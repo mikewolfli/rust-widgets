@@ -436,7 +436,9 @@ impl DataGrid {
         if height == 0 {
             return 0;
         }
-        ((height + self.row_height - 1) / self.row_height.max(1)) as usize
+        // `div_ceil` on the max'd row height: the plain `(height + row_height - 1)` overflowed when
+        // both operands were near `u32::MAX`, and the sibling `virtual_table` already used `div_ceil`.
+        height.div_ceil(self.row_height.max(1)) as usize
     }
 
     /// The area the cells may occupy: the grid's box minus the margin that keeps ink off the
@@ -502,7 +504,8 @@ impl DataGrid {
         if width == 0 {
             return 0;
         }
-        ((width + self.column_width - 1) / self.column_width.max(1)) as usize
+        // Same `div_ceil` reasoning as `visible_row_capacity`.
+        width.div_ceil(self.column_width.max(1)) as usize
     }
 
     fn normalize_projection_state(&mut self) {
@@ -1435,5 +1438,19 @@ mod tests {
 
         grid.set_column_width(100);
         assert_eq!(grid.column_width(), 100);
+    }
+
+    /// N-V-03 / N-V-04: a full-width control with a full-height row must not overflow the
+    /// `height + row_height - 1` capacity computation.
+    #[test]
+    fn extreme_dimensions_do_not_overflow_visible_capacity() {
+        // A very wide/tall control with an enormous row/column height: the old
+        // `height + row_height - 1` and `width + column_width - 1` overflowed (debug panic).
+        let mut grid = DataGrid::new(Rect::new(0, 0, u32::MAX, u32::MAX));
+        grid.set_row_height(u32::MAX);
+        grid.set_column_width(u32::MAX);
+        // Reaching the assertions means neither capacity calculation panicked.
+        assert_eq!(grid.visible_row_capacity(), 1);
+        assert_eq!(grid.visible_column_capacity(), 1);
     }
 }

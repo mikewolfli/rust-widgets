@@ -46,8 +46,12 @@ echo ""
 echo "=== [2/2] reverse injection: dropping a control must fail the gate ==="
 BACKUP="$(mktemp)"
 cp src/designer/generator.rs "$BACKUP"
+# `mktemp` rather than a fixed `id.1.diag`: a fixed name in the working tree pollutes `git status`
+# and races a concurrent run. `$DIAG` is the single path both uses below refer to, and the trap
+# removes it together with the restored generator on any exit.
+DIAG="$(mktemp)"
 # shellcheck disable=SC2064
-trap "cp '$BACKUP' src/designer/generator.rs; rm -f '$BACKUP'" EXIT
+trap "cp '$BACKUP' src/designer/generator.rs; rm -f '$BACKUP' '$DIAG'" EXIT
 
 "$PYTHON" - "$ROOT_DIR/src/designer/generator.rs" <<'PY'
 import pathlib
@@ -71,13 +75,13 @@ text = text.replace(
 path.write_text(text)
 PY
 
-if run_cases > id.1.diag 2>&1; then
-    cat id.1.diag
-    rm -f id.1.diag
+if run_cases > "$DIAG" 2>&1; then
+    cat "$DIAG"
+    rm -f "$DIAG"
     echo "FAIL: the generator can drop a control without this gate noticing" >&2
     exit 1
 fi
-rm -f id.1.diag
+rm -f "$DIAG"
 echo "  injection detected as expected (the dropped control is reported)"
 
 cp "$BACKUP" src/designer/generator.rs

@@ -453,7 +453,7 @@ impl JsonLoader {
 
         // Handle the "spacer" pseudo-widget
         if widget_type.eq_ignore_ascii_case("spacer") {
-            let stretch = obj.get("stretch").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+            let stretch = json_u32_at(obj, "stretch").unwrap_or(1);
             if let Some(pid) = parent_id {
                 add_spacer_to_layout(stretch, pid);
             }
@@ -481,9 +481,10 @@ impl JsonLoader {
                         if child_obj.len() == 1 {
                             let (child_type, child_val) = child_obj.iter().next().unwrap();
                             if child_type.eq_ignore_ascii_case("spacer") {
-                                let stretch =
-                                    child_val.get("stretch").and_then(|v| v.as_u64()).unwrap_or(1)
-                                        as u32;
+                                let stretch = child_val
+                                    .as_object()
+                                    .and_then(|m| json_u32_at(m, "stretch"))
+                                    .unwrap_or(1);
                                 add_spacer_to_layout(stretch, layout_parent);
                                 continue;
                             }
@@ -690,10 +691,9 @@ impl JsonLoader {
                                 let (child_type, child_val) = child_obj.iter().next().unwrap();
                                 if child_type.eq_ignore_ascii_case("spacer") {
                                     let stretch = child_val
-                                        .get("stretch")
-                                        .and_then(|v| v.as_u64())
-                                        .unwrap_or(1)
-                                        as u32;
+                                        .as_object()
+                                        .and_then(|m| json_u32_at(m, "stretch"))
+                                        .unwrap_or(1);
                                     add_spacer_to_layout(stretch, widget_id);
                                     continue;
                                 }
@@ -795,8 +795,8 @@ impl JsonLoader {
                 if let Some(placeholder) = obj.get("placeholder").and_then(|v| v.as_str()) {
                     le.set_placeholder_text(placeholder.to_string());
                 }
-                if let Some(max_len) = obj.get("max_length").and_then(|v| v.as_u64()) {
-                    le.set_max_length(Some(max_len as usize));
+                if let Some(max_len) = json_usize_at(obj, "max_length") {
+                    le.set_max_length(Some(max_len));
                 }
                 if let Some(password) = obj.get("password").and_then(|v| v.as_bool()) {
                     if password {
@@ -814,8 +814,8 @@ impl JsonLoader {
                 if let Some(placeholder) = obj.get("placeholder").and_then(|v| v.as_str()) {
                     te.set_placeholder_text(placeholder.to_string());
                 }
-                if let Some(max_len) = obj.get("max_length").and_then(|v| v.as_u64()) {
-                    te.set_max_length(Some(max_len as usize));
+                if let Some(max_len) = json_usize_at(obj, "max_length") {
+                    te.set_max_length(Some(max_len));
                 }
                 if let Some(read_only) = obj.get("read_only").and_then(|v| v.as_bool()) {
                     te.set_read_only(read_only);
@@ -835,16 +835,16 @@ impl JsonLoader {
                     }
                 }
                 // current_index: pre-select an item by index (0-based)
-                if let Some(idx) = obj.get("current_index").and_then(|v| v.as_u64()) {
-                    cb.set_current_index(Some(idx as usize));
+                if let Some(idx) = json_usize_at(obj, "current_index") {
+                    cb.set_current_index(Some(idx));
                 }
                 // editable: allow user to type custom text
                 if let Some(ed) = obj.get("editable").and_then(|v| v.as_bool()) {
                     cb.set_editable(ed);
                 }
                 // max_visible_items: dropdown max rows
-                if let Some(max) = obj.get("max_visible_items").and_then(|v| v.as_u64()) {
-                    cb.set_max_visible_items(max as usize);
+                if let Some(max) = json_usize_at(obj, "max_visible_items") {
+                    cb.set_max_visible_items(max);
                 }
                 Ok(Box::new(cb))
             }
@@ -873,12 +873,12 @@ impl JsonLoader {
                 let mut sl = Slider::new(geometry);
                 let (min, max) = read_json_range(obj);
                 if let Some(min) = min {
-                    sl.set_range(min as i32, max.unwrap_or(100) as i32);
+                    sl.set_range(i32_from_i64(min), i32_from_i64(max.unwrap_or(100)));
                 } else if let Some(max) = max {
-                    sl.set_maximum(max as i32);
+                    sl.set_maximum(i32_from_i64(max));
                 }
                 if let Some(value) = obj.get("value").and_then(|v| v.as_i64()) {
-                    sl.set_value(value as i32);
+                    sl.set_value(i32_from_i64(value));
                 }
                 if let Some(orientation) = obj.get("orientation").and_then(|v| v.as_str()) {
                     match orientation {
@@ -889,12 +889,12 @@ impl JsonLoader {
                     }
                 }
                 // single_step: keyboard arrow increment
-                if let Some(step) = obj.get("single_step").and_then(|v| v.as_u64()) {
-                    sl.set_single_step(step as i32);
+                if let Some(step) = json_i32_at(obj, "single_step") {
+                    sl.set_single_step(step);
                 }
                 // page_step: PgUp/PgDn increment
-                if let Some(step) = obj.get("page_step").and_then(|v| v.as_u64()) {
-                    sl.set_page_step(step as i32);
+                if let Some(step) = json_i32_at(obj, "page_step") {
+                    sl.set_page_step(step);
                 }
                 // tick_position: "none"|"above"|"below"|"both"
                 if let Some(pos) = obj.get("tick_position").and_then(|v| v.as_str()) {
@@ -913,8 +913,8 @@ impl JsonLoader {
                     }
                 }
                 // tick_interval: interval between tick marks
-                if let Some(iv) = obj.get("tick_interval").and_then(|v| v.as_u64()) {
-                    sl.set_tick_interval(iv as i32);
+                if let Some(iv) = json_i32_at(obj, "tick_interval") {
+                    sl.set_tick_interval(iv);
                 }
                 // tracking: emit value_changed while dragging (default: true)
                 if let Some(tr) = obj.get("tracking").and_then(|v| v.as_bool()) {
@@ -926,12 +926,12 @@ impl JsonLoader {
                 let mut sb = ScrollBar::new(geometry);
                 let (min, max) = read_json_range(obj);
                 if let Some(min) = min {
-                    sb.set_range(min as i32, max.unwrap_or(100) as i32);
+                    sb.set_range(i32_from_i64(min), i32_from_i64(max.unwrap_or(100)));
                 } else if let Some(max) = max {
-                    sb.set_maximum(max as i32);
+                    sb.set_maximum(i32_from_i64(max));
                 }
                 if let Some(value) = obj.get("value").and_then(|v| v.as_i64()) {
-                    sb.set_value(value as i32);
+                    sb.set_value(i32_from_i64(value));
                 }
                 if let Some(orientation) = obj.get("orientation").and_then(|v| v.as_str()) {
                     match orientation {
@@ -942,12 +942,12 @@ impl JsonLoader {
                     }
                 }
                 // single_step: arrow button increment
-                if let Some(step) = obj.get("single_step").and_then(|v| v.as_u64()) {
-                    sb.set_single_step(step as i32);
+                if let Some(step) = json_i32_at(obj, "single_step") {
+                    sb.set_single_step(step);
                 }
                 // page_step: click-track increment
-                if let Some(step) = obj.get("page_step").and_then(|v| v.as_u64()) {
-                    sb.set_page_step(step as i32);
+                if let Some(step) = json_i32_at(obj, "page_step") {
+                    sb.set_page_step(step);
                 }
                 Ok(Box::new(sb))
             }
@@ -955,12 +955,12 @@ impl JsonLoader {
                 let mut pb = ProgressBar::new(geometry);
                 let (min, max) = read_json_range(obj);
                 if let Some(min) = min {
-                    pb.set_range(min as i32, max.unwrap_or(100) as i32);
+                    pb.set_range(i32_from_i64(min), i32_from_i64(max.unwrap_or(100)));
                 } else if let Some(max) = max {
-                    pb.set_maximum(max as i32);
+                    pb.set_maximum(i32_from_i64(max));
                 }
                 if let Some(value) = obj.get("value").and_then(|v| v.as_i64()) {
-                    pb.set_value(value as i32);
+                    pb.set_value(i32_from_i64(value));
                 }
                 // text_visible: show percentage text overlay
                 if let Some(tv) = obj.get("text_visible").and_then(|v| v.as_bool()) {
@@ -1016,8 +1016,8 @@ impl JsonLoader {
             #[cfg(not(alloc_frugal))]
             "tabwidget" => {
                 let mut tw = TabWidget::new(geometry);
-                if let Some(index) = obj.get("current_index").and_then(|v| v.as_u64()) {
-                    tw.set_current_index(index as usize);
+                if let Some(index) = json_usize_at(obj, "current_index") {
+                    tw.set_current_index(index);
                 }
                 // tab_position: "north"|"south"|"west"|"east"
                 if let Some(pos) = obj.get("tab_position").and_then(|v| v.as_str()) {
@@ -1061,14 +1061,14 @@ impl JsonLoader {
             #[cfg(not(alloc_frugal))]
             "grid" => {
                 let mut grid = GridWidget::new(geometry);
-                if let Some(rows) = obj.get("rows").and_then(|v| v.as_u64()) {
-                    grid.set_rows(rows as u32);
+                if let Some(rows) = json_u32_at(obj, "rows") {
+                    grid.set_rows(rows);
                 }
-                if let Some(cols) = obj.get("columns").and_then(|v| v.as_u64()) {
-                    grid.set_columns(cols as u32);
+                if let Some(cols) = json_u32_at(obj, "columns") {
+                    grid.set_columns(cols);
                 }
-                if let Some(spacing) = obj.get("spacing").and_then(|v| v.as_u64()) {
-                    grid.set_spacing(spacing as u32);
+                if let Some(spacing) = json_u32_at(obj, "spacing") {
+                    grid.set_spacing(spacing);
                 }
                 if let Some(color_str) = obj.get("line_color").and_then(|v| v.as_str()) {
                     if let Some(color) = Color::parse_hex(color_str) {
@@ -1084,16 +1084,16 @@ impl JsonLoader {
                 let mut sb = SpinBox::new(geometry);
                 let (min, max) = read_json_range(obj);
                 if let Some(min) = min {
-                    sb.set_minimum(min as i32);
+                    sb.set_minimum(i32_from_i64(min));
                 }
                 if let Some(max) = max {
-                    sb.set_maximum(max as i32);
+                    sb.set_maximum(i32_from_i64(max));
                 }
                 if let Some(value) = obj.get("value").and_then(|v| v.as_i64()) {
-                    sb.set_value(value as i32);
+                    sb.set_value(i32_from_i64(value));
                 }
-                if let Some(step) = obj.get("single_step").and_then(|v| v.as_u64()) {
-                    sb.set_single_step(step as i32);
+                if let Some(step) = json_i32_at(obj, "single_step") {
+                    sb.set_single_step(step);
                 }
                 if let Some(prefix) = obj.get("prefix").and_then(|v| v.as_str()) {
                     sb.set_prefix(prefix.to_string());
@@ -1185,8 +1185,8 @@ impl JsonLoader {
                         _ => {}
                     }
                 }
-                if let Some(lw) = obj.get("line_width").and_then(|v| v.as_f64()) {
-                    frame.set_line_width(lw as f32);
+                if let Some(lw) = json_f32_at(obj, "line_width") {
+                    frame.set_line_width(lw);
                 }
                 Ok(Box::new(frame))
             }
@@ -1510,11 +1510,11 @@ fn apply_properties(widget: &mut dyn Widget, obj: &serde_json::Map<String, Value
     });
 
     // ── Style: border width / radius ────────────────────────
-    if let Some(bw) = obj.get("border_width").and_then(|v| v.as_u64()) {
-        widget.set_border_width(bw as u32);
+    if let Some(bw) = json_u32_at(obj, "border_width") {
+        widget.set_border_width(bw);
     }
-    if let Some(br) = obj.get("border_radius").and_then(|v| v.as_u64()) {
-        widget.set_border_radius(br as u32);
+    if let Some(br) = json_u32_at(obj, "border_radius") {
+        widget.set_border_radius(br);
     }
 
     // ── Size constraints ────────────────────────────────────
@@ -1540,11 +1540,16 @@ fn apply_geometry_shorthand(
     }
 
     let current = widget.geometry();
+    // `width`/`height` are `u64` but `Rect::from_i64` takes `i64`: a bare `w as i64` wrapped a
+    // value above `i64::MAX` to a *negative* extent, which `from_i64` then clamped to `0`, so a
+    // document asking for an enormous width laid out as a zero-width control. Clamping keeps
+    // the magnitude, and `from_i64` clamps toward the screen's own limits from there.
+    let extent = |raw: u64| i64::try_from(raw).unwrap_or(i64::MAX);
     let rect = Rect::from_i64(
         x.unwrap_or(current.x as i64),
         y.unwrap_or(current.y as i64),
-        width.map(|w| w as i64).unwrap_or(current.width as i64),
-        height.map(|h| h as i64).unwrap_or(current.height as i64),
+        width.map(extent).unwrap_or(current.width as i64),
+        height.map(extent).unwrap_or(current.height as i64),
     );
     widget.set_geometry(rect);
     supplied.iter().filter(|&&present| present).count()
@@ -1729,6 +1734,49 @@ fn read_json_range(obj: &serde_json::Map<String, Value>) -> (Option<i64>, Option
     (read("minimum", "min"), read("maximum", "max"))
 }
 
+/// Reads a JSON `u64` field and narrows it to `u32`, clamping at the bounds.
+///
+/// A JSON number is an arbitrary `u64` (or a float), so `as u32` is a truncation rather
+/// than a conversion: `4294967296` wrapped to `0`, and a spacing/size the author wrote
+/// large came out as none. Clamping keeps the direction and magnitude the document stated.
+fn json_u32_at(obj: &serde_json::Map<String, Value>, key: &str) -> Option<u32> {
+    obj.get(key).and_then(|v| v.as_u64()).map(|raw| u32::try_from(raw).unwrap_or(u32::MAX))
+}
+
+/// Reads a JSON `u64` field and narrows it to `usize`, clamping at the bounds.
+fn json_usize_at(obj: &serde_json::Map<String, Value>, key: &str) -> Option<usize> {
+    obj.get(key).and_then(|v| v.as_u64()).map(|raw| usize::try_from(raw).unwrap_or(usize::MAX))
+}
+
+/// Reads a JSON integer field and narrows it to `i32`, clamping at the bounds.
+///
+/// `as i32` on an `i64` wraps: `2147483648` became `-2147483648`, so a large positive
+/// range bound arrived as a large negative one. Clamping preserves the sign.
+fn json_i32_at(obj: &serde_json::Map<String, Value>, key: &str) -> Option<i32> {
+    obj.get(key)
+        .and_then(|v| v.as_i64())
+        .map(|raw| i32::try_from(raw).unwrap_or(if raw > 0 { i32::MAX } else { i32::MIN }))
+}
+
+/// Reads a JSON number field and narrows it to `f32`.
+///
+/// A `u64` above `f32::MAX` converts to `inf`, so the result is checked for finiteness:
+/// a non-finite value is refused (`None`) rather than stored and later mapped to a
+/// meaningless pixel width.
+fn json_f32_at(obj: &serde_json::Map<String, Value>, key: &str) -> Option<f32> {
+    let raw = obj.get(key).and_then(|v| v.as_f64())? as f32;
+    raw.is_finite().then_some(raw)
+}
+
+/// Narrows an `i64` (typically a JSON range bound) to `i32`, clamping at the bounds.
+///
+/// The JSON range reader yields `i64`; a bare `as i32` wrapped an out-of-range bound to the
+/// opposite sign, so a slider asking for `2147483648` arrived as `i32::MIN`. Clamping keeps
+/// the direction of the overflow.
+fn i32_from_i64(raw: i64) -> i32 {
+    i32::try_from(raw).unwrap_or(if raw > 0 { i32::MAX } else { i32::MIN })
+}
+
 /// Apply min/max size constraints from JSON object.
 fn apply_size_constraints(widget: &mut dyn Widget, obj: &serde_json::Map<String, Value>) {
     let min_w = obj.get("min_width").and_then(|v| v.as_u64());
@@ -1736,18 +1784,22 @@ fn apply_size_constraints(widget: &mut dyn Widget, obj: &serde_json::Map<String,
     let max_w = obj.get("max_width").and_then(|v| v.as_u64());
     let max_h = obj.get("max_height").and_then(|v| v.as_u64());
 
+    // `as u32` on a `u64` wrapped an over-large constraint to a tiny one (`min_width` of
+    // `4294967296` became `0`). Clamping keeps the constraint the document stated.
+    let clamp_u32 = |raw: u64| u32::try_from(raw).unwrap_or(u32::MAX);
+
     if min_w.is_some() || min_h.is_some() {
         let current = widget.min_size().unwrap_or(crate::core::Size::new(0, 0));
         widget.set_min_size(Some(crate::core::Size::new(
-            min_w.unwrap_or(current.width as u64) as u32,
-            min_h.unwrap_or(current.height as u64) as u32,
+            min_w.map(clamp_u32).unwrap_or(current.width),
+            min_h.map(clamp_u32).unwrap_or(current.height),
         )));
     }
     if max_w.is_some() || max_h.is_some() {
         let current = widget.max_size().unwrap_or(crate::core::Size::new(u32::MAX, u32::MAX));
         widget.set_max_size(Some(crate::core::Size::new(
-            max_w.unwrap_or(current.width as u64) as u32,
-            max_h.unwrap_or(current.height as u64) as u32,
+            max_w.map(clamp_u32).unwrap_or(current.width),
+            max_h.map(clamp_u32).unwrap_or(current.height),
         )));
     }
 }
@@ -1761,10 +1813,10 @@ fn parse_spacing(value: &Value) -> Option<crate::style::Padding> {
             Some(crate::style::Padding::all(v))
         }
         Value::Object(map) => {
-            let top = map.get("top").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            let right = map.get("right").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            let bottom = map.get("bottom").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            let left = map.get("left").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let top = json_u32_at(map, "top").unwrap_or(0);
+            let right = json_u32_at(map, "right").unwrap_or(0);
+            let bottom = json_u32_at(map, "bottom").unwrap_or(0);
+            let left = json_u32_at(map, "left").unwrap_or(0);
             if top == 0 && right == 0 && bottom == 0 && left == 0 {
                 None
             } else {

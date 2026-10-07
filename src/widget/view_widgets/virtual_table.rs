@@ -205,8 +205,8 @@ impl VirtualTable {
         let col_start = self.scroll_column.saturating_sub(self.overscan_columns);
         let visible_rows = (self.base.geometry().height / self.row_height.max(1)) as usize;
         let visible_cols = (self.base.geometry().width / self.column_width.max(1)) as usize;
-        let row_len = visible_rows.saturating_add(self.overscan_rows * 2).max(1);
-        let col_len = visible_cols.saturating_add(self.overscan_columns * 2).max(1);
+        let row_len = visible_rows.saturating_add(self.overscan_rows.saturating_mul(2)).max(1);
+        let col_len = visible_cols.saturating_add(self.overscan_columns.saturating_mul(2)).max(1);
         (row_start, row_len, col_start, col_len)
     }
 
@@ -926,5 +926,21 @@ mod tests {
         // rather than the control coming out blank.
         let sliver = Rect::new(0, 0, 3, 3);
         assert_eq!(table.visible_grid(sliver), (1, 1));
+    }
+
+    /// N-V-05: a huge overscan must saturate `overscan * 2`, not wrap the window length.
+    #[test]
+    fn a_huge_overscan_does_not_wrap_the_window() {
+        let mut table = VirtualTable::new(Rect::new(0, 0, 320, 200));
+        table.set_data_source(Arc::new(StaticSource));
+        table.set_row_height(20);
+        table.set_column_width(20);
+        // Debug builds panic on the wrapping `overscan_rows * 2`; reaching the assert is the check.
+        table.set_overscan_rows(usize::MAX);
+        table.set_overscan_columns(usize::MAX);
+        let (_row_start, row_len, _col_start, col_len) = table.visible_window();
+        // A wrapped multiply could have produced a tiny length; saturation keeps it large.
+        assert!(row_len > 1, "row length must not wrap to a small value, got {row_len}");
+        assert!(col_len > 1, "column length must not wrap to a small value, got {col_len}");
     }
 }

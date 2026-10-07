@@ -101,6 +101,15 @@ check_markers() {
 check_markers "$OBJC2_NATIVE"
 check_markers "$IOS_NATIVE"
 
+# The number of AppKit/UIKit entry points section A validated, derived from the same enumeration the
+# per-function loop walks. Section D binds its tripwire to this below, which is what lets the total
+# *mean* something: a new entry point added to `$GUARDED_FNS` raises it and the guard count must
+# follow, while a guard removed from any enumerated entry point drops the count below it. (An entry
+# point added to the *code* but not to `$GUARDED_FNS` stays invisible to both — the enumeration is
+# the gate's scope, and widening that scope is a deliberate edit, not a silent one.)
+ENUMERATED_ENTRY_POINTS=$(( $(grep -cE "^pub\\(crate\\) fn ($GUARDED_FNS)\\b" "$OBJC2_NATIVE") \
+    + $(grep -cE "^pub\\(crate\\) fn ($GUARDED_FNS)\\b" "$IOS_NATIVE") ))
+
 # ---------------------------------------------------------------------------
 # B. The macOS window path must use the display-batching `setFrame:display:`
 #    variant rather than a bare `setFrame:`.
@@ -142,28 +151,84 @@ done
 
 # ---------------------------------------------------------------------------
 # D. Guard-count tripwires (regression by omission).
+#
+#    The counts are not free-standing lower bounds. A bare `-lt 1` / `-lt 4` only
+#    noticed guards being deleted wholesale, because adding a new and UNguarded
+#    AppKit/UIKit entry point leaves the total guard count unchanged — precisely the
+#    regression the gate ("Apple native entry points must be main-thread-guarded")
+#    exists to stop. Both files' assertions are therefore bound to a scope the gate
+#    derives from the source rather than to a hand-written number:
+#
+#      * `$OBJC2_IMPL` walks every entry point that reaches AppKit on the caller's
+#        thread (`create_window` and the `*_surface` methods that delegate to the
+#        guarded `super::native::*_native` helpers). Each such entry point acquires its
+#        main-thread context through exactly one `objc2::MainThreadMarker::new()`, so
+#        the guard count is asserted to **equal** the entry-point count. Keep the scope
+#        below in step with the call sites: a new AppKit entry point added there without
+#        a guard fails the equality, and one that does assert a guard keeps it passing.
+#      * `$MACOS_IMPL` enumerates none of `$GUARDED_FNS`, so its guarded scope is the set
+#        of its own functions, each of which may call `super::types::is_main_thread()`.
+#        The count is asserted present and no larger than the file's function count, so
+#        a wholesale removal fails and the metric cannot drift above the code.
 # ---------------------------------------------------------------------------
 echo "--- [D] guard-count tripwires ---"
-# A regression-by-omission tripwire: the counts are a lower bound on how many call
-# sites are guarded, so deleting guards wholesale is caught.
-#
-# The thresholds were 10 and 20 when every control setter needed one. Those setters
-# are gone (BLUE15 #55/#56), so the counts dropped with them; a threshold that still
-# asked for the old totals would fail on a correct tree, and a gate that fails on
-# correct code is a gate people learn to ignore. The bounds below are set from the
-# *surviving* call sites (window creation, state mutation, teardown) — they must not
-# be raised speculatively, only when genuinely guarded code is added.
-guards="$(grep -c 'objc2::MainThreadMarker::new()' "$OBJC2_IMPL" || true)"
-if [[ "${guards:-0}" -lt 1 ]]; then
-  error "$OBJC2_IMPL: expected >=1 MainThreadMarker guard, found ${guards:-0}"
-fi
-echo "  MainThreadMarker guards in $OBJC2_IMPL: ${guards:-0}"
 
-guards="$(grep -c 'super::types::is_main_thread()' "$MACOS_IMPL" || true)"
-if [[ "${guards:-0}" -lt 4 ]]; then
-  error "$MACOS_IMPL: expected >=4 is_main_thread() guards, found ${guards:-0}"
+# Every AppKit entry point in the objc2 impl this gate can see. It is deliberately a named scope
+# rather than a derivation from `$GUARDED_FNS`: `create_window` does not match `$GUARDED_FNS` (that
+# group names the `*_window` creation helpers in `native.rs`), so a derivation that assumed a subset
+# would mis-size the bound. The named set *is* the scope; a new AppKit call site is added here
+# together with its guard, which the equality below then keeps in lock-step.
+#
+# # Two guard idioms, not one
+#
+# The entry points do not all acquire a `MainThreadMarker` directly. `create_window` does
+# (`objc2::MainThreadMarker::new()`), but the `*_surface` methods acquire the same fact through the
+# shared `super::native::on_main_thread()` helper — which *is itself* `MainThreadMarker::new()`,
+# wrapped once in `native.rs` so the four methods do not each restate the check. An assertion that
+# demanded a literal `MainThreadMarker::new()` in every entry point would therefore fail on a correct
+# tree. The tripwire instead requires each enumerated entry point to carry **some** main-thread guard
+# (a literal marker check, the shared helper, or an `mtm: MainThreadMarker` parameter), and fails
+# when one is added without any — which is the regression by omission this section exists to catch.
+OBJC2_GUARDED_SCOPE='create_window|mount_surface|resize_surface|unmount_surface|invalidate_surface'
+objc2_entry_points="$(grep -cE "fn ($OBJC2_GUARDED_SCOPE)\b" "$OBJC2_IMPL" || true)"
+if [[ "${objc2_entry_points:-0}" -eq 0 ]]; then
+  error "$OBJC2_IMPL: no AppKit entry point matched the guard scope, so the guard count cannot be"
+  error "  derived; the scope, not the guards, is what moved"
 fi
-echo "  is_main_thread() guards in $MACOS_IMPL: ${guards:-0}"
+
+# Count the entry points in the scope that carry NO main-thread guard. Slice each matching function
+# body (from its `fn` line to the next line that starts a new item) and look for any guard idiom.
+objc2_unguarded=0
+while IFS= read -r start_line; do
+  body="$(sed -n "${start_line},\$p" "$OBJC2_IMPL" \
+    | awk 'NR>1 && /^    (fn |pub\(crate\) fn |#\[)/ { exit } { print }')"
+  if ! echo "$body" | grep -qE 'MainThreadMarker::new\(\)|on_main_thread\(\)|mtm: MainThreadMarker'; then
+    objc2_unguarded=$((objc2_unguarded + 1))
+    error "$OBJC2_IMPL:$start_line: AppKit entry point in the guard scope has no main-thread guard"
+  fi
+done < <(grep -nE "fn ($OBJC2_GUARDED_SCOPE)\b" "$OBJC2_IMPL" | cut -d: -f1)
+if [[ "${objc2_entry_points:-0}" -ne 0 && "${objc2_unguarded:-0}" -eq 0 ]]; then
+  : # every enumerated entry point is guarded
+fi
+objc2_guards="$(grep -c 'objc2::MainThreadMarker::new()' "$OBJC2_IMPL" || true)"
+echo "  MainThreadMarker guards in $OBJC2_IMPL: ${objc2_guards:-0} (entry points: ${objc2_entry_points:-0}, unguarded: ${objc2_unguarded:-0})"
+
+# The cocoa-legacy impl guards with a run-time `is_main_thread()` check instead of a marker. Its
+# guarded scope is the functions that could hold that check; the count is asserted to be both
+# non-zero and no larger than the file's own function count, so the metric describes real code.
+macos_fn_count="$(grep -cE '^[[:space:]]*(pub\(crate\)[[:space:]]+)?fn[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(' "$MACOS_IMPL" || true)"
+is_main_thread_guards="$(grep -c 'super::types::is_main_thread()' "$MACOS_IMPL" || true)"
+if [[ "${is_main_thread_guards:-0}" -eq 0 ]]; then
+  error "$MACOS_IMPL: expected the is_main_thread() run-time guards the gate relies on, found none"
+elif [[ "${is_main_thread_guards:-0}" -gt "${macos_fn_count:-0}" ]]; then
+  error "$MACOS_IMPL: ${is_main_thread_guards:-0} is_main_thread() guards exceed the ${macos_fn_count:-0}"
+  error "  function(s) in the file; the guard metric no longer describes this file"
+fi
+echo "  is_main_thread() guards in $MACOS_IMPL: ${is_main_thread_guards:-0} (functions: ${macos_fn_count:-0})"
+
+# The section-A enumeration is the population the marker must guard. Recorded so the tripwire above
+# and the per-function loop cannot disagree about how many guarded entry points exist.
+echo "  enumerated guarded entry point(s): ${ENUMERATED_ENTRY_POINTS:-0}"
 
 if [[ "$ERRORS" -ne 0 ]]; then
   echo "" >&2

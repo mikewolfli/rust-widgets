@@ -46,6 +46,7 @@
 //! ```
 
 use crate::core::{Color, Point, Rect};
+use crate::render::pipeline::u32_to_i32_saturating;
 use crate::render::RenderContext;
 
 /// How far a bevel's highlight and shade are stepped from the caller's base colour.
@@ -265,12 +266,18 @@ impl Bevel {
     ///
     /// This is the second half of a double bevel — the "thickness" beneath the highlight.
     pub fn stroke_inner(&self, context: &mut RenderContext, rect: Rect, width: u32) {
-        let inset = width as i32;
+        // `width` is a public `u32` and every consumer here arithmetic's in `i32`, so narrow it
+        // saturating rather than wrapping: `width > i32::MAX` used to become a *negative* inset (the
+        // inner rect moved outward, off the control) and `width * 2` aborted in debug builds. A width
+        // that large cannot fit any real frame, so clamping it to `i32::MAX` makes the inner rect
+        // collapse to empty — the honest outcome — instead of drawing outside the caller's rect.
+        let inset = u32_to_i32_saturating(width);
+        let double = inset.saturating_mul(2);
         let inner = Rect::new(
-            rect.x + inset,
-            rect.y + inset,
-            rect.width.saturating_sub(width * 2),
-            rect.height.saturating_sub(width * 2),
+            rect.x.saturating_add(inset),
+            rect.y.saturating_add(inset),
+            rect.width.saturating_sub(double as u32),
+            rect.height.saturating_sub(double as u32),
         );
         let (leading, trailing) = self.inner_tones();
         let (x0, y0) = (inner.x as f32, inner.y as f32);

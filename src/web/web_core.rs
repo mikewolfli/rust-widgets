@@ -43,6 +43,32 @@ pub trait SimulationEngine: Send {
     fn simulate_navigation(&mut self, url: &str) -> Result<String, String>;
 }
 
+/// The result of one asynchronous HTTP fetch, delivered from the helper thread.
+///
+/// Carries the generation it was started for so [`WebViewCore::poll_load`] can discard a result whose
+/// navigation has since been superseded.
+#[cfg(all(not(alloc_frugal), feature = "web-http"))]
+struct HttpLoadOutcome {
+    generation: u64,
+    result: Result<String, String>,
+}
+
+/// Performs one blocking HTTP GET and returns the response body, or a message describing the failure.
+///
+/// This is the only part that blocks, and it runs on a helper thread — never on the UI thread — so a
+/// slow server cannot freeze the caller. Keeping it a free function makes it obvious that it touches
+/// no view state; the thread's only output is the returned `Result`, delivered over a channel.
+#[cfg(all(not(alloc_frugal), feature = "web-http"))]
+fn fetch_http_content(url: &str) -> Result<String, String> {
+    match ureq::get(url).call() {
+        Ok(response) => response
+            .into_body()
+            .read_to_string()
+            .map_err(|e| format!("Failed to read response body from '{url}': {e}")),
+        Err(e) => Err(format!("HTTP request failed for '{url}': {e}")),
+    }
+}
+
 /// Shared fields used by both WebEngineViewEnhanced and WebViewEnhanced.
 #[cfg(not(alloc_frugal))]
 pub struct WebViewCore {
@@ -79,6 +105,20 @@ pub struct WebViewCore {
     /// When set, navigation methods will delegate to this engine
     /// instead of the default simulated 0→50→100 progress.
     pub simulation_engine: Option<Box<dyn SimulationEngine>>,
+    /// The in-flight asynchronous HTTP load, if any (`web-http` only).
+    ///
+    /// # Why the fetch does not run on the calling thread
+    ///
+    /// `set_url` used to perform the whole request and body read inline, so a slow server froze the
+    /// UI thread for the round trip and a superseded navigation could not be abandoned. The request
+    /// now runs on a helper thread and its result is delivered through this channel, which
+    /// [`Self::poll_load`] drains. `load_generation` is bumped on every navigation, so a result that
+    /// belongs to an older generation is dropped instead of overwriting a newer page.
+    #[cfg(feature = "web-http")]
+    pending_load: Option<std::sync::mpsc::Receiver<HttpLoadOutcome>>,
+    /// Monotonic id of the current navigation; see [`Self::pending_load`].
+    #[cfg(feature = "web-http")]
+    load_generation: u64,
 }
 
 #[cfg(not(alloc_frugal))]
@@ -114,6 +154,10 @@ impl WebViewCore {
             console_message: Signal1::new(),
             content: String::new(),
             simulation_engine: None,
+            #[cfg(feature = "web-http")]
+            pending_load: None,
+            #[cfg(feature = "web-http")]
+            load_generation: 0,
         }
     }
 
@@ -237,45 +281,40 @@ impl WebViewCore {
         self.history.navigate(url.clone());
 
         // ── Real HTTP fetch (web-http feature) ──
+        //
+        // The request runs on a helper thread and its outcome is delivered through a channel drained
+        // by [`Self::poll_load`]. Running it inline here blocked the caller for the whole round trip
+        // (a slow server froze the UI) and made a superseded navigation impossible to abandon; a
+        // superseded load is now dropped by generation rather than by luck of timing.
         #[cfg(feature = "web-http")]
         {
             if url.starts_with("http://") || url.starts_with("https://") {
                 self.load_progress = 10;
                 self.loading_progress.emit(self.load_progress);
 
-                match ureq::get(&url).call() {
-                    Ok(response) => {
-                        self.load_progress = 60;
-                        self.loading_progress.emit(self.load_progress);
+                self.load_generation = self.load_generation.wrapping_add(1);
+                let generation = self.load_generation;
+                let request_url = url.clone();
+                let (sender, receiver) = std::sync::mpsc::channel();
+                self.pending_load = Some(receiver);
 
-                        match response.into_body().read_to_string() {
-                            Ok(body) => {
-                                self.content = body;
-                                // Try to extract title from HTML.
-                                if let Some(title_start) = self.content.find("<title>") {
-                                    let after = &self.content[title_start..];
-                                    if let Some(title_end) = after.find("</title>") {
-                                        self.title = after[7..title_end].to_string();
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                log::error!(
-                                    "[web] Failed to read response body from '{}': {}",
-                                    url,
-                                    e
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        log::error!("[web] HTTP request failed for '{}': {}", url, e);
-                        self.loading = false;
-                        self.loading_finished.emit(self.url.clone());
-                        self.update_navigation_state();
-                        self.base.request_redraw();
-                        return;
-                    }
+                // `spawn` can fail only on resource exhaustion; fall back to the synchronous
+                // path in that case so the navigation still completes rather than hanging on a
+                // channel that nothing will ever write to.
+                let spawned =
+                    std::thread::Builder::new().name("rw-web-http".to_string()).spawn(move || {
+                        let result = fetch_http_content(&request_url);
+                        // A send error means the receiver was dropped (the view was destroyed);
+                        // there is nothing to report to and no leak, so it is ignored.
+                        let _ = sender.send(HttpLoadOutcome { generation, result });
+                    });
+                if spawned.is_err() {
+                    log::error!(
+                        "[web] could not start the HTTP fetch thread for '{url}'; loading inline"
+                    );
+                    self.pending_load = None;
+                    let result = fetch_http_content(&url);
+                    self.apply_http_outcome(generation, result);
                 }
             } else {
                 // file:// URL fallback — simulated progress.
@@ -290,6 +329,15 @@ impl WebViewCore {
             // Emit progress at 50%.
             self.load_progress = 50;
             std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        // When an asynchronous HTTP fetch is in flight, the load is *not* finished here: the 100%
+        // progress and `loading_finished` are emitted by [`Self::poll_load`] when the result arrives
+        // (or by the error path when it fails). Emitting them inline would announce a completion for a
+        // page whose bytes have not been read yet.
+        #[cfg(feature = "web-http")]
+        if self.pending_load.is_some() {
+            return;
         }
 
         // Emit progress at 100% and finish.
@@ -420,6 +468,14 @@ impl WebViewCore {
     }
 
     pub fn stop(&mut self) {
+        // Cancel any in-flight asynchronous fetch: dropping the receiver closes the channel and
+        // bumping the generation invalidates a result already in flight, so a helper thread cannot
+        // deliver a page after the caller asked it to stop.
+        #[cfg(feature = "web-http")]
+        {
+            self.pending_load = None;
+            self.load_generation = self.load_generation.wrapping_add(1);
+        }
         if self.loading {
             self.loading = false;
             self.load_progress = 0;
@@ -475,6 +531,89 @@ impl WebViewCore {
 
     fn update_navigation_state(&self) {
         self.navigation_state_changed.emit((self.can_go_back(), self.can_go_forward()));
+    }
+
+    /// Ends a failed load: clears the loading flag, emits the error, and repaints.
+    ///
+    /// # Why this is separate from the success tail
+    ///
+    /// A failed fetch used to fall through to the same 100% / `loading_finished` emission the
+    /// success path used, so a caller could not tell a rendered page from a network error — the
+    /// "reported success for something that did not happen" failure the project's principles forbid.
+    /// A failure now emits `error_occurred` and **not** `loading_finished`, leaving `load_progress`
+    /// where it stalled so a progress indicator does not falsely complete.
+    #[cfg(feature = "web-http")]
+    fn finish_load_with_error(&mut self, message: String) {
+        log::error!("[web] {message}");
+        self.loading = false;
+        self.error_occurred.emit(message);
+        self.update_navigation_state();
+        self.base.request_redraw();
+    }
+
+    /// Applies the outcome of an HTTP fetch, if it still belongs to the current navigation.
+    ///
+    /// `generation` must equal [`Self::load_generation`]; a mismatch means a later `set_url`
+    /// superseded this load, so its bytes must not overwrite the newer page.
+    #[cfg(feature = "web-http")]
+    fn apply_http_outcome(&mut self, generation: u64, result: Result<String, String>) {
+        if generation != self.load_generation {
+            // A stale response for a navigation that has been replaced: drop it silently rather
+            // than reporting it — it is not an error, it is simply no longer wanted.
+            return;
+        }
+        match result {
+            Ok(body) => {
+                self.load_progress = 60;
+                self.loading_progress.emit(self.load_progress);
+                self.content = body;
+                if let Some(title_start) = self.content.find("<title>") {
+                    let after = &self.content[title_start..];
+                    if let Some(title_end) = after.find("</title>") {
+                        self.title = after[7..title_end].to_string();
+                    }
+                }
+                self.load_progress = 100;
+                self.loading = false;
+                self.loading_progress.emit(self.load_progress);
+                self.loading_finished.emit(self.url.clone());
+                self.title_changed.emit(self.title.clone());
+                self.browser_history.add_entry(self.url.clone(), self.title.clone());
+                self.update_navigation_state();
+                self.base.request_redraw();
+            }
+            Err(message) => self.finish_load_with_error(message),
+        }
+    }
+
+    /// Advances an in-flight asynchronous load, if any (`web-http` only).
+    ///
+    /// The host calls this from its frame/tick loop. It returns `true` while a load is still pending
+    /// (so the caller knows to keep polling) and `false` once the load has completed or failed. This
+    /// is the entry point that replaces the old inline blocking: nothing in `set_url` waits on the
+    /// network, and the signals fire on the caller's own thread through this poll.
+    #[cfg(feature = "web-http")]
+    pub fn poll_load(&mut self) -> bool {
+        let Some(receiver) = self.pending_load.as_ref() else {
+            return false;
+        };
+        match receiver.try_recv() {
+            Ok(outcome) => {
+                self.pending_load = None;
+                self.apply_http_outcome(outcome.generation, outcome.result);
+                false
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => true,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                // The helper thread vanished without sending (panicked). Do not leave the view
+                // stuck "loading" forever: report it as a failed load.
+                self.pending_load = None;
+                self.finish_load_with_error(String::from(
+                    "HTTP fetch thread ended without delivering a result",
+                ));
+                false
+            }
+        }
     }
 
     /// Handle common key events for navigation.

@@ -240,9 +240,19 @@ impl OtpInput {
         // under it: step back onto the previous one and clear that. This covers
         // `focused_index == value.len()`, the ordinary "delete the last digit"
         // case, which a strict `>` comparison would miss.
+        //
+        // The index to delete is derived from `value.len()`, not from
+        // `focused_index - 1`: the focus can be clicked onto an empty box well past
+        // the filled ones (`focused_index == length` on a six-box code with three
+        // digits), and `focused_index - 1` then pointed at a box that holds nothing,
+        // so `remove_at` indexed past the end of `value` and panicked. The last
+        // filled box is always `value.len() - 1`, regardless of where the focus is.
         if self.focused_index > 0 && self.focused_index >= self.value.len() {
-            self.focused_index -= 1;
-            self.remove_at(self.focused_index);
+            let target = self.value.len().saturating_sub(1);
+            self.value.remove(target);
+            // The focus lands on the box that was just cleared.
+            self.focused_index = target;
+            self.announce_after(self.value.len() + 1);
             return true;
         }
         if self.focused_index < self.value.len() {
@@ -291,7 +301,18 @@ impl OtpInput {
 
     /// Removes the character at `index` and pulls the following ones back, so the
     /// code never has a gap in the middle of it.
+    ///
+    /// Guarded rather than assuming a valid index: the callers compute `index` from
+    /// focus and length, and a future caller that gets it wrong must not panic a
+    /// control. An out-of-range `index` is a no-op with a warning naming the range.
     fn remove_at(&mut self, index: usize) {
+        if index >= self.value.len() {
+            log::warn!(
+                "[otp_input] remove_at({index}) is out of range for {} filled box(es); ignored",
+                self.value.len()
+            );
+            return;
+        }
         let filled_before = self.value.len();
         self.value.remove(index);
         self.announce_after(filled_before);
@@ -823,6 +844,30 @@ mod tests {
         assert_eq!(otp.focused_index(), 0);
         assert!(!otp.backspace(), "an empty control reports no change");
         assert_eq!(otp.focused_index(), 0, "a refused backspace does not move the focus");
+    }
+
+    /// N-B-01: backspace with the focus on an empty box *past* the filled ones must not panic.
+    ///
+    /// A six-box control with three digits, clicked onto the sixth box, has `focused_index == 5`
+    /// while `value.len() == 3`. The old code dropped the focus to `4` and called
+    /// `remove_at(4)` on a 3-character value — an out-of-bounds `Vec::remove` that panicked from an
+    /// ordinary interaction. The delete must act on the last *filled* box instead.
+    #[test]
+    fn backspace_with_focus_on_an_empty_box_past_the_code_does_not_panic() {
+        let mut otp = otp();
+        otp.set_value("123");
+        assert_eq!(otp.value().len(), 3);
+        // Click the sixth (last) box, which is empty.
+        otp.set_focused_index(5);
+        assert!(otp.backspace(), "there is a digit to delete");
+        assert_eq!(otp.value(), "12", "backspace must delete the last filled digit");
+        assert_eq!(otp.focused_index(), 2, "the focus lands on the cleared box");
+
+        // The same shape one box past the end still works.
+        otp.set_value("9");
+        otp.set_focused_index(3);
+        assert!(otp.backspace());
+        assert_eq!(otp.value(), "");
     }
 
     /// Pasting a whole code must fill the row in one go and complete it.

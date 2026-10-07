@@ -27,11 +27,13 @@ fn test_shortcut_parsing() {
 }
 #[test]
 fn test_shortcut_to_string() {
-    // `format_shortcut` is the canonical, platform-independent form.
+    // `format_shortcut` is the canonical, platform-independent form, and is an inverse of
+    // `from_string`. A *physical* Control shortcut renders as `Control` so it is distinguishable
+    // from the `Ctrl` input alias of PRIMARY (N-K-03).
     let shortcut = Shortcut::ctrl(Key::A);
-    assert_eq!(shortcut.to_string(), "Ctrl+A");
+    assert_eq!(shortcut.to_string(), "Control+A");
     let shortcut = Shortcut::new(Key::F1, Modifiers::CTRL | Modifiers::ALT);
-    assert_eq!(shortcut.to_string(), "Ctrl+Alt+F1");
+    assert_eq!(shortcut.to_string(), "Control+Alt+F1");
     let shortcut = Shortcut::primary(Key::Z);
     assert_eq!(shortcut.to_string(), "Primary+Z");
 }
@@ -144,6 +146,52 @@ fn page_keys_round_trip_without_glyphs() {
 
     assert_eq!(Key::from_string("⇞"), None, "the page-up glyph is not canonical input");
     assert_eq!(Key::from_string("⇟"), None, "the page-down glyph is not canonical input");
+}
+
+/// N-K-02 / N-K-03: the canonical form round-trips for physical Control, and a second key token is
+/// rejected rather than silently dropping the first.
+#[test]
+fn shortcut_canonical_form_round_trips_and_rejects_multiple_keys() {
+    use crate::compat::format;
+    use std::collections::HashMap;
+
+    // Physical Control keeps its identity through format -> parse.
+    for shortcut in [
+        Shortcut::ctrl(Key::Z),
+        Shortcut::ctrl_shift(Key::Z),
+        Shortcut::ctrl_alt(Key::F1),
+        Shortcut::primary(Key::Z),
+        Shortcut::new(Key::A, Modifiers::CTRL | Modifiers::META),
+    ] {
+        let formatted = shortcut.to_string();
+        let parsed = Shortcut::from_string(&formatted)
+            .unwrap_or_else(|| panic!("{formatted:?} must parse back"));
+        assert_eq!(parsed, shortcut, "{formatted:?} did not round-trip to an equal value");
+        assert_eq!(
+            format!("{parsed:?}"),
+            format!("{shortcut:?}"),
+            "Eq implies Hash, so Debug must match too"
+        );
+    }
+
+    // The hash-identity regression is the point: a shortcut must find itself.
+    let mut map: HashMap<Shortcut, u32> = HashMap::new();
+    map.insert(Shortcut::ctrl(Key::Z), 1);
+    let reparsed = Shortcut::from_string(&Shortcut::ctrl(Key::Z).to_string()).unwrap();
+    assert_eq!(
+        map.get(&reparsed).copied(),
+        Some(1),
+        "a reparsed shortcut must hash to the same key"
+    );
+
+    // A second key token is a malformed declaration, not a silent overwrite.
+    assert_eq!(Shortcut::from_string("Ctrl+A+B"), None);
+    assert_eq!(Shortcut::from_string("A+B"), None);
+    // One key token still parses.
+    assert!(Shortcut::from_string("Ctrl+A").is_some());
+    assert!(Shortcut::from_string("Control+A").is_some());
+    // `Ctrl` (input alias) and `Control` (physical) are distinct values.
+    assert_ne!(Shortcut::from_string("Ctrl+A"), Shortcut::from_string("Control+A"));
 }
 #[test]
 fn test_shortcut_manager_register() {

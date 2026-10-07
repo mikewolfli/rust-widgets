@@ -369,9 +369,16 @@ pub(crate) fn serialize_pdf_annotation(annotation: &Annotation) -> String {
             color.b as f32 / 255.0,
         ));
     }
-    // Opacity as /CA (optional, default 1.0)
-    if (annotation.opacity - 1.0).abs() > f32::EPSILON {
-        dict.push_str(&format!(" /CA {:.3}", annotation.opacity));
+    // Opacity as /CA (optional, default 1.0).
+    //
+    // `opacity` is a `pub` field, so a caller can bypass `with_opacity`'s normalisation and store a
+    // non-finite value directly. Writing `NaN`/`inf` into `/CA` would produce a PDF no viewer can
+    // parse, so a non-finite value is treated as the documented default of full opacity here, which
+    // is the same normalisation the setter applies.
+    let opacity =
+        if annotation.opacity.is_finite() { annotation.opacity.clamp(0.0, 1.0) } else { 1.0 };
+    if (opacity - 1.0).abs() > f32::EPSILON {
+        dict.push_str(&format!(" /CA {opacity:.3}"));
     }
     // Page reference (required for some viewers but can be inferred)
     dict.push_str(&format!(" /P {} 0 R", annotation.page));
@@ -623,10 +630,16 @@ pub(crate) fn append_page_number_footer(
 }
 
 pub(crate) fn pdf_rect(rect: &Rect) -> String {
+    // `rect.width as f32 as i32` was a double narrowing that both lost precision (a `u32` above
+    // `2^24` is not exactly representable in `f32`) and could overflow on the addition. The width
+    // is already an integer count of pixels, so it converts straight to `i32` — saturating at the
+    // bound — and the sum saturates rather than wrapping into a negative coordinate.
     let x1 = rect.x;
     let y1 = rect.y;
-    let x2 = rect.x + rect.width as f32 as i32;
-    let y2 = rect.y + rect.height as f32 as i32;
+    let w = i32::try_from(rect.width).unwrap_or(i32::MAX);
+    let h = i32::try_from(rect.height).unwrap_or(i32::MAX);
+    let x2 = rect.x.saturating_add(w);
+    let y2 = rect.y.saturating_add(h);
     format!("{x1} {y1} {x2} {y2}")
 }
 

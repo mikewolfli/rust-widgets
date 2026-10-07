@@ -123,13 +123,26 @@ impl BarChart {
     }
 
     /// Sets the bars to display. Clears any previous bars.
+    ///
+    /// A bar whose value is non-finite cannot be mapped to a height, so it is dropped rather than
+    /// drawn at a fabricated position (see [`is_finite_sample`](crate::widget::chart_widgets::is_finite_sample)).
     pub fn set_bars(&mut self, entries: Vec<BarEntry>) {
-        self.bars = entries;
+        self.bars = entries.into_iter().filter(|bar| bar.value.is_finite()).collect();
         self.base.request_redraw();
     }
 
     /// Adds a single bar entry to the chart.
+    ///
+    /// A non-finite value is refused; see [`Self::set_bars`].
     pub fn add_bar(&mut self, entry: BarEntry) {
+        if !entry.value.is_finite() {
+            log::warn!(
+                "[bar_chart] ignoring the bar '{}' with non-finite value {}",
+                entry.label,
+                entry.value
+            );
+            return;
+        }
         self.bars.push(entry);
         self.base.request_redraw();
     }
@@ -749,5 +762,25 @@ mod tests {
             with_grid > without_grid,
             "grid must add lines through the shared engine (off={without_grid}, on={with_grid})"
         );
+    }
+
+    /// N-CH-04: non-finite bar values are dropped at the data entry.
+    #[test]
+    fn non_finite_bars_are_dropped_at_entry() {
+        let mut bc = BarChart::new(Rect::new(0, 0, 200, 100));
+        bc.set_bars(vec![
+            BarEntry::new("a", 1.0),
+            BarEntry::new("bad", f64::NAN),
+            BarEntry::new("inf", f64::INFINITY),
+            BarEntry::new("b", 2.0),
+        ]);
+        let labels: Vec<&str> = bc.bars().iter().map(|b| b.label.as_str()).collect();
+        assert_eq!(labels, vec!["a", "b"], "only finite bars survive");
+
+        let before = bc.bars().len();
+        bc.add_bar(BarEntry::new("nan", f64::NAN));
+        assert_eq!(bc.bars().len(), before, "add_bar must refuse a non-finite value");
+        bc.add_bar(BarEntry::new("c", 3.0));
+        assert_eq!(bc.bars().len(), before + 1);
     }
 }

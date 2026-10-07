@@ -61,8 +61,12 @@ echo ""
 echo "=== [2/2] reverse injection: a cross-profile symbol must fail the gate ==="
 BACKUP="$(mktemp)"
 cp src/designer/generator.rs "$BACKUP"
+# The failure log is a `mktemp` file rather than a fixed `id.1.diag` in the tree: a fixed name
+# would show up in `git status` and race a concurrent run. `$DIAG` holds the path so its two uses
+# name the same file, and the trap below removes it alongside the restored generator.
+DIAG="$(mktemp)"
 # shellcheck disable=SC2064
-trap "cp '$BACKUP' src/designer/generator.rs; rm -f '$BACKUP'" EXIT
+trap "cp '$BACKUP' src/designer/generator.rs; rm -f '$BACKUP' '$DIAG'" EXIT
 
 # # Why the injection runs ONE case, not all four
 #
@@ -96,13 +100,13 @@ PY
 if rw_cargo_cached "$GATE_TIMEOUT" test \
     --no-default-features --features desktop \
     --test generator_output_compiles_test -- --ignored --nocapture --test-threads=1 $RUN_CASE \
-    > id.1.diag 2>&1; then
-    cat id.1.diag
-    rm -f id.1.diag
+    > "$DIAG" 2>&1; then
+    cat "$DIAG"
+    rm -f "$DIAG"
     echo "FAIL: a cross-profile symbol in the stripped output does not fail the gate" >&2
     exit 1
 fi
-rm -f id.1.diag
+rm -f "$DIAG"
 echo "  injection detected as expected (the target refuses the symbol)"
 
 cp "$BACKUP" src/designer/generator.rs

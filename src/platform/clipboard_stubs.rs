@@ -277,10 +277,10 @@ pub mod windows {
     // prelude that normally supplies `String`/`Vec`/`to_string` is suppressed
     // and this module failed to compile with 8 errors under
     // `--target x86_64-pc-windows-msvc --features mini`.
-    use crate::compat::{String, ToString, Vec};
+    use crate::compat::{String, Vec};
     use winapi::shared::minwindef::{FALSE, UINT};
     use winapi::um::winbase::GlobalAlloc;
-    use winapi::um::winbase::{GlobalLock, GlobalSize, GlobalUnlock, GHND};
+    use winapi::um::winbase::{GlobalFree, GlobalLock, GlobalSize, GlobalUnlock, GHND};
     use winapi::um::winuser::CF_UNICODETEXT;
     use winapi::um::winuser::{
         CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, RegisterClipboardFormatA,
@@ -398,6 +398,11 @@ pub mod windows {
                         let cf_html_format = Self::html_format_id();
                         let html_set = SetClipboardData(cf_html_format, h_html);
                         if html_set.is_null() {
+                            // `SetClipboardData` did **not** take ownership, so the block
+                            // allocated above is still ours to free. Without this the
+                            // clipboard being busy (or the format being refused) leaked one
+                            // `GHND` block per failed write.
+                            GlobalFree(h_html);
                             success = false;
                         }
 
@@ -424,6 +429,9 @@ pub mod windows {
                         GlobalUnlock(h_text);
                         let text_set = SetClipboardData(CF_UNICODETEXT, h_text);
                         if text_set.is_null() {
+                            // Same ownership rule as the HTML block above: only a successful
+                            // `SetClipboardData` transfers the handle to the system.
+                            GlobalFree(h_text);
                             success = false;
                         }
 

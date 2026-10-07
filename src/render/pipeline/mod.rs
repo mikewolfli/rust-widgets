@@ -21,5 +21,8 @@ pub use pixel_ops::{blend_pixel, blend_pixel_with_mode, fill_pixels};
 // Re-export internal helper used by surface.rs
 pub(crate) use pixel_ops::pixel_bytes_len;
 
+// Bounded coordinate arithmetic shared by the software and SVG backends.
+pub(crate) use pixel_ops::{sat_add_i32, sat_mul_i32, sat_neg_i32, u32_to_i32_saturating};
+
 // The glyph geometry both renderers read.
 pub(crate) use pixel_ops::glyph_rects;

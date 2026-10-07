@@ -124,8 +124,28 @@ impl BoundJsonLayout {
     }
 
     /// Register a name-to-id mapping (called during instantiation).
+    ///
+    /// # Duplicate names are reported, not silently overwritten
+    ///
+    /// The JSON schema requires `id` to be unique per document — it is how
+    /// [`Self::widget_by_name`] addresses a control. A second node that reuses a name used to
+    /// replace the first mapping with no signal, so `widget_by_name("ok")` resolved to the
+    /// *second* node and the first became unreachable through its own name: a silent data loss
+    /// the document author could not see. The first answer is kept (matching [`Self::set_overlay_root`]'s
+    /// first-wins rule) and a warning names the collision, so a duplicate is fixable rather than
+    /// mysterious. Re-registering the *same* (name, id) pair is not a collision and stays quiet.
     pub fn register(&mut self, name: impl Into<String>, id: ObjectId) {
-        self.name_map.insert(name.into(), id);
+        let name = name.into();
+        if let Some(existing) = self.name_map.get(&name) {
+            if *existing != id {
+                log::warn!(
+                    "[json] duplicate widget id '{name}': already bound to widget {existing}, \
+                     ignoring the redeclaration for widget {id} (ids must be unique per document)"
+                );
+                return;
+            }
+        }
+        self.name_map.insert(name, id);
     }
 
     // ── Tree structure ─────────────────────────────────────
@@ -585,15 +605,32 @@ mod tests {
         assert_eq!(layout.len(), 3);
     }
 
+    /// A second registration under the same name keeps the **first** binding (N-J-08).
+    ///
+    /// The JSON schema requires `id` to be unique per document, so a duplicate is the document's
+    /// mistake. The old behaviour replaced the first binding, which meant a node that *did* carry
+    /// a unique name became unreachable through it — a silent loss the author could not see. The
+    /// first answer now wins (and the collision is warned about), which keeps the earlier node
+    /// addressable rather than silently swapping it out.
     #[test]
-    fn duplicate_name_overwrites() {
+    fn duplicate_name_keeps_the_first_binding() {
         let mut layout = BoundJsonLayout::new();
         let id1 = 10;
         let id2 = 20;
         layout.register("dup", id1);
         layout.register("dup", id2);
         assert_eq!(layout.len(), 1);
-        assert_eq!(layout.id("dup"), Some(id2));
+        assert_eq!(layout.id("dup"), Some(id1));
+    }
+
+    /// Re-registering the same (name, id) pair is not a collision and must stay a no-op.
+    #[test]
+    fn re_registering_the_same_pair_is_idempotent() {
+        let mut layout = BoundJsonLayout::new();
+        layout.register("same", 7);
+        layout.register("same", 7);
+        assert_eq!(layout.len(), 1);
+        assert_eq!(layout.id("same"), Some(7));
     }
 
     #[test]

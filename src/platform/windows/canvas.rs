@@ -410,7 +410,24 @@ pub(crate) unsafe fn blit_frame(hdc: HDC, width: u32, height: u32, frame: &[u8])
     if width == 0 || height == 0 {
         return;
     }
-    let expected = width as usize * height as usize * 4;
+    // Win32's `BITMAPINFOHEADER` and `StretchDIBits` take **signed** extents, and a
+    // negative `biHeight` is the top-down flag. So a dimension above `i32::MAX` must be
+    // refused rather than narrowed: a bare `as i32` turns such a width negative (the DIB
+    // then describes a different image than the buffer) and turns such a height to
+    // `i32::MIN`, whose negation overflows. Both ends of the call are checked here, before
+    // any byte arithmetic, so the RGBA length below is computed in `usize` on validated
+    // inputs.
+    let (width_i32, height_i32) = match (i32::try_from(width), i32::try_from(height)) {
+        (Ok(w), Ok(h)) => (w, h),
+        _ => {
+            log::error!(
+                "[windows] blit_frame: {width}x{height} exceeds the Win32 DIB signed-extent \
+                 limit (i32::MAX); refusing to blit"
+            );
+            return;
+        }
+    };
+    let expected = (width as usize) * (height as usize) * 4;
     if frame.len() < expected {
         log::error!(
             "[windows] blit_frame: a {width}x{height} frame needs {expected} bytes, got {}",
@@ -422,19 +439,20 @@ pub(crate) unsafe fn blit_frame(hdc: HDC, width: u32, height: u32, frame: &[u8])
     // 32-bit top-down BGRA. The frame is RGBA, so red and blue are swapped while
     // copying; alpha is forced opaque because StretchDIBits with BI_RGB ignores it.
     let mut buffer = vec![0u8; expected];
-    for (index, pixel) in frame.chunks_exact(4).enumerate() {
-        let offset = index * 4;
-        buffer[offset] = pixel[2];
-        buffer[offset + 1] = pixel[1];
-        buffer[offset + 2] = pixel[0];
-        buffer[offset + 3] = 255;
+    for (offset, pixel) in buffer.as_chunks_mut::<4>().0.iter_mut().zip(frame.as_chunks::<4>().0) {
+        offset[0] = pixel[2];
+        offset[1] = pixel[1];
+        offset[2] = pixel[0];
+        offset[3] = 255;
     }
 
     let mut info: BITMAPINFOHEADER = std::mem::zeroed();
     info.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-    info.biWidth = width as i32;
+    info.biWidth = width_i32;
     // A negative height selects a top-down DIB, matching the frame's row order.
-    info.biHeight = -(height as i32);
+    // `checked_neg` cannot fail here because the conversion above rejects `i32::MIN`-scale
+    // heights, but stating it keeps the negation total by construction.
+    info.biHeight = height_i32.checked_neg().unwrap_or(height_i32);
     info.biPlanes = 1;
     info.biBitCount = 32;
     info.biCompression = BI_RGB;
@@ -443,12 +461,12 @@ pub(crate) unsafe fn blit_frame(hdc: HDC, width: u32, height: u32, frame: &[u8])
         hdc,
         0,
         0,
-        width as i32,
-        height as i32,
+        width_i32,
+        height_i32,
         0,
         0,
-        width as i32,
-        height as i32,
+        width_i32,
+        height_i32,
         buffer.as_ptr() as *const _,
         &info as *const _ as *const BITMAPINFO,
         DIB_RGB_COLORS,
@@ -690,6 +708,11 @@ unsafe fn forward_touch(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
         return;
     };
     let Some((origin_x, origin_y)) = canvas_origin(hwnd) else {
+        // The contact handle was opened by the successful `GetTouchInputInfo` above, so
+        // every early return after it must close it exactly once — this branch used to
+        // fall through to `return` and leak one handle per `WM_TOUCH` when the window had
+        // no mapped canvas.
+        CloseTouchInputHandle(lparam as *mut _);
         return;
     };
     let mut delivered = false;

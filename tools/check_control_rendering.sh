@@ -73,12 +73,22 @@ cd "$ROOT_DIR"
 
 STEP_BUDGET="${RW_GATE_TIMEOUT:-900}"
 
+# Scratch logs live in a private temporary directory, not at fixed `/tmp/rw_*.log` paths. The fixed
+# paths made two concurrent runs of this gate (which `run_all_gates.sh` can start) write the same
+# files, so one run's failure output could be the other's and the `sed` that prints the log could
+# show an unrelated run. `mktemp -d` gives each invocation its own directory; the `trap` removes it
+# on exit including the failure paths below, which `exit 1` would otherwise leave behind.
+SCRATCH_DIR="$(mktemp -d)"
+trap 'rm -rf "$SCRATCH_DIR"' EXIT
+RENDERING_LOG="$SCRATCH_DIR/rw_rendering_census.log"
+SEMANTIC_LOG="$SCRATCH_DIR/rw_semantic_census.log"
+
 echo "[1/4] census: rendering every published control in light and dark"
 if ! rw_cargo_cached "$STEP_BUDGET" test \
     --no-default-features --features desktop \
-    --test control_rendering_census_test -- --nocapture > /tmp/rw_rendering_census.log 2>&1; then
+    --test control_rendering_census_test -- --nocapture > "$RENDERING_LOG" 2>&1; then
     echo "  FAIL  control_rendering_census_test"
-    sed -n '1,120p' /tmp/rw_rendering_census.log
+    sed -n '1,120p' "$RENDERING_LOG"
     exit 1
 fi
 echo "  PASS  control_rendering_census_test (P1/P2/P3/P4/P5)"
@@ -92,7 +102,7 @@ if [ ! -f "$BASELINE" ]; then
 fi
 
 ROWS="$(grep -vcE '^#|^$' "$BASELINE" || true)"
-CHECKED="$(cargo test --no-default-features --features desktop \
+CHECKED="$(rw_run_bounded "$STEP_BUDGET" cargo test --no-default-features --features desktop \
     --test control_rendering_census_test every_published_control_is_measured \
     -- --exact > /dev/null 2>&1 && echo ok || echo fail)"
 if [ "$CHECKED" != "ok" ]; then
@@ -128,7 +138,7 @@ done
 
 # Every exempted name must be a control the factory actually publishes, so a
 # renamed control cannot leave a stale exemption behind that excuses nothing.
-FACTORY_NAMES="$(cargo run --no-default-features --features desktop \
+FACTORY_NAMES="$(rw_run_bounded "$STEP_BUDGET" cargo run --no-default-features --features desktop \
     --example control_rendering_census 2>/dev/null | sed '1d' | grep -v '^checked=' | awk 'NF>0 {print $1}' | sort -u)"
 STALE="$(awk '!/^#/ && NF>0 {print $1}' "$EXEMPT" | sort -u)"
 STALE="$(printf '%s\n' "$STALE" | while read -r name; do
@@ -148,7 +158,7 @@ echo "  PASS  exemptions justified: $(awk '!/^#/ && NF>0' "$EXEMPT" | wc -l)"
 # (someone hardcoding its chrome again) would be waved through. So an exempted
 # control that now differs between appearances is a finding, exactly like a
 # `KNOWN_THEME_BLIND` entry whose control has been fixed.
-CENSUS_JSON="$(cargo run --no-default-features --features desktop \
+CENSUS_JSON="$(rw_run_bounded "$STEP_BUDGET" cargo run --no-default-features --features desktop \
     --example control_rendering_census 2>/dev/null)"
 NO_LONGER_BLIND="$(awk '!/^#/ && NF>0 {print $1}' "$EXEMPT" | sort -u | while read -r name; do
     [ -z "$name" ] && continue
@@ -196,12 +206,12 @@ fi
 echo "  PASS  P5 overflow exemptions justified: $(awk '!/^#/ && NF>0' "$OVERFLOW_EXEMPT" | wc -l)"
 
 echo "[4/4] semantic tokens: each of the four has a control that reads it"
-if ! rw_run_bounded 120 "$PYTHON" tools/semantic_color_census.py > /tmp/rw_semantic_census.log 2>&1; then
+if ! rw_run_bounded 120 "$PYTHON" tools/semantic_color_census.py > "$SEMANTIC_LOG" 2>&1; then
     echo "  FAIL  a semantic token has no consumer (rule #109)"
-    sed -n '1,40p' /tmp/rw_semantic_census.log
+    sed -n '1,40p' "$SEMANTIC_LOG"
     exit 1
 fi
-sed -n '1,12p' /tmp/rw_semantic_census.log
+sed -n '1,12p' "$SEMANTIC_LOG"
 
 # The count comes from the census itself so the line cannot claim a number the run did
 # not measure. 188 is the registered-control count (187 before `heatmap`); printing a

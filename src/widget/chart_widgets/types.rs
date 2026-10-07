@@ -5,6 +5,26 @@
 
 use crate::core::{Color, Point, Rect};
 
+/// Whether every coordinate of a `(x, y)` sample is finite.
+///
+/// The cartesian controls (`LineChart`, `BarChart`, `Sparkline`) accept raw `f64` samples from public
+/// setters. A `NaN` or infinite coordinate used to flow straight into the automatic range and the
+/// pixel mapping, where it silently produced a fabricated position: `NaN as i32` is `0`, so a bad
+/// sample landed on the plot edge as if it were a real minimum, and a lone `+Inf` stretched the range
+/// so every genuine point collapsed onto one pixel. There is no correct pixel for a non-finite
+/// datum, so the controls drop such samples rather than draw a lie; this predicate is the one place
+/// that decision is stated, shared by all three (principle #51: one rule, not three drifting copies).
+pub(crate) fn is_finite_sample(sample: (f64, f64)) -> bool {
+    sample.0.is_finite() && sample.1.is_finite()
+}
+
+/// Drops every non-finite sample from a `(x, y)` series, preserving order.
+///
+/// See [`is_finite_sample`] for why a non-finite sample cannot be drawn.
+pub(crate) fn finite_samples(points: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+    points.into_iter().filter(|p| is_finite_sample(*p)).collect()
+}
+
 /// Chart data point
 #[derive(Debug, Clone)]
 pub struct DataPoint {

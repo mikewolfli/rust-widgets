@@ -47,37 +47,43 @@ cd "$ROOT_DIR"
 
 PROPERTIES="src/widget/capability/properties.rs"
 
+# Probe output goes to `mktemp` files, not fixed `gate.1.out` / `gate.2.out` names in the working
+# tree: the fixed names polluted `git status` and raced a concurrent run. The variables hold the
+# paths so each is referenced by the same name throughout, and the trap removes them on exit.
+OUT1="$(mktemp)"
+OUT2="$(mktemp)"
+
 run_probe() {
     rw_run_bounded 900 cargo test --no-default-features --features desktop \
         --test generator_agreement_probe -- --nocapture
 }
 
 echo "=== [1/2] every constructible name and alias is buildable by the generated program ==="
-if ! run_probe > gate.1.out 2>&1; then
-    cat gate.1.out
-    rm -f gate.1.out
+if ! run_probe > "$OUT1" 2>&1; then
+    cat "$OUT1"
+    rm -f "$OUT1"
     echo "FAIL: the generator and the registry disagree about what can be constructed" >&2
     exit 1
 fi
-grep -E "^OK |test result" gate.1.out || true
-rm -f gate.1.out
+grep -E "^OK |test result" "$OUT1" || true
+rm -f "$OUT1"
 
 echo ""
 echo "=== [2/2] reverse injection: an unresolvable alias must fail the gate ==="
 BACKUP="$(mktemp)"
 cp "$PROPERTIES" "$BACKUP"
 # shellcheck disable=SC2064
-trap "cp '$BACKUP' '$PROPERTIES'; rm -f '$BACKUP' gate.1.out gate.2.out" EXIT
+trap "cp '$BACKUP' '$PROPERTIES'; rm -f '$BACKUP' '$OUT1' '$OUT2'" EXIT
 
 "$PYTHON" tools/_inject_unresolvable_alias.py "$ROOT_DIR/$PROPERTIES"
 
-if run_probe > gate.2.out 2>&1; then
-    cat gate.2.out
+if run_probe > "$OUT2" 2>&1; then
+    cat "$OUT2"
     echo "FAIL: removing an alias from the registry does not fail the gate" >&2
     exit 1
 fi
-if ! grep -q "btn" gate.2.out; then
-    cat gate.2.out
+if ! grep -q "btn" "$OUT2"; then
+    cat "$OUT2"
     echo "FAIL: the gate failed but did not name the alias that became unresolvable" >&2
     exit 1
 fi
@@ -88,8 +94,8 @@ if ! run_probe > /dev/null 2>&1; then
     echo "FAIL: the gate does not pass again after the injection is reverted" >&2
     exit 1
 fi
-rm -f "$BACKUP"
-trap 'rm -f gate.1.out gate.2.out' EXIT
+rm -f "$BACKUP" "$OUT1" "$OUT2"
+trap 'rm -f "$OUT1" "$OUT2"' EXIT
 
 echo ""
 echo "generator/registry agreement checks passed."

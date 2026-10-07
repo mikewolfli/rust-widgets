@@ -113,8 +113,11 @@ pub fn decode_png<'a>(data: &[u8], out: &'a mut [u8]) -> Option<Decoded<'a>> {
     };
     // One filter-type byte precedes each row, so the inflated size is `height * (row_bytes + 1)`.
     // This was `height * row_bytes` in an earlier revision, which made every decode fail at the
-    // inflate step (the stream produced one byte per row more than the buffer held).
-    let expected = header.height as usize * (row_bytes + 1);
+    // inflate step (the stream produced one byte per row more than the buffer held). The multiply is
+    // checked for the same reason `row_bytes` above is: a header may declare a height arbitrarily
+    // larger than its data, and an unchecked product wraps to a small `expected`, which then *passes*
+    // the length check against a short stream instead of rejecting the file.
+    let expected = (header.height as usize).checked_mul(row_bytes.checked_add(1)?)?;
     let mut raw = crate::compat::vec![0u8; expected];
     inflate_into(&idat, &mut raw)?;
 
@@ -688,6 +691,33 @@ mod tests {
         let decoded = decode_png(&png, &mut out).expect("a valid PNG decodes");
         assert_eq!((decoded.width, decoded.height), (1, 1));
         assert_eq!(decoded.pixels, &[255, 0, 0, 255]);
+    }
+
+    /// N-R-05: a header that declares an enormous height is refused, not wrapped.
+    ///
+    /// `expected = height * (row_bytes + 1)` was an unchecked multiply, so a hostile header could pick
+    /// a height whose product wrapped to a small number and then *passed* the buffer-length check
+    /// against a tiny stream — decoding a few bytes of noise as if it were a large image. The checked
+    /// multiply returns `None` instead, which is the only honest answer for a header the data cannot
+    /// fill. The fixture keeps the header small enough that the allocation is never attempted.
+    #[test]
+    fn a_header_declaring_a_huge_height_is_refused() {
+        let mut png = Vec::new();
+        png.extend_from_slice(&SIGNATURE);
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes()); // width
+        ihdr.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes()); // height
+        ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
+        push_chunk(&mut png, b"IHDR", &ihdr);
+        // A one-byte stored deflate block, far too short for the declared image.
+        let zlib = zlib_stored(&[0u8], true);
+        push_chunk(&mut png, b"IDAT", &zlib);
+        push_chunk(&mut png, b"IEND", &[]);
+        let mut out = vec![0u8; 4];
+        assert!(
+            decode_png(&png, &mut out).is_none(),
+            "a header the data cannot fill must be refused, not wrapped into a small buffer"
+        );
     }
 
     /// A corrupted payload is refused, not decoded into noise.

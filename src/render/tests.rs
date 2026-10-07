@@ -1136,3 +1136,121 @@ fn draw_text_alignment_center_adjusts_origin() {
     // Should not panic; text should be centered around x=50
     assert!(!surface.frame_rgba().is_empty());
 }
+
+// ─── Regression pins for the 2026-10-07 render-partition batch (N-R-01..06) ─────────────────────
+
+/// N-R-01: a fully transparent source is a no-op in source-over, not an erase.
+///
+/// The old branch zeroed the destination pixel when `color.a == 0`, so drawing "nothing" punched a
+/// black hole through whatever was already composited. The assertion is that the pre-existing opaque
+/// pixel survives byte-for-byte.
+#[test]
+fn fully_transparent_source_leaves_destination_untouched() {
+    use crate::render::blend_pixel_with_mode;
+    use crate::render::BlendMode;
+    let width = 4u32;
+    let mut frame = crate::compat::vec![0u8; (width * width * 4) as usize];
+    // Seed an opaque orange pixel at (1, 1).
+    let idx = (width + 1) as usize * 4;
+    frame[idx..idx + 4].copy_from_slice(&[200, 120, 40, 255]);
+    blend_pixel_with_mode(
+        &mut frame,
+        width,
+        1,
+        1,
+        Color::rgba(10, 20, 30, 0),
+        1.0,
+        BlendMode::Normal,
+    );
+    assert_eq!(
+        &frame[idx..idx + 4],
+        &[200, 120, 40, 255],
+        "a zero-alpha source must not erase the destination"
+    );
+}
+
+/// N-R-02: `BoxShadow` spread/offset arithmetic saturates instead of wrapping.
+///
+/// Reaching `i32::MAX`-scale inputs in debug is the point: the old `rect.width as i32 + *spread * 2`
+/// and `rect.x + offset_x - *spread` would abort in a debug build and wrap in a release one. The
+/// assertion is only that the command executes and produces a bounded, non-panicking rect.
+#[test]
+fn box_shadow_extreme_spread_and_offset_do_not_overflow() {
+    let mut surface = SoftwarePaintBackend::new(Size { width: 8, height: 8 }, 1.0);
+    surface.begin_frame(Color::TRANSPARENT);
+    // Debug builds panic on wrapping arithmetic, so this call is the assertion.
+    surface.execute_command(&RenderCommand::BoxShadow {
+        rect: Rect::new(i32::MAX - 2, 0, u32::MAX, u32::MAX),
+        color: Color::rgba(0, 0, 0, 255),
+        offset_x: 5,
+        offset_y: i32::MIN,
+        blur_radius: 0,
+        spread: i32::MAX,
+    });
+    surface.execute_command(&RenderCommand::BoxShadow {
+        rect: Rect::new(i32::MIN + 1, i32::MIN + 1, 4, 4),
+        color: Color::rgba(0, 0, 0, 255),
+        offset_x: i32::MIN,
+        offset_y: i32::MIN,
+        blur_radius: 0,
+        spread: i32::MIN,
+    });
+    surface.end_frame();
+    // The surface must remain intact (a frame of 8x8 RGBA bytes).
+    assert_eq!(surface.frame_rgba().len(), 8 * 8 * 4);
+}
+
+/// N-R-03: a non-finite `SetOpacity` is rejected rather than poisoning every later colour.
+///
+/// Before the fix, `state.opacity *= NaN` made every subsequent alpha `NaN.round() as u8 == 0`, so a
+/// single bad command silently erased the rest of the batch's colour. The fix keeps the last finite
+/// opacity, so the fill after the bad command paints at full strength.
+#[test]
+fn batch_set_opacity_rejects_non_finite_and_keeps_colour() {
+    use crate::render::{BatchCommand, BatchRenderer};
+    let mut backend = SoftwarePaintBackend::new(Size { width: 8, height: 8 }, 1.0);
+    backend.begin_frame(Color::TRANSPARENT);
+    let batch = backend.begin_batch();
+    backend.record(BatchCommand::SetOpacity { opacity: f32::NAN }).expect("a batch is open");
+    backend
+        .record(BatchCommand::FillRect {
+            rect: Rect::new(0, 0, 4, 4),
+            color: Color::rgba(30, 40, 50, 255),
+        })
+        .expect("a batch is open");
+    backend.end_batch();
+    backend.replay(batch);
+    backend.end_frame();
+    let idx = (8 + 1) * 4;
+    let px = &backend.frame_rgba()[idx..idx + 4];
+    assert_eq!(
+        px,
+        &[30, 40, 50, 255],
+        "a NaN opacity must be ignored, not zero the batch's colour"
+    );
+}
+
+/// N-R-06: an absurd `stroke_inner` width must not panic or wrap.
+///
+/// `width as i32` narrowed a `u32` above `i32::MAX` to a negative inset, and `width * 2` aborted in
+/// debug. The assertion is that the call finishes; the inner rect is conceptually empty for such a
+/// width, which is the only honest picture.
+#[test]
+fn bevel_stroke_inner_clamps_huge_width_without_panicking() {
+    use crate::render::bevel::Bevel;
+    use crate::render::RenderContext;
+    let mut backend = SoftwarePaintBackend::new(Size { width: 32, height: 32 }, 1.0);
+    backend.begin_frame(Color::TRANSPARENT);
+    {
+        let mut context = RenderContext::new(&mut backend);
+        let bevel = Bevel::from_base(Color::rgb(128, 128, 128));
+        bevel.stroke_inner(&mut context, Rect::new(2, 2, 20, 20), u32::MAX);
+        bevel.stroke_inner(
+            &mut context,
+            Rect::new(i32::MAX - 5, i32::MAX - 5, 8, 8),
+            u32::MAX / 2 + 1,
+        );
+    }
+    backend.end_frame();
+    assert_eq!(backend.frame_rgba().len(), 32 * 32 * 4);
+}

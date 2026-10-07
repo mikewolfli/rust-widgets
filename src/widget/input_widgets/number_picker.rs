@@ -221,7 +221,11 @@ impl NumberPicker {
         if self.maximum <= self.minimum || self.step <= 0 {
             return 0;
         }
-        (self.maximum - self.minimum) / self.step
+        // `maximum - minimum` overflows for a range spanning most of `i64`
+        // (`set_range(i64::MIN, i64::MAX)` is a legal call), which aborted in a debug
+        // build and wrapped to a wrong — often negative — step count in release.
+        // Saturating keeps the answer as large as the type can express.
+        self.maximum.saturating_sub(self.minimum) / self.step
     }
 
     /// Clamps `value` into the range and rounds it to the nearest grid point.
@@ -234,19 +238,26 @@ impl NumberPicker {
         if self.step <= 1 {
             return clamped;
         }
-        let offset = clamped - self.minimum;
-        let steps = (offset + self.step / 2) / self.step;
+        // Both the offset and the `offset + step/2` that follows can exceed `i64` for a
+        // near-full-domain range, so they saturate rather than wrapping into a snapped
+        // value outside the range.
+        let offset = clamped.saturating_sub(self.minimum);
+        let steps = offset.saturating_add(self.step / 2) / self.step;
         let snapped = self.minimum.saturating_add(steps.saturating_mul(self.step));
         snapped.clamp(self.minimum, self.maximum)
     }
 
     /// Maps `value` into the range by wrapping rather than clamping.
     fn wrap_into(&self, value: i64) -> i64 {
-        let span = self.maximum - self.minimum;
+        // `maximum - minimum` and `span + 1` both overflow for near-full-domain ranges.
+        // Saturating gives a span that is merely "as wide as `i64` allows", which wraps
+        // the value to a real grid point instead of aborting on the subtraction.
+        let span = self.maximum.saturating_sub(self.minimum);
         if span <= 0 {
             return self.minimum;
         }
-        let offset = (value - self.minimum).rem_euclid(span + 1);
+        let modulus = span.saturating_add(1);
+        let offset = value.saturating_sub(self.minimum).rem_euclid(modulus);
         self.minimum.saturating_add(offset)
     }
 
@@ -656,6 +667,44 @@ mod tests {
         assert_eq!(picker.value(), 20);
         picker.set_value(-5);
         assert_eq!(picker.value(), 10);
+    }
+
+    /// N-B-02: a full-domain range must not overflow the range arithmetic.
+    ///
+    /// `set_range(i64::MIN, i64::MAX)` is a legal public call, and it immediately snaps the current
+    /// value. The old `maximum - minimum`, `clamped - minimum` and `span + 1` were bare arithmetic on
+    /// `i64`, which aborted in a debug build and wrapped to a wrong range in release. The assertions
+    /// here are that the calls complete and that every accessor stays consistent.
+    #[test]
+    fn extreme_range_does_not_overflow() {
+        let mut picker = picker();
+        // Debug builds panic on the bare subtractions this used to do, so reaching the asserts is
+        // itself the check.
+        picker.set_range(i64::MIN, i64::MAX);
+        assert_eq!(picker.minimum(), i64::MIN);
+        assert_eq!(picker.maximum(), i64::MAX);
+        // The value is a real grid point, not a wrapped constant: with a step of 1 the snapped value
+        // must equal whatever `set_range` left it at (it starts at 0).
+        assert_eq!(picker.value(), 0);
+
+        // Every derived accessor must terminate and stay in range.
+        let rows = picker.row_count();
+        let _ = picker.selected_row();
+        assert!(rows >= 1);
+
+        // A scroll with wrapping enabled must land on a real grid point, not abort.
+        picker.set_wrap(true);
+        // The point of this case is that the wrap arithmetic does not panic or wrap the *timer*
+        // arithmetic; the returned value is whatever the saturated span yields. Reaching here without
+        // a panic is the assertion.
+        let _ = picker.scroll_rows(1);
+        let _ = picker.scroll_rows(-1);
+
+        // A smaller range with a large step is the other overflow edge.
+        picker.set_range(i64::MIN, i64::MAX - 1);
+        picker.set_step(i64::MAX / 2);
+        let _ = picker.scroll_rows(1);
+        let _ = picker.row_count();
     }
 
     /// With a step of 5, only multiples of the step (offset from the minimum)

@@ -276,6 +276,15 @@ pub fn first_shape_bounds(svg: &str) -> Option<(i32, i32, i32, i32)> {
 ///
 /// Unknown commands are ignored rather than misread: a `d` this cannot understand yields the
 /// bounds of the parts it does, and a `d` with nothing understood yields `None`.
+///
+/// # A malformed tail keeps the bounds already found
+///
+/// The known-command arms used to propagate a parse failure with `?`, so a single bad operand at the
+/// **end** of an otherwise-understood `d` (e.g. `"M0 0h5v"` with a dangling `v`) made the whole
+/// function return `None` — discarding the bounds of the part that *was* understood, contradicting
+/// the contract above and silently dropping a measurement (`text_ink_boxes`, `first_shape_bounds`).
+/// A failure in a known command now ends the scan and returns whatever was found, matching how the
+/// unknown-command arm already behaves.
 fn path_bounds(d: &str) -> Option<(i32, i32, i32, i32)> {
     let bytes = d.as_bytes();
     let mut i = 0usize;
@@ -286,34 +295,48 @@ fn path_bounds(d: &str) -> Option<(i32, i32, i32, i32)> {
         i += 1;
         match command {
             b'M' | b'L' => {
-                let (x, y, next) = number_pair(d, i)?;
+                let Some((x, y, next)) = number_pair(d, i) else {
+                    break;
+                };
                 i = next;
                 cursor = Some((x, y));
                 include(&mut bounds, x, y);
             }
             b'm' | b'l' => {
                 // A relative move is relative to the current point, so the cursor is required — a
-                // document starting with `m` would be malformed, and `?` reports that rather than
-                // treating the delta as absolute.
-                let (dx, dy, next) = number_pair(d, i)?;
+                // document starting with `m` would be malformed, and stopping reports that rather
+                // than treating the delta as absolute.
+                let Some((dx, dy, next)) = number_pair(d, i) else {
+                    break;
+                };
                 i = next;
-                let (x, y) = cursor?;
+                let Some((x, y)) = cursor else {
+                    break;
+                };
                 let point = (x + dx, y + dy);
                 cursor = Some(point);
                 include(&mut bounds, point.0, point.1);
             }
             b'h' | b'v' => {
-                let (delta, next) = number(d, i)?;
+                let Some((delta, next)) = number(d, i) else {
+                    break;
+                };
                 i = next;
-                let (x, y) = cursor?;
+                let Some((x, y)) = cursor else {
+                    break;
+                };
                 let point = if command == b'h' { (x + delta, y) } else { (x, y + delta) };
                 cursor = Some(point);
                 include(&mut bounds, point.0, point.1);
             }
             b'H' | b'V' => {
-                let (value, next) = number(d, i)?;
+                let Some((value, next)) = number(d, i) else {
+                    break;
+                };
                 i = next;
-                let (x, y) = cursor?;
+                let Some((x, y)) = cursor else {
+                    break;
+                };
                 let point = if command == b'H' { (value, y) } else { (x, value) };
                 cursor = Some(point);
                 include(&mut bounds, point.0, point.1);
@@ -440,6 +463,26 @@ mod tests {
         let svg = render_to_svg(&mut btn);
         assert!(svg.starts_with("<svg"));
         assert!(svg.contains("width=\"80\""));
+    }
+
+    /// N-W-03: a malformed tail keeps the bounds of the part that *was* understood.
+    ///
+    /// `d = "M0 0h5v"` ends with a dangling `v`, whose missing operand used to propagate through `?`
+    /// and make the whole function return `None`, discarding the bounds of the understood
+    /// `M0 0 h5` prefix. The contract is that an unparsable `d` yields the bounds of the parts it
+    /// does understand, so the prefix's bounds must survive.
+    #[test]
+    fn path_bounds_keeps_a_valid_prefix_when_the_tail_is_malformed() {
+        let bounds = path_bounds("M0 0h5v").expect("the understood prefix must yield bounds");
+        // The prefix `M0 0 h5` spans x 0..=5, y 0..=0.
+        assert_eq!(bounds, (0, 0, 5, 0));
+    }
+
+    /// A `d` with nothing understandable still yields `None`.
+    #[test]
+    fn path_bounds_is_none_when_nothing_is_understood() {
+        assert_eq!(path_bounds("v"), None);
+        assert_eq!(path_bounds(""), None);
     }
 
     /// The emitted SVG ink box equals the rasteriser's ink box, exactly.

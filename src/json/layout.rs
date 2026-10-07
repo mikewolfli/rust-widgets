@@ -150,20 +150,24 @@ pub fn parse_layout_kind(value: &Value) -> Result<DeclarativeLayoutKind, String>
         .ok_or_else(|| "layout must have a 'type' field (string)".to_string())?;
 
     // Both numeric fields are forgiving: a missing value, a non-numeric value,
-    // or a negative value all fall back to 0.
-    let spacing = obj.get("spacing").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-    let margin = obj.get("margin").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    // or a negative value all fall back to 0. Out-of-range values are clamped to `u32`'s
+    // bounds rather than truncated: a bare `as u32` turned `4294967296` into `0`, so a
+    // document asking for an enormous spacing silently laid out with none. Clamping keeps
+    // the magnitude the document stated (the layout can only use so many pixels anyway)
+    // instead of wrapping it to the opposite extreme.
+    let spacing = json_u32(obj.get("spacing"), 0);
+    let margin = json_u32(obj.get("margin"), 0);
 
     match type_str {
         "hbox" | "HBox" | "horizontal" => Ok(DeclarativeLayoutKind::HBox { spacing, margin }),
         "vbox" | "VBox" | "vertical" => Ok(DeclarativeLayoutKind::VBox { spacing, margin }),
         "grid" | "Grid" => {
-            let columns = obj.get("columns").and_then(|v| v.as_u64()).unwrap_or(2) as u32;
+            let columns = json_u32(obj.get("columns"), 2);
             Ok(DeclarativeLayoutKind::Grid { columns, spacing, margin })
         }
         "uniform_grid" | "uniformGrid" | "uniform-grid" => {
-            let rows = obj.get("rows").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            let columns = obj.get("columns").and_then(|v| v.as_u64()).unwrap_or(2) as u32;
+            let rows = json_u32(obj.get("rows"), 0);
+            let columns = json_u32(obj.get("columns"), 2);
             Ok(DeclarativeLayoutKind::UniformGrid { rows, columns, spacing, margin })
         }
         "stack" | "Stack" => Ok(DeclarativeLayoutKind::Stack { spacing }),
@@ -178,9 +182,11 @@ pub fn parse_layout_kind(value: &Value) -> Result<DeclarativeLayoutKind, String>
         "flow" | "Flow" => {
             // `flow` and `wrap` take signed gaps: the layout accepts a negative
             // spacing (children overlap), so reading these as `u64` would reject a
-            // value the layout can honour.
-            let spacing = obj.get("spacing").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            let padding = obj.get("padding").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            // value the layout can honour. Out-of-range values clamp to `i32`'s bounds
+            // instead of wrapping, so `2147483648` becomes `i32::MAX` rather than a
+            // sudden negative gap.
+            let spacing = json_i32(obj.get("spacing"), 0);
+            let padding = json_i32(obj.get("padding"), 0);
             Ok(DeclarativeLayoutKind::Flow {
                 spacing,
                 padding,
@@ -188,8 +194,8 @@ pub fn parse_layout_kind(value: &Value) -> Result<DeclarativeLayoutKind, String>
             })
         }
         "wrap" | "Wrap" => {
-            let spacing = obj.get("spacing").and_then(|v| v.as_i64()).unwrap_or(8) as i32;
-            let padding = obj.get("padding").and_then(|v| v.as_i64()).unwrap_or(8) as i32;
+            let spacing = json_i32(obj.get("spacing"), 8);
+            let padding = json_i32(obj.get("padding"), 8);
             Ok(DeclarativeLayoutKind::Wrap {
                 spacing,
                 padding,
@@ -197,7 +203,7 @@ pub fn parse_layout_kind(value: &Value) -> Result<DeclarativeLayoutKind, String>
             })
         }
         "flex" | "Flex" => {
-            let gap = obj.get("gap").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let gap = json_u32(obj.get("gap"), 0);
             Ok(DeclarativeLayoutKind::Flex { gap })
         }
         _ => Err(format!(
@@ -205,6 +211,30 @@ pub fn parse_layout_kind(value: &Value) -> Result<DeclarativeLayoutKind, String>
             DeclarativeLayoutKind::SUPPORTED_TYPES.join(", ")
         )),
     }
+}
+
+/// Reads a JSON number as a `u32`, falling back to `default` when absent or non-numeric.
+///
+/// A JSON number is wider than `u32` (it can be any `u64`, and a float), so a direct
+/// `as u32` is a truncation, not a conversion: `4294967296` wrapped to `0`. `try_from`
+/// clamps the out-of-range cases to `u32::MAX`/`0` so the value the document stated is
+/// preserved as closely as the field can hold.
+fn json_u32(value: Option<&Value>, default: u32) -> u32 {
+    value.and_then(Value::as_u64).map_or(default, |raw| u32::try_from(raw).unwrap_or(u32::MAX))
+}
+
+/// Reads a JSON number as an `i32`, falling back to `default` when absent or non-numeric.
+///
+/// Same reasoning as [`json_u32`] for the signed field: `as i32` wrapped `2147483648` to
+/// `-2147483648`, so a large positive gap became a large negative one. Clamping keeps the
+/// sign and the magnitude.
+fn json_i32(value: Option<&Value>, default: i32) -> i32 {
+    value.and_then(Value::as_i64).map_or(default, |raw| {
+        // `try_from` on `i64` only fails when the value is outside `i32`; clamp toward the
+        // bound it exceeded, preserving the direction of the overflow.
+        let clamp = if raw > 0 { i32::MAX } else { i32::MIN };
+        i32::try_from(raw).unwrap_or(clamp)
+    })
 }
 
 /// Parse a flow/wrap axis from the JSON `orientation` field.
@@ -371,6 +401,33 @@ mod tests {
     fn parse_unknown_layout_returns_error() {
         let json: Value = serde_json::from_str(r#"{"type": "bogus"}"#).unwrap();
         assert!(parse_layout_kind(&json).is_err());
+    }
+
+    /// N-J-01: an out-of-range `spacing` clamps instead of wrapping to zero.
+    ///
+    /// `as u32` on the JSON `u64` turned `4294967296` (`2^32`) into `0`, so a document asking
+    /// for a huge gap silently laid the children out with none. The clamped answer keeps the
+    /// magnitude at `u32::MAX`.
+    #[test]
+    fn an_out_of_range_spacing_clamps_rather_than_wrapping() {
+        let json: Value =
+            serde_json::from_str(r#"{"type": "hbox", "spacing": 4294967296}"#).unwrap();
+        let kind = parse_layout_kind(&json).unwrap();
+        assert_eq!(kind, DeclarativeLayoutKind::HBox { spacing: u32::MAX, margin: 0 });
+    }
+
+    /// N-J-02: an out-of-range signed `padding` clamps instead of flipping sign.
+    ///
+    /// `as i32` on `2147483648` (`2^31`) produced `-2147483648`, so a large positive gap
+    /// arrived as a large negative one.
+    #[test]
+    fn an_out_of_range_flow_padding_clamps_rather_than_flipping_sign() {
+        let json: Value =
+            serde_json::from_str(r#"{"type": "flow", "padding": 2147483648}"#).unwrap();
+        match parse_layout_kind(&json).unwrap() {
+            DeclarativeLayoutKind::Flow { padding, .. } => assert_eq!(padding, i32::MAX),
+            other => panic!("expected a Flow layout, got {other:?}"),
+        }
     }
 
     #[test]

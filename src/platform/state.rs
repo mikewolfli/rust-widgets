@@ -395,11 +395,23 @@ where
         height: u32,
     ) {
         self.insert_widget(id, kind, text, x, y, width, height);
-        // Keep the allocator ahead of any externally supplied id.
+        // Keep the allocator ahead of any externally supplied id. `id + 1` is not
+        // unconditionally representable: `ObjectId` is `u64` and a caller may hand in
+        // `u64::MAX`, whose successor does not exist. In that case there is nothing to
+        // advance *to*, so the allocator is left alone — which is correct, because every
+        // id it could hand out is already `<= u64::MAX` and cannot collide with the one
+        // just registered without exhausting the space.
+        let Some(advanced) = id.checked_add(1) else {
+            return;
+        };
         let mut next = self.next_id.load(Ordering::Relaxed);
         while next <= id {
-            match self.next_id.compare_exchange(next, id + 1, Ordering::Relaxed, Ordering::Relaxed)
-            {
+            match self.next_id.compare_exchange(
+                next,
+                advanced,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
                 Ok(_) => break,
                 Err(current) => next = current,
             }
@@ -1020,6 +1032,31 @@ mod tests {
 
         let state = BackendState::<TestKind>::new();
         assert!(!state.is_kind(999, TestKind::Widget));
+    }
+
+    /// N-P-05: registering `u64::MAX` as an external id must not overflow the allocator.
+    ///
+    /// `ObjectId` is `u64`, and the self-drawn mount path adopts an id chosen by the caller, so
+    /// `u64::MAX` is reachable. The old `compare_exchange(next, id + 1, …)` computed `u64::MAX + 1`,
+    /// which aborts in a debug build and wraps `next_id` to `0` in a release one — after which every
+    /// subsequent `create_widget` could hand out an id it had already seen. The fix leaves the
+    /// allocator untouched when there is no successor to advance to.
+    #[test]
+    fn registering_the_max_id_does_not_overflow_the_allocator() {
+        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+        #[cfg_attr(all(feature = "serde", widgets_unstripped), derive(Serialize, Deserialize))]
+        enum TestKind {
+            Widget,
+        }
+
+        let state = BackendState::<TestKind>::new();
+        // Debug builds panic on `u64::MAX + 1`, so reaching the next line is the assertion.
+        state.register_widget_with_id(u64::MAX, TestKind::Widget, "x", 0, 0, 1, 1);
+        assert!(state.is_kind(u64::MAX, TestKind::Widget));
+        // A normal id still advances the allocator past itself.
+        state.register_widget_with_id(5, TestKind::Widget, "y", 0, 0, 1, 1);
+        let next = state.create_widget(TestKind::Widget, "z", 0, 0, 1, 1);
+        assert!(next > 5, "the allocator must move past an externally supplied id, got {next}");
     }
 
     /// The targeted pop takes **one widget's** oldest event and leaves every other widget's queued.

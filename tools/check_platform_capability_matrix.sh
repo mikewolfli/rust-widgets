@@ -109,7 +109,26 @@ fi
 echo "--- [3] Validating matrix cell values ---"
 
 VALID_CODES=("✅" "🟦" "🔶" "⬜" "➖")
-VALID_COLS=("Windows" "Linux/X11" "macOS" "Wayland" "Mobile" "Harmony" "Embedded/Stub")
+
+# The platform column names and their count are read from the matrix's own **header row**, not from
+# a literal. A `VALID_COLS=(... 7 names ...)` list plus a `for ((i=2; i<=8; i++))` loop hardcoded the
+# table's width, so an 8th platform column added by the generator escaped validation entirely: the
+# loop never reached it, and any `VALID_COLS[$((i-2))]` lookup past the end read empty. Driving both
+# the loop bound and the column label from the header the file itself carries means a new column is
+# validated the moment it appears — the file, not this script, decides how wide the table is.
+PLATFORM_COLS=()
+while IFS= read -r col; do
+  [[ -n "$col" ]] && PLATFORM_COLS+=("$col")
+done < <(
+  grep -m1 -E '^\|.*Widget.*Windows.*Linux.*macOS' "$MATRIX_FILE" \
+    | tr '|' '\n' \
+    | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+    | awk 'NF>0 && $0!="Widget" && $0!="C" {print}'
+)
+PLATFORM_COUNT=${#PLATFORM_COLS[@]}
+if [[ "$PLATFORM_COUNT" -eq 0 ]]; then
+  error "could not parse the platform column header from $MATRIX_FILE"
+fi
 
 LINE_NUM=0
 TABLE_STARTED=false
@@ -143,13 +162,15 @@ while IFS= read -r line; do
       continue
     fi
 
-    # Extract the 7 cell values (skip widget name column)
+    # Extract the platform cell values (skip the widget-name column). The loop runs to the header's
+    # own column count, so it validates every platform the table declares — including one added
+    # after this script was written.
     # Split by | and trim whitespace
     IFS='|' read -ra CELLS <<< "$line"
 
     # cells[0] is empty (before first |), cells[1] is widget name
-    # cells[2] through cells[8] are the 7 platform columns
-    for ((i=2; i<=8; i++)); do
+    # cells[2] through cells[2+PLATFORM_COUNT-1] are the platform columns
+    for ((i=2; i < 2 + PLATFORM_COUNT; i++)); do
       cell_val=$(echo "${CELLS[$i]}" | xargs)
       valid=false
       for code in "${VALID_CODES[@]}"; do
@@ -159,7 +180,7 @@ while IFS= read -r line; do
         fi
       done
       if ! $valid; then
-        col_name="${VALID_COLS[$((i-2))]}"
+        col_name="${PLATFORM_COLS[$((i-2))]:-column$((i-1))}"
         widget_name=$(echo "${CELLS[1]}" | xargs | sed 's/\*\*//g')
         error "Row '$widget_name', column '$col_name' has invalid value '$cell_val'"
       fi

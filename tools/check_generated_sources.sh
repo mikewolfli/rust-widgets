@@ -113,16 +113,23 @@ echo ""
 echo "=== [2/4] regenerating reproduces the committed bytes ==="
 # A scratch copy, so a failing comparison does not leave the tree modified.
 SCRATCH="$(mktemp -d)"
-trap 'rm -rf "$SCRATCH"' EXIT
+# Diagnostics go to `mktemp` files, not predictable names like `id.gen.log` in the working tree:
+# a fixed name both pollutes `git status` and races a second concurrent run of this gate. The
+# variables hold the paths so the multiple references per file all name the same temp file, and
+# the trap removes the ones still present on any exit (including the `fail` paths).
+GEN_LOG="$(mktemp)"
+DIAG1="$(mktemp)"
+DIAG3="$(mktemp)"
+DIAG4="$(mktemp)"
+trap 'rm -rf "$SCRATCH" "$INJECT_DIR"; rm -f "$GEN_LOG" "$DIAG1" "$DIAG3" "$DIAG4" "$GEN_BACKUP"' EXIT
 cp -R "$PROJECT_DIR/." "$SCRATCH/"
 rm -rf "$SCRATCH/src/generated"
 
-if ! GENERATE "$SCRATCH" "$SCRATCH/project.json" > id.gen.log 2>&1; then
-  cat id.gen.log
-  rm -f id.gen.log
+if ! GENERATE "$SCRATCH" "$SCRATCH/project.json" > "$GEN_LOG" 2>&1; then
+  cat "$GEN_LOG"
   fail "generation failed for $PROJECT_DIR; the output above is the reason"
 fi
-rm -f id.gen.log
+rm -f "$GEN_LOG"
 
 for generated in "$SCRATCH"/src/generated/*.rs; do
   name="$(basename "$generated")"
@@ -184,13 +191,13 @@ assert edit(document), "the fixture project must contain a `text` for the inject
 path.write_text(json.dumps(document, indent=2))
 PY
 
-if ! GENERATE "$INJECT_DIR" "$INJECT_DIR/project.json" > id.1.diag 2>&1; then
-  cat id.1.diag
-  rm -f id.1.diag
+if ! GENERATE "$INJECT_DIR" "$INJECT_DIR/project.json" > "$DIAG1" 2>&1; then
+  cat "$DIAG1"
+  rm -f "$DIAG1"
   rm -rf "$INJECT_DIR"
   fail "the injected document did not even generate, so this injection proves nothing"
 fi
-rm -f id.1.diag
+rm -f "$DIAG1"
 
 drift_seen=0
 for generated in "$INJECT_DIR"/src/generated/*.rs; do
@@ -225,11 +232,11 @@ injection_caught=0
 if REGENERATE_IN_PLACE; then
   if ! rw_cargo_cached "$GATE_TIMEOUT" test \
       --no-default-features --features desktop \
-      --test generated_artifacts_are_lint_clean_test -- --ignored > id.3.diag 2>&1; then
+      --test generated_artifacts_are_lint_clean_test -- --ignored > "$DIAG3" 2>&1; then
     injection_caught=1
   fi
 fi
-rm -f id.3.diag
+rm -f "$DIAG3"
 
 # Restore the generator **and** regenerate, so the tree is left exactly as it was found.
 cp "$GEN_BACKUP" src/designer/generator.rs
@@ -253,12 +260,11 @@ echo "    detected: the lint step refuses the needless \`mut\`"
 # gate* see drift the injection created — a false failure attributed to the next thing that ran. This
 # is asserted rather than assumed, because a gate that corrupts the tree on its way out is worse than
 # one that fails.
-if ! GENERATE "$PROJECT_DIR" "$PROJECT_DIR/project.json" --check > id.4.diag 2>&1; then
-  cat id.4.diag
-  rm -f id.4.diag
+if ! GENERATE "$PROJECT_DIR" "$PROJECT_DIR/project.json" --check > "$DIAG4" 2>&1; then
+  cat "$DIAG4"
   fail "the working tree is left with stale generated sources after the injections"
 fi
-rm -f id.4.diag
+rm -f "$DIAG4"
 echo "  tree restored and verified in sync"
 
 echo ""

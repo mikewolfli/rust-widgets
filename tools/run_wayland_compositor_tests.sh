@@ -196,7 +196,24 @@ fi
 echo "[3/5] Preparing private runtime dir (socket=$WESTON_SOCKET)"
 # Always use a private runtime dir so a live $XDG_RUNTIME_DIR (e.g. a real
 # desktop session) is never touched or removed.
+#
+# `$WESTON_SOCKET` is caller-controlled (`WESTON_SOCKET=… tools/run_wayland_compositor_tests.sh`)
+# and used to be interpolated straight into a path that is then `rm -rf`'d. A value containing `..`
+# or `/` would escape the intended `/tmp/xdg-weston-<socket>` directory — `WESTON_SOCKET=../../../home`
+# would delete outside it — so the name is validated against a strict whitelist first, and the
+# directory is only deleted after confirming it carries the expected prefix.
+if [[ ! "$WESTON_SOCKET" =~ ^[A-Za-z0-9_-]+$ ]]; then
+  echo "error: WESTON_SOCKET must match [A-Za-z0-9_-]+ (got: $WESTON_SOCKET)" >&2
+  exit 2
+fi
 XDG_RUNTIME_DIR="${WESTON_RUNTIME_DIR:-/tmp/xdg-weston-$WESTON_SOCKET}"
+# Belt-and-braces: even with a validated socket, never `rm -rf` a path that is not the private
+# runtime dir this script owns. This is the second guard against a caller-supplied
+# `WESTON_RUNTIME_DIR` pointing somewhere it must not delete.
+if [[ "$XDG_RUNTIME_DIR" != /tmp/xdg-weston-* ]]; then
+  echo "error: refusing to remove XDG_RUNTIME_DIR '$XDG_RUNTIME_DIR' (expected a /tmp/xdg-weston- prefix)" >&2
+  exit 2
+fi
 rm -rf "$XDG_RUNTIME_DIR"
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"

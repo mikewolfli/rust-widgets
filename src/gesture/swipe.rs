@@ -6,7 +6,7 @@
 use crate::core::Point;
 use crate::event::{Event, TouchId};
 
-use super::{distance, GestureRecognizer, SWIPE_MIN_DISTANCE, SWIPE_MIN_VELOCITY};
+use super::{distance, point_delta, GestureRecognizer, SWIPE_MIN_DISTANCE, SWIPE_MIN_VELOCITY};
 
 // ────────────────────────────────────────────
 // SwipeGesture
@@ -281,12 +281,19 @@ impl FlingGesture {
         let first = recent.first()?;
         let last = recent.last()?;
         let dt = last.1.saturating_sub(first.1).max(1) as f32;
-        let dx = (last.0.x - first.0.x) as f32;
-        let dy = (last.0.y - first.0.y) as f32;
+        // The displacement is widened like `total_distance` below, so a fling between coordinates
+        // near the `i32` extremes reports the true displacement rather than a wrapped one. The
+        // final `as i32` saturates through the clamp, matching how a very fast fling is handled.
+        let (raw_dx, raw_dy) = point_delta(first.0, last.0);
+        let dx = raw_dx as f32;
+        let dy = raw_dy as f32;
         // `Event::Fling::velocity` is documented as logical pixels per **second**,
         // so the per-millisecond ratio is scaled by 1000. Keep this in step with the
-        // `Swipe` variants, which convert the same way.
-        Some(Point::new((dx / dt * 1000.0).round() as i32, (dy / dt * 1000.0).round() as i32))
+        // `Swipe` variants, which convert the same way. A velocity above `i32::MAX`
+        // saturates rather than wrapping to a nonsensical negative speed.
+        let vx = (dx / dt * 1000.0).clamp(i32::MIN as f32, i32::MAX as f32) as i32;
+        let vy = (dy / dt * 1000.0).clamp(i32::MIN as f32, i32::MAX as f32) as i32;
+        Some(Point::new(vx, vy))
     }
 }
 

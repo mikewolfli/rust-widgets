@@ -6,7 +6,7 @@
 use crate::core::Point;
 use crate::event::{Event, TouchId};
 
-use super::{GestureRecognizer, DOUBLE_TAP_TIMEOUT_MS, MAX_STATIONARY_DISTANCE};
+use super::{point_delta_abs, GestureRecognizer, DOUBLE_TAP_TIMEOUT_MS, MAX_STATIONARY_DISTANCE};
 
 // ────────────────────────────────────────────
 // TapGesture
@@ -189,9 +189,11 @@ impl GestureRecognizer for TwoFingerTapGesture {
             }
             Event::TouchMove { pos, touch_id } => {
                 if let Some(t) = self.touches.iter_mut().find(|(_, _, id, _)| *id == *touch_id) {
-                    // Compare against the **original** touchdown position to prevent drift
-                    let dx = (pos.x - t.0.x).abs();
-                    let dy = (pos.y - t.0.y).abs();
+                    // Compare against the **original** touchdown position to prevent drift.
+                    // `point_delta_abs` widens the subtraction, so a touch that moves across the
+                    // `i32` extremes separates the two points (cancelling the tap) instead of
+                    // overflowing; and unlike `.abs()` it cannot panic on `i32::MIN`.
+                    let (dx, dy) = point_delta_abs(t.0, *pos);
                     if (dx as f32) > MAX_STATIONARY_DISTANCE
                         || (dy as f32) > MAX_STATIONARY_DISTANCE
                     {

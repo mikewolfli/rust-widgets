@@ -55,6 +55,15 @@ impl NavigationHistory {
     ///   is `false` afterwards and [`NavigationHistory::can_go_back`] is `true`
     ///   unless this is the only entry.
     pub fn push(&mut self, entry: NavigationEntry) {
+        // A zero-capacity history retains nothing, so pushing must leave it empty. The old code
+        // still executed `push_back` and set the cursor to that entry, contradicting the documented
+        // "discards every entry" contract: the history could hold one entry, and `go_back`/`go_forward`
+        // became meaningful for a history that claims to keep none.
+        if self.max_size == 0 {
+            self.entries.clear();
+            self.current_index = None;
+            return;
+        }
         if let Some(idx) = self.current_index {
             if idx < self.entries.len() - 1 {
                 self.entries.truncate(idx + 1);
@@ -115,15 +124,26 @@ impl NavigationHistory {
             None
         }
     }
-    /// All recorded entries, oldest first.
+    /// The **first contiguous run** of recorded entries, oldest first.
     ///
-    /// Returns only the first contiguous slice of the backing deque. The deque is
-    /// only split when a push wraps around inside it, so this is normally the
-    /// whole history, but after a wrapped push the oldest entries become
-    /// unreachable through this method. [`NavigationHistory::len`] reports the
-    /// true count, so it can exceed `entries().len()`.
+    /// # This is not "all entries"
+    ///
+    /// The backing deque is split when a push wraps around inside it, and this returns only the
+    /// first slice, so after such a push the oldest entries are unreachable here and `entries().len()`
+    /// can be smaller than [`NavigationHistory::len`]. Use
+    /// [`NavigationHistory::entries_in_order`] when every retained entry is needed; this method is
+    /// kept because it returns a borrowed slice without allocating.
     pub fn entries(&self) -> &[NavigationEntry] {
         self.entries.as_slices().0
+    }
+
+    /// All retained entries, oldest first, across the deque's wrapped split.
+    ///
+    /// The returned vector always has exactly [`NavigationHistory::len`] elements, so a caller that
+    /// needs the complete history does not have to know about the deque's internal wrapping. Use this
+    /// in preference to [`NavigationHistory::entries`], which only sees the first slice.
+    pub fn entries_in_order(&self) -> Vec<&NavigationEntry> {
+        self.entries.iter().collect()
     }
     /// Discards every entry and resets the cursor, leaving
     /// [`NavigationHistory::can_go_back`] and
@@ -524,5 +544,50 @@ mod tests {
         };
         assert!(security.allow_insecure_content);
         assert!(!security.block_popups);
+    }
+
+    /// N-WEB-04: a zero-capacity history retains nothing, exactly as documented.
+    #[test]
+    fn a_zero_capacity_history_stays_empty_after_a_push() {
+        let mut history = NavigationHistory::new(0);
+        history.push(NavigationEntry {
+            url: "https://example.com".to_string(),
+            title: "Example".to_string(),
+            timestamp: 1,
+        });
+        assert!(history.is_empty(), "a zero-capacity history must keep no entry");
+        assert_eq!(history.len(), 0);
+        assert!(history.current().is_none());
+        assert!(!history.can_go_back());
+        assert!(!history.can_go_forward());
+    }
+
+    /// N-WEB-03: `entries_in_order` exposes every retained entry across a wrapped deque.
+    ///
+    /// Pushing past `max_size` evicts the front and re-pushes at the back, which splits the backing
+    /// deque. The old `entries()` returned only the first slice, so `len()` could exceed
+    /// `entries().len()` and the oldest entries were unreachable. `entries_in_order` is asserted to
+    /// always agree with `len()`; the loop deliberately wraps the deque many times.
+    #[test]
+    fn entries_in_order_matches_len_even_after_wrapping() {
+        let mut history = NavigationHistory::new(3);
+        for i in 0..20 {
+            history.push(NavigationEntry {
+                url: format!("https://example.com/{i}"),
+                title: String::new(),
+                timestamp: i,
+            });
+            assert_eq!(
+                history.entries_in_order().len(),
+                history.len(),
+                "entries_in_order must expose every retained entry"
+            );
+        }
+        // The retained entries are the most recent three, oldest first.
+        let urls: Vec<&str> = history.entries_in_order().iter().map(|e| e.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            vec!["https://example.com/17", "https://example.com/18", "https://example.com/19"]
+        );
     }
 }

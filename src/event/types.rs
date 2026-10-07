@@ -730,6 +730,26 @@ pub trait EventHandler {
 mod tests {
     use super::*;
 
+    /// Serializes the tests that share the process-global async-task queue.
+    ///
+    /// `channel()` is one `static` for the whole process, and `drain_tasks` drains **everything**
+    /// queued — including tasks scheduled by other tests running in parallel in the same binary. The
+    /// task-queue tests assert on *their own* tasks' side effects, so without this lock another test's
+    /// `drain_tasks` call could consume a test's follow-up task (or deliver an unrelated one first),
+    /// making the assertions depend on scheduling order. The lock makes each such test observe only
+    /// its own drain by running them one at a time.
+    ///
+    /// This mirrors the guard convention used elsewhere (`layout/inspector.rs`, `style/stylesheet.rs`,
+    /// `image/cache.rs`): a lazily-initialised `Mutex<()>` whose guard is held for the test's duration.
+    #[cfg(not(alloc_frugal))]
+    fn task_queue_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static GUARD: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        GUARD
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[cfg(feature = "touch")]
     #[test]
     fn touch_begin_creation() {
@@ -994,6 +1014,7 @@ mod tests {
     #[test]
     fn drain_tasks_is_reentrant_without_deadlock() {
         use core::sync::atomic::{AtomicUsize, Ordering};
+        let _guard = task_queue_test_guard();
 
         let outer_ran = std::sync::Arc::new(AtomicUsize::new(0));
         let nested_ran = std::sync::Arc::new(AtomicUsize::new(0));
@@ -1022,6 +1043,7 @@ mod tests {
     #[test]
     fn a_task_may_schedule_more_work_for_the_next_drain() {
         use core::sync::atomic::{AtomicUsize, Ordering};
+        let _guard = task_queue_test_guard();
 
         let followup_ran = std::sync::Arc::new(AtomicUsize::new(0));
         let followup = std::sync::Arc::clone(&followup_ran);
@@ -1050,6 +1072,7 @@ mod tests {
     #[test]
     fn a_panicking_task_does_not_starve_later_tasks() {
         use core::sync::atomic::{AtomicUsize, Ordering};
+        let _guard = task_queue_test_guard();
 
         let later_ran = std::sync::Arc::new(AtomicUsize::new(0));
 

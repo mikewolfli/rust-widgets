@@ -211,7 +211,11 @@ impl AnimatedImage {
         let delay =
             self.frames.get(self.current_frame).map(|f| f.delay_ms).unwrap_or(self.frame_delay);
 
-        self.frame_timer += delta_ms;
+        // `saturating_add`: `frame_timer` is a `u64` fed by a public `tick(delta_ms)`, so a large
+        // `delta_ms` (or many small ones between advances) could overflow it. A wrapped timer is
+        // *smaller* than the delay, which would freeze the animation rather than advance it — the
+        // sibling `lottie_widget` already saturates.
+        self.frame_timer = self.frame_timer.saturating_add(delta_ms);
         if self.frame_timer >= delay {
             self.advance_frame();
             true
@@ -752,5 +756,25 @@ mod tests {
         assert!(svg.starts_with("<svg"));
         assert!(svg.contains("width=\"100\""));
         assert!(svg.ends_with("</svg>"));
+    }
+
+    /// N-V-06: `tick` with a huge `delta_ms` saturates rather than wrapping the frame timer.
+    ///
+    /// `frame_timer` is a `u64` fed by a public `tick`. A wrapping `+=` would make the timer
+    /// *smaller* than the delay and freeze the animation instead of advancing it.
+    #[test]
+    fn a_huge_tick_does_not_wrap_the_frame_timer() {
+        let mut img = AnimatedImage::new(Rect::new(0, 0, 100, 100));
+        img.load_frames(crate::compat::vec![AnimatedFrame {
+            width: 1,
+            height: 1,
+            data: crate::compat::vec![0u8; 4],
+            delay_ms: 100,
+        }])
+        .unwrap();
+        img.play();
+        // Debug builds panic on the wrapping `+=`; reaching the assert is the check.
+        let advanced = img.tick(u64::MAX);
+        assert!(advanced, "a huge delta must advance the frame, not freeze it");
     }
 }

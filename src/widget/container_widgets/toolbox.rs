@@ -545,6 +545,13 @@ impl ToolBox {
     ///
     /// The selected tile keeps the full ink colour; an unselected tile is that ink blended halfway
     /// toward the surface, so it reads as the same colour family at lower emphasis.
+    ///
+    /// Gated on `image` because its **only** production caller is the icon-tile draw pass, which is
+    /// itself behind `#[cfg(feature = "image")]` (`item.icon` only exists with that feature). Without
+    /// the gate the function was dead code under any build without `image` -- reported as
+    /// `associated function 'icon_tile_color' is never used` on the Windows cross-check, which runs a
+    /// feature set that includes `touch` but not `image`.
+    #[cfg(feature = "image")]
     pub(crate) fn icon_tile_color(ink: Color, surface: Color, is_current: bool) -> Color {
         if is_current {
             ink
@@ -1095,6 +1102,9 @@ mod tests {
     /// surface from the resolved style; this asserts the two observable properties: the selected tile
     /// is exactly the ink, and an unselected tile is a *different*, surface-blended colour (so it is
     /// not the same literal in disguise).
+    ///
+    /// Gated on `image` for the same reason the function is: the two exist together.
+    #[cfg(feature = "image")]
     #[test]
     fn an_embedded_icon_tile_is_derived_from_the_style() {
         let ink = Color::rgb(10, 20, 30);

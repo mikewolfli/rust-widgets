@@ -42,6 +42,13 @@ cd "$(dirname "$0")/.." || exit 1
 
 # shellcheck source=tools/lib_timeout.sh
 source tools/lib_timeout.sh
+# `$PYTHON` (validated, and itself probed under `rw_run_bounded`) replaces the bare `python3`. On
+# Windows `python3` is often the Microsoft Store alias, which *blocks* rather than runs the script,
+# turning this gate into a hang — see tools/lib_python.sh. The two inline heredocs below are still
+# run under `rw_run_bounded` because `$PYTHON` bounds only its own interpreter probe, not the work
+# the script it then executes performs.
+# shellcheck source=tools/lib_python.sh
+source tools/lib_python.sh
 
 SHARD_LIST="tools/cjk_vector_shards.txt"
 COVERAGE_LIST="tools/cjk_vector_codepoints.txt"
@@ -56,7 +63,7 @@ for required in "$SHARD_LIST" "$COVERAGE_LIST" "$GEN"; do
 done
 
 echo "[1/4] the shard list parses and is disjoint"
-if ! python3 - "$SHARD_LIST" <<'PY'
+if ! rw_run_bounded 120 "$PYTHON" - "$SHARD_LIST" <<'PY'
 import re, sys
 from pathlib import Path
 
@@ -104,7 +111,7 @@ fi
 echo "  PASS"
 
 echo "[2/4] the shards partition the fonts-cjk coverage"
-if ! python3 - "$SHARD_LIST" "$COVERAGE_LIST" <<'PY'
+if ! rw_run_bounded 120 "$PYTHON" - "$SHARD_LIST" "$COVERAGE_LIST" <<'PY'
 import sys
 from pathlib import Path
 
@@ -151,9 +158,9 @@ fi
 echo "  PASS"
 
 echo "[3/4] the committed shard files match the list"
-if ! rw_run_bounded 600 python3 "$GEN" --license=ofl-1.1 --check; then
+if ! rw_run_bounded 600 "$PYTHON" "$GEN" --license=ofl-1.1 --check; then
     echo "  FAIL  the committed shards are stale; run"
-    echo "        python3 tools/gen_cjk_shards.py --license=ofl-1.1"
+    echo "        \"\$PYTHON\" tools/gen_cjk_shards.py --license=ofl-1.1"
     exit 1
 fi
 echo "  PASS"

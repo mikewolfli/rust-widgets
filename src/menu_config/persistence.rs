@@ -129,8 +129,27 @@ impl ConfigPersistence {
             content.push_str(&format!("{key}={value}\n"));
         }
         let path = self.config_file_path();
-        let mut file = fs::File::create(path)?;
-        file.write_all(content.as_bytes())?;
+        // Write to a temporary file in the same directory, then rename over the target.
+        //
+        // `File::create(path)` truncates the existing file *before* the write, so an IO error
+        // mid-write (disk full, quota, a permissions change) left the previous configuration
+        // replaced by an empty or half-written file — the user lost their settings and gained a
+        // corrupt one. `rename` within the same directory is atomic on every supported platform, so
+        // the target is either the old content or the complete new content, never a torn mix. The
+        // temp file is removed on any failure so a failed save leaves no stray file behind.
+        let temp_path = path.with_extension("tmp");
+        {
+            let mut file = fs::File::create(&temp_path)?;
+            if let Err(error) = file.write_all(content.as_bytes()).and_then(|()| file.sync_all()) {
+                drop(file);
+                let _ = fs::remove_file(&temp_path);
+                return Err(error);
+            }
+        }
+        if let Err(error) = fs::rename(&temp_path, path) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(error);
+        }
         Ok(())
     }
     /// Loads menu configuration from disk.

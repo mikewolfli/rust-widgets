@@ -248,6 +248,23 @@ impl WebEngineViewEnhanced {
     pub fn stop(&mut self) {
         self.core.stop();
     }
+
+    /// Advances an in-flight asynchronous load, if any (`web-http` only).
+    ///
+    /// The host calls this once per frame/tick. It returns `true` while a load is still in flight and
+    /// `false` once it has completed, failed, or there was nothing to poll. With the `web-http`
+    /// feature, `set_url` starts the fetch on a helper thread and this method delivers its result on
+    /// the caller's thread — the fetch never blocks `set_url`.
+    pub fn poll_load(&mut self) -> bool {
+        #[cfg(feature = "web-http")]
+        {
+            self.core.poll_load()
+        }
+        #[cfg(not(feature = "web-http"))]
+        {
+            false
+        }
+    }
     /// Sets the title, emitting the core's `title_changed` signal only when the
     /// value actually differs.
     ///

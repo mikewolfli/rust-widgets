@@ -817,6 +817,18 @@ fn collect_stripped_nodes(
         if let Some(call) = setter_call(&binding, &name, &value) {
             setters.push_str(&format!("\n        // {name}\n        {call}"));
             report.properties_emitted += 1;
+        } else if is_known_setter_name(&name) && value.is_number() {
+            // A recognised numeric setter whose value does not fit the generated setter's
+            // `i32` parameter is reported rather than written out: emitting it produced a
+            // literal the compiler rejects (N-J-07), so silence would be worse than the
+            // explicit "unsupported" entry below.
+            report.unsupported.push(GenerationGap {
+                path: path.to_vec(),
+                widget: node.widget.clone(),
+                reason: format!(
+                    "`{name}` is {value} which does not fit the generated setter's `i32` parameter"
+                ),
+            });
         }
     }
 
@@ -923,7 +935,14 @@ fn placeholder_id(node: &ProjectNode) -> crate::core::ObjectId {
 /// placement when it does not; a grid document is instead reported through the placement mismatch
 /// check, which surfaces as an unplaced child rather than a silently wrong coordinate.
 fn child_stretch(node: &ProjectNode) -> u32 {
-    node.property("stretch").and_then(|v| v.as_u64()).unwrap_or(1) as u32
+    // `as u32` on a `u64` wrapped an over-large stretch to a small one (`2^32` became `0`),
+    // which silently collapsed a flexible child to zero weight. Clamping keeps the weight the
+    // document stated; the layout solve can only use so much. A negative value (`as_u64`
+    // rejects it) falls back to the default weight of `1`.
+    node.property("stretch")
+        .and_then(|v| v.as_u64())
+        .map(|raw| u32::try_from(raw).unwrap_or(u32::MAX))
+        .unwrap_or(1)
 }
 
 /// The Rust **type** name a document's widget name maps to, or `"UnsupportedControl"`.
@@ -1080,10 +1099,17 @@ fn setter_call(binding: &str, name: &str, value: &Value) -> Option<String> {
         };
     }
     if let Some(number) = value.as_i64() {
+        // The generated setters take `i32`. A document value outside that range
+        // (`2147483648`) used to be written into the source verbatim, producing a literal that
+        // does not fit the parameter — the generated file then failed to compile, which a
+        // designer sees as "my project broke generation" rather than "this value is too large".
+        // Refusing it (`None`) makes the caller record it as unsupported, which is the honest
+        // report. A value that *does* fit is emitted unchanged.
+        let fits = i32::try_from(number).ok()?;
         return match name {
-            "value" => Some(format!("{binding}.set_value({number});")),
-            "minimum" | "min" => Some(format!("{binding}.set_minimum({number});")),
-            "maximum" | "max" => Some(format!("{binding}.set_maximum({number});")),
+            "value" => Some(format!("{binding}.set_value({fits});")),
+            "minimum" | "min" => Some(format!("{binding}.set_minimum({fits});")),
+            "maximum" | "max" => Some(format!("{binding}.set_maximum({fits});")),
             _ => None,
         };
     }
@@ -1099,6 +1125,14 @@ fn setter_call(binding: &str, name: &str, value: &Value) -> Option<String> {
         };
     }
     None
+}
+
+/// Whether `name` is one of the numeric setters [`setter_call`] recognises.
+///
+/// Used by the caller to distinguish "this property is not a generation-time setter at all"
+/// (ignored silently, as before) from "this is a setter, but its value did not fit" (reported).
+fn is_known_setter_name(name: &str) -> bool {
+    matches!(name, "value" | "minimum" | "min" | "maximum" | "max")
 }
 
 /// Receives the geometry solved at generation time (d-3).
@@ -1572,6 +1606,51 @@ mod tests {
         assert!(is_wire_key("events"));
         assert!(is_wire_key("on_click"));
         assert!(!is_wire_key("text"));
+    }
+
+    /// N-J-07: an `i32`-overflowing value is refused, not written as an uncompilable literal.
+    ///
+    /// `2147483648` (`2^31`) does not fit the generated setter's `i32` parameter, so emitting it
+    /// produced source that failed to compile. `setter_call` now answers `None` for it (and the
+    /// caller records it as unsupported), while a fitting value keeps its setter.
+    #[test]
+    fn an_out_of_i32_range_number_is_not_emitted_as_a_setter() {
+        let overflowing = serde_json::json!(2147483648i64);
+        assert_eq!(setter_call("w", "value", &overflowing), None);
+        assert_eq!(setter_call("w", "minimum", &overflowing), None);
+        // The name is still recognised as a setter, which is what lets the caller report it.
+        assert!(is_known_setter_name("value"));
+
+        // In-range values are emitted unchanged.
+        let fits = serde_json::json!(7i64);
+        assert_eq!(setter_call("w", "value", &fits).as_deref(), Some("w.set_value(7);"));
+        // The extremes of the `i32` domain are exactly representable and must be accepted.
+        assert!(setter_call("w", "value", &serde_json::json!(i32::MIN as i64)).is_some());
+        assert!(setter_call("w", "value", &serde_json::json!(i32::MAX as i64)).is_some());
+    }
+
+    /// N-J-06: an out-of-range `stretch` clamps to `u32::MAX` rather than wrapping to `0`.
+    #[test]
+    fn an_out_of_range_stretch_clamps_rather_than_wrapping() {
+        let make = |props: Vec<(String, Value)>| ProjectNode {
+            widget: String::from("button"),
+            path: crate::compat::vec![],
+            key: String::from("button"),
+            properties: props,
+            wire_declaration: None,
+            marker_declarations: crate::compat::vec![],
+            children: crate::compat::vec![],
+        };
+
+        let huge =
+            make(crate::compat::vec![(String::from("stretch"), serde_json::json!(4294967296u64),)]);
+        assert_eq!(child_stretch(&huge), u32::MAX);
+
+        let default = make(crate::compat::vec![]);
+        assert_eq!(child_stretch(&default), 1);
+
+        let small = make(crate::compat::vec![(String::from("stretch"), serde_json::json!(3u64))]);
+        assert_eq!(child_stretch(&small), 3);
     }
 
     #[test]

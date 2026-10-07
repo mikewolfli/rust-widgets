@@ -28,7 +28,7 @@ pub use tap::{DoubleTapGesture, TapGesture, TwoFingerTapGesture};
 
 // Re-export constants and helpers used by sub-modules.
 pub(crate) use engine::{
-    distance, DOUBLE_TAP_TIMEOUT_MS, LONG_PRESS_MAX_MOVE, LONG_PRESS_MIN_MS,
-    MAX_STATIONARY_DISTANCE, PAN_MIN_DISTANCE, SWIPE_MIN_DISTANCE, SWIPE_MIN_VELOCITY,
-    TAP_TIMEOUT_MS,
+    distance, point_delta, point_delta_abs, DOUBLE_TAP_TIMEOUT_MS, LONG_PRESS_MAX_MOVE,
+    LONG_PRESS_MIN_MS, MAX_STATIONARY_DISTANCE, PAN_MIN_DISTANCE, SWIPE_MIN_DISTANCE,
+    SWIPE_MIN_VELOCITY, TAP_TIMEOUT_MS,
 };

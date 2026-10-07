@@ -24,6 +24,7 @@
 #![cfg(all(test, full_widgets))]
 
 use crate::core::Rect;
+use crate::widget::capability::properties_trait::WidgetProperties;
 use crate::widget::capability::types::CapabilityValue;
 use crate::widget::capability::{
     widget_property_get, widget_property_names, widget_property_set, WidgetFactory,
@@ -1276,5 +1277,37 @@ fn a_hyphenated_command_reaches_the_same_command_as_its_published_spelling() {
     assert!(
         checked > 0,
         "no published command contains an underscore, so this test proves nothing"
+    );
+}
+
+/// N-W-01: a `u32` chrome metric rejects a value above `u32::MAX` instead of truncating it.
+///
+/// On a 64-bit host `expect_usize` accepts any `usize`, so a `UInt` of `u32::MAX + 1` passed that
+/// check and was then silently truncated by the `as u32` that followed — the field took `0` and the
+/// caller was told the write succeeded. The field is `u32`, so an out-of-range value is a type
+/// mismatch.
+#[test]
+fn window_chrome_metric_rejects_out_of_u32_range() {
+    use crate::core::Rect;
+    use crate::widget::Window;
+
+    let mut window = Window::new("w".to_string(), Rect::new(0, 0, 320, 240));
+
+    // In range: accepted and stored.
+    assert!(window.set("title_bar_height", CapabilityValue::UInt(40)).is_ok());
+    assert_eq!(window.title_bar_height(), 40);
+
+    // Exactly `u32::MAX` is still in range.
+    assert!(window.set("title_bar_height", CapabilityValue::UInt(u32::MAX as u64)).is_ok());
+
+    // `u32::MAX + 1` must be refused rather than wrapped to `0`.
+    assert_eq!(
+        window.set("button_spacing", CapabilityValue::UInt(u32::MAX as u64 + 1)),
+        Err(CapabilityAccessError::TypeMismatch)
+    );
+    // A negative value is refused too.
+    assert_eq!(
+        window.set("close_button_size", CapabilityValue::Int(-1)),
+        Err(CapabilityAccessError::TypeMismatch)
     );
 }

@@ -7,7 +7,8 @@ use crate::core::Point;
 use crate::event::{Event, TouchId};
 
 use super::{
-    distance, GestureRecognizer, LONG_PRESS_MAX_MOVE, LONG_PRESS_MIN_MS, PAN_MIN_DISTANCE,
+    distance, point_delta, point_delta_abs, GestureRecognizer, LONG_PRESS_MAX_MOVE,
+    LONG_PRESS_MIN_MS, PAN_MIN_DISTANCE,
 };
 
 // ────────────────────────────────────────────
@@ -176,7 +177,8 @@ impl GestureRecognizer for PanGesture {
                 }
 
                 let delta = if let Some(last) = self.last_pos {
-                    Point::new(pos.x - last.x, pos.y - last.y)
+                    let (dx, dy) = point_delta(last, *pos);
+                    Point::new(dx, dy)
                 } else {
                     Point::new(0, 0)
                 };
@@ -261,7 +263,8 @@ impl GestureRecognizer for LongPressDragGesture {
                 if self.dragging {
                     // Already in drag mode — emit Drag
                     let delta = if let Some(last) = self.last_pos {
-                        Point::new(pos.x - last.x, pos.y - last.y)
+                        let (dx, dy) = point_delta(last, *pos);
+                        Point::new(dx, dy)
                     } else {
                         Point::new(0, 0)
                     };
@@ -273,7 +276,8 @@ impl GestureRecognizer for LongPressDragGesture {
                     self.dragging = true;
                     self.last_pos = Some(*pos);
                     let delta = if let Some(start) = self.start_pos {
-                        Point::new(pos.x - start.x, pos.y - start.y)
+                        let (dx, dy) = point_delta(start, *pos);
+                        Point::new(dx, dy)
                     } else {
                         Point::new(0, 0)
                     };
@@ -281,8 +285,7 @@ impl GestureRecognizer for LongPressDragGesture {
                 }
                 // Before long press fired — check if movement exceeds threshold
                 if let Some(start) = self.start_pos {
-                    let dx = (pos.x - start.x).abs();
-                    let dy = (pos.y - start.y).abs();
+                    let (dx, dy) = point_delta_abs(start, *pos);
                     if (dx as f32) > LONG_PRESS_MAX_MOVE || (dy as f32) > LONG_PRESS_MAX_MOVE {
                         // Moved too much — cancel
                         self.reset();

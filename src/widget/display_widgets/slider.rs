@@ -288,18 +288,22 @@ impl Slider {
     }
     /// Adds single step to value.
     pub fn trigger_action(&mut self, action: SliderAction) {
+        // The step arithmetic saturates before `set_value` clamps it: `self.value +
+        // self.single_step` on values near the `i32` extremes overflowed (debug abort,
+        // release wrap) *before* the clamp could bound it, so the slider jumped to a
+        // wrapped value instead of stopping at the bound.
         match action {
             SliderAction::SliderSingleStepAdd => {
-                self.set_value(self.value + self.single_step);
+                self.set_value(self.value.saturating_add(self.single_step));
             }
             SliderAction::SliderSingleStepSub => {
-                self.set_value(self.value - self.single_step);
+                self.set_value(self.value.saturating_sub(self.single_step));
             }
             SliderAction::SliderPageStepAdd => {
-                self.set_value(self.value + self.page_step);
+                self.set_value(self.value.saturating_add(self.page_step));
             }
             SliderAction::SliderPageStepSub => {
-                self.set_value(self.value - self.page_step);
+                self.set_value(self.value.saturating_sub(self.page_step));
             }
             SliderAction::SliderToMinimum => {
                 self.set_value(self.minimum);
@@ -1896,5 +1900,35 @@ mod tests {
         let g = parts.next()?.trim().parse().ok()?;
         let b = parts.next()?.trim().parse().ok()?;
         Some(Color::rgb(r, g, b))
+    }
+
+    /// N-CH-02: a step action at the `i32` extreme saturates instead of overflowing.
+    ///
+    /// `set_value` clamps, but the old `self.value + self.single_step` overflowed *before* the clamp
+    /// ran, so a slider already at `i32::MAX`/`i32::MIN` (or with a large step) wrapped to the
+    /// opposite end instead of stopping at the bound.
+    #[test]
+    fn step_actions_saturate_at_the_domain_extremes() {
+        let mut slider = make_slider();
+        slider.set_range(i32::MIN, i32::MAX);
+        slider.set_single_step(1);
+
+        slider.set_value(i32::MAX);
+        slider.trigger_action(SliderAction::SliderSingleStepAdd);
+        assert_eq!(slider.value(), i32::MAX, "stepping up at the maximum stays there");
+
+        slider.set_value(i32::MIN);
+        slider.trigger_action(SliderAction::SliderSingleStepSub);
+        assert_eq!(slider.value(), i32::MIN, "stepping down at the minimum stays there");
+
+        // A large positive step from a positive value saturates rather than wrapping.
+        slider.set_single_step(i32::MAX);
+        slider.set_value(1);
+        slider.trigger_action(SliderAction::SliderSingleStepAdd);
+        assert_eq!(
+            slider.value(),
+            i32::MAX,
+            "a step that would overflow must saturate at the maximum, not wrap negative"
+        );
     }
 }

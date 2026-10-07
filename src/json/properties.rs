@@ -121,7 +121,11 @@ fn to_capability_value(
         // harder to use than the Rust API it wraps.
         Some(PropertyValueKind::Number) => {
             let n = value.as_f64()?;
-            if n.fract() == 0.0 && n >= i64::MIN as f64 && n <= i64::MAX as f64 {
+            // `n <= i64::MAX as f64` admitted exactly `2^63`, whose `as i64` saturates to
+            // `i64::MAX` — losing the one that distinguishes them and making the round trip
+            // `Int -> JSON -> Int` asymmetric. `2^63` is not an `i64`, so the strict `<` is the
+            // correct predicate for "this fits in the integer carrier".
+            if n.fract() == 0.0 && n >= i64::MIN as f64 && n < i64::MAX as f64 {
                 Some(CapabilityValue::Int(n as i64))
             } else {
                 Some(CapabilityValue::Float(n))

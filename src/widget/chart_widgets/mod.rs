@@ -72,6 +72,7 @@ pub use sparkline::Sparkline;
 pub use adapter::ChartContextAdapter;
 #[cfg(widgets_unstripped)]
 pub use svg::{MemoryChartContext, SvgChartContext};
+pub(crate) use types::{finite_samples, is_finite_sample};
 #[cfg(widgets_unstripped)]
 pub use types::{Chart, ChartContext, ChartSeries, ChartType, DataPoint};
 

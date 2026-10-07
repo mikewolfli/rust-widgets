@@ -375,11 +375,15 @@ impl TransformState {
     }
 
     fn apply_to_color(&self, color: &Color) -> Color {
+        // `self.opacity` can be NaN when a caller fed a non-finite `SetOpacity` (see below), and
+        // `NaN.round() as u8` is 0, so the colour would silently vanish. Clamping first turns any
+        // out-of-range value into a defined endpoint and any NaN into 0, which is the honest
+        // "fully transparent" rather than "undefined turned into an arbitrary byte".
         Color {
             r: color.r,
             g: color.g,
             b: color.b,
-            a: (color.a as f32 * self.opacity).round() as u8,
+            a: (color.a as f32 * self.opacity).clamp(0.0, 255.0) as u8,
         }
     }
 }
@@ -497,7 +501,18 @@ impl BatchState {
                 None
             }
             BatchCommand::SetOpacity { opacity } => {
-                state.opacity *= opacity;
+                // A non-finite opacity is not a meaningful factor: `NaN` poisons every later
+                // multiplication and `Infinity` saturates every colour to one endpoint. Reject it at
+                // the source so the batch keeps its last good opacity instead of silently losing the
+                // colour for every command that follows.
+                if opacity.is_finite() {
+                    state.opacity = (state.opacity * opacity).clamp(0.0, 1.0);
+                } else {
+                    log::warn!(
+                        "[batch] SetOpacity({opacity}) rejected: opacity must be finite; keeping {}",
+                        state.opacity
+                    );
+                }
                 None
             }
         }

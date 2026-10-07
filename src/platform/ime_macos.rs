@@ -539,8 +539,14 @@ impl ImeBridge for MacOsImeBridge {
 /// offset.  If `byte_offset` points into the middle of a multi-byte sequence
 /// it is clamped to the nearest valid character boundary.
 fn byte_offset_to_utf16(s: &str, byte_offset: usize) -> usize {
-    let byte_offset = byte_offset.min(s.len());
-    // For exact counting we use the encode_utf16 approach:
+    // `s.len()` is a char boundary, so the initial clamp never splits a code point.
+    // What the old `.min(s.len())` alone missed is an offset *inside* the string that
+    // lands between a multi-byte code point's bytes: `s[..byte_offset]` then panics.
+    // Walk down to the nearest boundary, which is what the doc contract promises.
+    let mut byte_offset = byte_offset.min(s.len());
+    while byte_offset > 0 && !s.is_char_boundary(byte_offset) {
+        byte_offset -= 1;
+    }
     s[..byte_offset].encode_utf16().count()
 }
 
@@ -745,6 +751,26 @@ mod tests {
         assert_eq!(byte_offset_to_utf16("你好", 0), 0);
         assert_eq!(byte_offset_to_utf16("你好", 3), 1); // '你' is 3 bytes
         assert_eq!(byte_offset_to_utf16("你好", 6), 2);
+    }
+
+    /// N-P-02: an offset inside a multi-byte code point snaps down to a char boundary.
+    ///
+    /// `"你好"` is six bytes; offset `4` lands in the middle of the second code point (`好`
+    /// occupies bytes `3..6`). The old `.min(s.len())`-only clamp sliced `s[..4]`, which panics in
+    /// Rust because a `str` slice must start and end on a char boundary. The contract documented at
+    /// the function is "clamp to the nearest valid boundary", so the answer is the offset of `好`,
+    /// i.e. one UTF-16 code unit for `你`.
+    #[test]
+    fn test_byte_offset_to_utf16_inside_a_multibyte_codepoint() {
+        assert_eq!(byte_offset_to_utf16("你好", 1), 0);
+        assert_eq!(byte_offset_to_utf16("你好", 2), 0);
+        assert_eq!(byte_offset_to_utf16("你好", 4), 1);
+        assert_eq!(byte_offset_to_utf16("你好", 5), 1);
+        // Past the end still clamps to the whole string.
+        assert_eq!(byte_offset_to_utf16("你好", 99), 2);
+        // A four-byte code point (emoji) has three interior byte offsets.
+        assert_eq!(byte_offset_to_utf16("a\u{1F600}b", 2), 1);
+        assert_eq!(byte_offset_to_utf16("a\u{1F600}b", 5), 3);
     }
 
     #[test]

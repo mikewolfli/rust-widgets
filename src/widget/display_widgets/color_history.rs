@@ -62,6 +62,12 @@ impl ColorHistory {
         if self.colors.last() == Some(&color) {
             return;
         }
+        // A zero capacity means "keep nothing": `set_max_colors(0)` then `add_color`
+        // used to hit `remove(0)` on an empty vector and panic. A zero capacity is
+        // therefore a no-op, and the eviction is only reachable when there is a slot.
+        if self.max_colors == 0 {
+            return;
+        }
         if self.colors.len() >= self.max_colors {
             self.colors.remove(0);
         }
@@ -546,5 +552,32 @@ mod tests {
             ),
             "the selection is the theme's primary: {light}"
         );
+    }
+
+    /// N-CH-01: `add_color` with a zero capacity must not panic on an empty history.
+    ///
+    /// `set_max_colors(0)` then `add_color` hit `remove(0)` on an empty vector. A zero capacity
+    /// means "retain nothing", so the add is a no-op.
+    #[test]
+    fn add_color_with_zero_capacity_does_not_panic() {
+        let mut history = ColorHistory::new(Rect::new(0, 0, 200, 40));
+        history.set_max_colors(0);
+        assert_eq!(history.max_colors(), 0);
+        // Debug builds panic on the old `remove(0)` on an empty vector, so not panicking is the check.
+        history.add_color(Color::RED);
+        history.add_color(Color::BLUE);
+        assert!(history.colors().is_empty(), "a zero-capacity history keeps nothing");
+    }
+
+    /// A non-zero capacity still evicts the oldest entry at the cap.
+    #[test]
+    fn add_color_evicts_the_oldest_at_capacity() {
+        let mut history = ColorHistory::new(Rect::new(0, 0, 200, 40));
+        history.set_max_colors(2);
+        history.add_color(Color::RED);
+        history.add_color(Color::GREEN);
+        history.add_color(Color::BLUE);
+        assert_eq!(history.colors().len(), 2);
+        assert_eq!(history.colors(), &[Color::GREEN, Color::BLUE], "the oldest entry was evicted");
     }
 }

@@ -438,12 +438,25 @@ impl RiveWidget {
 
         // Assume 60fps for the Rive animation, 16.67ms per tick.
         let frame_delay = 16u64;
-        self.frame_timer += delta_ms;
+        // `saturating_add`: `frame_timer` is a `u64` fed by a public `tick(delta_ms)`. A plain `+=`
+        // could overflow and wrap to a *small* value, and the `while` below would then run for the
+        // wrapped remainder — potentially billions of iterations.
+        self.frame_timer = self.frame_timer.saturating_add(delta_ms);
+
+        // How many whole frames elapsed. Computed once rather than by decrementing in the loop, so
+        // the work is proportional to the frames actually consumed (bounded below) instead of to
+        // whatever magnitude the timer reached.
+        let elapsed_frames = self.frame_timer / frame_delay;
+        self.frame_timer %= frame_delay;
 
         let mut completed = false;
-        while self.frame_timer >= frame_delay {
-            self.frame_timer -= frame_delay;
-            let step = 1.0 / 60.0; // 1 frame at 60fps as progress fraction
+        // A single `tick` cannot meaningfully advance more than this many frames; a huge `delta_ms`
+        // is clamped so one call cannot spin for an unbounded time. Any excess is simply dropped
+        // (the animation is caught up, not replayed frame by frame).
+        const MAX_FRAMES_PER_TICK: u64 = 600;
+        let frames_to_advance = elapsed_frames.min(MAX_FRAMES_PER_TICK);
+        let step = 1.0 / 60.0; // 1 frame at 60fps as progress fraction
+        for _ in 0..frames_to_advance {
             self.animation_progress += step;
 
             if self.animation_progress >= 1.0 {
@@ -1151,5 +1164,25 @@ mod tests {
         // At t=0.25, sin(pi/2)=1 -> scale = 1.5, so w=60
         let (w25, _h25) = shape.size_at(0.25);
         assert!((w25 - 60.0).abs() < 0.01);
+    }
+
+    /// N-V-07: a huge `delta_ms` must not spin an unbounded frame-consumption loop.
+    ///
+    /// `frame_timer += delta_ms` used to overflow to a small/large wrapped value that a `while` loop
+    /// then consumed one 16ms frame at a time, potentially billions of iterations. The frame count is
+    /// now computed once and capped, so the call returns promptly.
+    #[test]
+    fn a_huge_tick_does_not_loop_unbounded() {
+        let mut rive = RiveWidget::new(Rect::new(0, 0, 100, 100));
+        rive.load_animation("wave");
+        rive.play();
+        // If the old `while` loop still ran per-frame, this call would take a very long time; the
+        // capped implementation returns immediately. Debug builds also panicked on the wrapping `+=`.
+        let completed = rive.tick(u64::MAX / 2);
+        // The widget is still in a sane state afterwards.
+        let svg = crate::widget::svg::render_to_svg(&mut rive);
+        assert!(svg.starts_with("<svg"));
+        // `completed` may be true or false depending on loop_count; touching it proves the call ran.
+        let _ = completed;
     }
 }

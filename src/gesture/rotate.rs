@@ -25,8 +25,10 @@ impl RotateGesture {
     }
 
     fn angle_between(a: Point, b: Point) -> f32 {
-        let dx = (b.x - a.x) as f32;
-        let dy = (b.y - a.y) as f32;
+        // Widen before subtracting: `i32` extremes would overflow the difference, and the angle is
+        // meant to describe the gesture, not the coordinate space's edge.
+        let dx = b.x as i64 as f32 - a.x as i64 as f32;
+        let dy = b.y as i64 as f32 - a.y as i64 as f32;
         dy.atan2(dx)
     }
 

@@ -1303,8 +1303,12 @@ impl ChartWidget {
             Some(data) if !data.is_empty() => data,
             _ => return,
         };
-        let total: f64 = data.iter().filter(|value| **value > 0.0).sum();
-        if total <= 0.0 {
+        // Only finite, positive values contribute. `filter(|v| **v > 0.0)` let `+Inf` into the total
+        // (and `NaN` is not `> 0.0`, so it was excluded from the sum but *not* from the per-slice
+        // loop below, where `val / total` on a `NaN` produced a NaN angle and a degenerate wedge).
+        // Filtering `is_finite()` here and at the loop keeps the two consistent.
+        let total: f64 = data.iter().copied().filter(|v| v.is_finite() && *v > 0.0).sum();
+        if !total.is_finite() || total <= 0.0 {
             return;
         }
         let cx = rect.x + rect.width as i32 / 2;
@@ -1312,9 +1316,9 @@ impl ChartWidget {
         let radius = (rect.width.min(rect.height) as i32 / 2).saturating_sub(10).max(10);
         let mut start_angle = -std::f64::consts::FRAC_PI_2;
         for (i, &val) in data.iter().enumerate() {
-            // A non-positive wedge has no angle; skipping it keeps the angle sum
-            // equal to the sum of the positive values the total was taken over.
-            if val <= 0.0 {
+            // A non-finite or non-positive wedge has no angle; skipping it keeps the
+            // angle sum equal to the sum of the positive values the total was taken over.
+            if !val.is_finite() || val <= 0.0 {
                 continue;
             }
             let slice_angle = 2.0 * std::f64::consts::PI * (val / total);
@@ -1843,5 +1847,22 @@ mod tests {
         assert!(in_range < 5);
         chart.set_data(vec![1.0; 8]);
         assert_eq!(chart.hovered_index(), Some(in_range), "an in-range hover is kept");
+    }
+
+    /// N-CH-03: a pie chart with `NaN`/`+Inf` slices draws without producing NaN angles.
+    ///
+    /// `filter(|v| **v > 0.0)` admitted `+Inf` into the total, and the per-slice guard `val <= 0.0`
+    /// is false for `NaN`, so a `NaN` slice reached `val / total` and produced a NaN angle and a
+    /// degenerate wedge. Rendering must complete and the output must be parseable.
+    #[test]
+    fn pie_chart_with_non_finite_slices_renders_no_nan_angles() {
+        let mut chart = ChartWidget::new(Rect::new(0, 0, 200, 120));
+        chart.set_chart_type(ChartType::Pie);
+        chart.set_data(vec![f64::NAN, 1.0, f64::INFINITY, 2.0, -1.0]);
+        // Debug builds would have produced `NaN as i32 == 0` coordinates; reaching here is the check.
+        let svg = crate::widget::svg::render_widget_to_svg(&mut chart, Rect::new(0, 0, 200, 120));
+        assert!(svg.starts_with("<svg"));
+        assert!(!svg.contains("NaN"), "no NaN may reach the rendered geometry: {svg}");
+        assert!(!svg.contains("inf"), "no infinity may reach the rendered geometry");
     }
 }

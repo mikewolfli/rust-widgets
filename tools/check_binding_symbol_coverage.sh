@@ -29,6 +29,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 . "$ROOT_DIR/tools/lib_python.sh"
 . "$ROOT_DIR/tools/lib_cargo_cache.sh"
+# `lib_timeout.sh` provides `rw_run_bounded`, used below to bound the build. Sourced explicitly
+# (also reachable transitively via `lib_python.sh`) so the dependency is visible at the call site.
+. "$ROOT_DIR/tools/lib_timeout.sh"
 
 "$PYTHON" tools/check_binding_symbol_coverage.py "$@"
 
@@ -44,7 +47,7 @@ fi
 if [[ ! -f "$LIB_PATH" ]]; then
   echo ""
   echo "[runtime] building the shared library for the binding smoke test"
-  cargo build --lib --no-default-features --features desktop >/dev/null 2>&1 || {
+  rw_run_bounded 900 cargo build --lib --no-default-features --features desktop >/dev/null 2>&1 || {
     echo "❌ runtime half: could not build the shared library" >&2
     exit 1
   }

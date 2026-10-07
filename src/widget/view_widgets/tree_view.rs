@@ -226,7 +226,12 @@ impl TreeView {
     /// which is exactly the defect `table_widget` records. One function, three readers.
     pub fn node_row_rect(&self, index: usize) -> Option<Rect> {
         let content = ControlMetrics::band_inset(self.base.geometry(), TREE_INSET);
-        let y = content.y + TREE_ROW_HEIGHT * index as i32;
+        // `index as i32` narrowed a `usize` above `i32::MAX` to a negative row offset, and the
+        // multiplication then wrapped — a row that scrolls nowhere near the control could map onto a
+        // visible position. Reject an index that cannot be represented before multiplying; such an
+        // index is far past any renderable row, so `None` is the honest answer.
+        let row_offset = i32::try_from(index).ok()?;
+        let y = content.y + TREE_ROW_HEIGHT.saturating_mul(row_offset);
         // A row that would extend past the content box is not shown, matching the draw loop's own
         // bound so the row the pointer can hit is exactly the row that was painted.
         if y + TREE_ROW_HEIGHT > content.y + content.height as i32 {
@@ -649,5 +654,20 @@ mod tests {
         view.handle_event(&Event::MouseLeave { pos: crate::core::Point::new(500, 500) });
         assert_eq!(view.hovered_node, None, "leaving clears the row rather than latching it");
         assert_eq!(view.widget_state(), WidgetState::Normal);
+    }
+
+    /// N-V-08: an index that cannot be a row offset is refused, not narrowed and multiplied.
+    ///
+    /// `TREE_ROW_HEIGHT * index as i32` turned a `usize` above `i32::MAX` into a negative offset and
+    /// then wrapped the product, so an absurd index could map onto a visible row. It must answer
+    /// `None` instead.
+    #[test]
+    fn an_out_of_range_row_index_is_refused() {
+        let view = TreeView::new(Rect::new(0, 0, 200, 200));
+        // The first row exists when there are nodes; an index far beyond `i32::MAX` never can.
+        assert_eq!(view.node_row_rect(usize::MAX), None);
+        assert_eq!(view.node_row_rect(i32::MAX as usize + 1), None);
+        // A small, in-view index still resolves.
+        assert!(view.node_row_rect(0).is_some());
     }
 }

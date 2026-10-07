@@ -20,7 +20,17 @@ PROFILE="desktop"
 
 mkdir -p themes
 
-cat > /tmp/rw_generate_themes.rs << 'RUST'
+# Both temporary files are created with `mktemp` rather than at a fixed `/tmp/rw_generate_themes.rs`
+# and `tests/tmp_generate_themes.rs`. The fixed paths were racy (a concurrent run clobbers the file
+# the other is compiling) and the `tests/` one left a dirty file behind on an abnormal exit. The
+# generated test must still live under `tests/` so cargo discovers it, so the `mktemp` file is
+# written into `tests/` (its name is unique), and the trap removes it on every exit path.
+TMP_RS="$(mktemp tests/tmp_generate_themes_XXXXXX.rs)"
+# cargo derives the test target name from the file stem; strip the leading `tmp_` and the `.rs`.
+TEST_NAME="$(basename "$TMP_RS" .rs)"
+trap 'rm -f "$TMP_RS"' EXIT
+
+cat > "$TMP_RS" << 'RUST'
 //! Fixture generator. Writes each built-in preset through the same
 //! `save_theme` the library exposes, so the output is exactly what the loader
 //! will accept.
@@ -40,7 +50,4 @@ fn generate() {
 }
 RUST
 
-cp /tmp/rw_generate_themes.rs tests/tmp_generate_themes.rs
-trap 'rm -f tests/tmp_generate_themes.rs' EXIT
-
-cargo test --no-default-features --features "$PROFILE" --test tmp_generate_themes -- --nocapture
+cargo test --no-default-features --features "$PROFILE" --test "$TEST_NAME" -- --nocapture

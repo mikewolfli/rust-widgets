@@ -401,7 +401,12 @@ impl HolographicKeyboardDetector {
 
     /// Compute a confidence score from the release depth.
     fn compute_confidence(depth: f32, release_threshold: f32) -> f32 {
-        if depth <= 0.0 {
+        // A zero (or negative/non-finite) threshold would make `depth / release_threshold`
+        // divide by zero: `depth / 0.0 == inf`, `inf.min(2.0) == 2.0`, and every release — no
+        // matter how shallow — would be scored `1.0` (maximum confidence). A threshold of
+        // zero is not a meaningful configuration (it claims any lift is a full release), so it
+        // is reported as "no confidence" rather than silently polarising to High.
+        if depth <= 0.0 || !release_threshold.is_finite() || release_threshold <= 0.0 {
             return 0.0;
         }
         let ratio = depth / release_threshold;
@@ -433,6 +438,24 @@ mod tests {
     fn detector_starts_idle() {
         let detector = HolographicKeyboardDetector::new();
         assert_eq!(detector.state, FingerState::Idle);
+    }
+
+    /// N-P-03: a zero release threshold must not polarise every lift to full confidence.
+    ///
+    /// `compute_confidence` divided by the threshold unconditionally, so `depth / 0.0` was
+    /// `+inf` and `inf.min(2.0) / 2.0` clamped to `1.0` — every release, however shallow, scored
+    /// maximum confidence with no signal that the configuration was meaningless. A zero (or
+    /// non-finite/negative) threshold now reports zero confidence instead.
+    #[test]
+    fn zero_release_threshold_reports_no_confidence() {
+        assert_eq!(HolographicKeyboardDetector::compute_confidence(20.0, 0.0), 0.0);
+        assert_eq!(HolographicKeyboardDetector::compute_confidence(20.0, -1.0), 0.0);
+        assert_eq!(HolographicKeyboardDetector::compute_confidence(20.0, f32::NAN), 0.0);
+        assert_eq!(HolographicKeyboardDetector::compute_confidence(20.0, f32::INFINITY), 0.0);
+        // A valid threshold still scores by depth.
+        assert_eq!(HolographicKeyboardDetector::compute_confidence(20.0, 15.0), 1.0);
+        assert!(HolographicKeyboardDetector::compute_confidence(5.0, 15.0) < 1.0);
+        assert_eq!(HolographicKeyboardDetector::compute_confidence(0.0, 15.0), 0.0);
     }
 
     #[test]

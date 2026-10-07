@@ -57,6 +57,36 @@ fn writer_stamps_page_number_footer_when_enabled() {
     assert!(text.contains("(Page 1/2)"));
     assert!(text.contains("(Page 2/2)"));
 }
+
+/// N-M-08: a rejected `reorder_pages` leaves the document's pages intact.
+///
+/// The old implementation drained `self.pages` into a local before validating the requested order, so
+/// a duplicate index (`[0, 0]` on a two-page document) returned `false` *after* emptying the document.
+/// The page count must be unchanged after a failed reorder.
+#[test]
+fn reorder_pages_failure_keeps_the_original_pages() {
+    let writer = PdfWriter::new();
+    let mut doc = writer.create_document(Size { width: 595, height: 842 });
+    doc.add_page(Size { width: 595, height: 842 });
+    let before = doc.page_count();
+    assert_eq!(before, 2, "the fixture starts with two pages");
+
+    // A duplicate index is not a permutation: the call must fail and change nothing.
+    assert!(!doc.reorder_pages(&[0, 0]), "a duplicate index must be rejected");
+    assert_eq!(doc.page_count(), before, "a failed reorder must not lose pages");
+
+    // An out-of-range index likewise.
+    assert!(!doc.reorder_pages(&[0, 2]), "an out-of-range index must be rejected");
+    assert_eq!(doc.page_count(), before, "a failed reorder must not lose pages");
+
+    // A wrong length is rejected before any work.
+    assert!(!doc.reorder_pages(&[0]), "a wrong-length order must be rejected");
+    assert_eq!(doc.page_count(), before);
+
+    // A valid permutation succeeds and still has both pages.
+    assert!(doc.reorder_pages(&[1, 0]), "a valid permutation must succeed");
+    assert_eq!(doc.page_count(), before);
+}
 #[test]
 fn writer_applies_custom_page_number_layout() {
     let writer = PdfWriter::new();

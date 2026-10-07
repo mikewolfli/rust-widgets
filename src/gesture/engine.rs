@@ -215,10 +215,39 @@ crate::impl_default_via_new!(GestureEngine);
 // ────────────────────────────────────────────
 
 /// Euclidean distance between two points.
+///
+/// The subtraction is widened to `i64` before it happens: `Point` holds `i32`, and a bare `a.x -
+/// b.x` on coordinates near the `i32` extremes overflows (aborting in a debug build, wrapping to a
+/// wrong — often tiny — distance in release). Widening and then converting to `f32` is exact for
+/// the whole `i32` domain.
 pub(crate) fn distance(a: Point, b: Point) -> f32 {
-    let dx = (a.x - b.x) as f32;
-    let dy = (a.y - b.y) as f32;
+    let dx = (a.x as i64 - b.x as i64) as f32;
+    let dy = (a.y as i64 - b.y as i64) as f32;
     (dx * dx + dy * dy).sqrt()
+}
+
+/// The per-axis displacement from `from` to `to`, computed without overflow.
+///
+/// Every recognizer that reports a drag delta did the subtraction inline as `to.x - from.x` on two
+/// `i32`s, so a gesture between coordinates near the `i32` extremes overflowed (debug abort, release
+/// wrap) even though the *reported* delta fits comfortably in `i32` for any realistic gesture. The
+/// subtraction is widened to `i64` and saturated back, so a pathological pair yields a bounded delta
+/// rather than a wrapped one. One helper because this is one relationship, stated in five places
+/// before.
+pub(crate) fn point_delta(from: Point, to: Point) -> (i32, i32) {
+    let dx = (to.x as i64 - from.x as i64).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+    let dy = (to.y as i64 - from.y as i64).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+    (dx, dy)
+}
+
+/// The per-axis **absolute** displacement between two points, without overflow.
+///
+/// Equivalent to `(to.x - from.x).abs()` widened to `u32`, but it cannot overflow and — unlike
+/// `i32::abs` — cannot panic on `i32::MIN` (whose negation is not representable).
+pub(crate) fn point_delta_abs(from: Point, to: Point) -> (u32, u32) {
+    let dx = (to.x as i64 - from.x as i64).unsigned_abs().min(u32::MAX as u64) as u32;
+    let dy = (to.y as i64 - from.y as i64).unsigned_abs().min(u32::MAX as u64) as u32;
+    (dx, dy)
 }
 
 #[cfg(test)]
@@ -603,5 +632,39 @@ mod tests {
             }
             other => panic!("a quarter-turn rotation must produce Rotate, got {other:?}"),
         }
+    }
+
+    /// N-K-04: `distance` is exact across the whole `i32` domain instead of overflowing.
+    ///
+    /// The old body subtracted two `i32` coordinates before widening, so points near the extremes
+    /// aborted in a debug build (and wrapped to a tiny distance in release). The widened form
+    /// computes the true separation.
+    #[test]
+    fn distance_is_total_across_the_i32_domain() {
+        let a = Point::new(i32::MIN, i32::MIN);
+        let b = Point::new(i32::MAX, i32::MAX);
+        // The diagonal is `sqrt(2) * (2^32 - 1)`; the important part is that it is finite, large,
+        // and non-zero, which a wrapped difference could not be.
+        let d = distance(a, b);
+        assert!(d.is_finite() && d > 1.0e9, "distance overflowed to {d}");
+
+        // A zero-length distance is still zero.
+        assert_eq!(distance(Point::new(5, 7), Point::new(5, 7)), 0.0);
+        // A 3-4-5 triangle is still exact.
+        assert!((distance(Point::new(0, 0), Point::new(3, 4)) - 5.0).abs() < 1.0e-6);
+    }
+
+    /// N-K-05 / N-K-06: `point_delta` and `point_delta_abs` do not overflow.
+    #[test]
+    fn point_delta_helpers_saturate_instead_of_wrapping() {
+        let (dx, dy) = point_delta(Point::new(i32::MIN, 0), Point::new(i32::MAX, 0));
+        assert_eq!(dx, i32::MAX, "the difference must saturate, not wrap to -1");
+        assert_eq!(dy, 0);
+
+        // `abs` of a full-range delta must not panic on the unrepresentable `i32::MIN` negation.
+        let (ax, _) = point_delta_abs(Point::new(0, 0), Point::new(i32::MIN, 0));
+        assert_eq!(ax, 1u32 << 31, "`|-2^31|` is representable as a `u32`");
+        let (bx, _) = point_delta_abs(Point::new(i32::MAX, 0), Point::new(i32::MIN, 0));
+        assert_eq!(bx, u32::MAX, "the full-range span saturates at u32::MAX");
     }
 }

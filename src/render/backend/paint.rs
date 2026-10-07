@@ -5,7 +5,9 @@
 use super::batch::BatchState;
 use crate::compat::vec;
 use crate::core::{Color, Font, Size};
-use crate::render::pipeline::set_pixel;
+use crate::render::pipeline::{
+    sat_add_i32, sat_mul_i32, sat_neg_i32, set_pixel, u32_to_i32_saturating,
+};
 use crate::render::{
     RenderCommand, ShapedText, SoftwareRenderConfig, SoftwareSurface, TextMetrics,
 };
@@ -201,12 +203,18 @@ impl PaintBackend for SoftwarePaintBackend {
                 self.surface.draw_path(points, *closed, *color, *filled, *width);
             }
             RenderCommand::BoxShadow { rect, color, offset_x, offset_y, blur_radius, spread } => {
-                // Render shadow rect with offset and optional spread
+                // Render shadow rect with offset and optional spread. Every term is `i32` and the
+                // operands come from a public command, so the arithmetic is saturating: a wrapped
+                // `spread` used to flip a large shadow into a tiny one (or a negative width that
+                // `.max(0)` silently collapsed), which is a wrong picture rather than a rejected one.
                 let spread_rect = crate::core::Rect::new(
-                    rect.x + offset_x - *spread,
-                    rect.y + offset_y - *spread,
-                    (rect.width as i32 + *spread * 2).max(0) as u32,
-                    (rect.height as i32 + *spread * 2).max(0) as u32,
+                    sat_add_i32(sat_add_i32(rect.x, *offset_x), sat_neg_i32(*spread)),
+                    sat_add_i32(sat_add_i32(rect.y, *offset_y), sat_neg_i32(*spread)),
+                    sat_mul_i32(*spread, 2).saturating_add(u32_to_i32_saturating(rect.width)).max(0)
+                        as u32,
+                    sat_mul_i32(*spread, 2)
+                        .saturating_add(u32_to_i32_saturating(rect.height))
+                        .max(0) as u32,
                 );
                 let shadow_color =
                     Color::rgba(color.r, color.g, color.b, (color.a as f32 * 0.5) as u8);

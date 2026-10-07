@@ -306,6 +306,45 @@ pub(crate) fn pixel_bytes_len(size: Size) -> usize {
     size.width.saturating_mul(size.height).saturating_mul(4) as usize
 }
 
+/// Offset a coordinate by a signed delta without wrapping.
+///
+/// Public `RenderCommand` fields (shadow offsets, spreads, stroke insets) are `i32`, so a caller can
+/// legally hand in a combination whose sum leaves `i32`'s range. That used to be a debug panic and a
+/// release wrap; both are wrong answers, and on a render hot path the caller has no way to report
+/// them. Saturating keeps the sign and the direction of the offset — the shadow still lies the way
+/// it was asked to — instead of flipping to the far edge of the coordinate space.
+pub(crate) fn sat_add_i32(a: i32, b: i32) -> i32 {
+    a.saturating_add(b)
+}
+
+/// Negate an offset without wrapping; `i32::MIN` saturates to `i32::MAX`.
+///
+/// The spread is subtracted from the rect's origin, and `-i32::MIN` is itself out of range — the one
+/// value a plain unary minus cannot represent. Saturating keeps the sign flip meaningful (the shadow
+/// moves the way the spread says) instead of aborting in a debug build.
+pub(crate) fn sat_neg_i32(value: i32) -> i32 {
+    value.saturating_neg()
+}
+
+/// `value * factor` in `i32` space, saturating instead of wrapping.
+///
+/// `factor` is the fixed doubling used by spread rects and inner bevels; `value` is a public `i32`,
+/// so the product can leave range. Saturating multiplication preserves the sign, which is what lets
+/// the caller's subsequent `.max(0)` clamp mean "collapse to zero" rather than "wrap to a huge
+/// positive rectangle".
+pub(crate) fn sat_mul_i32(value: i32, factor: i32) -> i32 {
+    value.saturating_mul(factor)
+}
+
+/// Widen a `u32` extent to `i32`, saturating at `i32::MAX`.
+///
+/// Rect dimensions are `u32` but every consumer here arithmetic's in `i32`. A bare `as i32` turns an
+/// extent above `i32::MAX` negative, which a later `.max(0)` then reports as "zero size" even though
+/// the caller asked for the largest one. Clamping keeps the magnitude honestly large.
+pub(crate) fn u32_to_i32_saturating(value: u32) -> i32 {
+    i32::try_from(value).unwrap_or(i32::MAX)
+}
+
 /// BLUE23 §0A.2 — the text-coverage boundary, asserted where it is decided.
 ///
 /// The crate-level docs claim "the default build draws Latin/ASCII only" and explain
@@ -611,10 +650,10 @@ pub fn blend_pixel_with_mode(
     }
     let src_a = (color.a as f32 / 255.0) * coverage.clamp(0.0, 1.0);
     if src_a <= 0.0 {
-        frame[idx] = 0;
-        frame[idx + 1] = 0;
-        frame[idx + 2] = 0;
-        frame[idx + 3] = 0;
+        // A fully transparent source contributes nothing in source-over, so the destination is left
+        // untouched. This used to zero the pixel, which turned "draw nothing" into "erase whatever
+        // was already there" -- a caller drawing a transparent colour over an opaque background lit
+        // a black hole through it. Erasing is a separate, explicit operation; compositing is not it.
         return;
     }
     let dst = &mut frame[idx..idx + 4];

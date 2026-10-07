@@ -82,8 +82,11 @@ impl Sparkline {
     }
 
     /// Sets the data values to display. Clears any previous values.
+    ///
+    /// Non-finite values are dropped: a `NaN` sample has no honest baseline position and an infinite
+    /// one stretches the auto-range so every real sample collapses onto one pixel.
     pub fn set_data(&mut self, values: Vec<f64>) {
-        self.data = values;
+        self.data = values.into_iter().filter(|value| value.is_finite()).collect();
         self.base.request_redraw();
     }
 
@@ -144,7 +147,13 @@ impl Sparkline {
     }
 
     /// Adds a single value to the data series.
+    ///
+    /// A non-finite value is refused; see [`Self::set_data`].
     pub fn add_value(&mut self, value: f64) {
+        if !value.is_finite() {
+            log::warn!("[sparkline] ignoring the non-finite value {value}");
+            return;
+        }
         self.data.push(value);
         self.base.request_redraw();
     }
@@ -383,5 +392,20 @@ mod tests {
         let mut sl = Sparkline::new(Rect::new(0, 0, 80, 24));
         sl.handle_event(&Event::MouseMove { pos: Point::new(5, 5) });
         sl.handle_event(&Event::MousePress { pos: Point::new(5, 5), button: 1, modifiers: 0 });
+    }
+
+    /// N-CH-04: non-finite values are dropped at the data entry.
+    #[test]
+    fn non_finite_sparkline_values_are_dropped_at_entry() {
+        let mut sl = Sparkline::new(Rect::new(0, 0, 80, 24));
+        sl.set_data(vec![1.0, f64::NAN, 2.0, f64::INFINITY, 3.0]);
+        assert_eq!(sl.data(), &[1.0, 2.0, 3.0], "only finite values survive");
+
+        let before = sl.data().len();
+        sl.add_value(f64::NAN);
+        sl.add_value(f64::NEG_INFINITY);
+        assert_eq!(sl.data().len(), before, "add_value must refuse non-finite input");
+        sl.add_value(4.0);
+        assert_eq!(sl.data().len(), before + 1);
     }
 }

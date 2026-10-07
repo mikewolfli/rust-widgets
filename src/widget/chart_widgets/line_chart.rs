@@ -31,6 +31,7 @@ use crate::widget::chart_widgets::adapter::ChartContextAdapter;
 use crate::widget::chart_widgets::charts::{
     compute_cartesian_layout, draw_cartesian_axes, draw_x_ticks, draw_y_ticks, CartesianLayout,
 };
+use crate::widget::chart_widgets::{finite_samples, is_finite_sample};
 // Shared with the engine-backed path so the `not(feature = "chart")` fallback cannot
 // reintroduce the light-chart literals the engine path moved off.
 #[cfg(not(feature = "chart"))]
@@ -91,8 +92,12 @@ impl LineChart {
     }
 
     /// Sets the data points to display. Clears any previous data.
+    ///
+    /// Non-finite samples (`NaN`, `±Inf`) have no honest pixel position and are dropped; see
+    /// [`is_finite_sample`](crate::widget::chart_widgets::is_finite_sample). A lone bad sample would
+    /// otherwise stretch the auto-range and squash every real point.
     pub fn set_data(&mut self, points: Vec<(f64, f64)>) {
-        self.data = points;
+        self.data = finite_samples(points);
         self.base.request_redraw();
     }
 
@@ -176,7 +181,14 @@ impl LineChart {
     }
 
     /// Adds a single data point to the chart.
+    ///
+    /// A non-finite point is refused (see [`Self::set_data`]) so the chart never holds a sample it
+    /// cannot place on the plot.
     pub fn add_point(&mut self, x: f64, y: f64) {
+        if !is_finite_sample((x, y)) {
+            log::warn!("[line_chart] ignoring the non-finite point ({x}, {y})");
+            return;
+        }
         self.data.push((x, y));
         self.base.request_redraw();
     }
@@ -770,5 +782,34 @@ mod tests {
             with_grid > without_grid,
             "grid must add lines through the shared engine (off={without_grid}, on={with_grid})"
         );
+    }
+
+    /// N-CH-04: non-finite samples are dropped at the data entry.
+    ///
+    /// A `NaN` y-coordinate used to map through `f64 as i32` to pixel `0`, landing on the plot edge
+    /// as if it were a real minimum, and a lone `+Inf` stretched the auto-range so every genuine
+    /// point collapsed onto one pixel. Both are dropped instead.
+    #[test]
+    fn non_finite_points_are_dropped_at_entry() {
+        let mut lc = LineChart::new(Rect::new(0, 0, 200, 100));
+        lc.set_data(vec![
+            (0.0, 1.0),
+            (1.0, f64::NAN),
+            (2.0, f64::INFINITY),
+            (3.0, f64::NEG_INFINITY),
+            (4.0, 2.0),
+        ]);
+        assert_eq!(lc.data().len(), 2, "only the two finite points survive");
+        assert_eq!(lc.data()[0], (0.0, 1.0));
+        assert_eq!(lc.data()[1], (4.0, 2.0));
+
+        // `add_point` refuses a non-finite point too.
+        let before = lc.data().len();
+        lc.add_point(f64::NAN, 3.0);
+        lc.add_point(3.0, f64::NAN);
+        assert_eq!(lc.data().len(), before, "add_point must refuse non-finite input");
+        // And a finite one is still accepted.
+        lc.add_point(5.0, 5.0);
+        assert_eq!(lc.data().len(), before + 1);
     }
 }

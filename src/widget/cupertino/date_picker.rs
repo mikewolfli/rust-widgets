@@ -145,7 +145,13 @@ impl CupertinoDatePicker {
     /// Determines which column (0=year, 1=month, 2=day) contains the given x-coordinate.
     fn column_at(&self, x: i32) -> usize {
         let rect = self.geometry();
+        // A control narrower than three pixels has a `col_width` of `0`, and `rel_x / 0` panicked.
+        // Such a control cannot show three distinct columns anyway, so every x maps to the first
+        // column rather than dividing by zero.
         let col_width = rect.width / 3;
+        if col_width == 0 {
+            return 0;
+        }
         if x < rect.x {
             return 0;
         }
@@ -155,17 +161,28 @@ impl CupertinoDatePicker {
     }
 
     /// Returns the range of years available for selection.
+    ///
+    /// # Why the bounds are ordered
+    ///
+    /// `set_date_range` accepts its two ends independently, so a caller can pass a `max` year below
+    /// the `min` year (directly, or by `unwrap_or` defaults against one bound). `min_y..=max_y` with
+    /// `min_y > max_y` is an *empty* `RangeInclusive` that panics when first iterated — and this is
+    /// called from the render loop, so a bad range crashed the frame. Ordering the two ends keeps the
+    /// range a legal (possibly single-year) interval, which is the honest reading of an inverted
+    /// request.
     fn year_range(&self) -> std::ops::RangeInclusive<i32> {
         let min_y = self.min_date.map(|d| d.0).unwrap_or(1900);
         let max_y = self.max_date.map(|d| d.0).unwrap_or(2100);
-        min_y..=max_y
+        min_y.min(max_y)..=min_y.max(max_y)
     }
 
     /// Returns the constraint for the current selection context.
     fn date_constraint(&self) -> DateConstraint {
         let min_y = self.min_date.map(|d| d.0).unwrap_or(1900);
         let max_y = self.max_date.map(|d| d.0).unwrap_or(2100);
-        DateConstraint { min_year: min_y, max_year: max_y }
+        // Same ordering as `year_range`, so a consumer that iterates this constraint cannot see an
+        // inverted interval the render path has already normalised.
+        DateConstraint { min_year: min_y.min(max_y), max_year: min_y.max(max_y) }
     }
 }
 
@@ -711,5 +728,30 @@ mod tests {
             svg.contains("height=\"32\""),
             "a row must be PICKER_ROW_HEIGHT tall, not a fraction of the panel"
         );
+    }
+
+    /// N-V-01: an inverted date range must not build an empty (panicking) `RangeInclusive`.
+    ///
+    /// `set_date_range` takes its two ends independently, so a `max` year below the `min` year is
+    /// reachable. The old `min_y..=max_y` then panicked the moment the render loop iterated it.
+    #[test]
+    fn inverted_date_range_renders_without_panicking() {
+        let mut picker = make_picker();
+        // `max` (2020) is *before* `min` (2030): an inverted request.
+        picker.set_date_range(Some((2030, 1, 1)), Some((2020, 12, 31)));
+        // The render loop iterates the year range; a panic here is the defect.
+        let svg = crate::widget::svg::render_to_svg(&mut picker);
+        assert!(svg.starts_with("<svg"));
+    }
+
+    /// N-V-02: a control narrower than three pixels must not divide by zero in `column_at`.
+    #[test]
+    fn a_very_narrow_picker_hit_test_does_not_divide_by_zero() {
+        let mut picker = CupertinoDatePicker::new(Rect::new(0, 0, 2, 100));
+        // A click anywhere would have divided by the zero column width.
+        picker.handle_event(&crate::event::Event::mouse_press(1, 50, 1));
+        // Reaching here without a panic is the assertion; the control also still renders.
+        let svg = crate::widget::svg::render_to_svg(&mut picker);
+        assert!(svg.starts_with("<svg"));
     }
 }

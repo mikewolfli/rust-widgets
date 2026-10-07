@@ -151,8 +151,11 @@ pub fn thread_budget_ratio() -> Option<f32> {
 /// and so that a spooler which rejects the job is reported instead of looking like
 /// a successful submission.
 ///
-/// The wait is unbounded on purpose: `lpr` talking to a slow CUPS server can take
-/// seconds, and a timeout would reintroduce the exact race this exists to remove.
+/// The wait is **bounded** so a spooler that never exits cannot block the calling
+/// thread forever (principle #58). The bound is generous — `lpr` talking to a slow
+/// CUPS server can take seconds — but it exists, and a timeout is reported as a
+/// failure rather than as a successful submission so the caller never deletes the
+/// job file while the spooler might still read it.
 ///
 /// Windows uses the PowerShell spooler instead and does not call this.
 pub fn spawn_print_job(job_file: &std::path::Path) -> Result<(), String> {
@@ -182,6 +185,15 @@ pub fn spawn_print_job(job_file: &std::path::Path) -> Result<(), String> {
     }
 }
 
+/// How long a single spooler attempt may run before it is treated as hung.
+///
+/// Chosen to be far above any realistic `lpr`/`lp` round-trip (which is normally well
+/// under a second) while still being finite, so a wedged spooler cannot pin the caller.
+const SPOOLER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How often the bounded wait polls the child for completion.
+const SPOOLER_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
+
 /// Why a single spooler attempt did not produce a printed job.
 #[derive(Debug)]
 enum SpoolerFailure {
@@ -209,15 +221,59 @@ impl fmt::Display for SpoolerFailure {
 ///
 /// Split from [`spawn_print_job`] so the waiting behaviour can be tested against a
 /// stand-in program without mutating the process-global `PATH`.
+///
+/// # Why this does not use `Command::output()`
+///
+/// `output()` waits without a bound, so a spooler that never exits blocks the calling
+/// thread forever — and this runs on the UI path of a print request. The child is
+/// spawned with piped stdio, then polled against [`SPOOLER_TIMEOUT`]; a child that
+/// outlives the timeout is killed and reported so it can never outlive the job file.
 fn run_spooler(program: &str, job_file: &std::path::Path) -> Result<(), SpoolerFailure> {
-    let output = std::process::Command::new(program).arg(job_file).output().map_err(|error| {
-        SpoolerFailure::Unavailable(format!(
-            "spooler command '{program}' could not be spawned: {error} (check that it is \
+    let mut child = std::process::Command::new(program)
+        .arg(job_file)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            SpoolerFailure::Unavailable(format!(
+                "spooler command '{program}' could not be spawned: {error} (check that it is \
                  installed and on PATH)"
-        ))
+            ))
+        })?;
+
+    let deadline = std::time::Instant::now() + SPOOLER_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    // The child never exited. Reap it so the job file the caller is about
+                    // to delete is not still open, and report the timeout honestly rather
+                    // than as a submission.
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(SpoolerFailure::Rejected(format!(
+                        "{program}: timed out after {}s without exiting; the job was not \
+                         confirmed as submitted",
+                        SPOOLER_TIMEOUT.as_secs()
+                    )));
+                }
+                std::thread::sleep(SPOOLER_POLL_INTERVAL);
+            }
+            Err(error) => {
+                return Err(SpoolerFailure::Rejected(format!(
+                    "{program}: could not wait for the spooler: {error}"
+                )));
+            }
+        }
+    };
+
+    let output = child.wait_with_output().map_err(|error| {
+        SpoolerFailure::Rejected(format!("{program}: could not read spooler output: {error}"))
     })?;
 
-    if output.status.success() {
+    if status.success() {
         return Ok(());
     }
 
@@ -226,7 +282,7 @@ fn run_spooler(program: &str, job_file: &std::path::Path) -> Result<(), SpoolerF
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stderr = stderr.trim();
     let message = if stderr.is_empty() {
-        format!("{program}: exited with {}", output.status)
+        format!("{program}: exited with {status}")
     } else {
         format!("{program}: failed: {stderr}")
     };
@@ -384,6 +440,46 @@ mod tests {
              `run_spooler` returned before the spooler had finished reading, so the \
              caller deleted the file underneath it and nothing was printed"
         );
+    }
+
+    /// A program that never exits must be reported as a failure, not waited on forever.
+    ///
+    /// N-P-06: `run_spooler` used unbounded `Command::output()`, so a wedged spooler pinned
+    /// the calling thread with no way out. The wait is now bounded, but the timeout is
+    /// deliberately far larger than any real spooler round-trip, so waiting for it here
+    /// would make the suite slow. This asserts the *contract* instead: a child that exits is
+    /// reaped and reported, which is what the polling loop must still do on the happy path.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_fast_spooler_is_still_reaped_and_reported() {
+        use std::io::Write as _;
+        #[cfg(unix)]
+        let script = "exit 0\n";
+        #[cfg(windows)]
+        let script = "WScript.Quit 0\n";
+        #[cfg(unix)]
+        let (program, name) = ("sh", "fast_spool.sh");
+        #[cfg(windows)]
+        let (program, name) = ("cscript", "fast_spool.vbs");
+
+        let dir = std::env::temp_dir().join(format!("rw_spool_fast_{}", std::process::id()));
+        if std::fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        let fake = dir.join(name);
+        if std::fs::File::create(&fake)
+            .and_then(|mut file| file.write_all(script.as_bytes()))
+            .is_err()
+        {
+            return;
+        }
+        let job = dir.join("job.txt");
+        let _ = std::fs::write(&job, "page:1\n");
+
+        let result = run_spooler(program, &fake);
+        let _ = std::fs::remove_file(&fake);
+        let _ = std::fs::remove_file(&job);
+        assert!(result.is_ok(), "a spooler that exits 0 must report success, got {result:?}");
     }
 
     /// A program that is not installed must be reported as missing, not as a rejected

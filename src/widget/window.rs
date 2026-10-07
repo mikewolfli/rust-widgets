@@ -7,7 +7,7 @@ use crate::core::{Color, ObjectId, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
-use crate::widget::capability::coercion::{expect_string, expect_usize};
+use crate::widget::capability::coercion::{expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -142,9 +142,11 @@ impl Widget for Window {
 
 /// `Window`'s property contract.
 ///
-/// The three chrome metrics are `u32` fields published as `UInt`; the write path
-/// narrows through `expect_usize` first, so an out-of-range or negative value is
-/// rejected as [`CapabilityAccessError::TypeMismatch`] rather than truncated.
+/// The three chrome metrics are `u32` fields published as `UInt`; the write path narrows through
+/// `expect_u32`, so an out-of-range or negative value is rejected as
+/// [`CapabilityAccessError::TypeMismatch`] rather than truncated. `expect_usize` alone was not enough
+/// on a 64-bit host: it accepts any `usize`, so a value above `u32::MAX` passed the check and was
+/// then silently truncated by the `as u32` that followed.
 impl WidgetProperties for Window {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
@@ -163,15 +165,15 @@ impl WidgetProperties for Window {
                 Ok(())
             }
             "title_bar_height" => {
-                self.set_title_bar_height(expect_usize(value)? as u32);
+                self.set_title_bar_height(expect_u32(value)?);
                 Ok(())
             }
             "close_button_size" => {
-                self.set_close_button_size(expect_usize(value)? as u32);
+                self.set_close_button_size(expect_u32(value)?);
                 Ok(())
             }
             "button_spacing" => {
-                self.set_button_spacing(expect_usize(value)? as u32);
+                self.set_button_spacing(expect_u32(value)?);
                 Ok(())
             }
             _ => base_property_set(self, name, value),

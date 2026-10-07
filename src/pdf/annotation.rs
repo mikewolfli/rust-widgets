@@ -137,8 +137,13 @@ impl Annotation {
         self
     }
     /// Builder-style setter for the opacity, clamped to `0.0..=1.0`.
+    ///
+    /// `f32::clamp` does **not** sanitise `NaN` — `NaN.clamp(0.0, 1.0)` is still `NaN`, and a
+    /// `NaN` opacity then makes the serialiser skip `/CA` while the field itself stays non-finite,
+    /// so the annotation's stored state and its written form disagree. A non-finite input is
+    /// therefore normalised to the safe default of full opacity rather than stored as-is.
     pub fn with_opacity(mut self, opacity: f32) -> Self {
-        self.opacity = opacity.clamp(0.0, 1.0);
+        self.opacity = if opacity.is_finite() { opacity.clamp(0.0, 1.0) } else { 1.0 };
         self
     }
     /// Whether the annotation is drawn at all: true unless the `hidden` or

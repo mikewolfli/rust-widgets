@@ -132,13 +132,30 @@ mv "$INJECT_DIR/emoji_subset_codepoints.txt" tools/emoji_subset_codepoints.txt
 # ── Half 4: the generated font tables must all be accounted for ────────────────────────────────
 #
 # The count is what makes "a new generated table was added without a NOTICE entry" fail rather than
-# pass: the scan's own `checked=N` is compared against the number of tables this repository ships.
-# Update this constant when a table is added *and* its NOTICE section is written — which is the
-# order the gate is here to enforce.
-EXPECTED_FONT_TABLES=11  # cjk_bitmap_data, latin, arabic, cjk, emoji,
-                        # cjk_shards (the shard index), and the five cjk_shard_* subsets
-if ! "$PYTHON" tools/font_license_scan.py | grep -q "checked=${EXPECTED_FONT_TABLES} failed=0"; then
-    echo "FAIL: the scan does not find exactly ${EXPECTED_FONT_TABLES} recorded font tables;"
+# pass. It is *derived*, not a literal: `font_license_scan.py` reports `expected=` (the number of
+# generated tables it found under `src/`) alongside `checked=` (how many it recorded in NOTICE).
+#
+# A `EXPECTED_FONT_TABLES=11` literal used to live here and was the defect: it drifted silently,
+# because the repository could gain a table without anyone editing *this* file, and the gate would
+# then compare the scanner's growing `checked` against a stale constant that no longer described the
+# tree. Both values the assertion uses now come from the scan itself, so the file that decides what
+# a font table *is* is the only file that has to change when one is added. The `expected == checked`
+# equality still carries the original intent — every shipped table must be recorded — while the
+# scanner's own `checked=N failed=0` shape is preserved for the earlier half-1 check.
+SCAN_OUT="$("$PYTHON" tools/font_license_scan.py)"
+# `grep -o` + `cut`, not `sed`/`awk` regex captures: the `\b` word boundary is a GNU-sed extension
+# (BSD/macOS `sed` silently matched nothing and failed the gate on every correct tree), and the
+# three-argument `match()` is a GNU-awk extension absent from macOS `awk`. Splitting on `=` with
+# `cut` works everywhere.
+SCAN_EXPECTED="$(printf '%s\n' "$SCAN_OUT" | grep -o 'expected=[0-9]*' | head -1 | cut -d= -f2)"
+SCAN_CHECKED="$(printf '%s\n' "$SCAN_OUT" | grep -o 'checked=[0-9]*' | head -1 | cut -d= -f2)"
+if [ -z "$SCAN_EXPECTED" ]; then
+    echo "FAIL: the scan did not report an expected table count; it cannot be checked"
+    exit 1
+fi
+if [ "$SCAN_EXPECTED" -ne "$SCAN_CHECKED" ] \
+        || ! printf '%s\n' "$SCAN_OUT" | grep -q "checked=${SCAN_EXPECTED} failed=0"; then
+    echo "FAIL: the scan does not find ${SCAN_EXPECTED} recorded font tables (checked=${SCAN_CHECKED});"
     echo "      a generated table is unrecorded, or one was added without its NOTICE section"
     exit 1
 fi

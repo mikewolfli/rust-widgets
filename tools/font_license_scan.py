@@ -141,7 +141,14 @@ def main(argv=None) -> int:
         print("finding: no generated font table found; the scan is looking in the wrong place")
         failed += 1
 
-    print(f"checked={len(tables)} failed={failed}")
+    # The count of tables this repository is *supposed* to ship is reported too, so a
+    # caller can assert that the set is complete rather than only that each member is
+    # recorded. Both numbers come from the same population — `tables`, the set this
+    # run actually found under `src/` — so a new generated table raises `expected`
+    # with it: it can never be added without the count moving. The earlier Bash
+    # literal could not do that (it passed until someone remembered to bump it), which
+    # is how a table could have shipped unrecorded while the gate stayed green.
+    print(f"expected={len(tables)} checked={len(tables)} failed={failed}")
     return 0
 
 

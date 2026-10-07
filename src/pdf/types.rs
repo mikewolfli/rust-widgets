@@ -192,6 +192,16 @@ pub(crate) fn normalize_image_payload_to_rgb(
         }
         return (rgb, ImageEncodingRoute::ExactGrayExpand);
     }
+    // No encoding matched exactly, so the payload's pixel count disagrees with the rectangle it was
+    // drawn into. Silently truncating or zero-padding produced a picture that is not the one the
+    // caller handed in, with nothing to say so; the warning names both lengths so the mismatch is
+    // observable in a log rather than only visible as wrong pixels. The graceful fallback is kept
+    // because some callers legitimately pass a shorter buffer, but it is no longer silent.
+    log::warn!(
+        "[pdf] image payload is {} byte(s) but the {width}x{height} rect needs {expected_rgb_len}
+         (rgb) / {expected_rgba_len} (rgba) / {expected_gray_len} (gray); truncating or zero-padding",
+        image.len()
+    );
     let mut rgb = vec![0u8; expected_rgb_len];
     let copy_len = expected_rgb_len.min(image.len());
     rgb[..copy_len].copy_from_slice(&image[..copy_len]);

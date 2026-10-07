@@ -46,6 +46,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 . "$ROOT_DIR/tools/lib_timeout.sh"
+# `"$PYTHON"` (a validated Python 3) replaces the bare `python3` below: on Windows `python3` is
+# often the Microsoft Store alias, which *blocks* rather than runs the script. `lib_python.sh`
+# sources `lib_timeout.sh` itself, but both are listed so the dependency is explicit here.
+. "$ROOT_DIR/tools/lib_python.sh"
 
 # `file|generator|check-args` — one line per generated artifact the repository ships.
 #
@@ -141,7 +145,12 @@ for pair in "${PAIRS[@]}"; do
     # `--check` is a byte comparison inside the generator, so no timeout wrapper is stacked here
     # beyond the generator's own (principle #59.3: one timeout, not two). `set -e` is suspended for
     # this call so a single failure reports every offender rather than aborting on the first.
-    if out="$(python3 "$generator" $args 2>&1)"; then
+    #
+    # The args string is split into an array on whitespace and expanded as `"${args[@]}"`, so a
+    # value such as `--license=ofl-1.1` reaches the generator as one argument rather than being
+    # re-split and glob-expanded by the shell the way an unquoted `$args` would be.
+    read -ra args_arr <<< "$args"
+    if out="$("$PYTHON" "$generator" "${args_arr[@]}" 2>&1)"; then
         echo "        OK: $file  ($out)"
     else
         echo "  FAIL  $file does not match $generator"
@@ -179,7 +188,11 @@ echo "[4/4] no source file calls itself generated without a declared producer"
 # no failure.
 GENERATED_HEADER_PATTERN='^// GENERATED FILE|^// Produced by `tools/|— \*\*generated\*\*\.'
 undeclared=0
-for candidate in $(grep -rlE "$GENERATED_HEADER_PATTERN" --include='*.rs' src/ 2>/dev/null | sort); do
+# `while IFS= read -r` rather than `for candidate in $(grep …)`: command substitution word-splits its
+# output, so a path containing whitespace would arrive as several candidates (and a `*` in a name
+# would be glob-expanded against the filesystem). Reading line by line keeps each path intact.
+while IFS= read -r candidate; do
+    [[ -n "$candidate" ]] || continue
     declared=0
     for pair in "${PAIRS[@]}"; do
         if [ "${pair%%|*}" = "$candidate" ]; then declared=1; break; fi
@@ -193,7 +206,7 @@ for candidate in $(grep -rlE "$GENERATED_HEADER_PATTERN" --include='*.rs' src/ 2
         echo "  FAIL  $candidate carries a generated-file header but no producer is declared for it"
         undeclared=1
     fi
-done
+done < <(grep -rlE "$GENERATED_HEADER_PATTERN" --include='*.rs' src/ 2>/dev/null | sort)
 if [ "$undeclared" -ne 0 ]; then
     echo '        Add it to PAIRS with its generator, or correct the header if the file is really'
     echo '        hand-maintained. A "generated" header with no producer is a claim, not a fact.'

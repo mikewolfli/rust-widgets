@@ -118,16 +118,31 @@ impl PdfDocument for PdfDocumentImpl {
         if new_order.len() != self.pages.len() {
             return false;
         }
-        let mut reordered: Vec<Box<dyn PdfPage>> = Vec::with_capacity(self.pages.len());
-        let mut slots: Vec<Option<Box<dyn PdfPage>>> = self.pages.drain(..).map(Some).collect();
+        // Validate the permutation **before** consuming any page. The old order drained
+        // `self.pages` into a local `slots` vector and only then checked the indices, so a
+        // duplicate (`new_order = [0, 0]` on a two-page document) or an out-of-range index returned
+        // `false` *after* every page had already been moved out of the document — the caller kept a
+        // "failed" result and a document whose pages were gone. Checking first means a rejected
+        // reorder leaves `self.pages` exactly as it was.
+        let page_count = self.pages.len();
+        let mut seen = crate::compat::vec![false; page_count];
         for index in new_order {
-            let Some(slot) = slots.get_mut(*index as usize) else {
+            let idx = *index as usize;
+            if idx >= page_count || seen[idx] {
+                // Out of range, or the same slot requested twice: not a permutation.
                 return false;
-            };
-            let Some(page) = slot.take() else {
-                return false;
-            };
-            reordered.push(page);
+            }
+            seen[idx] = true;
+        }
+
+        // The order is a permutation, so every slot is taken exactly once; draining now cannot
+        // fail. `map(Some)` plus `take()` is infallible under the guarantee above.
+        let mut slots: Vec<Option<Box<dyn PdfPage>>> = self.pages.drain(..).map(Some).collect();
+        let mut reordered: Vec<Box<dyn PdfPage>> = Vec::with_capacity(page_count);
+        for index in new_order {
+            if let Some(page) = slots[*index as usize].take() {
+                reordered.push(page);
+            }
         }
         self.pages = reordered;
         true

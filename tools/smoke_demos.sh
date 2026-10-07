@@ -15,6 +15,12 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# Every smoke command below shells out to `cargo`, which can block on the target-directory lock
+# (`smoke_demos.sh` is run directly as well as from the aggregate gate). Bound each one so a wedged
+# build fails this script instead of hanging it with no output — principle #58.
+. "$ROOT_DIR/tools/lib_timeout.sh"
+SMOKE_BUDGET="${RW_GATE_TIMEOUT:-900}"
+
 PASS=0
 FAIL=0
 
@@ -33,7 +39,10 @@ run_smoke() {
   shift
   echo ""
   echo "═══ SMOKE: $name ═══"
-  if "$@"; then
+  # The command is run under the same wall-clock bound every gate uses. `"$@"` is already the
+  # command and its arguments (for example `cargo test -q --lib …`), so this only prepends the
+  # budget; the call sites and their argument order are unchanged.
+  if rw_run_bounded "$SMOKE_BUDGET" "$@"; then
     pass "$name"
   else
     fail "$name"

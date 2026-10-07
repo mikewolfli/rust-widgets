@@ -8,6 +8,7 @@ use crate::compat::{format, MiniToString, String, Vec};
 use crate::core::{Color, Font, Point, Size};
 use crate::render::core::command::{BlendMode, RenderCommand};
 use crate::render::core::types::{ShapedText, TextMetrics};
+use crate::render::pipeline::{sat_add_i32, sat_mul_i32, sat_neg_i32, u32_to_i32_saturating};
 use crate::render::text::{is_combining_mark, is_variation_selector};
 use crate::render::{PaintBackend, SoftwareRenderConfig};
 use crate::style::gradient::GradientType;
@@ -609,7 +610,10 @@ fn rgba_to_bmp(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
     let source_pixels = (rgba.len() / 4) as u32;
     let (width, height) = if source_pixels == 0 {
         (0, 0)
-    } else if (width * height) as usize == source_pixels as usize && width > 0 && height > 0 {
+    } else if (width as usize).saturating_mul(height as usize) == source_pixels as usize
+        && width > 0
+        && height > 0
+    {
         // The data matches what was asked for, so the caller's extent is the data's.
         (width, height)
     } else if let Some(derived_width) = source_pixels.checked_div(height) {
@@ -1191,10 +1195,14 @@ impl PaintBackend for SvgPaintBackend {
                 // dark in the snapshot as on screen. The rect is square-cornered for the same
                 // reason: the rasteriser fills a plain rect and blurs it, so a fixed `rx` was a
                 // second, unfounded shape.
-                let spread_w = (rect.width as i32 + *spread * 2).max(0) as u32;
-                let spread_h = (rect.height as i32 + *spread * 2).max(0) as u32;
-                let x = rect.x + offset_x - *spread;
-                let y = rect.y + offset_y - *spread;
+                let spread_w = sat_mul_i32(*spread, 2)
+                    .saturating_add(u32_to_i32_saturating(rect.width))
+                    .max(0) as u32;
+                let spread_h = sat_mul_i32(*spread, 2)
+                    .saturating_add(u32_to_i32_saturating(rect.height))
+                    .max(0) as u32;
+                let x = sat_add_i32(sat_add_i32(rect.x, *offset_x), sat_neg_i32(*spread));
+                let y = sat_add_i32(sat_add_i32(rect.y, *offset_y), sat_neg_i32(*spread));
                 let shadow = Color::rgba(color.r, color.g, color.b, (color.a as f32 * 0.5) as u8);
                 let filter_attr = if *blur_radius > 0 {
                     let filter_id = format!("shadow_blur_{blur_radius}");

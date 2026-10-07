@@ -70,11 +70,19 @@ impl Shortcut {
     ///
     /// Supported formats: `"Ctrl+A"`, `"Alt+F4"`, `"Ctrl+Shift+S"`, `"F1"`.
     ///
-    /// `primary`/`cmd`/`command` all produce [`Modifiers::PRIMARY`], which the
-    /// backends resolve to `Command` on macOS and `Ctrl` on Windows/Linux. That
-    /// keeps one shortcut declaration usable on every platform, and is also why
-    /// `"Cmd+Z"` and `"Ctrl+Z"` parse to the *same* value rather than two
-    /// different ones.
+    /// `primary`/`cmd`/`command`/`cmdorctrl` all produce [`Modifiers::PRIMARY`], which the backends
+    /// resolve to `Command` on macOS and `Ctrl` on Windows/Linux — so `"Cmd+Z"` and `"Primary+Z"`
+    /// parse to the *same* value, and a single declaration works on every platform.
+    ///
+    /// # `"Ctrl"` is the physical key, and it round-trips
+    ///
+    /// `"control"` spells [`Modifiers::CTRL`] — the *physical* Control key — while `"ctrl"` remains
+    /// the platform-neutral alias for [`Modifiers::PRIMARY`]. This split is what makes
+    /// `format_shortcut` an inverse of `from_string`: [`Shortcut::ctrl`] formats to `"Control+…"`
+    /// and parses back to itself, whereas before both the input alias and the physical modifier
+    /// rendered as `"Ctrl"`, so `Shortcut::ctrl(Key::Z)` formatted to `"Ctrl+Z"`, parsed back to
+    /// `PRIMARY`, and changed `Eq`/`Hash` identity on the way — a shortcut that failed to find
+    /// itself in a `HashMap` keyed by the original.
     pub fn from_string(s: &str) -> Option<Self> {
         let parts: Vec<&str> = s.split('+').map(|p| p.trim()).collect();
         if parts.is_empty() {
@@ -82,15 +90,28 @@ impl Shortcut {
         }
         let mut modifiers = Modifiers::empty();
         let mut key_str = "";
+        let mut key_seen = false;
         for part in &parts {
             match part.to_lowercase().as_str() {
-                "primary" | "cmdorctrl" | "cmd" | "command" | "ctrl" | "control" => {
+                // The platform-neutral primary modifier: one declaration, every platform.
+                "primary" | "cmdorctrl" | "cmd" | "command" | "ctrl" => {
                     modifiers |= Modifiers::PRIMARY
                 }
+                // The physical Control key, kept distinct so the canonical form round-trips.
+                "control" => modifiers |= Modifiers::CTRL,
                 "alt" | "option" => modifiers |= Modifiers::ALT,
                 "shift" => modifiers |= Modifiers::SHIFT,
                 "meta" | "win" | "super" => modifiers |= Modifiers::META,
-                _ => key_str = part,
+                _ => {
+                    // A shortcut has exactly one key. A second key token used to silently overwrite
+                    // the first (`"Ctrl+A+B"` kept only `B`), so a mistyped declaration ran a
+                    // different command than the author wrote. Report the malformed input instead.
+                    if key_seen {
+                        return None;
+                    }
+                    key_seen = true;
+                    key_str = part;
+                }
             }
         }
         let key = Key::from_string(key_str)?;
@@ -112,7 +133,10 @@ impl Shortcut {
             if !result.is_empty() {
                 result.push('+');
             }
-            result.push_str("Ctrl");
+            // `Control`, not `Ctrl`: `Ctrl` is the platform-neutral *input* alias for PRIMARY, so
+            // rendering the physical modifier as `Ctrl` made the two indistinguishable and broke the
+            // `format_shortcut`/`from_string` round trip (N-K-03).
+            result.push_str("Control");
         }
         if self.modifiers.contains(Modifiers::ALT) {
             if !result.is_empty() {

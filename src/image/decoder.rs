@@ -996,7 +996,6 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
     // Convert to RGB
     let mut pixels = vec![0u8; (width * height * 4) as usize];
     let buf_width = (width.div_ceil(mcu_width) * mcu_width) as usize;
-    let _buf_height = (height.div_ceil(mcu_height) * mcu_height) as usize;
 
     for y in 0..height as usize {
         for x in 0..width as usize {
@@ -1147,17 +1146,27 @@ fn receive_extended(data: &[u8], bit_pos: &mut usize, cat: usize) -> Result<i32,
 }
 
 /// 2D IDCT (8x8). Simplified separable implementation.
+///
+/// # Why the accumulation is `i64`
+///
+/// `icosph` is scaled to `10000` and the DC/AC coefficients are `i32`, so a single term such as
+/// `32767 * 2 * 10000` already exceeds `i32::MAX` (about `2.1e9`) and the running sum of eight such
+/// terms overflows far sooner. A legally-constructed JPEG with a large quantization table and large
+/// coefficients is therefore enough to abort the process in a debug build (and wrap to a wrong
+/// picture in release). The cosine factors and the input are exactly representable in `i64`, so
+/// accumulating there is lossless; the result is rescaled back to `i32` after the division, which
+/// is where the real range of an 8-bit sample lives.
 fn idct_8x8(input: &[i32; 64], output: &mut [i32; 64]) {
-    let mut tmp = [0i32; 64];
+    let mut tmp = [0i64; 64];
 
     // Rows
     for y in 0..8 {
         for x in 0..8 {
-            let mut sum = 0i32;
+            let mut sum = 0i64;
             for u in 0..8 {
                 let cu = if u == 0 { 1 } else { 2 };
-                let val = input[y * 8 + u];
-                sum += val * cu * icosph(u, x);
+                let val = input[y * 8 + u] as i64;
+                sum += val * cu * icosph(u, x) as i64;
             }
             tmp[y * 8 + x] = sum;
         }
@@ -1166,13 +1175,17 @@ fn idct_8x8(input: &[i32; 64], output: &mut [i32; 64]) {
     // Columns
     for x in 0..8 {
         for y in 0..8 {
-            let mut sum = 0i32;
+            let mut sum = 0i64;
             for v in 0..8 {
                 let cv = if v == 0 { 1 } else { 2 };
                 let val = tmp[v * 8 + x];
-                sum += val * cv * icosph(v, y);
+                sum += val * cv * icosph(v, y) as i64;
             }
-            output[y * 8 + x] = sum / 4;
+            // `i32::try_from` after the `/4` keeps a pathological block (which the clamp at the
+            // store site would bound anyway) from wrapping in the narrowing cast.
+            let scaled = sum / 4;
+            output[y * 8 + x] =
+                i32::try_from(scaled).unwrap_or(if scaled > 0 { i32::MAX } else { i32::MIN });
         }
     }
 }
@@ -1210,7 +1223,9 @@ fn decode_bmp(data: &[u8]) -> Result<DecodedImage, String> {
     let width = u32::from_le_bytes([data[18], data[19], data[20], data[21]]);
     let raw_height_signed = i32::from_le_bytes([data[22], data[23], data[24], data[25]]);
     let height = raw_height_signed.unsigned_abs();
-    let _top_down = raw_height_signed < 0;
+    // N-M-05: `_top_down` used to be computed here and dropped, then re-derived inline at the row
+    // loop below. Both now read this one binding, so the row order has a single source.
+    let top_down = raw_height_signed < 0;
     let bit_count = u16::from_le_bytes([data[28], data[29]]);
     let compression = u32::from_le_bytes([data[30], data[31], data[32], data[33]]);
     if width == 0 || height == 0 || !matches!(bit_count, 24 | 32) {
@@ -1239,11 +1254,9 @@ fn decode_bmp(data: &[u8]) -> Result<DecodedImage, String> {
     let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
 
     for y in 0..height as usize {
-        let row = if raw_height_signed > 0 {
-            height as usize - 1 - y // Bottom-up
-        } else {
-            y // Top-down
-        };
+        // A positive height is bottom-up; a negative one is top-down. The flag computed once above
+        // is the single source for this, so the two cannot disagree.
+        let row = if top_down { y } else { height as usize - 1 - y };
         let row_start = row * row_size;
         for x in 0..width as usize {
             let off = row_start + x * bytes_per_pixel;
@@ -3140,5 +3153,66 @@ mod tests {
         let png = make_png(8, 8, 8, 6, 0, &[0, 1, 2, 3, 4, 5, 6, 7, 8]);
         let err = decode_png(&png).unwrap_err();
         assert!(err.contains("truncated") || err.contains("decompress"), "unexpected error: {err}");
+    }
+
+    /// N-M-01: the IDCT must not overflow on legally-large coefficients.
+    ///
+    /// `icosph` is scaled to `10000` and the DC/AC coefficients are `i32`, so a single term such as
+    /// `32767 * 2 * 10000` already exceeds `i32::MAX`. A legal JPEG with a large quantization table
+    /// can therefore reach these magnitudes, which used to abort the process in a debug build (and
+    /// wrap to a wrong picture in release).
+    ///
+    /// The assertion compares the transform against an `f64` reference implementation of the same
+    /// separable formula, so it proves the `i64` accumulation is *accurate* and not merely
+    /// non-panicking: a wrapped `i32` intermediate would differ from the exact result, while the
+    /// widened computation matches to within the integer rounding of the reference.
+    #[test]
+    fn idct_does_not_overflow_on_large_coefficients() {
+        // A block whose DC and AC coefficients are near the `i16` extreme, scaled as if by a large
+        // quantization table — exactly the shape a hostile or unusual JPEG can produce.
+        let mut block = [0i32; 64];
+        for (i, coeff) in block.iter_mut().enumerate() {
+            *coeff = if i % 2 == 0 { 32767 * 255 } else { -32768 * 255 };
+        }
+        let mut out = [0i32; 64];
+        // Debug builds panic on wrapping arithmetic, so reaching the comparison below is itself the
+        // check that the accumulator no longer overflows.
+        idct_8x8(&block, &mut out);
+
+        // Reference: the same separable formula in `f64`, using the exact cosine. The implementation
+        // quantises `icosph` to `(cos * 10000) as i32`, so the reference reads it through the same
+        // function to compare like with like.
+        let mut tmp = [0f64; 64];
+        for y in 0..8 {
+            for x in 0..8 {
+                let mut sum = 0f64;
+                for u in 0..8 {
+                    let cu = if u == 0 { 1 } else { 2 };
+                    sum += block[y * 8 + u] as f64 * cu as f64 * icosph(u, x) as f64;
+                }
+                tmp[y * 8 + x] = sum;
+            }
+        }
+        for x in 0..8 {
+            for y in 0..8 {
+                let mut sum = 0f64;
+                for v in 0..8 {
+                    let cv = if v == 0 { 1 } else { 2 };
+                    sum += tmp[v * 8 + x] * cv as f64 * icosph(v, y) as f64;
+                }
+                let reference = sum / 4.0;
+                let got = out[y * 8 + x] as f64;
+                // The implementation saturates at `i32` bounds; where the reference is inside that
+                // range, the two must agree exactly (both use the same integer cosine table).
+                if reference < i32::MAX as f64 && reference > i32::MIN as f64 {
+                    assert_eq!(
+                        got,
+                        reference.floor(),
+                        "IDCT sample ({x},{y}) diverged from the exact reference — this is the \
+                         signature of a wrapped intermediate"
+                    );
+                }
+            }
+        }
     }
 }

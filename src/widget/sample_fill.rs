@@ -429,8 +429,16 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
                 sheet.open();
                 // The rise is what the draw reads, so the sample must be *settled* open rather than
                 // merely aimed open — a sheet mid-slide would put a half-arrived panel in the
-                // snapshot and make every geometry assertion depend on the frame count.
-                while sheet.tick(1000) {}
+                // snapshot and make every geometry assertion depend on the frame count. The loop is
+                // bounded so a control that never settles cannot hang the census: settling takes a
+                // handful of frames, and the cap is far above that.
+                settle(widget, |w| {
+                    let mut settled = false;
+                    if let Some(sheet) = widget_as_mut::<BottomSheet>(w) {
+                        settled = !sheet.tick(1000);
+                    }
+                    settled
+                });
                 true
             }
             None => false,
@@ -446,8 +454,14 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
             Some(dialog) => {
                 dialog.open();
                 // Same reasoning as the sheet above: the reveal is what the draw reads, so the
-                // sample is settled fully shown and not merely aimed there.
-                while dialog.tick(1000) {}
+                // sample is settled fully shown and not merely aimed there, under a frame cap.
+                settle(widget, |w| {
+                    let mut settled = false;
+                    if let Some(dialog) = widget_as_mut::<Dialog>(w) {
+                        settled = !dialog.tick(1000);
+                    }
+                    settled
+                });
                 true
             }
             None => false,
@@ -460,7 +474,13 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
                 // same remedy as `dialog` above -- the state a message box exists to be seen in is
                 // the shown one.
                 message_box.show();
-                while message_box.tick(1000) {}
+                settle(widget, |w| {
+                    let mut settled = false;
+                    if let Some(message_box) = widget_as_mut::<MessageBox>(w) {
+                        settled = !message_box.tick(1000);
+                    }
+                    settled
+                });
                 true
             }
             None => false,
@@ -469,6 +489,29 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
         // Everything else has no data concept, or is already seeded by its own constructor (the charts).
         _ => false,
     }
+}
+
+/// Tick a control until it reports it has settled, under a hard frame cap.
+///
+/// # Why the loop is bounded
+///
+/// The reveal animations of `bottom_sheet`, `dialog` and `message_box` are what the sample snapshot
+/// reads, so the sample must be *settled* rather than merely aimed open. That used to be a bare
+/// `while widget.tick(1000) {}`, which has no exit condition of its own: a control that never reports
+/// "settled" (a bug in an animation, or a future control whose `tick` never returns `false`) would
+/// hang the census with no bound — exactly the unbounded loop the project's rules forbid. The cap is
+/// far above any real settle time (a few frames), so it changes nothing for a working control and
+/// merely stops a broken one from wedging the process.
+fn settle(widget: &mut dyn Widget, mut step: impl FnMut(&mut dyn Widget) -> bool) {
+    const MAX_SETTLE_FRAMES: usize = 600;
+    for _ in 0..MAX_SETTLE_FRAMES {
+        if step(widget) {
+            return;
+        }
+    }
+    log::warn!(
+        "[sample_fill] control did not settle within {MAX_SETTLE_FRAMES} frames; snapshotting anyway"
+    );
 }
 
 // ---------------------------------------------------------------------------
