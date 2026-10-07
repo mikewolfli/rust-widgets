@@ -17,17 +17,43 @@
 # The check is `tools/check_event_producers.py`; see its docstring for what counts as a
 # producer and why test-only construction deliberately does not.
 #
+# # Why the validator also runs bounded, and its output is checked
+#
+# The gate used to accept any zero exit from the Python validator. A "pass" that
+# produced no output is not distinguishable from a validator that never really
+# ran — the same vacuity this file's own interpreter probe guards against. So the
+# validator runs under `rw_run_bounded` (a wedged interpreter must not take the
+# gate with it) and its result contract is asserted: on success it must print the
+# `gesture events with a reachable producer:` summary line. A zero exit without
+# that line is a FAIL.
+#
+# `tools/lib_python_selftest.sh` proves the interpreter probe rejects stubs.
+#
 # Usage: tools/check_event_producers.sh
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# Prove the probe still discriminates before trusting the interpreter it chose.
+bash "$ROOT_DIR/tools/lib_python_selftest.sh"
+
 . "$ROOT_DIR/tools/lib_python.sh"
 
-if ! "$PYTHON" tools/check_event_producers.py; then
+OUTPUT=""
+if ! OUTPUT="$(rw_run_bounded 600 "$PYTHON" tools/check_event_producers.py)"; then
+    printf '%s\n' "$OUTPUT"
     echo "FAIL: a gesture event has no reachable producer"
     exit 1
 fi
 
+# The result contract: a passing run announces how many producers it verified.
+# Without it a silent/interrupted interpreter would look identical to a pass.
+if ! printf '%s\n' "$OUTPUT" | grep -q 'gesture events with a reachable producer:'; then
+    printf '%s\n' "$OUTPUT"
+    echo "FAIL: check_event_producers.py exited 0 without its result summary"
+    exit 1
+fi
+
+printf '%s\n' "$OUTPUT"
 echo "event producer checks passed."

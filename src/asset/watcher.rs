@@ -210,8 +210,18 @@ mod tests {
     #[test]
     fn asset_watcher_watch_nonexistent_directory_returns_error() {
         let mut watcher = AssetWatcher::new();
-        let result = watcher
-            .watch_directory(Path::new("/tmp/rw_nonexistent_asset_test_dir_xyzzy"), |_| true);
+        // A unique, guaranteed-absent path: the temp root plus a counter that no
+        // other test or process uses, so this test cannot accidentally point at a
+        // real directory that happens to exist. (The old fixed name
+        // `/tmp/rw_nonexistent_asset_test_dir_xyzzy` was only presumed absent.)
+        static UNIQUE: AtomicUsize = AtomicUsize::new(0);
+        let nonexistent = std::env::temp_dir().join(format!(
+            "rw_nonexistent_asset_{}_{}",
+            std::process::id(),
+            UNIQUE.fetch_add(1, Ordering::SeqCst)
+        ));
+        assert!(!nonexistent.exists(), "fixture path must not already exist");
+        let result = watcher.watch_directory(&nonexistent, |_| true);
         assert!(result.is_err(), "Expected error for nonexistent directory");
     }
 
@@ -262,15 +272,17 @@ mod tests {
 
     #[test]
     fn asset_watcher_watch_delivers_file_changed_event() {
-        let dir =
-            std::env::temp_dir().join(format!("asset_watcher_delivers_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        // An exclusive tempdir the test owns: nothing else on the host can share
+        // the path, and dropping it cleans up exactly what this test created. The
+        // previous fixture used a PID-suffixed name under the shared temp root and
+        // `remove_dir_all`ed it up front and again at the end, which could delete
+        // a same-named directory another process had created.
+        let dir = tempfile::tempdir().unwrap();
 
         let mut watcher = AssetWatcher::new();
-        watcher.watch(&dir, false, |p| p.extension().is_some_and(|e| e == "txt")).unwrap();
+        watcher.watch(dir.path(), false, |p| p.extension().is_some_and(|e| e == "txt")).unwrap();
 
-        let test_file = dir.join("test.txt");
+        let test_file = dir.path().join("test.txt");
         std::fs::write(&test_file, b"hello").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(200));
 
@@ -279,19 +291,18 @@ mod tests {
             |e| matches!(e, AssetEvent::FileChanged { path, .. } if path.ends_with("test.txt")),
         );
         assert!(matched, "Expected FileChanged event for test.txt, got {events:?}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn asset_watcher_watch_filter_blocks_unmatched() {
-        let dir = std::env::temp_dir().join(format!("asset_watcher_filter_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        // Exclusive tempdir; see the sibling test above for why the PID-suffixed
+        // shared-temp fixture was replaced.
+        let dir = tempfile::tempdir().unwrap();
 
         let mut watcher = AssetWatcher::new();
-        watcher.watch(&dir, false, |p| p.extension().is_some_and(|e| e == "json")).unwrap();
+        watcher.watch(dir.path(), false, |p| p.extension().is_some_and(|e| e == "json")).unwrap();
 
-        let txt_file = dir.join("ignored.txt");
+        let txt_file = dir.path().join("ignored.txt");
         std::fs::write(&txt_file, b"ignored").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(200));
 
@@ -300,6 +311,5 @@ mod tests {
             |e| matches!(e, AssetEvent::FileChanged { path, .. } if path.ends_with("ignored.txt")),
         );
         assert!(!matched, "Filtered file should not produce event, got {events:?}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

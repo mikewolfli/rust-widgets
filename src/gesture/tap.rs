@@ -204,11 +204,22 @@ impl GestureRecognizer for TwoFingerTapGesture {
             }
             Event::TouchEnd { pos, touch_id } => {
                 if let Some(idx) = self.touches.iter().position(|(_, _, id, _)| *id == *touch_id) {
-                    // Read the start time by identity, *before* the removal below: indexing
-                    // `touches[0]` afterwards is only valid while another finger remains,
-                    // so the single-finger case would have panicked on an empty list.
+                    // Read the start time and the touchdown position by identity, *before* the
+                    // removal below: indexing `touches[0]` afterwards is only valid while another
+                    // finger remains, so the single-finger case would have panicked on an empty
+                    // list.
                     let start_time = self.touches[idx].3;
+                    let touchdown = self.touches[idx].0;
                     self.touches.remove(idx);
+                    // S-86: the final release position must satisfy the same stationary bound the
+                    // Move path enforces. A finger that lands, lifts straight up far from where it
+                    // landed (and so produced no Move crossing the threshold — or no Move at all)
+                    // was travelling, not tapping; without this check the two-finger recogniser
+                    // reported a tap from `1000/1010` releases after `0/10` touchdowns.
+                    if super::distance(touchdown, *pos) >= MAX_STATIONARY_DISTANCE {
+                        self.reset();
+                        return None;
+                    }
                     // Record the release position (not the last move or the landing
                     // point) so the centroid reflects where the finger actually lifted.
                     self.completed.push((start_time, now_ms, *pos));
@@ -386,5 +397,28 @@ mod tests {
             Some(Event::TwoFingerTap { pos }) => assert_eq!(pos, Point::new(20, 10)),
             other => panic!("boundary timings must still be a tap, got {other:?}"),
         }
+    }
+
+    /// S-86: the release position must satisfy the same stationary bound as a move.
+    ///
+    /// Two fingers that land at `0/10` and lift up at `1000/1010` — travelling far with no
+    /// intervening `TouchMove` — were reported as a tap because only the move path checked the
+    /// distance. The final release must be compared to the touchdown too.
+    #[test]
+    fn two_finger_tap_rejects_a_far_away_release_without_a_move() {
+        let mut gesture = TwoFingerTapGesture::new();
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(0, 0), touch_id: 1 }, 0)
+            .is_none());
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(10, 0), touch_id: 2 }, 0)
+            .is_none());
+        // Fingers lift far from where they landed, with no Move in between.
+        assert!(gesture
+            .process(&Event::TouchEnd { pos: Point::new(1000, 0), touch_id: 1 }, 100)
+            .is_none());
+        let produced =
+            gesture.process(&Event::TouchEnd { pos: Point::new(1010, 0), touch_id: 2 }, 100);
+        assert!(produced.is_none(), "a far release must not be a TwoFingerTap, got {produced:?}");
     }
 }

@@ -163,19 +163,45 @@ mod tests {
 
     /// The boundary itself: exactly at the documented ratio the fallback applies.
     ///
-    /// Pinned because "more than half" and "at least half" differ on exactly this
-    /// input, and an off-by-one here is invisible in every other test.
+    /// # Why the fixture uses two disjoint regions
+    ///
+    /// The boundary must be measured on an input whose two sides produce
+    /// *different* observable outcomes, or the test cannot see which branch ran.
+    /// A single region is useless here: `too_large` picks the bounding-rect
+    /// branch, and `!(too_large)` picks the per-region branch, but both paint a
+    /// single region exactly once — so `>=` and `>` are indistinguishable, which
+    /// is precisely the off-by-one this test is meant to pin.
+    ///
+    /// Two *non-touching* regions that the tracker cannot merge separate the
+    /// branches: above the threshold they collapse to one bounding pass (paint
+    /// count 1), below it they stay separate (paint count 2). The region areas
+    /// are integral, so both sides are exactly `frame_area * 0.5`-comparable:
+    /// each region is `1/4` of the 1000x1000 frame, so two cover exactly `1/2`.
     #[test]
     fn the_fallback_applies_at_the_documented_ratio() {
-        let frame = Size::new(100, 100);
-        let half = Rect::new(0, 0, 100, 50);
-        assert_eq!(paints_for(&[half], frame), 1, "half the frame is the threshold");
-
-        let just_under = Rect::new(0, 0, 100, 49);
+        let frame = Size::new(1000, 1000);
         assert_eq!(
-            paints_for(&[just_under], frame),
+            FULL_REPAINT_AREA_RATIO, 0.5,
+            "the fixture below steps the covered fraction by exactly 1/1000 of the frame; a different ratio needs a rebuilt fixture"
+        );
+
+        // Exactly half the frame: two 1/4 regions. `>= 0.5` must take the
+        // bounding-rect branch, painting once.
+        let exactly_half = [Rect::new(0, 0, 500, 500), Rect::new(500, 500, 500, 500)];
+        assert_eq!(
+            paints_for(&exactly_half, frame),
             1,
-            "a single region is one pass either way, so this pins that it still paints"
+            "two disjoint regions covering exactly half the frame must collapse to the one-pass bounding fallback"
+        );
+
+        // Just under half the frame, same two-region shape. `> 0.5` would be
+        // false here *and* at the value above, so a count of 2 here is what
+        // proves the comparison is `>=`, not `>`.
+        let just_under = [Rect::new(0, 0, 499, 500), Rect::new(500, 500, 500, 500)];
+        assert_eq!(
+            paints_for(&just_under, frame),
+            2,
+            "one pixel of area below the ratio must keep the two regions separate (one pass each)"
         );
     }
 

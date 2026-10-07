@@ -84,11 +84,32 @@ struct SlotSlot<T: Clone + Send + 'static> {
     /// matching `Signal<T>`'s public bound. FIFO order preserves the order in which concurrent
     /// emitters acquired this queue; each value is re-wrapped in an `Arc` when delivered.
     pending: Mutex<VecDeque<T>>,
+    /// Whether some thread currently owns the drain loop for this slot.
+    ///
+    /// # Why a bare "drain until empty" loop is not enough (E-21)
+    ///
+    /// The drain loop used to run under the callback mutex only: it popped until `pending` looked
+    /// empty and then released the callback. A deferrer that acquired `pending` **after** that last
+    /// failed pop but **before** the callback lock was released pushed its value into a queue whose
+    /// drainer had already given up — the value stayed queued with no owner, delivered only if a
+    /// later emit happened to arrive (the comment claimed "delivered before release", which this
+    /// window falsified).
+    ///
+    /// `draining` is checked and mutated **under the `pending` mutex**, so a deferrer and the
+    /// drainer cannot disagree about who is responsible: the deferrer pushes and, if no drainer is
+    /// active, becomes the drainer itself; the drainer clears the flag under the same lock only
+    /// after confirming the queue is empty, so a push that lands after the check sees `draining ==
+    /// false` and drains it. No value is left queue-ownerless and none is dropped.
+    draining: Mutex<bool>,
 }
 
 impl<T: Clone + Send + 'static> SlotSlot<T> {
     fn new(callback: SlotFn<T>) -> Self {
-        Self { callback: Mutex::new(callback), pending: Mutex::new(VecDeque::new()) }
+        Self {
+            callback: Mutex::new(callback),
+            pending: Mutex::new(VecDeque::new()),
+            draining: Mutex::new(false),
+        }
     }
 
     /// Runs `value` on this slot if the callback is free, otherwise defers it.
@@ -97,19 +118,82 @@ impl<T: Clone + Send + 'static> SlotSlot<T> {
     fn deliver(&self, value: Arc<T>) -> bool {
         let Some(mut callback) = crate::compat::try_lock_recover(&self.callback) else {
             // Busy: defer rather than block (which could cycle) or drop (which loses the value).
-            lock(&self.pending).push_back((*value).clone());
+            self.defer(value);
             return false;
         };
+        // We hold the callback mutex, so we own the drain phase for this pass.
+        *lock(&self.draining) = true;
         callback(value);
         // Deliver everything another thread queued while we held the callback, before releasing it.
+        // The pending mutex and the `draining` flag are coordinated so a deferrer racing our exit
+        // cannot leave a value in a queue nobody owns (E-21).
         loop {
-            let next = lock(&self.pending).pop_front();
-            match next {
-                Some(queued) => callback(Arc::new(queued)),
-                None => break,
+            let mut pending = lock(&self.pending);
+            if let Some(queued) = pending.pop_front() {
+                drop(pending);
+                callback(Arc::new(queued));
+                continue;
             }
+            // Queue is empty: publish that no drainer is active, still under the same lock, so a
+            // deferrer that pushes now sees `draining == false` and takes over the drain itself.
+            *lock(&self.draining) = false;
+            break;
         }
         true
+    }
+
+    /// Enqueues `value`, taking over the drain loop if no other thread owns it.
+    fn defer(&self, value: Arc<T>) {
+        // Push under the pending lock; ownership is decided under the `draining` flag, which the
+        // active drainer also consults under the same lock, so the two cannot disagree about who
+        // is responsible for the value we just queued.
+        lock(&self.pending).push_back((*value).clone());
+        // If a drainer is active it re-checks `pending` under this same lock and will deliver our
+        // value. Otherwise we become the drainer.
+        self.drain_if_orphaned();
+    }
+
+    /// Runs the deferred queue if no thread currently owns the drain phase.
+    fn drain_if_orphaned(&self) {
+        {
+            let mut draining = lock(&self.draining);
+            if *draining {
+                return;
+            }
+            *draining = true;
+        }
+        // We own the drain phase. The previous owner releases the callback mutex only as its
+        // `deliver` returns, so a `try_lock` here may still fail for the instant right after it
+        // cleared `draining`. Spin briefly; then, because we have already claimed ownership and the
+        // holder is finishing its (now empty) drain rather than blocking on our slot, take the
+        // callback lock for real. This guarantees the value we queued is delivered.
+        let mut callback = match crate::compat::try_lock_recover(&self.callback) {
+            Some(guard) => guard,
+            None => {
+                for _ in 0..64 {
+                    std::thread::yield_now();
+                    if let Some(mut guard) = crate::compat::try_lock_recover(&self.callback) {
+                        return self.finish_drain(&mut guard);
+                    }
+                }
+                lock(&self.callback)
+            }
+        };
+        self.finish_drain(&mut callback);
+    }
+
+    /// Drains `pending` through `callback`, then releases ownership of the drain phase.
+    fn finish_drain<D: core::ops::DerefMut<Target = SlotFn<T>>>(&self, callback: &mut D) {
+        loop {
+            let mut pending = lock(&self.pending);
+            if let Some(queued) = pending.pop_front() {
+                drop(pending);
+                callback(Arc::new(queued));
+                continue;
+            }
+            *lock(&self.draining) = false;
+            break;
+        }
     }
 }
 
@@ -891,6 +975,54 @@ mod emit_behaviour_tests {
         worker.join().expect("the in-flight emitter must complete");
 
         assert_eq!(*observed.lock().unwrap(), vec![1, 2, 3]);
+    }
+
+    /// A value deferred as the active drainer is finishing must still be delivered before the
+    /// deferring emitter returns (E-21 hand-off window).
+    ///
+    /// The FIFO test above releases only after both deferred emits have enqueued, so it never
+    /// exercises the window the earlier "drain until empty then release" loop left open: a push
+    /// landing after the drainer's last failed pop but before it released the callback. Here the
+    /// deferred emit is raced against the drainer's exit, and the assertion requires that the
+    /// second value is delivered as a consequence of the emit itself — not merely present once a
+    /// later emit happens to flush it.
+    #[test]
+    fn a_value_deferred_as_the_drainer_exits_is_still_delivered() {
+        use std::sync::Barrier;
+
+        let signal = Signal::<u32>::new();
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let slot_entered = Arc::clone(&entered);
+        let slot_release = Arc::clone(&release);
+        let slot_observed = Arc::clone(&observed);
+        signal.connect(move |value| {
+            let value = *value;
+            slot_observed.lock().unwrap().push(value);
+            if value == 1 {
+                slot_entered.wait();
+                slot_release.wait();
+            }
+        });
+
+        let worker_signal = signal.clone();
+        let worker = std::thread::spawn(move || worker_signal.emit(1));
+        entered.wait();
+        // Deferred while the first emit holds the callback, then let the drainer finish. The value
+        // must be delivered by this deferred emit's own hand-off, with no further emit afterwards.
+        let deferred_signal = signal.clone();
+        let deferred = std::thread::spawn(move || deferred_signal.emit(2));
+        release.wait();
+        deferred.join().expect("the deferred emitter must complete");
+        worker.join().expect("the in-flight emitter must complete");
+
+        assert_eq!(
+            *observed.lock().unwrap(),
+            vec![1, 2],
+            "the value deferred during the drainer's exit must be delivered"
+        );
     }
 
     /// Blocked slots are skipped, and unblocking restores them.

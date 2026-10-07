@@ -4,6 +4,10 @@
 **/*.rlib
 **/target
 
+# Windows SDK / MSVC download caches (cargo-xwin). These are tens of MB of
+# downloaded .msi/.cab/.vsix blobs, not source; committing them bloats history.
+.xwin-cache/
+
 # IDE/Editor files
 .idea/
 *.iml

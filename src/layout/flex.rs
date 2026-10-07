@@ -621,7 +621,20 @@ impl FlexLayout {
             } else {
                 self.items[index].min_size.height
             };
-            intrinsic.max(minimum) as i32
+            let maximum = if is_row {
+                self.items[index].max_size.width
+            } else {
+                self.items[index].max_size.height
+            };
+            // S-50: the wrap path applied only the minimum to the intrinsic main size, so an item
+            // whose intrinsic size already exceeded its own maximum stayed above it — the grow pass
+            // below only limited *added* space, never the starting size. The maximum is honoured
+            // here too (a zero maximum means "unbounded", matching `item_cross` and the grow pass).
+            let mut main = intrinsic.max(minimum);
+            if maximum > 0 {
+                main = main.min(maximum.max(minimum));
+            }
+            main as i32
         };
         let item_cross = |index: usize| {
             let size = self.child_sizes.get(index).copied().unwrap_or(Size::new(0, 0));
@@ -1655,6 +1668,36 @@ mod tests {
         assert_eq!(rects.get(&1), Some(&Rect::new(0, 0, 60, 20)));
         assert_eq!(rects.get(&2), Some(&Rect::new(65, 0, 60, 30)));
         assert_eq!(rects.get(&3), Some(&Rect::new(0, 35, 40, 10)));
+    }
+
+    /// S-50: an item whose intrinsic main size already exceeds its own maximum must be clamped
+    /// in the wrap path, not only when *added* grow space overflows the maximum. The wrap path
+    /// applied only the minimum to the intrinsic size, so an over-max item kept its over-max size.
+    #[test]
+    fn flex_layout_wrap_honours_a_max_below_the_intrinsic_main_size() {
+        let mut layout = FlexLayout::with_params(
+            FlexDirection::Row,
+            FlexWrap::Wrap,
+            JustifyContent::FlexStart,
+            AlignItems::FlexStart,
+            0,
+            0,
+        );
+        layout.add_widget(1, 0);
+        // Intrinsic width 100, but the item's own maximum is 30.
+        layout.set_child_sizes(vec![Size::new(100, 20)]);
+        layout.items_mut()[0].max_size = Size::new(30, 0);
+
+        let mut rects = HashMap::new();
+        layout.update(Rect::new(0, 0, 500, 100), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+
+        assert_eq!(
+            rects.get(&1).map(|rect| rect.width),
+            Some(30),
+            "the wrap path must clamp the intrinsic main size to the item's own maximum"
+        );
     }
 
     #[test]

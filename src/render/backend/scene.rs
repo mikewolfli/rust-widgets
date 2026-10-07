@@ -253,6 +253,8 @@ fn cached_wgpu_renderer() -> Option<&'static WgpuRenderer> {
 mod tests {
     use super::*;
     use crate::core::{Color, Point, Rect, Size};
+    #[cfg(feature = "quality-management")]
+    use crate::quality::{QualityLevel, QualityManager};
     use crate::render::RenderCommand;
 
     // ── SceneLayer ──────────────────────────────────────────────────────
@@ -509,10 +511,36 @@ mod tests {
     }
 
     #[cfg(feature = "quality-management")]
+    /// The process-global quality manager must start at a valid, in-range level.
+    ///
+    /// # Why this asserts a range, not the enum default
+    ///
+    /// `QualityManager::new()` does **not** leave `current_level` at the enum's
+    /// `#[default]` (`High`): the constructor derives the initial level from the
+    /// default GPU capability via `recommended_initial_quality()`, which for the
+    /// default capability is `Medium`. So the honest contract to pin is the one the
+    /// type actually promises — the level lies inside the valid `Low..=High` span
+    /// and is a level the manager could have produced. Asserting `== High` (or the
+    /// enum default) would encode this test's own guess instead of the contract.
+    ///
+    /// The assertion is on the level the global reports, not on a value this test
+    /// writes into it first: writing first and reading back would be order-dependent
+    /// on the shared global and would prove nothing about initialisation.
     #[test]
     fn current_quality_level_returns_reasonable_default() {
         let level = current_quality_level();
-        let _ = level;
+        assert!(
+            QualityLevel::Low <= level && level <= QualityLevel::High,
+            "the global quality manager must report a level inside Low..=High"
+        );
+        // The constructor path is what the global took; a fresh manager built the
+        // same way must report the same level, so the global is not silently at
+        // some other, caller-written value.
+        assert_eq!(
+            level,
+            QualityManager::new().quality_level(),
+            "the global must hold the level a fresh QualityManager would start at"
+        );
     }
 
     // ── Z-order edge cases ──────────────────────────────────────────────

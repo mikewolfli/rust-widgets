@@ -18,10 +18,10 @@ fn main() {
 
 /// Declares derived cfgs so gating conditions cannot drift apart.
 ///
-/// Six aliases are emitted. They answer six genuinely different questions, and
-/// the distinctions matter — `--no-default-features --features gpu` selects no
-/// device profile at all, and `--no-default-features --features embedded` has no
-/// OS runtime, so no single `not(...)` expression substitutes for another:
+/// **Seven** aliases answer genuinely different questions, and the distinctions
+/// matter — `--no-default-features --features gpu` selects no device profile at
+/// all, and `--no-default-features --features embedded` has no OS runtime, so no
+/// single `not(...)` expression substitutes for another:
 ///
 /// - `device_profile` — `desktop`, `tablet` or `mobile` is on. The question
 ///   "is this a device build?", answered without repeating the three-feature
@@ -40,6 +40,16 @@ fn main() {
 ///   second for every build that selects a profile.
 /// - `declarative_view` — `full_widgets` **and** the caller has not opted out
 ///   with `no-declarative-view`. This is the gate for `crate::view`.
+/// - `embedded_surface` — `embedded` is on. Names the bare-surface profile, the
+///   companion to `alloc_frugal` for the stripped case.
+///
+/// Two further aliases are declared (and emitted) here for the same reason, but
+/// are gated by a *feature conjunction* rather than by the profile matrix:
+///
+/// - `designer_tooling` — `full_widgets` and the `designer` feature. See its own
+///   note below for why it is not folded into `full_widgets`.
+/// - `cjk_outline_face` — `fonts-cjk`, a single shard, or a `fonts-cjk-shard-*`
+///   shard. See its own note below.
 ///
 /// Before these aliases existed, `widget/mod.rs` used
 /// `not(any(mini, embedded)) + any(desktop, tablet, mobile)` while several
@@ -195,8 +205,9 @@ fn check_system_dependencies() {
         _ => {}
     }
     // Not part of the match above: the XComponent bridge is a *feature*, not a target, and it
-    // can be enabled on any host (where it compiles and then fails to link). Checking it here
-    // means the message appears whichever target is being built.
+    // can be enabled on any host. On an OpenHarmony target it links the SDK; on any other
+    // host it compiles but stays inert, and the check warns there (see `check_xcomponent`).
+    // Checking it here means the message appears whichever target is being built.
     check_xcomponent();
 }
 
@@ -237,14 +248,23 @@ fn check_windows() {
 ///
 /// # The honest half
 ///
-/// On a host build (`x86_64-unknown-linux-gnu`, not `*-ohos`) there is no `libace_ndk` to
-/// link, so enabling the feature there links against nothing and fails at link time. That is
-/// the *correct* behaviour for a feature that requires a target SDK — but silently, it wastes
-/// a whole build. The warning below says so up front.
+/// On a host build (`x86_64-unknown-linux-gnu`, not `*-ohos`) the link directives are
+/// **not** emitted at all: the emission below is gated on `target_env == "ohos"`.
+/// The bridge therefore compiles on the host (the FFI declarations it calls are
+/// themselves `#[cfg(target_env = "ohos")]`) and links cleanly — it is simply
+/// inert, because there is no `libace_ndk` to attach an accessibility provider
+/// from. The warning makes that explicit up front so a host build does not look
+/// like a working bridge.
 fn check_xcomponent() {
     if !feature_enabled("xcomponent") {
         return;
     }
+    // `OHOS_SDK_NATIVE` is read below and turns into `rustc-link-search` /
+    // `rustc-link-arg` directives. Without this directive, changing the SDK
+    // path on an already-built tree would reuse the cached build-script output
+    // and link against the stale directory — the same hazard the feature list
+    // in `declare_cfg_aliases` documents for its cfgs.
+    println!("cargo:rerun-if-env-changed=OHOS_SDK_NATIVE");
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
 

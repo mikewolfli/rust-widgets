@@ -27,9 +27,16 @@
 //!   stand again, with the caveat that damage tracking is a *choice*: a caller that
 //!   leaves the mode at `Full` gets exactly the old behaviour.
 //!
-//! So this module is not simply dead weight: one third of it is an advertised,
-//! implemented, unwired feature. Deleting it without deciding that question would
-//! silently drop the capability the README promises.
+//! So this module is not dead weight: `dirty` / `region` / `render_dirty` are a
+//! live, wired feature — `render_dirty_regions` is called from
+//! `src/widget/runtime.rs` — and the frame-timing group is the only part still
+//! reserved. Deleting the module without deciding that question would silently
+//! drop the capability the README promises.
+//!
+//! The real boundaries, stated once so they cannot drift: the default repaint
+//! mode is `Full`; `Dirty` is opt-in; and within `Dirty`, damage is grouped by
+//! covered *area* (see `render_dirty::FULL_REPAINT_AREA_RATIO`) rather than by
+//! region count.
 /// Coalesces repaint requests so a burst of invalidations costs one frame.
 pub mod batcher;
 /// Tracks the union of regions that need repainting.

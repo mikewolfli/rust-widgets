@@ -116,10 +116,13 @@ fn entry_value<'a>(
     let byte_len = (count as usize).checked_mul(size)?;
     let value_field = entry.get(8..12)?;
     if byte_len <= 4 {
-        // Inline: the value occupies the 4-byte field, left-justified in a little-endian file and
-        // right-justified in a big-endian one.
-        let start = if little_endian { 0 } else { 4 - byte_len };
-        value_field.get(start..start + byte_len)
+        // Inline: a value that fits in four bytes is stored **left-justified** in the value field —
+        // its first byte sits at the field's first byte — regardless of the file's byte order
+        // (TIFF 6.0 §2, and how the reference `tiff` crate's `ifd.rs` reads an inline SHORT/LONG).
+        // The earlier spelling right-justified big-endian values (`start = 4 - byte_len`), which
+        // read a standard `MM` file's inline SHORT `[0,6,0,0]` as `0` instead of `6`; a fixture
+        // built to match that bug (`[0,0,0,6]`) hid it.
+        value_field.get(0..byte_len)
     } else {
         let offset = read_u32_at(value_field, 0, little_endian)? as usize;
         let end = offset.checked_add(byte_len)?;
@@ -465,11 +468,12 @@ mod tests {
         tiff.extend_from_slice(&8u32.to_be_bytes()); // IFD0 at 8
         tiff.extend_from_slice(&3u16.to_be_bytes()); // three entries
 
-        // Orientation (274), SHORT, count 1, inline value 6.
+        // Orientation (274), SHORT, count 1, inline value 6, **left-justified** as the
+        // TIFF 6.0 spec requires for a value that fits in the four-byte field.
         tiff.extend_from_slice(&274u16.to_be_bytes());
         tiff.extend_from_slice(&3u16.to_be_bytes());
         tiff.extend_from_slice(&1u32.to_be_bytes());
-        tiff.extend_from_slice(&[0, 0, 0, 6]); // right-justified inline SHORT
+        tiff.extend_from_slice(&[0, 6, 0, 0]);
 
         // ImageWidth (256), LONG, count 1, inline value 1024.
         tiff.extend_from_slice(&256u16.to_be_bytes());
