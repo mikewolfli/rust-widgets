@@ -36,6 +36,7 @@ __pycache__/
 # Environment files
 .env
 .env.local
+.ruff_cache/
 
 # Build outputs
 **/*.exp

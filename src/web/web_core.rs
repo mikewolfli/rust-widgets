@@ -273,6 +273,9 @@ impl WebViewCore {
             }
         }
 
+        #[cfg(feature = "web-http")]
+        self.invalidate_pending_load();
+
         self.url = url.clone();
         self.loading = true;
         self.load_progress = 0;
@@ -292,7 +295,6 @@ impl WebViewCore {
                 self.load_progress = 10;
                 self.loading_progress.emit(self.load_progress);
 
-                self.load_generation = self.load_generation.wrapping_add(1);
                 let generation = self.load_generation;
                 let request_url = url.clone();
                 let (sender, receiver) = std::sync::mpsc::channel();
@@ -354,6 +356,9 @@ impl WebViewCore {
     /// SIMULATED: No real web engine — loads HTML content with simulated
     /// 0% → 100% progress callbacks.
     pub fn load_html(&mut self, html: &str, base_url: Option<&str>) {
+        #[cfg(feature = "web-http")]
+        self.invalidate_pending_load();
+
         self.url = base_url.unwrap_or("data:text/html").to_string();
         self.title = "HTML Content".to_string();
         self.loading = true;
@@ -379,6 +384,9 @@ impl WebViewCore {
     /// SIMULATED: No real web engine — loads binary data as a string with simulated
     /// 0% → 50% → 100% progress callbacks.
     pub fn load_data(&mut self, data: &[u8], mime_type: &str, base_url: &str) {
+        #[cfg(feature = "web-http")]
+        self.invalidate_pending_load();
+
         self.url = base_url.to_string();
         self.title = format!("Data: {mime_type}");
         self.loading = true;
@@ -404,6 +412,9 @@ impl WebViewCore {
     /// loading callbacks.
     pub fn go_back(&mut self) {
         if let Some(url) = self.history.go_back() {
+            #[cfg(feature = "web-http")]
+            self.invalidate_pending_load();
+
             self.url = url;
             self.loading = true;
             self.load_progress = 0;
@@ -427,6 +438,9 @@ impl WebViewCore {
     /// loading callbacks.
     pub fn go_forward(&mut self) {
         if let Some(url) = self.history.go_forward() {
+            #[cfg(feature = "web-http")]
+            self.invalidate_pending_load();
+
             self.url = url;
             self.loading = true;
             self.load_progress = 0;
@@ -450,6 +464,9 @@ impl WebViewCore {
     /// 0% → 50% → 100% progress callbacks.
     pub fn reload(&mut self) {
         if !self.url.is_empty() {
+            #[cfg(feature = "web-http")]
+            self.invalidate_pending_load();
+
             self.loading = true;
             self.load_progress = 0;
             self.loading_started.emit(self.url.clone());
@@ -472,10 +489,7 @@ impl WebViewCore {
         // bumping the generation invalidates a result already in flight, so a helper thread cannot
         // deliver a page after the caller asked it to stop.
         #[cfg(feature = "web-http")]
-        {
-            self.pending_load = None;
-            self.load_generation = self.load_generation.wrapping_add(1);
-        }
+        self.invalidate_pending_load();
         if self.loading {
             self.loading = false;
             self.load_progress = 0;
@@ -531,6 +545,12 @@ impl WebViewCore {
 
     fn update_navigation_state(&self) {
         self.navigation_state_changed.emit((self.can_go_back(), self.can_go_forward()));
+    }
+
+    #[cfg(feature = "web-http")]
+    fn invalidate_pending_load(&mut self) {
+        self.pending_load = None;
+        self.load_generation = self.load_generation.wrapping_add(1);
     }
 
     /// Ends a failed load: clears the loading flag, emits the error, and repaints.
@@ -844,6 +864,70 @@ mod tests {
         assert_eq!(core.url(), "https://data.url");
         assert_eq!(core.title(), "Data: text/plain");
         assert_eq!(core.content(), "raw data");
+    }
+
+    #[cfg(feature = "web-http")]
+    #[test]
+    fn non_http_navigation_discards_superseded_http_results() {
+        fn assert_invalidates_pending_load(
+            core: &mut WebViewCore,
+            navigate: impl FnOnce(&mut WebViewCore),
+        ) {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let stale_generation = core.load_generation.wrapping_add(1);
+            core.load_generation = stale_generation;
+            core.pending_load = Some(receiver);
+
+            navigate(core);
+
+            assert!(core.pending_load.is_none());
+            assert_ne!(core.load_generation, stale_generation);
+            let expected = (
+                core.url.clone(),
+                core.title.clone(),
+                core.content.clone(),
+                core.loading,
+                core.load_progress,
+            );
+            core.apply_http_outcome(
+                stale_generation,
+                Ok("<title>stale</title><p>stale response</p>".to_string()),
+            );
+            assert_eq!(
+                (
+                    core.url.clone(),
+                    core.title.clone(),
+                    core.content.clone(),
+                    core.loading,
+                    core.load_progress,
+                ),
+                expected
+            );
+            drop(sender);
+        }
+
+        let mut core = WebViewCore::new(
+            WidgetKind::WebEngineView,
+            Rect::new(0, 0, 800, 600),
+            "test_webview",
+            "https://old.example",
+        );
+
+        assert_invalidates_pending_load(&mut core, |core| {
+            core.set_url("file://new-document".to_string());
+        });
+        assert_invalidates_pending_load(&mut core, |core| {
+            core.load_html("<p>new HTML</p>", Some("data:text/html"));
+        });
+        assert_invalidates_pending_load(&mut core, |core| {
+            core.load_data(b"new data", "text/plain", "data:text/plain");
+        });
+
+        core.history.navigate("file://history-back".to_string());
+        core.history.navigate("file://history-forward".to_string());
+        assert_invalidates_pending_load(&mut core, |core| core.go_back());
+        assert_invalidates_pending_load(&mut core, |core| core.go_forward());
+        assert_invalidates_pending_load(&mut core, |core| core.reload());
     }
 
     #[test]

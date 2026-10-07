@@ -926,7 +926,9 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
                                 .ok_or("JPEG entropy data truncated in DC coefficient")?;
                         if cat > 0 {
                             let mag = receive_extended(scan_data, &mut bit_pos, cat as usize)?;
-                            dc_pred[ci] += mag;
+                            dc_pred[ci] = dc_pred[ci]
+                                .checked_add(mag)
+                                .ok_or("JPEG DC predictor exceeds the supported i32 range")?;
                         }
                         block[0] = dc_pred[ci];
 
@@ -962,10 +964,7 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
                             k += 1;
                         }
 
-                        // Dequantize
-                        for i in 0..64 {
-                            block[i] *= qt[i] as i32;
-                        }
+                        dequantize_block(&mut block, &qt)?;
 
                         // IDCT
                         let mut pixels = [0i32; 64];
@@ -1147,26 +1146,23 @@ fn receive_extended(data: &[u8], bit_pos: &mut usize, cat: usize) -> Result<i32,
 
 /// 2D IDCT (8x8). Simplified separable implementation.
 ///
-/// # Why the accumulation is `i64`
+/// # Why the accumulation is `i128`
 ///
-/// `icosph` is scaled to `10000` and the DC/AC coefficients are `i32`, so a single term such as
-/// `32767 * 2 * 10000` already exceeds `i32::MAX` (about `2.1e9`) and the running sum of eight such
-/// terms overflows far sooner. A legally-constructed JPEG with a large quantization table and large
-/// coefficients is therefore enough to abort the process in a debug build (and wrap to a wrong
-/// picture in release). The cosine factors and the input are exactly representable in `i64`, so
-/// accumulating there is lossless; the result is rescaled back to `i32` after the division, which
-/// is where the real range of an 8-bit sample lives.
+/// `icosph` is scaled to `10000` and the DC/AC coefficients are `i32`, so IDCT products and sums
+/// can exceed both `i32` and `i64` for hostile but representable coefficients. `i128` safely
+/// covers the two separable passes; the result is narrowed only after division, saturating outside
+/// the range used by the pixel-store clamp.
 fn idct_8x8(input: &[i32; 64], output: &mut [i32; 64]) {
-    let mut tmp = [0i64; 64];
+    let mut tmp = [0i128; 64];
 
     // Rows
     for y in 0..8 {
         for x in 0..8 {
-            let mut sum = 0i64;
+            let mut sum = 0i128;
             for u in 0..8 {
                 let cu = if u == 0 { 1 } else { 2 };
-                let val = input[y * 8 + u] as i64;
-                sum += val * cu * icosph(u, x) as i64;
+                let val = input[y * 8 + u] as i128;
+                sum += val * cu * icosph(u, x) as i128;
             }
             tmp[y * 8 + x] = sum;
         }
@@ -1175,11 +1171,11 @@ fn idct_8x8(input: &[i32; 64], output: &mut [i32; 64]) {
     // Columns
     for x in 0..8 {
         for y in 0..8 {
-            let mut sum = 0i64;
+            let mut sum = 0i128;
             for v in 0..8 {
                 let cv = if v == 0 { 1 } else { 2 };
                 let val = tmp[v * 8 + x];
-                sum += val * cv * icosph(v, y) as i64;
+                sum += val * cv * icosph(v, y) as i128;
             }
             // `i32::try_from` after the `/4` keeps a pathological block (which the clamp at the
             // store site would bound anyway) from wrapping in the narrowing cast.
@@ -1188,6 +1184,16 @@ fn idct_8x8(input: &[i32; 64], output: &mut [i32; 64]) {
                 i32::try_from(scaled).unwrap_or(if scaled > 0 { i32::MAX } else { i32::MIN });
         }
     }
+}
+
+fn dequantize_block(block: &mut [i32; 64], quant_table: &[u16; 64]) -> Result<(), String> {
+    for (index, (coefficient, quantization)) in block.iter_mut().zip(quant_table.iter()).enumerate()
+    {
+        *coefficient = coefficient
+            .checked_mul(*quantization as i32)
+            .ok_or_else(|| format!("JPEG dequantization overflow at coefficient {index}"))?;
+    }
+    Ok(())
 }
 
 /// Pre-computed IDCT cosine factor.
@@ -3163,7 +3169,7 @@ mod tests {
     /// wrap to a wrong picture in release).
     ///
     /// The assertion compares the transform against an `f64` reference implementation of the same
-    /// separable formula, so it proves the `i64` accumulation is *accurate* and not merely
+    /// separable formula, so it proves the `i128` accumulation is *accurate* and not merely
     /// non-panicking: a wrapped `i32` intermediate would differ from the exact result, while the
     /// widened computation matches to within the integer rounding of the reference.
     #[test]
@@ -3214,5 +3220,72 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn jpeg_dequantization_rejects_coefficients_outside_i32() {
+        let mut block = [0i32; 64];
+        block[0] = 32_769;
+        let quant_table = [u16::MAX; 64];
+
+        let error = dequantize_block(&mut block, &quant_table).unwrap_err();
+        assert!(error.contains("dequantization overflow"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn decode_jpeg_rejects_overflowing_dequantized_dc_coefficients() {
+        fn append_segment(jpeg: &mut Vec<u8>, marker: u8, payload: &[u8]) {
+            jpeg.extend_from_slice(&[0xFF, marker]);
+            // The decoder advances by this length from the marker's 0xFF byte.
+            jpeg.extend_from_slice(&((payload.len() + 4) as u16).to_be_bytes());
+            jpeg.extend_from_slice(payload);
+        }
+
+        let mut jpeg = vec![0xFF, 0xD8];
+
+        let mut dqt = vec![0x10];
+        for _ in 0..64 {
+            dqt.extend_from_slice(&u16::MAX.to_be_bytes());
+        }
+        append_segment(&mut jpeg, 0xDB, &dqt);
+
+        append_segment(&mut jpeg, 0xC0, &[8, 0, 8, 1, 8, 1, 1, 0x11, 0]);
+
+        let mut dht = vec![0x00];
+        dht.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        dht.push(10);
+        dht.push(0x10);
+        dht.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        dht.push(0);
+        append_segment(&mut jpeg, 0xC4, &dht);
+
+        append_segment(&mut jpeg, 0xDA, &[1, 1, 0, 0, 63, 0]);
+
+        let mut bits = Vec::new();
+        for _ in 0..33 {
+            bits.push(false); // DC category 10 Huffman code
+            bits.extend([true; 10]); // +1023 DC difference
+            bits.push(false); // AC EOB Huffman code
+        }
+        while bits.len() % 8 != 0 {
+            bits.push(true);
+        }
+        for byte_bits in bits.chunks(8) {
+            let byte = byte_bits.iter().fold(0u8, |value, bit| (value << 1) | u8::from(*bit));
+            jpeg.push(byte);
+        }
+        jpeg.extend_from_slice(&[0xFF, 0xD9]);
+
+        let error = decode_jpeg(&jpeg).unwrap_err();
+        assert!(error.contains("dequantization overflow"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn idct_accepts_i32_extremes_without_overflow() {
+        let block = [i32::MAX; 64];
+        let mut output = [0; 64];
+
+        idct_8x8(&block, &mut output);
+        assert!(output.iter().any(|sample| *sample == i32::MAX || *sample == i32::MIN));
     }
 }

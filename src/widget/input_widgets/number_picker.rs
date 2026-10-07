@@ -188,11 +188,11 @@ impl NumberPicker {
         if steps == 0 {
             return false;
         }
-        let delta = rows.saturating_mul(self.step);
+        let target = self.value as i128 + rows as i128 * self.step as i128;
         let next = if self.wrap {
-            self.wrap_into(self.value.saturating_add(delta))
+            self.wrap_into(target)
         } else {
-            self.value.saturating_add(delta).clamp(self.minimum, self.maximum)
+            target.clamp(self.minimum as i128, self.maximum as i128) as i64
         };
         let next = self.snap(next);
         if next == self.value {
@@ -206,26 +206,21 @@ impl NumberPicker {
 
     /// Number of selectable rows in the range.
     pub fn row_count(&self) -> u64 {
-        self.available_steps().saturating_add(1).try_into().unwrap_or(u64::MAX)
+        u64::try_from(self.available_steps().saturating_add(1)).unwrap_or(u64::MAX)
     }
 
     /// Returns the index of the current value within the grid, from the minimum.
     pub fn selected_row(&self) -> u64 {
-        let offset = self.value.saturating_sub(self.minimum);
-        let index = offset / self.step;
-        index.try_into().unwrap_or(u64::MAX)
+        let offset = self.value as i128 - self.minimum as i128;
+        u64::try_from(offset / self.step as i128).unwrap_or(u64::MAX)
     }
 
     /// Number of steps between the bounds, or 0 when the range cannot be stepped.
-    fn available_steps(&self) -> i64 {
+    fn available_steps(&self) -> i128 {
         if self.maximum <= self.minimum || self.step <= 0 {
             return 0;
         }
-        // `maximum - minimum` overflows for a range spanning most of `i64`
-        // (`set_range(i64::MIN, i64::MAX)` is a legal call), which aborted in a debug
-        // build and wrapped to a wrong — often negative — step count in release.
-        // Saturating keeps the answer as large as the type can express.
-        self.maximum.saturating_sub(self.minimum) / self.step
+        (self.maximum as i128 - self.minimum as i128) / self.step as i128
     }
 
     /// Clamps `value` into the range and rounds it to the nearest grid point.
@@ -238,27 +233,21 @@ impl NumberPicker {
         if self.step <= 1 {
             return clamped;
         }
-        // Both the offset and the `offset + step/2` that follows can exceed `i64` for a
-        // near-full-domain range, so they saturate rather than wrapping into a snapped
-        // value outside the range.
-        let offset = clamped.saturating_sub(self.minimum);
-        let steps = offset.saturating_add(self.step / 2) / self.step;
-        let snapped = self.minimum.saturating_add(steps.saturating_mul(self.step));
-        snapped.clamp(self.minimum, self.maximum)
+        let offset = clamped as i128 - self.minimum as i128;
+        let step = self.step as i128;
+        let steps = (offset + step / 2) / step;
+        let snapped = self.minimum as i128 + steps * step;
+        snapped.clamp(self.minimum as i128, self.maximum as i128) as i64
     }
 
     /// Maps `value` into the range by wrapping rather than clamping.
-    fn wrap_into(&self, value: i64) -> i64 {
-        // `maximum - minimum` and `span + 1` both overflow for near-full-domain ranges.
-        // Saturating gives a span that is merely "as wide as `i64` allows", which wraps
-        // the value to a real grid point instead of aborting on the subtraction.
-        let span = self.maximum.saturating_sub(self.minimum);
-        if span <= 0 {
+    fn wrap_into(&self, value: i128) -> i64 {
+        let span = self.maximum as i128 - self.minimum as i128 + 1;
+        if span <= 1 {
             return self.minimum;
         }
-        let modulus = span.saturating_add(1);
-        let offset = value.saturating_sub(self.minimum).rem_euclid(modulus);
-        self.minimum.saturating_add(offset)
+        let offset = (value - self.minimum as i128).rem_euclid(span);
+        (self.minimum as i128 + offset) as i64
     }
 
     /// The row-height grid position a y coordinate falls on, as a signed row
@@ -440,12 +429,11 @@ impl EventHandler for NumberPicker {
                     // wrong: the zero-row case is precisely the one that has to
                     // restore the value, and skipping it left the last intermediate
                     // value in place.
-                    let target =
-                        self.drag_origin_value.saturating_add(rows.saturating_mul(self.step));
+                    let target = self.drag_origin_value as i128 + rows as i128 * self.step as i128;
                     let next = if self.wrap {
                         self.wrap_into(target)
                     } else {
-                        target.clamp(self.minimum, self.maximum)
+                        target.clamp(self.minimum as i128, self.maximum as i128) as i64
                     };
                     let next = self.snap(next);
                     if next != self.value {
@@ -613,15 +601,14 @@ impl NumberPicker {
     /// has been passed and nothing should be drawn there.
     fn value_at_offset(&self, offset: i64) -> Option<i64> {
         // Offsets count in screen rows; a row above the centre is a higher value.
-        let delta = -offset.saturating_mul(self.step);
-        let candidate = self.value.saturating_add(delta);
+        let candidate = self.value as i128 - offset as i128 * self.step as i128;
         if self.wrap {
             return Some(self.wrap_into(candidate));
         }
-        if candidate < self.minimum || candidate > self.maximum {
+        if candidate < self.minimum as i128 || candidate > self.maximum as i128 {
             return None;
         }
-        Some(candidate)
+        Some(candidate as i64)
     }
 }
 
@@ -683,6 +670,7 @@ mod tests {
         picker.set_range(i64::MIN, i64::MAX);
         assert_eq!(picker.minimum(), i64::MIN);
         assert_eq!(picker.maximum(), i64::MAX);
+        assert_eq!(picker.row_count(), u64::MAX);
         // The value is a real grid point, not a wrapped constant: with a step of 1 the snapped value
         // must equal whatever `set_range` left it at (it starts at 0).
         assert_eq!(picker.value(), 0);
@@ -692,19 +680,21 @@ mod tests {
         let _ = picker.selected_row();
         assert!(rows >= 1);
 
-        // A scroll with wrapping enabled must land on a real grid point, not abort.
+        // Wrapping covers the entire inclusive range, including 2^64 possible values.
         picker.set_wrap(true);
-        // The point of this case is that the wrap arithmetic does not panic or wrap the *timer*
-        // arithmetic; the returned value is whatever the saturated span yields. Reaching here without
-        // a panic is the assertion.
-        let _ = picker.scroll_rows(1);
-        let _ = picker.scroll_rows(-1);
+        assert!(picker.scroll_rows(1));
+        assert_eq!(picker.value(), 1);
+        assert!(picker.scroll_rows(-1));
+        assert_eq!(picker.value(), 0);
+        picker.set_value(i64::MIN);
+        assert!(picker.scroll_rows(-1));
+        assert_eq!(picker.value(), i64::MAX);
 
-        // A smaller range with a large step is the other overflow edge.
-        picker.set_range(i64::MIN, i64::MAX - 1);
-        picker.set_step(i64::MAX / 2);
-        let _ = picker.scroll_rows(1);
-        let _ = picker.row_count();
+        // Snapping an on-grid value remains stable even when the offset exceeds i64.
+        picker.set_step(5);
+        picker.set_value(i64::MIN + 10);
+        assert_eq!(picker.value(), i64::MIN + 10);
+        assert_eq!(picker.selected_row(), 2);
     }
 
     /// With a step of 5, only multiples of the step (offset from the minimum)

@@ -113,7 +113,13 @@ impl PdfPage for PdfPageImpl {
         }
         let width = rect.width.max(1) as usize;
         let height = rect.height.max(1) as usize;
-        let (rgb, route) = normalize_image_payload_to_rgb(image, width, height);
+        let (rgb, route) = match normalize_image_payload_to_rgb(image, width, height) {
+            Ok(normalized) => normalized,
+            Err(error) => {
+                log::error!("[pdf] refusing to draw image: {error}");
+                return;
+            }
+        };
         let hex = hex_encode(&rgb);
         let expected_rgb_len = width.saturating_mul(height).saturating_mul(3);
         let pdf_y = to_pdf_y(rect.y as f32 + rect.height as f32, self.size.height as f32);

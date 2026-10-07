@@ -23,12 +23,15 @@ mkdir -p themes
 # Both temporary files are created with `mktemp` rather than at a fixed `/tmp/rw_generate_themes.rs`
 # and `tests/tmp_generate_themes.rs`. The fixed paths were racy (a concurrent run clobbers the file
 # the other is compiling) and the `tests/` one left a dirty file behind on an abnormal exit. The
-# generated test must still live under `tests/` so cargo discovers it, so the `mktemp` file is
-# written into `tests/` (its name is unique), and the trap removes it on every exit path.
-TMP_RS="$(mktemp tests/tmp_generate_themes_XXXXXX.rs)"
-# cargo derives the test target name from the file stem; strip the leading `tmp_` and the `.rs`.
+# generated test must still live under `tests/` so cargo discovers it. Create a unique
+# extensionless file first: BSD and GNU `mktemp` both require the X template at the end. Then add
+# `.rs` by renaming the reserved path; the trap removes either name on every exit path.
+TMP_RS_BASE="$(mktemp tests/tmp_generate_themes_XXXXXX)"
+TMP_RS="${TMP_RS_BASE}.rs"
+trap 'rm -f "$TMP_RS_BASE" "$TMP_RS"' EXIT
+mv "$TMP_RS_BASE" "$TMP_RS"
+# Cargo derives the test target name from the file stem.
 TEST_NAME="$(basename "$TMP_RS" .rs)"
-trap 'rm -f "$TMP_RS"' EXIT
 
 cat > "$TMP_RS" << 'RUST'
 //! Fixture generator. Writes each built-in preset through the same

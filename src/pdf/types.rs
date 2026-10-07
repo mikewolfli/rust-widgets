@@ -149,18 +149,16 @@ impl PdfFontResource {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ImageEncodingRoute {
-    ExactRgb,
-    ExactRgbaDropAlpha,
-    ExactGrayExpand,
-    TruncatedOrPadded,
+    Rgb,
+    RgbaDropAlpha,
+    GrayExpand,
 }
 impl ImageEncodingRoute {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            ImageEncodingRoute::ExactRgb => "exact-rgb",
-            ImageEncodingRoute::ExactRgbaDropAlpha => "exact-rgba-drop-alpha",
-            ImageEncodingRoute::ExactGrayExpand => "exact-gray-expand",
-            ImageEncodingRoute::TruncatedOrPadded => "raw-truncate-pad",
+            ImageEncodingRoute::Rgb => "exact-rgb",
+            ImageEncodingRoute::RgbaDropAlpha => "exact-rgba-drop-alpha",
+            ImageEncodingRoute::GrayExpand => "exact-gray-expand",
         }
     }
 }
@@ -168,44 +166,50 @@ pub(crate) fn normalize_image_payload_to_rgb(
     image: &[u8],
     width: usize,
     height: usize,
-) -> (Vec<u8>, ImageEncodingRoute) {
-    let pixel_count = width.saturating_mul(height);
-    let expected_rgb_len = pixel_count.saturating_mul(3);
-    let expected_rgba_len = pixel_count.saturating_mul(4);
+) -> Result<(Vec<u8>, ImageEncodingRoute), String> {
+    let pixel_count = width.checked_mul(height).ok_or_else(|| {
+        format!("PDF image dimensions {width}x{height} overflow addressable size")
+    })?;
+    let expected_rgb_len = pixel_count.checked_mul(3).ok_or_else(|| {
+        format!("PDF RGB image dimensions {width}x{height} overflow addressable size")
+    })?;
+    let expected_rgba_len = pixel_count.checked_mul(4).ok_or_else(|| {
+        format!("PDF RGBA image dimensions {width}x{height} overflow addressable size")
+    })?;
     let expected_gray_len = pixel_count;
     if image.len() == expected_rgb_len {
-        return (image.to_vec(), ImageEncodingRoute::ExactRgb);
+        let mut rgb = reserve_rgb(expected_rgb_len)?;
+        rgb.extend_from_slice(image);
+        return Ok((rgb, ImageEncodingRoute::Rgb));
     }
     if image.len() == expected_rgba_len {
-        let mut rgb = Vec::with_capacity(expected_rgb_len);
+        let mut rgb = reserve_rgb(expected_rgb_len)?;
         for chunk in image.as_chunks::<4>().0 {
             rgb.extend_from_slice(&chunk[..3]);
         }
-        return (rgb, ImageEncodingRoute::ExactRgbaDropAlpha);
+        return Ok((rgb, ImageEncodingRoute::RgbaDropAlpha));
     }
     if image.len() == expected_gray_len {
-        let mut rgb = Vec::with_capacity(expected_rgb_len);
+        let mut rgb = reserve_rgb(expected_rgb_len)?;
         for gray in image {
             rgb.push(*gray);
             rgb.push(*gray);
             rgb.push(*gray);
         }
-        return (rgb, ImageEncodingRoute::ExactGrayExpand);
+        return Ok((rgb, ImageEncodingRoute::GrayExpand));
     }
-    // No encoding matched exactly, so the payload's pixel count disagrees with the rectangle it was
-    // drawn into. Silently truncating or zero-padding produced a picture that is not the one the
-    // caller handed in, with nothing to say so; the warning names both lengths so the mismatch is
-    // observable in a log rather than only visible as wrong pixels. The graceful fallback is kept
-    // because some callers legitimately pass a shorter buffer, but it is no longer silent.
-    log::warn!(
-        "[pdf] image payload is {} byte(s) but the {width}x{height} rect needs {expected_rgb_len}
-         (rgb) / {expected_rgba_len} (rgba) / {expected_gray_len} (gray); truncating or zero-padding",
+    Err(format!(
+        "PDF image payload has {} byte(s), but {width}x{height} requires {expected_rgb_len} (RGB), \
+         {expected_rgba_len} (RGBA), or {expected_gray_len} (grayscale); refusing to alter pixels",
         image.len()
-    );
-    let mut rgb = vec![0u8; expected_rgb_len];
-    let copy_len = expected_rgb_len.min(image.len());
-    rgb[..copy_len].copy_from_slice(&image[..copy_len]);
-    (rgb, ImageEncodingRoute::TruncatedOrPadded)
+    ))
+}
+
+fn reserve_rgb(length: usize) -> Result<Vec<u8>, String> {
+    let mut rgb = Vec::new();
+    rgb.try_reserve_exact(length)
+        .map_err(|error| format!("unable to allocate {length} bytes for PDF image: {error}"))?;
+    Ok(rgb)
 }
 
 pub(crate) struct ParsedPdfPage {

@@ -114,7 +114,10 @@ fn reader_roundtrip_preserves_page_stream_and_media_box() {
             Rect { x: 40, y: 20, width: 15, height: 8 },
             Color { r: 70, g: 80, b: 90, a: 255 },
         );
-        page.draw_image(&[0xAB, 0xCD, 0xEF], Rect { x: 5, y: 5, width: 2, height: 2 });
+        page.draw_image(
+            &[0xAB, 0xCD, 0xEF, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0, 0x11],
+            Rect { x: 5, y: 5, width: 2, height: 2 },
+        );
     }
     let bytes = doc.to_bytes().expect("serialize");
     let reader = PdfReader::new();
@@ -259,7 +262,7 @@ fn writer_combined_pipeline_emits_form_security_and_image_markers() {
             "alice@example.com",
         );
         page.add_checkbox("newsletter", Rect { x: 32, y: 688, width: 14, height: 14 }, false);
-        page.draw_image(&[0x7F], Rect { x: 16, y: 16, width: 2, height: 1 });
+        page.draw_image(&[0x7F; 6], Rect { x: 16, y: 16, width: 2, height: 1 });
     }
     let bytes = doc.to_bytes().expect("serialize document");
     let text = String::from_utf8_lossy(&bytes);
@@ -283,12 +286,12 @@ fn writer_combined_pipeline_emits_form_security_and_image_markers() {
     assert!(!text.contains("combo-owner"));
     #[cfg(not(feature = "pdf-encryption"))]
     {
-        assert!(text.contains("% rw-image-route:raw-truncate-pad"));
+        assert!(text.contains("% rw-image-route:exact-rgb"));
     }
     #[cfg(feature = "pdf-encryption")]
     {
         // The image operators were encrypted along with the rest of the stream.
-        assert!(!text.contains("% rw-image-route:raw-truncate-pad"));
+        assert!(!text.contains("% rw-image-route:exact-rgb"));
     }
 }
 #[test]
@@ -305,7 +308,10 @@ fn reader_roundtrip_preserves_security_and_image_route_markers() {
     });
     {
         let page = doc.get_page(0).expect("page exists");
-        page.draw_image(&[0x11, 0x22, 0x33], Rect { x: 2, y: 2, width: 2, height: 2 });
+        page.draw_image(
+            &[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC],
+            Rect { x: 2, y: 2, width: 2, height: 2 },
+        );
         page.draw_text("ok", 10.0, 10.0, 10.0, Color { r: 0, g: 0, b: 0, a: 255 });
     }
     let bytes = doc.to_bytes().expect("serialize document");
@@ -335,8 +341,8 @@ fn reader_roundtrip_preserves_security_and_image_route_markers() {
     #[cfg(not(feature = "pdf-encryption"))]
     {
         let content = String::from_utf8_lossy(&content_bytes);
-        assert!(content.contains("% rw-image-route:raw-truncate-pad"));
-        assert!(content.contains("% rw-image-source-len:3"));
+        assert!(content.contains("% rw-image-route:exact-rgb"));
+        assert!(content.contains("% rw-image-source-len:12"));
         assert!(content.contains("% rw-image-expected-rgb-len:12"));
         assert!(content.contains("BT /F1"));
     }
@@ -348,20 +354,20 @@ fn reader_roundtrip_preserves_security_and_image_route_markers() {
     }
 }
 #[test]
-fn writer_image_with_short_payload_uses_truncate_pad_not_tiling() {
+fn writer_image_with_mismatched_payload_is_rejected() {
     let writer = PdfWriter::new();
     let mut doc = writer.create_document(Size { width: 100, height: 100 });
     {
         let page = doc.get_page(0).expect("page exists");
-        page.draw_image(&[0x01, 0x02, 0x03], Rect { x: 0, y: 0, width: 2, height: 2 });
+        page.draw_image(&[0x01], Rect { x: 0, y: 0, width: 2, height: 1 });
     }
     let bytes = doc.to_bytes().expect("serialize document");
     let text = String::from_utf8_lossy(&bytes);
-    assert!(text.contains("% rw-image-route:raw-truncate-pad"));
-    assert!(text.contains("% rw-image-source-len:3"));
-    assert!(text.contains("% rw-image-expected-rgb-len:12"));
-    assert!(text.contains("010203000000000000000000>"));
-    assert!(!text.contains("010203010203010203010203>"));
+    assert!(!text.contains("% rw-image-route:"));
+    assert!(!text.contains("% rw-image-source-len:1"));
+    assert!(!text.contains("% rw-image-expected-rgb-len:6"));
+    assert!(!text.contains("BI\n"));
+    assert!(!text.contains("010000000000>"));
 }
 #[test]
 fn writer_image_with_rgba_payload_drops_alpha_deterministically() {

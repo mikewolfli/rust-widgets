@@ -38,9 +38,8 @@
 #   WESTON_BIN           explicit weston binary path (skips mode detection)
 #   WESTON_SOCKET        compositor socket name (default: wayland-test)
 #   WESTON_SRC           dir for downloaded .debs (rootless; /tmp/weston-debs)
-#   WESTON_RUNTIME_DIR   private XDG_RUNTIME_DIR for the compositor
-#                        (default: /tmp/xdg-weston-$WESTON_SOCKET; never the
-#                        caller's live session directory)
+#   WESTON_RUNTIME_DIR   parent directory for a unique private XDG_RUNTIME_DIR
+#                        (default: /tmp; never the caller's live session directory)
 #   WESTON_FEATURES      cargo feature set to test (default: wayland-native)
 # ============================================================================
 
@@ -194,30 +193,34 @@ fi
 "$WESTON_BIN" --version
 
 echo "[3/5] Preparing private runtime dir (socket=$WESTON_SOCKET)"
-# Always use a private runtime dir so a live $XDG_RUNTIME_DIR (e.g. a real
-# desktop session) is never touched or removed.
-#
-# `$WESTON_SOCKET` is caller-controlled (`WESTON_SOCKET=… tools/run_wayland_compositor_tests.sh`)
-# and used to be interpolated straight into a path that is then `rm -rf`'d. A value containing `..`
-# or `/` would escape the intended `/tmp/xdg-weston-<socket>` directory — `WESTON_SOCKET=../../../home`
-# would delete outside it — so the name is validated against a strict whitelist first, and the
-# directory is only deleted after confirming it carries the expected prefix.
+# Always use a unique private runtime dir so a live $XDG_RUNTIME_DIR (e.g. a real desktop
+# session) is never touched. The configured path is only a parent; it is never recursively
+# removed. `mktemp -d` creates the exact child this run owns, which cleanup removes after Weston
+# exits.
 if [[ ! "$WESTON_SOCKET" =~ ^[A-Za-z0-9_-]+$ ]]; then
   echo "error: WESTON_SOCKET must match [A-Za-z0-9_-]+ (got: $WESTON_SOCKET)" >&2
   exit 2
 fi
-XDG_RUNTIME_DIR="${WESTON_RUNTIME_DIR:-/tmp/xdg-weston-$WESTON_SOCKET}"
-# Belt-and-braces: even with a validated socket, never `rm -rf` a path that is not the private
-# runtime dir this script owns. This is the second guard against a caller-supplied
-# `WESTON_RUNTIME_DIR` pointing somewhere it must not delete.
-if [[ "$XDG_RUNTIME_DIR" != /tmp/xdg-weston-* ]]; then
-  echo "error: refusing to remove XDG_RUNTIME_DIR '$XDG_RUNTIME_DIR' (expected a /tmp/xdg-weston- prefix)" >&2
+RUNTIME_PARENT="${WESTON_RUNTIME_DIR:-/tmp}"
+if [[ "$RUNTIME_PARENT" != /* ]]; then
+  echo "error: WESTON_RUNTIME_DIR must be an absolute parent directory (got: $RUNTIME_PARENT)" >&2
   exit 2
 fi
-rm -rf "$XDG_RUNTIME_DIR"
-mkdir -p "$XDG_RUNTIME_DIR"
+mkdir -p "$RUNTIME_PARENT"
+RUNTIME_PARENT="$(cd "$RUNTIME_PARENT" && pwd -P)"
+XDG_RUNTIME_DIR="$(mktemp -d "$RUNTIME_PARENT/xdg-weston-$WESTON_SOCKET.XXXXXX")"
 chmod 700 "$XDG_RUNTIME_DIR"
 export XDG_RUNTIME_DIR
+
+WESTON_PID=""
+cleanup() {
+  if [[ -n "$WESTON_PID" ]]; then
+    kill "$WESTON_PID" 2>/dev/null || true
+    wait "$WESTON_PID" 2>/dev/null || true
+  fi
+  rm -rf "$XDG_RUNTIME_DIR"
+}
+trap cleanup EXIT
 
 echo "[4/5] Starting headless compositor"
 WESTON_LOG="$(mktemp /tmp/weston-compositor-XXXXXX.log)"
@@ -227,12 +230,6 @@ nohup "$WESTON_BIN" \
   --socket="$WESTON_SOCKET" \
   --idle-time=0 >"$WESTON_LOG" 2>&1 &
 WESTON_PID=$!
-
-cleanup() {
-  kill "$WESTON_PID" 2>/dev/null || true
-  wait "$WESTON_PID" 2>/dev/null || true
-}
-trap cleanup EXIT
 
 # Wait for the socket to appear, then confirm the compositor is still alive.
 for _ in $(seq 1 50); do
