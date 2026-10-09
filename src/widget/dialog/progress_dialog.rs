@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Progress dialog widget.
-use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
@@ -14,7 +14,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::numeric::ordered_clamp_i32;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Progress dialog widget.
@@ -366,6 +366,9 @@ impl Draw for ProgressDialog {
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
         let style = self.base.style().clone();
+        // The **effective font** — the resolved theme/caller font — for the title, label, the
+        // percentage readout and the buttons (D09-STYLE-01).
+        let font = effective_font(&style);
         let theme = crate::style::resolved_theme_style("progress_dialog");
         // `progress_dialog` is absent from `WidgetRole::for_kind_name`'s table, so it
         // classifies as `Surface` and resolves to `theme.colors.background` — the window's
@@ -432,7 +435,7 @@ impl Draw for ProgressDialog {
         context.fill_rect(title_bar_band, title_bar);
         // Guarded on the text being non-empty so a titleless dialog emits no `<text …></text>`.
         if !self.title.is_empty() {
-            let title_font = Font::default();
+            let title_font = font;
             let title_line = context.text_line(title_bar_band, &title_font);
             context.draw_text_fitted(
                 Rect::new(
@@ -456,7 +459,7 @@ impl Draw for ProgressDialog {
         let button_band = ControlMetrics::bottom_band(body, dimensions::DIALOG_BUTTON_HEIGHT);
         let content =
             ControlMetrics::content_above_bottom_band(body, dimensions::DIALOG_BUTTON_HEIGHT);
-        let label_font = Font::default();
+        let label_font = font;
         let label_line_h = context.measure_text("M", &label_font).height.max(1);
         // Label: the top row of the content area, bounded by it rather than by `rect.y + 48`.
         // Guarded on the text being non-empty so a labelless dialog emits no empty `<text>`.
@@ -509,7 +512,7 @@ impl Draw for ProgressDialog {
             context.draw_text_line(
                 bar_band,
                 &format!("{pct}%"),
-                &Font::default(),
+                font,
                 if track.is_dark() { Color::WHITE } else { ink },
                 HorizontalAlignment::Center,
             );
@@ -528,13 +531,7 @@ impl Draw for ProgressDialog {
         let btn_rect = Rect::new(btn_x, button_band.y, btn_w, button_band.height.max(1));
         context.fill_rect(btn_rect, button_fill);
         context.draw_rect(btn_rect, border);
-        context.draw_text_line(
-            btn_rect,
-            &labels[0],
-            &Font::default(),
-            ink,
-            HorizontalAlignment::Center,
-        );
+        context.draw_text_line(btn_rect, &labels[0], font, ink, HorizontalAlignment::Center);
     }
 }
 

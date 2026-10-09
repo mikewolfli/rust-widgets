@@ -8,7 +8,7 @@
 //! distance exceeds the configured threshold. Supports embedding child content
 //! below the indicator area.
 
-use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -17,7 +17,7 @@ use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, role_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -458,7 +458,9 @@ impl Draw for RefreshControl {
                 // Draw "Loading..." text below. The origin is the glyph box's top edge, so the
                 // label hangs from `center_y + 14` itself; the old `+ ascent` pushed it half a
                 // line further down, out past the indicator area.
-                let font = Font::simple("sans-serif", 11.0);
+                // The label face is the **effective font** at its role size, so the theme family and
+                // the user's text scale reach it (D09-STYLE-01).
+                let font = role_font(&style, 11.0);
                 let label = "Loading...";
                 let metrics = context.measure_text(label, &font);
                 let text_x = center_x - (metrics.width as i32) / 2;
@@ -503,7 +505,7 @@ impl Draw for RefreshControl {
                 // Progress text. Top edge origin again, so the descent from the arrow is the
                 // 14px offset alone rather than 14 plus a full ascent.
                 if progress >= 1.0 {
-                    let font = Font::simple("sans-serif", 11.0);
+                    let font = role_font(&style, 11.0);
                     let label = "Release to refresh";
                     let metrics = context.measure_text(label, &font);
                     let text_x = center_x - (metrics.width as i32) / 2;

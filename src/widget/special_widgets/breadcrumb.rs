@@ -3,14 +3,14 @@
 
 //! Breadcrumb navigation widget.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -127,8 +127,20 @@ impl Breadcrumb {
         self.base.request_redraw();
     }
 
-    fn segment_width(segment: &BreadcrumbSegment, padding: i32) -> i32 {
-        (segment.label.chars().count() as i32) * 8 + padding * 2
+    /// The width one segment claims: its label plus the padding on both sides.
+    ///
+    /// # Why the shared ruler (D09-CTRL-02)
+    ///
+    /// The box used `chars().count() * 8`, a flat per-character estimate. The segment box is also
+    /// the click target, while the label inside it is drawn with the real glyph advances — so a wide
+    /// label (CJK, `W`) could be wider than its box and spill into the next separator/segment while
+    /// its overflow sat outside the clickable rectangle. Measuring with [`estimate_text_width`] — the
+    /// same ruler the painter uses — makes the box fit the label it draws, so the click target
+    /// covers the visible segment.
+    fn segment_width(&self, segment: &BreadcrumbSegment, padding: i32) -> i32 {
+        // The **effective font** — the resolved theme/caller font — so the segment box and the label
+        // are measured with the font the row paints with (D09-STYLE-01 / D09-STYLE-02).
+        estimate_text_width(&segment.label, effective_font(self.style()), 1.0) as i32 + padding * 2
     }
 
     /// The row the trail occupies: full width,
@@ -163,7 +175,7 @@ impl Breadcrumb {
             if x >= band_right {
                 break;
             }
-            let width = Self::segment_width(segment, self.segment_padding).max(1);
+            let width = self.segment_width(segment, self.segment_padding).max(1);
             if i == index {
                 let visible_width = width.min(band_right - x).max(0) as u32;
                 if visible_width == 0 {
@@ -389,11 +401,23 @@ impl Draw for Breadcrumb {
             // A label's origin is the glyph box's top edge, so the segment's raw midpoint put
             // that edge on the middle line and drew the label half a line low. The line box
             // centred in the segment gives the origin instead; the separator below shares it.
-            let line = context.text_line(segment_rect, &Font::default());
-            context.draw_text(
-                Point::new(segment_rect.x + self.segment_padding, line.y),
+            //
+            // The label is **fitted** into its own segment box (minus the leading pad), so a label
+            // wider than the box the segment was laid out as cannot spill into the next segment's
+            // separator: the box is also the click target, and D09-CTRL-02 is exactly the case where
+            // ink and target disagreed. `estimate_text_width` sizes the box, so this only bites for a
+            // caller font larger than the measured one — where eliding is still the correct answer.
+            let line = context.text_line(segment_rect, effective_font(&style));
+            let label_box = Rect::new(
+                segment_rect.x + self.segment_padding,
+                line.y,
+                (segment_rect.width as i32 - self.segment_padding).max(0) as u32,
+                line.height,
+            );
+            context.draw_text_fitted(
+                label_box,
                 &segment.label,
-                &Font::default(),
+                effective_font(&style),
                 text_color,
                 HorizontalAlignment::Left,
             );
@@ -406,7 +430,7 @@ impl Draw for Breadcrumb {
                 context.draw_text(
                     Point::new(gap_x + 3, line.y),
                     ">",
-                    &Font::default(),
+                    effective_font(&style),
                     separator_color,
                     HorizontalAlignment::Left,
                 );
@@ -418,6 +442,7 @@ impl Draw for Breadcrumb {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::Font;
     use std::sync::{Arc, Mutex};
 
     fn sample_segments() -> Vec<BreadcrumbSegment> {
@@ -554,5 +579,49 @@ mod tests {
             let seg = breadcrumb.segment_rect_at(0).expect("a laid-out segment");
             assert_eq!(seg.height, band.height, "a segment fills the trail's row, not the control");
         }
+    }
+
+    // ── D09-CTRL-02: segments are measured with the shared text ruler ──
+
+    /// A wide-glyph segment must be measured by the shared ruler, so its click target covers the
+    /// label it draws and it does not spill into the next segment's separator.
+    ///
+    /// # The defect this pins
+    ///
+    /// `segment_width` estimated `chars().count() * 8`. A CJK label advances far wider, so the
+    /// segment box (which is also the click target) was narrower than the drawn label: the text bled
+    /// toward the next separator while its overflow sat outside the clickable rectangle. The box now
+    /// uses `estimate_text_width`, the same ruler the painter uses.
+    #[test]
+    fn a_wide_glyph_segment_is_measured_by_the_shared_ruler() {
+        let label = "\u{4e2d}\u{6587}\u{76ee}\u{5f55}"; // four CJK scalars
+        let mut breadcrumb = Breadcrumb::new(Rect::new(0, 0, 800, 28));
+        breadcrumb.set_segments(vec![
+            BreadcrumbSegment::new("wide", label),
+            BreadcrumbSegment::new("next", "next"),
+        ]);
+
+        let measured = estimate_text_width(label, &Font::default(), 1.0) as i32;
+        let old_estimate = label.chars().count() as i32 * 8;
+        assert!(
+            measured > old_estimate,
+            "CJK advances wider than the old per-char estimate (was {old_estimate}, measured {measured})"
+        );
+        let seg = breadcrumb.segment_rect_at(0).expect("a laid-out segment");
+        assert!(
+            seg.width as i32 >= measured + breadcrumb.segment_padding * 2,
+            "the segment must hold the measured label plus padding, got {}",
+            seg.width
+        );
+
+        // The click target is that same box, and the next segment starts after the separator — no
+        // overlap.
+        let inside = Point::new(seg.x + seg.width as i32 - 1, seg.y + seg.height as i32 / 2);
+        assert_eq!(breadcrumb.hit_index(inside), Some(0));
+        let next = breadcrumb.segment_rect_at(1).expect("the second segment");
+        assert!(
+            next.x >= seg.x + seg.width as i32 + breadcrumb.separator_width,
+            "the next segment must clear the first segment and its separator"
+        );
     }
 }

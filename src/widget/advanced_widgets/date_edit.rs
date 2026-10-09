@@ -34,7 +34,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::dimensions;
+use crate::widget::metrics::{dimensions, effective_font};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -873,8 +873,10 @@ impl Draw for DateEdit {
         // glyph box's top edge on the field's middle line, so the value sat half a line low.
         // The line box is also what a caller reading this field's text position would need,
         // so deriving it here keeps the two from drifting.
-        let font = Font::default();
-        let line = context.text_line(rect, &font);
+        // The **effective font** — the resolved theme/caller font — so the value honours the theme
+        // body font and the user's text scale (D09-STYLE-01).
+        let font = effective_font(&style);
+        let line = context.text_line(rect, font);
         context.draw_text_fitted(
             Rect {
                 x: rect.x + 6,
@@ -883,7 +885,7 @@ impl Draw for DateEdit {
                 height: line.height,
             },
             &text,
-            &font,
+            font,
             ink,
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
@@ -923,6 +925,7 @@ pub(crate) fn draw_month_grid(
     date: &Date,
     minimum: &Date,
     maximum: &Date,
+    font: &Font,
 ) {
     let grid_w = POPUP_CELL_W * 7;
     let grid_h = POPUP_CELL_H * 7;
@@ -939,7 +942,6 @@ pub(crate) fn draw_month_grid(
     context.fill_rect(popup, plate);
     context.draw_rect(popup, border);
 
-    let font = Font::default();
     let muted = plate.blend(&ink, 0.45);
     // The day-of-week row, so the grid's columns mean something. Drawn from the same table
     // `weekday()` indexes, so the column that a date lands in is the initial above it.
@@ -950,7 +952,7 @@ pub(crate) fn draw_month_grid(
             POPUP_CELL_W,
             POPUP_CELL_H,
         );
-        context.draw_text_line(cell, initial, &font, muted, HorizontalAlignment::Center);
+        context.draw_text_line(cell, initial, font, muted, HorizontalAlignment::Center);
     }
 
     let first = Date::new(date.year(), date.month(), 1);
@@ -984,7 +986,7 @@ pub(crate) fn draw_month_grid(
             context.draw_text_line(
                 cell,
                 &day.to_string(),
-                &font,
+                font,
                 accent.contrast_color(),
                 HorizontalAlignment::Center,
             );
@@ -995,7 +997,7 @@ pub(crate) fn draw_month_grid(
             context.draw_text_line(
                 cell,
                 &day.to_string(),
-                &font,
+                font,
                 day_ink,
                 HorizontalAlignment::Center,
             );
@@ -1033,6 +1035,7 @@ impl DateEdit {
             &self.date,
             &self.minimum,
             &self.maximum,
+            effective_font(self.base.style()),
         );
     }
 }

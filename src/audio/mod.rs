@@ -25,7 +25,7 @@ pub use decoder::{decode, detect_audio_format};
 pub use encoder::encode;
 pub use engine::AudioEngine;
 pub use format::AudioFormat;
-pub use normalize::normalize;
+pub use normalize::{normalize, NormalizationError, NormalizationTarget};
 pub use resample::resample;
 pub use samples::AudioBuffer;
 

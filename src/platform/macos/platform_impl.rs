@@ -252,18 +252,33 @@ impl Platform for MacOSPlatform {
     }
 
     fn destroy_widget(&self, widget_id: ObjectId) -> bool {
-        // Teardown is safe on any thread: nothing here messages AppKit. The
-        // retained native objects (NSWindow/NSView instances) stay referenced by
-        // the AppKit view hierarchy, which releases them when the window closes.
-        // Off-main the backend never constructed a native object at all (it
-        // registered a state-only handle), so the state record and side tables
-        // are the only per-widget resources in either case.
-        //
-        // Each lock guard is released at the end of its own statement so that no
-        // two of the backend's mutexes are ever held at the same time.
-        crate::compat::lock(&self.handles).remove(&widget_id);
+        // Take the native handle out under its own lock, then release the guard
+        // before messaging AppKit (the two mutexes are never held together).
+        let handle = crate::compat::lock(&self.handles).remove(&widget_id);
         // Drop the per-widget accessibility registration that `register_handle` added.
         self.a11y_bridge.unregister_handle(widget_id);
+        // Native teardown for a window this backend really created: close it (so it
+        // leaves the screen) and release the `alloc`-owned reference `create_window`
+        // took. Without this, `destroy_widget` only deleted a `Copy` `usize` bookkeeping
+        // entry and the OS window stayed visible with its reference never balanced
+        // (D08-P-01). The close/release are main-thread-only, so they are skipped
+        // off-main, where `create_window` also never constructed a native object.
+        if let Some(handle) = handle {
+            if handle.ptr != 0
+                && matches!(handle.kind, HandleKind::Window)
+                && super::types::is_main_thread()
+            {
+                // SAFETY: `handle.ptr` is the `NSWindow*` this backend obtained from
+                // `NSWindow::alloc(..).initWithContentRect_..(..)` in `create_window`, so
+                // it is a valid owned AppKit object. `close`/`release` are the balanced
+                // teardown for that `alloc`, and both are main-thread-only (checked above).
+                unsafe {
+                    let window = handle.ptr as id;
+                    let _: () = msg_send![window, close];
+                    let _: () = msg_send![window, release];
+                }
+            }
+        }
         // The state record is the authority for whether the widget existed.
         self.state.destroy_widget(widget_id)
     }

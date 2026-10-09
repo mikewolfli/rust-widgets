@@ -19,7 +19,7 @@
 //! `rect.x + 6` with no bound and the indicator placed independently at
 //! `rect.x + rect.width - 20`.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -31,7 +31,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, estimate_text_width, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -190,6 +190,21 @@ impl EditableComboBox {
             }
             self.text_changed.emit(self.text.clone());
             self.base.request_redraw();
+        }
+    }
+
+    /// Appends committed text to the field and emits `text_changed` (D09-INPUT-01).
+    ///
+    /// The desktop backends deliver a printable character or an IME commit as
+    /// `Event::TextInput`/`Event::ImeCommit`, not as a `KeyPress`. This is the one append entry
+    /// point shared by the printable key arm and the committed-text branch, so the undo push and
+    /// the `text_changed` signal behave identically for both. Control characters are filtered so a
+    /// stray one does not enter the value.
+    fn append_committed_text(&mut self, text: &str) {
+        let mut next = self.text.clone();
+        next.extend(text.chars().filter(|c| !c.is_control()));
+        if next != self.text {
+            self.set_text(next);
         }
     }
 
@@ -358,7 +373,7 @@ impl Widget for EditableComboBox {
         // original reasoning holds — it is simply a per-*cluster* nominal advance rather than a
         // per-byte one.
         let content =
-            Size::new(estimate_text_width(&self.text, &crate::core::Font::default(), 1.0), 0);
+            Size::new(estimate_text_width(&self.text, effective_font(self.style()), 1.0), 0);
         let floor = Size::new(
             dimensions::TEXT_FIELD_MIN_HEIGHT + trailing,
             dimensions::TEXT_FIELD_MIN_HEIGHT,
@@ -509,16 +524,18 @@ impl Draw for EditableComboBox {
         context.draw_rounded_rect_stroke(rect, 4, border_color, 1);
 
         // Draw text content and the dropdown arrow from **one** derivation, so the value
-        // yields to the indicator instead of being written at an unconstrained offset.
-        let font = Font::simple("sans-serif", 13.0);
-        let line = context.text_line(rect, &font);
+        // yields to the indicator instead of being written at an unconstrained offset. The font is
+        // the **effective** one so the theme body font and the user's text scale reach the value
+        // and the list rows (D09-STYLE-01).
+        let font = effective_font(&style);
+        let line = context.text_line(rect, font);
         let geometry = self.indicator_geometry(line.height);
         let display_text = if self.text.is_empty() && !is_enabled { "" } else { &self.text };
         let text_color = self.base.disabled_ink_on(ink, bg_color);
         // The value is fitted into the box the indicator left, on that box's own line box: a
         // glyph origin is the box's top edge, so the old `padding + 13` put a 13 px font's
         // origin on the field's middle line and drew the value half a line low.
-        let value_line = context.text_line(geometry.text_box, &font);
+        let value_line = context.text_line(geometry.text_box, font);
         context.draw_text_fitted(
             Rect::new(
                 geometry.text_box.x,
@@ -527,7 +544,7 @@ impl Draw for EditableComboBox {
                 value_line.height,
             ),
             display_text,
-            &font,
+            font,
             text_color,
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
@@ -602,7 +619,7 @@ impl Draw for EditableComboBox {
             context.draw_text(
                 Point::new(item_text_x, item_text_y),
                 item,
-                &font,
+                font,
                 item_color,
                 HorizontalAlignment::Left,
             );
@@ -686,15 +703,21 @@ impl EventHandler for EditableComboBox {
                         // Character input
                         if let Some(ch) = char::from_u32(*key) {
                             if ch.is_ascii_graphic() || ch == ' ' {
-                                let mut new_text = self.text.clone();
-                                new_text.push(ch);
-                                self.set_text(new_text);
+                                self.append_committed_text(&ch.to_string());
                                 return;
                             }
                         }
                     }
                 }
                 self.base.handle_event(event);
+            }
+            // Platform-committed text (D09-INPUT-01). A printable character or an IME commit reaches
+            // the control as `TextInput`/`ImeCommit`, not as a `KeyPress`, so without this branch a
+            // typed value never entered the field. It funnels into the shared
+            // `append_committed_text`, which drives `set_text` — the same entry point the printable
+            // key arm uses. The `is_enabled` guard above already ran.
+            Event::TextInput { text } | Event::ImeCommit { text } => {
+                self.append_committed_text(text);
             }
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 let rect = self.geometry();

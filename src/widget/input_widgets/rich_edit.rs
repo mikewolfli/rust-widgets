@@ -124,6 +124,45 @@ impl RichEdit {
         self.base.request_redraw();
     }
 
+    /// Inserts committed text at the caret, replacing the selection when one is active
+    /// (D09-INPUT-01).
+    ///
+    /// This is the single editing entry point for text that came from the platform rather than a
+    /// single key: `Event::TextInput`/`Event::ImeCommit` route here, and the `KeyPress` printable
+    /// arm calls it too, so selection replacement, the undo push, `text_changed` and
+    /// `cursor_position_changed` are implemented once. Control characters are dropped because a
+    /// stray one must not enter the document as a non-printing byte.
+    pub fn insert_committed_text(&mut self, text: &str) {
+        if self.read_only {
+            return;
+        }
+        let filtered: String = text.chars().filter(|c| !c.is_control()).collect();
+        if filtered.is_empty() {
+            return;
+        }
+        // The insertion point is the caret end of the range, which is where a user typing sees the
+        // next character land. A non-empty selection is replaced rather than appended to.
+        let caret = self.extend_caret.min(self.text.len());
+        let (start, end) = match self.selection {
+            Some((a, b)) => {
+                let lo = a.min(b).min(self.text.len());
+                let hi = a.max(b).min(self.text.len());
+                (floor_char_boundary(&self.text, lo), floor_char_boundary(&self.text, hi))
+            }
+            None => {
+                (floor_char_boundary(&self.text, caret), floor_char_boundary(&self.text, caret))
+            }
+        };
+        let mut next = self.text.clone();
+        next.replace_range(start..end, &filtered);
+        let new_caret = start + filtered.len();
+        self.set_text(next);
+        self.selection = Some((new_caret, new_caret));
+        self.extend_caret = new_caret;
+        self.cursor_position_changed.emit(new_caret);
+        self.base.request_redraw();
+    }
+
     /// Steps back one text change and returns `true`, or `false` when there is
     /// nothing to undo.
     ///
@@ -741,6 +780,16 @@ impl crate::event::EventHandler for RichEdit {
             crate::event::Event::MouseRelease { pos: _, button } if *button == 1 => {
                 self.base.set_mouse_pressed(false);
             }
+            // Platform-committed text (D09-INPUT-01). The desktop backends deliver a printable
+            // character or an IME commit as `TextInput`/`ImeCommit`, so this is the branch that
+            // actually receives typing; it funnels into `insert_committed_text`, the same entry
+            // point the `KeyPress` printable arm below uses. `set_text`/the helper reject read-only,
+            // and an unfocused editor ignores it exactly as the key path does.
+            crate::event::Event::TextInput { text } | crate::event::Event::ImeCommit { text } => {
+                if self.focused {
+                    self.insert_committed_text(text);
+                }
+            }
             crate::event::Event::KeyPress { key, modifiers } => {
                 // An unfocused editor owns no keys: otherwise a second editor on the page is edited
                 // by the same keystroke, and a control the user never reached swallows the host's
@@ -878,14 +927,11 @@ impl crate::event::EventHandler for RichEdit {
                         self.set_selection(0, self.text.len());
                     }
                     _ if *key >= 32 && *key <= 126 => {
-                        // Printable ASCII — insert at cursor position
+                        // Printable ASCII — insert at the caret through the shared entry point, so
+                        // the keyboard and the platform's committed-text path cannot drift.
                         let c = char::from_u32(*key).unwrap_or(' ');
                         let c = if *modifiers & 0x02 != 0 { c.to_ascii_uppercase() } else { c };
-                        self.text.insert(cursor, c);
-                        let new_cursor = cursor + c.len_utf8();
-                        self.selection = Some((new_cursor, new_cursor));
-                        self.text_changed.emit(self.text.clone());
-                        self.cursor_position_changed.emit(new_cursor);
+                        self.insert_committed_text(&c.to_string());
                     }
                     _ => {}
                 }
@@ -1343,5 +1389,73 @@ mod tests {
         re.handle_event(&crate::event::Event::mouse_press(6, 6, 1));
         re.handle_event(&crate::event::Event::key_press(97, 0)); // 'a'
         assert_eq!(re.text(), "a", "the press made the editor own the keyboard");
+    }
+
+    // ─── D09-INPUT-01: platform-committed text reaches the document ───
+
+    /// A `TextInput` from the platform must enter the document.
+    ///
+    /// # The defect this pins (D09-INPUT-01)
+    ///
+    /// The desktop backends deliver a printable character or an IME commit as `Event::TextInput`,
+    /// not as a `KeyPress`; the handler only matched `KeyPress`, so committed text was dropped. The
+    /// test feeds `TextInput` to prove that path itself is wired.
+    #[test]
+    fn text_input_enters_the_document() {
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 300, 200)));
+        re.set_selection(0, 0);
+        re.handle_event(&crate::event::Event::TextInput { text: "héllo".to_string() });
+        assert_eq!(re.text(), "héllo");
+    }
+
+    /// An IME commit enters the document the same way.
+    #[test]
+    fn ime_commit_enters_the_document() {
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 300, 200)));
+        re.set_selection(0, 0);
+        re.handle_event(&crate::event::Event::ime_commit("你好"));
+        assert_eq!(re.text(), "你好");
+    }
+
+    /// A `TextInput` replaces a selection rather than appending to it.
+    #[test]
+    fn text_input_replaces_the_selection() {
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 400, 300)));
+        re.set_text("hello world".to_string());
+        re.set_selection(0, 5); // `hello`
+        re.handle_event(&crate::event::Event::TextInput { text: "Z".to_string() });
+        assert_eq!(re.text(), "Z world", "the committed text replaced the selected range");
+    }
+
+    /// A read-only editor ignores committed text, just as it ignores a printable key.
+    #[test]
+    fn read_only_ignores_text_input() {
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 300, 200)));
+        re.set_text("locked".to_string());
+        re.set_read_only(true);
+        re.handle_event(&crate::event::Event::TextInput { text: "X".to_string() });
+        assert_eq!(re.text(), "locked");
+    }
+
+    /// An unfocused editor ignores committed text, matching the key gate.
+    #[test]
+    fn unfocused_ignores_text_input() {
+        let mut re = RichEdit::new(Rect::new(0, 0, 300, 200));
+        re.handle_event(&crate::event::Event::TextInput { text: "X".to_string() });
+        assert!(re.text().is_empty());
+    }
+
+    /// Committed text emits `text_changed` with the new document.
+    #[test]
+    fn text_input_emits_text_changed() {
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 300, 200)));
+        re.set_selection(0, 0);
+        let last = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        re.text_changed.connect({
+            let last = std::sync::Arc::clone(&last);
+            move |text| *last.lock().unwrap() = text.to_string()
+        });
+        re.handle_event(&crate::event::Event::TextInput { text: "abc".to_string() });
+        assert_eq!(*last.lock().unwrap(), "abc");
     }
 }

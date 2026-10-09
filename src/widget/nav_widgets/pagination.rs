@@ -22,7 +22,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -501,7 +501,12 @@ impl Draw for Pagination {
         // stays inside a page-number cell.
         let font_size =
             (rect.height as f32 * 0.4).max(8.0).min(rect.height.saturating_sub(8).max(8) as f32);
-        let font = Font::simple("Sans", font_size);
+        // The **effective font** — the resolved theme/caller font — when the style names one, else
+        // the bar-height-derived face this control has always used, so a themed font or text scale
+        // reaches the page numbers (D09-STYLE-01).
+        let fallback_font = Font::simple("Sans", font_size);
+        let font = effective_font(&style);
+        let font = if style.font.is_some() { font } else { &fallback_font };
 
         context.face_with_gradient(
             rect,
@@ -549,7 +554,7 @@ impl Draw for Pagination {
                 text_color
             };
             if let Some(icon) = nav_icon {
-                let line = context.text_line(cell_rect, &font);
+                let line = context.text_line(cell_rect, font);
                 let side = line.height.max(1);
                 let icon_rect = Rect::new(
                     cell_rect.x + (cell_rect.width as i32 - side as i32) / 2,
@@ -571,11 +576,11 @@ impl Draw for Pagination {
             // old `cell_rect.y + (cell_rect.height - font_size) / 2` used the font size as a
             // stand-in for the line box and put the label half a line low whenever the two
             // differed.
-            let text_width = context.measure_text(&label, &font).width as i32;
-            let line = context.text_line(cell_rect, &font);
+            let text_width = context.measure_text(&label, font).width as i32;
+            let line = context.text_line(cell_rect, font);
             let origin =
                 Point::new(cell_rect.x + (cell_rect.width as i32 - text_width) / 2, line.y);
-            context.draw_text(origin, &label, &font, color, HorizontalAlignment::Left);
+            context.draw_text(origin, &label, font, color, HorizontalAlignment::Left);
         }
 
         context.draw_rect(rect, style.border_color.unwrap_or(Color::rgb(210, 210, 210)));

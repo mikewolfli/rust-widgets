@@ -7,13 +7,14 @@
 //! labels, percentage annotations, exploded slices, and donut mode.
 //! Each slice has a label, numeric value, color, and optional explosion offset.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -452,8 +453,10 @@ impl Draw for PieChart {
             return;
         }
 
-        let label_font = Font::new("sans-serif", 10.0, false, false);
-        let pct_font = Font::new("sans-serif", 9.0, false, false);
+        // The label and percentage faces are the **effective font** at their role sizes, so the
+        // theme family and the user's text scale reach the chart chrome (D09-STYLE-01).
+        let label_font = role_font(self.base.style(), 10.0);
+        let pct_font = role_font(self.base.style(), 9.0);
         // Chart chrome, derived from the active surface: `DARK_GRAY` was a light-chart literal
         // and rendered at 1.8:1 on the dark appearance's surface. The *slice* colours are
         // untouched — those identify the data (rule #108 ③). Shared with `bar_chart` and the

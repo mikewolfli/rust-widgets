@@ -18,6 +18,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::menu_toolbar::popup_reveal::{PopupReveal, RevealDirection};
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -345,7 +346,6 @@ impl Draw for MenuButton {
     fn draw(&mut self, context: &mut RenderContext) {
         let geom = self.geometry();
         let is_enabled = self.base.is_enabled();
-        let font = Font::simple("sans-serif", 13.0);
 
         // Chrome colours resolve the explicit style first, then the theme's resolved style
         // for this control, and only then the original literal. The literal stays as the
@@ -354,6 +354,9 @@ impl Draw for MenuButton {
         // a separate manager lock, taken and released inside `resolved_theme_style`, so no
         // guard is held across the draw (the mutex is not re-entrant).
         let style = self.base.style().clone();
+        // The **effective font** — the resolved theme/caller font — for the button's own label;
+        // the popup rows take the same font below (D09-STYLE-01).
+        let font = effective_font(&style);
         let themed = crate::style::resolved_theme_style("menu_button");
         let themed_bg = themed.as_ref().and_then(|r| r.background_color);
         let themed_border = themed.as_ref().and_then(|r| r.border_color);
@@ -407,11 +410,11 @@ impl Draw for MenuButton {
 
         // ── Draw button text ──
         let text_color = if !is_enabled { disabled_ink } else { ink };
-        let line = context.text_line(geom, &font);
+        let line = context.text_line(geom, font);
         context.draw_text(
             Point::new(text_offset_x, line.y),
             &self.text,
-            &font,
+            font,
             text_color,
             HorizontalAlignment::Left,
         );
@@ -477,7 +480,7 @@ impl Draw for MenuButton {
                 // Item text
                 let item_text_color =
                     if !item.enabled { item_ink.blend(&panel, 0.5) } else { item_ink };
-                let item_font = Font::simple("sans-serif", 12.0);
+                let item_font = effective_font(&style);
                 let mut item_x = item_rect.x + PADDING;
 
                 // Item icon
@@ -497,11 +500,11 @@ impl Draw for MenuButton {
                     item_x += 20;
                 }
 
-                let item_line = context.text_line(item_rect, &item_font);
+                let item_line = context.text_line(item_rect, item_font);
                 context.draw_text(
                     Point::new(item_x, item_line.y),
                     &item.text,
-                    &item_font,
+                    item_font,
                     item_text_color,
                     HorizontalAlignment::Left,
                 );
@@ -511,7 +514,7 @@ impl Draw for MenuButton {
                 // character fell back to an 8x8 bitmap and read as a blob.
                 if item.checked {
                     let check_x = item_rect.x + item_rect.width as i32 - PADDING - 12;
-                    let check_line = context.text_line(item_rect, &item_font);
+                    let check_line = context.text_line(item_rect, item_font);
                     let side = check_line.height.max(1);
                     let check_rect = Rect::new(
                         check_x,

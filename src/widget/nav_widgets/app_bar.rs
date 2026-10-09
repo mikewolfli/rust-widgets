@@ -20,7 +20,7 @@
 //! The title's *centring* is deliberately not affected: a centred box has the same left edge in
 //! either direction, which is why the defect survived review on the middle of the bar.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, TextDirection};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, TextDirection};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -30,6 +30,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -368,7 +369,10 @@ impl Draw for AppBar {
         // width on the same sides its affordances actually occupy. A centered box is unaffected by the
         // direction, which is why an unmirrored title on an unmirrored bar went unnoticed.
         if !self.title.is_empty() {
-            let title_font = Font::new("sans-serif", title_font_size, false, false);
+            // Derive the title's face from the **effective font** — the theme's family/weight/leading —
+            // and scale the role-derived title size by the same factor, so a text-scale preference
+            // reaches the title (D09-STYLE-01).
+            let title_font = role_font(&style, title_font_size);
             let metrics = context.measure_text(&self.title, &title_font);
 
             let (leading_reserve, trailing_reserve) = (
@@ -410,7 +414,9 @@ impl Draw for AppBar {
 
         // ── Action text (the bar's trailing zone) ──
         if !self.action_text.is_empty() {
-            let action_font = Font::new("sans-serif", action_font_size, false, false);
+            // Same rule as the title: the theme face at the action role's own size, scaled by the
+            // text preference (D09-STYLE-01).
+            let action_font = role_font(&style, action_font_size);
             let metrics = context.measure_text(&self.action_text, &action_font);
 
             let action_x = if self.direction.is_right_to_left() {

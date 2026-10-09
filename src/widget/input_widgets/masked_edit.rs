@@ -473,6 +473,19 @@ impl MaskedEdit {
         }
     }
 
+    /// Feeds platform-committed text through the mask one character at a time (D09-INPUT-01).
+    ///
+    /// The desktop backends deliver a printable character or an IME commit as
+    /// `Event::TextInput`/`Event::ImeCommit`, not as a `KeyPress`. `insert_char` is the same entry
+    /// point the `KeyPress` printable arm uses, so each committed character is validated against
+    /// the mask and advances the caret exactly as a keystroke would — which is what keeps a
+    /// multi-character commit filling successive slots instead of only the first.
+    fn insert_committed_text(&mut self, text: &str) {
+        for ch in text.chars().filter(|c| !c.is_control()) {
+            self.insert_char(ch);
+        }
+    }
+
     /// Deletes the character before the cursor (backspace).
     fn backspace(&mut self) {
         // A selection is what Backspace means when there is one: the whole range goes, not just the
@@ -1109,6 +1122,14 @@ impl EventHandler for MaskedEdit {
             // where the press put it, so the selection the user made is kept.
             Event::MouseRelease { button, .. } if *button == 1 => {
                 self.end_drag();
+            }
+            // Platform-committed text (D09-INPUT-01), routed through the mask entry point the
+            // `KeyPress` printable arm uses. Without this branch a committed string never reached
+            // the raw value. An unfocused field ignores it, matching the key path below.
+            Event::TextInput { text } | Event::ImeCommit { text } => {
+                if self.focused {
+                    self.insert_committed_text(text);
+                }
             }
             Event::KeyPress { key, modifiers } => {
                 if !self.focused {
@@ -1911,5 +1932,68 @@ mod tests {
             crate::widget::svg::text_ink_box(&plain),
             "and the value's ink is where it was"
         );
+    }
+
+    // ─── D09-INPUT-01: platform-committed text reaches the raw value ───
+
+    /// A `TextInput` from the platform must be fed through the mask.
+    ///
+    /// # The defect this pins (D09-INPUT-01)
+    ///
+    /// The desktop backends deliver a printable character or an IME commit as `Event::TextInput`,
+    /// not as a `KeyPress`; the handler only matched `KeyPress`, so committed text was dropped. The
+    /// test feeds `TextInput` to prove that path itself is wired.
+    #[test]
+    fn text_input_enters_the_raw_value() {
+        let mut me = MaskedEdit::new(Rect::new(0, 0, 200, 30));
+        me.set_mask("000-0000");
+        me.focused = true;
+        me.handle_event(&Event::TextInput { text: "123".to_string() });
+        assert_eq!(me.raw_text(), "123", "each committed character filled a slot");
+        assert_eq!(me.text(), "123-____");
+    }
+
+    /// An IME commit is fed through the mask one character at a time.
+    #[test]
+    fn ime_commit_enters_the_raw_value() {
+        let mut me = MaskedEdit::new(Rect::new(0, 0, 200, 30));
+        me.set_mask("0000");
+        me.focused = true;
+        me.handle_event(&Event::ime_commit("9876"));
+        assert_eq!(me.raw_text(), "9876");
+    }
+
+    /// A committed character that does not match the mask is rejected, exactly as a keystroke is.
+    #[test]
+    fn text_input_rejects_characters_the_mask_forbids() {
+        let mut me = MaskedEdit::new(Rect::new(0, 0, 200, 30));
+        me.set_mask("000");
+        me.focused = true;
+        me.handle_event(&Event::TextInput { text: "abc".to_string() });
+        assert_eq!(me.raw_text(), "", "letters do not match a digit mask");
+    }
+
+    /// An unfocused field ignores committed text, matching the key gate.
+    #[test]
+    fn unfocused_ignores_text_input() {
+        let mut me = MaskedEdit::new(Rect::new(0, 0, 200, 30));
+        me.set_mask("000");
+        me.handle_event(&Event::TextInput { text: "1".to_string() });
+        assert_eq!(me.raw_text(), "");
+    }
+
+    /// Committed text emits `text_changed` once with the raw value.
+    #[test]
+    fn text_input_emits_text_changed() {
+        let captured = Arc::new(Mutex::new(None));
+        let mut me = MaskedEdit::new(Rect::new(0, 0, 200, 30));
+        me.set_mask("0000");
+        me.focused = true;
+        let cap = captured.clone();
+        me.text_changed.connect(move |val| {
+            *cap.lock().unwrap() = Some(val.to_string());
+        });
+        me.handle_event(&Event::TextInput { text: "12".to_string() });
+        assert_eq!(*captured.lock().unwrap(), Some("12".to_string()));
     }
 }

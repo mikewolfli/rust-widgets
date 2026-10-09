@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! CollapsiblePane — a container widget that can be collapsed/expanded.
-use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -12,7 +12,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::dimensions;
+use crate::widget::metrics::{dimensions, effective_font};
 use crate::widget::{BaseWidget, Draw, IconName, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -467,9 +467,11 @@ impl Draw for CollapsiblePane {
         // The arrow and the title share one line box centred in the header, so the two read
         // as a single row. Centring through the shared primitive replaces the previous
         // `hdr.y + hdr.height / 2 - k`: the glyph origin is the box's top-left edge, so the
-        // hand-tuned constant was compensating for a defect rather than expressing the row.
-        let header_font = Font::default();
-        let header_line = context.text_line(hdr, &header_font);
+        // hand-tuned constant was compensating for a defect rather than expressing the row. The
+        // **effective font** — the resolved theme/caller font — replaces the hardcoded default so
+        // the header honours the theme body font and the user's text scale (D09-STYLE-01).
+        let header_font = effective_font(&style);
+        let header_line = context.text_line(hdr, header_font);
         let arrow_x = hdr.x + 6;
         let arrow_y = header_line.y;
         // # Why the disabled ink is derived from the header, not blended toward it
@@ -501,7 +503,7 @@ impl Draw for CollapsiblePane {
             context.draw_text(
                 Point::from_f32(text_x as f32, text_y as f32),
                 &self.title,
-                &header_font,
+                header_font,
                 title_color,
                 HorizontalAlignment::Left,
             );

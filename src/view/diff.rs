@@ -400,6 +400,53 @@ fn diff_node(
     diff_children(old, new, path, old_id, id_of, report);
 }
 
+/// The set of matched old indices that must be moved for the new order to hold.
+///
+/// `matches` is the per-new-child old index, in new order (`None` for a genuinely new
+/// child). The indices that appear in a **longest increasing subsequence** of the
+/// non-`None` entries already occur in the target relative order and are left in place;
+/// every other matched old index is returned, so the caller emits one `Move` per member.
+///
+/// This is the standard minimum-move-diff for a reorder expressed as remove-then-insert,
+/// and it is what makes a cyclic permutation like `[2, 0, 1]` resolve to a single
+/// `Move(tail, 0)` instead of the under-specified move the previous single-lookback rule
+/// produced (D08-V-02).
+fn children_to_move(matches: &[Option<usize>]) -> std::collections::HashSet<usize> {
+    // The matched old indices in new order, each paired with its target position so the
+    // returned set can be keyed by old index.
+    let sequence: Vec<usize> = matches.iter().flatten().copied().collect();
+    if sequence.len() <= 1 {
+        return std::collections::HashSet::new();
+    }
+
+    // Longest strictly increasing subsequence (patience-sorting): `prev[i]` is the index in
+    // `sequence` of the predecessor of element `i`, so the subsequence can be rebuilt.
+    let mut tails: Vec<usize> = Vec::new(); // indices into `sequence`
+    let mut prev: Vec<Option<usize>> = vec![None; sequence.len()];
+    for (i, &value) in sequence.iter().enumerate() {
+        // `partition_point` gives the first element greater than or equal to `value`.
+        let pos = tails.partition_point(|&t| sequence[t] < value);
+        if pos > 0 {
+            prev[i] = Some(tails[pos - 1]);
+        }
+        if pos == tails.len() {
+            tails.push(i);
+        } else {
+            tails[pos] = i;
+        }
+    }
+
+    // Walk the predecessor chain back from the last element of the LIS to mark stayers.
+    let mut stay: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut cursor = tails.last().copied();
+    while let Some(i) = cursor {
+        stay.insert(sequence[i]);
+        cursor = prev[i];
+    }
+
+    sequence.into_iter().filter(|value| !stay.contains(value)).collect()
+}
+
 /// Diff the child lists of two matched nodes.
 ///
 /// The algorithm is the classical "match, then emit inserts/moves/removes" pass:
@@ -453,71 +500,90 @@ fn diff_children(
 
     let mut consumed: Vec<bool> = vec![false; old.children.len()];
     // For each new child, the old index it matched, or `None` when it is new.
-    let mut matches: Vec<Option<usize>> = Vec::with_capacity(new.children.len());
+    let mut matches: Vec<Option<usize>> = vec![None; new.children.len()];
 
-    for child in &new.children {
-        // A keyed child is matched **only** by its key. It must not fall through to the
-        // positional match: doing so would let a newly added keyed node steal an existing
-        // node's position, which is precisely the identity drift rule #87 forbids — and it
-        // would consume the position the real owner still needs. A key is a statement about
-        // identity, so honouring it means an unmatched key means "this is new".
-        let found = match child.key_str() {
-            Some(k) => {
-                // A key shared by several old siblings identifies none of them, so it is
-                // unmappable and this child is treated as new — the same answer the
-                // key-not-found path gives, and the only deterministic one available.
-                if duplicated_keys.contains(k) {
-                    None
-                } else {
-                    old_key_index.get(k).copied().filter(|&i| !consumed[i])
-                }
+    // Pass 1 — keyed children, matched **only** by their key. They run before any keyless
+    // positional match so that a keyless sibling inserted ahead of a keyed one can never
+    // consume the node the keyed child is about to claim (D08-V-03). Previously a single
+    // pass let a keyless new child take the first same-type old child even when that child
+    // was the keyed one: old `[label(key=a)] -> [label(keyless), label(key=a)]` matched the
+    // keyless node to the old keyed node, then inserted a *second* `key=a` control, leaving
+    // two live widgets claiming one key.
+    //
+    // A key is a statement about identity and takes precedence over position, so reserving
+    // keyed matches first is the only order that keeps every key unique.
+    for (new_index, child) in new.children.iter().enumerate() {
+        let Some(k) = child.key_str() else { continue };
+        // A key shared by several old siblings identifies none of them, so it is unmappable
+        // and this child is treated as new — the same answer the key-not-found path gives,
+        // and the only deterministic one available.
+        if duplicated_keys.contains(k) {
+            continue;
+        }
+        if let Some(&i) = old_key_index.get(k) {
+            if !consumed[i] {
+                consumed[i] = true;
+                matches[new_index] = Some(i);
             }
-            None => {
-                // Keyless children have no identity to honour, so they match the first
-                // unconsumed old child of the same widget type. Restricting by type keeps a
-                // reordered list from matching a `label` to a `button`, which would then
-                // emit a cascade of refused writes.
-                //
-                // "Same type" is the resolved kind, not the declared spelling: an alias
-                // respelling must not turn a positional match into a `Replace`.
-                let positional =
-                    old.children.iter().enumerate().position(|(i, c)| {
-                        !consumed[i] && same_control_kind(&c.widget, &child.widget)
-                    });
-                // This is the branch the field measures, so this is where it is counted.
-                //
-                // `positional_matches` used to be incremented in the *not-found* arm below,
-                // which inverted its meaning: a stable keyless list — every child matched by
-                // position, exactly the case the field documents — reported **0**, while a
-                // genuinely appended child reported 1. A keyed match is not a positional one
-                // and is not counted here; `b4_8b_keyed_children_do_not_count_as_positional`
-                // pins that.
-                if positional.is_some() {
-                    report.positional_matches += 1;
-                }
-                positional
-            }
-        };
-        if let Some(i) = found {
+        }
+    }
+
+    // Pass 2 — keyless children, matched positionally against the first unconsumed old child
+    // of the same type that a keyed child did not already claim.
+    for (new_index, child) in new.children.iter().enumerate() {
+        if child.key_str().is_some() {
+            continue;
+        }
+        // Keyless children have no identity to honour, so they match the first unconsumed
+        // old child of the same widget type. Restricting by type keeps a reordered list from
+        // matching a `label` to a `button`, which would then emit a cascade of refused
+        // writes.
+        //
+        // "Same type" is the resolved kind, not the declared spelling: an alias respelling
+        // must not turn a positional match into a `Replace`.
+        let positional = old
+            .children
+            .iter()
+            .enumerate()
+            .position(|(i, c)| !consumed[i] && same_control_kind(&c.widget, &child.widget));
+        // This is the branch the field measures, so this is where it is counted.
+        //
+        // `positional_matches` used to be incremented in the *not-found* arm below, which
+        // inverted its meaning: a stable keyless list — every child matched by position,
+        // exactly the case the field documents — reported **0**, while a genuinely appended
+        // child reported 1. A keyed match is not a positional one and is not counted here;
+        // `b4_8b_keyed_children_do_not_count_as_positional` pins that.
+        if let Some(i) = positional {
+            report.positional_matches += 1;
             consumed[i] = true;
-        } else if child.key.is_none() {
-            // A keyless child with no positional match is genuinely new: a control is created
-            // for it where the old tree had none.
+            matches[new_index] = Some(i);
+        } else {
+            // A keyless child with no positional match is genuinely new: a control is
+            // created for it where the old tree had none.
             report.new_keyless_children += 1;
         }
-        matches.push(found);
     }
 
     // Step 2: emit for each new child, in order.
-    let mut last_matched_old: Option<usize> = None;
+    //
+    // Which matched children must be *moved* is decided from the whole order, not from a
+    // single previous index. The old approach flagged a child as moved only when its old
+    // index was smaller than the previous matched child's, which under-detected cyclic
+    // permutations: `[a,b,c] -> [c,a,b]` (old-index sequence `[2,0,1]`) emitted just
+    // `Move(a, 1)`, and applying remove-then-insert-at-index turned `[a,b,c]` into
+    // `[b,a,c]` rather than `[c,a,b]` (D08-V-02).
+    //
+    // The correct rule is the classical one for "transform a permutation with the fewest
+    // moves, each a remove + insert-at-position": the children whose old indices form a
+    // **longest increasing subsequence** already keep their relative order and stay put; every
+    // other matched child is moved, in ascending target order, to its own new index. Because
+    // each move places its child at an absolute index, and the stayers keep their relative
+    // order, the moves compose to exactly the declared order.
+    let moved_old_indices = children_to_move(&matches);
     for (new_index, child) in new.children.iter().enumerate() {
         match matches[new_index] {
             Some(old_index) => {
-                let moved = match last_matched_old {
-                    Some(previous) => old_index < previous,
-                    None => false,
-                };
-                if moved {
+                if moved_old_indices.contains(&old_index) {
                     report.patches.push(Patch::Move {
                         id: id_of(
                             &{
@@ -544,16 +610,24 @@ fn diff_children(
                 // misleading shape alive; both are gone.
                 let mut old_child_path = path.to_vec();
                 old_child_path.push(old_index);
+                // The child's parent is *this* container (`parent_id`), not the child itself.
+                //
+                // `diff_node`'s `parent_id` parameter is the control a `Replace`/`Insert` of the
+                // node itself is emitted against; the recursion used to pass the child's own id
+                // here, so a matched keyed child whose type changed produced
+                // `Replace { parent: <child id> }` (D08-V-01): apply then deleted the child and
+                // re-registered the replacement under the freshly-deleted id, stranding it and
+                // emptying the real parent's child list. Passing the container id keeps the
+                // replacement in the slot the old control occupied.
                 diff_node(
                     &old.children[old_index],
                     child,
                     &old_child_path,
-                    id_of(&old_child_path, old_index),
+                    Some(parent_id),
                     new_index,
                     id_of,
                     report,
                 );
-                last_matched_old = Some(old_index);
             }
             None => {
                 report.patches.push(Patch::Insert {

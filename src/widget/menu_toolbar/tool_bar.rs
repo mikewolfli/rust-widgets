@@ -11,7 +11,7 @@
 //! precisely what a layout owns, so nothing here accumulates an offset or re-derives the direction.
 
 use crate::compat::{String, ToString, Vec};
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::layout::{
     AlignItems, FlexDirection, FlexLayout, FlexWrap, JustifyContent, LayoutParams,
@@ -25,7 +25,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::composite::CompositeBuilder;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetFactory, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Orientation of a toolbar.
@@ -752,9 +752,11 @@ impl Draw for ToolBar {
             // when disabled", which on a dark strip was black text on a near-black button.
             let ink = surface.contrast_color();
             let fg = if item.is_enabled() { bg.contrast_color() } else { ink.with_alpha(130) };
-            let font = Font::default();
-            let line = context.text_line(item_band, &font);
-            context.draw_text_fitted(line, item.text(), &font, fg, HorizontalAlignment::Center);
+            // The **effective font** — the resolved theme/caller font — so toolbar item labels
+            // honour the theme body font and the user's text scale (D09-STYLE-01).
+            let font = effective_font(style);
+            let line = context.text_line(item_band, font);
+            context.draw_text_fitted(line, item.text(), font, fg, HorizontalAlignment::Center);
         }
     }
 }

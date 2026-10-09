@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Popup window widget.
-use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
@@ -11,6 +11,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Popup window widget.
 pub struct PopupWindow {
@@ -273,8 +274,10 @@ impl Draw for PopupWindow {
         // offset is half the difference between the bar and the line box; using the bar's own
         // midline put the glyph's top *at* the centre, leaving a 14 px title spanning 12..26 in
         // a 24 px bar — two pixels over the separator below it.
-        let title_font = Font::default();
-        let title_h = context.measure_text("M", &title_font).height;
+        // The **effective font** — the resolved theme/caller font — so the popup title honours the
+        // theme body font and the user's text scale (D09-STYLE-01).
+        let title_font = effective_font(&style);
+        let title_h = context.measure_text("M", title_font).height;
         context.draw_text_fitted(
             Rect::new(
                 rect.x + 8,
@@ -283,7 +286,7 @@ impl Draw for PopupWindow {
                 title_h,
             ),
             &self.title,
-            &title_font,
+            title_font,
             ink,
             HorizontalAlignment::Left,
         );

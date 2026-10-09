@@ -900,7 +900,17 @@ impl EventHandler for RangeSlider {
             Event::MouseMove { pos } => {
                 if let Some(is_lower) = self.dragging {
                     let rect = self.geometry();
-                    let raw_value = self.pixel_to_value(pos.x, &rect);
+                    // The drag reads the pointer along the *track's* axis (D09-VIEW-02): a vertical
+                    // selector moves with y, a horizontal one with x. Reading x unconditionally made
+                    // a vertical drag depend on the pointer's horizontal position, so the handle
+                    // jumped to an end whenever x was outside the narrow track. This is the same
+                    // axis selection the base `Slider` applies, and it keeps the drag, the hit test
+                    // and the two pixel mappings on one axis.
+                    let pixel = match self.orientation {
+                        RangeSliderOrientation::Horizontal => pos.x,
+                        RangeSliderOrientation::Vertical => pos.y,
+                    };
+                    let raw_value = self.pixel_to_value(pixel, &rect);
                     if is_lower {
                         self.set_lower_value(raw_value);
                     } else {
@@ -1332,5 +1342,164 @@ mod tests {
         assert!(!rs.is_dragging());
         let released = crate::widget::svg::render_to_svg(&mut rs);
         assert_eq!(released, resting, "releasing must restore the resting frame");
+    }
+
+    // ── D09-VIEW-02: the drag reads the pointer along the track's own axis ──
+
+    /// A vertical drag must track the pointer's **y**, not its x.
+    ///
+    /// # The defect this pins
+    ///
+    /// The `MouseMove` arm always called `pixel_to_value(pos.x, ..)`, so a vertical selector's value
+    /// followed the pointer's horizontal position. In a narrow, tall control x is almost always
+    /// outside the track, so `pixel_to_value` clamped it and the handle snapped to an end. The drag
+    /// now selects the axis by orientation, like the base `Slider`.
+    #[test]
+    fn a_vertical_drag_follows_the_pointer_y_not_x() {
+        let rect = Rect::new(0, 0, 40, 300);
+        let mut rs = RangeSlider::new(rect);
+        rs.set_orientation(RangeSliderOrientation::Vertical);
+        rs.set_range(0.0, 100.0);
+        rs.set_lower_value(50.0);
+        rs.set_upper_value(80.0);
+
+        // Press the lower handle at its own drawn centre.
+        let lower_centre =
+            Point::new(rect.x + rect.width as i32 / 2, rs.value_to_pixel(50.0, &rect));
+        rs.handle_event(&Event::MousePress { pos: lower_centre, button: 1, modifiers: 0 });
+        assert!(rs.is_dragging(), "a press on the lower handle must arm the drag");
+
+        // Moving along the track (y) changes the value; the vertical axis puts the maximum at the
+        // top (small y) and the minimum at the bottom (large y). Each move must land on the value
+        // whose own drawn y the pointer is given, so the drag and the paint agree. The lower handle
+        // is capped by the upper one (80), so the sampled values stay at or below that.
+        for fraction in [0.75_f64, 0.5, 0.25, 0.6] {
+            let value = 80.0 * fraction;
+            let y = rs.value_to_pixel(value, &rect);
+            rs.handle_event(&Event::MouseMove { pos: Point::new(lower_centre.x, y) });
+            let decoded = rs.pixel_to_value(y, &rect);
+            assert!(
+                (rs.lower_value() - decoded).abs() <= 1.0,
+                "a vertical drag must decode y into the same value the handle would be drawn at: \
+                 requested {value}, y {y}, got {} vs {decoded}",
+                rs.lower_value()
+            );
+        }
+
+        // Monotonic: moving the pointer *up* the track (smaller y) cannot lower the value. The
+        // sweep starts from the bottom-most sample so the sequence is genuinely increasing.
+        rs.handle_event(&Event::MouseMove {
+            pos: Point::new(lower_centre.x, rs.value_to_pixel(80.0 * 0.25, &rect)),
+        });
+        let mut previous = rs.lower_value();
+        for fraction in [0.5_f64, 0.75] {
+            let y = rs.value_to_pixel(80.0 * fraction, &rect);
+            rs.handle_event(&Event::MouseMove { pos: Point::new(lower_centre.x, y) });
+            let now = rs.lower_value();
+            assert!(
+                now >= previous,
+                "moving the pointer up the track must not decrease the value: {previous} -> {now}"
+            );
+            previous = now;
+        }
+
+        // Changing x while y is fixed must not change the value at all.
+        let y = rs.value_to_pixel(30.0, &rect);
+        rs.handle_event(&Event::MouseMove { pos: Point::new(lower_centre.x, y) });
+        let stable = rs.lower_value();
+        for x in [-500, -1, 0, 5, 20, 39, 5000] {
+            rs.handle_event(&Event::MouseMove { pos: Point::new(x, y) });
+            assert!(
+                (rs.lower_value() - stable).abs() < f64::EPSILON,
+                "x={x} must not change a vertical drag's value (was {stable}, now {})",
+                rs.lower_value()
+            );
+        }
+
+        rs.handle_event(&Event::MouseRelease { pos: lower_centre, button: 1 });
+        assert!(!rs.is_dragging());
+    }
+
+    /// The vertical drag's endpoints land on the range ends, and x is irrelevant, in both writing
+    /// directions (the vertical axis ignores direction).
+    #[test]
+    fn a_vertical_drag_reaches_both_ends_ignoring_direction() {
+        let rect = Rect::new(0, 0, 40, 300);
+        for direction in
+            [crate::core::TextDirection::LeftToRight, crate::core::TextDirection::RightToLeft]
+        {
+            let mut rs = RangeSlider::new(rect);
+            rs.set_orientation(RangeSliderOrientation::Vertical);
+            rs.set_direction(direction);
+            rs.set_range(0.0, 100.0);
+            rs.set_lower_value(50.0);
+            rs.set_upper_value(80.0);
+
+            // Grab the **upper** handle (which keeps its own value while dragging).
+            let upper_centre =
+                Point::new(rect.x + rect.width as i32 / 2, rs.value_to_pixel(80.0, &rect));
+            rs.handle_event(&Event::MousePress { pos: upper_centre, button: 1, modifiers: 0 });
+            assert!(rs.is_dragging());
+
+            // Drag to the very top (minimum y) with an off-track x: the value must reach the maximum.
+            let top = rs.value_to_pixel(100.0, &rect);
+            rs.handle_event(&Event::MouseMove { pos: Point::new(-1000, top) });
+            assert!(
+                (rs.upper_value() - 100.0).abs() < f64::EPSILON,
+                "{direction:?}: dragging to the top must reach the maximum, got {}",
+                rs.upper_value()
+            );
+
+            // Drag to the very bottom: the value must reach the lower floor (lower + min_range = 50).
+            let bottom = rs.value_to_pixel(0.0, &rect);
+            rs.handle_event(&Event::MouseMove { pos: Point::new(1000, bottom) });
+            assert!(
+                (rs.upper_value() - 50.0).abs() < f64::EPSILON,
+                "{direction:?}: dragging to the bottom must reach the lower floor, got {}",
+                rs.upper_value()
+            );
+            rs.handle_event(&Event::MouseRelease { pos: upper_centre, button: 1 });
+        }
+    }
+
+    /// A horizontal drag follows x, in both directions, and ignores y.
+    #[test]
+    fn a_horizontal_drag_follows_x_in_both_directions() {
+        let rect = Rect::new(0, 0, 300, 40);
+        for direction in
+            [crate::core::TextDirection::LeftToRight, crate::core::TextDirection::RightToLeft]
+        {
+            let mut rs = RangeSlider::new(rect);
+            rs.set_direction(direction);
+            rs.set_range(0.0, 100.0);
+            rs.set_lower_value(20.0);
+            rs.set_upper_value(80.0);
+
+            let lower_centre =
+                Point::new(rs.value_to_pixel(20.0, &rect), rect.y + rect.height as i32 / 2);
+            rs.handle_event(&Event::MousePress { pos: lower_centre, button: 1, modifiers: 0 });
+            assert!(rs.is_dragging());
+
+            // The value at an x is the value `pixel_to_value` gives; the drag must agree with it.
+            let target_x = rs.value_to_pixel(50.0, &rect);
+            rs.handle_event(&Event::MouseMove { pos: Point::new(target_x, lower_centre.y) });
+            let expected = rs.pixel_to_value(target_x, &rect);
+            assert!(
+                (rs.lower_value() - expected).abs() < 1.0,
+                "{direction:?}: a horizontal drag must track x, got {} vs {expected}",
+                rs.lower_value()
+            );
+
+            // Changing y while x is fixed must not change the value.
+            let stable = rs.lower_value();
+            for y in [-500, 0, 20, 39, 5000] {
+                rs.handle_event(&Event::MouseMove { pos: Point::new(target_x, y) });
+                assert!(
+                    (rs.lower_value() - stable).abs() < f64::EPSILON,
+                    "{direction:?}: y={y} must not change a horizontal drag's value"
+                );
+            }
+            rs.handle_event(&Event::MouseRelease { pos: lower_centre, button: 1 });
+        }
     }
 }

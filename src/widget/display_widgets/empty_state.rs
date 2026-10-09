@@ -16,6 +16,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -290,9 +291,11 @@ impl Draw for EmptyState {
         // size, is the unit every row below is placed with. A row's *pitch* is that box
         // plus the inter-row gap; the header's contribution to the stack is the icon box
         // and the title box in sequence, so the message's rows begin below both.
-        let title_font = Font::with_weight("Sans", title_font_size as f32, 600, false);
-        let icon_font = Font::with_weight("Sans", icon_size as f32, 400, false);
-        let message_font = Font::with_weight("Sans", message_font_size as f32, 400, false);
+        // Each label's face comes from the **effective font** at its role size and weight, so the
+        // theme family and the user's text scale reach the empty-state copy (D09-STYLE-01).
+        let title_font = role_font(&style, title_font_size as f32).with_weight_value(600);
+        let icon_font = role_font(&style, icon_size as f32).with_weight_value(400);
+        let message_font = role_font(&style, message_font_size as f32).with_weight_value(400);
         let icon_height = context.measure_text("M", &icon_font).height.max(1) as i32;
         let title_height = context.measure_text("M", &title_font).height.max(1) as i32;
         let line_height = context.measure_text("M", &message_font).height.max(1) as i32;
@@ -380,7 +383,7 @@ impl Draw for EmptyState {
             } else {
                 btn_bg.contrast_color()
             };
-            let btn_font = Font::with_weight("Sans", 14.0, 600, false);
+            let btn_font = role_font(&style, 14.0).with_weight_value(600);
             // Horizontal centring is measured; vertical centring comes from the shared line
             // box. The previous `btn_rect.y + btn_rect.height / 2` put the glyph box's top edge
             // on the button's middle line and drew the label half a line low.

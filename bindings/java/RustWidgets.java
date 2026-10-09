@@ -15,8 +15,28 @@ package io.github.rustwidgets;
  *   RustWidgets.run();
  * }</pre>
  *
- * <p>Widget IDs are {@code long} values (0 = invalid). All methods throw
- * {@link IllegalStateException} on invalid widget IDs or native failures.
+ * <p>Widget IDs are {@code long} values (0 = invalid, see
+ * {@link #INVALID_WIDGET_ID}). The public API reports errors in two ways, and
+ * the two are deliberately distinct:
+ *
+ * <ul>
+ *   <li><b>Programming errors</b> — a {@code null} text/title argument, or a
+ *       widget/parent ID of {@code 0} — throw
+ *       {@link IllegalArgumentException} from the method itself.</li>
+ *   <li><b>Native failures</b> — an unknown or already-destroyed non-zero ID,
+ *       or a creation the backend declines — are reported through the method's
+ *       own return value: a creation method returns
+ *       {@link #INVALID_WIDGET_ID} ({@code 0}), a predicate returns
+ *       {@code false}, and a string accessor returns the empty string. A
+ *       caller that needs to distinguish these must check the return value;
+ *       the methods do not throw for them.</li>
+ * </ul>
+ *
+ * <p>This split matches the C ABI, which likewise uses {@code 0}/{@code false}
+ * for native failure rather than an error channel. The Javadoc previously
+ * claimed every method throws {@link IllegalStateException} on invalid IDs or
+ * native failures, which was untrue for both categories (D09-JNI-01); it now
+ * describes what the methods do.
  *
  * <p>Thread safety: the native library expects all calls from the main (EDT)
  * thread unless documented otherwise.
@@ -71,8 +91,6 @@ public final class RustWidgets {
     /**
      * Initialise the native library. Must be called once before any other
      * method. Calls after the first are no-ops.
-     *
-     * @throws IllegalStateException if the native library cannot be initialised
      */
     public static void init() {
         nativeInit();
@@ -106,7 +124,8 @@ public final class RustWidgets {
      * @param y      initial vertical position
      * @param width  content area width (px)
      * @param height content area height (px)
-     * @return the widget ID (always &gt; 0 on success)
+     * @return the widget ID (&gt; 0 on success, {@link #INVALID_WIDGET_ID} on
+     *         native failure)
      * @throws IllegalArgumentException if {@code title} is null
      */
     public static long createWindow(String title, int x, int y, int width, int height) {

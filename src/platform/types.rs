@@ -795,6 +795,35 @@ pub trait Platform: Send + Sync {
         false
     }
 
+    /// Returns `true` when this backend can deliver pointer/stylus events carrying pen
+    /// pressure and tilt (D09-POINTER-01).
+    ///
+    /// # What `true` promises
+    ///
+    /// That the backend has a path from a real pen device to
+    /// [`Event::PointerPress`](crate::event::Event::PointerPress)/
+    /// [`PointerMove`](crate::event::Event::PointerMove)/
+    /// [`PointerRelease`](crate::event::Event::PointerRelease), so a control that consumes
+    /// them (a `SignaturePad`, a `Button`) receives real pen data rather than nothing.
+    ///
+    /// # Why the built-in backends answer `false`
+    ///
+    /// None of this crate's built-in backends can read a pen's pressure axis without
+    /// reaching past the safe bindings they depend on — for example `gdk` 0.18 leaves
+    /// `gdk_device_get_axis_value` unwrapped, so GTK's Linux backend has no *safe* way to
+    /// turn a pen contact into a normalized pressure and must not fabricate one from the
+    /// mouse it does receive (principle #37). The honest answer is therefore `false`, and
+    /// the pen path is reached through the same host-injected [`Platform::route_pointer_event`]
+    /// route a test uses: a host that *does* own a pen device (an Android `MotionEvent`, an
+    /// iOS `UITouch`, an out-of-tree backend with a raw device handle) constructs the
+    /// `PointerPress`/`PointerMove`/`PointerRelease` events itself and routes them here.
+    ///
+    /// A host should ask this before building a pen-only feature, so "this build cannot
+    /// show you pen pressure" is answerable rather than silently degrading to a mouse line.
+    fn supports_pen_input(&self) -> bool {
+        false
+    }
+
     /// Routes a pointer event that arrived at the surface `root` to the widget
     /// actually under `point`.
     ///
@@ -815,6 +844,15 @@ pub trait Platform: Send + Sync {
     ///
     /// The method describes the *intent* ("route this pointer event"), not the
     /// mechanism, so callers stay free of per-OS knowledge (BLUE15 rules #35/#52).
+    ///
+    /// # Stylus events
+    ///
+    /// The `PointerPress`/`PointerMove`/`PointerRelease` family routes through this same
+    /// method (D09-POINTER-01), so a host that owns a pen device delivers real pen data by
+    /// constructing those events and calling here. A control that consumes them (a
+    /// `SignaturePad`'s ink, a `Button`'s activation) therefore works end to end through the
+    /// public route whether the data came from a device or a test. [`Platform::supports_pen_input`]
+    /// reports whether *this backend* has such a device path of its own.
     ///
     /// Returns whether a widget accepted the event.
     ///

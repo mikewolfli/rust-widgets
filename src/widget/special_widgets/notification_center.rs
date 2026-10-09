@@ -3,7 +3,7 @@
 
 //! NotificationCenter widget.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -11,6 +11,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::menu_toolbar::popup_reveal::PopupReveal;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -535,7 +536,7 @@ impl Draw for NotificationCenter {
             context.draw_text_fitted(
                 title_band,
                 &item.title,
-                &Font::default(),
+                effective_font(&style),
                 text_color,
                 HorizontalAlignment::Left,
             );
@@ -549,7 +550,7 @@ impl Draw for NotificationCenter {
                 context.draw_text_fitted(
                     message_band,
                     &item.message,
-                    &Font::default(),
+                    effective_font(&style),
                     // The message is secondary text, so it is a tint of the resolved
                     // foreground rather than a second literal.
                     text_color.blend(&background, 0.25),

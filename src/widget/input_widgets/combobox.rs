@@ -39,7 +39,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 #[cfg(full_widgets)]
 use crate::widget::composite::CompositeBuilder;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 #[cfg(full_widgets)]
 use crate::widget::WidgetFactory;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -814,7 +814,13 @@ impl Widget for ComboBox {
         // requirement supplying the floor. The width was previously `max_w * 8 + 30` and the
         // height a flat `24` — neither had any relation to the 120 px slab `draw` painted, nor
         // to the 48 px band it paints now.
-        let widest = self.items().iter().map(|s| s.len() as u32).max().unwrap_or(8) * 8;
+        // The widest item, measured with the **effective font** through the shared estimate rather
+        // than an 8-px-per-UTF-8-byte guess. The old `s.len() * 8` counted bytes, so a CJK value
+        // measured three times its drawn width, and it ignored the font entirely, so a scaled theme
+        // font did not widen the field (D09-STYLE-02).
+        let font = effective_font(self.style());
+        let widest =
+            self.items().iter().map(|s| estimate_text_width(s, font, 1.0)).max().unwrap_or(8);
         let side_air = (dimensions::TEXT_FIELD_MIN_HEIGHT / 2).saturating_sub(8);
         let trailing =
             dimensions::TEXT_FIELD_PADDING_H + dimensions::BUTTON_ICON_SIZE + INDICATOR_LEADING_GAP;
@@ -1904,5 +1910,30 @@ mod tests {
             "the window is clamped to the rows that exist"
         );
         assert!(cb.item_rect(0).is_some(), "and item 0 is still shown");
+    }
+
+    // ── D09-STYLE-02: the hint measures with the font the paint uses ──
+
+    /// A caller-authored `style.font` must widen the combo box hint, and the measured item width
+    /// must follow the shared ruler rather than a byte count.
+    #[test]
+    fn a_custom_font_grows_the_combo_box_hint() {
+        let mut baseline = ComboBox::new(Rect::new(0, 0, 200, 24));
+        baseline.set_items(vec!["a modest option".to_string()]);
+        let base_hint = baseline.size_hint();
+
+        let mut big = ComboBox::new(Rect::new(0, 0, 200, 24));
+        big.set_items(vec!["a modest option".to_string()]);
+        big.set_style(
+            crate::style::WidgetStyle::default().with_font(crate::core::Font::simple("Test", 30.0)),
+        );
+        let big_hint = big.size_hint();
+
+        assert!(
+            big_hint.width > base_hint.width,
+            "a larger font must widen the combo hint: {} vs {}",
+            big_hint.width,
+            base_hint.width
+        );
     }
 }

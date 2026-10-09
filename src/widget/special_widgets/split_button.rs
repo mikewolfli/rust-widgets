@@ -30,7 +30,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::composite::CompositeBuilder;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetFactory, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -335,7 +335,7 @@ impl SplitButton {
     /// label actually carries — so the face tiles from a number the child control would agree with,
     /// rather than from a restatement of it.
     fn trigger_hint_width(&self) -> u32 {
-        split_hint_width(&self.text)
+        split_hint_width(&self.text, effective_font(self.style()))
     }
 
     fn primary_rect(&self) -> Rect {
@@ -643,6 +643,10 @@ impl Draw for SplitButton {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
         let style = self.base.style().clone();
+        // The **effective font** — the resolved theme/caller font — used for the trigger label, the
+        // drop-down arrow glyph and every menu row, so the control honours the theme body font and
+        // the user's text scale (D09-STYLE-01).
+        let font = effective_font(&style);
         let theme = crate::style::resolved_theme_style("split_button");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
@@ -733,9 +737,9 @@ impl Draw for SplitButton {
         // the previous `x + 8` origin left-aligned it against a literal.
         let primary_box = self.primary_label_box(primary_rect);
         context.draw_text_fitted(
-            context.text_line(primary_box, &Font::default()),
+            context.text_line(primary_box, font),
             &self.text,
-            &Font::default(),
+            font,
             ink,
             HorizontalAlignment::Center,
         );
@@ -745,9 +749,9 @@ impl Draw for SplitButton {
         // size put the glyph off the column's centre. `draw_text_fitted` with `Center` derives
         // the origin from the measured string inside the column.
         context.draw_text_fitted(
-            context.text_line(arrow, &Font::default()),
+            context.text_line(arrow, font),
             ARROW_LABEL,
-            &Font::default(),
+            font,
             ink.blend(&arrow_bg, 0.35),
             HorizontalAlignment::Center,
         );
@@ -774,9 +778,9 @@ impl Draw for SplitButton {
                     // it hangs from share their leading space rather than each naming it.
                     let row_box = self.primary_label_box(action_rect);
                     context.draw_text_fitted(
-                        context.text_line(row_box, &Font::default()),
+                        context.text_line(row_box, font),
                         &action.label,
-                        &Font::default(),
+                        font,
                         ink,
                         HorizontalAlignment::Left,
                     );
@@ -799,9 +803,8 @@ impl Draw for SplitButton {
 ///
 /// It replaced `text.len() as u32 * 8`, which counted UTF-8 **bytes**; see `trigger_hint_width`
 /// for why that was wrong.
-fn split_hint_width(text: &str) -> u32 {
-    crate::widget::metrics::estimate_text_width(text, &crate::core::Font::default(), 1.0)
-        + dimensions::BUTTON_PADDING_H * 2
+fn split_hint_width(text: &str, font: &Font) -> u32 {
+    estimate_text_width(text, font, 1.0) + dimensions::BUTTON_PADDING_H * 2
 }
 
 #[cfg(test)]
@@ -1001,7 +1004,8 @@ mod tests {
         // tiling is *possible at all* — it is not a threshold the code applies, it is the sum of
         // the two columns' own sizes, and the assertion below is that the assembly tiles exactly
         // wherever tiling is representable.
-        let min_tile_width = split_hint_width("Run") + dimensions::SPLIT_ARROW_COLUMN_WIDTH;
+        let min_tile_width =
+            split_hint_width("Run", &Font::default()) + dimensions::SPLIT_ARROW_COLUMN_WIDTH;
         for width in [min_tile_width, 100, 240, 400] {
             let split = SplitButton::new("Run", Rect::new(0, 0, width, 120));
             let band = split.face_band();
@@ -1066,8 +1070,9 @@ mod tests {
         // face is honestly described as "this control is smaller than its contents": the arrow keeps
         // its **share** rather than being dropped, which is the property that matters (an absent
         // drop-down arrow is a split button that is not a split button).
-        let scale =
-            width as f32 / (split_hint_width("Run") + dimensions::SPLIT_ARROW_COLUMN_WIDTH) as f32;
+        let scale = width as f32
+            / (split_hint_width("Run", &Font::default()) + dimensions::SPLIT_ARROW_COLUMN_WIDTH)
+                as f32;
         assert!(
             (arrow.width as f32 - dimensions::SPLIT_ARROW_COLUMN_WIDTH as f32 * scale).abs() <= 1.0,
             "the arrow keeps its proportional share of a squeezed face: {} vs {} × {scale:.2}",

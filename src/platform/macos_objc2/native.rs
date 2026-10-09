@@ -130,24 +130,42 @@ unsafe fn object_is_window(object: *mut AnyObject) -> bool {
     is_window
 }
 
+/// What [`destroy_native_handle`] did (or could not do).
+///
+/// The caller must be able to tell "there was no native object" (its bookkeeping
+/// is the only thing to drop) from "there was one but AppKit is main-thread-only
+/// and we are not on it" (the bookkeeping must be **kept** so a later main-thread
+/// call can finish). A plain `bool` collapsed the two and let an off-main destroy
+/// report success while the window stayed on screen (D08-P-02).
+pub(crate) enum NativeDestroyOutcome {
+    /// A native object was found and torn down.
+    Destroyed,
+    /// No native object was ever created for this id (a state-only widget).
+    NoNativeObject,
+    /// AppKit refused: not the main thread. The registry entry is **kept** so the
+    /// teardown can be retried on the main thread.
+    RefusedOffMainThread,
+}
+
 /// Destroys a native handle created by this backend.
 ///
 /// A **window** is closed with `close` (which hides and releases the window's
 /// AppKit resources); any other view is detached with `removeFromSuperview`.
 /// Both run only on the main thread — off it, AppKit must not be messaged, so the
-/// call logs and returns `false` and the caller keeps the bookkeeping it had.
-pub(crate) fn destroy_native_handle(widget_id: u64) -> bool {
+/// call logs and reports [`NativeDestroyOutcome::RefusedOffMainThread`] and the
+/// caller keeps the bookkeeping it had.
+pub(crate) fn destroy_native_handle(widget_id: u64) -> NativeDestroyOutcome {
     if MainThreadMarker::new().is_none() {
         log::error!(
             "[macos-objc2] destroy_handle: refused off the AppKit main thread (id={widget_id})"
         );
-        return false;
+        return NativeDestroyOutcome::RefusedOffMainThread;
     }
     let removed = NATIVE_VIEWS.lock().unwrap().remove(&widget_id);
     let Some(ptr) = removed else {
         // No native object was ever created for this id (a state-only widget), so
         // there is nothing to tear down and the caller's bookkeeping stands.
-        return false;
+        return NativeDestroyOutcome::NoNativeObject;
     };
     unsafe {
         let object = ptr.0 as *mut AnyObject;
@@ -161,7 +179,7 @@ pub(crate) fn destroy_native_handle(widget_id: u64) -> bool {
         }
         let _: () = msg_send![object, release];
     }
-    true
+    NativeDestroyOutcome::Destroyed
 }
 
 fn release_closed_window(host_id: u64) {

@@ -355,6 +355,23 @@ impl DataGrid {
         (row_start, row_end.saturating_sub(row_start), col_start, col_end.saturating_sub(col_start))
     }
 
+    /// The projected row/column the fetch window starts at, i.e. the scroll position pulled back by
+    /// the overscan.
+    ///
+    /// # Why this exists (D09-VIEW-01)
+    ///
+    /// `visible_window()` fetches from `row_start = scroll - overscan`, so the matrix the source
+    /// returns begins *before* the viewport. The draw pass used to enumerate that matrix from its
+    /// local row `0`, which painted the leading overscan rows as if they were the first visible
+    /// ones; and `cell_rect` already places a cell from its own projected column, so the local
+    /// column reached it un-offset and the leading overscan columns overlapped the first visible
+    /// column. The draw pass and `cell_at` both convert a window-local index through this origin, so
+    /// a painted cell and the cell a press resolves to use one index semantics.
+    fn window_origin(&self) -> (usize, usize) {
+        let (row_start, _, col_start, _) = self.visible_window();
+        (row_start, col_start)
+    }
+
     /// Fetches visible cells, applying filters and sort rules in window scope.
     pub fn fetch_visible_cells(&mut self) -> Vec<Vec<Option<String>>> {
         self.normalize_projection_state();
@@ -461,6 +478,11 @@ impl DataGrid {
     /// left the two derivations free to disagree.
     fn cell_rect(&self, row: usize, column: usize) -> Rect {
         let cells = self.cells_box();
+        // The row also travels the scroll: `row` is a **global** projected index, so its screen y is
+        // measured from the current scroll row, the same way the column is measured from
+        // `scroll_column`. Before this the row was used raw, so the first window row always painted
+        // at the top of the grid regardless of scroll (D09-VIEW-01).
+        let row = row.saturating_sub(self.scroll_row);
         let column = column.saturating_sub(self.scroll_column);
         Rect::new(
             cells.x + column as i32 * self.column_width as i32,
@@ -483,16 +505,16 @@ impl DataGrid {
         }
         // Integer division truncates toward zero, so a point left of the first column would
         // floor to `0` and name a cell that is not there. Compute the distance in signed
-        // arithmetic and reject a negative distance instead; the alternative — offsetting by
-        // `scroll_column` first — would only work because the scroll is non-negative, and
-        // would silently name the wrong cell if it ever were not.
+        // arithmetic and reject a negative distance instead.
         let dx = point.x - cells.x;
         let dy = point.y - cells.y;
         if dx < 0 || dy < 0 {
             return None;
         }
+        // Both axes carry the scroll offset, matching `cell_rect` (D09-VIEW-01), so the projected
+        // cell a point names is the cell painted there.
         let column = self.scroll_column + dx as usize / self.column_width.max(1) as usize;
-        let row = dy as usize / self.row_height.max(1) as usize;
+        let row = self.scroll_row + dy as usize / self.row_height.max(1) as usize;
         if column >= self.column_count() || row >= self.row_count() {
             return None;
         }
@@ -786,13 +808,20 @@ impl Draw for DataGrid {
 
         // Every cell's box comes from `cell_rect`, the same derivation `cell_at` reads, so a
         // painted cell and the cell a press resolves to can never drift apart.
+        //
+        // The fetched window starts at `scroll - overscan`, so its leading rows/columns are above/
+        // left of the viewport. Convert each window-local index to its **global** projected index
+        // before `cell_rect` (which subtracts the scroll) (D09-VIEW-01). The filtered/sorted
+        // projection is left as-is: its row identity is not the source's projected index, so no
+        // correction is applied here.
+        let (row_origin, col_origin) = self.window_origin();
         for (row_idx, row) in rows.iter().enumerate() {
-            if self.cell_rect(row_idx, 0).y >= cells_bottom {
+            if self.cell_rect(row_origin + row_idx, 0).y >= cells_bottom {
                 break;
             }
 
             for (col_idx, cell) in row.iter().enumerate() {
-                let cell_rect = self.cell_rect(row_idx, col_idx);
+                let cell_rect = self.cell_rect(row_origin + row_idx, col_origin + col_idx);
                 if cell_rect.x >= cells_right {
                     break;
                 }
@@ -1085,6 +1114,78 @@ mod tests {
             grid.cell_at(Point::new(first.x - 1, probe.y)),
             None,
             "the frame margin is not a cell"
+        );
+    }
+
+    // ── D09-VIEW-01: the leading overscan is skipped, not painted as the first cell ──
+
+    /// After a vertical scroll the first visible box must name the scrolled-to row, and a press in
+    /// that box must select that same global row.
+    ///
+    /// # The defect this pins
+    ///
+    /// `visible_window()` fetches from `row_start = scroll - overscan`, but the draw loop enumerated
+    /// the fetched matrix from its local row `0` — so at row 8 the first painted row was global row 6
+    /// (the overscan lead), not row 8. The row also never travelled the scroll in `cell_at`. Both
+    /// now measure the row from `scroll_row`, so the box a press resolves to is the box that was
+    /// painted for the scrolled-to row.
+    #[test]
+    fn a_vertical_scroll_keeps_the_first_visible_row_at_the_scroll_position() {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 400, 300));
+        grid.set_data_source(Arc::new(StaticSource {
+            rows: 30,
+            cols: 6,
+            data: (0..30).map(|r| (0..6).map(|c| format!("{r}:{c}")).collect()).collect(),
+        }));
+
+        grid.set_scroll_row(8);
+        // The default row overscan (2) means the fetch begins two rows early.
+        assert_eq!(grid.visible_window().0, 6, "the fetch origin leads the scroll by the overscan");
+
+        // The first visible box must name global row 8, not the overscan lead row 6.
+        let first = grid.cell_rect(8, 0);
+        let centre =
+            Point::new(first.x + first.width as i32 / 2, first.y + first.height as i32 / 2);
+        assert_eq!(grid.cell_at(centre), Some((8, 0)));
+
+        // And a press there selects the same global cell.
+        grid.handle_event(&Event::MousePress { pos: centre, button: 1, modifiers: 0 });
+        assert_eq!(grid.selection(), Some((8, 0)));
+    }
+
+    /// A scrolled grid paints its visible rows, not the leading overscan rows — the model-versus-
+    /// pixels form. As with `virtual_table`, the SVG carries glyph outlines rather than the text
+    /// string, so exactly one cell is made non-empty and its ink box is checked instead.
+    #[test]
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn the_visible_rows_are_drawn_blocked_at_the_scroll_position() {
+        // The scrolled-to cell is the only non-empty one; if the leading overscan were painted first
+        // the first visible box would be blank.
+        let mut grid = DataGrid::new(Rect::new(0, 0, 400, 300));
+        let rows = 30usize;
+        let mut data: Vec<Vec<String>> = vec![vec![String::new(); 6]; rows];
+        data[8][0] = "W".to_string();
+        grid.set_data_source(Arc::new(StaticSource { rows, cols: 6, data }));
+
+        grid.set_scroll_row(8);
+        let first = grid.cell_rect(8, 0);
+        let rect = grid.geometry();
+        let svg = crate::widget::svg::render_widget_to_svg(&mut grid, rect);
+        let boxes = crate::widget::svg::text_ink_boxes(&svg);
+        assert_eq!(
+            boxes.len(),
+            1,
+            "only the scrolled-to cell must be painted as text; a missing row-scroll offset paints \
+             the blank lead row instead"
+        );
+        let (bx, by, _, _) = boxes[0];
+        assert!(
+            bx >= first.x && bx < first.x + first.width as i32,
+            "the value must land in the scrolled-to row's first column ({first:?}), got x={bx}"
+        );
+        assert!(
+            by >= first.y && by < first.y + first.height as i32,
+            "the value must land in the scrolled-to row's box ({first:?}), got y={by}"
         );
     }
 

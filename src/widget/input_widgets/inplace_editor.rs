@@ -283,6 +283,19 @@ impl InplaceEditor {
         }
     }
 
+    /// Inserts committed text through the same `insert_char` path the keyboard uses
+    /// (D09-INPUT-01).
+    ///
+    /// The desktop backends deliver a printable character or an IME commit as
+    /// `Event::TextInput`/`ImeCommit`, not as a `KeyPress`. Each committed character is inserted
+    /// with `insert_char`, so the caret advance and the undo push are identical to typing. Control
+    /// characters are filtered so a stray one does not enter the value.
+    fn insert_committed_text(&mut self, text: &str) {
+        for c in text.chars().filter(|c| !c.is_control()) {
+            self.insert_char(c);
+        }
+    }
+
     /// Moves the cursor left by one character.
     fn cursor_left(&mut self) {
         if self.cursor_position > 0 {
@@ -603,10 +616,23 @@ impl EventHandler for InplaceEditor {
                         if let Some(c) = char::from_u32(*key) {
                             if c.is_alphanumeric() || c.is_whitespace() || c.is_ascii_punctuation()
                             {
-                                self.insert_char(c);
+                                self.insert_committed_text(&c.to_string());
                             }
                         }
                     }
+                }
+            }
+            // Platform-committed text (D09-INPUT-01). A printable character or an IME commit reaches
+            // the editor as `TextInput`/`ImeCommit`, not as a `KeyPress`, so this branch is what
+            // actually receives typing. It funnels into the shared `insert_committed_text`, which
+            // drives `insert_char` — the same entry point the printable key arm uses. The editor only
+            // accepts text while it is in edit mode, so a `TextInput` in display mode is ignored
+            // exactly as the key path ignores keys outside edit mode.
+            Event::TextInput { text } | Event::ImeCommit { text } => {
+                if self.is_editing {
+                    self.insert_committed_text(text);
+                } else {
+                    self.base.handle_event(event);
                 }
             }
             _ => {
@@ -923,5 +949,49 @@ mod tests {
         let clamped = ie.text_rect();
         assert!(clamped.width >= 1, "a clamped box still has width: {clamped:?}");
         assert!(clamped.x >= field.x, "and is still inside the field: {clamped:?}");
+    }
+
+    // ─── D09-INPUT-01: platform-committed text reaches the value ───
+
+    /// A `TextInput` in edit mode must enter the editor's value.
+    ///
+    /// # The defect this pins (D09-INPUT-01)
+    ///
+    /// The desktop backends deliver a printable character or an IME commit as `Event::TextInput`,
+    /// not as a `KeyPress`; the handler only matched `KeyPress`, so committed text was dropped. The
+    /// test feeds `TextInput` to prove that path itself is wired.
+    #[test]
+    fn text_input_enters_the_value_while_editing() {
+        let mut ie = InplaceEditor::new("", Rect::new(0, 0, 200, 30));
+        ie.start_edit();
+        ie.handle_event(&Event::TextInput { text: "héllo".to_string() });
+        assert_eq!(ie.text(), "héllo");
+    }
+
+    /// An IME commit enters the value the same way.
+    #[test]
+    fn ime_commit_enters_the_value_while_editing() {
+        let mut ie = InplaceEditor::new("", Rect::new(0, 0, 200, 30));
+        ie.start_edit();
+        ie.handle_event(&Event::ime_commit("你好"));
+        assert_eq!(ie.text(), "你好");
+    }
+
+    /// Committed text is ignored outside edit mode, matching the key gate.
+    #[test]
+    fn text_input_is_ignored_outside_edit_mode() {
+        let mut ie = InplaceEditor::new("base", Rect::new(0, 0, 200, 30));
+        ie.handle_event(&Event::TextInput { text: "X".to_string() });
+        assert_eq!(ie.text(), "base", "display mode must not take committed text");
+    }
+
+    /// A disabled editor ignores committed text.
+    #[test]
+    fn disabled_ignores_text_input() {
+        let mut ie = InplaceEditor::new("", Rect::new(0, 0, 200, 30));
+        ie.start_edit();
+        ie.set_enabled(false);
+        ie.handle_event(&Event::TextInput { text: "X".to_string() });
+        assert_eq!(ie.text(), "");
     }
 }

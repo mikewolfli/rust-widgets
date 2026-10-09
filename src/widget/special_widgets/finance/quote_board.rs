@@ -25,6 +25,7 @@ use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::role_font;
 use crate::widget::special_widgets::finance::layout::PlotArea;
 use crate::widget::special_widgets::finance::types::Quote;
 use crate::widget::special_widgets::finance::volume_chart::draw_empty_pane;
@@ -629,7 +630,9 @@ impl Draw for QuoteBoard {
             header_fill,
         );
         for (column, (start, width)) in self.columns.iter().zip(ranges.iter()) {
-            let font = Font::simple("Sans", HEADING_FONT_SIZE);
+            // The header face is the **effective font** at its role size, so the theme family and the
+            // user's text scale reach the board's headings (D09-STYLE-01).
+            let font = role_font(&style, HEADING_FONT_SIZE);
             let title = column.title();
             let label_x = heading_origin(*start, *width, title, &font);
             if heading_fits(*width, title, &font) {
@@ -686,6 +689,7 @@ impl Draw for QuoteBoard {
                             panel, ink,
                         )
                     },
+                    &role_font(&style, 12.0),
                 );
             }
             return;
@@ -722,7 +726,7 @@ impl Draw for QuoteBoard {
                 } else {
                     body_text
                 };
-                let font = Font::simple("Sans", BODY_FONT_SIZE);
+                let font = role_font(&style, BODY_FONT_SIZE);
                 // The advance model the renderer draws with, not a per-character guess: a
                 // right-aligned number whose reserved width was a guess lands short of its
                 // column edge by the difference, and the guess drifts with every glyph that

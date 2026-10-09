@@ -10,6 +10,7 @@ use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{effective_font, role_font};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// The chart styles [`ChartWidget`] can switch between at runtime.
@@ -488,7 +489,6 @@ fn expect_chart_type(value: CapabilityValue) -> Result<ChartType, CapabilityAcce
 impl Draw for ChartWidget {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
-        use crate::core::Font;
         // The plot panel is a surface, so it resolves like every other control's: the
         // caller's style first, then the theme's resolved style for this control, then a
         // literal. It used to be a fixed `rgb(255,255,255)` for the fill and `rgb(200,200,200)`
@@ -524,7 +524,7 @@ impl Draw for ChartWidget {
             // arrives is what makes the two states read as the same control, and it is what
             // every charting toolkit does: the axes belong to the chart, not to a series.
             self.draw_value_axis(context, &plot, ink, surface);
-            let font = Font::simple("Sans", 12.0);
+            let font = role_font(&style, 12.0);
             let line = context.text_line(rect, &font);
             context.draw_text_fitted(
                 line,
@@ -701,8 +701,8 @@ fn draw_truncated_label(
     baseline_y: i32,
     label: &str,
     right_bound: i32,
+    font: &Font,
 ) {
-    use crate::core::Font;
     const BUDGET: usize = 6;
     if label.is_empty() {
         return;
@@ -713,8 +713,7 @@ fn draw_truncated_label(
     } else {
         label.to_string()
     };
-    let font = Font::simple("Sans", 10.0);
-    let width = context.measure_text(&text, &font).width as i32;
+    let width = context.measure_text(&text, font).width as i32;
     let origin_x = (x - width / 2).min(right_bound - width).max(0);
     // Axis chrome, derived from the **panel the label is painted on**. The literal `80,80,80`
     // is a light chart's label colour and rendered at 1.8:1 on the dark appearance — the
@@ -728,7 +727,7 @@ fn draw_truncated_label(
     context.draw_text(
         crate::core::Point { x: origin_x, y: baseline_y + LABEL_ROW_TOP },
         &text,
-        &font,
+        font,
         ink.legible_on(surface, 4.5).with_alpha(191),
         HorizontalAlignment::Left,
     );
@@ -831,7 +830,7 @@ impl ChartWidget {
         let (min, max) = self.plot_range();
         let axis_ink = ink.legible_on(surface, 4.5).with_alpha(190);
         let grid_ink = surface.blend(&axis_ink, 0.18);
-        let font = Font::simple("Sans", 10.0);
+        let font = role_font(self.style(), 10.0);
 
         for step in 0..TICKS {
             let fraction = step as f64 / (TICKS - 1) as f64;
@@ -908,6 +907,7 @@ impl ChartWidget {
                         area.baseline_y,
                         label,
                         rect.x + rect.width as i32,
+                        effective_font(self.style()),
                     );
                 }
             }
@@ -949,6 +949,7 @@ impl ChartWidget {
                         area.baseline_y,
                         label,
                         rect.x + rect.width as i32,
+                        effective_font(self.style()),
                     );
                 }
             }
@@ -1017,6 +1018,7 @@ impl ChartWidget {
                         area.baseline_y,
                         label,
                         rect.x + rect.width as i32,
+                        effective_font(self.style()),
                     );
                 }
             }
@@ -1086,6 +1088,7 @@ impl ChartWidget {
                     area.baseline_y,
                     label,
                     rect.x + rect.width as i32,
+                    effective_font(self.style()),
                 );
             }
         }
@@ -1134,6 +1137,7 @@ impl ChartWidget {
                     y + stage_height - 4,
                     label,
                     rect.x + rect.width as i32,
+                    effective_font(self.style()),
                 );
             }
         }
@@ -1214,6 +1218,7 @@ impl ChartWidget {
                     area.baseline_y,
                     label,
                     rect.x + rect.width as i32,
+                    effective_font(self.style()),
                 );
             }
         }
@@ -1293,6 +1298,7 @@ impl ChartWidget {
                     area.baseline_y,
                     label,
                     rect.x + rect.width as i32,
+                    effective_font(self.style()),
                 );
             }
         }
@@ -1347,7 +1353,7 @@ impl ChartWidget {
                 context.draw_text(
                     Point { x: lx, y: ly },
                     &text,
-                    &crate::core::Font::simple("Sans", 9.0),
+                    &role_font(self.style(), 9.0),
                     crate::core::Color::rgb(60, 60, 60),
                     HorizontalAlignment::Left,
                 );
@@ -1380,6 +1386,7 @@ impl ChartWidget {
                         area.baseline_y,
                         label,
                         rect.x + rect.width as i32,
+                        effective_font(self.style()),
                     );
                 }
             }

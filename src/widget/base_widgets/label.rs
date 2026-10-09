@@ -13,7 +13,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{
-    dimensions, estimate_line_height, estimate_text_width, ControlMetrics,
+    dimensions, effective_font, estimate_line_height, estimate_text_width, ControlMetrics,
 };
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -78,9 +78,12 @@ impl Label {
     /// character-advance-and-padding arithmetic that would drift from the shared one on the first
     /// change to either.
     pub fn implicit_size(&self) -> Size {
-        let font = crate::core::Font::default();
-        let text_width = estimate_text_width(&self.text, &font, 1.0);
-        let floor = Size::new(LABEL_MIN_WIDTH, estimate_line_height(&font, 1.0));
+        // The **effective** font — the resolved theme/caller font, the same one `draw` reads through
+        // `self.font()` — rather than `Font::default()`, so the hint follows the painted label
+        // (D09-STYLE-02). A custom or scaled font now changes the label's intrinsic size too.
+        let font = effective_font(self.style());
+        let text_width = estimate_text_width(&self.text, font, 1.0);
+        let floor = Size::new(LABEL_MIN_WIDTH, estimate_line_height(font, 1.0));
         ControlMetrics::implicit_size(Size::new(text_width, 0), LABEL_PADDING, floor)
     }
 }
@@ -198,7 +201,7 @@ impl Draw for Label {
             } else {
                 Color::rgb(0, 0, 0)
             });
-            let font = self.font().cloned().unwrap_or_default();
+            let font = effective_font(self.style());
             // The **shared** estimate, because this is the same quantity `implicit_size` reports.
             //
             // This read `self.text.len() as u32 * 8` — a byte count, not an advance — while
@@ -209,7 +212,7 @@ impl Draw for Label {
             // three times too large and drifted left. The label's own doc comment already claims
             // the inline copy "would drift from the shared one on the first change to either" —
             // it had, and this was the copy.
-            let text_width = estimate_text_width(&self.text, &font, 1.0);
+            let text_width = estimate_text_width(&self.text, font, 1.0);
             let text_x = match self.alignment {
                 crate::core::Alignment::Center => {
                     rect.x + (rect.width.saturating_sub(text_width) / 2) as i32
@@ -228,11 +231,11 @@ impl Draw for Label {
             //
             // Only the vertical anchor moves: the horizontal origin above is computed from
             // the caller's alignment and stays exactly as it was.
-            let line = context.text_line(rect, &font);
+            let line = context.text_line(rect, font);
             context.draw_text(
                 Point::new(text_x, line.y),
                 &self.text,
-                &font,
+                font,
                 text_color,
                 HorizontalAlignment::Left,
             );
@@ -891,5 +894,92 @@ mod tests {
             "a declared gradient must emit a paint server in the label's document"
         );
         assert_ne!(solid, ramp, "the gradient label must differ from the solid one");
+    }
+
+    // ── D09-STYLE-02: the hint measures with the font the paint uses ──
+
+    /// A caller-authored `style.font` must change both the hint and the painted ink.
+    ///
+    /// # The defect this pins
+    ///
+    /// `implicit_size()` always measured with `Font::default()`, while `draw()` read
+    /// `self.font()` (i.e. `style.font`). A label given a custom font therefore reported a size
+    /// the drawn text did not fill, so its layout box and its ink disagreed.
+    #[test]
+    fn a_custom_font_grows_the_label_hint_and_the_drawn_text() {
+        use crate::style::WidgetStyle;
+
+        let mut baseline = Label::new("Sample text".to_string(), Rect::new(0, 0, 200, 30));
+        let base_hint = baseline.implicit_size();
+        let base_ink = ink_width(&mut baseline);
+
+        let mut big = Label::new("Sample text".to_string(), Rect::new(0, 0, 200, 30));
+        big.set_style(WidgetStyle::default().with_font(Font::simple("Test", 30.0)));
+        let big_hint = big.implicit_size();
+        let big_ink = ink_width(&mut big);
+
+        assert!(
+            big_hint.width > base_hint.width,
+            "a larger font must widen the label hint: {} vs {}",
+            big_hint.width,
+            base_hint.width
+        );
+        assert!(
+            big_ink > base_ink,
+            "a larger font must widen the painted text: {big_ink} vs {base_ink}"
+        );
+    }
+
+    /// A text scale above 1.0, resolved through the theme, must widen the label hint.
+    #[test]
+    fn a_theme_text_scale_above_one_grows_the_label_hint() {
+        use crate::style::environment::{
+            install_environment, uninstall_environment, EnvironmentProvider,
+        };
+        use crate::style::MotionPreference;
+
+        struct Scaled(f32);
+        impl EnvironmentProvider for Scaled {
+            fn text_scale(&self) -> f32 {
+                self.0
+            }
+            fn motion_preference(&self) -> MotionPreference {
+                MotionPreference::NoPreference
+            }
+        }
+
+        let _guard = crate::style::theme_test_guard();
+        let previous = install_environment(Box::new(Scaled(1.0)));
+        {
+            let mut manager = crate::theme::global_theme_manager();
+            manager.register_theme(crate::theme::Theme::default());
+            manager.set_appearance(crate::theme::AppearanceMode::Light);
+        }
+        let mut at_one = Label::new("Scaled label".to_string(), Rect::new(0, 0, 200, 30));
+        crate::theme::apply_active_theme(&mut at_one);
+        let hint_one = at_one.implicit_size();
+
+        install_environment(Box::new(Scaled(1.5)));
+        let mut scaled = Label::new("Scaled label".to_string(), Rect::new(0, 0, 200, 30));
+        crate::theme::apply_active_theme(&mut scaled);
+        let hint_large = scaled.implicit_size();
+
+        let _ = uninstall_environment();
+        if let Some(previous) = previous {
+            install_environment(previous);
+        }
+
+        assert!(
+            hint_large.width > hint_one.width,
+            "a text scale above 1.0 must widen the label hint: {} vs {}",
+            hint_large.width,
+            hint_one.width
+        );
+    }
+
+    /// The ink width of the text a label paints, read back from an SVG render.
+    fn ink_width(label: &mut Label) -> i32 {
+        let svg = crate::widget::svg::render_to_svg(label);
+        crate::widget::svg::text_ink_box(&svg).map(|(x, _, right, _)| right - x).unwrap_or(0)
     }
 }

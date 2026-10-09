@@ -186,6 +186,11 @@ impl FlowLayout {
     }
     fn layout_horizontal(&self, content_rect: &Rect) -> Vec<Rect> {
         let mut positions = Vec::new();
+        // The index at which each flow line begins. Recorded as the lines are formed rather
+        // than recovered later from coordinates: with a legal negative `spacing` a later item
+        // on the *same* line sits before the content origin, so the old "major <= origin means
+        // a new line" heuristic split one line into two and mis-aligned it (D08-L-01).
+        let mut line_starts = vec![0usize];
         let mut current_x = content_rect.x;
         let mut current_y = content_rect.y;
         let mut row_height = 0i32;
@@ -199,6 +204,7 @@ impl FlowLayout {
                 current_x = content_rect.x;
                 current_y += row_height + self.config.spacing;
                 row_height = 0;
+                line_starts.push(positions.len());
             }
             positions.push(Rect::new(
                 current_x,
@@ -209,11 +215,12 @@ impl FlowLayout {
             current_x += child_width + self.config.spacing;
             row_height = row_height.max(child_height);
         }
-        self.apply_alignment(&mut positions, content_rect);
+        self.apply_alignment(&mut positions, &line_starts, content_rect);
         positions
     }
     fn layout_vertical(&self, content_rect: &Rect) -> Vec<Rect> {
         let mut positions = Vec::new();
+        let mut line_starts = vec![0usize];
         let mut current_x = content_rect.x;
         let mut current_y = content_rect.y;
         let mut column_width = 0i32;
@@ -227,6 +234,7 @@ impl FlowLayout {
                 current_y = content_rect.y;
                 current_x += column_width + self.config.spacing;
                 column_width = 0;
+                line_starts.push(positions.len());
             }
             positions.push(Rect::new(
                 current_x,
@@ -237,7 +245,7 @@ impl FlowLayout {
             current_y += child_height + self.config.spacing;
             column_width = column_width.max(child_width);
         }
-        self.apply_alignment(&mut positions, content_rect);
+        self.apply_alignment(&mut positions, &line_starts, content_rect);
         positions
     }
     /// Align the items **within each flow line**, not the whole child set.
@@ -256,25 +264,26 @@ impl FlowLayout {
     /// remaining minor extent, measured as the sum of each line's tallest member plus the
     /// gaps between lines (S-45). This is what centres a single line by its max height and a
     /// wrapped block by its real line footprint.
-    fn apply_alignment(&self, positions: &mut [Rect], content_rect: &Rect) {
+    fn apply_alignment(&self, positions: &mut [Rect], line_starts: &[usize], content_rect: &Rect) {
         if self.config.alignment == FlowAlignment::Start {
             return;
         }
 
-        // A new line/column starts at the content origin, so the groups are recovered by
-        // splitting wherever an item sits back at that edge.
+        // Recover the line groups from the boundaries the layout pass recorded. A coordinate
+        // heuristic cannot do this correctly for a negative `spacing`, because a same-line item
+        // may legitimately sit before the content origin (D08-L-01).
         let major_is_x = self.config.direction == FlowDirection::Horizontal;
         let origin = if major_is_x { content_rect.x } else { content_rect.y };
-        let mut line_start = 0usize;
-        let mut lines: Vec<core::ops::Range<usize>> = Vec::new();
-        for (index, position) in positions.iter().enumerate().skip(1) {
-            let major = if major_is_x { position.x } else { position.y };
-            if major <= origin {
-                lines.push(line_start..index);
-                line_start = index;
+        let mut lines: Vec<core::ops::Range<usize>> = Vec::with_capacity(line_starts.len());
+        for (i, &start) in line_starts.iter().enumerate() {
+            let end = line_starts.get(i + 1).copied().unwrap_or(positions.len());
+            if start < end {
+                lines.push(start..end);
             }
         }
-        lines.push(line_start..positions.len());
+        if lines.is_empty() && !positions.is_empty() {
+            lines.push(0..positions.len());
+        }
 
         for line in &lines {
             let items = &mut positions[line.start..line.end];
@@ -849,6 +858,74 @@ mod tests {
         assert_eq!(layout.preferred_size(), Size::new(19, 10));
         let positions = layout.layout(Rect::new(0, 0, 100, 40));
         assert_eq!(positions[1].x, 9, "the second child overlaps by the negative spacing");
+    }
+
+    /// D08-L-01: a legal negative spacing must not be mistaken for a line break.
+    ///
+    /// Horizontal, `wrap = false`, padding 0, spacing -10, `SpaceBetween`, two 10×10
+    /// children in a 100×40 area. The second child's initial x (0) equals the content
+    /// origin, and with alignment applied coordinates can fall behind it, so the old
+    /// "major <= origin means a new line" split the single line and left both children at
+    /// x = 0. The free space of one line must instead push them apart.
+    #[test]
+    fn negative_spacing_with_space_between_keeps_one_line() {
+        let mut layout = FlowLayout::with_config(FlowLayoutConfig {
+            direction: FlowDirection::Horizontal,
+            alignment: FlowAlignment::SpaceBetween,
+            spacing: -10,
+            wrap: false,
+            padding: 0,
+            ..FlowLayoutConfig::default()
+        });
+        layout.add_child(Box::new(TestWidget::new(1, 10, 10)));
+        layout.add_child(Box::new(TestWidget::new(2, 10, 10)));
+        let positions = layout.layout(Rect::new(0, 0, 100, 40));
+        assert_eq!(positions.len(), 2);
+        assert_eq!(positions[0].y, positions[1].y, "both children stay on one line");
+        assert_eq!(positions[0].x, 0);
+        assert_eq!(positions[1].x, 90, "SpaceBetween spreads the single line's free space");
+    }
+
+    /// D08-L-01: the Vertical direction has the symmetric defect and must be fixed too.
+    #[test]
+    fn negative_spacing_with_space_between_keeps_one_column() {
+        let mut layout = FlowLayout::with_config(FlowLayoutConfig {
+            direction: FlowDirection::Vertical,
+            alignment: FlowAlignment::SpaceBetween,
+            spacing: -10,
+            wrap: false,
+            padding: 0,
+            ..FlowLayoutConfig::default()
+        });
+        layout.add_child(Box::new(TestWidget::new(1, 10, 10)));
+        layout.add_child(Box::new(TestWidget::new(2, 10, 10)));
+        let positions = layout.layout(Rect::new(0, 0, 40, 100));
+        assert_eq!(positions[0].x, positions[1].x, "both children stay in one column");
+        assert_eq!(positions[0].y, 0);
+        assert_eq!(positions[1].y, 90);
+    }
+
+    /// A genuine wrap still splits into the recorded lines even with negative spacing, so the
+    /// fix does not collapse two real lines into one.
+    #[test]
+    fn wrapping_still_splits_lines_with_negative_spacing() {
+        let mut layout = FlowLayout::with_config(FlowLayoutConfig {
+            direction: FlowDirection::Horizontal,
+            alignment: FlowAlignment::Start,
+            spacing: -5,
+            wrap: true,
+            padding: 0,
+            ..FlowLayoutConfig::default()
+        });
+        // Three 10-wide children in a 15-wide area with spacing -5: the first two fit on
+        // the first line, the third wraps.
+        for id in 1..=3 {
+            layout.add_child(Box::new(TestWidget::new(id, 10, 10)));
+        }
+        let positions = layout.layout(Rect::new(0, 0, 15, 100));
+        assert_eq!(positions[0].y, 0);
+        assert_eq!(positions[1].y, 0, "the second child still fits on the first line");
+        assert!(positions[2].y > 0, "the third child wraps to a new line");
     }
 
     // ── S-47: negative padding is rejected, not folded into geometry ──────────────────

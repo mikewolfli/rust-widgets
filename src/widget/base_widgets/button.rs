@@ -15,8 +15,8 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{
-    dimensions, estimate_line_height, estimate_text_width, focus_ring_color, ControlMetrics,
-    FocusRing, FOCUS_RING_WIDTH,
+    dimensions, effective_font, estimate_line_height, estimate_text_width, focus_ring_color,
+    ControlMetrics, FocusRing, FOCUS_RING_WIDTH,
 };
 #[cfg(feature = "image")]
 use crate::widget::Image;
@@ -181,9 +181,12 @@ impl Button {
     /// was added to that same hand-rolled sum. Both now come from the metric system, which is what
     /// `check_implicit_size_uses_metrics` guards.
     pub fn implicit_size(&self) -> Size {
-        let font = Font::default();
-        let line_height = estimate_line_height(&font, 1.0);
-        let label_width = estimate_text_width(&self.text, &font, 1.0);
+        // Measure with the effective font — the resolved theme/caller font, not the default — so
+        // the intrinsic size matches the label the draw path paints with the same font
+        // (D09-STYLE-02). A text scale or custom face now grows the hint with the ink.
+        let font = effective_font(self.style());
+        let line_height = estimate_line_height(font, 1.0);
+        let label_width = estimate_text_width(&self.text, font, 1.0);
         // The icon is the *leading* slot, so its box and the gap to the label are content. Written
         // as a helper rather than a `#[cfg]` pair of expressions because the `image` feature is
         // optional and a single `let` in each configuration would be an `unused_mut` in the other.
@@ -659,6 +662,10 @@ impl EventHandler for Button {
     /// | release inside | release, `clicked` |
     /// | release outside | release, `canceled`, **no** `clicked` |
     /// | ungrab (leave / focus loss / disable) | release, `canceled` |
+    ///
+    /// The whole table applies to a stylus as well as to a mouse (D09-POINTER-01):
+    /// `PointerPress`/`PointerMove`/`PointerRelease` take the same arms as their mouse
+    /// counterparts, so a pen tap activates the button and a pen drag-off cancels it.
     fn handle_event(&mut self, event: &Event) {
         // Gesture logic runs **before** the base records the event. The base both paints and
         // records from the same primitive facts, and it clears `grabbed`/`pressed` on the
@@ -666,11 +673,17 @@ impl EventHandler for Button {
         // whether the release belonged to its own gesture. Handling first keeps the arm's
         // guard meaningful, and the base then records the same outcome from the same facts.
         match event {
-            Event::MousePress { pos, button, .. } if self.base.is_enabled() => {
+            Event::MousePress { pos, button, .. } | Event::PointerPress { pos, button, .. }
+                if self.base.is_enabled() =>
+            {
                 // Only a press that resolves to this control arms it. The runtime
                 // hit-tests before delivery, but a direct dispatch (a test, a host with
                 // its own routing, a designer preview) does not, and an unguarded press
                 // would leave the latch armed for a release that belongs elsewhere.
+                //
+                // A stylus press (`PointerPress`) is a full press here (D09-POINTER-01):
+                // before this, a pen tap never armed the button, so it could not activate
+                // even though `PointerRelease` already reached the release arm below.
                 if button_activates(*button) && self.base.contains_point_with_touch_expansion(*pos)
                 {
                     self.press();
@@ -692,11 +705,17 @@ impl EventHandler for Button {
             Event::MouseMove { pos } | Event::PointerMove { pos, .. } if self.base.is_grabbed() => {
                 self.set_pressed(self.base.contains_point_with_touch_expansion(*pos));
             }
-            Event::MouseRelease { pos, button } if self.base.is_grabbed() => {
+            Event::MouseRelease { pos, button, .. } | Event::PointerRelease { pos, button, .. }
+                if self.base.is_grabbed() =>
+            {
                 if !button_activates(*button) {
                     return;
                 }
                 // Inside ⇒ activate; outside ⇒ cancel. This is the whole contract.
+                //
+                // A stylus release completes the gesture exactly like a mouse release
+                // (D09-POINTER-01), so a pen tap activates the button when it lands inside
+                // and cancels when it is dragged off.
                 let inside = self.base.contains_point_with_touch_expansion(*pos);
                 self.release();
                 if inside {
@@ -714,6 +733,16 @@ impl EventHandler for Button {
                 } else {
                     self.canceled.emit();
                 }
+            }
+            // D09-EVT-02: a withdrawn contact ends the gesture without activating. The
+            // platform can normalise a `TouchCancel` to a `TouchEnd`, so the cancel arrives
+            // here as its own internal event; reusing `cancel_gesture` gives exactly the
+            // "interaction is off" handling (clear the latch and grab, emit `canceled`) and
+            // never emits `clicked`.
+            #[cfg(feature = "touch")]
+            event if crate::event::translator::is_touch_cancel(event) => {
+                self.cancel_gesture();
+                self.base.request_redraw();
             }
             #[cfg(feature = "touch")]
             Event::Tap { .. } if self.base.is_enabled() => {
@@ -880,8 +909,9 @@ impl Draw for Button {
 
         // ── Text ──
         if !self.text.is_empty() {
-            let default_font = Font::default();
-            let font = style.font.as_ref().unwrap_or(&default_font);
+            // The draw path and `implicit_size` take their font from the same accessor, so the
+            // label measured and the label painted cannot disagree (D09-STYLE-02).
+            let font = effective_font(style);
             // The ink must be legible *on the fill this button actually got*, not on an
             // assumption about it. The fill comes from `style.background_color`, which the
             // theme may have set to a saturated accent: the dark appearance's `PRIMARY` is
@@ -1401,6 +1431,87 @@ mod tests {
         assert!(clicked.load(Ordering::SeqCst));
     }
 
+    /// D09-POINTER-01: a stylus press/release activates the button exactly like a mouse.
+    ///
+    /// Before the fix the button only armed on `MousePress`, so a `PointerPress` armed
+    /// nothing and the `PointerRelease` arm (guarded on the grab) was unreachable. The
+    /// assertions cover the whole lifecycle: press arms, the release inside clicks, and the
+    /// released latch is cleared.
+    #[test]
+    fn event_pointer_press_and_release_activate_the_button() {
+        let mut b = make_button();
+        let clicks = Arc::new(core::sync::atomic::AtomicUsize::new(0));
+        b.base.clicked.connect({
+            let counter = Arc::clone(&clicks);
+            move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        let canceled = Arc::new(AtomicBool::new(false));
+        b.canceled.connect({
+            let flag = Arc::clone(&canceled);
+            move || flag.store(true, Ordering::SeqCst)
+        });
+
+        b.handle_event(&Event::pointer_press(
+            Point::new(15, 25),
+            crate::event::mouse_button::PRIMARY,
+            0.8,
+            0.0,
+            0.0,
+        ));
+        assert!(b.is_pressed(), "a stylus press must arm the button like a mouse press");
+        assert_eq!(b.state(), ButtonState::Pressed);
+
+        b.handle_event(&Event::pointer_release(
+            Point::new(15, 25),
+            crate::event::mouse_button::PRIMARY,
+            0.7,
+        ));
+        assert!(!b.is_pressed(), "the stylus release must clear the pressed latch");
+        assert_eq!(b.state(), ButtonState::Normal);
+        assert_eq!(clicks.load(Ordering::SeqCst), 1, "a stylus tap inside must click once");
+        assert!(!canceled.load(Ordering::SeqCst), "a release inside must not cancel");
+    }
+
+    /// D09-POINTER-01: dragging a stylus off the button and releasing cancels, mirroring the
+    /// mouse contract — a pen drag-off must not activate.
+    #[test]
+    fn a_pointer_release_outside_the_button_cancels() {
+        let mut b = make_button();
+        let clicks = Arc::new(core::sync::atomic::AtomicUsize::new(0));
+        b.base.clicked.connect({
+            let counter = Arc::clone(&clicks);
+            move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        let canceled = Arc::new(AtomicBool::new(false));
+        b.canceled.connect({
+            let flag = Arc::clone(&canceled);
+            move || flag.store(true, Ordering::SeqCst)
+        });
+
+        b.handle_event(&Event::pointer_press(
+            Point::new(20, 30),
+            crate::event::mouse_button::PRIMARY,
+            0.9,
+            0.0,
+            0.0,
+        ));
+        // The pen moves off the control before lifting: `pressed` clears, the grab survives.
+        b.handle_event(&Event::pointer_move(Point::new(400, 400), 0.9, 0.0, 0.0));
+        assert!(!b.is_pressed(), "off the control the painted pressed state clears");
+
+        b.handle_event(&Event::pointer_release(
+            Point::new(400, 400),
+            crate::event::mouse_button::PRIMARY,
+            0.0,
+        ));
+        assert_eq!(clicks.load(Ordering::SeqCst), 0, "a release outside must not click");
+        assert!(canceled.load(Ordering::SeqCst), "a release outside must cancel");
+    }
+
     // ── The activation contract (P0-6 / P0-7) ────────────────────────────
 
     #[test]
@@ -1690,6 +1801,59 @@ mod tests {
         assert!(clicked.load(Ordering::SeqCst));
         // Tap does not change pressed state
         assert!(!b.is_pressed());
+    }
+
+    /// D09-EVT-02: a touch cancel resets the latch without firing `clicked`.
+    ///
+    /// A platform `TouchCancel` is normalised into a `TouchEnd`, which the button treated as a
+    /// completed gesture and clicked. The internal cancel event must instead behave like an
+    /// abandoned gesture: the pressed latch is cleared and `canceled` (not `clicked`) fires.
+    #[cfg(feature = "touch")]
+    #[test]
+    fn event_touch_cancel_resets_without_clicking() {
+        let mut b = make_button();
+        let clicked = Arc::new(AtomicBool::new(false));
+        let canceled = Arc::new(AtomicBool::new(false));
+        b.base.clicked.connect({
+            let flag = Arc::clone(&clicked);
+            move || {
+                flag.store(true, Ordering::SeqCst);
+            }
+        });
+        b.canceled.connect({
+            let flag = Arc::clone(&canceled);
+            move || {
+                flag.store(true, Ordering::SeqCst);
+            }
+        });
+
+        b.press();
+        assert!(b.is_pressed());
+        let cancel = crate::event::translator::touch_cancel(Point::new(15, 25), 0);
+        b.handle_event(&cancel);
+
+        assert!(!b.is_pressed(), "a cancelled gesture must clear the latch");
+        assert!(!b.is_grabbed(), "a cancelled gesture must drop the grab");
+        assert!(!clicked.load(Ordering::SeqCst), "a cancel must not click");
+        assert!(canceled.load(Ordering::SeqCst), "a cancel reports the abandoned gesture");
+    }
+
+    /// D09-EVT-02: a cancel when nothing is pressed is a harmless no-op (no phantom click).
+    #[cfg(feature = "touch")]
+    #[test]
+    fn event_touch_cancel_without_a_press_is_a_noop() {
+        let mut b = make_button();
+        let clicked = Arc::new(AtomicBool::new(false));
+        b.base.clicked.connect({
+            let flag = Arc::clone(&clicked);
+            move || {
+                flag.store(true, Ordering::SeqCst);
+            }
+        });
+        let cancel = crate::event::translator::touch_cancel(Point::new(15, 25), 0);
+        b.handle_event(&cancel);
+        assert!(!b.is_pressed());
+        assert!(!clicked.load(Ordering::SeqCst));
     }
 
     #[test]
@@ -2215,5 +2379,97 @@ mod tests {
 
         // Restore the light default so a later test in this binary starts where it expects.
         assert!(global_theme_manager().set_theme("default"));
+    }
+
+    // ── D09-STYLE-02: the hint measures with the font the paint uses ──
+
+    /// A caller-authored `style.font` must move the hint together with the painted label.
+    ///
+    /// # The defect this pins
+    ///
+    /// `implicit_size()` measured with `Font::default()` while `draw()` painted with
+    /// `style.font`, so a custom face or a scaled theme font left the hint at the default size:
+    /// the drawn label was `draw_text_fitted` into a box that was too small and got squeezed or
+    /// truncated. Both paths now read `metrics::effective_font`.
+    #[test]
+    fn a_custom_font_grows_the_button_hint() {
+        let mut baseline = Button::new("A wide label".into(), Rect::new(0, 0, 240, 40));
+        let base_hint = baseline.implicit_size();
+
+        let mut big = Button::new("A wide label".into(), Rect::new(0, 0, 240, 40));
+        big.set_style(crate::style::WidgetStyle::default().with_font(Font::simple("Test", 30.0)));
+        let big_hint = big.implicit_size();
+
+        assert!(
+            big_hint.width > base_hint.width,
+            "a larger font must widen the hint: {} vs {}",
+            big_hint.width,
+            base_hint.width
+        );
+        assert!(
+            big_hint.height > base_hint.height,
+            "a larger font must raise the hint: {} vs {}",
+            big_hint.height,
+            base_hint.height
+        );
+        // The draw path reads the same font, so its ink must be wider too.
+        let base_ink = ink_width(&mut baseline);
+        let big_ink = ink_width(&mut big);
+        assert!(big_ink > base_ink, "the painted label must widen too: {big_ink} vs {base_ink}");
+    }
+
+    /// A text scale above 1.0, resolved through the theme, must widen the hint.
+    #[cfg(device_profile)]
+    #[test]
+    fn a_theme_text_scale_above_one_grows_the_button_hint() {
+        use crate::style::environment::{
+            install_environment, uninstall_environment, EnvironmentProvider,
+        };
+        use crate::style::MotionPreference;
+        use crate::theme::{global_theme_manager, AppearanceMode, Theme};
+
+        struct Scaled(f32);
+        impl EnvironmentProvider for Scaled {
+            fn text_scale(&self) -> f32 {
+                self.0
+            }
+            fn motion_preference(&self) -> MotionPreference {
+                MotionPreference::NoPreference
+            }
+        }
+
+        let _guard = crate::style::theme_test_guard();
+        let previous = install_environment(Box::new(Scaled(1.0)));
+        {
+            let mut manager = global_theme_manager();
+            manager.register_theme(Theme::default());
+            manager.set_appearance(AppearanceMode::Light);
+        }
+        let mut at_one = Button::new("Scaled label".into(), Rect::new(0, 0, 240, 40));
+        crate::theme::apply_active_theme(&mut at_one);
+        let hint_one = at_one.implicit_size();
+
+        install_environment(Box::new(Scaled(1.5)));
+        let mut scaled = Button::new("Scaled label".into(), Rect::new(0, 0, 240, 40));
+        crate::theme::apply_active_theme(&mut scaled);
+        let hint_large = scaled.implicit_size();
+
+        let _ = uninstall_environment();
+        if let Some(previous) = previous {
+            install_environment(previous);
+        }
+
+        assert!(
+            hint_large.width > hint_one.width,
+            "a text scale above 1.0 must widen the button hint: {} vs {}",
+            hint_large.width,
+            hint_one.width
+        );
+    }
+
+    /// The ink width of the label a button paints, read back from an SVG render.
+    fn ink_width(button: &mut Button) -> i32 {
+        let svg = crate::widget::svg::render_to_svg(button);
+        crate::widget::svg::text_ink_box(&svg).map(|(x, _, right, _)| right - x).unwrap_or(0)
     }
 }

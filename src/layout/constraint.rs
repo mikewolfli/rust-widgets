@@ -51,6 +51,11 @@ pub struct ConstraintRef {
     /// Pixel offset applied after resolving the constraint position.
     pub offset: i32,
     /// Scale multiplier applied to the resolved dimension.
+    ///
+    /// For [`ConstraintType::Width`] and [`ConstraintType::Height`] a non-finite value
+    /// (`NaN`, `±∞`) is **ignored**: the constraint leaves the widget rect unchanged rather than
+    /// rounding the product to a degenerate size (D09-LAYOUT-03). [`ConstraintType::AspectRatio`]
+    /// carries its own ratio and applies the same finite-input rule.
     pub multiplier: f32,
 }
 
@@ -168,10 +173,23 @@ impl ConstraintLayout {
                     .saturating_add(constraint.offset);
             }
             ConstraintType::Width => {
+                // D09-LAYOUT-03: a non-finite multiplier cannot describe a scale, so it is
+                // ignored rather than silently rounded to a degenerate size. Without this guard
+                // `NaN.round() as i32` becomes `0` and `±∞`/over-range products saturate to the
+                // `i32` bounds, either of which changes the widget geometry. This mirrors the
+                // `AspectRatio` branch below, which already rejects a non-finite factor
+                // (principle #50: degenerate input is ignored, not coerced).
+                if !constraint.multiplier.is_finite() {
+                    return;
+                }
                 let w = (target_rect.width as f32 * constraint.multiplier).round() as i32;
                 widget_rect.width = w.max(0) as u32;
             }
             ConstraintType::Height => {
+                // D09-LAYOUT-03: same finite-multiplier policy as the `Width` branch above.
+                if !constraint.multiplier.is_finite() {
+                    return;
+                }
                 let h = (target_rect.height as f32 * constraint.multiplier).round() as i32;
                 widget_rect.height = h.max(0) as u32;
             }
@@ -406,5 +424,74 @@ mod tests {
         assert!(layout.has_child(42));
         layout.remove_widget(42);
         assert!(!layout.has_child(42));
+    }
+
+    // ── D09-LAYOUT-03: Width/Height multiplier must be finite ──
+
+    /// Runs a `Width` constraint with the given multiplier and returns the resolved width for
+    /// widget `1`, whose target shares the same parent rect. The parent is 200x100, so a valid
+    /// multiplier of `1.0` leaves the width at 200.
+    fn width_for(multiplier: f32) -> u32 {
+        let mut layout = ConstraintLayout::new();
+        layout.add_widget(1, 0);
+        layout.add_constraint(1, 1, ConstraintType::Width, 0, multiplier);
+        let mut rects = HashMap::new();
+        layout.update(Rect::new(0, 0, 200, 100), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+        rects.get(&1).map(|r| r.width).expect("widget placed")
+    }
+
+    /// Runs a `Height` constraint with the given multiplier; a valid `1.0` leaves the height at
+    /// the parent's 100.
+    fn height_for(multiplier: f32) -> u32 {
+        let mut layout = ConstraintLayout::new();
+        layout.add_widget(1, 0);
+        layout.add_constraint(1, 1, ConstraintType::Height, 0, multiplier);
+        let mut rects = HashMap::new();
+        layout.update(Rect::new(0, 0, 200, 100), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+        rects.get(&1).map(|r| r.height).expect("widget placed")
+    }
+
+    /// A non-finite multiplier must not silently shrink the widget to zero (NaN) or saturate it
+    /// to an extreme size (∞); the constraint is ignored and the rect keeps the parent size.
+    #[test]
+    fn width_non_finite_multiplier_is_ignored() {
+        assert_eq!(width_for(f32::NAN), 200, "NaN must be ignored, not rounded to 0");
+        assert_eq!(width_for(f32::INFINITY), 200, "+∞ must be ignored, not saturated");
+        assert_eq!(width_for(f32::NEG_INFINITY), 200, "-∞ must be ignored, not saturated");
+    }
+
+    /// The `Height` branch shares the finite-multiplier policy (D09-LAYOUT-03).
+    #[test]
+    fn height_non_finite_multiplier_is_ignored() {
+        assert_eq!(height_for(f32::NAN), 100, "NaN must be ignored, not rounded to 0");
+        assert_eq!(height_for(f32::INFINITY), 100, "+∞ must be ignored, not saturated");
+        assert_eq!(height_for(f32::NEG_INFINITY), 100, "-∞ must be ignored, not saturated");
+    }
+
+    /// Normal and huge-but-finite multipliers still scale the dimension, clamped at the `i32`
+    /// boundary rather than wrapping to a negative width (D09-LAYOUT-03).
+    #[test]
+    fn width_finite_multipliers_scale_within_bounds() {
+        assert_eq!(width_for(1.0), 200, "1.0 leaves the width unchanged");
+        assert_eq!(width_for(0.5), 100, "0.5 halves the width");
+        assert_eq!(width_for(0.0), 0, "0.0 collapses the width to zero, not negative");
+        // A huge finite multiplier overflows `i32` when rounded; the non-negative clamp keeps it
+        // from wrapping into a negative width that casts back to an enormous `u32`.
+        let huge = width_for(f32::MAX);
+        assert!(huge <= i32::MAX as u32, "a huge multiplier must saturate, not wrap: {huge}");
+    }
+
+    /// The `Height` branch scales finite multipliers identically.
+    #[test]
+    fn height_finite_multipliers_scale_within_bounds() {
+        assert_eq!(height_for(1.0), 100);
+        assert_eq!(height_for(0.5), 50);
+        assert_eq!(height_for(0.0), 0);
+        let huge = height_for(f32::MAX);
+        assert!(huge <= i32::MAX as u32, "a huge multiplier must saturate, not wrap: {huge}");
     }
 }

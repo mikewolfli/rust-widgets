@@ -21,11 +21,12 @@
 
 use alloc::vec::Vec;
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::render::RenderContext;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::role_font;
 use crate::widget::special_widgets::finance::layout::PlotArea;
 use crate::widget::special_widgets::finance::types::{BookLevel, OrderBook};
 use crate::widget::special_widgets::finance::volume_chart::draw_empty_pane;
@@ -425,6 +426,7 @@ impl Draw for OrderBookWidget {
                         panel, ink,
                     )
                 },
+                &role_font(&style, 12.0),
             );
             return;
         }
@@ -485,7 +487,7 @@ impl Draw for OrderBookWidget {
                 context.draw_text(
                     Point { x: price_x, y: text_y },
                     &price_text,
-                    &Font::simple("Sans", 11.0),
+                    &role_font(self.style(), 11.0),
                     color,
                     HorizontalAlignment::Left,
                 );
@@ -493,7 +495,7 @@ impl Draw for OrderBookWidget {
                     context.draw_text(
                         Point { x: quantity_x, y: text_y },
                         &quantity_text,
-                        &Font::simple("Sans", 11.0),
+                        &role_font(self.style(), 11.0),
                         self.text_color,
                         HorizontalAlignment::Left,
                     );
@@ -515,7 +517,7 @@ impl Draw for OrderBookWidget {
             context.draw_text(
                 Point { x: geometry.x + 6, y: y - 13 },
                 &text,
-                &Font::simple("Sans", 10.0),
+                &role_font(self.style(), 10.0),
                 ink.blend(&panel, 0.45),
                 HorizontalAlignment::Left,
             );

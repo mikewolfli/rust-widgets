@@ -21,7 +21,7 @@
 //! rather than a second derivation of it, so the paint path, the hit test and the tests all read
 //! one geometry.
 use crate::compat::{format, String, ToString};
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 #[cfg(full_widgets)]
 use crate::layout::{
@@ -35,7 +35,7 @@ use crate::widget::composite::CompositeBuilder;
 use crate::widget::decorations::{
     DecorationLayout, DecorationMetrics, DecorationSlots, DECORATION_GAP,
 };
-use crate::widget::metrics::{dimensions, estimate_text_width, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 
 use crate::widget::capability::coercion::{
     expect_bool, expect_f64, expect_horizontal_alignment, expect_i64, expect_string,
@@ -751,7 +751,7 @@ impl Widget for SpinBox {
         // pixels generous, which is true of a nominal per-cluster advance and false of a byte
         // count — a CJK value measured three times its drawn width, so the step column was pushed
         // further right than the digits needed and the hint stopped describing the control.
-        let text_width = estimate_text_width(&value, &crate::core::Font::default(), 1.0);
+        let text_width = estimate_text_width(&value, effective_font(self.style()), 1.0);
         let field_air = (dimensions::TEXT_FIELD_MIN_HEIGHT / 2).saturating_sub(8);
         let padding = EdgeOffsets {
             top: field_air,
@@ -1094,8 +1094,9 @@ impl Draw for SpinBox {
                 base
             }
         };
-        let default_font = Font::default();
-        let font = style.font.as_ref().unwrap_or(&default_font);
+        // The effective font, so the field's value is drawn in the same font the hint measured
+        // (D09-STYLE-02).
+        let font = effective_font(style);
         // Draw background. The field also acknowledges the pointer, so the whole control reads
         // as one interactive object rather than only its buttons doing so.
         context.fill_rect(band, step_fill(bg));
@@ -2024,5 +2025,33 @@ mod tests {
         assert_eq!(sb.value_f64(), 1.2);
         sb.step_up();
         assert_eq!(seen.load(Ordering::SeqCst), 1, "a real step still emits");
+    }
+
+    // ── D09-STYLE-02: the hint measures with the font the paint uses ──
+
+    /// A caller-authored `style.font` must widen the spin box hint.
+    #[test]
+    fn a_custom_font_grows_the_spin_box_hint() {
+        let mut baseline = SpinBox::new(Rect::new(0, 0, 200, 24));
+        baseline.set_decimals(2);
+        baseline.set_range_f64(0.0, 1_000_000_000.0);
+        baseline.set_value_f64(987654321.25);
+        let base_hint = baseline.size_hint();
+
+        let mut big = SpinBox::new(Rect::new(0, 0, 200, 24));
+        big.set_decimals(2);
+        big.set_range_f64(0.0, 1_000_000_000.0);
+        big.set_value_f64(987654321.25);
+        big.set_style(
+            crate::style::WidgetStyle::default().with_font(crate::core::Font::simple("Test", 30.0)),
+        );
+        let big_hint = big.size_hint();
+
+        assert!(
+            big_hint.width > base_hint.width,
+            "a larger font must widen the hint: {} vs {}",
+            big_hint.width,
+            base_hint.width
+        );
     }
 }

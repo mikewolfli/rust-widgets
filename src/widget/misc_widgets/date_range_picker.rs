@@ -11,7 +11,7 @@
 use super::date_utils::{days_in_month, parse_iso_date, DAY_NAMES, MONTH_NAMES};
 #[cfg(test)]
 use crate::core::Point;
-use crate::core::{Color, Font, HorizontalAlignment, Rect};
+use crate::core::{Color, HorizontalAlignment, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -19,6 +19,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -430,7 +431,7 @@ impl Draw for DateRangePicker {
         // the control entirely. `ascent` is *inside* the line box, not above it — the render
         // origin is the glyph's top edge.
         let header_band = Rect::new(rect.x + 20, rect.y + 6, rect.width.saturating_sub(40), 18);
-        let header_font = Font::new("sans-serif", 14.0, true, false);
+        let header_font = role_font(&style, 14.0).with_bold(true);
         let header_text = format!("{} {}", self.month_name(), self.display_year);
         context.draw_text_fitted(
             header_band,
@@ -465,7 +466,7 @@ impl Draw for DateRangePicker {
         // a symbol glyph the control no longer draws: measuring `"◀"` sized the icon from a
         // character that was about to become a bitmap block, which is a measurement of something the
         // frame does not contain.
-        let nav_font = Font::new("sans-serif", 12.0, true, false);
+        let nav_font = role_font(&style, 12.0).with_bold(true);
         let nav_height = context.measure_text("M", &nav_font).height;
         let arrow_side = nav_height.max(1);
         crate::widget::draw_icon_at(
@@ -482,7 +483,7 @@ impl Draw for DateRangePicker {
         );
 
         // ── Day-of-week header ──
-        let dow_font = Font::new("sans-serif", 9.0, false, false);
+        let dow_font = role_font(&style, 9.0);
         // The weekday row is secondary chrome: derived from the resolved text colour
         // so it stays legible against either surface.
         let dow_color = surface.blend(&text_color, 0.55);
@@ -503,7 +504,7 @@ impl Draw for DateRangePicker {
         }
 
         // ── Calendar grid ──
-        let day_font = Font::new("sans-serif", 10.0, false, false);
+        let day_font = role_font(&style, 10.0);
         let total_cells = layout.total_cells;
 
         for cell_idx in 0..total_cells {

@@ -7,7 +7,7 @@
 //! Unlike the existing SearchBox, this widget is designed for mobile-style
 //! search UX with active state management and a cancel button.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -19,6 +19,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -323,9 +324,12 @@ impl Draw for SearchBar {
 
         // Cancel button area
         let cancel_x = rect.x + rect.width as i32 - cancel_width as i32;
+        // The **effective font** — the resolved theme/caller font — for the cancel label, the
+        // placeholder and the value (D09-STYLE-01).
+        let font = effective_font(&style);
         if self.is_active && self.cancel_button_visible {
             let _cancel_rect = Rect::new(cancel_x, rect.y, cancel_width, rect.height);
-            let cancel_font = Font::simple("sans-serif", 14.0);
+            let cancel_font = font;
             let cancel_text = "Cancel";
             let metrics = context.measure_text(cancel_text, &cancel_font);
             let text_x = cancel_x + (cancel_width as i32 - metrics.width as i32) / 2;
@@ -420,7 +424,6 @@ impl Draw for SearchBar {
         } else {
             field_width.saturating_sub((text_left - rect.x) as u32 + 24)
         };
-        let font = Font::simple("sans-serif", 14.0);
         // The alignment this control's own value is drawn with. The placeholder shares it, so the
         // field reads as one column whichever state it is in.
         let value_align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);

@@ -29,9 +29,15 @@ impl AspectRatioLayout {
     ///
     /// # Panics
     ///
-    /// Panics if `aspect_ratio` is not positive.
+    /// Panics if `aspect_ratio` is not a finite positive number. A `NaN` or an
+    /// infinity is not a ratio the child can have: an infinite ratio would make
+    /// `parent_w / ratio` zero and collapse the child to nothing even in a
+    /// non-empty parent (D08-L-02, Round 55).
     pub fn new(aspect_ratio: f32, respect_parent: bool) -> Self {
-        assert!(aspect_ratio > 0.0, "AspectRatioLayout: aspect_ratio must be positive");
+        assert!(
+            aspect_ratio.is_finite() && aspect_ratio > 0.0,
+            "AspectRatioLayout: aspect_ratio must be finite and positive"
+        );
         Self { child: None, aspect_ratio, respect_parent }
     }
 
@@ -39,9 +45,12 @@ impl AspectRatioLayout {
     ///
     /// # Panics
     ///
-    /// Panics if `ratio` is not positive.
+    /// Panics if `ratio` is not a finite positive number (see [`AspectRatioLayout::new`]).
     pub fn set_aspect_ratio(&mut self, ratio: f32) {
-        assert!(ratio > 0.0, "AspectRatioLayout: aspect_ratio must be positive");
+        assert!(
+            ratio.is_finite() && ratio > 0.0,
+            "AspectRatioLayout: aspect_ratio must be finite and positive"
+        );
         self.aspect_ratio = ratio;
     }
 
@@ -61,10 +70,30 @@ impl AspectRatioLayout {
     }
 
     /// Compute the child rect that fits within the given rect while maintaining the aspect ratio.
+    ///
+    /// A positive extent that rounds to a sub-pixel value keeps at least one pixel, so a
+    /// child that has real width or height does not silently disappear (principle #50).
+    /// A zero extent (an empty parent, or a degenerate axis) stays zero.
     fn compute_child_rect(&self, parent: Rect) -> Rect {
         let parent_w = parent.width as f32;
         let parent_h = parent.height as f32;
         let ratio = self.aspect_ratio;
+
+        // Round a non-negative extent to pixels, keeping a positive-but-sub-pixel extent
+        // visible as one pixel rather than collapsing it to zero.
+        fn to_px(extent: f32) -> u32 {
+            if extent <= 0.0 {
+                return 0;
+            }
+            let rounded = extent.round();
+            if rounded >= 1.0 {
+                rounded as u32
+            } else {
+                // A positive extent below one pixel (including one that rounds down to 0)
+                // keeps a single visible pixel.
+                1
+            }
+        }
 
         let (child_w, child_h) = if self.respect_parent {
             // Fit within parent bounds.
@@ -73,16 +102,16 @@ impl AspectRatioLayout {
 
             // Pick the one that fits entirely inside the parent.
             if by_width.1 <= parent_h {
-                (by_width.0.round() as u32, by_width.1.round() as u32)
+                (to_px(by_width.0), to_px(by_width.1))
             } else {
-                (by_height.0.round() as u32, by_height.1.round() as u32)
+                (to_px(by_height.0), to_px(by_height.1))
             }
         } else {
             // Allow child to exceed parent if necessary to maintain ratio.
             // Use parent width as the base, derive height.
             let w = parent_w;
             let h = w / ratio;
-            (w.round() as u32, h.round() as u32)
+            (to_px(w), to_px(h))
         };
 
         let x_offset = (parent.width.saturating_sub(child_w) / 2) as i32;
@@ -209,6 +238,52 @@ mod tests {
         layout.clear();
         assert!(layout.child_ids().is_empty());
     }
+
+    /// D08-L-02: a positive sub-pixel extent must stay visible, not round to zero.
+    #[test]
+    fn a_positive_sub_pixel_extent_keeps_one_pixel() {
+        // ratio 4.0, non-empty 1x1 parent: by_width is (1, 0.25), which fits, and the
+        // 0.25 height must become 1 rather than 0.
+        let layout = AspectRatioLayout::new_with_child(42, 4.0, true);
+        let mut out = None;
+        layout.update(Rect::new(0, 0, 1, 1), &mut |id, rect| {
+            if id == 42 {
+                out = Some(rect);
+            }
+        });
+        let rect = out.expect("child should be positioned");
+        assert_eq!(rect.width, 1);
+        assert_eq!(rect.height, 1, "a positive extent must not collapse to zero");
+    }
+
+    /// An empty parent still yields a degenerate (zero) child rather than a 1x1 one.
+    #[test]
+    fn an_empty_parent_still_yields_a_zero_sized_child() {
+        let layout = AspectRatioLayout::new_with_child(42, 2.0, true);
+        let mut out = None;
+        layout.update(Rect::new(0, 0, 0, 0), &mut |id, rect| {
+            if id == 42 {
+                out = Some(rect);
+            }
+        });
+        let rect = out.expect("child should be positioned");
+        assert_eq!((rect.width, rect.height), (0, 0));
+    }
+
+    /// D08-L-02: a non-finite ratio is rejected at every entry point, so it can never
+    /// produce a zero-height child in a non-empty parent.
+    #[test]
+    fn non_finite_ratios_are_rejected() {
+        assert!(std::panic::catch_unwind(|| AspectRatioLayout::new(f32::INFINITY, true)).is_err());
+        assert!(std::panic::catch_unwind(|| AspectRatioLayout::new(f32::NAN, true)).is_err());
+        assert!(std::panic::catch_unwind(|| AspectRatioLayout::new(0.0, true)).is_err());
+        assert!(std::panic::catch_unwind(|| AspectRatioLayout::new(-1.0, true)).is_err());
+        let mut layout = AspectRatioLayout::new(2.0, true);
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            layout.set_aspect_ratio(f32::INFINITY)
+        }))
+        .is_err());
+    }
 }
 
 /// Helper for constructing a layout pre-populated with a child.
@@ -218,9 +293,12 @@ impl AspectRatioLayout {
     ///
     /// # Panics
     ///
-    /// Panics if `aspect_ratio` is not positive.
+    /// Panics if `aspect_ratio` is not a finite positive number.
     pub fn new_with_child(child_id: ObjectId, aspect_ratio: f32, respect_parent: bool) -> Self {
-        assert!(aspect_ratio > 0.0, "AspectRatioLayout: aspect_ratio must be positive");
+        assert!(
+            aspect_ratio.is_finite() && aspect_ratio > 0.0,
+            "AspectRatioLayout: aspect_ratio must be finite and positive"
+        );
         Self { child: Some(child_id), aspect_ratio, respect_parent }
     }
 }

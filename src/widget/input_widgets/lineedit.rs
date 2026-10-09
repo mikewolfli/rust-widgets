@@ -21,7 +21,7 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::decorations::{
     DecorationLayout, DecorationMetrics, DecorationSlots, DECORATION_GAP,
 };
-use crate::widget::metrics::{dimensions, estimate_text_width, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 
 /// Trailing room a text field leaves for the caret, added to the measured value.
 const LINE_EDIT_CARET_ROOM: u32 = 10;
@@ -573,8 +573,8 @@ impl LineEdit {
             return 0;
         }
         let style = self.base.style();
-        let default_font = crate::core::Font::default();
-        let font = style.font.as_ref().unwrap_or(&default_font);
+        // The effective font — what the paint uses — so the hit test and the ink agree (D09-STYLE-02).
+        let font = effective_font(style);
         // The box the value is laid out in, derived the only way this file derives it: from the
         // decoration layout, so a prefix (`$`) and the value's own origin cannot disagree with
         // the paint (see the `layout` binding in `draw`, which comes from this same call).
@@ -940,8 +940,9 @@ impl LineEdit {
     fn decoration_layout(&self, context: &mut RenderContext) -> DecorationLayout {
         let field = self.field_rect();
         let style = self.base.style().clone();
-        let default_font = crate::core::Font::default();
-        let font = style.font.as_ref().unwrap_or(&default_font);
+        // The effective font, taken through the shared accessor so this layout, `byte_index_at_x`
+        // and `draw` all measure with one font (D09-STYLE-02).
+        let font = effective_font(&style);
         let metrics = DecorationMetrics::measure(&self.decorations, |text| {
             context.measure_text(text, font).width
         });
@@ -975,9 +976,10 @@ impl Widget for LineEdit {
         // The shared estimate plus the caret's own trailing room, rather than `len() * 8 + 10`.
         // The 10 px was making the same point — a text field leaves the caret somewhere to be —
         // but the multiplier was a byte count, so any non-ASCII value asked for three times the
-        // width it would draw.
-        let text_w = estimate_text_width(self.text(), &crate::core::Font::default(), 1.0)
-            + LINE_EDIT_CARET_ROOM;
+        // width it would draw. The font is the **effective** one the draw path uses (D09-STYLE-02),
+        // so a text scale or custom face moves the hint and the ink together.
+        let font = effective_font(self.style());
+        let text_w = estimate_text_width(self.text(), font, 1.0) + LINE_EDIT_CARET_ROOM;
         Size::new(text_w.max(LINE_EDIT_MIN_WIDTH), LINE_EDIT_HEIGHT)
     }
     impl_draw_bridge!();
@@ -1371,6 +1373,18 @@ impl EventHandler for LineEdit {
             Event::KeyPress { key, modifiers } => {
                 self.handle_key(*key, crate::shortcut::Modifiers::from_event_bits(*modifiers));
             }
+            // Platform-committed text (D09-INPUT-01).
+            //
+            // The desktop backends deliver a printable character or an IME commit as
+            // `Event::TextInput`/`Event::ImeCommit`, not as a `KeyPress`, so a handler that only
+            // matches `KeyPress` never receives what the user typed. Routing both variants into
+            // `insert_text` — the same entry point the `KeyPress` printable path calls — keeps the
+            // field's focus, read-only, selection-replacement, `max_length`, undo and
+            // `text_changed` contract in one place rather than duplicating it here. The
+            // `read_only`/`is_enabled` early returns above already gate this branch.
+            Event::TextInput { text } | Event::ImeCommit { text } => {
+                self.insert_text(text);
+            }
             Event::FocusLost => {
                 self.set_focused(false);
                 self.editing_finished.emit();
@@ -1471,8 +1485,7 @@ impl Draw for LineEdit {
         } else {
             &self.display_text()
         };
-        let default_font = crate::core::Font::default();
-        let font = style.font.as_ref().unwrap_or(&default_font);
+        let font = effective_font(style);
         let value_line = context.text_line(rect, font);
         let text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
         // The box the value is laid out in, and the alignment it uses within that box.
@@ -3126,5 +3139,183 @@ mod composition_tests {
         field.cancel_composition();
         let after = crate::widget::svg::render_widget_to_svg(&mut field, bounds);
         assert_eq!(horizontal_lines(&after), horizontal_lines(&without));
+    }
+
+    // ── D09-STYLE-02: the hint measures with the font the paint uses ──
+
+    /// A caller-authored `style.font` must widen the field's hint and its drawn value.
+    ///
+    /// # The defect this pins
+    ///
+    /// `size_hint()` measured the value with `Font::default()` while `draw()` used `style.font`,
+    /// so a custom face or a scaled theme font left the field asking for less room than its ink
+    /// needed.
+    #[test]
+    fn a_custom_font_grows_the_line_edit_hint_and_the_drawn_value() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut baseline = LineEdit::new(Rect::new(0, 0, 400, 24));
+        baseline.set_text("A longer value");
+        let base_hint = baseline.size_hint();
+        let base_ink = value_ink_width(&mut baseline);
+
+        let mut big = LineEdit::new(Rect::new(0, 0, 400, 24));
+        big.set_text("A longer value");
+        big.set_style(
+            crate::style::WidgetStyle::default().with_font(crate::core::Font::simple("Test", 30.0)),
+        );
+        let big_hint = big.size_hint();
+        let big_ink = value_ink_width(&mut big);
+
+        assert!(
+            big_hint.width > base_hint.width,
+            "a larger font must widen the field hint: {} vs {}",
+            big_hint.width,
+            base_hint.width
+        );
+        assert!(
+            big_ink > base_ink,
+            "a larger font must widen the drawn value: {big_ink} vs {base_ink}"
+        );
+    }
+
+    /// A text scale above 1.0, resolved through the theme, must widen the hint.
+    #[test]
+    fn a_theme_text_scale_above_one_grows_the_line_edit_hint() {
+        use crate::style::environment::{
+            install_environment, uninstall_environment, EnvironmentProvider,
+        };
+        use crate::style::MotionPreference;
+
+        struct Scaled(f32);
+        impl EnvironmentProvider for Scaled {
+            fn text_scale(&self) -> f32 {
+                self.0
+            }
+            fn motion_preference(&self) -> MotionPreference {
+                MotionPreference::NoPreference
+            }
+        }
+
+        let _guard = crate::style::theme_test_guard();
+        let previous = install_environment(Box::new(Scaled(1.0)));
+        {
+            let mut manager = crate::theme::global_theme_manager();
+            manager.register_theme(crate::theme::Theme::default());
+            manager.set_appearance(crate::theme::AppearanceMode::Light);
+        }
+        let mut at_one = LineEdit::new(Rect::new(0, 0, 400, 24));
+        at_one.set_text("Scaled value");
+        crate::theme::apply_active_theme(&mut at_one);
+        let hint_one = at_one.size_hint();
+
+        install_environment(Box::new(Scaled(1.5)));
+        let mut scaled = LineEdit::new(Rect::new(0, 0, 400, 24));
+        scaled.set_text("Scaled value");
+        crate::theme::apply_active_theme(&mut scaled);
+        let hint_large = scaled.size_hint();
+
+        let _ = uninstall_environment();
+        if let Some(previous) = previous {
+            install_environment(previous);
+        }
+
+        assert!(
+            hint_large.width > hint_one.width,
+            "a text scale above 1.0 must widen the field hint: {} vs {}",
+            hint_large.width,
+            hint_one.width
+        );
+    }
+
+    /// The ink width of the value a field paints, read back from an SVG render.
+    fn value_ink_width(field: &mut LineEdit) -> i32 {
+        let svg = crate::widget::svg::render_to_svg(field);
+        crate::widget::svg::text_ink_box(&svg).map(|(x, _, right, _)| right - x).unwrap_or(0)
+    }
+
+    // ── D09-INPUT-01: platform-committed text reaches the value ──
+
+    /// A `TextInput` from the platform must enter the field's value.
+    ///
+    /// # The defect this pins (D09-INPUT-01)
+    ///
+    /// The desktop backends deliver a printable character or an IME commit as
+    /// `Event::TextInput`, not as a `KeyPress`. This handler only matched `KeyPress`, so the text
+    /// the platform committed was dropped and a focused field never changed. The test feeds
+    /// `TextInput` (never `KeyPress`) to prove the committed-text path itself is wired.
+    #[test]
+    fn text_input_enters_the_value() {
+        let mut field = LineEdit::new(Rect::new(0, 0, 200, 24));
+        field.set_focused(true);
+        field.handle_event(&Event::TextInput { text: "hé".to_string() });
+        assert_eq!(field.text(), "hé", "committed text must reach the value");
+    }
+
+    /// An IME commit is committed text and enters the value the same way.
+    #[test]
+    fn ime_commit_enters_the_value() {
+        let mut field = LineEdit::new(Rect::new(0, 0, 200, 24));
+        field.set_focused(true);
+        field.handle_event(&Event::ime_commit("你好"));
+        assert_eq!(field.text(), "你好");
+    }
+
+    /// A `TextInput` replacing a selection must replace the range, not append to it.
+    #[test]
+    fn text_input_replaces_the_selection() {
+        let mut field = LineEdit::new(Rect::new(0, 0, 200, 24));
+        field.set_focused(true);
+        field.set_text("abcdef".to_string());
+        field.select_all();
+        field.handle_event(&Event::TextInput { text: "Z".to_string() });
+        assert_eq!(field.text(), "Z", "the committed text replaced the selected range");
+    }
+
+    /// Committed text respects `max_length`, exactly as a typed character does.
+    #[test]
+    fn text_input_respects_the_max_length() {
+        let mut field = LineEdit::new(Rect::new(0, 0, 200, 24));
+        field.set_focused(true);
+        field.set_max_length(Some(3));
+        field.handle_event(&Event::TextInput { text: "abcdef".to_string() });
+        assert_eq!(field.text().chars().count(), 3, "the limit applies to a commit too");
+    }
+
+    /// A read-only field ignores committed text.
+    #[test]
+    fn read_only_ignores_text_input() {
+        let mut field = LineEdit::new(Rect::new(0, 0, 200, 24));
+        field.set_focused(true);
+        field.set_text("locked".to_string());
+        field.set_read_only(true);
+        field.handle_event(&Event::TextInput { text: "X".to_string() });
+        assert_eq!(field.text(), "locked", "a read-only field must not accept committed text");
+    }
+
+    /// A disabled field ignores committed text.
+    #[test]
+    fn disabled_ignores_text_input() {
+        let mut field = LineEdit::new(Rect::new(0, 0, 200, 24));
+        field.set_enabled(false);
+        field.set_focused(true);
+        field.handle_event(&Event::TextInput { text: "X".to_string() });
+        assert_eq!(field.text(), "", "a disabled field must not accept committed text");
+    }
+
+    /// Committed text emits `text_changed` once with the new value, and the edit is undoable.
+    #[test]
+    fn text_input_emits_changed_and_is_undoable() {
+        use std::sync::{Arc, Mutex};
+        let mut field = LineEdit::new(Rect::new(0, 0, 200, 24));
+        field.set_focused(true);
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen_clone = seen.clone();
+        field.text_changed.connect(move |text| seen_clone.lock().unwrap().push(text.to_string()));
+
+        field.handle_event(&Event::TextInput { text: "hi".to_string() });
+        assert_eq!(field.text(), "hi");
+        assert_eq!(*seen.lock().unwrap(), vec!["hi".to_string()]);
+        assert!(field.undo(), "committed text is on the undo stack like any other edit");
+        assert_eq!(field.text(), "");
     }
 }

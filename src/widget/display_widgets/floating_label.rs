@@ -8,7 +8,7 @@
 //! contains text. It also supports placeholder text that is shown when the
 //! field is empty and unfocused.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -16,7 +16,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::dimensions;
+use crate::widget::metrics::{dimensions, role_font};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -340,8 +340,10 @@ impl FloatingLabel {
         }
         let field_background = self.field_background_color();
         let is_enabled = self.base.is_enabled();
-        let input_font = Font::simple("sans-serif", INPUT_FONT_SIZE);
-        let label_font = Font::simple("sans-serif", LABEL_FONT_SIZE);
+        // The **effective font** at each role's own size, so the theme family and the user's text
+        // scale reach both the inline label and the floated caption (D09-STYLE-01).
+        let input_font = role_font(self.base.style(), INPUT_FONT_SIZE);
+        let label_font = role_font(self.base.style(), LABEL_FONT_SIZE);
         let label_x = rect.x + LABEL_PADDING;
         // Both text origins come from `text_line`, which centres the line box in the band.
         // The inline origin sits on the band the input text occupies, the floating one on
@@ -583,7 +585,8 @@ impl Draw for FloatingLabel {
         // constants change.
         let has_label = !self.label.is_empty();
         let floats = has_label && self.show_label_above;
-        let input_font = Font::simple("sans-serif", INPUT_FONT_SIZE);
+        // The input text takes the **effective font** at the input role's size (D09-STYLE-01).
+        let input_font = role_font(&style, INPUT_FONT_SIZE);
         let input_band = Rect::new(
             rect.x,
             rect.y + if floats { FLOATED_BAND_TOP } else { INLINE_BAND_TOP },

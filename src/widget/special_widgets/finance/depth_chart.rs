@@ -26,6 +26,7 @@ use crate::render::RenderContext;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::role_font;
 use crate::widget::special_widgets::finance::layout::{panel_colors, PanelColors, PlotArea};
 use crate::widget::special_widgets::finance::types::{BookLevel, OrderBook};
 use crate::widget::special_widgets::finance::volume_chart::draw_empty_pane;
@@ -422,7 +423,7 @@ impl Draw for DepthChart {
         // would be two invisible hairlines on the baseline. The pane draws its frame and a
         // message instead of leaving the slab this used to return after.
         if max_cumulative <= 0.0 {
-            draw_empty_pane(context, &area, chrome);
+            draw_empty_pane(context, &area, chrome, &role_font(self.style(), 12.0));
             return;
         }
 

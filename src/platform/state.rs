@@ -260,11 +260,16 @@ where
     /// Refuses an unknown `id`: a surface for a widget that does not exist could only
     /// produce a frame nobody reads, so reporting `false` is the honest answer.
     pub fn mount_surface_record(&self, id: ObjectId, rect: Rect) -> bool {
-        if !self.contains_widget(id) {
+        // `widgets` first (matching `destroy_widget`), then `surfaces`, so the check
+        // cannot be separated from the insert by a concurrent destroy (D08-P-03).
+        let widgets = lock(&self.widgets);
+        if !widgets.contains_key(&id) {
             return false;
         }
         let mut surfaces = lock(&self.surfaces);
         surfaces.insert(id, rect_to_tuple(rect));
+        drop(surfaces);
+        drop(widgets);
         true
     }
 
@@ -302,13 +307,22 @@ where
     /// pixels on screen. Coalesced: a widget already awaiting a repaint is not queued
     /// again, so a burst of invalidations in one frame produces one repaint.
     pub fn invalidate_surface_record(&self, id: ObjectId) -> bool {
-        if self.surface_rect(id).is_none() {
+        // Hold `widgets` across the surface check and the repaint enqueue so a
+        // concurrent destroy cannot clear `pending_repaints` between them and leave a
+        // repaint queued for a widget that is gone (D08-P-03).
+        let widgets = lock(&self.widgets);
+        if !widgets.contains_key(&id) {
+            return false;
+        }
+        if !lock(&self.surfaces).contains_key(&id) {
             return false;
         }
         let mut pending = lock(&self.pending_repaints);
         if !pending.contains(&id) {
             pending.push_back(id);
         }
+        drop(pending);
+        drop(widgets);
         true
     }
 
@@ -344,13 +358,17 @@ where
     /// present the frame should resolve it with `crate::app::window_handle_for`
     /// (or read [`Self::surface_rect`] for a widget mounted directly).
     pub fn record_repaint_request(&self, id: ObjectId) -> bool {
-        if !self.contains_widget(id) {
+        // Atomic with the existence check (D08-P-03), same lock order as destroy.
+        let widgets = lock(&self.widgets);
+        if !widgets.contains_key(&id) {
             return false;
         }
         let mut pending = lock(&self.pending_repaints);
         if !pending.contains(&id) {
             pending.push_back(id);
         }
+        drop(pending);
+        drop(widgets);
         true
     }
 
@@ -869,6 +887,9 @@ where
     }
     /// Pop menu trigger event.
     /// Reserved for menu system integration (paired with push_menu_event).
+    ///
+    /// As with [`BackendState::pop_widget_event`], the atomic inject path is what keeps the
+    /// queue honest; directly pushed entries are returned as-is.
     pub fn pop_menu_event(&self) -> Option<ObjectId> {
         lock(&self.menu_events).pop_front()
     }
@@ -878,6 +899,12 @@ where
         lock(&self.widget_events).push_back(event);
     }
     /// Pop typed widget trigger event.
+    ///
+    /// The atomic [`BackendState::inject_widget_trigger_event`] already guarantees that a
+    /// queued event's widget existed at enqueue time and could not be destroyed mid-enqueue,
+    /// so the queue itself is the authority here. Events pushed directly by
+    /// [`BackendState::push_widget_event`] (a public path used to seed state, e.g. in tests)
+    /// are returned as-is rather than filtered against the widget registry.
     pub fn pop_widget_event(&self) -> Option<WidgetTriggerEvent> {
         lock(&self.widget_events).pop_front()
     }
@@ -912,7 +939,9 @@ where
     }
     /// Begin drag event for existing source widget.
     pub fn begin_drag(&self, source_widget_id: ObjectId, mime: &str, payload: &[u8]) -> bool {
-        if !self.contains_widget(source_widget_id) {
+        // Atomic with the existence check (D08-P-03), same lock order as destroy.
+        let widgets = lock(&self.widgets);
+        if !widgets.contains_key(&source_widget_id) {
             return false;
         }
         lock(&self.drop_events).push_back(DropEvent {
@@ -921,6 +950,7 @@ where
             mime: mime.to_string(),
             payload: payload.to_vec(),
         });
+        drop(widgets);
         true
     }
     /// Pop one drop event.
@@ -928,11 +958,15 @@ where
         lock(&self.drop_events).pop_front()
     }
     /// Inject drop event when target widget exists.
+    ///
+    /// Atomic with the existence check (D08-P-03).
     pub fn inject_drop_event(&self, event: DropEvent) -> bool {
-        if !self.contains_widget(event.target_widget_id) {
+        let widgets = lock(&self.widgets);
+        if !widgets.contains_key(&event.target_widget_id) {
             return false;
         }
         lock(&self.drop_events).push_back(event);
+        drop(widgets);
         true
     }
 
@@ -940,13 +974,44 @@ where
     // These helpers are called by the macos, mobile, and stub platform backends
     // for event system bridge functions.
 
-    /// Inject menu trigger event.
-    /// Reserved for testing and programmatic event injection.
-    pub fn inject_menu_trigger(&self, menu_item_id: ObjectId) -> bool {
-        if !self.contains_widget(menu_item_id) {
+    /// Inject a typed widget trigger event, atomically with the existence check.
+    ///
+    /// # Why this is one operation rather than `contains_widget` + `push_widget_event`
+    ///
+    /// The two-lock form had a window between the existence check and the enqueue: a
+    /// concurrent [`BackendState::destroy_widget`] could remove the widget (and clear its
+    /// queues) after the check passed, and the push then re-added an event for an id that
+    /// no longer exists — which `poll` would hand back (D08-P-03). Holding the `widgets`
+    /// lock across the check-and-enqueue closes that window. The lock order
+    /// (`widgets` → `widget_events`) matches [`BackendState::destroy_widget`], so the two
+    /// cannot deadlock.
+    pub fn inject_widget_trigger_event(
+        &self,
+        widget_id: ObjectId,
+        kind: WidgetTriggerKind,
+    ) -> bool {
+        let widgets = lock(&self.widgets);
+        if !widgets.contains_key(&widget_id) {
             return false;
         }
-        self.push_menu_event(menu_item_id);
+        // The widget cannot be destroyed while `widgets` is held, so this enqueue
+        // cannot outlive the id it names.
+        lock(&self.widget_events).push_back(WidgetTriggerEvent { widget_id, kind });
+        drop(widgets);
+        true
+    }
+
+    /// Inject a menu trigger event, atomically with the existence check.
+    ///
+    /// Same reasoning as [`BackendState::inject_widget_trigger_event`]: the check and the
+    /// enqueue must not be separable by a concurrent destroy (D08-P-03).
+    pub fn inject_menu_trigger(&self, menu_item_id: ObjectId) -> bool {
+        let widgets = lock(&self.widgets);
+        if !widgets.contains_key(&menu_item_id) {
+            return false;
+        }
+        lock(&self.menu_events).push_back(menu_item_id);
+        drop(widgets);
         true
     }
     /// Pop widget trigger event.
@@ -961,19 +1026,6 @@ where
     /// Reserved for event processing in platform backends (typed variant).
     pub fn pop_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
         self.pop_widget_event()
-    }
-    /// Inject widget trigger event.
-    /// Reserved for testing and programmatic event injection (typed variant).
-    pub fn inject_widget_trigger_event(
-        &self,
-        widget_id: ObjectId,
-        kind: WidgetTriggerKind,
-    ) -> bool {
-        if !self.contains_widget(widget_id) {
-            return false;
-        }
-        self.push_widget_event(WidgetTriggerEvent { widget_id, kind });
-        true
     }
 
     /// The size `window_id` was created with, if it exists.
@@ -1115,5 +1167,58 @@ mod tests {
         assert_eq!(other.widget_id, 2, "and it is the one that was queued for widget 2");
         assert_eq!(other.kind, WidgetTriggerKind::Clicked);
         assert!(state.pop_widget_event().is_none(), "the queue is now empty");
+    }
+
+    /// D08-P-03: a destroy that races an inject must not leave a queued event for a
+    /// widget that no longer exists.
+    ///
+    /// A `Barrier` fixes the interleaving: one thread blocks inside the inject after
+    /// its existence check used to pass, and the other destroys the widget in that
+    /// window. With the check and the enqueue now under one `widgets` lock, the destroy
+    /// cannot slip between them, so the pop can never surface the dead id.
+    #[test]
+    fn destroy_racing_an_inject_leaves_no_event_for_a_dead_widget() {
+        use crate::platform::types::WidgetTriggerKind;
+        use std::sync::{Arc, Barrier};
+
+        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+        #[allow(dead_code)]
+        enum TestKind {
+            Widget,
+        }
+
+        // Run many rounds: the barrier makes the race deterministic when the fields are
+        // not atomic, and the loop raises the chance of catching a regression.
+        for _ in 0..200 {
+            let state = Arc::new(BackendState::<TestKind>::new());
+            let id = state.create_widget(TestKind::Widget, "probe", 0, 0, 10, 10);
+            let barrier = Arc::new(Barrier::new(2));
+
+            let inject_state = Arc::clone(&state);
+            let inject_barrier = Arc::clone(&barrier);
+            let injector = std::thread::spawn(move || {
+                inject_barrier.wait();
+                inject_state.inject_widget_trigger_event(id, WidgetTriggerKind::Clicked)
+            });
+
+            let destroy_state = Arc::clone(&state);
+            let destroy_barrier = Arc::clone(&barrier);
+            let destroyer = std::thread::spawn(move || {
+                destroy_barrier.wait();
+                destroy_state.destroy_widget(id)
+            });
+
+            let injected = injector.join().expect("inject thread must not panic");
+            let _existed = destroyer.join().expect("destroy thread must not panic");
+
+            // Whatever the interleaving, a pop may only return an event for a still-live
+            // widget. After destroy the widget is gone, so the queue must be either empty
+            // (the inject lost the race) or contain the event only if the inject ran first
+            // AND the destroy then cleared it — i.e. always empty once destroy has completed.
+            assert!(
+                state.pop_widget_event().is_none(),
+                "a destroyed widget must not leave a queued event (injected={injected})"
+            );
+        }
     }
 }

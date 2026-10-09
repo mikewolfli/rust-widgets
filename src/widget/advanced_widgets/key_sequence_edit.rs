@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 //! Key sequence editor widget for capturing keyboard shortcuts.
-use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -473,8 +474,10 @@ impl Draw for KeySequenceEdit {
         // Vertically centred through the shared primitive, and bounded to the field's own
         // width: the recorded sequence grows without limit (`Ctrl+Shift+Alt+Meta+K`), and the
         // SVG backend emits absolute coordinates, so an unbounded one ran past the field.
-        let font = Font::default();
-        let line = context.text_line(rect, &font);
+        // The **effective font** — the resolved theme/caller font — so the recorded sequence
+        // honours the theme body font and the user's text scale (D09-STYLE-01).
+        let font = effective_font(style);
+        let line = context.text_line(rect, font);
         context.draw_text_fitted(
             Rect {
                 x: rect.x + 6,
@@ -483,7 +486,7 @@ impl Draw for KeySequenceEdit {
                 height: line.height,
             },
             &display,
-            &font,
+            font,
             text_color,
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );

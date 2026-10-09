@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Calendar widget.
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -13,7 +13,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::dimensions;
+use crate::widget::metrics::{dimensions, effective_font, role_font};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use chrono::Datelike;
@@ -819,8 +819,8 @@ impl Draw for Calendar {
             } else {
                 dim_color
             });
-            let arrow_font = Font::default();
-            let arrow_line = context.text_line(nav, &arrow_font);
+            let arrow_font = effective_font(style);
+            let arrow_line = context.text_line(nav, arrow_font);
             // The arrows' own box width, used to reserve the span the title may use.
             let btn_w = 30i32;
             let arrow_side = arrow_line.height.max(1);
@@ -841,7 +841,7 @@ impl Draw for Calendar {
             // non-zero origin, so a calendar placed at x > 0 would still overrun by `rect.x`.
             let arrow_inset = 8 + btn_w;
             let left_edge = nav.x + arrow_inset;
-            let title_font = Font::bold("Arial", 13.0);
+            let title_font = role_font(style, 13.0).with_bold(true);
             let title_line = context.text_line(nav, &title_font);
             let title_bounds = Rect::new(
                 left_edge,
@@ -924,7 +924,7 @@ impl Draw for Calendar {
                 context.draw_text_fitted(
                     label_bounds,
                     name,
-                    &Font::bold("Arial", 11.0),
+                    &role_font(style, 11.0).with_bold(true),
                     c,
                     HorizontalAlignment::Center,
                 );
@@ -944,7 +944,7 @@ impl Draw for Calendar {
             // when the control is shorter than six rows' worth and the rows are compressed.
             let gutter = self.week_gutter_rect();
             if gutter.width > 0 {
-                let font = Font::simple("Sans", 10.0);
+                let font = role_font(style, 10.0);
                 for row in 0..6u32 {
                     let Some(start) = self.week_row_start(row) else {
                         continue;
@@ -1120,7 +1120,7 @@ impl Draw for Calendar {
                     // overhang into its neighbour, but the *number* belongs to the whole cell
                     // and must stay centred when that highlight is absent. Centring inside the
                     // tinted band instead would have shifted every non-today number by a pixel.
-                    let day_font = Font::new("Arial", 11.0, false, false);
+                    let day_font = role_font(style, 11.0);
                     let day_line = context.text_line(cell_rect, &day_font);
                     context.draw_text_fitted(
                         day_line,
@@ -1143,7 +1143,7 @@ impl Draw for Calendar {
 #[cfg(all(test, full_widgets))]
 mod tests {
     use super::*;
-    use crate::core::{Rect, Size};
+    use crate::core::{Font, Rect, Size};
     use chrono::NaiveDate;
 
     #[test]

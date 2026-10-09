@@ -409,8 +409,16 @@ impl Color {
     ///
     /// A factor of `0.0` leaves the color unchanged; `1.0` produces black.
     /// Alpha is preserved unchanged.
+    ///
+    /// # Non-finite factors (D09-THEME-02)
+    ///
+    /// [`f32::clamp`] passes `NaN` through, and a `NaN` channel rounds to `NaN` and casts to `0`,
+    /// so the previous implementation silently produced **black** — unrelated to either factor
+    /// endpoint. The shared policy in [`Color::normalized_factor`] maps `NaN` to `0.0` (the
+    /// identity transform: the original colour) and `±∞` to the nearer endpoint, so a bad factor
+    /// yields a defined colour rather than black.
     pub fn dark_variant(&self, factor: f32) -> Self {
-        let f = factor.clamp(0.0, 1.0);
+        let f = Self::normalized_factor(factor);
         Self::rgba(
             (self.r as f32 * (1.0 - f)).round().clamp(0.0, 255.0) as u8,
             (self.g as f32 * (1.0 - f)).round().clamp(0.0, 255.0) as u8,
@@ -424,14 +432,32 @@ impl Color {
     ///
     /// A factor of `0.0` leaves the color unchanged; `1.0` produces white.
     /// Alpha is preserved unchanged.
+    ///
+    /// # Non-finite factors (D09-THEME-02)
+    ///
+    /// Shares [`Color::normalized_factor`] with [`Color::dark_variant`] so both helpers agree:
+    /// `NaN` → `0.0` (the identity transform), `±∞` → the nearer endpoint.
     pub fn light_variant(&self, factor: f32) -> Self {
-        let f = factor.clamp(0.0, 1.0);
+        let f = Self::normalized_factor(factor);
         Self::rgba(
             (self.r as f32 + (255.0 - self.r as f32) * f).round().clamp(0.0, 255.0) as u8,
             (self.g as f32 + (255.0 - self.g as f32) * f).round().clamp(0.0, 255.0) as u8,
             (self.b as f32 + (255.0 - self.b as f32) * f).round().clamp(0.0, 255.0) as u8,
             self.a,
         )
+    }
+
+    /// The documented non-finite policy for a colour-mix factor, shared by both variant helpers
+    /// (D09-THEME-02).
+    ///
+    /// `NaN` → `0.0` (the identity transform, so the colour is left as-is rather than zeroed);
+    /// `±∞` → `0.0` / `1.0`; a finite value → clamped into `0.0..=1.0`.
+    pub fn normalized_factor(factor: f32) -> f32 {
+        if factor.is_nan() {
+            0.0
+        } else {
+            factor.clamp(0.0, 1.0)
+        }
     }
 }
 
@@ -607,7 +633,10 @@ pub struct ThemeStyleToken {
     /// kept the font its constructor chose.
     #[cfg_attr(not(alloc_frugal), serde(default))]
     pub font: Option<Font>,
-    /// Optional opacity override (clamped to `[0.0, 1.0]` on application).
+    /// Optional opacity override (normalised to `[0.0, 1.0]` on application).
+    ///
+    /// Applied through [`crate::style::normalized_opacity`], so a programmatic `NaN` becomes
+    /// `1.0` rather than reaching the resolved style (D09-STYLE-04).
     #[cfg_attr(not(alloc_frugal), serde(default))]
     pub opacity: Option<f32>,
     /// Optional drop-shadow override.

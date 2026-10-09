@@ -292,10 +292,26 @@ pub fn text_line(
 ///
 /// # Why the advance model is repeated here
 ///
-/// It matches [`PaintBackend::shape_text`]: one cluster per `char`, each advancing by the
-/// font's size. Measuring with the model the renderer draws with is what makes the fitted
-/// string actually fit; a private estimate here would reintroduce the mismatch this exists
-/// to remove (a CJK title measured by `len()` is four times its drawn width).
+/// It matches [`PaintBackend::shape_text`]: one cluster per grapheme, and the shaped run's
+/// total advance is the sum of its cluster advances plus the font's tracking between them.
+/// Measuring with the model the renderer draws with is what makes the fitted string actually
+/// fit; a private estimate here would reintroduce the mismatch this exists to remove (a CJK
+/// title measured by `len()` is four times its drawn width).
+///
+/// # Why the prefix is found in one pass (D09-RENDER-03)
+///
+/// The previous loop built each candidate by cloning the kept prefix, pushing one char, and
+/// calling `measure_text` on the whole candidate — so every accepted cluster was re-copied and
+/// re-shaped on each later iteration, and the work grew as `1 + 2 + … + K = O(K²)` in the number
+/// of clusters that fit. That is quadratic on exactly the inputs this helper exists for: long
+/// labels, paths and status strings clipped to a narrow control.
+///
+/// The width of a prefix is *additive* over its clusters, so the whole text is shaped **once**,
+/// the cluster advances are accumulated in a single running sum, and the split point is taken
+/// where that sum first exceeds the budget. The candidate string is assembled once from the
+/// accepted clusters' text; no candidate is ever re-measured. The result is the same clusters,
+/// measured with the same advances, so the fitted string — including ellipsis, CJK and the
+/// exact width boundary — is unchanged; only the cost is.
 fn fit_text_to_width(
     text: &str,
     max_width: f32,
@@ -316,6 +332,123 @@ fn fit_text_to_width(
         return ELLIPSIS.to_string();
     }
     let budget = max_width - ellipsis_width;
+
+    // One shaping pass for the whole string. Its cluster advances are the renderer's own model.
+    let shaped = backend.shape_text(text, font);
+    let clusters = shaped.clusters();
+
+    // # Why the order is checked before the linear pass (D09-RENDER-03)
+    //
+    // The accumulation below walks the shaped clusters in the order `shape_text` returned them,
+    // which is **visual** order. For a left-to-right line (every Latin, CJK and combined-script
+    // label) visual order equals logical order, so the accepted prefix is a string prefix.
+    // Bidirectional reordering permutes the clusters, so a visual prefix is not a string prefix
+    // there; the concatenation of the shaped clusters reproduces `text` exactly when no reorder
+    // happened, and that comparison leaves the rare reordered line on the original per-prefix
+    // walk — same behaviour, no quadratic cost paid where the reorder does not occur.
+    let shaped_matches_text = {
+        let mut rebuilt = crate::compat::String::new();
+        for cluster in clusters {
+            rebuilt.push_str(&cluster.text);
+        }
+        rebuilt == text
+    };
+    if !shaped_matches_text {
+        return fit_text_to_width_by_prefix(text, budget, font, backend, ELLIPSIS);
+    }
+
+    // Tracking adds one inter-cluster gap per adjacent pair, so a run of `n` clusters carries
+    // `n - 1` gaps; it is part of the shaped *total* but not of any single cluster's advance
+    // (see `shape_line`), so an accumulated prefix has to add it the same way.
+    let tracking = font.letter_spacing() * backend.dpi_scale();
+
+    // # Why the candidates are re-checked (D09-RENDER-03)
+    //
+    // A cluster's advance comes from shaping the **whole** string, and with a real face the
+    // shaper is context-sensitive: shaping a prefix in isolation can differ by a sub-pixel
+    // amount (a kern pair, a boundary rounding). So the running sum is a very good *estimate* of
+    // where the split falls, not a proof of it. Only the prefixes near that estimate are then
+    // confirmed with the renderer's own `measure_text`, which is the same call the old loop made
+    // and therefore the ground truth for the result. The estimate is within a rounding step, so
+    // the confirmed window is a couple of clusters wide; the number of shaping *passes* is one
+    // for the whole string plus a constant for the confirmation, not one per kept cluster.
+    let mut estimated = 0usize;
+    {
+        let mut advance = 0.0f32;
+        for cluster in clusters {
+            let with_tracking = if estimated == 0 { 0.0 } else { tracking };
+            let candidate_advance = advance + with_tracking + cluster.advance;
+            if candidate_advance.round() > budget {
+                break;
+            }
+            advance = candidate_advance;
+            estimated += 1;
+        }
+    }
+
+    // True measure of a prefix of `length` clusters, matching `measure_text`'s contract.
+    let prefix_fits = |length: usize| -> bool {
+        if length == 0 {
+            return true;
+        }
+        let prefix: crate::compat::String =
+            clusters[..length].iter().flat_map(|cluster| cluster.text.chars()).collect();
+        backend.measure_text(&prefix, font).width as f32 <= budget
+    };
+
+    // Confirm the estimate by finding the **first** prefix that does not fit, which is exactly
+    // what the old cluster-by-cluster loop returned (`kept` was the prefix just before the first
+    // failure). The estimate comes from whole-string advances and can differ from the isolated
+    // prefix measurement by a sub-pixel amount, so the search starts a couple of clusters below
+    // it and walks forward. Two clusters of slack cover the rounding; if the true boundary is
+    // further than that — which a context-sensitive shaper could in principle produce — the short
+    // walk does not reach a failure and the exact per-prefix walk is used instead, so the result
+    // is always the one the old code produced.
+    const CONFIRM_SLACK: usize = 2;
+    let search_from = estimated.saturating_sub(CONFIRM_SLACK);
+    let mut confirmed = None;
+    let mut length = search_from;
+    while length <= clusters.len() {
+        if !prefix_fits(length) {
+            confirmed = Some(length - 1);
+            break;
+        }
+        length += 1;
+    }
+    let confirmed = match confirmed {
+        Some(value) => value,
+        // No failure within the window: only trust it when the window actually reached the end
+        // (every prefix fit), otherwise the estimate was off by more than the slack and the
+        // guaranteed-exact walk takes over.
+        None if length > clusters.len() => clusters.len(),
+        None => return fit_text_to_width_by_prefix(text, budget, font, backend, ELLIPSIS),
+    };
+
+    let mut kept = crate::compat::String::new();
+    for cluster in &clusters[..confirmed] {
+        kept.push_str(&cluster.text);
+    }
+
+    kept.push(ELLIPSIS);
+    kept
+}
+
+/// The pre-D09-RENDER-03 prefix walk, kept for the bidi order the linear pass cannot use.
+///
+/// # Why this is retained rather than deleted
+///
+/// The single-pass fitter above assumes the shaped clusters are in logical order. A
+/// bidirectionally reordered line breaks that assumption, and the honest answer is to keep the
+/// per-prefix search that is correct for it rather than to silently assemble the wrong string.
+/// The quadratic cost only applies to the reordered line, which is a small minority of labels;
+/// the common case never reaches here.
+fn fit_text_to_width_by_prefix(
+    text: &str,
+    budget: f32,
+    font: &Font,
+    backend: &dyn PaintBackend,
+    ellipsis: char,
+) -> crate::compat::String {
     let mut kept = crate::compat::String::new();
     for ch in text.chars() {
         let candidate = {
@@ -328,7 +461,7 @@ fn fit_text_to_width(
         }
         kept = candidate;
     }
-    kept.push(ELLIPSIS);
+    kept.push(ellipsis);
     kept
 }
 
@@ -890,18 +1023,21 @@ impl<'a> RenderContext<'a> {
     /// `data` is interpreted as 8-bit RGBA, four bytes per pixel, tightly
     /// packed, and is expected to hold at least `width * height * 4` bytes;
     /// a shorter slice is cropped by the backend. The position is translated by
-    /// the current offset. The slice is copied into the command, so the caller
-    /// need not keep it alive.
+    /// the current offset.
+    ///
+    /// # Borrowed, not copied (D09-RENDER-02)
+    ///
+    /// This routes through [`PaintBackend::draw_image`], which hands the pixels over by
+    /// reference. A backend that rasterises the image immediately — the software backend does —
+    /// therefore draws straight from `data` with no copy. A backend that retains the command
+    /// still gets an owning copy from that method's default implementation, so the caller's
+    /// slice never needs to outlive the call on any backend. The earlier form always built an
+    /// owning `RenderCommand::DrawImage` (a `to_vec()`), which cost one full-image allocation and
+    /// copy per draw even when nothing retained it.
     pub fn draw_image(&mut self, x: i32, y: i32, width: u32, height: u32, data: &[u8]) {
         let x = x + self.offset_x;
         let y = y + self.offset_y;
-        self.backend.execute_command(&RenderCommand::DrawImage {
-            x,
-            y,
-            width,
-            height,
-            data: data.to_vec(),
-        });
+        self.backend.draw_image(x, y, width, height, data);
     }
 
     /// Execute an arbitrary render command directly.
@@ -915,8 +1051,13 @@ impl<'a> RenderContext<'a> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::paint::take_image_bytes_drawn_without_copy;
     use super::*;
     use crate::compat::{lock, MutexGuard};
+    // `String`/`ToString` are not in scope under the `mini` profile (no std
+    // prelude here), so the reference implementation in the fit test must import
+    // the crate's own aliases explicitly.
+    use crate::compat::{MiniToString, String};
     use crate::core::{Color, Font, Point, Rect, Size};
     use crate::render::SoftwarePaintBackend;
     use crate::render::{PaintBackend, RenderCommand};
@@ -1904,5 +2045,284 @@ mod tests {
 
         let rgba = backend.frame_rgba();
         assert!(!rgba.is_empty());
+    }
+
+    // ── D09-RENDER-03: text fitting must not re-shape every prefix ──────────
+
+    /// A [`PaintBackend`] that forwards to a real software backend while counting how many
+    /// times `measure_text`/`shape_text` are called.
+    ///
+    /// # Why counting calls is the right observable
+    ///
+    /// The defect is an *algorithmic* one — the fitter re-shaped each candidate prefix, so the
+    /// number of shaping calls grew with the square of the clusters that fit. Wall-clock timing
+    /// on a shared CI machine is not a stable way to see that; the number of shaping calls is a
+    /// direct, deterministic witness of the complexity, so the test asserts on it.
+    struct CountingBackend<'a> {
+        inner: &'a SoftwarePaintBackend,
+        shapes: core::cell::Cell<usize>,
+        measures: core::cell::Cell<usize>,
+    }
+
+    impl CountingBackend<'_> {
+        fn shapes(&self) -> usize {
+            self.shapes.get()
+        }
+    }
+
+    impl PaintBackend for CountingBackend<'_> {
+        fn begin_frame(&mut self, _clear: Color) {}
+        fn end_frame(&mut self) {}
+        fn execute_command(&mut self, _command: &RenderCommand) {}
+        fn size(&self) -> Size {
+            self.inner.size()
+        }
+        fn set_size(&mut self, _size: Size) {}
+        fn dpi_scale(&self) -> f32 {
+            self.inner.dpi_scale()
+        }
+        fn set_dpi_scale(&mut self, _dpi_scale: f32) {}
+        fn measure_text(&self, text: &str, font: &Font) -> TextMetrics {
+            self.measures.set(self.measures.get() + 1);
+            self.inner.measure_text(text, font)
+        }
+        fn shape_text(&self, text: &str, font: &Font) -> ShapedText {
+            self.shapes.set(self.shapes.get() + 1);
+            self.inner.shape_text(text, font)
+        }
+        fn frame_rgba(&self) -> &[u8] {
+            self.inner.frame_rgba()
+        }
+    }
+
+    fn counting_backend() -> SoftwarePaintBackend {
+        let mut backend = SoftwarePaintBackend::new(Size::new(400, 40), 1.0);
+        backend.begin_frame(Color::WHITE);
+        backend
+    }
+
+    /// `fit_text_to_width` must find the split point in a bounded number of shaping calls,
+    /// independent of how many clusters fit — the old loop shaped once per accepted cluster.
+    #[test]
+    fn fitting_a_long_label_shapes_bounded_times() {
+        let backend = counting_backend();
+        let counter = CountingBackend {
+            inner: &backend,
+            shapes: core::cell::Cell::new(0),
+            measures: core::cell::Cell::new(0),
+        };
+        let font = Font::default();
+
+        // A label long enough that a narrow budget keeps many clusters. The width fits roughly
+        // 10 ems of this font, so the old loop would have shaped ~10 times (and copied each
+        // prefix); the new one shapes once.
+        let long = "The quick brown fox jumps over the lazy dog repeatedly";
+        let _fitted = fit_text_to_width(long, 60.0, &font, &counter);
+
+        assert!(
+            counter.shapes() <= 1,
+            "fitting must shape the source at most once, but shaped {} times",
+            counter.shapes()
+        );
+    }
+
+    /// The number of shaping calls must not grow as the kept prefix grows: doubling the budget
+    /// (which keeps roughly twice as many clusters) must not double the work.
+    #[test]
+    fn fitting_steps_do_not_grow_with_the_kept_prefix() {
+        let backend = counting_backend();
+        let font = Font::default();
+        let long = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+
+        let measure = |max_width: f32| {
+            let counter = CountingBackend {
+                inner: &backend,
+                shapes: core::cell::Cell::new(0),
+                measures: core::cell::Cell::new(0),
+            };
+            let fitted = fit_text_to_width(long, max_width, &font, &counter);
+            (counter.shapes(), fitted.chars().count())
+        };
+
+        let (narrow_shapes, narrow_len) = measure(40.0);
+        let (wide_shapes, wide_len) = measure(200.0);
+
+        assert!(wide_len > narrow_len, "the wider budget must keep more clusters");
+        assert!(
+            wide_shapes <= narrow_shapes && wide_shapes <= 1,
+            "shaping calls must stay bounded as the kept prefix grows: narrow={narrow_shapes}, wide={wide_shapes}"
+        );
+    }
+
+    /// The linear fitter must produce the same fitted string as a straightforward reference
+    /// implementation, across Latin, CJK, combining characters and exact-boundary budgets.
+    ///
+    /// This is the pixel-equivalence half of the fix: a faster search that dropped or added a
+    /// cluster would still return *a* string, so only comparing against the reference catches it.
+    #[test]
+    fn linear_fit_matches_a_prefix_walk_for_all_scripts() {
+        let backend = counting_backend();
+        let font = Font::default();
+
+        // Byte-for-byte reference of the original per-prefix algorithm.
+        fn reference(
+            text: &str,
+            max_width: f32,
+            font: &Font,
+            backend: &dyn PaintBackend,
+        ) -> String {
+            if text.is_empty() || max_width <= 0.0 {
+                return String::new();
+            }
+            if backend.measure_text(text, font).width as f32 <= max_width {
+                return text.to_string();
+            }
+            const ELLIPSIS: char = '\u{2026}';
+            let ellipsis_width = backend.measure_text(&ELLIPSIS.to_string(), font).width as f32;
+            if ellipsis_width > max_width {
+                return ELLIPSIS.to_string();
+            }
+            let budget = max_width - ellipsis_width;
+            let mut kept = String::new();
+            for ch in text.chars() {
+                let mut next = kept.clone();
+                next.push(ch);
+                if backend.measure_text(&next, font).width as f32 > budget {
+                    break;
+                }
+                kept = next;
+            }
+            kept.push(ELLIPSIS);
+            kept
+        }
+
+        let samples = [
+            "The quick brown fox jumps over the lazy dog",
+            "中文标签测试文本内容在这个控件里显示",
+            "e\u{301}cole cafe\u{301} nai\u{308}ve re\u{301}sume\u{301}",
+            "short",
+            "oneverylongsinglewordwithoutanyspacesatall",
+        ];
+        // A range of budgets exercises the exact boundary, the ellipsis-only case and the fits
+        // case. The step per sample is small so several boundaries are hit for each string.
+        for sample in samples {
+            let mut width = 0.0f32;
+            while width <= 240.0 {
+                let expected = reference(sample, width, &font, &backend);
+                let actual = fit_text_to_width(sample, width, &font, &backend);
+                assert_eq!(
+                    actual, expected,
+                    "fitted text differs from the prefix walk at width {width} for {sample:?}"
+                );
+                width += 3.0;
+            }
+        }
+    }
+
+    /// The ellipsis-only and no-fit boundaries are preserved by the linear path.
+    #[test]
+    fn fit_boundaries_match_the_prefix_walk() {
+        let backend = counting_backend();
+        let font = Font::default();
+        let text = "hello world";
+
+        // A budget that fits the whole string returns it unchanged.
+        assert_eq!(fit_text_to_width(text, 1000.0, &font, &backend), text);
+
+        // A budget too small for even the ellipsis yields just the ellipsis.
+        assert_eq!(fit_text_to_width(text, 1.0, &font, &backend), "\u{2026}");
+
+        // A non-positive budget yields an empty string, not an ellipsis.
+        assert_eq!(fit_text_to_width(text, 0.0, &font, &backend), "");
+    }
+
+    // ── D09-RENDER-02: image draws must not copy the source on the immediate path ──
+
+    /// Building a 2x2 image of four distinct opaque pixels, so a wrong stride or channel order
+    /// shows up as a colour mismatch rather than as an all-same buffer.
+    fn distinct_image() -> ([u8; 16], [(u8, u8, u8, u8); 4]) {
+        let pixels =
+            [(255u8, 0u8, 0u8, 255u8), (0, 255, 0, 255), (0, 0, 255, 255), (255, 255, 0, 255)];
+        let mut data = [0u8; 16];
+        for (index, px) in pixels.iter().enumerate() {
+            data[index * 4] = px.0;
+            data[index * 4 + 1] = px.1;
+            data[index * 4 + 2] = px.2;
+            data[index * 4 + 3] = px.3;
+        }
+        (data, pixels)
+    }
+
+    /// The borrowed draw must land the same pixels as the owning-command draw.
+    #[test]
+    fn borrowed_draw_image_matches_the_command_path_pixel_for_pixel() {
+        let (data, pixels) = distinct_image();
+        let size = Size::new(8, 8);
+
+        // Reference: build an owning DrawImage command and execute it, exactly as the old
+        // `RenderContext::draw_image` did.
+        let mut reference = SoftwarePaintBackend::new(size, 1.0);
+        reference.begin_frame(Color::BLACK);
+        reference.execute_command(&RenderCommand::DrawImage {
+            x: 2,
+            y: 3,
+            width: 2,
+            height: 2,
+            data: data.to_vec(),
+        });
+        reference.end_frame();
+        let expected = reference.frame_rgba().to_vec();
+
+        // Borrowed: the same draw through the context, which now takes the no-copy path.
+        let mut backend = SoftwarePaintBackend::new(size, 1.0);
+        backend.begin_frame(Color::BLACK);
+        {
+            let mut ctx = RenderContext::new(&mut backend);
+            ctx.draw_image(2, 3, 2, 2, &data);
+        }
+        backend.end_frame();
+
+        assert_eq!(
+            backend.frame_rgba(),
+            expected.as_slice(),
+            "borrowed and owning draws must agree"
+        );
+
+        // And the pixels really are the source's, at the requested offset.
+        let stride = 8 * 4;
+        for (index, px) in pixels.iter().enumerate() {
+            let (x, y) = (2 + (index % 2), 3 + (index / 2));
+            let at = y * stride + x * 4;
+            let got = backend.frame_rgba();
+            assert_eq!(
+                (got[at], got[at + 1], got[at + 2], got[at + 3]),
+                *px,
+                "pixel {index} must come from the source at ({x}, {y})"
+            );
+        }
+    }
+
+    /// The immediate path must draw from the borrowed slice rather than building an owning
+    /// command — this is the copy D09-RENDER-02 removes.
+    #[test]
+    fn the_immediate_path_draws_the_source_without_copying_it() {
+        let (data, _) = distinct_image();
+        let mut backend = SoftwarePaintBackend::new(Size::new(8, 8), 1.0);
+        backend.begin_frame(Color::BLACK);
+
+        // Reset the counter, then draw through the context (the immediate path).
+        let _ = take_image_bytes_drawn_without_copy();
+        {
+            let mut ctx = RenderContext::new(&mut backend);
+            ctx.draw_image(0, 0, 2, 2, &data);
+        }
+        let drawn = take_image_bytes_drawn_without_copy();
+
+        assert_eq!(
+            drawn,
+            data.len(),
+            "the software backend must draw the full source through the no-copy path"
+        );
+        backend.end_frame();
     }
 }

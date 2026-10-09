@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Menu bar widget.
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -10,7 +10,7 @@ use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// A top-level menu entry in the menu bar.
@@ -187,15 +187,20 @@ impl MenuBar {
         ControlMetrics::top_band(self.geometry(), dimensions::MENU_BAR_HEIGHT)
     }
 
-    fn entry_width(title: &str) -> f32 {
-        // Approximate width: 8 pixels per char + 16 padding
-        title.len() as f32 * 8.0 + 16.0
+    fn entry_width(&self, title: &str) -> f32 {
+        // Measured with the **effective font** through the shared ruler rather than the old
+        // "8 px per byte + 16" guess (D09-STYLE-01 / D09-STYLE-02): the byte count over-measured
+        // non-ASCII titles and ignored the font entirely, so a scaled theme font did not widen an
+        // entry. Entries are one line tall, so this is the content width; the bar's own padding is
+        // folded into the estimate via the measured text plus the shared horizontal inset.
+        let font = effective_font(self.style());
+        estimate_text_width(title, font, 1.0) as f32 + dimensions::TOOLBAR_ITEM_INSET as f32 * 2.0
     }
     fn _entry_rect(&self, index: usize) -> Rect {
         let rect = self.band_rect();
         let mut x = rect.x;
         for (i, entry) in self.entries.iter().enumerate() {
-            let w = Self::entry_width(entry.title()) as i32;
+            let w = self.entry_width(entry.title()) as i32;
             if i == index {
                 return Rect { x, y: rect.y, width: w as u32, height: rect.height };
             }
@@ -211,7 +216,7 @@ impl MenuBar {
         }
         let mut x = rect.x;
         for (i, entry) in self.entries.iter().enumerate() {
-            let w = Self::entry_width(entry.title()) as i32;
+            let w = self.entry_width(entry.title()) as i32;
             if pos.x >= x && pos.x < x + w {
                 return Some(i);
             }
@@ -428,7 +433,7 @@ impl Draw for MenuBar {
         );
         let mut x = rect.x;
         for (i, entry) in self.entries.iter().enumerate() {
-            let w = Self::entry_width(entry.title()) as i32;
+            let w = self.entry_width(entry.title()) as i32;
             let is_hovered = self.hovered_index == Some(i);
             let is_active = self.active_index == Some(i);
             let entry_rect = Rect { x, y: rect.y, width: w as u32, height: rect.height };
@@ -454,9 +459,9 @@ impl Draw for MenuBar {
             // advanced 32 px from `x + 24` — past the end of its own entry and 9.6 px over the
             // next title. Passing the entry rectangle and asking for `Center` states the
             // intent, and there is no midpoint left to misuse.
-            let font = Font::default();
-            let line = context.text_line(entry_rect, &font);
-            context.draw_text_fitted(line, entry.title(), &font, fg, HorizontalAlignment::Center);
+            let font = effective_font(self.style());
+            let line = context.text_line(entry_rect, font);
+            context.draw_text_fitted(line, entry.title(), font, fg, HorizontalAlignment::Center);
             x += w;
         }
     }

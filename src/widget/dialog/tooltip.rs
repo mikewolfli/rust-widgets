@@ -302,16 +302,29 @@ impl Tooltip {
         if self.text.is_empty() {
             return Size::new((self.padding as u32) * 2, (self.padding as u32) * 2 + 16);
         }
+        // The hint measures with the **same font the bubble draws with** (D09-STYLE-02): a themed
+        // body font, or the caller's own `font_size` when the style names none.
+        let font = self.bubble_font();
         let glyphs = self.text.chars().filter(|c| !c.is_control()).count() as f32;
         // A proportional face averages a little over half an em; this is the same constant
         // the old estimate used and is the honest resolution of a hint without a context.
-        let char_width = self.font_size * 0.6;
+        let char_width = font.size() * 0.6;
         let estimated_width = (glyphs * char_width).ceil() as u32;
-        let line_height = (self.font_size * 1.4).ceil() as u32;
+        let line_height = (font.size() * 1.4).ceil() as u32;
 
         let width = (estimated_width + (self.padding as u32) * 2).min(self.max_width);
         let height = line_height + (self.padding as u32) * 2;
         Size::new(width, height)
+    }
+
+    /// The font the bubble draws its label with: the resolved `style.font` when set, otherwise the
+    /// caller-configured `font_size` in the crate's default sans-serif face.
+    ///
+    /// Named once so `preferred_size` (the hint) and `draw` cannot measure with different fonts
+    /// (D09-STYLE-02). The theme body font reaches a tooltip through `style.font`, so a text-scale
+    /// preference now enlarges the bubble as well as its ink.
+    fn bubble_font(&self) -> Font {
+        self.style().font.clone().unwrap_or_else(|| Font::simple("sans-serif", self.font_size))
     }
 }
 
@@ -566,7 +579,7 @@ impl Draw for Tooltip {
         // the fade now comes from `tick`, so it moves over time rather than snapping.
         let bubble_color = window_fill.blend(&bubble_fill, self.fade.value());
 
-        let font = Font::simple("sans-serif", self.font_size);
+        let font = self.bubble_font();
 
         // Measure text for layout. The empty case measures the placeholder so a hidden
         // tooltip still has a body to paint at the census geometry.

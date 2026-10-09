@@ -4,6 +4,28 @@
 use super::Gradient;
 use crate::core::{Color, Font, Size};
 
+/// The documented non-finite policy for an opacity value, shared by every write path
+/// (D09-STYLE-04).
+///
+/// [`f32::clamp`] passes `NaN` through unchanged, so a plain `clamp` left `NaN` in the public
+/// [`WidgetStyle::opacity`] state and in resolved theme styles, violating the `[0.0, 1.0]`
+/// contract every consumer reads. This normalises all three writers —
+/// [`WidgetStyle::with_opacity`], CSS `opacity` parsing, and theme token application — to one
+/// rule: `NaN` → `1.0` (fully opaque, the identity transform that leaves the control unchanged),
+/// `±∞` → `0.0` / `1.0`, and a finite value → clamped into `0.0..=1.0`.
+///
+/// `NaN` maps to opaque rather than transparent because opacity is a *reduction* from the fully
+/// opaque default: an unset fraction is the identity, and a bad one must not silently erase the
+/// control. That is also why `0.0` rather than `1.0` would be the wrong choice here, unlike the
+/// colour-mix factors where `0.0` is the identity.
+pub fn normalized_opacity(opacity: f32) -> f32 {
+    if opacity.is_nan() {
+        1.0
+    } else {
+        opacity.clamp(0.0, 1.0)
+    }
+}
+
 /// Whether the user prefers reduced motion (BLUE11 R7.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReducedMotionPreference {
@@ -415,6 +437,10 @@ pub struct WidgetStyle {
     /// When set, hit testing expands the effective area to this size.
     pub touch_target: Option<Size>,
     /// Optional opacity (0.0 = transparent, 1.0 = opaque). Set via CSS `opacity`.
+    ///
+    /// Kept in `0.0..=1.0` by all three writers — [`WidgetStyle::with_opacity`], CSS parsing,
+    /// and theme token application — which share [`normalized_opacity`] so a non-finite input
+    /// cannot leave `NaN` here (D09-STYLE-04).
     pub opacity: Option<f32>,
     /// Records that this style is currently **the active theme's rendering of this
     /// control**, so re-applying a theme may replace its colours.
@@ -556,8 +582,11 @@ impl WidgetStyle {
         self
     }
     /// Sets the opacity (CSS `opacity`).
+    ///
+    /// The stored value is normalised through [`normalized_opacity`], so a non-finite input
+    /// cannot leave `NaN` in the public [`WidgetStyle::opacity`] state (D09-STYLE-04).
     pub fn with_opacity(mut self, opacity: f32) -> Self {
-        self.opacity = Some(opacity.clamp(0.0, 1.0));
+        self.opacity = Some(normalized_opacity(opacity));
         self
     }
 

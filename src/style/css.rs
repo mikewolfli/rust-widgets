@@ -610,7 +610,9 @@ impl CssParser {
                     .trim()
                     .parse()
                     .map_err(|_| format!("Invalid opacity: {}", decl.value))?;
-                let val = val.clamp(0.0, 1.0);
+                // D09-STYLE-04: `f32::clamp` alone leaves `NaN` in the style state; the shared
+                // policy (`NaN` -> opaque, `±∞` -> endpoints) keeps it in `0.0..=1.0`.
+                let val = crate::style::normalized_opacity(val);
                 // Opacity handling is rendering-pipeline specific; store for reference
                 style.opacity = Some(val);
             }
@@ -1338,6 +1340,28 @@ mod tests {
         let decl = CssDeclaration { property: "opacity".into(), value: "0.5".into() };
         CssParser::apply_declarations(&[decl], &mut style).unwrap();
         assert!((style.opacity.unwrap() - 0.5).abs() < 0.01);
+    }
+
+    /// D09-STYLE-04: CSS `opacity` used to `clamp` and leave `NaN` in the style state. The
+    /// declaration must now normalise non-finite input the same way the builder and theme
+    /// token paths do.
+    #[test]
+    fn opacity_declaration_normalizes_non_finite_values() {
+        let mut style = WidgetStyle::default();
+        CssParser::apply_declaration_text("opacity: NaN", &mut style).expect("NaN parses as f32");
+        assert_eq!(style.opacity, Some(1.0), "NaN must normalise to opaque, not stay NaN");
+
+        let mut style = WidgetStyle::default();
+        CssParser::apply_declaration_text("opacity: inf", &mut style).expect("+inf parses as f32");
+        assert_eq!(style.opacity, Some(1.0));
+
+        let mut style = WidgetStyle::default();
+        CssParser::apply_declaration_text("opacity: -inf", &mut style).expect("-inf parses as f32");
+        assert_eq!(style.opacity, Some(0.0));
+
+        let mut style = WidgetStyle::default();
+        CssParser::apply_declaration_text("opacity: 2", &mut style).expect("finite out of range");
+        assert_eq!(style.opacity, Some(1.0));
     }
 
     #[test]

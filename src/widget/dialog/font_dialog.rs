@@ -15,7 +15,7 @@ use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Font selection dialog.
 ///
@@ -255,6 +255,10 @@ impl Draw for FontDialog {
         // The **frame**, not the control's rectangle: see `frame_rect`.
         let rect = self.frame_rect();
         let style = self.style().clone();
+        // The **effective font** — the resolved theme/caller font — for the title, the column
+        // headers and the buttons. The preview sample keeps `self.current_font`, which is the
+        // user's selected font and deliberately not the theme's (D09-STYLE-01).
+        let font = effective_font(&style);
 
         // Chrome colours resolve explicit style first, then the theme's resolved style
         // for this control, and only then fall back to a literal. The style step alone
@@ -330,7 +334,7 @@ impl Draw for FontDialog {
         // locale cannot run the title past the frame.
         let title_bar_band = ControlMetrics::top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
         context.fill_rect(title_bar_band, accent);
-        let title_font = Font::default();
+        let title_font = font;
         let title_label = tr!("dialog.font.select_font");
         let title_line = context.text_line(title_bar_band, &title_font);
         context.draw_text_fitted(
@@ -367,7 +371,7 @@ impl Draw for FontDialog {
         // (`TableColumn`) sits wholly inside its own header row, and the row is at least as
         // tall as the text it holds. Sizing from `measure_text` is what makes those two
         // agree by construction rather than by a tuned pair of literals.
-        let header_metrics = context.measure_text("M", &Font::default());
+        let header_metrics = context.measure_text("M", font);
         let header_h = header_metrics.height.max(1);
         let list_y = rect.y + dimensions::DIALOG_TITLE_BAR_HEIGHT as i32 + 2 + header_h as i32 + 2;
         // The columns are the dialog's primary content, so they take the space left
@@ -407,13 +411,13 @@ impl Draw for FontDialog {
         let col_labels =
             [tr!("dialog.font.font_family"), tr!("dialog.font.style"), tr!("dialog.font.size")];
         let header_band = Rect::new(rect.x, header_top, rect.width, header_h);
-        let header_line = context.text_line(header_band, &Font::default());
+        let header_line = context.text_line(header_band, font);
         for (i, label) in col_labels.iter().enumerate() {
             let col_x = rect.x + 4 + i as i32 * (col_w as i32 + COL_GAP);
             context.draw_text_fitted(
                 Rect::new(col_x, header_line.y, col_w, header_line.height.max(1)),
                 label.as_str(),
-                &Font::default(),
+                font,
                 ink,
                 HorizontalAlignment::Left,
             );
@@ -457,7 +461,6 @@ impl Draw for FontDialog {
         // row's left edge falls. The labels are centred in their buttons and fitted to them.
         let labels = vec![tr!("dialog.ok"), tr!("dialog.cancel")];
         let row = super::message_box::action_row_geometry(context, &labels, button_band, true);
-        let font = Font::default();
         let ok_rect = row.buttons[0];
         context.fill_rect(ok_rect, accent);
         context.draw_text_line(ok_rect, &labels[0], &font, accent_ink, HorizontalAlignment::Center);

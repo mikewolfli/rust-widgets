@@ -3,7 +3,7 @@
 
 //! SegmentedControl widget.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -11,7 +11,7 @@ use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -494,14 +494,16 @@ impl Draw for SegmentedControl {
                 // The segment's label is centred through the shared primitive: a glyph origin
                 // is the top edge of its box, so `seg.y + seg.height / 2` drew the label half
                 // a line low rather than on the segment's middle.
-                let line = context.text_line(seg, &Font::default());
+                // The **effective font** — the resolved theme/caller font — for the segment labels
+                // (D09-STYLE-01).
+                let line = context.text_line(seg, effective_font(&style));
                 // Material's segmented control insets a segment's label by 16 px rather than the
                 // 8 the old literal used: at 8 the label of a two-character segment ran into the
                 // divider it sits beside.
                 context.draw_text(
                     Point::new(seg.x + SEGMENT_LABEL_INSET, line.y),
                     &item.label,
-                    &Font::default(),
+                    effective_font(&style),
                     label_color,
                     HorizontalAlignment::Left,
                 );

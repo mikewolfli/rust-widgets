@@ -10,6 +10,7 @@ use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -345,17 +346,19 @@ impl Draw for DiffViewer {
             divider,
         );
 
+        // The LEFT/RIGHT column headings are ordinary chrome, so they take the **effective font**
+        // (D09-STYLE-01). The diff line bodies keep a fixed code face, as the issue records.
         context.draw_text(
             Point::new(rect.x + 8, rect.y + 16),
             "LEFT",
-            &Font::default(),
+            effective_font(&style),
             text_color,
             HorizontalAlignment::Left,
         );
         context.draw_text(
             Point::new(mid_x + 8, rect.y + 16),
             "RIGHT",
-            &Font::default(),
+            effective_font(&style),
             text_color,
             HorizontalAlignment::Left,
         );

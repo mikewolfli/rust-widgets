@@ -7,7 +7,7 @@
 //! segment has a sliding highlight. Clicking a segment selects it and emits
 //! a `value_changed` signal with the segment index.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -16,7 +16,7 @@ use crate::widget::capability::coercion::expect_usize;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, role_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -359,7 +359,8 @@ impl Draw for CupertinoSegmentedControl {
         context.fill_rounded_rect(sel_rect, corner_radius, indicator_color);
 
         // ── Segment labels ──
-        let font = Font::new("sans-serif", 13.0, false, false);
+        // The label face is the **effective font** at its role size (D09-STYLE-01).
+        let font = role_font(&style, 13.0);
         // The unselected label is de-emphasised from the control's own ink rather than being
         // a fixed grey that a dark theme would render illegible.
         let unselected = ink.blend(&track_color, 0.45);

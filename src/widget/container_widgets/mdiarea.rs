@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! MDI area widget.
-use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -10,6 +10,7 @@ use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 #[cfg(feature = "image")]
 use crate::widget::Image;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
@@ -863,8 +864,10 @@ impl Draw for MdiArea {
                     frame_rect.width,
                     title_bar_height as u32,
                 );
-                let title_font = Font::default();
-                let title_line = context.text_line(title_bar_rect, &title_font);
+                // The **effective font** — the resolved theme/caller font — for the subwindow title
+                // (D09-STYLE-01).
+                let title_font = effective_font(&style);
+                let title_line = context.text_line(title_bar_rect, title_font);
                 let text_color = if is_active { primary.contrast_color() } else { ink };
                 context.draw_text_fitted(
                     Rect {
@@ -875,7 +878,7 @@ impl Draw for MdiArea {
                         height: title_line.height,
                     },
                     &subwindow.title,
-                    &title_font,
+                    title_font,
                     text_color,
                     HorizontalAlignment::Left,
                 );
@@ -945,7 +948,9 @@ impl MdiArea {
             Point::new(strip.x + strip.width as i32, strip.y + strip.height as i32 - 1),
             *border,
         );
-        let font = Font::default();
+        // The **effective font** — the resolved theme/caller font — for the tab labels
+        // (D09-STYLE-01).
+        let font = effective_font(self.style());
         for index in 0..self.subwindows.len() {
             let Some(tab) = self.tab_rect(index) else { break };
             let is_active = self.active_subwindow == Some(index);
@@ -965,9 +970,9 @@ impl MdiArea {
                 tab.height,
             );
             context.draw_text_fitted(
-                context.text_line(label, &font),
+                context.text_line(label, font),
                 &self.subwindows[index].title,
-                &font,
+                font,
                 text_color,
                 HorizontalAlignment::Center,
             );

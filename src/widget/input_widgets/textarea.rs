@@ -645,7 +645,6 @@ impl TextArea {
             return;
         }
         let before = self.text.clone();
-        self.replace_selection();
         let at = floor_char_boundary(&self.text, self.cursor_pos.min(self.text.len()));
         let mut next = self.text.clone();
         next.insert_str(at, text);
@@ -660,6 +659,23 @@ impl TextArea {
         self.selection_anchor = None;
         self.record_edit(before);
         self.base.request_redraw();
+    }
+
+    /// Routes platform-committed text into the ordinary editing path (D09-INPUT-01).
+    ///
+    /// The desktop backends deliver a printable character or an IME commit as
+    /// `Event::TextInput`/`Event::ImeCommit`, not as a `KeyPress`. The `KeyPress` printable arm
+    /// above handles exactly one character, so a whole committed string — a paste-like `TextInput`
+    /// or an IME word — needs the multi-character `insert_str`, which is the same entry point that
+    /// owns selection replacement, `max_length`, undo and the `changed` signal. Control characters
+    /// are filtered out here rather than inside `insert_str`, because one unexpected control code
+    /// must not discard the printable text committed alongside it.
+    fn insert_committed_text(&mut self, text: &str) {
+        let printable: String = text.chars().filter(|c| !c.is_control()).collect();
+        if printable.is_empty() {
+            return;
+        }
+        self.insert_str(&printable);
     }
 
     /// Deletes the character after the caret, or the selection when there is one.
@@ -947,6 +963,15 @@ impl EventHandler for TextArea {
             Event::FocusLost => {
                 self.focused = false;
                 self.request_redraw();
+            }
+            // Platform-committed text (D09-INPUT-01), routed into the ordinary insert path. A
+            // read-only area is rejected here, exactly as the `KeyPress` printable arm is, and the
+            // `is_enabled` guard above already ran.
+            Event::TextInput { text } | Event::ImeCommit { text } => {
+                if self.read_only {
+                    return;
+                }
+                self.insert_committed_text(text);
             }
             Event::KeyPress { key, modifiers } => {
                 // The event carries the framework's wire bitmask; translate it once, here, so the
@@ -1667,6 +1692,66 @@ mod tests {
 
     fn area(text: &str) -> TextArea {
         TextArea::new(text.to_string(), Rect::new(0, 0, 300, 200))
+    }
+
+    // ─── D09-INPUT-01: platform-committed text reaches the value ───
+
+    /// A `TextInput` from the platform must enter the area's value.
+    ///
+    /// # The defect this pins (D09-INPUT-01)
+    ///
+    /// The desktop backends deliver a printable character or an IME commit as `Event::TextInput`,
+    /// not as a `KeyPress`; the handler only matched `KeyPress`, so committed text was dropped. The
+    /// test feeds `TextInput` to prove that path itself is wired.
+    #[test]
+    fn text_input_enters_the_value() {
+        let mut ta = area("");
+        ta.handle_event(&Event::TextInput { text: "héllo".to_string() });
+        assert_eq!(ta.text(), "héllo");
+    }
+
+    /// An IME commit enters the value the same way.
+    #[test]
+    fn ime_commit_enters_the_value() {
+        let mut ta = area("");
+        ta.handle_event(&Event::ime_commit("你好"));
+        assert_eq!(ta.text(), "你好");
+    }
+
+    /// A `TextInput` replaces a selection rather than appending to it.
+    #[test]
+    fn text_input_replaces_the_selection() {
+        let mut ta = area("abcdef");
+        ta.select_all();
+        ta.handle_event(&Event::TextInput { text: "Z".to_string() });
+        assert_eq!(ta.text(), "Z", "the committed text replaced the selected range");
+    }
+
+    /// Committed text respects `max_length`.
+    #[test]
+    fn text_input_respects_the_max_length() {
+        let mut ta = area("");
+        ta.set_max_length(3);
+        ta.handle_event(&Event::TextInput { text: "abcdef".to_string() });
+        assert!(ta.text().len() <= 3, "the limit applies: got {:?}", ta.text());
+    }
+
+    /// A read-only area ignores committed text, just as it ignores a printable key.
+    #[test]
+    fn read_only_ignores_text_input() {
+        let mut ta = area("locked");
+        ta.set_read_only(true);
+        ta.handle_event(&Event::TextInput { text: "X".to_string() });
+        assert_eq!(ta.text(), "locked");
+    }
+
+    /// A disabled area ignores committed text.
+    #[test]
+    fn disabled_ignores_text_input() {
+        let mut ta = area("");
+        ta.set_enabled(false);
+        ta.handle_event(&Event::TextInput { text: "X".to_string() });
+        assert_eq!(ta.text(), "");
     }
 
     /// A Shift-arrow **extends**; a plain arrow replaces.

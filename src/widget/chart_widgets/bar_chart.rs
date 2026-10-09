@@ -31,6 +31,7 @@ use crate::widget::chart_widgets::adapter::ChartContextAdapter;
 use crate::widget::chart_widgets::charts::{
     compute_cartesian_layout, draw_y_ticks, CartesianLayout,
 };
+use crate::widget::metrics::role_font;
 // The chrome derivation is shared with the engine-backed path deliberately: the
 // `not(feature = "chart")` backdrop used to write its own light-chart literals, so a
 // tablet/mobile build in the dark appearance drew a near-invisible chart. One
@@ -412,7 +413,9 @@ impl Draw for BarChart {
             if self.show_values && is_enabled {
                 let label = format!("{:.1}", bar.value);
                 let label_x = bar_x.max(plot_area.x) + (bar_width as i32 / 2).min(12);
-                let font = Font::simple("sans-serif", LABEL_FONT_SIZE);
+                // The chart's label face is the **effective font** at the value role's size, so the
+                // theme family and the user's text scale reach the chart chrome (D09-STYLE-01).
+                let font = role_font(self.base.style(), LABEL_FONT_SIZE);
                 let line_height = context.measure_text("M", &font).height.max(1) as i32;
                 let label_band = Rect {
                     x: label_x,
@@ -429,7 +432,7 @@ impl Draw for BarChart {
                 // Same treatment, anchored below the baseline: the line box starts where the
                 // axis label row starts, so the gap under the axis is `LABEL_ROW_TOP`, not a
                 // second hand-tuned offset that happened to equal it.
-                let font = Font::simple("sans-serif", CATEGORY_FONT_SIZE);
+                let font = role_font(self.base.style(), CATEGORY_FONT_SIZE);
                 let line_height = context.measure_text("M", &font).height.max(1) as i32;
                 let label_band = Rect {
                     x: label_x,
@@ -782,5 +785,42 @@ mod tests {
         assert_eq!(bc.bars().len(), before, "add_bar must refuse a non-finite value");
         bc.add_bar(BarEntry::new("c", 3.0));
         assert_eq!(bc.bars().len(), before + 1);
+    }
+
+    // ── D09-STYLE-01: the axis/category label consumes the resolved theme/caller font ──
+
+    /// A caller-authored `style.font` must change the ink the category axis labels paint.
+    ///
+    /// # The defect this pins
+    ///
+    /// The value and category labels built a fixed `sans-serif` face by hand, so the theme body
+    /// font and the user's text scale never reached the chart chrome. They are now derived from
+    /// `metrics::effective_font` at their role sizes.
+    #[test]
+    fn a_custom_font_changes_the_category_axis_label_ink() {
+        let render = |font: Option<crate::core::Font>| {
+            let mut bc = BarChart::new(Rect::new(0, 0, 400, 300));
+            bc.set_bars(vec![BarEntry::new("Category", 5.0), BarEntry::new("Second", 3.0)]);
+            if let Some(font) = font {
+                bc.set_style(crate::style::WidgetStyle::default().with_font(font));
+            }
+            render_to_svg(&mut bc)
+        };
+
+        let base = render(None);
+        let big = render(Some(crate::core::Font::simple("Test", 30.0)));
+        // The control must actually carry the caller font in its resolved style; if this fails the
+        // defect is upstream of the chart's own measurement.
+        let mut probe = BarChart::new(Rect::new(0, 0, 400, 300));
+        probe.set_style(
+            crate::style::WidgetStyle::default().with_font(crate::core::Font::simple("Test", 30.0)),
+        );
+        assert_eq!(
+            crate::widget::metrics::effective_font(probe.style()).size(),
+            30.0,
+            "the caller font must reach the chart's resolved style"
+        );
+        assert!(!base.is_empty(), "the chart must paint something for this test to mean anything");
+        assert_ne!(base, big, "a caller-authored larger font must change what the chart paints");
     }
 }

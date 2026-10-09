@@ -154,9 +154,12 @@ fn platform_bridge_ptr() -> Option<*const dyn AccessibilityBridge> {
 /// does not exist to it. What is *not* invented is a label — an empty field is reported as empty.
 pub fn submit_mounted(id: ObjectId, state: &A11yState) {
     with_bridge(|bridge| {
-        bridge.set_accessibility_name(id, &state.label);
-        // The full state (role, value, checked/mixed, enabled) travels with the node's creation;
-        // a bridge that keeps its own tree stores what this notification carried.
+        // D09-A11Y-02: the *whole* derived state is submitted, not the label alone. Before this the
+        // bridge boundary kept only `state.label`, so role, description, enabled/focused/selected/
+        // expanded, value, checked/mixed and the child relations never left the widget. The bridge
+        // stores what this carries and a screen reader can query it.
+        bridge.submit_node_state(id, state);
+        // And the creation is announced; a bridge that keeps its own tree has the node by now.
         bridge.notify_state_changed(id);
     });
 }
@@ -167,9 +170,12 @@ pub fn submit_mounted(id: ObjectId, state: &A11yState) {
 /// is the failure a screen reader experiences as "focus lands on nothing".
 pub fn submit_unmounted(id: ObjectId) {
     with_bridge(|bridge| {
-        // A node with no name and the `Unknown` role is what "gone" looks like to a bridge that
-        // only speaks in notifications; `notify_state_changed` lets it drop the entry.
-        bridge.set_accessibility_name(id, "");
+        // D09-A11Y-03: the node is *removed*, not blanked. `unregister_node` drops the entry from
+        // the bridge's store, so the maps return to their baseline across repeated mount/unmount
+        // cycles instead of accumulating one empty-named entry per historical widget id.
+        bridge.unregister_node(id);
+        // Only then is the removal announced — a notification about a node the bridge has already
+        // dropped is exactly the "event source the application does not own" defect of D09-A11Y-01.
         bridge.notify_state_changed(id);
     });
 }
@@ -222,12 +228,16 @@ mod tests {
     use std::sync::Mutex;
 
     /// What a submit point was asked to do, recorded for assertion.
-    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[derive(Debug, Clone, PartialEq)]
     enum Call {
         Name(ObjectId, String),
         State(ObjectId),
         Value(ObjectId),
         Focus(ObjectId),
+        /// D09-A11Y-02: the complete derived state that reached the bridge boundary.
+        Node(ObjectId, A11yState),
+        /// D09-A11Y-03: the explicit removal of a node.
+        Unregister(ObjectId),
     }
 
     /// A bridge that records the calls made to it, so the submit path can be asserted.
@@ -265,6 +275,15 @@ mod tests {
         fn notify_focus_changed(&self, id: ObjectId) {
             self.calls.lock().expect("not poisoned").push(Call::Focus(id));
         }
+        // D09-A11Y-02 and D09-A11Y-03: the recording substitute adopts the full-state contract so
+        // the assertions can see the whole submitted state and the explicit removal, rather than
+        // only the label and a payload-less notification.
+        fn submit_node_state(&self, id: ObjectId, state: &A11yState) {
+            self.calls.lock().expect("not poisoned").push(Call::Node(id, state.clone()));
+        }
+        fn unregister_node(&self, id: ObjectId) {
+            self.calls.lock().expect("not poisoned").push(Call::Unregister(id));
+        }
     }
 
     /// Installs a recording bridge for the duration of `f`, then removes it.
@@ -281,6 +300,10 @@ mod tests {
     }
 
     /// BLUE24 §6 criterion 1: mounting a control creates a node, with role and label.
+    ///
+    /// D09-A11Y-02 strengthens the assertion: the node the bridge receives carries the *full*
+    /// derived state, not only the label. The comparison is against the whole `A11yState`, so any
+    /// field silently dropped at the boundary makes it fail.
     #[test]
     fn mounting_submits_a_node() {
         with_recording(|recorder| {
@@ -293,8 +316,8 @@ mod tests {
 
             let calls = recorder.calls();
             assert!(
-                calls.contains(&Call::Name(7, "Save".to_string())),
-                "the node's label must reach the bridge: {calls:?}"
+                calls.contains(&Call::Node(7, state.clone())),
+                "the node's complete state must reach the bridge: {calls:?}"
             );
             assert!(
                 calls.contains(&Call::State(7)),
@@ -303,12 +326,64 @@ mod tests {
         });
     }
 
+    /// D09-A11Y-02: every field of the derived state crosses the bridge boundary intact.
+    ///
+    /// The old `submit_mounted` sent only `state.label`, so role, description, enabled, focused,
+    /// selected, expanded, value, checked, mixed and children were all lost. This asserts each one
+    /// individually against the substitute, which is the "observable assertion" the defect asks
+    /// for — not a claim that a function was called.
+    #[test]
+    fn mounting_submits_every_derived_field() {
+        with_recording(|recorder| {
+            let state = A11yState {
+                role: A11yRole::CheckBox,
+                label: "Subscribe".to_string(),
+                description: "Toggles the newsletter".to_string(),
+                enabled: false,
+                focused: true,
+                selected: true,
+                expanded: true,
+                value: "on".to_string(),
+                checked: Some(true),
+                mixed: true,
+                children: vec![11, 12, 13],
+            };
+            submit_mounted(21, &state);
+
+            let submitted = recorder
+                .calls()
+                .into_iter()
+                .find_map(|call| match call {
+                    Call::Node(21, recorded) => Some(recorded),
+                    _ => None,
+                })
+                .expect("the full node state must have been submitted");
+            assert_eq!(submitted.role, A11yRole::CheckBox, "role crossed the boundary");
+            assert_eq!(submitted.label, "Subscribe", "label crossed the boundary");
+            assert_eq!(
+                submitted.description, "Toggles the newsletter",
+                "description crossed the boundary"
+            );
+            assert!(!submitted.enabled, "enabled crossed the boundary");
+            assert!(submitted.focused, "focused crossed the boundary");
+            assert!(submitted.selected, "selected crossed the boundary");
+            assert!(submitted.expanded, "expanded crossed the boundary");
+            assert_eq!(submitted.value, "on", "value crossed the boundary");
+            assert_eq!(submitted.checked, Some(true), "checked crossed the boundary");
+            assert!(submitted.mixed, "mixed crossed the boundary");
+            assert_eq!(submitted.children, vec![11, 12, 13], "children crossed the boundary");
+        });
+    }
+
     /// Unmounting reports the removal, paired with the mount.
+    ///
+    /// D09-A11Y-03: the removal must be an explicit `unregister_node`, not a name blanked to "".
+    /// A blanked name is exactly what left the map entry behind for the life of the process.
     #[test]
     fn unmounting_submits_the_removal() {
         with_recording(|recorder| {
             submit_unmounted(9);
-            assert_eq!(recorder.calls(), vec![Call::Name(9, String::new()), Call::State(9)]);
+            assert_eq!(recorder.calls(), vec![Call::Unregister(9), Call::State(9)]);
         });
     }
 
@@ -332,6 +407,78 @@ mod tests {
                 ]
             );
         });
+    }
+
+    /// D09-A11Y-02 and D09-A11Y-03, end to end through one bridge that keeps a real store.
+    ///
+    /// A `Storing` substitute that models the tree like the platform bridges do proves the pump
+    /// twice over: after a mount the store holds the full state (role, value, checked) and not just
+    /// the name, and after an unmount the store is back to empty rather than holding a blanked
+    /// entry — so repeated cycles cannot grow it.
+    #[test]
+    fn the_submit_pump_round_trips_full_state_and_removes_on_unmount() {
+        use std::collections::HashMap as StdHashMap;
+        use std::sync::Mutex as StdMutex;
+
+        struct Storing {
+            nodes: StdMutex<StdHashMap<ObjectId, A11yState>>,
+        }
+        impl AccessibilityBridge for Storing {
+            fn set_accessibility_name(&self, _id: ObjectId, _name: &str) {}
+            fn accessibility_name(&self, _id: ObjectId) -> Option<String> {
+                None
+            }
+            fn notify_name_changed(&self, _id: ObjectId) {}
+            fn notify_value_changed(&self, _id: ObjectId) {}
+            fn notify_state_changed(&self, _id: ObjectId) {}
+            fn notify_focus_changed(&self, _id: ObjectId) {}
+            fn submit_node_state(&self, id: ObjectId, state: &A11yState) {
+                self.nodes.lock().expect("not poisoned").insert(id, state.clone());
+            }
+            fn node_state(&self, id: ObjectId) -> Option<A11yState> {
+                self.nodes.lock().expect("not poisoned").get(&id).cloned()
+            }
+            fn unregister_node(&self, id: ObjectId) {
+                self.nodes.lock().expect("not poisoned").remove(&id);
+            }
+            fn node_count(&self) -> usize {
+                self.nodes.lock().expect("not poisoned").len()
+            }
+        }
+
+        let bridge: &'static Storing =
+            Box::leak(Box::new(Storing { nodes: StdMutex::new(StdHashMap::new()) }));
+        let had = install_bridge(bridge);
+        assert!(!had, "no bridge should have been installed before this test");
+
+        let baseline = bridge.node_count();
+        assert_eq!(baseline, 0, "a fresh store is empty");
+
+        for cycle in 0..3u64 {
+            let id = 100 + cycle;
+            let state = A11yState {
+                role: A11yRole::Slider,
+                label: String::new(),
+                value: "42".to_string(),
+                ..A11yState::default()
+            };
+            submit_mounted(id, &state);
+            let stored = bridge.node_state(id).expect("the node must be readable after mount");
+            assert_eq!(stored.role, A11yRole::Slider, "role survived cycle {cycle}");
+            assert_eq!(stored.value, "42", "value survived cycle {cycle}");
+            assert_eq!(bridge.node_count(), baseline + 1, "one live node in cycle {cycle}");
+
+            submit_unmounted(id);
+            assert!(bridge.node_state(id).is_none(), "the node is gone after unmount");
+            assert_eq!(
+                bridge.node_count(),
+                baseline,
+                "the store returns to baseline after cycle {cycle}"
+            );
+        }
+
+        let removed = uninstall_bridge();
+        assert!(removed, "the substitute must be removable, or it leaks into the next test");
     }
 
     /// With no bridge installed every submit point is a no-op that does not panic — the

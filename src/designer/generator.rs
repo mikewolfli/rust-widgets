@@ -273,6 +273,14 @@ pub struct GenerationRequest {
 /// designer accepts should generate something the user can inspect, with the gaps listed; failing
 /// the whole run would leave them with nothing.
 pub fn generate(request: &GenerationRequest) -> Result<GeneratedSource, String> {
+    // The function name is interpolated verbatim into the emitted `pub fn <name>()`,
+    // so it must be a valid Rust identifier before anything is generated. Without
+    // this the generator returned `Ok` for a name like `123name` and produced
+    // source that does not compile (D08-J-01) — the same refusal every other
+    // unsupported input gets, applied at the entry point so all three emit paths
+    // (default, stripped and the empty/unsupported source) are covered at once.
+    validate_function_name(&request.function_name)?;
+
     // Mode 1 is the parse half. Reusing it is what makes the two modes agree about what a document
     // *means*; a second parser would be the duplication rule #101 forbids.
     let project = JsonProject::parse(&request.json)?;
@@ -317,6 +325,59 @@ pub fn generate(request: &GenerationRequest) -> Result<GeneratedSource, String> 
 
     let source = assemble(request, &project, &body, &report, &factory);
     Ok(GeneratedSource { source, report })
+}
+
+/// Rejects a `function_name` that could not be emitted as a Rust function name.
+///
+/// A generated function is written as `pub fn <name>()`, so `name` must be a
+/// valid Rust identifier and must not be a reserved keyword. This is checked at
+/// the single entry point ([`generate`]) so the default template, the stripped
+/// template and the empty "nothing was emitted" source all share one rule
+/// (D08-J-01) rather than each growing its own ad-hoc check.
+pub fn validate_function_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("generated function name must not be empty".to_string());
+    }
+    let mut chars = name.chars();
+    let first = chars.next().expect("non-empty checked above");
+    if !(first == '_' || first.is_alphabetic()) {
+        return Err(format!(
+            "generated function name {name:?} is not a valid Rust identifier: it must start with a
+             letter or underscore, not {first:?}"
+        ));
+    }
+    if let Some(bad) = chars.find(|c| !(*c == '_' || c.is_alphanumeric())) {
+        return Err(format!(
+            "generated function name {name:?} is not a valid Rust identifier: it contains {bad:?},
+             which is not permitted in an identifier"
+        ));
+    }
+    if is_rust_keyword(name) {
+        return Err(format!(
+            "generated function name {name:?} is a reserved Rust keyword and cannot be a function name"
+        ));
+    }
+    Ok(())
+}
+
+/// Whether `name` is a Rust reserved keyword (strict or 2018+ reserved).
+///
+/// The list is the one `rustc` refuses to accept as an identifier passed to the
+/// Rust 2021 edition this crate builds under; a generated `pub fn match(...)`
+/// would fail exactly like `pub fn 123name(...)` does.
+fn is_rust_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        // Strict keywords.
+        "as" | "break" | "const" | "continue" | "crate" | "else" | "enum" | "extern"
+            | "false" | "fn" | "for" | "if" | "impl" | "in" | "let" | "loop" | "match"
+            | "mod" | "move" | "mut" | "pub" | "ref" | "return" | "self" | "Self" | "static"
+            | "struct" | "super" | "trait" | "true" | "type" | "unsafe" | "use" | "where"
+            | "while" | "async" | "await" | "dyn"
+            // Reserved for future use.
+            | "abstract" | "become" | "box" | "do" | "final" | "macro" | "override" | "priv"
+            | "typeof" | "unsized" | "virtual" | "yield" | "try"
+    )
 }
 
 /// Whether `name` can be constructed, and how conclusive the answer is.
@@ -1932,6 +1993,53 @@ mod tests {
                 "{target:?}: the direct child must be emitted exactly once, not in place of the \
                  layout child"
             );
+        }
+    }
+
+    /// D08-J-01: an invalid function name must be refused with an error, not
+    /// emitted as source that does not compile. The check runs at the entry point
+    /// so every target and the empty source are covered.
+    #[test]
+    fn an_invalid_function_name_is_refused() {
+        const DOCUMENT: &str = r#"{ "label": { "text": "hi" } }"#;
+        for name in ["123name", "has space", "has-dash", "", "a.b", "match", "fn"] {
+            for target in [TargetProfile::Default, TargetProfile::Stripped] {
+                let request = GenerationRequest {
+                    json: DOCUMENT.to_string(),
+                    target,
+                    width: 320,
+                    height: 240,
+                    function_name: name.to_string(),
+                };
+                let result = generate(&request);
+                assert!(
+                    result.is_err(),
+                    "{target:?}: generating with function_name {name:?} must fail, not emit
+                     uncompilable source"
+                );
+            }
+        }
+        // A legal name still generates, so the guard did not reject valid input.
+        let request = GenerationRequest {
+            json: DOCUMENT.to_string(),
+            target: TargetProfile::Default,
+            width: 320,
+            height: 240,
+            function_name: String::from("build_ui"),
+        };
+        let generated = generate(&request).expect("a legal name must generate");
+        assert!(generated.source.contains("pub fn build_ui()"));
+    }
+
+    /// D08-J-01: the entry-point check rejects non-identifiers and keywords and
+    /// accepts every legal name, including raw-identifier-compatible ones.
+    #[test]
+    fn function_name_validation_accepts_identifiers_only() {
+        for good in ["build", "build_ui", "_private", "a1", "_", "Build"] {
+            assert!(validate_function_name(good).is_ok(), "{good:?} must be accepted");
+        }
+        for bad in ["", "1name", "na me", "a-b", "a.b", "match", "fn", "self", "crate"] {
+            assert!(validate_function_name(bad).is_err(), "{bad:?} must be rejected");
         }
     }
 }

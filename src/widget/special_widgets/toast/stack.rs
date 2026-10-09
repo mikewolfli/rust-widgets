@@ -4,7 +4,7 @@
 //! `ToastStack` — the container that queues toasts and lays them out as rows.
 
 use super::item::{ToastItem, ToastLevel};
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -12,7 +12,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::menu_toolbar::popup_reveal::PopupReveal;
-use crate::widget::metrics::ControlMetrics;
+use crate::widget::metrics::{effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -447,7 +447,7 @@ impl Draw for ToastStack {
             context.draw_text(
                 Point::new(row.x + 20, row.y + 17),
                 &item.message,
-                &Font::default(),
+                effective_font(&style),
                 text_color,
                 HorizontalAlignment::Left,
             );

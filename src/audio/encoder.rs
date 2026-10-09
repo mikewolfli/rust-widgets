@@ -73,6 +73,21 @@ fn encode_wav(buffer: &AudioBuffer) -> Result<Vec<u8>, String> {
     }
     let bits_per_sample: u16 = 16;
     let bytes_per_sample: u64 = (bits_per_sample / 8) as u64;
+    // A WAV data chunk holds whole *frames* (one sample per channel), and the
+    // library's own decoder rejects a chunk that ends mid-frame. `AudioBuffer`
+    // does not guarantee its sample count is a multiple of the channel count,
+    // so an incomplete final frame must be rejected here rather than written
+    // into a file our own decoder then refuses (D08-M-03).
+    let channels_usize = channels as usize;
+    if buffer.samples.len() % channels_usize != 0 {
+        return Err(format!(
+            "WAV encoding requires a whole number of frames: {} samples is not a multiple of the
+             {channels}-channel frame size (the buffer ends with {} sample(s) of an incomplete
+             final frame)",
+            buffer.samples.len(),
+            buffer.samples.len() % channels_usize,
+        ));
+    }
     // `block_align` is a 16-bit field; compute in `u64` so a large channel count
     // cannot wrap it, then narrow after the check.
     let block_align = channels as u64 * bytes_per_sample;
@@ -235,6 +250,33 @@ mod tests {
     fn test_encode_unknown_returns_error() {
         let buf = AudioBuffer::new(44100, vec![], 1);
         assert!(encode(&buf, AudioFormat::Unknown).is_err());
+    }
+
+    /// D08-M-03: a buffer whose sample count is not a whole number of frames
+    /// must be rejected by the encoder, because the library's own decoder
+    /// refuses such a data chunk as an incomplete final frame.
+    #[test]
+    fn encode_wav_rejects_incomplete_final_frame() {
+        // 3 samples in 2 channels: the last frame is missing its second sample.
+        let buf = AudioBuffer::new(44100, vec![0.1, 0.2, 0.3], 2);
+        let err = encode_wav(&buf).unwrap_err();
+        assert!(err.contains("whole number of frames"), "got: {err}");
+    }
+
+    /// D08-M-03 acceptance: whatever the encoder accepts, its own decoder must
+    /// accept back, for every supported channel count.
+    #[test]
+    fn encoded_wav_roundtrips_through_the_library_decoder() {
+        for channels in 1u8..=4 {
+            // A whole number of frames, so encoding is permitted.
+            let samples: Vec<f32> = (0..(channels as usize * 8)).map(|i| i as f32 * 0.01).collect();
+            let buf = AudioBuffer::new(44100, samples, channels);
+            let wav = encode_wav(&buf).expect("aligned buffer must encode");
+            let decoded = crate::audio::decoder::decode(&wav)
+                .unwrap_or_else(|e| panic!("{channels}-channel WAV failed to decode: {e}"));
+            assert_eq!(decoded.channels(), channels);
+            assert_eq!(decoded.samples.len(), buf.samples.len());
+        }
     }
 
     /// N-S-52: `sample_rate = u32::MAX` must be rejected explicitly rather than

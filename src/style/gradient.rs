@@ -23,14 +23,45 @@ pub struct GradientStop {
     /// `0.0`..=`1.0`: `0.0` is the ramp's start, `1.0` its end. Values outside
     /// that range cannot be constructed through [`GradientStop::new`], but the
     /// field is public and a directly-constructed stop may hold one.
+    ///
+    /// # Non-finite values (D09-STYLE-03)
+    ///
+    /// The field is public, so a stop built with struct-literal syntax can still hold `NaN` or
+    /// `±∞`. [`Gradient::with_stops`] normalises every stop's position through
+    /// [`GradientStop::normalized_position`] before sorting, so the invariant
+    /// [`Gradient::interpolate`] relies on holds for collect/*builder* input too. A vector
+    /// assigned *directly* through [`Gradient::stops`] is the caller's responsibility, exactly
+    /// as its ordering is.
     pub position: f32,
     /// The colour reached exactly at `position`.
     pub color: Color,
 }
 impl GradientStop {
     /// Creates a stop, clamping `position` into `0.0`..=`1.0`.
+    ///
+    /// # Non-finite positions (D09-STYLE-03)
+    ///
+    /// [`f32::clamp`] passes `NaN` through unchanged, so a plain `clamp` violated this
+    /// constructor's documented range contract and left a stop whose position compares as
+    /// neither inside nor outside the ramp. The policy is therefore: **`NaN` normalises to
+    /// `0.0`** (the ramp's start, the deterministic value an unset fraction reads as) and
+    /// `±∞` clamps to the nearer end. Apply it through [`GradientStop::normalized_position`] so
+    /// every entry point — this constructor, [`Gradient::interpolate`] and
+    /// [`Gradient::reverse`] — agrees.
     pub fn new(position: f32, color: Color) -> Self {
-        Self { position: position.clamp(0.0, 1.0), color }
+        Self { position: Self::normalized_position(position), color }
+    }
+
+    /// The documented non-finite policy for a ramp position, shared by every entry point
+    /// (D09-STYLE-03).
+    ///
+    /// `NaN` → `0.0`; `±∞` → `0.0` / `1.0`; a finite value → clamped into `0.0..=1.0`.
+    pub fn normalized_position(position: f32) -> f32 {
+        if position.is_nan() {
+            0.0
+        } else {
+            position.clamp(0.0, 1.0)
+        }
     }
 }
 /// A colour ramp, plus the geometry that says how ramp positions map to space.
@@ -135,9 +166,15 @@ impl Gradient {
         self.stops.sort_by(|a, b| a.position.total_cmp(&b.position));
         self
     }
-    /// Replaces the whole stop list, sorts it by ascending position, and returns
-    /// `self`.
-    pub fn with_stops(mut self, stops: Vec<GradientStop>) -> Self {
+    /// Replaces the whole stop list, normalises each stop's position into `0.0`..=`1.0`, sorts
+    /// by ascending position, and returns `self`.
+    ///
+    /// Normalisation uses [`GradientStop::normalized_position`], so a stop built through a
+    /// struct literal with `NaN`/`±∞` does not escape the range contract or the sort (D09-STYLE-03).
+    pub fn with_stops(mut self, mut stops: Vec<GradientStop>) -> Self {
+        for stop in &mut stops {
+            stop.position = GradientStop::normalized_position(stop.position);
+        }
         self.stops = stops;
         self.stops.sort_by(|a, b| a.position.total_cmp(&b.position));
         self
@@ -156,7 +193,10 @@ impl Gradient {
     /// * `position` before the first stop or at/after the last — the first or
     ///   last stop's colour, with no extension or wrapping.
     pub fn interpolate(&self, position: f32) -> Color {
-        let position = position.clamp(0.0, 1.0);
+        // D09-STYLE-03: `clamp` leaves `NaN` as `NaN`, which then fails every boundary
+        // comparison below and fell through to the last stop's colour. Normalise the policy in
+        // one place so a non-finite sample reads as the ramp's start instead of an arbitrary end.
+        let position = GradientStop::normalized_position(position);
         if self.stops.is_empty() {
             return Color::TRANSPARENT;
         }
@@ -342,5 +382,63 @@ mod tests {
             .stop(1.0, Color::BLACK)
             .build();
         assert_eq!(gradient.stops.len(), 3);
+    }
+
+    // ── D09-STYLE-03: non-finite position policy ──
+
+    /// The constructor promises a position in `0.0..=1.0`; `NaN` and `±∞` must be normalised
+    /// rather than passed through, and finite out-of-range values must still clamp.
+    #[test]
+    fn gradient_stop_new_normalizes_non_finite_positions() {
+        assert_eq!(GradientStop::new(f32::NAN, Color::RED).position, 0.0);
+        assert_eq!(GradientStop::new(f32::INFINITY, Color::RED).position, 1.0);
+        assert_eq!(GradientStop::new(f32::NEG_INFINITY, Color::RED).position, 0.0);
+        assert_eq!(GradientStop::new(-0.5, Color::RED).position, 0.0);
+        assert_eq!(GradientStop::new(1.5, Color::RED).position, 1.0);
+        assert_eq!(GradientStop::new(0.25, Color::RED).position, 0.25);
+    }
+
+    /// A stop built through the public field with `NaN` is normalised by `with_stops`, so the
+    /// range contract and the sort hold even for a directly-constructed stop.
+    #[test]
+    fn with_stops_normalizes_directly_constructed_stop_positions() {
+        let stops = vec![
+            GradientStop { position: f32::NAN, color: Color::RED },
+            GradientStop { position: f32::INFINITY, color: Color::BLUE },
+            GradientStop { position: -1.0, color: Color::GREEN },
+        ];
+        let g = Gradient::linear(Point::new(0, 0), Point::new(100, 0)).with_stops(stops);
+        let positions: Vec<f32> = g.stops.iter().map(|s| s.position).collect();
+        assert!(
+            positions.iter().all(|p| p.is_finite() && (0.0..=1.0).contains(p)),
+            "every stored position must be finite and in range: {positions:?}"
+        );
+        // NaN -> 0.0 and -1.0 -> 0.0 tie at the start; +∞ -> 1.0 is last, so the ramp is sorted.
+        assert_eq!(g.stops[g.stops.len() - 1].position, 1.0);
+    }
+
+    /// `interpolate(NaN)` must read as a defined value (the ramp start) rather than falling
+    /// through to the last stop's colour.
+    #[test]
+    fn interpolate_nan_reads_as_the_ramp_start() {
+        let g = Gradient::linear(Point::new(0, 0), Point::new(100, 0))
+            .add_stop(0.0, Color::BLACK)
+            .add_stop(1.0, Color::WHITE);
+        assert_eq!(g.interpolate(f32::NAN), Color::BLACK);
+        assert_eq!(g.interpolate(f32::NEG_INFINITY), Color::BLACK);
+        assert_eq!(g.interpolate(f32::INFINITY), Color::WHITE);
+    }
+
+    /// The builder path routes through `GradientStop::new`, so a non-finite stop gives the same
+    /// defined position as the standalone constructor (D09-STYLE-03).
+    #[test]
+    fn gradient_builder_normalizes_non_finite_stop_positions() {
+        let g = GradientBuilder::linear(Point::new(0, 0), Point::new(100, 0))
+            .stop(f32::NAN, Color::RED)
+            .stop(f32::INFINITY, Color::BLUE)
+            .build();
+        assert!(g.stops.iter().all(|s| s.position.is_finite()));
+        assert_eq!(g.stops[0].position, 0.0);
+        assert_eq!(g.stops[g.stops.len() - 1].position, 1.0);
     }
 }

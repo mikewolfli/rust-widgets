@@ -35,6 +35,31 @@ pub trait PaintBackend {
     /// The command is applied in sequence, so ordering matters: a clip push
     /// affects every command until its matching pop.
     fn execute_command(&mut self, command: &RenderCommand);
+    /// Draws `data` as an RGBA image at `(x, y)` scaled to `width` x `height` pixels.
+    ///
+    /// # Why this exists next to [`PaintBackend::execute_command`] (D09-RENDER-02)
+    ///
+    /// `RenderCommand::DrawImage` owns its pixel bytes, so routing an image through it forces
+    /// the caller to copy the whole source buffer into the command. A backend that consumes the
+    /// image **synchronously** — the software backend blits it immediately and retains nothing —
+    /// gains nothing from that copy; it is pure cost proportional to the image size, paid on
+    /// every frame of a static image and every frame of an animation.
+    ///
+    /// This entry point hands the pixels over by reference, so a backend that does not retain
+    /// the command can draw straight from the caller's buffer. The **default implementation**
+    /// reproduces the old behaviour exactly: it builds an owning `DrawImage` command (one copy)
+    /// and executes it. A backend that keeps the command — or renders it later — must keep that
+    /// default, because it really does need to own the bytes. Only an immediate backend should
+    /// override it, and then the copy disappears.
+    fn draw_image(&mut self, x: i32, y: i32, width: u32, height: u32, data: &[u8]) {
+        self.execute_command(&RenderCommand::DrawImage {
+            x,
+            y,
+            width,
+            height,
+            data: data.to_vec(),
+        });
+    }
     /// Returns the size of the target surface in logical (DPI-independent)
     /// units.
     fn size(&self) -> Size;
@@ -141,193 +166,21 @@ impl PaintBackend for SoftwarePaintBackend {
         self.surface.end_frame();
     }
     fn execute_command(&mut self, command: &RenderCommand) {
-        match command {
-            RenderCommand::FillRect { rect, color } => self.surface.fill_rect(*rect, *color),
-            RenderCommand::DrawRect { rect, color } => self.surface.draw_rect(*rect, *color),
-            RenderCommand::DrawRectStroke { rect, color, width } => {
-                self.surface.draw_rect_with_width(*rect, *color, *width)
-            }
-            RenderCommand::FillRoundedRect { rect, radius, color } => {
-                self.surface.fill_rounded_rect(*rect, *radius, *color)
-            }
-            RenderCommand::FillRoundedRectAA { rect, radius, color } => {
-                self.surface.fill_rounded_rect_aa(*rect, *radius, *color)
-            }
-            RenderCommand::DrawRoundedRectStroke { rect, radius, color, width } => {
-                self.surface.draw_rounded_rect_with_width(*rect, *radius, *color, *width)
-            }
-            RenderCommand::DrawRoundedRectStrokeAA { rect, radius, color, width } => {
-                self.surface.draw_rounded_rect_aa_with_width(*rect, *radius, *color, *width)
-            }
-            RenderCommand::DrawLine { from, to, color } => {
-                self.surface.draw_line(*from, *to, *color)
-            }
-            RenderCommand::DrawLineAA { from, to, color } => {
-                self.surface.draw_line_aa(*from, *to, *color)
-            }
-            RenderCommand::DrawLineStrokeAA { from, to, color, width } => {
-                self.surface.draw_line_aa_with_width(*from, *to, *color, *width)
-            }
-            RenderCommand::DrawLineStroke { from, to, color, width } => {
-                self.surface.draw_line_with_width(*from, *to, *color, *width)
-            }
-            RenderCommand::FillCircle { center, radius, color } => {
-                self.surface.fill_circle(*center, *radius, *color)
-            }
-            RenderCommand::FillCircleAA { center, radius, color } => {
-                self.surface.fill_circle_aa(*center, *radius, *color)
-            }
-            RenderCommand::DrawCircle { center, radius, color } => {
-                self.surface.draw_circle(*center, *radius, *color)
-            }
-            RenderCommand::DrawCircleStroke { center, radius, color, width } => {
-                self.surface.draw_circle_with_width(*center, *radius, *color, *width)
-            }
-            RenderCommand::DrawText { origin, text, font, color, alignment } => {
-                self.surface.draw_text(*origin, text, font, *color, *alignment)
-            }
-            RenderCommand::DrawImage { x, y, width, height, data } => {
-                self.surface.draw_image(*x, *y, *width, *height, data)
-            }
-            RenderCommand::PushClip { x, y, width, height } => {
-                self.surface.push_clip(*x, *y, *width, *height)
-            }
-            RenderCommand::PopClip => self.surface.pop_clip(),
-            RenderCommand::DrawGradient { rect, gradient } => {
-                self.surface.fill_rect_gradient(*rect, gradient);
-            }
-            RenderCommand::DrawArc { center, radius, start_angle, end_angle, color, filled } => {
-                self.surface.draw_arc(*center, *radius, *start_angle, *end_angle, *color, *filled);
-            }
-            RenderCommand::DrawPath { points, closed, color, filled, width } => {
-                self.surface.draw_path(points, *closed, *color, *filled, *width);
-            }
-            RenderCommand::BoxShadow { rect, color, offset_x, offset_y, blur_radius, spread } => {
-                // Render shadow rect with offset and optional spread. Every term is `i32` and the
-                // operands come from a public command, so the arithmetic is saturating: a wrapped
-                // `spread` used to flip a large shadow into a tiny one (or a negative width that
-                // `.max(0)` silently collapsed), which is a wrong picture rather than a rejected one.
-                let spread_rect = crate::core::Rect::new(
-                    sat_add_i32(sat_add_i32(rect.x, *offset_x), sat_neg_i32(*spread)),
-                    sat_add_i32(sat_add_i32(rect.y, *offset_y), sat_neg_i32(*spread)),
-                    sat_mul_i32(*spread, 2).saturating_add(u32_to_i32_saturating(rect.width)).max(0)
-                        as u32,
-                    sat_mul_i32(*spread, 2)
-                        .saturating_add(u32_to_i32_saturating(rect.height))
-                        .max(0) as u32,
-                );
-                let shadow_color =
-                    Color::rgba(color.r, color.g, color.b, (color.a as f32 * 0.5) as u8);
-                self.surface.fill_rect(spread_rect, shadow_color);
-                // Apply box blur to the shadow region if blur_radius > 0
-                if *blur_radius > 0 {
-                    let size = self.surface.size();
-                    let w = size.width as usize;
-                    let h = size.height as usize;
-                    if w > 0 && h > 0 {
-                        let back = self.surface.buffer.back_mut();
-                        let radius = (*blur_radius).min(100) as usize;
-                        let blur_x0 = spread_rect.x.max(0) as usize;
-                        let blur_y0 = spread_rect.y.max(0) as usize;
-                        let blur_w = ((spread_rect.x as usize + spread_rect.width as usize).min(w))
-                            .saturating_sub(blur_x0);
-                        let blur_h = ((spread_rect.y as usize + spread_rect.height as usize)
-                            .min(h))
-                        .saturating_sub(blur_y0);
-                        box_blur_region(back, w, h, blur_x0, blur_y0, blur_w, blur_h, radius);
-                    }
-                }
-            }
-            RenderCommand::Blur { radius } => {
-                let r = (*radius).min(100) as usize;
-                if r == 0 {
-                    return;
-                }
-                let size = self.surface.size();
-                let w = size.width as usize;
-                let h = size.height as usize;
-                if w == 0 || h == 0 {
-                    return;
-                }
-                let back = self.surface.buffer.back_mut();
-                box_blur_region(back, w, h, 0, 0, w, h, r);
-            }
-            RenderCommand::ClipPath { points } => {
-                // Approximate clip path: push bounding rect of points
-                if points.is_empty() {
-                    return;
-                }
-                let min_x = points.iter().map(|p| p.x).min().unwrap();
-                let max_x = points.iter().map(|p| p.x).max().unwrap();
-                let min_y = points.iter().map(|p| p.y).min().unwrap();
-                let max_y = points.iter().map(|p| p.y).max().unwrap();
-                if min_x < max_x && min_y < max_y {
-                    let cw = (max_x - min_x) as u32;
-                    let ch = (max_y - min_y) as u32;
-                    if cw > 0 && ch > 0 {
-                        self.surface.push_clip(min_x, min_y, cw, ch);
-                    }
-                }
-            }
-            RenderCommand::SetBlendMode { mode } => {
-                // Frame state, like the clip stack: it applies to everything drawn until it changes.
-                // The writes it governs each go through the surface's blend-aware pixel path.
-                self.surface.set_blend_mode(*mode);
-            }
-            RenderCommand::DrawConicGradient { center, start_angle, stops } => {
-                if stops.is_empty() {
-                    return;
-                }
-                let size = self.surface.size();
-                let w = size.width as usize;
-                let h = size.height as usize;
-                if w == 0 || h == 0 {
-                    return;
-                }
-                let back = self.surface.buffer.back_mut();
-                let cx = center.x as f32;
-                let cy = center.y as f32;
-                let angle_offset = *start_angle;
-                // Iterate over all pixels on the surface
-                for py in 0..h {
-                    for px in 0..w {
-                        let dx = px as f32 - cx;
-                        let dy = py as f32 - cy;
-                        let mut t = dy.atan2(dx) + core::f32::consts::PI;
-                        t = (t + angle_offset) % (2.0 * core::f32::consts::PI);
-                        let pos = t / (2.0 * core::f32::consts::PI);
-                        // Find the two stops surrounding pos
-                        let color = if pos <= stops[0].0 {
-                            stops[0].1
-                        } else if pos >= stops.last().unwrap().0 {
-                            stops.last().unwrap().1
-                        } else {
-                            let mut lo = 0usize;
-                            let mut hi = stops.len() - 1;
-                            while hi - lo > 1 {
-                                let mid = (lo + hi) / 2;
-                                if stops[mid].0 <= pos {
-                                    lo = mid;
-                                } else {
-                                    hi = mid;
-                                }
-                            }
-                            let t_local =
-                                (pos - stops[lo].0) / (stops[hi].0 - stops[lo].0).max(0.0001);
-                            let ca = stops[lo].1;
-                            let cb = stops[hi].1;
-                            Color::rgba(
-                                (ca.r as f32 + (cb.r as f32 - ca.r as f32) * t_local) as u8,
-                                (ca.g as f32 + (cb.g as f32 - ca.g as f32) * t_local) as u8,
-                                (ca.b as f32 + (cb.b as f32 - ca.b as f32) * t_local) as u8,
-                                (ca.a as f32 + (cb.a as f32 - ca.a as f32) * t_local) as u8,
-                            )
-                        };
-                        set_pixel(back, w as u32, px as u32, py as u32, color);
-                    }
-                }
-            }
-        }
+        route_command_to_surface(&mut self.surface, command);
+    }
+    /// Draws an image straight from the caller's slice — no owning command, no copy.
+    ///
+    /// # Why this override matters (D09-RENDER-02)
+    ///
+    /// The software backend rasterises an image the moment it is asked to, and keeps no
+    /// reference to the bytes afterwards. The trait default would copy the whole source into a
+    /// `RenderCommand::DrawImage` for that one synchronous call; this draws from the borrowed
+    /// slice instead, so a widget that shows a static or animated image pays no per-frame
+    /// full-image allocation or copy.
+    fn draw_image(&mut self, x: i32, y: i32, width: u32, height: u32, data: &[u8]) {
+        #[cfg(test)]
+        note_image_bytes_drawn_without_copy(data.len());
+        self.surface.draw_image(x, y, width, height, data);
     }
     fn size(&self) -> Size {
         self.surface.size()
@@ -355,6 +208,223 @@ impl PaintBackend for SoftwarePaintBackend {
     }
     fn render_config(&self) -> SoftwareRenderConfig {
         self.surface.render_config()
+    }
+}
+
+// Test-only counter of source image bytes the software backend drew **without** copying, so a
+// regression test can prove the borrowed path is the one taken and that the owned-command path
+// copies exactly once when a caller builds the command itself (D09-RENDER-02). Kept out of
+// release builds (principle #28).
+#[cfg(test)]
+thread_local! {
+    static IMAGE_BYTES_DRAWN_WITHOUT_COPY: core::cell::Cell<usize> =
+        const { core::cell::Cell::new(0) };
+}
+
+/// Adds `bytes` to the test-only "drawn without copy" counter. (D09-RENDER-02)
+#[cfg(test)]
+pub(crate) fn note_image_bytes_drawn_without_copy(bytes: usize) {
+    IMAGE_BYTES_DRAWN_WITHOUT_COPY.with(|cell| cell.set(cell.get() + bytes));
+}
+
+/// Resets and returns the test-only "drawn without copy" counter. (D09-RENDER-02)
+#[cfg(test)]
+pub(crate) fn take_image_bytes_drawn_without_copy() -> usize {
+    IMAGE_BYTES_DRAWN_WITHOUT_COPY.with(|cell| cell.replace(0))
+}
+
+/// Route one [`RenderCommand`] into a bare [`SoftwareSurface`].
+///
+/// # Why this is a free function (D09-RENDER-05)
+///
+/// `PaintBackend::execute_command` for [`SoftwarePaintBackend`] is exactly this
+/// routing over `self.surface`. Batch replay has to paint while a *different* field
+/// of the backend (`batch_state`) is borrowed immutably, and the borrow checker
+/// rejects borrowing `self` both ways — which is why replay used to deep-`clone()`
+/// the whole batch state. Splitting the routing out lets the replay path paint
+/// through the surface alone. Both paths share this one function, so the command
+/// routing cannot drift between them.
+pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &RenderCommand) {
+    match command {
+        RenderCommand::FillRect { rect, color } => surface.fill_rect(*rect, *color),
+        RenderCommand::DrawRect { rect, color } => surface.draw_rect(*rect, *color),
+        RenderCommand::DrawRectStroke { rect, color, width } => {
+            surface.draw_rect_with_width(*rect, *color, *width)
+        }
+        RenderCommand::FillRoundedRect { rect, radius, color } => {
+            surface.fill_rounded_rect(*rect, *radius, *color)
+        }
+        RenderCommand::FillRoundedRectAA { rect, radius, color } => {
+            surface.fill_rounded_rect_aa(*rect, *radius, *color)
+        }
+        RenderCommand::DrawRoundedRectStroke { rect, radius, color, width } => {
+            surface.draw_rounded_rect_with_width(*rect, *radius, *color, *width)
+        }
+        RenderCommand::DrawRoundedRectStrokeAA { rect, radius, color, width } => {
+            surface.draw_rounded_rect_aa_with_width(*rect, *radius, *color, *width)
+        }
+        RenderCommand::DrawLine { from, to, color } => surface.draw_line(*from, *to, *color),
+        RenderCommand::DrawLineAA { from, to, color } => surface.draw_line_aa(*from, *to, *color),
+        RenderCommand::DrawLineStrokeAA { from, to, color, width } => {
+            surface.draw_line_aa_with_width(*from, *to, *color, *width)
+        }
+        RenderCommand::DrawLineStroke { from, to, color, width } => {
+            surface.draw_line_with_width(*from, *to, *color, *width)
+        }
+        RenderCommand::FillCircle { center, radius, color } => {
+            surface.fill_circle(*center, *radius, *color)
+        }
+        RenderCommand::FillCircleAA { center, radius, color } => {
+            surface.fill_circle_aa(*center, *radius, *color)
+        }
+        RenderCommand::DrawCircle { center, radius, color } => {
+            surface.draw_circle(*center, *radius, *color)
+        }
+        RenderCommand::DrawCircleStroke { center, radius, color, width } => {
+            surface.draw_circle_with_width(*center, *radius, *color, *width)
+        }
+        RenderCommand::DrawText { origin, text, font, color, alignment } => {
+            surface.draw_text(*origin, text, font, *color, *alignment)
+        }
+        RenderCommand::DrawImage { x, y, width, height, data } => {
+            surface.draw_image(*x, *y, *width, *height, data)
+        }
+        RenderCommand::PushClip { x, y, width, height } => {
+            surface.push_clip(*x, *y, *width, *height)
+        }
+        RenderCommand::PopClip => surface.pop_clip(),
+        RenderCommand::DrawGradient { rect, gradient } => {
+            surface.fill_rect_gradient(*rect, gradient);
+        }
+        RenderCommand::DrawArc { center, radius, start_angle, end_angle, color, filled } => {
+            surface.draw_arc(*center, *radius, *start_angle, *end_angle, *color, *filled);
+        }
+        RenderCommand::DrawPath { points, closed, color, filled, width } => {
+            surface.draw_path(points, *closed, *color, *filled, *width);
+        }
+        RenderCommand::BoxShadow { rect, color, offset_x, offset_y, blur_radius, spread } => {
+            // Render shadow rect with offset and optional spread. Every term is `i32` and the
+            // operands come from a public command, so the arithmetic is saturating: a wrapped
+            // `spread` used to flip a large shadow into a tiny one (or a negative width that
+            // `.max(0)` silently collapsed), which is a wrong picture rather than a rejected one.
+            let spread_rect = crate::core::Rect::new(
+                sat_add_i32(sat_add_i32(rect.x, *offset_x), sat_neg_i32(*spread)),
+                sat_add_i32(sat_add_i32(rect.y, *offset_y), sat_neg_i32(*spread)),
+                sat_mul_i32(*spread, 2).saturating_add(u32_to_i32_saturating(rect.width)).max(0)
+                    as u32,
+                sat_mul_i32(*spread, 2).saturating_add(u32_to_i32_saturating(rect.height)).max(0)
+                    as u32,
+            );
+            let shadow_color = Color::rgba(color.r, color.g, color.b, (color.a as f32 * 0.5) as u8);
+            surface.fill_rect(spread_rect, shadow_color);
+            // Apply box blur to the shadow region if blur_radius > 0
+            if *blur_radius > 0 {
+                let size = surface.size();
+                let w = size.width as usize;
+                let h = size.height as usize;
+                if w > 0 && h > 0 {
+                    let radius = (*blur_radius).min(100) as usize;
+                    let blur_x0 = spread_rect.x.max(0) as usize;
+                    let blur_y0 = spread_rect.y.max(0) as usize;
+                    let blur_w = ((spread_rect.x as usize + spread_rect.width as usize).min(w))
+                        .saturating_sub(blur_x0);
+                    let blur_h = ((spread_rect.y as usize + spread_rect.height as usize).min(h))
+                        .saturating_sub(blur_y0);
+                    let back = surface.buffer.back_mut();
+                    box_blur_region(back, w, h, blur_x0, blur_y0, blur_w, blur_h, radius);
+                }
+            }
+        }
+        RenderCommand::Blur { radius } => {
+            let r = (*radius).min(100) as usize;
+            if r == 0 {
+                return;
+            }
+            let size = surface.size();
+            let w = size.width as usize;
+            let h = size.height as usize;
+            if w == 0 || h == 0 {
+                return;
+            }
+            let back = surface.buffer.back_mut();
+            box_blur_region(back, w, h, 0, 0, w, h, r);
+        }
+        RenderCommand::ClipPath { points } => {
+            // Approximate clip path: push bounding rect of points
+            if points.is_empty() {
+                return;
+            }
+            let min_x = points.iter().map(|p| p.x).min().unwrap();
+            let max_x = points.iter().map(|p| p.x).max().unwrap();
+            let min_y = points.iter().map(|p| p.y).min().unwrap();
+            let max_y = points.iter().map(|p| p.y).max().unwrap();
+            if min_x < max_x && min_y < max_y {
+                let cw = (max_x - min_x) as u32;
+                let ch = (max_y - min_y) as u32;
+                if cw > 0 && ch > 0 {
+                    surface.push_clip(min_x, min_y, cw, ch);
+                }
+            }
+        }
+        RenderCommand::SetBlendMode { mode } => {
+            // Frame state, like the clip stack: it applies to everything drawn until it changes.
+            // The writes it governs each go through the surface's blend-aware pixel path.
+            surface.set_blend_mode(*mode);
+        }
+        RenderCommand::DrawConicGradient { center, start_angle, stops } => {
+            if stops.is_empty() {
+                return;
+            }
+            let size = surface.size();
+            let w = size.width as usize;
+            let h = size.height as usize;
+            if w == 0 || h == 0 {
+                return;
+            }
+            let cx = center.x as f32;
+            let cy = center.y as f32;
+            let angle_offset = *start_angle;
+            // Take the back buffer once rather than re-borrowing it per pixel: the writes are
+            // sequential and non-overlapping, so one borrow covers the whole loop.
+            let back = surface.buffer.back_mut();
+            // Iterate over all pixels on the surface
+            for py in 0..h {
+                for px in 0..w {
+                    let dx = px as f32 - cx;
+                    let dy = py as f32 - cy;
+                    let mut t = dy.atan2(dx) + core::f32::consts::PI;
+                    t = (t + angle_offset) % (2.0 * core::f32::consts::PI);
+                    let pos = t / (2.0 * core::f32::consts::PI);
+                    // Find the two stops surrounding pos
+                    let color = if pos <= stops[0].0 {
+                        stops[0].1
+                    } else if pos >= stops.last().unwrap().0 {
+                        stops.last().unwrap().1
+                    } else {
+                        let mut lo = 0usize;
+                        let mut hi = stops.len() - 1;
+                        while hi - lo > 1 {
+                            let mid = (lo + hi) / 2;
+                            if stops[mid].0 <= pos {
+                                lo = mid;
+                            } else {
+                                hi = mid;
+                            }
+                        }
+                        let t_local = (pos - stops[lo].0) / (stops[hi].0 - stops[lo].0).max(0.0001);
+                        let ca = stops[lo].1;
+                        let cb = stops[hi].1;
+                        Color::rgba(
+                            (ca.r as f32 + (cb.r as f32 - ca.r as f32) * t_local) as u8,
+                            (ca.g as f32 + (cb.g as f32 - ca.g as f32) * t_local) as u8,
+                            (ca.b as f32 + (cb.b as f32 - ca.b as f32) * t_local) as u8,
+                            (ca.a as f32 + (cb.a as f32 - ca.a as f32) * t_local) as u8,
+                        )
+                    };
+                    set_pixel(back, size.width, px as u32, py as u32, color);
+                }
+            }
+        }
     }
 }
 

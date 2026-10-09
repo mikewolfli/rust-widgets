@@ -5,7 +5,7 @@
 
 #[cfg(test)]
 use crate::core::Point;
-use crate::core::{Color, Font, HorizontalAlignment, MediaClock, Rect};
+use crate::core::{Color, HorizontalAlignment, MediaClock, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -13,7 +13,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::dimensions;
+use crate::widget::metrics::{dimensions, effective_font};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -594,7 +594,9 @@ impl Draw for MediaPlayer {
         // which has no length limit, and the status line is three joined words; neither was
         // bounded, so a long file name simply kept going past the player's right edge. Both
         // share the one padding constant with the transport rule below them.
-        let font = Font::default();
+        // The title and status lines take the **effective font** — the resolved theme/caller font —
+        // so the theme body font and the user's text scale reach them (D09-STYLE-01).
+        let font = effective_font(style);
         context.draw_text_fitted(
             Rect::new(
                 rect.x + MEDIA_PLAYER_PADDING,
@@ -603,7 +605,7 @@ impl Draw for MediaPlayer {
                 16,
             ),
             title,
-            &font,
+            font,
             ink,
             HorizontalAlignment::Left,
         );
@@ -615,7 +617,7 @@ impl Draw for MediaPlayer {
                 16,
             ),
             &format!("{state} | {vol} | {fs}"),
-            &font,
+            font,
             muted,
             HorizontalAlignment::Left,
         );

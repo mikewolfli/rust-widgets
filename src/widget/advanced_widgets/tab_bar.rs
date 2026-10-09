@@ -43,8 +43,8 @@ const TAB_TEXT_PADDING: u32 = TAB_TEXT_INSET * 2;
 /// a cluster that is not one `char` (combining marks, ZWJ emoji), or a font with `letter_spacing`
 /// — so a tab's reserved width and its painted width could differ before the first measurement.
 /// This is the same "one metric, not two" rule the shared estimate exists for (BLUE24 U-14).
-fn estimate_text_width(text: &str, font_size: f32) -> u32 {
-    crate::widget::metrics::estimate_text_width(text, &Font::simple("", font_size), 1.0)
+fn estimate_text_width(text: &str, font: &Font) -> u32 {
+    crate::widget::metrics::estimate_text_width(text, font, 1.0)
 }
 
 /// A single tab in a `TabBar`.
@@ -624,10 +624,19 @@ impl TabBar {
     /// `char`, each advancing by the font size — rather than inventing a second one. It
     /// is only reached before the first `draw`, because `draw_tab` records the measured
     /// width in [`Self::measured_title_widths`] from then on.
+    /// The font tab labels are drawn and measured with: the resolved theme/caller font, falling
+    /// back to the fixed Arial face this control used before (D09-STYLE-01).
+    ///
+    /// Named once so `compute_tab_width`, `draw_tab` and `draw` all measure with the font the
+    /// labels are painted with — a reserved width and its ink cannot disagree.
+    fn label_font(&self) -> Font {
+        self.style().font.clone().unwrap_or_else(|| Font::simple("Arial", TAB_FONT_SIZE))
+    }
+
     fn compute_tab_width(&self, index: usize) -> u32 {
         let text = self.tabs[index].title.as_str();
         let measured = self.measured_title_widths.get(index).copied();
-        let text_width = measured.unwrap_or_else(|| estimate_text_width(text, TAB_FONT_SIZE));
+        let text_width = measured.unwrap_or_else(|| estimate_text_width(text, &self.label_font()));
         let mut w = text_width + TAB_TEXT_PADDING; // horizontal padding
         if self.closable {
             w += (CLOSE_SIZE + CLOSE_PADDING) as u32;
@@ -780,12 +789,15 @@ impl TabBar {
         // (which is what `tab_rect.height / 2` is) put the glyph box's *top* at the centre,
         // so a 14 px label in a 24 px tab spanned 12..26 and crossed the tab's bottom edge.
         let text_x = tab_rect.x + TAB_TEXT_INSET as i32;
-        let title_height = context.measure_text("M", &Font::simple("Arial", TAB_FONT_SIZE)).height;
+        // The **effective font** — the resolved theme/caller font — replacing the fixed Arial face,
+        // so the tab title honours the theme body font and the user's text scale (D09-STYLE-01).
+        let font = self.label_font();
+        let title_height = context.measure_text("M", &font).height;
         let text_y = tab_rect.y + (tab_rect.height as i32 - title_height as i32) / 2;
         context.draw_text(
             Point::new(text_x, text_y),
             &tab.title,
-            &Font::simple("Arial", TAB_FONT_SIZE),
+            &font,
             text_color,
             HorizontalAlignment::Left,
         );
@@ -1054,9 +1066,9 @@ impl Draw for TabBar {
         // the estimate and tab `n+1` from a real metric — a strip whose later tabs are a
         // different size from its first.
         self.measured_title_widths.clear();
+        let font = self.label_font();
         for tab in &self.tabs {
-            let width =
-                context.measure_text(&tab.title, &Font::simple("Arial", TAB_FONT_SIZE)).width;
+            let width = context.measure_text(&tab.title, &font).width;
             self.measured_title_widths.push(width);
         }
         for i in 0..self.tabs.len() {

@@ -3,7 +3,7 @@
 
 //! Snackbar widget.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -12,7 +12,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::menu_toolbar::popup_reveal::{PopupReveal, RevealDirection};
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -403,8 +403,10 @@ impl Draw for Snackbar {
         // Both labels are centred on their own band. The origins were fixed offsets
         // (`+ 16` and `+ 13`) written for one font size: a 14 px line in a 26 px bar spans
         // 16..30, four pixels past the bar's bottom edge, and the action label likewise.
-        let message_font = Font::default();
-        let message_h = context.measure_text("M", &message_font).height;
+        // The message and action labels take the **effective font** — the resolved theme/caller font
+        // — so the theme body font and the user's text scale reach them (D09-STYLE-01).
+        let message_font = effective_font(&style);
+        let message_h = context.measure_text("M", message_font).height;
         if !self.message.is_empty() {
             context.draw_text(
                 Point::new(
@@ -412,7 +414,7 @@ impl Draw for Snackbar {
                     bar.y + (bar.height as i32 - message_h as i32) / 2,
                 ),
                 &self.message,
-                &message_font,
+                message_font,
                 bar_text,
                 HorizontalAlignment::Left,
             );
@@ -431,7 +433,7 @@ impl Draw for Snackbar {
                             message_h,
                         ),
                         label,
-                        &message_font,
+                        message_font,
                         action_text,
                         HorizontalAlignment::Center,
                     );

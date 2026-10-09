@@ -14,10 +14,31 @@
 use crate::compat::{String, ToString, Vec};
 use crate::i18n::global::get_manager;
 use crate::i18n::types::ReloadEvent;
-use crossbeam_channel::{unbounded, Receiver, Sender};
+use crossbeam_channel::{bounded, Receiver, Sender};
 use notify::{Event, EventKind, RecursiveMode, Watcher};
+use std::collections::VecDeque;
 use std::path::Path;
 use std::time::SystemTime;
+
+/// Maximum number of pending reload announcements the channel holds (D09-WATCH-01).
+///
+/// The channel is bounded so a burst of translation-file changes cannot grow the
+/// queue without limit while the consumer pauses. Callback-side coalescing (see
+/// `flush_pending`) re-checks the channel and collapses a language already queued,
+/// so the queue holds at most one pending announcement per language; the bound is
+/// nonetheless kept as a hard ceiling, because the manager itself can also publish
+/// announcements (`announce_reload`) that the watcher must not drop.
+pub(crate) const I18N_RELOAD_CAPACITY: usize = 1024;
+
+/// Maximum number of events one [`process_reload_events`] call may take
+/// (D09-WATCH-01). The rest stay queued and are applied by later calls, so a
+/// single frame applies a bounded number of reloads while delivery stays eventual.
+pub(crate) const I18N_RELOAD_BATCH_LIMIT: usize = 64;
+
+/// Maximum number of events one [`I18nFileWatcher::drain_events`] call may take
+/// (D09-WATCH-01). Kept equal to [`I18N_RELOAD_BATCH_LIMIT`] so the watcher and the
+/// free-function entry point bound a single pass to the same amount of work.
+pub(crate) const I18N_DRAIN_BATCH_LIMIT: usize = I18N_RELOAD_BATCH_LIMIT;
 
 /// The language a translation file name implies: the file stem (name without the
 /// `.json` extension).
@@ -66,13 +87,29 @@ pub struct I18nFileWatcher {
 }
 impl I18nFileWatcher {
     /// Create a new file watcher
+    ///
+    /// The reload channel is bounded (D09-WATCH-01) and its callback coalesces
+    /// repeated changes by language, so a burst that outruns the consumer cannot
+    /// grow the queue without limit. A coalesced duplicate is dropped; the fact
+    /// that a locale changed is never dropped.
     pub fn new() -> Self {
-        let (reload_sender, reload_receiver) = unbounded();
+        let (reload_sender, reload_receiver) = bounded(I18N_RELOAD_CAPACITY);
         Self { watcher: None, reload_sender, reload_receiver }
     }
     /// Start watching a directory for translation file changes
+    ///
+    /// The notify callback buffers the languages an event names and flushes them
+    /// to the bounded channel *after* the event, coalescing against what is already
+    /// queued (D09-WATCH-01). A flush that finds the channel full leaves the
+    /// still-pending languages in the buffer instead of dropping them, so the
+    /// pending set is bounded rather than unbounded, and the next callback retries.
     pub fn watch_directory(&mut self, dir: &Path) -> Result<(), String> {
         let sender = self.reload_sender.clone();
+        let receiver = self.reload_receiver.clone();
+        // Pending languages for the coalescing flush, in insertion order for
+        // deterministic delivery. Owned by the callback, which runs on the notify
+        // backend thread (D09-WATCH-01).
+        let mut pending: VecDeque<String> = VecDeque::new();
         let mut watcher = notify::recommended_watcher(move |res: Result<Event, _>| match res {
             Ok(event) => {
                 // Every path the event carries is mapped to its language identity, not
@@ -80,13 +117,30 @@ impl I18nFileWatcher {
                 // (old and new) for an atomic save, and a new locale is a `Create`.
                 // `languages_for_event` owns that mapping so it can be unit-tested.
                 for language in languages_for_event(&event.kind, &event.paths) {
-                    if let Err(e) = sender.send(ReloadEvent::TranslationReloaded {
-                        language,
-                        timestamp: SystemTime::now(),
-                    }) {
-                        log::error!("[i18n] Watcher send failed: {e:?}");
+                    // Skip a language already pending in this callback's buffer.
+                    if pending.iter().any(|queued| queued == &language) {
+                        continue;
+                    }
+                    // Skip a language already queued on the channel: re-reading the
+                    // same file again before the consumer has applied it would only
+                    // produce the same result, so the duplicate announcement is the
+                    // one thing safe to drop (D09-WATCH-01).
+                    if channel_already_holds_language(&sender, &receiver, &language) {
+                        continue;
+                    }
+                    if !sender
+                        .try_send(ReloadEvent::TranslationReloaded {
+                            language: language.clone(),
+                            timestamp: SystemTime::now(),
+                        })
+                        .is_ok()
+                    {
+                        // The channel is full: keep the language pending so a later
+                        // callback retries it rather than losing the change.
+                        pending.push_back(language);
                     }
                 }
+                flush_pending(&sender, &receiver, &mut pending);
             }
             Err(e) => {
                 log::error!("[i18n] Watcher error: {e:?}");
@@ -117,6 +171,17 @@ impl I18nFileWatcher {
     pub fn sender(&self) -> &Sender<ReloadEvent> {
         &self.reload_sender
     }
+    /// Apply up to [`I18N_DRAIN_BATCH_LIMIT`] pending reload events from this
+    /// watcher's own channel (D09-WATCH-01).
+    ///
+    /// The per-call work is bounded and the rest stay queued for later calls, so a
+    /// consumer that paused through a storm does not pay for the whole backlog in
+    /// one frame. This is the watcher-owned equivalent of [`process_reload_events`]
+    /// and applies events through [`I18nManager::reload_translation_quiet`] for the
+    /// same reason: an announcing reload would feed this channel back onto itself.
+    pub fn drain_events(&self) -> Vec<ReloadEvent> {
+        process_reload_events_bounded(&self.reload_receiver, I18N_DRAIN_BATCH_LIMIT)
+    }
     /// Enable hot reload on the global i18n manager
     pub fn enable_hot_reload(&self) {
         let mut guard = get_manager();
@@ -138,6 +203,111 @@ impl I18nFileWatcher {
     }
 }
 crate::impl_default_via_new!(I18nFileWatcher);
+/// Returns whether `language` already has a `TranslationReloaded` waiting on the
+/// channel (D09-WATCH-01).
+///
+/// Used by the notify callback to coalesce repeated changes: a language already
+/// queued needs no second announcement. Only `TranslationReloaded` is matched —
+/// `ReloadError` events are diagnostics and are never coalesced. `receiver` is a
+/// clone of the channel that `sender` feeds, and `try_recv` removes the events it
+/// sees; the caller re-queues every probed event immediately, so nothing is lost.
+/// The channel is small, so a scan over its buffered messages is cheap.
+fn channel_already_holds_language(
+    sender: &Sender<ReloadEvent>,
+    receiver: &Receiver<ReloadEvent>,
+    language: &str,
+) -> bool {
+    let mut found = false;
+    let mut requeue: VecDeque<ReloadEvent> = VecDeque::new();
+    while let Ok(event) = receiver.try_recv() {
+        if matches!(&event, ReloadEvent::TranslationReloaded { language: seen, .. } if seen == language)
+        {
+            found = true;
+        }
+        requeue.push_back(event);
+    }
+    for event in requeue {
+        if sender.try_send(event).is_err() {
+            // The channel holds exactly the messages just drained, so re-queueing
+            // them cannot fail unless the receiver was dropped concurrently; in
+            // that case there is no consumer left to observe them anyway.
+            break;
+        }
+    }
+    found
+}
+
+/// Flush coalesced pending languages to the bounded channel (D09-WATCH-01).
+///
+/// A language already queued (checked at send time) is dropped as a duplicate; a
+/// language that does not fit stays pending so it is retried by a later callback
+/// rather than lost. There is at most one pending entry per language.
+fn flush_pending(
+    sender: &Sender<ReloadEvent>,
+    receiver: &Receiver<ReloadEvent>,
+    pending: &mut VecDeque<String>,
+) {
+    let mut index = 0usize;
+    while index < pending.len() {
+        let language = pending[index].clone();
+        if channel_already_holds_language(sender, receiver, &language) {
+            // Already queued: this pending copy is a duplicate.
+            pending.remove(index);
+            continue;
+        }
+        if sender
+            .try_send(ReloadEvent::TranslationReloaded { language, timestamp: SystemTime::now() })
+            .is_ok()
+        {
+            pending.remove(index);
+            continue;
+        }
+        // Channel full: leave the entry pending and try again on the next flush.
+        index += 1;
+    }
+}
+
+/// Apply at most `limit` pending reload events from `receiver` (D09-WATCH-01).
+///
+/// This is the bounded core shared by [`process_reload_events`] and
+/// [`I18nFileWatcher::drain_events`]. Events beyond `limit` stay queued, so a
+/// single pass never processes an unbounded backlog while still guaranteeing the
+/// pending set is applied by later passes.
+fn process_reload_events_bounded(
+    receiver: &Receiver<ReloadEvent>,
+    limit: usize,
+) -> Vec<ReloadEvent> {
+    let mut events = Vec::new();
+    let mut languages_seen: Vec<String> = Vec::new();
+    let mut taken = 0usize;
+    while taken < limit {
+        let Ok(event) = receiver.try_recv() else { break };
+        taken += 1;
+        match &event {
+            ReloadEvent::TranslationReloaded { language, .. } => {
+                // De-duplicate within a single pass: an editor save is often a burst
+                // for one logical change, and re-reading the same file for each is
+                // wasted work (D09-WATCH-01).
+                if languages_seen.iter().any(|seen| seen == language) {
+                    continue;
+                }
+                languages_seen.push(language.clone());
+                let mut guard = get_manager();
+                if let Some(ref mut manager) = *guard {
+                    match manager.reload_translation_quiet(language) {
+                        Ok(()) => events.push(event),
+                        Err(e) => events.push(ReloadEvent::ReloadError {
+                            language: language.clone(),
+                            error: e,
+                        }),
+                    }
+                }
+            }
+            ReloadEvent::ReloadError { .. } => events.push(event),
+        }
+    }
+    events
+}
 /// Initialize i18n with hot reload support
 pub fn init_with_hot_reload(
     options: crate::i18n::options::InitOptions,
@@ -160,11 +330,14 @@ pub fn init_with_hot_reload(
 }
 /// Process pending reload events and apply the corresponding translations.
 ///
-/// Drains every event already queued on `receiver`, re-reads the translation
-/// file for each announced language, and returns the events actually applied.
-/// A language whose reload failed is reported as [`ReloadEvent::ReloadError`]
-/// carrying the underlying reason, so a caller can surface it rather than
-/// discovering a silently stale catalogue.
+/// Applies up to [`I18N_RELOAD_BATCH_LIMIT`] events already queued on `receiver`,
+/// re-reads the translation file for each announced language, and returns the
+/// events actually applied. Any events beyond the batch limit — and any left in
+/// the receiver when the limit is hit — stay queued and are applied by the next
+/// call, so the per-call synchronous work is bounded without losing a reload
+/// (D09-WATCH-01). A language whose reload failed is reported as
+/// [`ReloadEvent::ReloadError`] carrying the underlying reason, so a caller can
+/// surface it rather than discovering a silently stale catalogue.
 ///
 /// # Why this does not announce the reload it performs
 ///
@@ -181,32 +354,7 @@ pub fn init_with_hot_reload(
 /// re-reading and re-parsing the same file for each of them multiplies work
 /// without changing the result.
 pub fn process_reload_events(receiver: &Receiver<ReloadEvent>) -> Vec<ReloadEvent> {
-    let mut events = Vec::new();
-    let mut languages_seen: Vec<String> = Vec::new();
-    while let Ok(event) = receiver.try_recv() {
-        match &event {
-            ReloadEvent::TranslationReloaded { language, .. } => {
-                if languages_seen.iter().any(|seen| seen == language) {
-                    continue;
-                }
-                languages_seen.push(language.clone());
-                let mut guard = get_manager();
-                if let Some(ref mut manager) = *guard {
-                    match manager.reload_translation_quiet(language) {
-                        Ok(()) => events.push(event),
-                        Err(e) => events.push(ReloadEvent::ReloadError {
-                            language: language.clone(),
-                            error: e,
-                        }),
-                    }
-                }
-            }
-            ReloadEvent::ReloadError { .. } => {
-                events.push(event);
-            }
-        }
-    }
-    events
+    process_reload_events_bounded(receiver, I18N_RELOAD_BATCH_LIMIT)
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -290,9 +438,12 @@ pub fn disable_global_hot_reload() {
 /// Drains pending translation-reload events and applies them.
 ///
 /// This is the frame-loop entry point: call it once per frame and translations
-/// edited on disk appear without a restart. It is deliberately cheap when hot
-/// reload is off — one mutex lock and a `None` check — because the platform loops
-/// call it on every tick whether or not a catalogue directory was configured.
+/// edited on disk appear without a restart. It applies at most
+/// [`I18N_RELOAD_BATCH_LIMIT`] events per frame (D09-WATCH-01); a larger backlog
+/// is spread over subsequent frames rather than processed in one unbounded pass.
+/// It is deliberately cheap when hot reload is off — one mutex lock and a `None`
+/// check — because the platform loops call it on every tick whether or not a
+/// catalogue directory was configured.
 ///
 /// Returns the number of events applied, so the frame ledger can report that a
 /// frame did reload work rather than leaving it invisible.
@@ -387,5 +538,90 @@ mod tests {
             &[std::path::PathBuf::from("/dir/notes.txt")],
         )
         .is_empty());
+    }
+
+    /// D09-WATCH-01: the channel is bounded, so a paused consumer cannot grow it
+    /// without limit; and once the consumer resumes, every language still queued is
+    /// applied and reported.
+    #[test]
+    fn reload_channel_is_bounded_and_delivers_every_language() {
+        use crate::i18n::global;
+        use crate::i18n::options::InitOptions;
+        let _lock = crate::i18n::global::global_i18n_test_lock();
+        let _ = global::init_with_options(InitOptions {
+            language: "en".to_string(),
+            ..Default::default()
+        });
+
+        let watcher = I18nFileWatcher::new();
+        let sender = watcher.reload_sender.clone();
+
+        for i in 0..(I18N_RELOAD_CAPACITY + 500) {
+            // `try_send` is what the notify callback uses; a full channel is an
+            // expected outcome here, not a failure (the callback keeps the item
+            // pending).
+            let _ = sender.try_send(ReloadEvent::TranslationReloaded {
+                language: format!("lang-{i}"),
+                timestamp: SystemTime::now(),
+            });
+        }
+        assert!(
+            sender.len() <= I18N_RELOAD_CAPACITY,
+            "queue grew past the bound: {}",
+            sender.len()
+        );
+
+        // A bounded pass drains at most one batch; repeating until the queue is
+        // empty delivers every queued language and applies each through the global
+        // manager. One call alone would leave the rest queued, which is the timeout
+        // the fix is about, not a loss.
+        let queued = sender.len();
+        let mut applied = watcher.drain_events();
+        assert!(!applied.is_empty(), "the first pass must do work");
+        assert!(applied.len() <= I18N_DRAIN_BATCH_LIMIT, "one pass is bounded");
+        while !applied.is_empty() {
+            applied = watcher.drain_events();
+        }
+        assert_eq!(sender.len(), 0, "the queue is emptied over bounded passes");
+        assert!(queued <= I18N_RELOAD_CAPACITY, "the queue never outgrew its bound");
+    }
+
+    /// D09-WATCH-01: pausing the consumer and then resuming costs a bounded amount
+    /// of work per pass, while the whole backlog is still delivered eventually (so
+    /// the final set of changed locales is recoverable).
+    #[test]
+    fn paused_consumer_resumes_with_bounded_work_and_loses_nothing() {
+        let watcher = I18nFileWatcher::new();
+        let sender = watcher.reload_sender.clone();
+
+        let pushed = I18N_DRAIN_BATCH_LIMIT * 2;
+        for i in 0..pushed {
+            sender
+                .try_send(ReloadEvent::ReloadError {
+                    language: format!("lang-{i}"),
+                    error: "synthetic backlog entry".to_string(),
+                })
+                .expect("within capacity");
+        }
+
+        let mut drained = 0usize;
+        let mut calls = 0usize;
+        loop {
+            let batch = watcher.drain_events();
+            assert!(
+                batch.len() <= I18N_DRAIN_BATCH_LIMIT,
+                "one drain exceeded the batch limit: {}",
+                batch.len()
+            );
+            if batch.is_empty() {
+                break;
+            }
+            drained += batch.len();
+            calls += 1;
+        }
+
+        assert_eq!(drained, pushed, "every queued event must eventually be delivered");
+        assert_eq!(calls, 2, "work is spread over ceil(pushed / batch_limit) calls, not one");
+        assert!(watcher.drain_events().is_empty(), "the queue is empty in the end");
     }
 }

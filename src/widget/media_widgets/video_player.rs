@@ -9,7 +9,7 @@
 //! seek only move the simulated position, which advances when `tick` is called.
 //! It emits signals for playback state changes and time updates.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
@@ -19,7 +19,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_f32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 
 /// VideoPlayer — simulated video player widget with playback controls.
@@ -420,19 +420,21 @@ impl Draw for VideoPlayer {
         );
         context.draw_rect_stroke(rect, Color::rgba(80, 80, 80, 200), 1);
 
-        let font = Font::default();
+        // The control's chrome text (placeholder, time, rate) takes the **effective font**, so the
+        // theme body font and the user's text scale reach it (D09-STYLE-01).
+        let font = effective_font(self.style());
 
         if self.source.is_empty() {
             // Empty state. Fitted to the control's width so a narrow player truncates the
             // label instead of drawing it past its own edge.
             let text = "No video loaded";
-            let metrics = context.measure_text(text, &font);
+            let metrics = context.measure_text(text, font);
             let text_y = rect.y + (rect.height as i32 - metrics.height as i32) / 2;
             let line = Rect::new(rect.x, text_y, rect.width, metrics.height);
             context.draw_text_fitted(
                 line,
                 text,
-                &font,
+                font,
                 placeholder_ink,
                 HorizontalAlignment::Center,
             );
@@ -500,13 +502,13 @@ impl Draw for VideoPlayer {
             (self.duration as u32) / 60,
             (self.duration as u32) % 60,
         );
-        let time_metrics = context.measure_text(&time_text, &font);
+        let time_metrics = context.measure_text(&time_text, font);
         let time_x = seek_bar_full.x + seek_bar_full.width as i32 + 4;
         let time_y = control_bar_y + (control_bar_height as i32 - time_metrics.height as i32) / 2;
         context.draw_text(
             Point::new(time_x, time_y),
             &time_text,
-            &font,
+            font,
             Color::rgba(220, 220, 220, 230),
             HorizontalAlignment::Left,
         );
@@ -528,14 +530,14 @@ impl Draw for VideoPlayer {
         // Playback rate indicator.
         if (self.playback_rate - 1.0).abs() > 0.01 {
             let rate_text = format!("{:.1}x", self.playback_rate);
-            let rate_metrics = context.measure_text(&rate_text, &font);
+            let rate_metrics = context.measure_text(&rate_text, font);
             let rate_x = vol_box.x - rate_metrics.width as i32 - 8;
             let rate_y =
                 control_bar_y + (control_bar_height as i32 - rate_metrics.height as i32) / 2;
             context.draw_text(
                 Point::new(rate_x, rate_y),
                 &rate_text,
-                &font,
+                font,
                 Color::rgba(255, 220, 100, 230),
                 HorizontalAlignment::Left,
             );

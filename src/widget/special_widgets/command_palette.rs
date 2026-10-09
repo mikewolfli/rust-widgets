@@ -3,13 +3,14 @@
 
 //! CommandPalette productivity widget.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -452,8 +453,10 @@ impl Draw for CommandPalette {
         context.fill_rect(header, header_background);
         // Centred inside the header row by half the line box: the origin is the glyph's **top**
         // edge, so the row's midline put a 14 px query at 12..26 in a 24 px row.
-        let query_font = Font::default();
-        let query_h = context.measure_text("M", &query_font).height;
+        // The **effective font** — the resolved theme/caller font — for the query and the rows
+        // (D09-STYLE-01).
+        let query_font = effective_font(&style);
+        let query_h = context.measure_text("M", query_font).height;
         context.draw_text_fitted(
             Rect::new(
                 header.x + 8,
@@ -462,7 +465,7 @@ impl Draw for CommandPalette {
                 query_h,
             ),
             &format!("> {}", self.query),
-            &query_font,
+            query_font,
             text_color,
             HorizontalAlignment::Left,
         );
@@ -490,7 +493,7 @@ impl Draw for CommandPalette {
                 context.draw_text(
                     Point::new(rect.x + 8, y + self.row_height as i32 / 2),
                     &line,
-                    &Font::default(),
+                    effective_font(&style),
                     text_color,
                     HorizontalAlignment::Left,
                 );

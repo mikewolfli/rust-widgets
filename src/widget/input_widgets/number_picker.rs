@@ -535,7 +535,11 @@ impl Draw for NumberPicker {
 
         let row_h = self.row_height.max(1);
         let centre = rect.y + (rect.height as i32) / 2;
-        let font = Font::simple("Sans", (row_h as f32 * 0.55).max(8.0));
+        // The **effective font**: the resolved theme/caller font when the style names one, else the
+        // row-height-derived face this control has always used. Either way the hint, the row height
+        // and the ink agree (D09-STYLE-01).
+        let fallback_font = Font::simple("Sans", (row_h as f32 * 0.55).max(8.0));
+        let font = style.font.as_ref().unwrap_or(&fallback_font);
 
         // Selection band across the centre row.
         let band = Rect::new(rect.x, centre - (row_h as i32) / 2, rect.width, row_h);
@@ -550,7 +554,7 @@ impl Draw for NumberPicker {
         // neighbour of the centre row was drawn at `y = -3` and the bottom one past the
         // frame's last pixel. Testing the box the text actually occupies is what the
         // assertion measures, so it is what the loop must test too.
-        let text_h = context.measure_text("M", &font).height as i32;
+        let text_h = context.measure_text("M", font).height as i32;
         let frame_bottom = rect.y + rect.height as i32;
         for offset in -visible..=visible {
             let row_center = centre + (offset as i32) * row_h as i32;
@@ -582,7 +586,7 @@ impl Draw for NumberPicker {
             context.draw_text_fitted(
                 Rect::new(rect.x, text_top, rect.width, text_h.max(1) as u32),
                 &label,
-                &font,
+                font,
                 color,
                 HorizontalAlignment::Center,
             );

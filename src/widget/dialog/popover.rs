@@ -8,7 +8,7 @@
 //! arrow pointing toward the anchor, and auto-dismisses when the user
 //! clicks outside the popover area.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
@@ -17,6 +17,7 @@ use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -452,7 +453,9 @@ impl Draw for Popover {
         if content_rect.height == 0 {
             return;
         }
-        let font = Font::simple("sans-serif", 13.0);
+        // The **effective font** — the resolved theme/caller font — rather than the fixed 13 px
+        // sans-serif this used to build (D09-STYLE-01).
+        let font = effective_font(&style);
         let label = if self.content.is_some() { "Popover" } else { "Popover (empty)" };
         // The label is centred on the content box — **both ways**. `draw_text_fitted` aligns
         // horizontally only, so passing the padded content box pinned the label to the card's
@@ -460,8 +463,8 @@ impl Draw for Popover {
         // the line box first is what makes «centred» true on the vertical axis too, and the
         // fit/ellipsis behaviour is unchanged (the box is 224 px wide at the census geometry
         // and `Popover (empty)` is wider than that).
-        let line = context.text_line(content_rect, &font);
-        context.draw_text_fitted(line, label, &font, muted_ink, HorizontalAlignment::Center);
+        let line = context.text_line(content_rect, font);
+        context.draw_text_fitted(line, label, font, muted_ink, HorizontalAlignment::Center);
     }
 }
 
@@ -559,6 +562,7 @@ impl EventHandler for Popover {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::Font;
     use crate::widget::svg::render_to_svg;
 
     /// How far the empty-state placeholder's line box may sit from the card's middle and

@@ -23,7 +23,7 @@
 //! │ Group1   │ Group2   │ Group3   │ Group4           │  ← group title row
 //! └──────────────────────────────────────────────────┘
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -31,6 +31,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -833,10 +834,12 @@ impl RibbonBar {
         // A glyph origin is the box's top-left, so the old `tab_rect.y + tab_rect.height / 2`
         // put that top edge on the tab's middle line and drew the title half a line low. The
         // centred line box is derived from the same rectangle the label is centred on.
-        let font = Font::default();
-        let line = context.text_line(tab_rect, &font);
+        // The **effective font** — the resolved theme/caller font — so the tab title honours the
+        // theme body font and the user's text scale (D09-STYLE-01).
+        let font = effective_font(self.style());
+        let line = context.text_line(tab_rect, font);
         let title_band = Rect::new(tab_rect.x, line.y, tab_rect.width, line.height);
-        context.draw_text_fitted(title_band, text, &font, text_color, HorizontalAlignment::Center);
+        context.draw_text_fitted(title_band, text, font, text_color, HorizontalAlignment::Center);
     }
 
     /// Draws the content panel for the current tab (groups + items).
@@ -900,7 +903,7 @@ impl RibbonBar {
                         context.draw_text(
                             icon_center,
                             &icon_char.to_string(),
-                            &Font::default(),
+                            effective_font(self.style()),
                             palette.accent,
                             HorizontalAlignment::Left,
                         );
@@ -909,7 +912,7 @@ impl RibbonBar {
                         context.draw_text(
                             Point::new(ir.x + ir.width as i32 / 2, label_y),
                             item.text(),
-                            &Font::default(),
+                            effective_font(self.style()),
                             fg,
                             HorizontalAlignment::Left,
                         );
@@ -919,19 +922,19 @@ impl RibbonBar {
                         // The icon and the label share one line box centred in the item, so
                         // the two rule the same row. Halving `ir.height` put the glyph box's
                         // top edge on the item's middle line instead of centring the box.
-                        let item_font = Font::default();
-                        let item_line = context.text_line(*ir, &item_font);
+                        let item_font = effective_font(self.style());
+                        let item_line = context.text_line(*ir, item_font);
                         context.draw_text(
                             Point::new(ir.x + 2, item_line.y),
                             &icon_char.to_string(),
-                            &item_font,
+                            item_font,
                             palette.accent,
                             HorizontalAlignment::Left,
                         );
                         context.draw_text(
                             Point::new(ir.x + SMALL_ICON_SIZE + 4, item_line.y),
                             item.text(),
-                            &item_font,
+                            item_font,
                             fg,
                             HorizontalAlignment::Left,
                         );
@@ -956,12 +959,12 @@ impl RibbonBar {
             // The group title is a single line in a strip that is only one line tall, so its own
             // centred line box is where the text belongs; `title_y + GROUP_TITLE_HEIGHT / 2` put
             // the glyph box's top edge on the strip's middle line instead.
-            let title_font = Font::default();
-            let title_line = context.text_line(title_rect, &title_font);
+            let title_font = effective_font(self.style());
+            let title_line = context.text_line(title_rect, title_font);
             context.draw_text(
                 Point::new(gr.x + 2, title_line.y),
                 group.title(),
-                &title_font,
+                title_font,
                 palette.muted,
                 HorizontalAlignment::Left,
             );

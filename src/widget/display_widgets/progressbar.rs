@@ -3,7 +3,7 @@
 
 //! Progress bar widget.
 use crate::compat::{format, String, ToString};
-use crate::core::{Color, Font, HorizontalAlignment, Orientation, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Orientation, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -14,7 +14,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::numeric::ordered_clamp_i32;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -634,10 +634,12 @@ impl Draw for ProgressBar {
         };
         let text = self.format_text();
         if !text.is_empty() {
+            // The value label takes the **effective font** — the resolved theme/caller font — so the
+            // theme body font and the user's text scale reach it (D09-STYLE-01).
             context.draw_text_line(
                 rect,
                 &text,
-                &Font::default(),
+                effective_font(&style),
                 text_color,
                 HorizontalAlignment::Center,
             );

@@ -17,6 +17,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::role_font;
 use crate::widget::nav_widgets::app_bar::AppBar;
 use crate::widget::nav_widgets::bottom_navigation_bar::NavItem;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -352,8 +353,8 @@ impl AdaptiveScaffold {
         let icon_font_size = (nav_rect.height as f32 * 0.32).clamp(14.0, 28.0);
         let label_font_size = (nav_rect.height as f32 * 0.18).clamp(9.0, 14.0);
 
-        let icon_font = crate::core::Font::new("sans-serif", icon_font_size, false, false);
-        let label_font = crate::core::Font::new("sans-serif", label_font_size, false, false);
+        let icon_font = role_font(&style, icon_font_size);
+        let label_font = role_font(&style, label_font_size);
 
         for (i, item) in self.nav_items.iter().enumerate() {
             let tab_x = nav_rect.x + (i as u32 * tab_width) as i32;

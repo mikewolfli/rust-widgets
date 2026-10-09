@@ -45,6 +45,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::text_utils::floor_char_boundary;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -526,8 +527,17 @@ impl Mention {
     /// widths are a font fact this module does not own.
     fn caret_x(&self, context: &RenderContext) -> i32 {
         let before = self.text.get(..self.caret).unwrap_or("");
-        let font = Font::simple("Sans", 12.0);
+        let font = self.field_font();
         context.measure_text(before, &font).width as i32
+    }
+
+    /// The font the mention field and its popup rows draw with: the resolved theme/caller font when
+    /// the style names one, otherwise the default sans-serif face (D09-STYLE-01).
+    ///
+    /// Named once so `caret_x`, `draw` and `draw_popup` measure and paint with the same font, which
+    /// is what keeps the caret on the glyph the pointer lands on.
+    fn field_font(&self) -> Font {
+        effective_font(self.style()).clone()
     }
 }
 
@@ -686,10 +696,15 @@ impl Draw for Mention {
 
         context.fill_rounded_rect(rect, 4, background);
         context.draw_rounded_rect_stroke(rect, 4, border, 1);
+        // The **effective font** — the resolved theme/caller font — for the typed text and the
+        // completed-mention underlines, so the theme body font and the user's text scale apply
+        // (D09-STYLE-01).
+        let field_font = self.field_font();
+        let field_line = context.text_line(rect, &field_font);
         context.draw_text(
-            Point::new(rect.x + 8, rect.y + 20),
+            Point::new(rect.x + 8, field_line.y),
             &self.text,
-            &Font::simple("Sans", 12.0),
+            &field_font,
             text_color,
             HorizontalAlignment::Left,
         );
@@ -705,10 +720,11 @@ impl Draw for Mention {
         for mention in &self.completed {
             let before = self.text.get(..mention.start).unwrap_or("");
             let span = self.text.get(mention.start..mention.end).unwrap_or("");
-            let font = Font::simple("Sans", 12.0);
-            let start_x = rect.x + 8 + context.measure_text(before, &font).width as i32;
-            let width = context.measure_text(span, &font).width as i32;
-            let underline_y = rect.y + 22;
+            let start_x = rect.x + 8 + context.measure_text(before, &field_font).width as i32;
+            let width = context.measure_text(span, &field_font).width as i32;
+            // The underline sits just under the line box, so it tracks the effective font rather
+            // than the fixed `rect.y + 22` that assumed a 12 px face.
+            let underline_y = field_line.y + field_line.height as i32;
             context.draw_line_stroke(
                 Point::new(start_x, underline_y),
                 Point::new(start_x + width, underline_y),
@@ -793,18 +809,20 @@ impl Mention {
                 context.fill_rect(row, highlight);
             }
             let ink = if highlighted { on_highlight } else { row_ink };
+            let popup_font = self.field_font();
+            let row_line = context.text_line(row, &popup_font);
             context.draw_text(
-                Point::new(row.x + 8, row.y + 16),
+                Point::new(row.x + 8, row_line.y),
                 &candidate.display,
-                &Font::simple("Sans", 11.0),
+                &popup_font,
                 ink,
                 HorizontalAlignment::Left,
             );
             if !candidate.description.is_empty() {
                 context.draw_text(
-                    Point::new(row.x + 120, row.y + 16),
+                    Point::new(row.x + 120, row_line.y),
                     &candidate.description,
-                    &Font::simple("Sans", 10.0),
+                    &popup_font,
                     // The description is a hint beside a value, so on a highlighted row it damps
                     // toward that row's fill rather than staying the page's weak ink.
                     if highlighted { on_highlight.blend(&highlight, 0.3) } else { weak_ink },

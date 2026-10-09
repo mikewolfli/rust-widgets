@@ -44,9 +44,9 @@
 //! clamped up to a one-pixel floor so a squeezed dialog stays visible instead of
 //! collapsing to a zero-extent, invisible rect.
 
-use crate::core::{Rect, Size};
+use crate::core::{Font, Rect, Size};
 use crate::render::text::{estimate_cluster_advance, for_each_cluster};
-use crate::style::EdgeOffsets;
+use crate::style::{EdgeOffsets, WidgetStyle};
 
 /// The width `text` occupies in `font` at `scale`, without a render context.
 ///
@@ -137,6 +137,73 @@ pub fn estimate_text_width(text: &str, font: &crate::core::Font, scale: f32) -> 
 /// disagree with every `text_line` it draws.
 pub fn estimate_line_height(font: &crate::core::Font, scale: f32) -> u32 {
     (font.effective_line_height().max(1.0) * scale).round().max(1.0) as u32
+}
+
+/// The font a control should **both draw and measure** with: its resolved [`WidgetStyle::font`]
+/// when one is set, otherwise [`Font::default`].
+///
+/// # Why this is one shared accessor (D09-STYLE-01 / D09-STYLE-02)
+///
+/// The theme resolves `theme.fonts.body` scaled by the device's text-size preference into
+/// [`WidgetStyle::font`] once, in `ThemeManager`, and every control is meant to take that font
+/// unless it names another. The crate had been spelling that choice inline, and inconsistently:
+///
+/// * some controls drew with `style.font` but measured their intrinsic size with
+///   `Font::default()` (D09-STYLE-02), so the hint and the ink disagreed under any text scale
+///   other than 1.0;
+/// * others never read `style.font` at all and stayed on a hardcoded default or fixed point
+///   size (D09-STYLE-01), so the theme's face and the user's scaling never reached them.
+///
+/// One accessor is the crate's single answer to "which font is this control's?". Because the
+/// draw path and the measurement path both call it, they cannot drift apart, which is the whole
+/// requirement of D09-STYLE-02.
+///
+/// # Why caller priority is preserved
+///
+/// `style.font` is one field, written by the theme **and** by the caller's
+/// [`set_font`](crate::widget::Widget::set_font). `WidgetStyle::merge` only fills a field that
+/// is `None`, and `merge_theme` keeps any field a caller authored, so a caller's font already
+/// wins over the theme's inside this field. Reading it here therefore honours caller-authored
+/// priority without a second precedence rule at the call site.
+///
+/// # Why the fallback is borrowed, not cloned
+///
+/// Draw runs every frame; returning an owned `Font` would allocate a `String` (the family) per
+/// text-emitting control per frame. The default is instead built once behind a process-wide
+/// [`OnceLock`](crate::compat::OnceLock) and handed out as `&'static Font`. The returned borrow
+/// is tied to `style` (or to that static), never to a value that dies at the end of this call.
+pub fn effective_font<'a>(style: &'a WidgetStyle) -> &'a Font {
+    fn default_font() -> &'static Font {
+        use crate::compat::OnceLock;
+        static DEFAULT: OnceLock<Font> = OnceLock::new();
+        DEFAULT.get_or_init(Font::default)
+    }
+    match style.font.as_ref() {
+        Some(font) => font,
+        None => default_font(),
+    }
+}
+
+/// A control's **role-sized** font: the effective font's face (family, weight, style, tracking,
+/// leading) carrying a size scaled by however much the effective font differs from the base body
+/// size.
+///
+/// # Why a role size has to scale, not be fixed
+///
+/// Several controls pick a size *relative* to body text — an AppBar title is 0.38 em, a chart axis
+/// label is 9 pt beside a 14 pt body, a nav label is 0.18 em. Those sizes are ratios, and the body
+/// they are a ratio *of* is exactly what [`effective_font`] reports. Writing a fixed point size
+/// into the role font (`effective_font(style).with_size(9.0)`) throws the user's text-scale
+/// preference away: the resulting font is always 9 pt whatever the device asked for, which is the
+/// D09-STYLE-01 defect restated — the theme font reaches the control's face but not its size.
+///
+/// This scales the role size by `effective.size() / Font::default().size()`, so a body scaled by
+/// 1.5 gives role-sized text scaled by the same factor while keeping the role's own proportion.
+pub fn role_font(style: &WidgetStyle, role_size: f32) -> Font {
+    let effective = effective_font(style);
+    let base = Font::default().size().max(1.0);
+    let scaled = role_size.max(0.0) * (effective.size().max(1.0) / base);
+    effective.with_size(scaled)
 }
 
 /// `t` of the way from `from` to `to`, for a geometry quantity.

@@ -15,7 +15,7 @@
 //! `rect.x + rect.width - 18`, so the two were independent derivations from the same field
 //! and a longer summary — `"3 selected"` in a narrow form — was drawn underneath the arrow.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -26,7 +26,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, estimate_text_width, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::collections::HashSet;
@@ -355,7 +355,7 @@ impl Widget for MultiSelectComboBox {
         // It used to be `len() as u32 * 8` (UTF-8 bytes); see `editable_combo_box` for why a byte
         // count is not the generous direction but a wrong one for any non-ASCII summary.
         let content = Size::new(
-            estimate_text_width(&self.summary_text(), &crate::core::Font::default(), 1.0),
+            estimate_text_width(&self.summary_text(), effective_font(self.style()), 1.0),
             0,
         );
         let floor = Size::new(
@@ -524,14 +524,16 @@ impl Draw for MultiSelectComboBox {
 
         // The summary's box and the indicator's box come from **one** derivation, so the
         // summary yields to the indicator instead of being written at an unconstrained offset.
-        let font = Font::simple("sans-serif", 13.0);
-        let line = context.text_line(rect, &font);
+        // The font is the **effective** one so the theme body font and the user's text scale
+        // reach the summary and the list rows (D09-STYLE-01).
+        let font = effective_font(&style);
+        let line = context.text_line(rect, font);
         let geometry = self.indicator_geometry(line.height);
         let summary = self.summary_text();
         // Fitted into the box the indicator left, on that box's own line box: a glyph origin is
         // the box's top edge, so the old `padding + 13` put a 13 px font's origin on the field's
         // middle line and drew the summary half a line low.
-        let summary_line = context.text_line(geometry.text_box, &font);
+        let summary_line = context.text_line(geometry.text_box, font);
         context.draw_text_fitted(
             Rect::new(
                 geometry.text_box.x,
@@ -540,7 +542,7 @@ impl Draw for MultiSelectComboBox {
                 summary_line.height,
             ),
             &summary,
-            &font,
+            font,
             ink,
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
@@ -619,7 +621,7 @@ impl Draw for MultiSelectComboBox {
             context.draw_text(
                 Point::new(item_text_x, item_text_y),
                 &item.text,
-                &font,
+                font,
                 item_color,
                 HorizontalAlignment::Left,
             );

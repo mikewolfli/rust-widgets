@@ -146,21 +146,28 @@ rw_run_bounded() {
   # exists to prevent. Killing the sleep by PID avoids both failure modes.
   local sleeper_file
   sleeper_file="$(mktemp)"
+  # A marker the watchdog creates only when *it* fires the timeout. The status
+  # mapping below consults it, so a child that exits 143/137 on its own (or is
+  # killed by someone else) is reported verbatim rather than being mislabelled a
+  # timeout (D08-G-02).
+  local fired_file
+  fired_file="$(mktemp)"
+  rm -f "$fired_file"
   (
     sleep "$budget" &
     printf '%s' "$!" > "$sleeper_file"
     wait 2>/dev/null
     if kill -0 "$child" 2>/dev/null; then
       echo "rw_run_bounded: timed out after ${budget}s, killing pid $child" >&2
+      # Record that the bound fired *before* killing, so the flag is set even if
+      # the kill itself races the child's own exit.
+      : > "$fired_file"
       rw_kill_tree "$child"
     fi
   ) &
   local watchdog=$!
 
   # `wait` returns the child's status, or 128+signal when it was signalled.
-  # 143 (SIGTERM) / 137 (SIGKILL) with the watchdog still armed can only come
-  # from the bound firing, so those map to 124 — the status GNU `timeout`
-  # reports, which lets callers treat both implementations identically.
   local status=0
   wait "$child" 2>/dev/null || status=$?
 
@@ -177,8 +184,16 @@ rw_run_bounded() {
   wait "$watchdog" 2>/dev/null || true
   rm -f "$sleeper_file"
 
-  case "$status" in
-    143 | 137) status=124 ;;
-  esac
+  # Map 143/137 to 124 **only** when this helper's own watchdog fired. A child
+  # that exited 143 for its own reasons keeps its status, so a genuine failure is
+  # never disguised as a timeout (D08-G-02). When GNU `timeout` is present it
+  # already reports 124 for a real timeout and the child's own status otherwise,
+  # so both implementations now agree.
+  if [[ -f "$fired_file" ]]; then
+    case "$status" in
+      143 | 137) status=124 ;;
+    esac
+  fi
+  rm -f "$fired_file"
   return "$status"
 }

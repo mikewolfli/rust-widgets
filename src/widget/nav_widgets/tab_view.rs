@@ -7,7 +7,7 @@
 //! below showing the selected tab's content. Supports add/remove/clear
 //! operations on tabs and emits a `tab_changed` signal on selection.
 
-use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Rect};
+use crate::core::{Color, HorizontalAlignment, ObjectId, Rect};
 use crate::event::{Event, EventHandler};
 #[cfg(full_widgets)]
 use crate::layout::{
@@ -20,7 +20,7 @@ use crate::widget::capability::coercion::expect_usize;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::estimate_text_width;
+use crate::widget::metrics::{effective_font, estimate_text_width};
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -239,7 +239,9 @@ impl TabView {
     /// does not crowd out its siblings. This is the same derivation `TabWidget::tab_widths`
     /// uses, with the same constants, so the two tab strips in this crate cannot disagree.
     fn tab_widths(&self) -> crate::compat::Vec<i32> {
-        let font = Font::default();
+        // Measured with the **effective font** — the same font the caption is painted with — so the
+        // tab's reserved width and its ink cannot disagree (D09-STYLE-02).
+        let font = effective_font(self.style());
         self.tabs
             .iter()
             .map(|tab| {
@@ -248,7 +250,7 @@ impl TabView {
                 // form was a second copy of the advance arithmetic and one that counts *clusters*
                 // at a fixed 8 px: a CJK caption measured half its drawn width, so a Chinese tab
                 // label overflowed the strip its own width had reserved.
-                (estimate_text_width(&tab.title, &font, 1.0) as i32 + TAB_TEXT_PADDING)
+                (estimate_text_width(&tab.title, font, 1.0) as i32 + TAB_TEXT_PADDING)
                     .clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH)
             })
             .collect()
@@ -528,7 +530,9 @@ impl Draw for TabView {
         // the pointer for the same reason and is now consistent with the paint by using the raw
         // position. Both were latent: every tab test used a control at `x = 0`.
         let strip = tab_bar_rect;
-        let font = Font::simple("sans-serif", 12.0);
+        // The **effective font** — the resolved theme/caller font — rather than the fixed 12 px
+        // sans-serif this used to build (D09-STYLE-01).
+        let font = effective_font(self.style());
         for (i, tab_rect) in self.tab_run(strip).into_iter().enumerate() {
             let is_selected = i == self.selected_index;
 
@@ -565,9 +569,9 @@ impl Draw for TabView {
             // sit half a line off; `draw_text_fitted` with `Center` then bounds it to the tab, so
             // a long title is elided rather than running over its neighbour.
             context.draw_text_fitted(
-                context.text_line(tab_rect, &font),
+                context.text_line(tab_rect, font),
                 &display_text,
-                &font,
+                font,
                 text_color,
                 HorizontalAlignment::Center,
             );
@@ -654,7 +658,7 @@ impl EventHandler for TabView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Point;
+    use crate::core::{Font, Point};
     use crate::widget::svg::render_to_svg;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;

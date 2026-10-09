@@ -8,7 +8,7 @@
 //! when the animation finishes. Shapes defined in the Lottie JSON are parsed
 //! and rendered using the RenderContext.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
@@ -18,6 +18,7 @@ use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 
 // ──────────────────────────────────────────────
@@ -210,6 +211,96 @@ pub struct LottieStroke {
     pub _line_join: u32,
 }
 
+/// A bezier path shape ("sh").
+///
+/// Lottie stores a path as three parallel point lists in the shape's `ks.k`
+/// object: the vertices (`v`) and, relative to each vertex, an incoming (`i`)
+/// and outgoing (`o`) tangent. Consecutive vertices plus their tangents form
+/// cubic bezier segments — `ctrl1 = v[n] + o[n]`, `ctrl2 = v[n+1] + i[n+1]` —
+/// which is exactly how the renderer flattens them (D09-LOT-01).
+#[derive(Debug, Clone)]
+pub struct LottiePathShape {
+    /// Vertices, in the layer's coordinate space.
+    pub vertices: Vec<[f64; 2]>,
+    /// In-tangents, each relative to the vertex of the same index.
+    pub in_tangents: Vec<[f64; 2]>,
+    /// Out-tangents, each relative to the vertex of the same index.
+    pub out_tangents: Vec<[f64; 2]>,
+    /// Whether the contour is closed (`c` in the source).
+    pub closed: bool,
+}
+
+impl LottiePathShape {
+    /// Parses a `"sh"` shape from its `ks.k` value.
+    ///
+    /// The value is normally the shape object itself; when the path is animated
+    /// it is an array of keyframes, each carrying that shape under `s`. Only the
+    /// first keyframe is sampled, matching how [`LottieColor`] is handled: the
+    /// animation is not honoured, but the geometry is not lost (D09-LOT-01).
+    fn from_json(val: &serde_json::Value) -> Option<Self> {
+        // Unwrap a keyframe array down to the first shape object. A keyframe's `s`
+        // holds either the shape object directly or a one-element array of it.
+        let shape = if let Some(arr) = val.as_array() {
+            let first = arr.first()?;
+            match first.get("s") {
+                Some(s) => s.as_array().and_then(|a| a.first()).unwrap_or(s),
+                None => first,
+            }
+        } else {
+            val
+        };
+
+        let read_points = |key: &str| -> Vec<[f64; 2]> {
+            shape
+                .get(key)
+                .and_then(|v| v.as_array())
+                .map(|points| {
+                    points
+                        .iter()
+                        .filter_map(|p| {
+                            let arr = p.as_array()?;
+                            let x = arr.first()?.as_f64()?;
+                            let y = arr.get(1)?.as_f64()?;
+                            if x.is_finite() && y.is_finite() {
+                                Some([x, y])
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        let vertices = read_points("v");
+        if vertices.len() < 2 {
+            // A path needs at least two vertices to span a segment; fewer is not
+            // renderable and is reported as unsupported by the loader.
+            return None;
+        }
+        let closed = shape.get("c").and_then(|v| v.as_bool()).unwrap_or(false);
+        Some(Self {
+            vertices,
+            in_tangents: read_points("i"),
+            out_tangents: read_points("o"),
+            closed,
+        })
+    }
+}
+
+/// A group of shapes ("gr"/"gs") with its own transform.
+///
+/// A group's `it` array holds child shapes plus a trailing `"tr"` transform
+/// entry. The children are kept in declaration order; the transform is composed
+/// with the enclosing placement before its children are drawn (D09-LOT-01).
+#[derive(Debug, Clone)]
+pub struct LottieGroup {
+    /// Child shapes, in declaration order, excluding the transform entry.
+    pub items: Vec<LottieShape>,
+    /// The group's own transform ("tr"); the identity when absent.
+    pub transform: LottieTransform,
+}
+
 /// A shape within a layer.
 #[derive(Debug, Clone)]
 pub enum LottieShape {
@@ -221,11 +312,45 @@ pub enum LottieShape {
     Fill(LottieFill),
     /// A stroke ("st") applied to preceding shapes.
     Stroke(LottieStroke),
-    /// "sh" (path) and "gs" (group) are not yet implemented.
+    /// A bezier path ("sh").
+    Path(LottiePathShape),
+    /// A nested group ("gr"/"gs") with its own transform.
+    Group(LottieGroup),
+    /// A shape type this renderer does not draw.
     ///
-    /// The inner string records the Lottie shape type that was skipped, so a
-    /// caller can report which constructs were dropped.
+    /// The inner string records the Lottie shape type (`ty`). It is **not**
+    /// silently dropped: the loader records every such type in
+    /// [`LottieWidget::unsupported_shapes`], which callers can query
+    /// (D09-LOT-01).
     Other(String),
+}
+
+/// Where and how a shape is placed on the device, threaded through layers and
+/// nested groups so a group's transform composes with its parent's (D09-LOT-01).
+///
+/// Coordinates (positions and path vertices) are mapped with `scale_x`/`scale_y`;
+/// the sizes of primitive rectangles and ellipses are additionally multiplied by
+/// `size_x`/`size_y`. The two are separate because the layer transform from the
+/// original renderer scaled a primitive's size but not its position, and that
+/// existing pixel behaviour is preserved exactly when no group is involved.
+#[derive(Debug, Clone, Copy)]
+struct ShapePlacement {
+    /// Device x of the composition origin.
+    tx: f64,
+    /// Device y of the composition origin.
+    ty: f64,
+    /// Device pixels per composition unit, horizontally (coordinates).
+    scale_x: f64,
+    /// Device pixels per composition unit, vertically (coordinates).
+    scale_y: f64,
+    /// Extra horizontal size multiplier accumulated from transforms.
+    size_x: f64,
+    /// Extra vertical size multiplier accumulated from transforms.
+    size_y: f64,
+    /// Accumulated opacity multiplier in `0.0..=1.0`.
+    opacity: f64,
+    /// Whether a non-trivial rotation is in effect for this placement.
+    has_rotation: bool,
 }
 
 /// Transform properties for a layer.
@@ -403,6 +528,40 @@ impl LottieLayer {
                     _line_join,
                 }))
             }
+            "sh" => {
+                // A `"sh"` path carries its geometry under `ks.k`. When the path
+                // itself is animated, `ks.k` is a keyframe array; the path is not
+                // animated here but its first sample is rendered (see
+                // `LottiePathShape::from_json`). A path that cannot yield at least
+                // one segment is reported as unsupported rather than dropped
+                // silently (D09-LOT-01).
+                let ks = val.get("ks").and_then(|v| v.get("k"))?;
+                match LottiePathShape::from_json(ks) {
+                    Some(path) => Some(LottieShape::Path(path)),
+                    None => Some(LottieShape::Other("sh".to_string())),
+                }
+            }
+            "gr" | "gs" => {
+                // A group's `it` array lists its children followed by a `"tr"`
+                // transform entry. The children are parsed recursively, so nested
+                // groups and their paths compose; the transform is kept separately
+                // so the renderer can fold it into the placement (D09-LOT-01).
+                let mut items = Vec::new();
+                let mut transform = LottieTransform::default();
+                if let Some(it) = val.get("it").and_then(|v| v.as_array()) {
+                    for child in it {
+                        match child.get("ty").and_then(|v| v.as_str()) {
+                            Some("tr") => transform = Self::parse_transform(child),
+                            _ => {
+                                if let Some(shape) = Self::parse_shape(child) {
+                                    items.push(shape);
+                                }
+                            }
+                        }
+                    }
+                }
+                Some(LottieShape::Group(LottieGroup { items, transform }))
+            }
             other => Some(LottieShape::Other(other.to_string())),
         }
     }
@@ -435,6 +594,13 @@ pub struct LottieWidget {
     comp_height: f64,
     /// Frame offset (ip) from Lottie JSON.
     frame_offset: f64,
+    /// Lottie shape types (`ty`) present in the document that this renderer
+    /// cannot draw, deduplicated and in first-seen order.
+    ///
+    /// Populated at load time so a caller can observe that a composition is only
+    /// partially renderable instead of seeing shapes silently disappear
+    /// (D09-LOT-01). Query it with [`Self::unsupported_shapes`].
+    unsupported_shapes: Vec<String>,
 }
 
 impl LottieWidget {
@@ -454,6 +620,7 @@ impl LottieWidget {
             comp_width: 100.0,
             comp_height: 100.0,
             frame_offset: 0.0,
+            unsupported_shapes: Vec::new(),
         }
     }
 
@@ -542,6 +709,16 @@ impl LottieWidget {
         } else {
             Vec::new()
         };
+
+        // Record every shape type the renderer cannot draw. This is the queryable
+        // diagnostic that replaces the old silent skip: a caller can now tell that
+        // a composition is only partially renderable (D09-LOT-01).
+        self.unsupported_shapes.clear();
+        let mut unsupported = Vec::new();
+        for layer in &self.layers {
+            Self::collect_unsupported_shapes(&layer.shapes, &mut unsupported);
+        }
+        self.unsupported_shapes = unsupported;
 
         self.json_data = Some(data.to_string());
         self.total_frames = total;
@@ -745,6 +922,42 @@ impl LottieWidget {
         self.frame_offset
     }
 
+    /// The Lottie shape types (`ty`) the loaded document contains that this
+    /// renderer cannot draw.
+    ///
+    /// Every entry would previously have been dropped without a trace: the parser
+    /// kept unknown shapes as [`LottieShape::Other`] and the draw loop ignored
+    /// them, so an animation played with graphics silently missing. The list is
+    /// collected at load time, is deduplicated, and follows first-seen order. An
+    /// empty slice means the whole composition is renderable (D09-LOT-01).
+    pub fn unsupported_shapes(&self) -> &[String] {
+        &self.unsupported_shapes
+    }
+
+    /// Whether the loaded document contains any shape this renderer cannot draw.
+    ///
+    /// The predicate form of [`Self::unsupported_shapes`], for callers that only
+    /// need to warn that rendering is incomplete (D09-LOT-01).
+    pub fn has_unsupported_shapes(&self) -> bool {
+        !self.unsupported_shapes.is_empty()
+    }
+
+    /// Walks `shapes` (including nested groups) and appends each unsupported
+    /// Lottie shape type once, in first-seen order (D09-LOT-01).
+    fn collect_unsupported_shapes(shapes: &[LottieShape], out: &mut Vec<String>) {
+        for shape in shapes {
+            match shape {
+                LottieShape::Other(name) => {
+                    if !out.iter().any(|seen| seen == name) {
+                        out.push(name.clone());
+                    }
+                }
+                LottieShape::Group(group) => Self::collect_unsupported_shapes(&group.items, out),
+                _ => {}
+            }
+        }
+    }
+
     /// Render all layers for a given frame.
     fn render_layers(&self, context: &mut RenderContext, frame: f64, widget_rect: Rect) {
         let scale_x = widget_rect.width as f64 / self.comp_width.max(1.0);
@@ -761,11 +974,6 @@ impl LottieWidget {
         let mut sorted_layers: Vec<&LottieLayer> = self.layers.iter().collect();
         sorted_layers.sort_by_key(|l| l.index);
 
-        // Collect fills and strokes separately — they are applied to
-        // the most recent geometry shape.
-        let mut current_fill: Option<LottieFill> = None;
-        let mut current_stroke: Option<LottieStroke> = None;
-
         for layer in &sorted_layers {
             let t = &layer.transform;
             let pos = t.position.at_frame(frame);
@@ -773,178 +981,392 @@ impl LottieWidget {
             let rot = t.rotation.at_frame_scalar(frame);
             let layer_opacity = t.opacity.at_frame_scalar(frame) / 100.0;
 
-            let tx = offset_x + pos.first().copied().unwrap_or(0.0) * scale;
-            let ty = offset_y + pos.get(1).copied().unwrap_or(0.0) * scale;
+            // The layer transform is the root placement: the fit `scale` maps
+            // composition units to device pixels, the layer's own scale is folded
+            // into the size multipliers, and rotation is reported so primitives can
+            // approximate it. Positions use the uniform `scale`, exactly as the
+            // original renderer did, so existing output is unchanged.
+            let placement = ShapePlacement {
+                tx: offset_x + pos.first().copied().unwrap_or(0.0) * scale,
+                ty: offset_y + pos.get(1).copied().unwrap_or(0.0) * scale,
+                scale_x: scale,
+                scale_y: scale,
+                size_x: s.first().copied().unwrap_or(100.0) / 100.0,
+                size_y: s.get(1).copied().unwrap_or(100.0) / 100.0,
+                opacity: layer_opacity,
+                has_rotation: rot.abs() > 0.5,
+            };
 
-            // If rotation is significant, we approximate by applying it to individual shapes.
-            let has_rotation = rot.abs() > 0.5;
+            self.draw_shapes(context, frame, &layer.shapes, placement);
+        }
+    }
 
-            for shape in &layer.shapes {
-                match shape {
-                    LottieShape::Fill(fill) => {
-                        current_fill = Some(fill.clone());
-                    }
-                    LottieShape::Stroke(stroke) => {
-                        current_stroke = Some(stroke.clone());
-                    }
-                    LottieShape::Rectangle(rect_shape) => {
-                        let rp = rect_shape.position.at_frame(frame);
-                        let rs = rect_shape.size.at_frame(frame);
-                        let rr = rect_shape.rounded.at_frame_scalar(frame);
+    /// Draws `shapes` under `placement`, composing fills/strokes onto the geometry
+    /// they style and recursing into groups (D09-LOT-01).
+    ///
+    /// The list is walked **last to first**. Lottie lists a group's items
+    /// top-down, so the first item is drawn last (on top); walking in reverse is
+    /// therefore the correct paint order *and* it makes a style reach its geometry:
+    /// a `"fl"`/`"st"` appears after the path it fills in the array, so only in
+    /// reverse order is the style already known when the geometry is drawn.
+    /// Styles are tracked per call so a group's style cannot leak into the layer
+    /// that contains the group.
+    fn draw_shapes(
+        &self,
+        context: &mut RenderContext,
+        frame: f64,
+        shapes: &[LottieShape],
+        placement: ShapePlacement,
+    ) {
+        let mut current_fill: Option<LottieFill> = None;
+        let mut current_stroke: Option<LottieStroke> = None;
 
-                        let shape_x = tx
-                            + (rp.first().copied().unwrap_or(0.0)
-                                - rs.first().copied().unwrap_or(0.0) / 2.0)
-                                * scale;
-                        let shape_y = ty
-                            + (rp.get(1).copied().unwrap_or(0.0)
-                                - rs.get(1).copied().unwrap_or(0.0) / 2.0)
-                                * scale;
-                        let shape_w = (rs.first().copied().unwrap_or(0.0) * scale).round() as u32;
-                        let shape_h = (rs.get(1).copied().unwrap_or(0.0) * scale).round() as u32;
-                        let radius = (rr * scale).round() as u32;
-
-                        let shape_rect =
-                            Rect::new(shape_x as i32, shape_y as i32, shape_w, shape_h);
-                        if shape_w == 0 || shape_h == 0 {
-                            continue;
-                        }
-
-                        // Apply scaling from layer transform.
-                        let sx = s.first().copied().unwrap_or(100.0) / 100.0;
-                        let sy = s.get(1).copied().unwrap_or(100.0) / 100.0;
-                        let scaled_rect = Rect::new(
-                            shape_rect.x,
-                            shape_rect.y,
-                            (shape_rect.width as f64 * sx).round() as u32,
-                            (shape_rect.height as f64 * sy).round() as u32,
-                        );
-
-                        // Draw fill if present.
-                        if let Some(ref fill) = current_fill {
-                            let mut fill_color = fill.color.at_frame(frame);
-                            let fill_alpha = (fill.opacity.at_frame_scalar(frame) / 100.0
-                                * layer_opacity)
-                                .clamp(0.0, 1.0);
-                            fill_color = fill_color.with_alpha_f32(fill_alpha as f32);
-                            if has_rotation {
-                                // Approximate rotation as rotated rectangle stroke with fill.
-                                // For simplicity, render at center of widget with rotation hints.
-                                context.fill_rounded_rect(scaled_rect, radius, fill_color);
-                            } else if radius > 0 {
-                                context.fill_rounded_rect(scaled_rect, radius, fill_color);
-                            } else {
-                                context.fill_rect(scaled_rect, fill_color);
-                            }
-                        }
-
-                        // Draw stroke if present.
-                        if let Some(ref stroke) = current_stroke {
-                            let mut stroke_color = stroke.color.at_frame(frame);
-                            let stroke_alpha = (stroke.opacity.at_frame_scalar(frame) / 100.0
-                                * layer_opacity)
-                                .clamp(0.0, 1.0);
-                            stroke_color = stroke_color.with_alpha_f32(stroke_alpha as f32);
-                            let sw = (stroke.width.at_frame_scalar(frame) * scale).round() as u32;
-                            if sw > 0 {
-                                if radius > 0 {
-                                    context.draw_rounded_rect_stroke(
-                                        scaled_rect,
-                                        radius,
-                                        stroke_color,
-                                        sw,
-                                    );
-                                } else {
-                                    context.draw_rect_stroke(scaled_rect, stroke_color, sw);
-                                }
-                            }
-                        }
-                    }
-                    LottieShape::Ellipse(ellipse_shape) => {
-                        let ep = ellipse_shape.position.at_frame(frame);
-                        let es = ellipse_shape.size.at_frame(frame);
-
-                        let cx = tx + ep.first().copied().unwrap_or(0.0) * scale;
-                        let cy = ty + ep.get(1).copied().unwrap_or(0.0) * scale;
-                        let ew = (es.first().copied().unwrap_or(0.0) * scale).round() as u32;
-                        let eh = (es.get(1).copied().unwrap_or(0.0) * scale).round() as u32;
-
-                        // Apply layer scaling.
-                        let sx = s.first().copied().unwrap_or(100.0) / 100.0;
-                        let sy = s.get(1).copied().unwrap_or(100.0) / 100.0;
-                        let sw = (ew as f64 * sx).round() as u32;
-                        let sh = (eh as f64 * sy).round() as u32;
-
-                        if sw == 0 || sh == 0 {
-                            continue;
-                        }
-
-                        // Use the smaller dimension for radius if the ellipse
-                        // is approximately circular, otherwise draw as an ellipse
-                        // approximated by a filled rect with large rounded corners.
-                        let radius = sw.min(sh) / 2;
-
-                        let ex = (cx - sw as f64 / 2.0).round() as i32;
-                        let ey = (cy - sh as f64 / 2.0).round() as i32;
-                        let ellipse_rect = Rect::new(ex, ey, sw, sh);
-
-                        // Draw fill if present.
-                        if let Some(ref fill) = current_fill {
-                            let mut fill_color = fill.color.at_frame(frame);
-                            let fill_alpha = (fill.opacity.at_frame_scalar(frame) / 100.0
-                                * layer_opacity)
-                                .clamp(0.0, 1.0);
-                            fill_color = fill_color.with_alpha_f32(fill_alpha as f32);
-                            if sw == sh {
-                                // Circle
-                                context.fill_circle(
-                                    Point::new(cx.round() as i32, cy.round() as i32),
-                                    radius.max(1),
-                                    fill_color,
-                                );
-                            } else {
-                                // Approximate ellipse with rounded rect
-                                context.fill_rounded_rect(ellipse_rect, radius.max(1), fill_color);
-                            }
-                        }
-
-                        // Draw stroke if present.
-                        if let Some(ref stroke) = current_stroke {
-                            let mut stroke_color = stroke.color.at_frame(frame);
-                            let stroke_alpha = (stroke.opacity.at_frame_scalar(frame) / 100.0
-                                * layer_opacity)
-                                .clamp(0.0, 1.0);
-                            stroke_color = stroke_color.with_alpha_f32(stroke_alpha as f32);
-                            let sw_val =
-                                (stroke.width.at_frame_scalar(frame) * scale).round() as u32;
-                            if sw_val > 0 {
-                                if sw == sh {
-                                    context.draw_circle_stroke(
-                                        Point::new(cx.round() as i32, cy.round() as i32),
-                                        radius.max(1),
-                                        stroke_color,
-                                        sw_val,
-                                    );
-                                } else {
-                                    context.draw_rounded_rect_stroke(
-                                        ellipse_rect,
-                                        radius.max(1),
-                                        stroke_color,
-                                        sw_val,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    LottieShape::Other(_) => {
-                        // Skip unsupported shape types.
-                    }
+        for shape in shapes.iter().rev() {
+            match shape {
+                LottieShape::Fill(fill) => {
+                    current_fill = Some(fill.clone());
+                }
+                LottieShape::Stroke(stroke) => {
+                    current_stroke = Some(stroke.clone());
+                }
+                LottieShape::Rectangle(rect_shape) => {
+                    self.draw_rectangle(
+                        context,
+                        frame,
+                        rect_shape,
+                        placement,
+                        current_fill.as_ref(),
+                        current_stroke.as_ref(),
+                    );
+                }
+                LottieShape::Ellipse(ellipse_shape) => {
+                    self.draw_ellipse(
+                        context,
+                        frame,
+                        ellipse_shape,
+                        placement,
+                        current_fill.as_ref(),
+                        current_stroke.as_ref(),
+                    );
+                }
+                LottieShape::Path(path) => {
+                    self.draw_path_shape(
+                        context,
+                        frame,
+                        path,
+                        placement,
+                        current_fill.as_ref(),
+                        current_stroke.as_ref(),
+                    );
+                }
+                LottieShape::Group(group) => {
+                    // A group's transform composes with the enclosing placement: its
+                    // position is offset in the parent's coordinate space, its scale
+                    // multiplies both coordinates and sizes, and its opacity
+                    // multiplies in. Nested groups therefore stack correctly.
+                    let gt = &group.transform;
+                    let gp = gt.position.at_frame(frame);
+                    let gs = gt.scale.at_frame(frame);
+                    let grot = gt.rotation.at_frame_scalar(frame);
+                    let gx = gs.first().copied().unwrap_or(100.0) / 100.0;
+                    let gy = gs.get(1).copied().unwrap_or(100.0) / 100.0;
+                    let group_placement = ShapePlacement {
+                        tx: placement.tx + gp.first().copied().unwrap_or(0.0) * placement.scale_x,
+                        ty: placement.ty + gp.get(1).copied().unwrap_or(0.0) * placement.scale_y,
+                        scale_x: placement.scale_x * gx,
+                        scale_y: placement.scale_y * gy,
+                        size_x: placement.size_x * gx,
+                        size_y: placement.size_y * gy,
+                        opacity: (placement.opacity * gt.opacity.at_frame_scalar(frame) / 100.0)
+                            .clamp(0.0, 1.0),
+                        has_rotation: placement.has_rotation || grot.abs() > 0.5,
+                    };
+                    self.draw_shapes(context, frame, &group.items, group_placement);
+                }
+                LottieShape::Other(_) => {
+                    // Recorded at load time (see `collect_unsupported_shapes`) and
+                    // reported through `unsupported_shapes`; nothing is drawn here
+                    // because there is no geometry to draw. This arm is deliberately
+                    // not a silent drop: the diagnostic is queryable (D09-LOT-01).
                 }
             }
+        }
+    }
 
-            // Reset fills/strokes after each layer.
-            current_fill = None;
-            current_stroke = None;
+    /// Draws a rectangle ("rc") with the active fill and stroke.
+    fn draw_rectangle(
+        &self,
+        context: &mut RenderContext,
+        frame: f64,
+        rect_shape: &LottieRectShape,
+        placement: ShapePlacement,
+        current_fill: Option<&LottieFill>,
+        current_stroke: Option<&LottieStroke>,
+    ) {
+        let rp = rect_shape.position.at_frame(frame);
+        let rs = rect_shape.size.at_frame(frame);
+        let rr = rect_shape.rounded.at_frame_scalar(frame);
+
+        let shape_x = placement.tx
+            + (rp.first().copied().unwrap_or(0.0) - rs.first().copied().unwrap_or(0.0) / 2.0)
+                * placement.scale_x;
+        let shape_y = placement.ty
+            + (rp.get(1).copied().unwrap_or(0.0) - rs.get(1).copied().unwrap_or(0.0) / 2.0)
+                * placement.scale_y;
+        let shape_w = (rs.first().copied().unwrap_or(0.0) * placement.scale_x).round() as u32;
+        let shape_h = (rs.get(1).copied().unwrap_or(0.0) * placement.scale_y).round() as u32;
+        let radius = (rr * placement.scale_x).round().max(0.0) as u32;
+
+        let shape_rect = Rect::new(shape_x as i32, shape_y as i32, shape_w, shape_h);
+        if shape_w == 0 || shape_h == 0 {
+            return;
+        }
+
+        // Apply scaling from the transform chain.
+        let scaled_rect = Rect::new(
+            shape_rect.x,
+            shape_rect.y,
+            (shape_rect.width as f64 * placement.size_x).round() as u32,
+            (shape_rect.height as f64 * placement.size_y).round() as u32,
+        );
+
+        // Draw fill if present.
+        if let Some(fill) = current_fill {
+            let fill_color = fill.color.at_frame(frame).with_alpha_f32(
+                (fill.opacity.at_frame_scalar(frame) / 100.0 * placement.opacity).clamp(0.0, 1.0)
+                    as f32,
+            );
+            // Rotation is approximated by drawing the axis-aligned shape; the
+            // original renderer did the same and the branch is kept so the intent is
+            // explicit rather than accidental.
+            if placement.has_rotation || radius > 0 {
+                context.fill_rounded_rect(scaled_rect, radius, fill_color);
+            } else {
+                context.fill_rect(scaled_rect, fill_color);
+            }
+        }
+
+        // Draw stroke if present.
+        if let Some(stroke) = current_stroke {
+            let stroke_color = stroke.color.at_frame(frame).with_alpha_f32(
+                (stroke.opacity.at_frame_scalar(frame) / 100.0 * placement.opacity).clamp(0.0, 1.0)
+                    as f32,
+            );
+            let sw = (stroke.width.at_frame_scalar(frame) * placement.scale_x).round() as u32;
+            if sw > 0 {
+                if radius > 0 {
+                    context.draw_rounded_rect_stroke(scaled_rect, radius, stroke_color, sw);
+                } else {
+                    context.draw_rect_stroke(scaled_rect, stroke_color, sw);
+                }
+            }
+        }
+    }
+
+    /// Draws an ellipse or circle ("el") with the active fill and stroke.
+    fn draw_ellipse(
+        &self,
+        context: &mut RenderContext,
+        frame: f64,
+        ellipse_shape: &LottieEllipseShape,
+        placement: ShapePlacement,
+        current_fill: Option<&LottieFill>,
+        current_stroke: Option<&LottieStroke>,
+    ) {
+        let ep = ellipse_shape.position.at_frame(frame);
+        let es = ellipse_shape.size.at_frame(frame);
+
+        let cx = placement.tx + ep.first().copied().unwrap_or(0.0) * placement.scale_x;
+        let cy = placement.ty + ep.get(1).copied().unwrap_or(0.0) * placement.scale_y;
+        let ew = (es.first().copied().unwrap_or(0.0) * placement.scale_x).round() as u32;
+        let eh = (es.get(1).copied().unwrap_or(0.0) * placement.scale_y).round() as u32;
+
+        // Apply scaling from the transform chain.
+        let sw = (ew as f64 * placement.size_x).round() as u32;
+        let sh = (eh as f64 * placement.size_y).round() as u32;
+
+        if sw == 0 || sh == 0 {
+            return;
+        }
+
+        // Use the smaller dimension for radius if the ellipse
+        // is approximately circular, otherwise draw as an ellipse
+        // approximated by a filled rect with large rounded corners.
+        let radius = sw.min(sh) / 2;
+
+        let ex = (cx - sw as f64 / 2.0).round() as i32;
+        let ey = (cy - sh as f64 / 2.0).round() as i32;
+        let ellipse_rect = Rect::new(ex, ey, sw, sh);
+
+        // Draw fill if present.
+        if let Some(fill) = current_fill {
+            let fill_color = fill.color.at_frame(frame).with_alpha_f32(
+                (fill.opacity.at_frame_scalar(frame) / 100.0 * placement.opacity).clamp(0.0, 1.0)
+                    as f32,
+            );
+            if sw == sh {
+                // Circle
+                context.fill_circle(
+                    Point::new(cx.round() as i32, cy.round() as i32),
+                    radius.max(1),
+                    fill_color,
+                );
+            } else {
+                // Approximate ellipse with rounded rect
+                context.fill_rounded_rect(ellipse_rect, radius.max(1), fill_color);
+            }
+        }
+
+        // Draw stroke if present.
+        if let Some(stroke) = current_stroke {
+            let stroke_color = stroke.color.at_frame(frame).with_alpha_f32(
+                (stroke.opacity.at_frame_scalar(frame) / 100.0 * placement.opacity).clamp(0.0, 1.0)
+                    as f32,
+            );
+            let sw_val = (stroke.width.at_frame_scalar(frame) * placement.scale_x).round() as u32;
+            if sw_val > 0 {
+                if sw == sh {
+                    context.draw_circle_stroke(
+                        Point::new(cx.round() as i32, cy.round() as i32),
+                        radius.max(1),
+                        stroke_color,
+                        sw_val,
+                    );
+                } else {
+                    context.draw_rounded_rect_stroke(
+                        ellipse_rect,
+                        radius.max(1),
+                        stroke_color,
+                        sw_val,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Draws a bezier path ("sh") with the active fill and stroke (D09-LOT-01).
+    ///
+    /// The path's vertices and tangents are turned into cubic segments and then
+    /// into a device-space polyline by the crate's single curve flattener
+    /// ([`crate::render::path::flatten`]), so a Lottie path is tessellated by the
+    /// same rule as an icon or glyph outline (principle #101). The returned
+    /// contours are then filled and/or stroked per contour.
+    fn draw_path_shape(
+        &self,
+        context: &mut RenderContext,
+        frame: f64,
+        path: &LottiePathShape,
+        placement: ShapePlacement,
+        current_fill: Option<&LottieFill>,
+        current_stroke: Option<&LottieStroke>,
+    ) {
+        // A path with neither fill nor stroke paints nothing; skip the work rather
+        // than flatten geometry that would not be drawn.
+        if current_fill.is_none() && current_stroke.is_none() {
+            return;
+        }
+
+        let (points, contour_ranges) = match self.flatten_lottie_path(path, placement) {
+            Some(contours) => contours,
+            None => return,
+        };
+
+        // Fill every contour first, then stroke, matching the rectangle/ellipse
+        // draw order (fill under stroke).
+        if let Some(fill) = current_fill {
+            let fill_color = fill.color.at_frame(frame).with_alpha_f32(
+                (fill.opacity.at_frame_scalar(frame) / 100.0 * placement.opacity).clamp(0.0, 1.0)
+                    as f32,
+            );
+            for (start, end) in &contour_ranges {
+                context.draw_path(&points[*start..*end], true, fill_color, true, 0);
+            }
+        }
+
+        if let Some(stroke) = current_stroke {
+            let stroke_color = stroke.color.at_frame(frame).with_alpha_f32(
+                (stroke.opacity.at_frame_scalar(frame) / 100.0 * placement.opacity).clamp(0.0, 1.0)
+                    as f32,
+            );
+            let sw = (stroke.width.at_frame_scalar(frame) * placement.scale_x).round() as u32;
+            if sw > 0 {
+                for (start, end) in &contour_ranges {
+                    // The closing edge of a contour is implicit in the fill, so a
+                    // stroked contour is emitted closed so the backend joins the last
+                    // point back to the first.
+                    context.draw_path(&points[*start..*end], true, stroke_color, false, sw);
+                }
+            }
+        }
+    }
+
+    /// Flattens a Lottie path into device-space polylines.
+    ///
+    /// Returns `None` when the path cannot be tessellated (a degenerate path, or
+    /// one over the flattener's point budget). The curve data is emitted as SVG
+    /// path syntax and handed to [`crate::render::path::flatten::flatten_paths`]
+    /// with an identity placement, so the flattening rule is shared rather than
+    /// re-implemented (principle #101).
+    #[allow(clippy::type_complexity)]
+    fn flatten_lottie_path(
+        &self,
+        path: &LottiePathShape,
+        placement: ShapePlacement,
+    ) -> Option<(Vec<Point>, Vec<(usize, usize)>)> {
+        use crate::render::path::flatten::{flatten_paths, IconPlacement};
+        use crate::render::path::flatten::{MAX_OUTLINE_CONTOURS, MAX_OUTLINE_POINTS};
+
+        // Build an SVG `d` string in **device space**: each vertex and its control
+        // points are transformed by the placement as they are written, so the
+        // flattener applies no further mapping.
+        let n = path.vertices.len();
+        if n < 2 {
+            return None;
+        }
+
+        let map = |p: [f64; 2]| -> (f64, f64) {
+            (placement.tx + p[0] * placement.scale_x, placement.ty + p[1] * placement.scale_y)
+        };
+
+        let mut d = String::with_capacity(n * 32);
+        let (sx, sy) = map(path.vertices[0]);
+        d.push_str(&format!("M{sx} {sy}"));
+
+        let segment_count = if path.closed { n } else { n - 1 };
+        for i in 0..segment_count {
+            let j = (i + 1) % n;
+            let out_i = path.out_tangents.get(i).copied().unwrap_or([0.0, 0.0]);
+            let in_j = path.in_tangents.get(j).copied().unwrap_or([0.0, 0.0]);
+            let v_i = path.vertices[i];
+            let v_j = path.vertices[j];
+            // Lottie tangents are relative to their vertex, so the cubic's control
+            // points are the vertex plus its tangent.
+            let (c1x, c1y) = map([v_i[0] + out_i[0], v_i[1] + out_i[1]]);
+            let (c2x, c2y) = map([v_j[0] + in_j[0], v_j[1] + in_j[1]]);
+            let (ex, ey) = map(v_j);
+            d.push_str(&format!("C{c1x} {c1y} {c2x} {c2y} {ex} {ey}"));
+        }
+        if path.closed {
+            d.push('Z');
+        }
+
+        let mut points = vec![Point::new(0, 0); MAX_OUTLINE_POINTS];
+        let mut contour_ranges = vec![(0usize, 0usize); MAX_OUTLINE_CONTOURS];
+        // Identity placement: `map` adds `grid` to y, so a zero grid with unit scale
+        // leaves device coordinates untouched (see `IconPlacement::map`).
+        let identity = IconPlacement { origin_x: 0.0, origin_y: 0.0, scale: 1.0, grid: 0.0 };
+        match flatten_paths(&[d.as_str()], identity, &mut points, &mut contour_ranges) {
+            Ok(count) => {
+                let ranges = contour_ranges[..count].to_vec();
+                Some((points, ranges))
+            }
+            Err(_) => {
+                // A path over the flattener's budget (or otherwise untessellatable)
+                // contributes nothing this frame rather than a truncated outline,
+                // which would draw the wrong shape. `flatten_paths` refuses rather
+                // than truncates for exactly that reason.
+                None
+            }
         }
     }
 }
@@ -1108,7 +1530,7 @@ impl Draw for LottieWidget {
             // widget's chrome — there is no animation data here at all — so both now follow
             // the theme instead of pinning the control to one appearance.
             context.fill_rounded_rect(rect, 4, base_bg);
-            let font = Font::default();
+            let font = effective_font(&style);
             let text = "No Lottie animation loaded";
             // Centred on the vertical midline and fitted to the control's width: the label
             // is 25 characters at 14 px, wider than most controls it is drawn into, and
@@ -1154,7 +1576,7 @@ impl Draw for LottieWidget {
         self.render_layers(context, frame, rect);
 
         // Frame counter overlay at top-right.
-        let font = Font::default();
+        let font = effective_font(&style);
         let counter_text =
             format!("{}/{} FPS:{:.0}", self.current_frame + 1, self.total_frames, self.frame_rate);
         let c_metrics = context.measure_text(&counter_text, &font);
@@ -1250,6 +1672,7 @@ impl EventHandler for LottieWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::PaintBackend;
     use std::sync::{Arc, Mutex};
 
     fn make_lottie_json(op: f64, ip: f64, fr: f64) -> String {
@@ -1774,6 +2197,253 @@ mod tests {
             seen.load(std::sync::atomic::Ordering::SeqCst),
             1,
             "a non-finite rate is refused, so nothing changed"
+        );
+    }
+
+    /// Loads `json` into a widget drawn into a fresh software backend and returns
+    /// the number of shape-red pixels in the presented frame.
+    fn render_red_pixels(json: &str) -> usize {
+        render_and_count(json).0
+    }
+
+    /// Draws `json` and returns `(red pixel count, mean red-pixel x)`.
+    ///
+    /// The mean x is how a group's transform composition is proven: shifting a
+    /// group's position must move where its shapes land (D09-LOT-01).
+    fn render_and_count(json: &str) -> (usize, f64) {
+        use crate::render::{RenderContext, SoftwarePaintBackend};
+
+        let mut backend = SoftwarePaintBackend::new(crate::core::Size::new(200, 200), 1.0);
+        backend.begin_frame(crate::core::Color::rgba(255, 255, 255, 255));
+        {
+            // The context borrows the backend for the duration of the draw, so it
+            // is scoped and dropped before the frame is presented and read back.
+            let mut ctx = RenderContext::new(&mut backend);
+            let mut lottie = LottieWidget::new(Rect::new(0, 0, 200, 200));
+            lottie.load_json(json).expect("the fixture must be a valid Lottie document");
+            lottie.draw(&mut ctx);
+        }
+        backend.end_frame();
+
+        let width = 200usize;
+        let mut count = 0usize;
+        let mut x_sum = 0f64;
+        for (i, px) in backend.frame_rgba().chunks_exact(4).enumerate() {
+            if px[0] > 200 && px[1] < 80 && px[2] < 80 {
+                count += 1;
+                x_sum += (i % width) as f64;
+            }
+        }
+        let mean_x = if count == 0 { 0.0 } else { x_sum / count as f64 };
+        (count, mean_x)
+    }
+
+    /// A `"sh"` bezier path is a supported shape and must actually be painted.
+    ///
+    /// Before the fix the parser kept `"sh"` as [`LottieShape::Other`] and the draw
+    /// loop dropped it, so the filled triangle below produced **zero** red pixels
+    /// while the animation still reported success (D09-LOT-01).
+    #[test]
+    fn lottie_widget_renders_a_bezier_path_shape() {
+        // A closed triangle: three vertices, straight edges (zero tangents), filled
+        // pure red. `ip=0`, `op=30` so the loader accepts it.
+        let json = r#"{
+            "op":30,"ip":0,"fr":30,"v":"5.5.2","w":100,"h":100,
+            "layers":[{
+                "ind":0,"parent":-1,
+                "ks":{"a":{"k":[0,0]},"p":{"k":[0,0]},"s":{"k":[100,100]},"r":{"k":[0]},"o":{"k":[100]}},
+                "shapes":[
+                    {"ty":"sh","ks":{"k":{
+                        "i":[[0,0],[0,0],[0,0]],
+                        "o":[[0,0],[0,0],[0,0]],
+                        "v":[[10,10],[90,10],[50,90]],
+                        "c":true
+                    }}},
+                    {"ty":"fl","c":{"k":[1,0,0,1]},"o":{"k":[100]},"r":1}
+                ]
+            }]
+        }"#;
+
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 200, 200));
+        lottie.load_json(json).unwrap();
+
+        // The parser must produce a real Path, not an `Other` fallback.
+        assert_eq!(lottie.layers().len(), 1, "the single layer must parse");
+        assert!(
+            matches!(lottie.layers()[0].shapes.first(), Some(LottieShape::Path(_))),
+            "the \"sh\" shape must parse as LottieShape::Path, got {:?}",
+            lottie.layers()[0].shapes.first()
+        );
+        assert!(
+            !lottie.has_unsupported_shapes(),
+            "a path and a fill are both supported: {:?}",
+            lottie.unsupported_shapes()
+        );
+
+        let red = render_red_pixels(json);
+        assert!(
+            red > 500,
+            "the filled triangle must paint a substantial red area, got {red} red pixels"
+        );
+    }
+
+    /// An unsupported shape must not vanish without a trace: the widget records a
+    /// queryable diagnostic, and it must still draw the supported shapes around it.
+    ///
+    /// The old renderer matched [`LottieShape::Other`] with a no-op, so the star
+    /// simply disappeared and the caller had no way to learn the composition was
+    /// only partially rendered (D09-LOT-01).
+    #[test]
+    fn lottie_widget_reports_unsupported_shapes_instead_of_dropping_them() {
+        // `sr` (star) is a legal Lottie shape this renderer does not draw. The
+        // rectangle beside it is supported and must still render.
+        let json = r#"{
+            "op":30,"ip":0,"fr":30,"v":"5.5.2","w":100,"h":100,
+            "layers":[{
+                "ind":0,"parent":-1,
+                "ks":{"a":{"k":[0,0]},"p":{"k":[0,0]},"s":{"k":[100,100]},"r":{"k":[0]},"o":{"k":[100]}},
+                "shapes":[
+                    {"ty":"rc","p":{"k":[50,50]},"s":{"k":[80,80]},"r":{"k":[0]}},
+                    {"ty":"fl","c":{"k":[1,0,0,1]},"o":{"k":[100]},"r":1},
+                    {"ty":"sr","sy":1},
+                    {"ty":"sr","sy":2}
+                ]
+            }]
+        }"#;
+
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 200, 200));
+        lottie.load_json(json).unwrap();
+
+        assert!(
+            lottie.has_unsupported_shapes(),
+            "an unsupported \"sr\" shape must be reported, not silently lost"
+        );
+        assert_eq!(
+            lottie.unsupported_shapes(),
+            ["sr"],
+            "each unsupported type is recorded once, in first-seen order"
+        );
+
+        // The supported rectangle in the same layer still paints.
+        let red = render_red_pixels(json);
+        assert!(
+            red > 500,
+            "the supported rectangle must still render alongside the skipped star, got {red} px"
+        );
+    }
+
+    /// An unsupported shape nested inside a group is reported too.
+    ///
+    /// The diagnostic must walk groups, otherwise an unsupported shape buried in a
+    /// group would be exactly as invisible as before the fix (D09-LOT-01).
+    #[test]
+    fn lottie_widget_reports_unsupported_shapes_nested_in_a_group() {
+        let json = r#"{
+            "op":30,"ip":0,"fr":30,"v":"5.5.2","w":100,"h":100,
+            "layers":[{
+                "ind":0,"parent":-1,
+                "ks":{"a":{"k":[0,0]},"p":{"k":[0,0]},"s":{"k":[100,100]},"r":{"k":[0]},"o":{"k":[100]}},
+                "shapes":[{
+                    "ty":"gr",
+                    "it":[
+                        {"ty":"sh","ks":{"k":{
+                            "i":[[0,0],[0,0],[0,0]],
+                            "o":[[0,0],[0,0],[0,0]],
+                            "v":[[10,10],[90,10],[50,90]],
+                            "c":true
+                        }}},
+                        {"ty":"fl","c":{"k":[1,0,0,1]},"o":{"k":[100]},"r":1},
+                        {"ty":"mm","mm":1},
+                        {"ty":"tr","o":{"k":[100]},"p":{"k":[0,0]},"a":{"k":[0,0]},"s":{"k":[100,100]},"r":{"k":[0]}}
+                    ]
+                }]
+            }]
+        }"#;
+
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 200, 200));
+        lottie.load_json(json).unwrap();
+
+        assert_eq!(lottie.layers().len(), 1);
+        assert!(
+            matches!(lottie.layers()[0].shapes.first(), Some(LottieShape::Group(_))),
+            "the group must parse as LottieShape::Group, got {:?}",
+            lottie.layers()[0].shapes.first()
+        );
+        assert_eq!(
+            lottie.unsupported_shapes(),
+            ["mm"],
+            "an unsupported shape nested in a group must be reported"
+        );
+
+        // The path inside the group is supported and must render through the group.
+        let (red, _) = render_and_count(json);
+        assert!(red > 500, "the grouped path must render, got {red} px");
+    }
+
+    /// A group's transform must compose with its parent: shifting the group's
+    /// `tr.p` moves where its child path lands.
+    ///
+    /// This pins the transformer composition itself rather than merely "something
+    /// got drawn", which a group whose transform was ignored would also satisfy
+    /// (D09-LOT-01).
+    #[test]
+    fn lottie_widget_composes_a_group_transform() {
+        // The same triangle inside a group, once at group offset `p=[0,0]` and once
+        // at `p=[30,0]`; the second must land measurably further right.
+        let make = |group_px: i32| {
+            format!(
+                r#"{{
+                "op":30,"ip":0,"fr":30,"v":"5.5.2","w":100,"h":100,
+                "layers":[{{
+                    "ind":0,"parent":-1,
+                    "ks":{{"a":{{"k":[0,0]}},"p":{{"k":[0,0]}},"s":{{"k":[100,100]}},"r":{{"k":[0]}},"o":{{"k":[100]}}}},
+                    "shapes":[{{
+                        "ty":"gr",
+                        "it":[
+                            {{"ty":"sh","ks":{{"k":{{
+                                "i":[[0,0],[0,0],[0,0]],
+                                "o":[[0,0],[0,0],[0,0]],
+                                "v":[[10,10],[40,10],[25,40]],
+                                "c":true
+                            }}}}}},
+                            {{"ty":"fl","c":{{"k":[1,0,0,1]}},"o":{{"k":[100]}},"r":1}},
+                            {{"ty":"tr","o":{{"k":[100]}},"p":{{"k":[{group_px},0]}},"a":{{"k":[0,0]}},"s":{{"k":[100,100]}},"r":{{"k":[0]}}}}
+                        ]
+                    }}]
+                }}]
+                }}"#
+            )
+        };
+
+        let (base_count, base_x) = render_and_count(&make(0));
+        let (shifted_count, shifted_x) = render_and_count(&make(30));
+
+        assert!(base_count > 200, "the base group must render, got {base_count} px");
+        assert!(shifted_count > 200, "the shifted group must render, got {shifted_count} px");
+        assert!(
+            shifted_x > base_x + 20.0,
+            "a group at p=[30,0] must land ~30px right of p=[0,0]: base mean x {base_x:.1}, \
+             shifted mean x {shifted_x:.1}"
+        );
+    }
+
+    /// A supported-path document reports an empty diagnostic, and re-loading a
+    /// document resets the previous diagnostic rather than accumulating it.
+    #[test]
+    fn lottie_widget_unsupported_shapes_reset_on_reload() {
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 200, 200));
+        let unsupported = r#"{"op":10,"ip":0,"fr":30,"w":100,"h":100,
+            "layers":[{"ind":0,"parent":-1,"ks":{},
+                "shapes":[{"ty":"sr","sy":1}]}]}"#;
+        lottie.load_json(unsupported).unwrap();
+        assert_eq!(lottie.unsupported_shapes(), ["sr"]);
+
+        // Reloading a fully supported document must clear the stale entry.
+        lottie.load_json(&make_lottie_json(30.0, 0.0, 30.0)).unwrap();
+        assert!(
+            !lottie.has_unsupported_shapes(),
+            "a reload must not leave the previous document's diagnostic behind: {:?}",
+            lottie.unsupported_shapes()
         );
     }
 }

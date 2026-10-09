@@ -8,7 +8,7 @@
 //! displays a text label and an optional icon. The active/highlighted segment uses
 //! a filled background to indicate selection.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -16,7 +16,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usi
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, role_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -445,7 +445,7 @@ impl Draw for SegmentedButton {
         // rounding rather than the 16 px radius a 120 px canvas produced.
         let track_rect = self.track_band();
         let corner_radius = (track_rect.height / 2).max(4);
-        let font = Font::simple("sans-serif", 13.0);
+        let font = role_font(&style, 13.0);
 
         // The track is painted before the early return on an empty segment list, so a freshly
         // constructed control is visible rather than reporting `ink = 0`. An empty track reads as

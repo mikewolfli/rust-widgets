@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Input dialog widget.
-use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
@@ -14,7 +14,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::numeric::{ordered_clamp_f64, ordered_clamp_i64};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Input dialog input mode.
@@ -560,6 +560,9 @@ impl Draw for InputDialog {
         // The **frame**, not the control's rectangle: see `frame_rect`.
         let rect = self.frame_rect();
         let style = self.style().clone();
+        // The **effective font** — the resolved theme/caller font — for the title, label, entry
+        // value and buttons (D09-STYLE-01).
+        let font = effective_font(&style);
 
         // Chrome colours resolve explicit style first, then the theme's resolved style
         // for this control, and only then fall back to a literal. The style step alone
@@ -638,7 +641,7 @@ impl Draw for InputDialog {
         let title_bar_band = ControlMetrics::top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
         context.fill_rect(title_bar_band, accent);
         if !self.title.is_empty() {
-            let title_font = Font::default();
+            let title_font = font;
             let title_line = context.text_line(title_bar_band, &title_font);
             context.draw_text_fitted(
                 Rect::new(
@@ -658,7 +661,7 @@ impl Draw for InputDialog {
         // field it names at any frame size and the two cannot drift apart.
         let body =
             ControlMetrics::content_below_top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
-        let label_font = Font::default();
+        let label_font = font;
         let label_line_h = context.measure_text("M", &label_font).height.max(1);
         // Label. Its box is the row above the entry field, which is what bounds a label
         // longer than the dialog instead of the dialog's own width. Guarded on the text
@@ -697,7 +700,7 @@ impl Draw for InputDialog {
         // the rasteriser never produces. The line box is centred on the field through the
         // shared primitive, which the old `input_y + ((26 - h) / 2)` re-derived by hand.
         if !display_text.is_empty() {
-            let input_font = Font::default();
+            let input_font = font;
             let input_line = context.text_line(input_band, &input_font);
             context.draw_text_fitted(
                 Rect::new(
@@ -721,14 +724,13 @@ impl Draw for InputDialog {
         let button_band = ControlMetrics::bottom_band(rect, dimensions::DIALOG_BUTTON_HEIGHT);
         let labels = vec![tr!("common.button.ok"), tr!("common.button.cancel")];
         let row = super::message_box::action_row_geometry(context, &labels, button_band, true);
-        let font = Font::default();
         let ok_rect = row.buttons[0];
         context.fill_rect(ok_rect, accent);
-        context.draw_text_line(ok_rect, &labels[0], &font, accent_ink, HorizontalAlignment::Center);
+        context.draw_text_line(ok_rect, &labels[0], font, accent_ink, HorizontalAlignment::Center);
         let cancel_rect = row.buttons[1];
         context.fill_rect(cancel_rect, surface.blend(&ink, 0.1));
         context.draw_rect(cancel_rect, border);
-        context.draw_text_line(cancel_rect, &labels[1], &font, ink, HorizontalAlignment::Center);
+        context.draw_text_line(cancel_rect, &labels[1], font, ink, HorizontalAlignment::Center);
     }
 }
 

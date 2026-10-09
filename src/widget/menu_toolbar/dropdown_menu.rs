@@ -20,6 +20,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::menu_toolbar::popup_reveal::{PopupReveal, RevealDirection};
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -421,7 +422,6 @@ impl Draw for DropdownMenu {
     fn draw(&mut self, context: &mut RenderContext) {
         let geom = self.geometry();
         let is_enabled = self.base.is_enabled();
-        let font = Font::simple("sans-serif", 13.0);
 
         // Chrome colours resolve explicit style first, then the theme's resolved
         // style for this control, and only then a literal. The theme step is what
@@ -432,6 +432,9 @@ impl Draw for DropdownMenu {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style().clone();
+        // The **effective font** — the resolved theme/caller font — for the field's value;
+        // the list rows take the same font below (D09-STYLE-01).
+        let font = effective_font(&style);
         let theme = crate::style::resolved_theme_style("dropdown_menu");
         // `dropdown_menu` is not a control kind in the role table, so it classifies as
         // `Surface`, whose background is `theme.colors.background` — the colour the
@@ -482,7 +485,7 @@ impl Draw for DropdownMenu {
         // `draw_text`'s origin is the glyph box's top-left, so `geom.y + geom.height / 2` put
         // that top edge on the field's middle line and drew the label half a line low. The
         // shared primitive returns the line box itself, centred in the field.
-        let line = context.text_line(geom, &font);
+        let line = context.text_line(geom, font);
         // The value is aligned within the field's inner box (its own padding inset at both ends),
         // so a right- or centre-aligned value moves the run while the field it sits in does not.
         // Fitted rather than drawn at a point, because an anchor alone cannot express centre/right
@@ -496,7 +499,7 @@ impl Draw for DropdownMenu {
                 line.height,
             ),
             &display_text,
-            &font,
+            font,
             text_color,
             value_align,
         );
@@ -573,7 +576,9 @@ impl Draw for DropdownMenu {
                 }
 
                 let item_text_color = if !item.enabled { disabled_text_color } else { text_color };
-                let item_font = Font::simple("sans-serif", 12.0);
+                // The item label takes the **effective font**, so the theme body font and the
+                // user's text scale reach the list rows (D09-STYLE-01).
+                let item_font = effective_font(&style);
                 let mut item_x = ir.x + PADDING;
 
                 // Item icon
@@ -594,7 +599,7 @@ impl Draw for DropdownMenu {
                 }
 
                 // Item label
-                let item_line = context.text_line(ir, &item_font);
+                let item_line = context.text_line(ir, item_font);
                 // The label is aligned in the same inner box the field's value uses, so the two
                 // columns line up. The band starts where the icon (if any) pushed it, so an icon
                 // shifts the whole label run rather than only its left-aligned form. Fitted rather
@@ -610,7 +615,7 @@ impl Draw for DropdownMenu {
                 context.draw_text_fitted(
                     label_band,
                     &item.label,
-                    &item_font,
+                    item_font,
                     item_text_color,
                     label_align,
                 );

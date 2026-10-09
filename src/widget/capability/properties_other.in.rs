@@ -133,6 +133,13 @@ macro_rules! impl_properties_other {
             // interpolation. Without it a fast stroke was recorded once per input event and
             // drawn as a polygon.
             PropertySchema::new("min_point_interval_ms", PropertyValueKind::UInt, true, true),
+            // D09-POINTER-01: whether tip pressure modulates the drawn stroke width, plus the
+            // retained pen datum (pressure and tilt) of the most recent pointer event. The datum
+            // is read-only — writing it would fabricate a fact about the input device.
+            PropertySchema::new("pressure_affects_width", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("last_pressure", PropertyValueKind::Float, true, false),
+            PropertySchema::new("last_tilt_x", PropertyValueKind::Float, true, false),
+            PropertySchema::new("last_tilt_y", PropertyValueKind::Float, true, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

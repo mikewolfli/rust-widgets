@@ -1138,4 +1138,174 @@ mod tests {
         assert_eq!(report.widgets_created, 0, "and creates nothing");
         assert!(layout.children(1).is_empty(), "leaving the parent's child list untouched");
     }
+
+    /// Build a `BoundJsonLayout` from a declarative tree and return the root id.
+    ///
+    /// The layout is populated by walking `root`, creating a real control per non-`spacer`
+    /// node via `create`, so a subsequent `diff`/`apply` cycle exercises the real path.
+    fn mount_layout(
+        root: &Node,
+        create: &dyn Fn(&Node) -> Option<ObjectId>,
+    ) -> (crate::json::BoundJsonLayout, ObjectId) {
+        let mut layout = crate::json::BoundJsonLayout::new();
+        let mut register = |node: &Node, parent: Option<ObjectId>| -> Option<ObjectId> {
+            if node.widget.eq_ignore_ascii_case("spacer") {
+                return None;
+            }
+            let id = create(node)?;
+            layout.register_node(
+                id,
+                node.widget.clone(),
+                node.key_str().unwrap_or("").to_string(),
+                parent,
+            );
+            Some(id)
+        };
+        let root_id = register(root, None).expect("the root must be creatable");
+        let mut stack = vec![(root.clone(), root_id)];
+        while let Some((node, id)) = stack.pop() {
+            for child in &node.children {
+                if let Some(child_id) = register(child, Some(id)) {
+                    stack.push((child.clone(), child_id));
+                }
+            }
+        }
+        (layout, root_id)
+    }
+
+    /// The keys of `parent`'s children in order, read back from the layout.
+    fn child_keys(layout: &crate::json::BoundJsonLayout, parent: ObjectId) -> Vec<String> {
+        layout
+            .children(parent)
+            .iter()
+            .map(|&id| layout.node_key(id).unwrap_or_default().to_string())
+            .collect()
+    }
+
+    /// D08-V-02: a three-node cyclic reorder must reach the declared order after apply.
+    ///
+    /// The previous single-lookback move rule emitted one under-specified `Move` for
+    /// `[a,b,c] -> [c,a,b]`, and remove-then-insert-at-index produced `[b,a,c]`.
+    #[test]
+    fn a_three_node_cyclic_reorder_reaches_the_declared_order() {
+        let create = real_creator();
+        let old = Node::new("window")
+            .key("root")
+            .child(Node::new("label").key("a"))
+            .child(Node::new("label").key("b"))
+            .child(Node::new("label").key("c"));
+        let new = Node::new("window")
+            .key("root")
+            .child(Node::new("label").key("c"))
+            .child(Node::new("label").key("a"))
+            .child(Node::new("label").key("b"));
+
+        let (mut layout, root) = mount_layout(&old, &create);
+        let ids: Vec<ObjectId> = layout.children(root).to_vec();
+        // ids in old order are [a, b, c]; capture them to prove identity survives.
+        let id_of = {
+            let ids = ids.clone();
+            move |path: &[usize], _index: usize| -> Option<ObjectId> {
+                if path.is_empty() {
+                    Some(root)
+                } else {
+                    path.first().and_then(|&i| ids.get(i).copied())
+                }
+            }
+        };
+        let report = crate::view::diff::diff(&old, &new, &id_of);
+        let applied = apply(&mut layout, &report.patches, &create);
+        assert!(applied.is_clean(), "apply errors: {:?}", applied.errors);
+        assert_eq!(
+            child_keys(&layout, root),
+            ["c", "a", "b"],
+            "the applied order must match the declaration"
+        );
+        // The three controls are the same three ids, reordered — nothing was rebuilt.
+        let mut after = layout.children(root).to_vec();
+        after.sort_unstable();
+        let mut before = ids.clone();
+        before.sort_unstable();
+        assert_eq!(after, before, "a reorder must keep every control's identity");
+    }
+
+    /// D08-V-01: a keyed child whose type changes is replaced **in its parent's slot**.
+    ///
+    /// The recursion used to emit `Replace { parent: <child id> }`, so apply deleted the
+    /// child and re-registered the replacement under the deleted id, emptying the real
+    /// parent's child list and stranding the new control.
+    #[test]
+    fn a_type_change_on_a_keyed_child_replaces_it_in_place() {
+        let create = real_creator();
+        let old =
+            Node::new("window").key("root").child(Node::new("label").key("a").prop("text", s("A")));
+        let new = Node::new("window")
+            .key("root")
+            .child(Node::new("button").key("a").prop("text", s("A")));
+
+        let (mut layout, root) = mount_layout(&old, &create);
+        let old_id = layout.children(root)[0];
+        let id_of = move |path: &[usize], _index: usize| -> Option<ObjectId> {
+            if path.is_empty() {
+                Some(root)
+            } else if path == [0] {
+                Some(old_id)
+            } else {
+                None
+            }
+        };
+        let report = crate::view::diff::diff(&old, &new, &id_of);
+        let applied = apply(&mut layout, &report.patches, &create);
+        assert!(applied.is_clean(), "apply errors: {:?}", applied.errors);
+        assert_eq!(layout.children(root).len(), 1, "the window keeps exactly one child");
+        let replaced = layout.children(root)[0];
+        assert_eq!(layout.widget_name(replaced), Some("button"));
+        assert_eq!(layout.node_key(replaced), Some("a"));
+        assert_ne!(
+            replaced, old_id,
+            "a type change replaces the control rather than reusing its id"
+        );
+    }
+
+    /// D08-V-03: a keyless child inserted ahead of a keyed one must not steal its identity.
+    ///
+    /// Old `[label(key=a)] -> [label(keyless), label(key=a)]` used to match the keyless node
+    /// to the old keyed node and insert a second `key=a`, leaving two live controls claiming
+    /// one key.
+    #[test]
+    fn a_keyless_insert_does_not_steal_a_keyed_sibling() {
+        let create = real_creator();
+        let old =
+            Node::new("window").key("root").child(Node::new("label").key("a").prop("text", s("A")));
+        let new = Node::new("window")
+            .key("root")
+            .child(Node::new("label").prop("text", s("new")))
+            .child(Node::new("label").key("a").prop("text", s("A")));
+
+        let (mut layout, root) = mount_layout(&old, &create);
+        let old_id = layout.children(root)[0];
+        let id_of = move |path: &[usize], _index: usize| -> Option<ObjectId> {
+            if path.is_empty() {
+                Some(root)
+            } else if path == [0] {
+                Some(old_id)
+            } else {
+                None
+            }
+        };
+        let report = crate::view::diff::diff(&old, &new, &id_of);
+        let applied = apply(&mut layout, &report.patches, &create);
+        assert!(applied.is_clean(), "apply errors: {:?}", applied.errors);
+
+        let children = layout.children(root).to_vec();
+        assert_eq!(children.len(), 2, "the keyless insert adds one child, nothing is lost");
+        // The keyed control keeps its identity and moves to the second slot.
+        assert_eq!(layout.node_key(children[1]), Some("a"));
+        assert_eq!(children[1], old_id, "the keyed control keeps its id");
+        // The keyless control is genuinely new (not the recycled keyed one).
+        assert_ne!(children[0], old_id, "the keyless child must be a new control");
+        // The key `a` is claimed by exactly one live control.
+        let a_claimants = children.iter().filter(|&&id| layout.node_key(id) == Some("a")).count();
+        assert_eq!(a_claimants, 1, "a key must be unique among live controls");
+    }
 }

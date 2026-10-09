@@ -25,6 +25,7 @@ use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::role_font;
 use crate::widget::special_widgets::finance::layout::{
     panel_colors, PanelColors, PlotArea, PANEL_MIN_CONTRAST,
 };
@@ -271,7 +272,7 @@ impl Draw for VolumeChart {
         // its frame, so this is where the grid and the message go rather than a bare return
         // that left a solid slab behind.
         if bars.is_empty() || max_volume <= 0.0 {
-            draw_empty_pane(context, &area, chrome);
+            draw_empty_pane(context, &area, chrome, &role_font(self.style(), 12.0));
             return;
         }
         let usable_height = (area.rect.height as f64 * self.headroom).max(1.0);
@@ -333,6 +334,7 @@ pub(crate) fn draw_empty_pane(
     context: &mut RenderContext,
     area: &PlotArea,
     chrome: crate::widget::special_widgets::finance::layout::PanelColors,
+    font: &crate::core::Font,
 ) {
     context.draw_rect(area.rect, chrome.grid);
     // A hairline at mid-height, where a series with no data would plot, so the pane reads as
@@ -343,12 +345,11 @@ pub(crate) fn draw_empty_pane(
         crate::core::Point { x: area.right(), y: mid_y },
         chrome.grid,
     );
-    let font = crate::core::Font::simple("Sans", 12.0);
-    let line = context.text_line(area.rect, &font);
+    let line = context.text_line(area.rect, font);
     context.draw_text_fitted(
         line,
         "No data",
-        &font,
+        font,
         chrome.ink.legible_on(chrome.surface, PANEL_MIN_CONTRAST).with_alpha(160),
         crate::core::HorizontalAlignment::Center,
     );

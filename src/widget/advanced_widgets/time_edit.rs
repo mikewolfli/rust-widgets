@@ -36,7 +36,9 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::dimensions;
+use crate::widget::metrics::{
+    dimensions, effective_font, estimate_line_height, estimate_text_width,
+};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -703,8 +705,10 @@ impl Widget for TimeEdit {
     /// The height comes from the same `TEXT_FIELD_MIN_HEIGHT` the field's own band uses, so the number
     /// reported and the number drawn cannot disagree.
     fn size_hint(&self) -> Size {
-        let font = crate::core::Font::default();
-        let line_height = crate::widget::metrics::estimate_line_height(&font, 1.0);
+        // Measured with the **effective font** — the same font the value is painted with — so the
+        // hint and the ink agree under a theme font or a text scale (D09-STYLE-02).
+        let font = effective_font(self.style());
+        let line_height = estimate_line_height(font, 1.0);
         // The widest value this format can produce, not the *current* one: a hint that shrank when the
         // time happened to be `01:01:01` would make the field jump as the user stepped through values.
         let sample = super::date_edit::format_with_pattern(
@@ -718,7 +722,7 @@ impl Widget for TimeEdit {
             },
         )
         .unwrap_or_else(|| Time::new(23, 59, 59, 999).to_string());
-        let content = crate::widget::metrics::estimate_text_width(&sample, &font, 1.0);
+        let content = estimate_text_width(&sample, font, 1.0);
         // The field's vertical padding is what is left of its height once a line is accounted for, so it
         // is *derived* rather than a second constant: the crate names one horizontal text-field inset
         // and states no vertical one, because `TEXT_FIELD_MIN_HEIGHT` is the fact that fixes that axis.
@@ -1006,8 +1010,10 @@ impl Draw for TimeEdit {
         // glyph box's top edge on the field's middle line, so the value sat half a line low.
         // The line box is also what a caller reading this field's text position would need,
         // so deriving it here keeps the two from drifting.
-        let font = Font::default();
-        let line = context.text_line(rect, &font);
+        // The **effective font** — the resolved theme/caller font — so the value honours the theme
+        // body font and the user's text scale (D09-STYLE-01).
+        let font = effective_font(&style);
+        let line = context.text_line(rect, font);
         context.draw_text_fitted(
             Rect {
                 x: rect.x + 6,
@@ -1016,7 +1022,7 @@ impl Draw for TimeEdit {
                 height: line.height,
             },
             &text,
-            &font,
+            font,
             ink,
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );

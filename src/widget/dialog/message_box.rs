@@ -19,7 +19,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 /// Message box icon type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -790,7 +790,10 @@ impl Draw for MessageBox {
         // word ran past the frame — the raster backends clip that away, but the SVG
         // backend emits absolute coordinates and showed the overflow as drawing outside
         // the picture. Each label is fitted to the band it belongs to instead.
-        let font = Font::default();
+        // These labels are drawn with the **effective font** — the resolved theme/caller font — so
+        // the title, body and buttons honour the theme body font and the user's text scale
+        // (D09-STYLE-01).
+        let font = effective_font(&style);
 
         // Dialog background. Rounded by [`dimensions::DIALOG_RADIUS`] so a message box reads
         // as the same class of object as every other dialog; the radius is clamped to the
@@ -817,7 +820,7 @@ impl Draw for MessageBox {
         let title_bar_band = ControlMetrics::top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
         context.fill_rect(title_bar_band, title_bar);
         if !self.title.is_empty() {
-            let title_font = Font::default();
+            let title_font = font;
             let title_line = context.text_line(title_bar_band, &title_font);
             context.draw_text_fitted(
                 Rect::new(
@@ -842,7 +845,7 @@ impl Draw for MessageBox {
         let body =
             ControlMetrics::content_below_top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
         let icon = self.icon_name();
-        let body_font = Font::default();
+        let body_font = font;
         let body_line_h = context.measure_text("M", &body_font).height.max(1) as i32;
         // The icon column is a fixed square at the frame's own margin, so a wide scalar cannot
         // overlap the message beside it and the message's start is the same whether or not a

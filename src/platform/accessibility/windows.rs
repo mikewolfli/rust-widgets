@@ -16,13 +16,15 @@
 //! The `uia_control_type()` function maps [`super::A11yRole`] to UIA control
 //! type IDs for modern UI Automation (UIA) provider conformance.
 
-use super::AccessibilityBridge;
+use super::{A11yState, AccessibilityBridge};
 use crate::compat::{lock, HashMap, Mutex, String, ToString};
 use crate::core::ObjectId;
 
 /// Windows UIAutomation bridge using NotifyWinEvent.
 pub struct WindowsAccessibilityBridge {
     names: Mutex<HashMap<ObjectId, String>>,
+    /// Full accessibility state per widget (D09-A11Y-02), mirrored from `submit_node_state`.
+    nodes: Mutex<HashMap<ObjectId, A11yState>>,
     /// Mapping from widget ObjectId to native HWND pointer (as usize).
     native_handles: Mutex<HashMap<ObjectId, usize>>,
 }
@@ -30,7 +32,11 @@ pub struct WindowsAccessibilityBridge {
 impl WindowsAccessibilityBridge {
     /// Creates an empty bridge: no accessible names and no bound handles.
     pub fn new() -> Self {
-        Self { names: Mutex::new(HashMap::new()), native_handles: Mutex::new(HashMap::new()) }
+        Self {
+            names: Mutex::new(HashMap::new()),
+            nodes: Mutex::new(HashMap::new()),
+            native_handles: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Register a native HWND handle for the given widget id.
@@ -77,6 +83,28 @@ impl AccessibilityBridge for WindowsAccessibilityBridge {
 
     fn accessibility_name(&self, id: ObjectId) -> Option<String> {
         lock(&self.names).get(&id).cloned()
+    }
+
+    /// Stores the full node state (D09-A11Y-02) alongside the name, so a UIA provider can report a
+    /// control's role, value and checked state rather than only its name.
+    fn submit_node_state(&self, id: ObjectId, state: &A11yState) {
+        lock(&self.names).insert(id, state.label.clone());
+        lock(&self.nodes).insert(id, state.clone());
+    }
+
+    fn node_state(&self, id: ObjectId) -> Option<A11yState> {
+        lock(&self.nodes).get(&id).cloned()
+    }
+
+    /// Removes the name and state entries on unmount (D09-A11Y-03), so the maps do not keep one
+    /// entry per historical widget id.
+    fn unregister_node(&self, id: ObjectId) {
+        lock(&self.names).remove(&id);
+        lock(&self.nodes).remove(&id);
+    }
+
+    fn node_count(&self) -> usize {
+        lock(&self.nodes).len()
     }
 
     fn notify_name_changed(&self, id: ObjectId) {
@@ -190,7 +218,7 @@ pub fn uia_control_type_id(role: &super::A11yRole) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::accessibility::A11yRole;
+    use crate::platform::accessibility::{A11yRole, A11yState};
 
     #[test]
     fn test_bridge_send_sync() {
@@ -198,6 +226,42 @@ mod tests {
         fn assert_sync<T: Sync>() {}
         assert_send::<WindowsAccessibilityBridge>();
         assert_sync::<WindowsAccessibilityBridge>();
+    }
+
+    /// D09-A11Y-02: the full state is stored and read back, not only the label.
+    #[test]
+    fn submitted_state_is_stored_in_full_not_only_the_label() {
+        let bridge = WindowsAccessibilityBridge::new();
+        let full = A11yState {
+            role: A11yRole::Slider,
+            label: "Volume".to_string(),
+            description: "Output level".to_string(),
+            enabled: true,
+            value: "60".to_string(),
+            children: vec![2],
+            ..A11yState::default()
+        };
+        bridge.submit_node_state(3, &full);
+        assert_eq!(bridge.node_state(3), Some(full), "every field round-trips");
+        assert_eq!(bridge.accessibility_name(3).as_deref(), Some("Volume"));
+    }
+
+    /// D09-A11Y-03: unmount removes both the name and the state entry.
+    #[test]
+    fn unmount_removes_entries_so_counts_return_to_baseline() {
+        let bridge = WindowsAccessibilityBridge::new();
+        let id = 11u64;
+        bridge.submit_node_state(
+            id,
+            &A11yState { role: A11yRole::Button, label: "Go".to_string(), ..A11yState::default() },
+        );
+        assert_eq!(bridge.node_count(), 1);
+        assert!(bridge.accessibility_name(id).is_some());
+
+        bridge.unregister_node(id);
+        assert_eq!(bridge.node_count(), 0, "the node is gone");
+        assert!(bridge.accessibility_name(id).is_none(), "and the name is gone");
+        assert!(bridge.node_state(id).is_none(), "and the state is gone");
     }
 
     #[test]

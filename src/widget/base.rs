@@ -960,6 +960,10 @@ impl BaseWidget {
     /// Maintains [`Self::hovered`], [`Self::pressed`], [`Self::grabbed`] and
     /// [`Self::focus_reason`] from the primitive input events.
     ///
+    /// A stylus press (`PointerPress`) arms and clears this state exactly like a mouse press
+    /// (`MousePress`) and its matching `PointerRelease` (D09-POINTER-01), so the state channel
+    /// reports the same facts whichever device produced the gesture.
+    ///
     /// # Why the base owns this
     ///
     /// These four are true of *every* control, and the events that report them are the
@@ -984,12 +988,18 @@ impl BaseWidget {
         match event {
             Event::MouseEnter { .. } => self.hovered = true,
             Event::MouseLeave { .. } => self.hovered = false,
-            Event::MousePress { pos, button, .. } => {
+            Event::MousePress { pos, button, .. } | Event::PointerPress { pos, button, .. } => {
                 // Only a press the runtime actually routed here (or that hit-tests
                 // inside) arms the gesture, and never on a disabled control: a disabled
                 // control is inert, so its state channel must stay `Disabled` rather than
                 // reporting pressed. A themed box that paints outside its rectangle would
                 // otherwise look pressed for a click that landed elsewhere.
+                //
+                // `PointerPress` is treated exactly like `MousePress` here (D09-POINTER-01):
+                // a stylus contact is a press like any other, and the base must arm the same
+                // `grabbed`/`pressed` pair so a control's own gesture and the painted state
+                // both work. Before this, only `mouse_down` was emitted, so a pen press armed
+                // nothing and every later move/release was unrouteable.
                 if self.enabled
                     && *button == crate::event::mouse_button::PRIMARY
                     && self.contains_point_with_touch_expansion(*pos)
@@ -1002,6 +1012,9 @@ impl BaseWidget {
                 self.pressed = self.contains_point_with_touch_expansion(*pos);
             }
             Event::MouseRelease { .. } | Event::PointerRelease { .. } => {
+                // The release half of the pair (`PointerRelease` included, D09-POINTER-01):
+                // whichever device started the gesture, its release ends it. Guarding on
+                // `grabbed` is unnecessary — clearing an unset flag is idempotent.
                 self.grabbed = false;
                 self.pressed = false;
             }
@@ -1055,6 +1068,39 @@ mod tests {
 
         assert_eq!(*hovers.lock().expect("lock"), vec![Point::new(3, 4)], "hover is routed");
         assert_eq!(*downs.lock().expect("lock"), 1, "mouse_down is routed");
+    }
+
+    /// D09-POINTER-01: a stylus press arms `grabbed`/`pressed` exactly like a mouse press,
+    /// so a control's gesture and its painted state both work from pen input.
+    ///
+    /// Before the fix only `mouse_down` was emitted for a `PointerPress`: the latch stayed
+    /// unset, so the button's release arm (guarded on the grab) could never fire.
+    #[test]
+    fn base_pointer_press_arms_and_release_clears_the_interaction_state() {
+        let mut bw = make_base();
+
+        bw.handle_event(&Event::pointer_press(Point::new(20, 30), 1, 0.6, 0.0, 0.0));
+        assert!(bw.is_grabbed(), "a PointerPress inside must take the grab");
+        assert!(bw.is_mouse_pressed(), "a PointerPress inside must arm pressed");
+
+        // A move while grabbed re-resolves `pressed` from whether the point is still inside.
+        bw.handle_event(&Event::pointer_move(Point::new(400, 400), 0.6, 0.0, 0.0));
+        assert!(!bw.is_mouse_pressed(), "dragging off clears the painted pressed state");
+        assert!(bw.is_grabbed(), "the grab survives the drag");
+
+        bw.handle_event(&Event::pointer_release(Point::new(400, 400), 1, 0.0));
+        assert!(!bw.is_grabbed(), "a PointerRelease must drop the grab");
+        assert!(!bw.is_mouse_pressed(), "a PointerRelease must clear pressed");
+    }
+
+    /// D09-POINTER-01: a `PointerPress` of a non-primary button (a barrel switch) is not a
+    /// tip contact, so it must not arm the gesture — the same rule the mouse arm applies.
+    #[test]
+    fn base_pointer_press_with_a_non_primary_button_does_not_arm() {
+        let mut bw = make_base();
+        bw.handle_event(&Event::pointer_press(Point::new(20, 30), 2, 0.6, 0.0, 0.0));
+        assert!(!bw.is_grabbed(), "a secondary button must not take the grab");
+        assert!(!bw.is_mouse_pressed(), "a secondary button must not arm pressed");
     }
 
     /// The base must **not** invent a `clicked` signal.

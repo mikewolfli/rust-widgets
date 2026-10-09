@@ -38,7 +38,7 @@
 //! `ControlBackend`. `WidgetKind::RadarChart` is its own kind rather than a
 //! `chart_type` token, because its data model is series-over-dimensions.
 
-use crate::core::{deg_to_rad, Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{deg_to_rad, Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -46,6 +46,7 @@ use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -595,7 +596,7 @@ impl RadarChart {
         context.draw_text_fitted(
             rect,
             "No data",
-            &Font::simple("Sans", 12.0),
+            &role_font(self.style(), 12.0),
             self.chrome_colors().placeholder,
             HorizontalAlignment::Left,
         );
@@ -652,7 +653,7 @@ impl RadarChart {
     ) {
         const LABEL_GAP: u32 = 10;
         let rect = self.base.geometry();
-        let font = Font::simple("Sans", 10.0);
+        let font = role_font(self.style(), 10.0);
         let label_ink = self.chrome_colors().label;
         let label_radius = radius + LABEL_GAP;
         for axis in 0..axis_count {
@@ -734,7 +735,7 @@ impl RadarChart {
     fn draw_legend(&self, context: &mut RenderContext, rect: Rect) {
         const SWATCH: u32 = 10;
         const ROW_HEIGHT: i32 = 18;
-        let font = Font::simple("Sans", 10.0);
+        let font = role_font(self.style(), 10.0);
         // One derivation for the legend's ink, shared with every other piece of chrome.
         let chrome = self.chrome_colors();
         let legend_ink = chrome.legend_ink;
@@ -786,7 +787,7 @@ impl RadarChart {
         context.draw_line_stroke(center, outer, chrome.hover_spoke, 1);
         // The read-out for every series on this dimension, which is what makes the
         // hover worth doing on a chart whose polygons overlap.
-        let font = Font::simple("Sans", 9.0);
+        let font = role_font(self.style(), 9.0);
         let mut text_y = outer.y + 4;
         for series_index in 0..self.series.len() {
             let Some(value) = self.value_at(series_index, axis) else {

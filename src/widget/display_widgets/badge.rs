@@ -8,7 +8,7 @@
 //! levels (Info, Success, Warning, Error) and a dot mode that shows only a
 //! colored dot without text. When the count is set to 0, the badge hides itself.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::style::SemanticColor;
@@ -18,7 +18,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, role_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -327,7 +327,7 @@ impl Draw for Badge {
         // `pill_height` so a wide label also grew the pill taller. Both now derive from
         // the resolved label and the named pill metrics alone, and the pill is centred in
         // the control by [`ControlMetrics::center_in`], which clamps rather than expands.
-        let font = Font::simple("sans-serif", dimensions::BADGE_LABEL_FONT_SIZE as f32);
+        let font = role_font(&style, dimensions::BADGE_LABEL_FONT_SIZE as f32);
         let metrics = context.measure_text(&text_str, &font);
 
         let text_width = metrics.width;

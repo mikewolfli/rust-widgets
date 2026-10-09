@@ -8,7 +8,7 @@
 
 use std::f32::consts::TAU;
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -18,7 +18,7 @@ use crate::widget::capability::coercion::{expect_f32, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::dimensions;
+use crate::widget::metrics::{dimensions, effective_font};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -936,8 +936,10 @@ impl Draw for PieMenu {
         context.fill_circle(center, inner_r as u32, hub);
         context.draw_circle_stroke(center, inner_r as u32, border, 1);
 
-        // Draw text labels centered in each slice
-        let font = Font::default();
+        // Draw text labels centered in each slice, with the **effective font** — the resolved
+        // theme/caller font — so the labels honour the theme body font and the user's text scale
+        // (D09-STYLE-01).
+        let font = effective_font(&style);
         for (i, item) in self.items.iter().enumerate() {
             if !item.is_enabled() {
                 continue;
@@ -960,7 +962,7 @@ impl Draw for PieMenu {
             context.draw_text(
                 Point::from_f32(lx, ly),
                 label_text,
-                &font,
+                font,
                 text_color,
                 HorizontalAlignment::Left,
             );

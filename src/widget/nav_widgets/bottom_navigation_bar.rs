@@ -18,6 +18,7 @@ use crate::widget::capability::coercion::expect_usize;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -308,8 +309,8 @@ impl Draw for BottomNavigationBar {
         let icon_font_size = (bar_height as f32 * 0.32).clamp(14.0, 28.0);
         let label_font_size = (bar_height as f32 * 0.18).clamp(9.0, 14.0);
 
-        let icon_font = crate::core::Font::new("sans-serif", icon_font_size, false, false);
-        let label_font = crate::core::Font::new("sans-serif", label_font_size, false, false);
+        let icon_font = role_font(&style, icon_font_size);
+        let label_font = role_font(&style, label_font_size);
 
         for (i, item) in self.items.iter().enumerate() {
             let tab_x = rect.x + (i as u32 * tab_width) as i32;

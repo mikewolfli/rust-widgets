@@ -32,6 +32,10 @@ use crate::widget::chart_widgets::charts::{
     compute_cartesian_layout, draw_cartesian_axes, draw_x_ticks, draw_y_ticks, CartesianLayout,
 };
 use crate::widget::chart_widgets::{finite_samples, is_finite_sample};
+#[cfg(not(feature = "chart"))]
+use crate::widget::metrics::effective_font;
+#[cfg(not(feature = "chart"))]
+use crate::widget::metrics::role_font;
 // Shared with the engine-backed path so the `not(feature = "chart")` fallback cannot
 // reintroduce the light-chart literals the engine path moved off.
 #[cfg(not(feature = "chart"))]
@@ -503,7 +507,9 @@ impl LineChart {
         }
 
         if self.show_labels && is_enabled {
-            let label_font = Font::new("sans-serif", 9.0, false, false);
+            // The axis labels take the **effective font** at their role size, so the theme family
+            // and the user's text scale reach the chart chrome (D09-STYLE-01).
+            let label_font = role_font(self.base.style(), 9.0);
             for i in 0..=4 {
                 let t = i as f64 / 4.0;
                 let val = y_min + (y_max - y_min) * (1.0 - t);

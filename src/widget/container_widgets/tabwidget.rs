@@ -29,7 +29,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 #[cfg(full_widgets)]
 use crate::widget::composite::CompositeBuilder;
-use crate::widget::metrics::estimate_text_width;
+use crate::widget::metrics::{effective_font, estimate_text_width};
 #[cfg(feature = "image")]
 use crate::widget::Image;
 #[cfg(full_widgets)]
@@ -506,7 +506,8 @@ impl TabWidget {
                 // label's advance for the whole crate, matching what `TabView::tab_widths` uses and
                 // what the renderer draws with. The hand-rolled form also mis-measured any
                 // non-Latin caption, since it charged a fixed 8 px per cluster.
-                (estimate_text_width(&tab.title, &Font::default(), 1.0) as i32 + TAB_TEXT_PADDING)
+                (estimate_text_width(&tab.title, effective_font(self.style()), 1.0) as i32
+                    + TAB_TEXT_PADDING)
                     .clamp(MIN_TAB_WIDTH, MAX_TAB_WIDTH)
             })
             .collect();
@@ -995,7 +996,8 @@ impl EventHandler for TabWidget {
                         // origins differed by half a line, which put the glyph's outer rows outside
                         // its own hit area.
                         if let Some(tab_rect) = self.tab_rect(index) {
-                            let close_rect = self.close_button_rect(tab_rect, &Font::default());
+                            let close_rect =
+                                self.close_button_rect(tab_rect, effective_font(self.style()));
                             if close_rect.is_some_and(|close_rect| close_rect.contains(*pos)) {
                                 self.tab_close_requested.emit(index);
                                 return;
@@ -1143,8 +1145,8 @@ impl Draw for TabWidget {
                 // vertical midpoint. `draw_text_fitted` with `Center` states the intent and
                 // elides a title that cannot fit, instead of letting it leave the control.
                 let text_color = if !is_enabled { disabled_text } else { text_color };
-                let font = Font::default();
-                let tab_line = context.text_line(tab_rect, &font);
+                let font = effective_font(&style);
+                let tab_line = context.text_line(tab_rect, font);
                 let title_band = Rect {
                     x: tab_rect.x,
                     y: tab_line.y,
@@ -1158,7 +1160,7 @@ impl Draw for TabWidget {
                 context.draw_text_fitted(
                     title_band,
                     &tab.title,
-                    &font,
+                    font,
                     text_color,
                     HorizontalAlignment::Center,
                 );
@@ -1168,7 +1170,7 @@ impl Draw for TabWidget {
                 // (`close_button_rect`), so what looks clickable is clickable. It used to be
                 // derived here from `tab_line.y` while the hit test used `tab_rect.y` — the two
                 // ruled the same row and disagreed by half a line.
-                if let Some(close_rect) = self.close_button_rect(tab_rect, &font) {
+                if let Some(close_rect) = self.close_button_rect(tab_rect, font) {
                     let close_x = close_rect.x;
                     let close_y = close_rect.y;
                     context.draw_line(

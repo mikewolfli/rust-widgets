@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 //! Tool box widget.
-use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Orientation, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, ObjectId, Orientation, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::metrics::effective_font;
 
 use crate::widget::capability::coercion::{expect_orientation, expect_usize, orientation_to_str};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -783,12 +784,15 @@ impl Draw for ToolBox {
                 // The label is centred on the item's own line box. `item_rect.y +
                 // item_rect.height / 2` placed the glyph box's top edge on the item's middle
                 // line instead, which drew the text half a line low.
-                let text_font = Font::default();
-                let item_line = context.text_line(item_rect, &text_font);
+                // The **effective font** — the resolved theme/caller font — not a hardcoded default,
+                // so the item label honours the theme body font and the user's text scale
+                // (D09-STYLE-01).
+                let text_font = effective_font(style);
+                let item_line = context.text_line(item_rect, text_font);
                 context.draw_text(
                     Point::new(text_x, item_line.y),
                     &item.text,
-                    &text_font,
+                    text_font,
                     text_color,
                     HorizontalAlignment::Left,
                 );

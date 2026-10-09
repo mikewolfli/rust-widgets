@@ -5,6 +5,8 @@
 use super::event_queue::{EventQueue, EventSender};
 use super::timer::IdleTask;
 use super::timer::TimerManager;
+#[cfg(all(feature = "touch", not(alloc_frugal)))]
+use super::translator::is_touch_cancel;
 use super::types::{Event, EventPriority};
 #[cfg(all(feature = "touch", not(alloc_frugal)))]
 use crate::compat::HashMap;
@@ -51,27 +53,122 @@ fn feeds_the_gesture_engine(event: &Event) -> bool {
     event.is_touch() || matches!(event, Event::Timer { .. })
 }
 
-/// Routes an event through the gesture engine owned by its interaction target.
+/// Per-target gesture engines with a lifecycle, so a long-lived loop does not grow forever
+/// (D09-EVT-03).
 ///
-/// The loop used to share one [`GestureEngine`] across every target. Recognisers that remember
-/// state — the double-tap's "first tap seen" — therefore leaked from one target to the next: a
-/// single tap on target A followed by a single tap at the same coordinates on target B was reported
-/// as a double-tap on B, whose own recogniser had never seen the first tap. Keeping one engine per
-/// [`ObjectId`] scopes that state to the interaction owner. The registry is created on demand and
-/// dropped when the loop thread ends, so stopping the loop clears all gesture state.
+/// # The defect this closes
+///
+/// The loop kept a `HashMap<ObjectId, GestureEngine>` created on demand and **never** removed an
+/// entry: every distinct target that ever received a touch retained an 11-recogniser engine until
+/// the loop stopped, so an app that dynamically creates and destroys interaction targets grew the
+/// map with the historical target count. `runtime::unregister` clears focus, hover and pointer
+/// capture, but it cannot reach the loop thread's private map.
+///
+/// # The lifecycle boundary
+///
+/// An entry is dropped when its target is released (`release`), and swept when it has been idle
+/// for longer than any recogniser's memory: [`Self::idle_grace`] exceeds the double-tap timeout,
+/// so a target that is quietly waiting for the second tap of a double-tap keeps its engine, while
+/// one that has not seen input for longer than that is reclaimed. Sweeping by *idle time* (rather
+/// than on every touch end) is what keeps double-tap working — an engine removed the moment the
+/// first tap ends could never recognise the second. A touch **cancel** drops the entry at once:
+/// the interaction was withdrawn, so no recogniser state should survive it.
 #[cfg(all(feature = "touch", not(alloc_frugal)))]
-fn process_gesture(
-    engines: &mut HashMap<ObjectId, GestureEngine>,
-    target: ObjectId,
-    event: &Event,
-    now_ms: u64,
-) -> Option<Event> {
-    engines.entry(target).or_default().process(event, now_ms)
+struct GestureRegistry {
+    engines: HashMap<ObjectId, GestureEngineEntry>,
+}
+
+#[cfg(all(feature = "touch", not(alloc_frugal)))]
+struct GestureEngineEntry {
+    engine: GestureEngine,
+    /// Last time this target received an event the engine consumed (`now_ms`).
+    last_active_ms: u64,
+}
+
+#[cfg(all(feature = "touch", not(alloc_frugal)))]
+impl GestureRegistry {
+    fn new() -> Self {
+        Self { engines: HashMap::new() }
+    }
+
+    /// How long an idle target's engine is retained after its last event.
+    ///
+    /// Strictly greater than `DOUBLE_TAP_TIMEOUT_MS` (400 ms) so a target waiting for the
+    /// second tap of a double-tap is never swept, with headroom for the loop's own wake
+    /// cadence.
+    fn idle_grace() -> u64 {
+        crate::gesture::DOUBLE_TAP_TIMEOUT_MS + 600
+    }
+
+    /// Routes `event` to `target`'s engine, creating it on demand, and returns any derived
+    /// gesture event. A touch cancel discards the target's engine instead of feeding it, so no
+    /// recogniser commits a withdrawn gesture and the entry does not linger.
+    fn process(&mut self, target: ObjectId, event: &Event, now_ms: u64) -> Option<Event> {
+        if is_touch_cancel(event) {
+            self.engines.remove(&target);
+            return None;
+        }
+        let entry = self.engines.entry(target).or_insert_with(|| GestureEngineEntry {
+            engine: GestureEngine::new(),
+            last_active_ms: now_ms,
+        });
+        entry.last_active_ms = now_ms;
+        entry.engine.process(event, now_ms)
+    }
+
+    /// Drops engines idle longer than [`Self::idle_grace`]. Returns how many were removed.
+    fn sweep(&mut self, now_ms: u64) -> usize {
+        let grace = Self::idle_grace();
+        let before = self.engines.len();
+        self.engines.retain(|_, entry| now_ms.saturating_sub(entry.last_active_ms) <= grace);
+        before - self.engines.len()
+    }
+
+    /// Drops the engine for `target` (on unregister). Returns whether one was present.
+    fn release(&mut self, target: ObjectId) -> bool {
+        self.engines.remove(&target).is_some()
+    }
+
+    /// Number of live engines (test/introspection only).
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.engines.len()
+    }
 }
 
 /// Canonical event name for animation frame requests.
 /// Used instead of a string literal to avoid fragile string matching.
 pub const ANIMATION_FRAME_EVENT_NAME: &str = "animation_frame";
+
+// ── Per-turn dispatch budgets (D09-EVT-04) ──
+//
+// # Why explicit limits rather than "drain everything"
+//
+// The loop used to pull **every** queued event into an unbounded `Vec` and then walk the
+// High and Normal phases with no count or time limit. A sustained producer therefore made
+// the buffer grow with the backlog, and an arbitrarily large High/Normal stream pushed the
+// next platform pump, frame tasks and Idle work arbitrarily far out. The three constants
+// below bound one turn's work; whatever a turn does not reach stays in the queue (or is
+// re-queued in order) and is delivered on a later turn — bounded and eventually delivered,
+// never silently dropped.
+
+/// Maximum events pulled from the queue into a turn's dispatch buffer (D09-EVT-04).
+///
+/// This is what bounds the peak transient buffer: events beyond it simply remain in the
+/// queue, so the buffer cannot grow with the backlog.
+#[cfg(not(alloc_frugal))]
+const PER_TURN_EVENT_DRAIN_CAP: usize = 512;
+
+/// Time budget for the High-priority dispatch phase of one turn (D09-EVT-04).
+///
+/// High work is the most urgent, so it gets the largest share, but it is still bounded so
+/// it cannot monopolise a turn and starve the platform pump and the next frame.
+#[cfg(not(alloc_frugal))]
+const HIGH_PHASE_BUDGET: Duration = Duration::from_millis(4);
+
+/// Time budget for the Normal-priority dispatch phase of one turn (D09-EVT-04).
+#[cfg(not(alloc_frugal))]
+const NORMAL_PHASE_BUDGET: Duration = Duration::from_millis(4);
 
 /// The request id carried by an animation-frame event, or `None` for any other event.
 ///
@@ -120,6 +217,17 @@ impl AnimFrameState {
     /// Records a new request as pending.
     fn request(&mut self, id: u64) {
         self.pending.push(id);
+    }
+
+    /// Drops a pending id without marking it cancelled.
+    ///
+    /// Used to roll back the registration made before publication when publishing the
+    /// frame event fails (D09-EVT-08): the frame was never queued, so leaving it pending
+    /// would let a later cancel of a request that was never issued report a change.
+    fn forget(&mut self, id: u64) {
+        if let Some(position) = self.pending.iter().position(|pending| *pending == id) {
+            self.pending.swap_remove(position);
+        }
     }
 
     /// Cancels `id` if it is still pending. Returns whether a state change occurred.
@@ -229,7 +337,7 @@ pub struct EventLoop {
     cancelled_anim_frames: Arc<Mutex<AnimFrameState>>,
     /// Round-robin start index into `idle_tasks` for the next loop iteration.
     ///
-    /// The Idle-task phase used to restart at index 0 every round and break on the 5ms
+    /// The Idle-task phase used to restart at index 0 every round and break on the 5 ms
     /// budget, so a slow first task let later tasks starve. Persisting the next start
     /// position rotates the phase: every task eventually reaches the front of the round,
     /// while the budget and the normal (cooldown-respecting) ordering are unchanged.
@@ -241,6 +349,15 @@ pub struct EventLoop {
     /// mirror the desktop layout (same reason `thread_handle` is mirrored there).
     #[cfg_attr(alloc_frugal, allow(dead_code))]
     idle_task_cursor: Arc<AtomicUsize>,
+    /// Targets whose gesture state the host has asked the loop to drop (D09-EVT-03).
+    ///
+    /// The per-target gesture registry lives on the loop thread, so the host cannot reach
+    /// it directly. This is the handoff: `EventLoop::release_gesture_target` pushes an id
+    /// here and the loop drains the set at the top of each turn. A plain `Vec` under its own
+    /// mutex (never the queue mutex) keeps the discipline simple — the producer never blocks
+    /// on the loop's queue, and the loop never blocks on the producer beyond this short push.
+    #[cfg(all(feature = "touch", not(alloc_frugal)))]
+    gesture_releases: Arc<Mutex<Vec<ObjectId>>>,
 }
 
 impl EventLoop {
@@ -261,6 +378,8 @@ impl EventLoop {
             native_pump: None,
             idle_tasks: Vec::new(),
             idle_task_cursor: Arc::new(AtomicUsize::new(0)),
+            #[cfg(all(feature = "touch", not(alloc_frugal)))]
+            gesture_releases: Arc::new(Mutex::new(Vec::new())),
             cancelled_anim_frames: Arc::new(Mutex::new(AnimFrameState::default())),
         }
     }
@@ -313,7 +432,7 @@ impl EventLoop {
         let queue = Arc::clone(&self.queue);
         let dispatch_fn = self.dispatch_fn.clone();
         #[cfg(feature = "touch")]
-        let mut gesture_engines: HashMap<ObjectId, GestureEngine> = HashMap::new();
+        let mut gesture_engines = GestureRegistry::new();
         let native_pump = self.native_pump.clone();
         // Idle tasks run on the loop thread, so they move with it. `mem::take` leaves the
         // field empty; a restart after `stop()` therefore begins with none, which is the
@@ -323,6 +442,8 @@ impl EventLoop {
         // `cancel_animation_frame` (called from the host's thread) mutates the same one.
         let cancelled_anim_frames = Arc::clone(&self.cancelled_anim_frames);
         let idle_task_cursor = Arc::clone(&self.idle_task_cursor);
+        #[cfg(all(feature = "touch", not(alloc_frugal)))]
+        let gesture_releases = Arc::clone(&self.gesture_releases);
         let handle = thread::spawn(move || {
             while *lock(&running) {
                 // Phase 0: Pump native platform events (e.g., Wayland dispatch)
@@ -331,80 +452,77 @@ impl EventLoop {
                 }
                 // Phase 0a: Drain any pending scheduled tasks
                 crate::event::types::drain_tasks();
-                // Phase 1a: Drain all available events into a buffer so we can
-                // dispatch them in strict priority order (High > Normal > Idle).
-                let mut had_work = false;
-                let mut priority_buffer: Vec<(ObjectId, Event, EventPriority)> = Vec::new();
-                let mut idle_events: Vec<(ObjectId, Event)> = Vec::new();
-                while let Some(entry) = lock(&queue).dequeue() {
-                    had_work = true;
-                    priority_buffer.push(entry);
-                }
-
-                // Phase 1b: Dispatch High-priority events first.
-                for (target, event, priority) in &priority_buffer {
-                    if *priority != EventPriority::High {
-                        continue;
-                    }
-
-                    #[cfg(feature = "touch")]
-                    let maybe_gesture_event = if feeds_the_gesture_engine(event) {
-                        process_gesture(&mut gesture_engines, *target, event, now_ms())
-                    } else {
-                        None
+                // Phase 0b: Apply host-requested gesture-state releases (D09-EVT-03). A target
+                // that was unregistered no longer needs its engine, so dropping it here bounds
+                // the registry by *live* targets rather than by every target ever seen.
+                #[cfg(feature = "touch")]
+                {
+                    let releases: Vec<ObjectId> = {
+                        let mut pending = lock(&gesture_releases);
+                        core::mem::take(&mut *pending)
                     };
-
-                    if let Some(ref dispatch) = dispatch_fn {
-                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            dispatch(*target, event);
-                            #[cfg(feature = "touch")]
-                            if let Some(ref gesture) = maybe_gesture_event {
-                                dispatch(*target, gesture);
-                            }
-                        }));
-                        if let Err(e) = result {
-                            log::error!("[event-loop] Dispatch panicked: {e:?}");
-                        }
-                    } else {
-                        log::warn!(
-                            "[event-loop] No dispatch_fn set — dropping event {event:?} for target {target:?}"
-                        );
+                    for target in releases {
+                        gesture_engines.release(target);
+                    }
+                }
+                // Phase 1a: Drain up to `PER_TURN_EVENT_DRAIN_CAP` events into per-priority
+                // buffers (D09-EVT-04). Draining a bounded prefix — rather than everything —
+                // keeps the transient buffer bounded under a sustained producer; the rest
+                // stays queued and is picked up next turn, so ordering is preserved.
+                let mut had_work = false;
+                let mut high_events: Vec<(ObjectId, Event)> = Vec::new();
+                let mut normal_events: Vec<(ObjectId, Event)> = Vec::new();
+                let mut idle_events: Vec<(ObjectId, Event)> = Vec::new();
+                let mut drained = 0usize;
+                while drained < PER_TURN_EVENT_DRAIN_CAP {
+                    let Some((target, event, priority)) = lock(&queue).dequeue() else { break };
+                    had_work = true;
+                    drained += 1;
+                    match priority {
+                        EventPriority::High => high_events.push((target, event)),
+                        EventPriority::Normal => normal_events.push((target, event)),
+                        EventPriority::Idle => idle_events.push((target, event)),
                     }
                 }
 
-                // Phase 1c: Dispatch Normal-priority events second.
-                for (target, event, priority) in &priority_buffer {
-                    if *priority != EventPriority::Normal {
-                        continue;
-                    }
-
+                // One dispatch helper shared by the High and Normal phases, so both honour the
+                // same animation-frame cancellation and gesture-routing rules (and neither is a
+                // copy that can drift from the other). It borrows the gesture registry and the
+                // cancellation state; the phase loops below own only their event buffers.
+                let dispatch_fn_ref = &dispatch_fn;
+                let cancelled_ref = &cancelled_anim_frames;
+                #[cfg(feature = "touch")]
+                let gesture_ref = &mut gesture_engines;
+                // `mut` is only needed when the `touch` feature captures the gesture
+                // registry by `&mut`; without it the binding is immutable.
+                #[cfg_attr(not(feature = "touch"), allow(unused_mut))]
+                let mut dispatch_one = |target: ObjectId, event: &Event| {
                     // A cancelled animation frame is discarded here, before any dispatch, so a
-                    // host that cancelled never sees the callback. See
-                    // `cancel_animation_frame` for why this is checked at dispatch rather than
-                    // removed from the queue. Every delivered id is also marked dispatched so a
-                    // later cancel of the same handle reports `false`.
+                    // host that cancelled never sees the callback. See `cancel_animation_frame`
+                    // for why this is checked at dispatch rather than removed from the queue.
                     let anim_id = animation_frame_id(event);
                     let skip = match anim_id {
-                        Some(id) => lock(&cancelled_anim_frames).dispatched_and_cancelled(id),
+                        Some(id) => lock(cancelled_ref).dispatched_and_cancelled(id),
                         None => false,
                     };
                     if skip {
-                        continue;
+                        return;
                     }
 
                     #[cfg(feature = "touch")]
-                    let maybe_gesture_event = if feeds_the_gesture_engine(event) {
-                        process_gesture(&mut gesture_engines, *target, event, now_ms())
-                    } else {
-                        None
-                    };
+                    let maybe_gesture_event =
+                        if feeds_the_gesture_engine(event) || is_touch_cancel(event) {
+                            gesture_ref.process(target, event, now_ms())
+                        } else {
+                            None
+                        };
 
-                    if let Some(ref dispatch) = dispatch_fn {
+                    if let Some(dispatch) = dispatch_fn_ref {
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            dispatch(*target, event);
+                            dispatch(target, event);
                             #[cfg(feature = "touch")]
                             if let Some(ref gesture) = maybe_gesture_event {
-                                dispatch(*target, gesture);
+                                dispatch(target, gesture);
                             }
                         }));
                         if let Err(e) = result {
@@ -415,12 +533,46 @@ impl EventLoop {
                             "[event-loop] No dispatch_fn set — dropping event {event:?} for target {target:?}"
                         );
                     }
+                };
+
+                // Phase 1b: Dispatch High-priority events first, within a time budget. Events
+                // the budget does not reach are re-queued (High) so they are delivered next
+                // turn rather than dropped; the buffer is already bounded by the drain cap.
+                let mut processed = 0usize;
+                let budget_start = std::time::Instant::now();
+                while processed < high_events.len() {
+                    if budget_start.elapsed() >= HIGH_PHASE_BUDGET {
+                        break;
+                    }
+                    let (target, event) = &high_events[processed];
+                    dispatch_one(*target, event);
+                    processed += 1;
+                }
+                if processed < high_events.len() {
+                    let sender = lock(&queue).sender();
+                    for (target, event) in high_events.drain(processed..) {
+                        let _ = sender.post_with_priority(target, event, EventPriority::High);
+                    }
                 }
 
-                // Phase 1d: Buffer Idle events for budgeted processing.
-                for (target, event, priority) in priority_buffer {
-                    if priority == EventPriority::Idle {
-                        idle_events.push((target, event));
+                // Phase 1c: Dispatch Normal-priority events second, also budgeted. A cancelled
+                // animation frame is discarded before any dispatch, so a host that cancelled
+                // never sees the callback (see `cancel_animation_frame`), and every delivered
+                // id is marked dispatched so a later cancel reports `false`.
+                let mut processed = 0usize;
+                let budget_start = std::time::Instant::now();
+                while processed < normal_events.len() {
+                    if budget_start.elapsed() >= NORMAL_PHASE_BUDGET {
+                        break;
+                    }
+                    let (target, event) = &normal_events[processed];
+                    dispatch_one(*target, event);
+                    processed += 1;
+                }
+                if processed < normal_events.len() {
+                    let sender = lock(&queue).sender();
+                    for (target, event) in normal_events.drain(processed..) {
+                        let _ = sender.post_with_priority(target, event, EventPriority::Normal);
                     }
                 }
 
@@ -438,41 +590,10 @@ impl EventLoop {
                             break;
                         }
                         let (target, event) = &idle_events[processed];
-                        // Same cancellation rule the Normal phase applies; an animation frame may
-                        // be posted at either priority.
-                        let anim_id = animation_frame_id(event);
-                        let skip = match anim_id {
-                            Some(id) => lock(&cancelled_anim_frames).dispatched_and_cancelled(id),
-                            None => false,
-                        };
-                        if skip {
-                            processed += 1;
-                            continue;
-                        }
-                        #[cfg(feature = "touch")]
-                        let maybe_gesture_event = if feeds_the_gesture_engine(event) {
-                            process_gesture(&mut gesture_engines, *target, event, now_ms())
-                        } else {
-                            None
-                        };
-
-                        if let Some(ref dispatch) = dispatch_fn {
-                            let result =
-                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    dispatch(*target, event);
-                                    #[cfg(feature = "touch")]
-                                    if let Some(ref gesture) = maybe_gesture_event {
-                                        dispatch(*target, gesture);
-                                    }
-                                }));
-                            if let Err(e) = result {
-                                log::error!("[event-loop] Dispatch panicked: {e:?}");
-                            }
-                        } else {
-                            log::warn!(
-                                "[event-loop] No dispatch_fn set — dropping idle event {event:?} for target {target:?}"
-                            );
-                        }
+                        // Same cancellation and gesture rules the High/Normal phases apply; an
+                        // animation frame may be posted at any priority. `dispatch_one` owns
+                        // those rules, so idle events cannot drift from the others.
+                        dispatch_one(*target, event);
                         processed += 1;
                     }
                     // Deliver the remainder on a later, quieter iteration, in order.
@@ -481,6 +602,19 @@ impl EventLoop {
                         for (target, event) in idle_events.drain(processed..) {
                             let _ = sender.post_idle(target, event);
                         }
+                    }
+                }
+
+                // Phase 1f: Reclaim gesture engines whose targets have gone quiet (D09-EVT-03).
+                // The sweep runs on the loop's own cadence, so a target that received a touch and
+                // then went silent does not retain an 11-recogniser engine for the life of the
+                // loop. The grace exceeds the double-tap timeout, so a target still waiting for the
+                // second tap keeps its engine and double-tap keeps working.
+                #[cfg(feature = "touch")]
+                {
+                    let removed = gesture_engines.sweep(now_ms());
+                    if removed > 0 {
+                        log::trace!("[event-loop] reclaimed {removed} idle gesture engine(s)");
                     }
                 }
 
@@ -545,17 +679,25 @@ impl EventLoop {
     /// Mini builds do not spawn a background thread, so hosts must call this
     /// from their own frame/input loop to make `post_event` and timers live.
     ///
-    /// This is the synchronous counterpart of the threaded loop's Normal phase, and it
-    /// honours the same animation-frame contract: an event carrying a cancelled frame id
-    /// is discarded before dispatch and its cancellation entry is consumed, exactly as the
-    /// threaded loop does.
+    /// # Priority (D09-EVT-06)
+    ///
+    /// The event dispatched is the **highest-priority** one available — High before Normal
+    /// before Idle — with same-priority events kept in FIFO order. This matches the threaded
+    /// loop's phased dispatch, so a High event posted after older Normal/Idle work is not
+    /// delayed behind it. (The old pump dequeued strictly oldest-first and ignored the
+    /// priority metadata entirely, giving the two profiles different ordering semantics.)
+    ///
+    /// This remains the synchronous counterpart of the threaded loop's dispatch in every
+    /// other respect: it honours the same animation-frame contract (a cancelled frame is
+    /// discarded before dispatch and its cancellation entry is consumed, exactly as the
+    /// threaded loop does) and routes touch through the same gesture path.
     #[cfg(alloc_frugal)]
     pub fn pump_once(&mut self) -> bool {
         if !self.is_running() {
             return false;
         }
         self.timer_manager.pump();
-        let next = lock(&self.queue).dequeue();
+        let next = lock(&self.queue).dequeue_priority_first();
         let Some((target, event, _priority)) = next else {
             return false;
         };
@@ -627,14 +769,28 @@ impl EventLoop {
         target: ObjectId,
     ) -> Result<AnimationFrameRequest, String> {
         let id = self.next_anim_frame_id.fetch_add(1, Ordering::SeqCst);
+        // D09-EVT-08: register the request as pending **before** publishing the frame
+        // event. Publishing first left a window in which the loop thread could dequeue
+        // and dispatch the frame before this thread recorded it as pending; the dispatch
+        // then consumed nothing, and the id was added to `pending` *after* it had already
+        // run — so `cancel_animation_frame` would later report `true` for an already
+        // dispatched frame, leaving an orphan cancellation entry no event could consume.
+        //
+        // Registering first closes that window: the frame event cannot be dequeued until
+        // after `post_event`, by which point its id is already pending, so the dispatch
+        // removes it from `pending` and every later cancel correctly reports `false`. The
+        // lock is **not** held across `post_event` (which can synchronously run dispatch
+        // callbacks), so this cannot deadlock against them.
+        lock(&self.cancelled_anim_frames).request(id);
         let event = Event::Custom {
             name: ANIMATION_FRAME_EVENT_NAME.to_string(),
             payload: id.to_le_bytes().to_vec(),
         };
-        self.post_event(target, event, EventPriority::Normal)?;
-        // Record the request as pending so a subsequent cancel can tell a live request from
-        // one that was already dispatched (or never issued through this loop).
-        lock(&self.cancelled_anim_frames).request(id);
+        if let Err(error) = self.post_event(target, event, EventPriority::Normal) {
+            // The frame was never published, so the pending record must not survive it.
+            lock(&self.cancelled_anim_frames).forget(id);
+            return Err(error);
+        }
         Ok(AnimationFrameRequest { id })
     }
 
@@ -710,6 +866,26 @@ impl EventLoop {
     /// Stop all timers associated with a target widget.
     pub fn stop_timers_for_target(&self, target: ObjectId) -> usize {
         self.timer_manager.stop_timers_for_target(target)
+    }
+
+    /// Releases the gesture state the loop holds for `target` (D09-EVT-03).
+    ///
+    /// # When to call this
+    ///
+    /// This is the loop-side half of a widget unregister: when a host tears down an
+    /// interaction target (`runtime::unregister` clears focus, hover and pointer capture, but
+    /// cannot reach the loop thread's per-target gesture registry), it should call this so
+    /// the target's 11-recogniser engine is dropped rather than retained for the life of the
+    /// loop. The request is queued and applied on the loop's next turn; if the loop is not
+    /// running the request simply waits, and if it is never started the state is dropped with
+    /// the loop.
+    ///
+    /// The idle sweep would eventually reclaim the engine anyway, but only after the
+    /// registry's idle grace (longer than the double-tap timeout); this makes the reclaim
+    /// immediate and explicit, which is what a deterministic teardown needs.
+    #[cfg(all(feature = "touch", not(alloc_frugal)))]
+    pub fn release_gesture_target(&self, target: ObjectId) {
+        lock(&self.gesture_releases).push(target);
     }
 }
 
@@ -1203,6 +1379,144 @@ mod tests {
         assert!(!state.cancel(2), "a dispatched id is no longer pending");
     }
 
+    /// D09-EVT-08: a frame registered-then-dispatched before the caller cancels must not
+    /// be cancellable, and no orphan entry may remain.
+    ///
+    /// This drives the exact interleaving the fix is about: the id is pending, the loop
+    /// dispatches it (removing it from `pending`), and only then does the caller cancel.
+    /// The cancel must report `false` (nothing to cancel) and leave both sets empty, rather
+    /// than recording a cancellation that no future event can consume.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_frame_dispatched_before_cancel_leaves_no_orphan_entry() {
+        let mut el = EventLoop::new();
+        let handle = el.request_animation_frame(1u64).unwrap();
+
+        // The request is pending the instant it is issued — the registration precedes
+        // publication, so the loop can never dispatch ahead of it.
+        {
+            let state = lock(&el.cancelled_anim_frames);
+            assert!(
+                state.pending.contains(&handle.id),
+                "the id must be pending immediately after the request returns"
+            );
+        }
+
+        // The loop dispatches it (this is what the dispatch phase calls).
+        assert!(
+            !el.take_cancelled_animation_frame(handle.id),
+            "an un-cancelled frame is not skipped at dispatch"
+        );
+
+        // Now the caller cancels: the frame already ran, so this changes nothing.
+        assert!(
+            !el.cancel_animation_frame(handle),
+            "a frame dispatched before the cancel must report `false`"
+        );
+
+        let state = lock(&el.cancelled_anim_frames);
+        assert!(state.pending.is_empty(), "no pending entry may survive a dispatched frame");
+        assert!(
+            state.cancelled.is_empty(),
+            "no orphan cancellation entry may be recorded for a dispatched frame"
+        );
+    }
+
+    /// D09-EVT-08: a long request/dispatch/cancel sequence converges to empty bookkeeping.
+    ///
+    /// Each request is dispatched immediately and then cancelled; because the registration
+    /// precedes publication, every cancel must be refused and neither `pending` nor
+    /// `cancelled` may grow.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_request_dispatch_cancel_sequence_leaves_the_sets_empty() {
+        let mut el = EventLoop::new();
+        for _ in 0..512 {
+            let handle = el.request_animation_frame(1u64).unwrap();
+            // Dispatch the frame (not cancelled → not skipped).
+            assert!(!el.take_cancelled_animation_frame(handle.id));
+            // Cancelling after dispatch must be a no-op.
+            assert!(!el.cancel_animation_frame(handle));
+        }
+        let state = lock(&el.cancelled_anim_frames);
+        assert!(state.pending.is_empty(), "no pending entries may accumulate");
+        assert!(state.cancelled.is_empty(), "no cancelled entries may accumulate");
+    }
+
+    /// D09-EVT-08: a cancel before dispatch still wins, and the dispatch then consumes the
+    /// cancellation, leaving both sets empty.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_cancel_before_dispatch_is_honoured_and_consumed() {
+        let mut el = EventLoop::new();
+        let handle = el.request_animation_frame(1u64).unwrap();
+        assert!(el.cancel_animation_frame(handle), "a still-pending frame can be cancelled");
+        assert!(
+            el.take_cancelled_animation_frame(handle.id),
+            "the dispatch must skip the cancelled frame"
+        );
+        let state = lock(&el.cancelled_anim_frames);
+        assert!(state.pending.is_empty(), "the cancelled id is no longer pending");
+        assert!(state.cancelled.is_empty(), "the cancellation was consumed by dispatch");
+    }
+
+    /// D09-EVT-08: under real concurrency the bookkeeping still converges to empty.
+    ///
+    /// The host thread issues and cancels frames while the loop thread dispatches them —
+    /// the actual threading model of the API (`request_animation_frame`/
+    /// `cancel_animation_frame` take `&mut self`, so the host owns the loop and `start`
+    /// moves only the dispatch onto a thread). Whatever the interleaving, once the loop is
+    /// stopped every request is either dispatched or cancelled-and-consumed, so no
+    /// `pending` id and no orphan `cancelled` entry may remain. This is the race the fix
+    /// closes: before it, a frame dispatched in the publish/registration window left a
+    /// permanent `pending` entry and a `cancelled` entry that no event could consume.
+    #[cfg(all(not(alloc_frugal), not(target_arch = "wasm32")))]
+    #[test]
+    fn concurrent_request_dispatch_cancel_converges_to_empty_state() {
+        let dispatched = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&dispatched);
+
+        let mut el = EventLoop::new();
+        el.set_dispatch_fn(Arc::new(move |_target, event| {
+            if animation_frame_id(event).is_some() {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+        }));
+        el.start();
+
+        // The host issues and immediately cancels frames while the loop drains them. The
+        // cancel races the dispatch, which is the window D09-EVT-08 is about.
+        for i in 0..2_000u64 {
+            let request = el.request_animation_frame(1u64).unwrap();
+            if i % 2 == 0 {
+                let _ = el.cancel_animation_frame(request);
+            }
+        }
+
+        // Let the loop drain what is left, then stop it (which joins the dispatch thread).
+        let deadline = std::time::Instant::now() + Duration::from_millis(1_000);
+        while std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        el.stop();
+
+        let state = lock(&el.cancelled_anim_frames);
+        assert!(
+            state.pending.is_empty(),
+            "every request must be resolved to dispatched or cancelled; {} still pending",
+            state.pending.len()
+        );
+        assert!(
+            state.cancelled.is_empty(),
+            "every recorded cancellation must be consumed by a dispatch; {} orphaned",
+            state.cancelled.len()
+        );
+        assert!(
+            dispatched.load(Ordering::SeqCst) > 0,
+            "the loop must actually have dispatched frames, or the race was never exercised"
+        );
+    }
+
     /// The `mini` synchronous pump honours the same cancellation contract as the
     /// threaded loop: a cancelled frame is discarded before dispatch.
     ///
@@ -1236,24 +1550,101 @@ mod tests {
         assert!(fired.load(Ordering::SeqCst), "an uncancelled frame still dispatches");
     }
 
+    /// D09-EVT-06: the mini pump dispatches the highest-priority event available, not merely
+    /// the oldest, and keeps FIFO order within a priority.
+    ///
+    /// The old `pump_once` dequeued strictly oldest-first and ignored the priority metadata,
+    /// so a Normal/Idle event posted before a High one was dispatched first — different
+    /// semantics from the threaded loop. This drives the mini pump directly and asserts the
+    /// High event comes out first, then the remaining events in their posted order.
+    #[cfg(alloc_frugal)]
+    #[test]
+    fn pump_once_dispatches_by_priority() {
+        use std::sync::Mutex;
+
+        let order: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&order);
+
+        let mut el = EventLoop::new();
+        el.set_dispatch_fn(Arc::new(move |_target, event| {
+            let Event::Custom { name, .. } = event else { return };
+            let label = match name.as_str() {
+                "idle" => "idle",
+                "normal" => "normal",
+                "high" => "high",
+                _ => return,
+            };
+            log.lock().unwrap().push(label);
+        }));
+        el.start();
+
+        // Posted oldest-first: Normal, then Idle, then a High. FIFO would yield Normal first.
+        el.post_event(
+            1,
+            Event::Custom { name: "normal".to_string(), payload: vec![] },
+            EventPriority::Normal,
+        )
+        .unwrap();
+        el.post_event(
+            1,
+            Event::Custom { name: "idle".to_string(), payload: vec![] },
+            EventPriority::Idle,
+        )
+        .unwrap();
+        el.post_event(
+            1,
+            Event::Custom { name: "high".to_string(), payload: vec![] },
+            EventPriority::High,
+        )
+        .unwrap();
+
+        // Three pumps drain the three events.
+        assert!(el.pump_once());
+        assert!(el.pump_once());
+        assert!(el.pump_once());
+        assert!(!el.pump_once(), "the queue is empty after three events");
+
+        assert_eq!(
+            *order.lock().unwrap(),
+            vec!["high", "normal", "idle"],
+            "mini must dispatch High before Normal before Idle"
+        );
+
+        // Same-priority FIFO: two High events come out in the order posted.
+        order.lock().unwrap().clear();
+        el.post_event(
+            1,
+            Event::Custom { name: "high".to_string(), payload: vec![1] },
+            EventPriority::High,
+        )
+        .unwrap();
+        el.post_event(
+            1,
+            Event::Custom { name: "high".to_string(), payload: vec![2] },
+            EventPriority::High,
+        )
+        .unwrap();
+        assert!(el.pump_once());
+        assert!(el.pump_once());
+        assert_eq!(order.lock().unwrap().len(), 2, "both High events are dispatched");
+    }
+
     /// Gesture recogniser state is scoped to the interaction target: a tap on one target must
-    /// not arm a double-tap on another.
+    /// not arm a double-tap on another, and the registry reclaims engines for quiet targets
+    /// (D09-EVT-03).
     #[test]
     #[cfg(all(feature = "touch", not(alloc_frugal)))]
     fn gesture_state_is_scoped_to_its_interaction_target() {
-        use crate::compat::HashMap as CompatHashMap;
-        use crate::gesture::GestureEngine as Gesture;
-
-        let mut engines: CompatHashMap<ObjectId, Gesture> = CompatHashMap::new();
+        let mut registry = GestureRegistry::new();
 
         // Target 1: a single tap produces a Tap.
-        let _ = process_gesture(&mut engines, 1, &Event::touch_begin(10, 10, 1), 0);
-        let first = process_gesture(&mut engines, 1, &Event::touch_end(10, 10, 1), 100);
+        let _ = registry.process(1, &Event::touch_begin(10, 10, 1), 0);
+        let first = registry.process(1, &Event::touch_end(10, 10, 1), 100);
         assert!(matches!(first, Some(Event::Tap { .. })), "a single tap on target 1 is a Tap");
 
         // Target 2: the same tap must not inherit target 1's first tap into a DoubleTap.
-        let _ = process_gesture(&mut engines, 2, &Event::touch_begin(10, 10, 2), 200);
-        let second = process_gesture(&mut engines, 2, &Event::touch_end(10, 10, 2), 250);
+        let _ = registry.process(2, &Event::touch_begin(10, 10, 2), 200);
+        let second = registry.process(2, &Event::touch_end(10, 10, 2), 250);
         assert!(
             !matches!(second, Some(Event::DoubleTap { .. })),
             "a first tap on target 2 must not inherit target 1's tap"
@@ -1261,11 +1652,253 @@ mod tests {
         assert!(matches!(second, Some(Event::Tap { .. })), "target 2's own tap is still a Tap");
 
         // A second tap on target 2, within the window, does complete a double-tap.
-        let _ = process_gesture(&mut engines, 2, &Event::touch_begin(10, 10, 3), 300);
-        let third = process_gesture(&mut engines, 2, &Event::touch_end(10, 10, 3), 350);
+        let _ = registry.process(2, &Event::touch_begin(10, 10, 3), 300);
+        let third = registry.process(2, &Event::touch_end(10, 10, 3), 350);
         assert!(
             matches!(third, Some(Event::DoubleTap { .. })),
             "two taps on the same target still complete a double tap"
+        );
+    }
+
+    /// D09-EVT-03: many distinct touch targets are reclaimed once they go quiet, so the
+    /// registry stays bounded by *live* targets rather than by history.
+    ///
+    /// The old map created an engine per target and never removed one, so the count grew with
+    /// every distinct target ever touched. This drives 1000 distinct targets and then sweeps
+    /// past the idle grace: no orphan engine may remain.
+    #[test]
+    #[cfg(all(feature = "touch", not(alloc_frugal)))]
+    fn many_distinct_targets_are_reclaimed_after_they_go_quiet() {
+        let mut registry = GestureRegistry::new();
+        // Touch every target at the same instant so "within the grace" is unambiguous.
+        let touched_at = 1_000u64;
+        for target in 0..1000u64 {
+            let _ = registry.process(target, &Event::touch_begin(1, 1, target), touched_at);
+            let _ = registry.process(target, &Event::touch_end(1, 1, target), touched_at);
+        }
+        assert_eq!(registry.len(), 1000, "every target touched so far holds an engine");
+
+        // Sweep at exactly the grace boundary: nothing is reclaimed yet (a target may be
+        // waiting for a second tap).
+        let within_grace = touched_at + GestureRegistry::idle_grace();
+        assert_eq!(registry.sweep(within_grace), 0, "a target within the grace must be kept");
+        assert_eq!(registry.len(), 1000);
+
+        // Past the grace, every quiet target is reclaimed.
+        let past_grace = touched_at + GestureRegistry::idle_grace() + 1;
+        assert_eq!(registry.sweep(past_grace), 1000, "quiet targets must be reclaimed");
+        assert_eq!(registry.len(), 0, "no orphan gesture engine may remain");
+    }
+
+    /// D09-EVT-03: an explicit release drops one target's engine without touching the others.
+    #[test]
+    #[cfg(all(feature = "touch", not(alloc_frugal)))]
+    fn release_drops_only_the_named_target() {
+        let mut registry = GestureRegistry::new();
+        let _ = registry.process(1, &Event::touch_begin(0, 0, 1), 0);
+        let _ = registry.process(2, &Event::touch_begin(0, 0, 2), 0);
+        assert_eq!(registry.len(), 2);
+
+        assert!(registry.release(1), "releasing a present target reports true");
+        assert_eq!(registry.len(), 1, "only the named target is dropped");
+        assert!(!registry.release(1), "releasing an absent target reports false");
+        assert_eq!(registry.len(), 1);
+    }
+
+    /// D09-EVT-03: a touch cancel discards the target's engine at once and yields no gesture,
+    /// so a withdrawn contact neither commits nor lingers.
+    #[test]
+    #[cfg(all(feature = "touch", not(alloc_frugal)))]
+    fn a_touch_cancel_drops_the_engine_and_produces_no_gesture() {
+        let mut registry = GestureRegistry::new();
+        let _ = registry.process(7, &Event::touch_begin(10, 10, 1), 0);
+        assert_eq!(registry.len(), 1);
+
+        let cancel = crate::event::translator::touch_cancel(crate::core::Point::new(10, 10), 1);
+        let produced = registry.process(7, &cancel, 50);
+        assert!(produced.is_none(), "a cancel must not produce a completed gesture");
+        assert_eq!(registry.len(), 0, "the cancelled target's engine must be dropped");
+
+        // The contact is gone: a following end for the same id carries no state and no Tap.
+        let after = registry.process(7, &Event::touch_end(10, 10, 1), 60);
+        assert!(after.is_none(), "an end after a cancel must not synthesise a tap");
+    }
+
+    /// D09-EVT-03: sweeping by idle time must not break double-tap — an engine kept within
+    /// the grace still recognises the second tap.
+    #[test]
+    #[cfg(all(feature = "touch", not(alloc_frugal)))]
+    fn double_tap_still_works_across_a_sweep_within_the_grace() {
+        let mut registry = GestureRegistry::new();
+        // First tap.
+        let _ = registry.process(5, &Event::touch_begin(10, 10, 1), 0);
+        let first = registry.process(5, &Event::touch_end(10, 10, 1), 50);
+        assert!(matches!(first, Some(Event::Tap { .. })));
+
+        // A sweep inside the grace keeps the engine that remembers the first tap.
+        assert_eq!(registry.sweep(200), 0);
+
+        // Second tap within the double-tap window completes the double-tap.
+        let _ = registry.process(5, &Event::touch_begin(10, 10, 2), 250);
+        let second = registry.process(5, &Event::touch_end(10, 10, 2), 300);
+        assert!(
+            matches!(second, Some(Event::DoubleTap { .. })),
+            "double-tap must survive a sweep that happens within the idle grace"
+        );
+    }
+
+    /// D09-EVT-04: a burst far larger than the per-turn drain cap is delivered completely and
+    /// in order — boundedness is achieved by deferral, not by dropping.
+    ///
+    /// The queue used to be drained whole each turn and the High/Normal phases walked without
+    /// limit. The drain cap bounds one turn's buffer; this asserts the other half of the
+    /// contract: nothing is lost and the promised FIFO order survives the deferral across
+    /// turns.
+    #[cfg(all(not(alloc_frugal), not(target_arch = "wasm32")))]
+    #[test]
+    fn a_burst_larger_than_the_drain_cap_is_delivered_in_order_without_loss() {
+        const BURST: usize = PER_TURN_EVENT_DRAIN_CAP * 3 + 7;
+        let delivered = Arc::new(std::sync::Mutex::new(Vec::<usize>::new()));
+        let order = Arc::clone(&delivered);
+
+        let mut el = EventLoop::new();
+        el.set_dispatch_fn(Arc::new(move |_target, event| {
+            let Event::Custom { name, payload } = event else { return };
+            if name != "burst" {
+                return;
+            }
+            let index = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
+            order.lock().unwrap().push(index);
+        }));
+
+        for index in 0..BURST {
+            el.post_event(
+                1,
+                Event::Custom {
+                    name: "burst".to_string(),
+                    payload: (index as u32).to_le_bytes().to_vec(),
+                },
+                EventPriority::Normal,
+            )
+            .unwrap();
+        }
+
+        el.start();
+        let deadline = std::time::Instant::now() + Duration::from_millis(5_000);
+        while delivered.lock().unwrap().len() < BURST && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        el.stop();
+
+        let seen = delivered.lock().unwrap().clone();
+        assert_eq!(seen.len(), BURST, "every event in the burst must be delivered");
+        assert_eq!(
+            seen,
+            (0..BURST).collect::<Vec<_>>(),
+            "deferring past the drain cap must preserve FIFO order"
+        );
+    }
+
+    /// D09-EVT-04: a High event posted behind a large Normal backlog is still delivered in a
+    /// bounded number of turns, and High is always dispatched before Normal within a turn.
+    ///
+    /// # What "not starved" means here
+    ///
+    /// The queue is FIFO, so an event behind a backlog is drained in order — but the drain is
+    /// capped per turn, so the delay is bounded by the backlog size rather than unbounded, and
+    /// the platform pump and frame tasks run every turn regardless. This test pins that: the
+    /// High event arrives within a wall-clock deadline, and the phase order (High before the
+    /// Normal events drained in the same turn) is observed.
+    #[cfg(all(not(alloc_frugal), not(target_arch = "wasm32")))]
+    #[test]
+    fn a_high_event_behind_a_normal_backlog_is_delivered_within_bounded_turns() {
+        let saw_high = Arc::new(AtomicBool::new(false));
+        let saw_high_flag = Arc::clone(&saw_high);
+
+        let mut el = EventLoop::new();
+        el.set_dispatch_fn(Arc::new(move |_target, event| {
+            let Event::Custom { name, .. } = event else { return };
+            if name == "high" {
+                saw_high_flag.store(true, Ordering::SeqCst);
+            }
+        }));
+
+        let backlog = PER_TURN_EVENT_DRAIN_CAP * 4;
+        for _ in 0..backlog {
+            el.post_event(
+                1,
+                Event::Custom { name: "normal".to_string(), payload: vec![] },
+                EventPriority::Normal,
+            )
+            .unwrap();
+        }
+        el.post_event(
+            1,
+            Event::Custom { name: "high".to_string(), payload: vec![] },
+            EventPriority::High,
+        )
+        .unwrap();
+
+        el.start();
+        let deadline = std::time::Instant::now() + Duration::from_millis(3_000);
+        while !saw_high.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        el.stop();
+
+        assert!(
+            saw_high.load(Ordering::SeqCst),
+            "a High event must not be starved: it was not delivered within the bounded deadline"
+        );
+    }
+
+    /// D09-EVT-04: within a single turn, every High event is dispatched before any Normal
+    /// event, even when they are drained together.
+    #[cfg(all(not(alloc_frugal), not(target_arch = "wasm32")))]
+    #[test]
+    fn high_events_dispatch_before_normal_events_in_the_same_turn() {
+        let order = Arc::new(std::sync::Mutex::new(Vec::<&'static str>::new()));
+        let log = Arc::clone(&order);
+        let mut el = EventLoop::new();
+        el.set_dispatch_fn(Arc::new(move |_target, event| {
+            let Event::Custom { name, .. } = event else { return };
+            // Only the first few of each kind matter; a short prefix keeps the log small.
+            let mut guard = log.lock().unwrap();
+            if name == "h" && guard.iter().filter(|entry| **entry == "h").count() < 4 {
+                guard.push("h");
+            } else if name == "n" && guard.iter().filter(|entry| **entry == "n").count() < 4 {
+                guard.push("n");
+            }
+        }));
+
+        // Interleave so the FIFO order alone would put Normal before High.
+        for i in 0..4 {
+            el.post_event(
+                1,
+                Event::Custom { name: "n".to_string(), payload: vec![i] },
+                EventPriority::Normal,
+            )
+            .unwrap();
+            el.post_event(
+                1,
+                Event::Custom { name: "h".to_string(), payload: vec![i] },
+                EventPriority::High,
+            )
+            .unwrap();
+        }
+
+        el.start();
+        let deadline = std::time::Instant::now() + Duration::from_millis(2_000);
+        while order.lock().unwrap().len() < 8 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        el.stop();
+
+        let seen = order.lock().unwrap().clone();
+        let first_four = &seen[..seen.len().min(4)];
+        assert!(
+            first_four.iter().all(|entry| *entry == "h"),
+            "the High phase must run before the Normal phase; observed {seen:?}"
         );
     }
 

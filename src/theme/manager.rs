@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use super::{AppearanceMode, Borders, Colors, Fonts, Spacing, Theme, ThemeOverrides, WidgetRole};
-use crate::compat::HashMap;
+use crate::compat::{HashMap, Vec};
 use crate::core::{Color, Font};
 use crate::signal::Signal;
 use crate::style::{HighContrastMode, Margin, Padding, ThemeMode, WidgetState, WidgetStyle};
@@ -11,6 +11,19 @@ use crate::style::{HighContrastMode, Margin, Padding, ThemeMode, WidgetState, Wi
 pub struct ThemeManager {
     /// Registered themes keyed by theme name.
     themes: HashMap<String, Theme>,
+    /// Theme names in **registration order**, oldest first.
+    ///
+    /// # Why the manager keeps an order the map does not
+    ///
+    /// [`ThemeManager::set_appearance`] must choose one theme when several share an appearance.
+    /// Deriving that choice from the map's iteration order is non-deterministic: the registry is
+    /// a `std::collections::HashMap` on desktop and an `alloc::collections::BTreeMap` under mini,
+    /// so the same program picks different themes on different runs and different profiles
+    /// (D09-THEME-01). This vector makes the tie-break explicit and auditable — **first
+    /// registered wins** — and identical on every profile. A name is appended the first time it
+    /// is registered and never moved when it is re-registered (an update keeps its slot); see
+    /// [`ThemeManager::register_theme`].
+    registration_order: Vec<String>,
     /// Active theme name.
     current_theme: String,
     /// Signal emitted when the active theme changes.
@@ -28,10 +41,12 @@ impl ThemeManager {
     pub fn new() -> Self {
         let default = Theme::default();
         let current_theme = default.name.clone();
+        let registration_order = Vec::from([current_theme.clone()]);
         let mut themes = HashMap::new();
         themes.insert(default.name.clone(), default);
         Self {
             themes,
+            registration_order,
             current_theme,
             theme_changed: Signal::new(),
             high_contrast: HighContrastMode::None,
@@ -80,14 +95,37 @@ impl ThemeManager {
     /// appearance, which is the honest answer rather than silently keeping the
     /// current theme.
     pub fn set_appearance(&mut self, appearance: AppearanceMode) -> bool {
+        // D09-THEME-01: pick the **first-registered** theme of this appearance, not the map's
+        // first match. `self.themes` is unordered, so `.iter().find(...)` returned a different
+        // theme per process/profile when two shared an appearance; `registration_order` is the
+        // manager's explicit, auditable tie-break.
         let candidate = self
-            .themes
+            .registration_order
             .iter()
-            .find(|(_, theme)| theme.appearance == appearance)
-            .map(|(name, _)| name.clone());
+            .find(|name| self.themes.get(*name).is_some_and(|theme| theme.appearance == appearance))
+            .cloned();
         match candidate {
             Some(name) => self.set_theme(&name),
             None => false,
+        }
+    }
+
+    /// Registers a theme in memory.
+    ///
+    /// # Selection when appearances collide (D09-THEME-01)
+    ///
+    /// Multiple themes may share an [`AppearanceMode`]; the manager does not reject them,
+    /// because a caller may legitimately keep several light themes. Instead
+    /// [`Self::set_appearance`] resolves the collision by an explicit, auditable rule:
+    /// **the first-registered theme of that appearance wins**, recorded in
+    /// [`Self::registration_order`]. Registering the same name again **updates** it in place and
+    /// does not change its position, so re-loading a theme file never shifts the tie-break.
+    /// Passing an explicit name to [`Self::set_theme`] bypasses the rule entirely.
+    pub fn register_theme(&mut self, theme: Theme) {
+        let name = theme.name.clone();
+        let is_new = self.themes.insert(name.clone(), theme).is_none();
+        if is_new {
+            self.registration_order.push(name);
         }
     }
 
@@ -131,7 +169,10 @@ impl ThemeManager {
     pub fn load_theme(&mut self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
         let content = std::fs::read_to_string(path)?;
         let theme: Theme = serde_json::from_str(&content)?;
-        self.themes.insert(theme.name.clone(), theme);
+        // Route through `register_theme` so a loaded theme joins the deterministic
+        // registration order; inserting directly here would leave it unselectable by
+        // `set_appearance` (D09-THEME-01).
+        self.register_theme(theme);
         Ok(())
     }
 
@@ -152,7 +193,8 @@ impl ThemeManager {
         let content = std::fs::read_to_string(path)?;
         let theme: Theme = serde_json::from_str(&content)?;
         let name = theme.name.clone();
-        self.themes.insert(name.clone(), theme);
+        // Same order bookkeeping as `load_theme` (D09-THEME-01).
+        self.register_theme(theme);
         // `set_theme` always succeeds here: the entry was just inserted under this
         // exact name. Asserting rather than ignoring keeps a future change to either
         // method from silently leaving the loaded theme inactive.
@@ -188,11 +230,6 @@ impl ThemeManager {
             )
         })?;
         Ok(())
-    }
-
-    /// Registers a theme in memory.
-    pub fn register_theme(&mut self, theme: Theme) {
-        self.themes.insert(theme.name.clone(), theme);
     }
 
     /// Selects active theme by name. Emits `theme_changed` on success.
@@ -605,7 +642,9 @@ fn apply_token(style: &mut WidgetStyle, token: &super::ThemeStyleToken, theme: O
         style.border_radius = Some(radius);
     }
     if let Some(opacity) = token.opacity {
-        style.opacity = Some(opacity.clamp(0.0, 1.0));
+        // D09-STYLE-04: a programmatically-set `NaN` token must not reach the resolved style;
+        // `normalized_opacity` applies the same policy the builder and CSS paths use.
+        style.opacity = Some(crate::style::normalized_opacity(opacity));
     }
     if token.shadow != super::ShadowOverride::Inherit {
         // A named three-way choice rather than a nested `Option`: see

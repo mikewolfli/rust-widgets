@@ -19,6 +19,7 @@ use crate::widget::capability::coercion::expect_f32;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// HeroAnimation widget for shared element transitions.
@@ -288,7 +289,7 @@ impl Draw for HeroAnimation {
         if src.is_none() && tgt.is_none() {
             // No widgets configured: draw placeholder. The message is this widget's own
             // chrome — a hint about missing configuration — so it follows the theme.
-            let font = crate::core::Font::default();
+            let font = effective_font(&style);
             // Two lines, each fitted to the control's width, and each centred on the vertical
             // midline as a pair. The previous single call passed a two-line string with one
             // origin: the renderer draws **one** row per call, so the origin was computed
@@ -358,7 +359,7 @@ impl Draw for HeroAnimation {
         // Draw the progress indicator label. The label is chrome, so it uses the resolved
         // foreground instead of the fixed mid-grey that made it unreadable on a dark shell.
         let progress_text = format!("Progress: {:.0}%", t * 100.0);
-        let font = crate::core::Font::default();
+        let font = effective_font(&style);
         let metrics = context.measure_text(&progress_text, &font);
         let text_x = rect.x + (rect.width as i32 - metrics.width as i32) / 2;
         let text_y = rect.y + rect.height as i32 - 10;

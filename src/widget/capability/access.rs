@@ -862,6 +862,11 @@ pub fn default_widget_property_default_value(
             "stroke_color" => CapabilityValue::Color(crate::core::Color::rgb(20, 20, 20)),
             "min_point_distance" => CapabilityValue::Float(1.5),
             "min_point_interval_ms" => CapabilityValue::UInt(10),
+            // D09-POINTER-01: pressure-driven width is on by default, and the retained pen datum
+            // starts neutral (full pressure, no tilt) until a pointer event reports otherwise.
+            "pressure_affects_width" => CapabilityValue::Bool(true),
+            "last_pressure" => CapabilityValue::Float(1.0),
+            "last_tilt_x" | "last_tilt_y" => CapabilityValue::Float(0.0),
             _ => return None,
         },
         WidgetKind::DropZone => match property_name {

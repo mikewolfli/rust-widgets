@@ -189,11 +189,16 @@ impl FormField {
         }
     }
     /// The text a viewer should show for the field: the value with each
-    /// character replaced by `*` when [`FormField::is_password`] is set, and the
-    /// value itself otherwise.
+    /// *character* replaced by `*` when [`FormField::is_password`] is set, and
+    /// the value itself otherwise.
+    ///
+    /// The mask counts `char`s (Unicode scalar values), matching the character
+    /// counting used by [`FormField::set_value`] for `max_length`, so `"中文"`
+    /// shows two asterisks rather than the six its UTF-8 encoding occupies
+    /// (D08-PDF-04).
     pub fn get_display_value(&self) -> String {
         if self.is_password {
-            "*".repeat(self.value.len())
+            "*".repeat(self.value.chars().count())
         } else {
             self.value.clone()
         }
@@ -206,12 +211,18 @@ impl FormField {
     /// Selects the option at `index`, ignoring an index outside
     /// [`FormField::options`] and any call on a read-only field.
     ///
-    /// A radio or checkbox field replaces the whole selection and copies the
-    /// option's text into [`FormField::value`]; any other field type adds
-    /// `index` to the selection if it is not already there.
+    /// A field with a single selection — [`FieldType::Radio`],
+    /// [`FieldType::Checkbox`] and [`FieldType::ComboBox`] — replaces the whole
+    /// selection and copies the option's text into [`FormField::value`], so
+    /// selecting a second option moves the selection instead of accumulating
+    /// (D08-PDF-01). A [`FieldType::ListBox`], whose value is genuinely
+    /// multi-valued, adds `index` to the selection if it is not already there.
     pub fn select_option(&mut self, index: usize) {
         if !self.is_read_only && index < self.options.len() {
-            if self.field_type == FieldType::Radio || self.field_type == FieldType::Checkbox {
+            if matches!(
+                self.field_type,
+                FieldType::Radio | FieldType::Checkbox | FieldType::ComboBox
+            ) {
                 self.selected_indices = vec![index];
                 if let Some(option) = self.options.get(index) {
                     self.value = option.clone();
@@ -226,11 +237,40 @@ impl FormField {
     /// Removes the option at `index` from the selection, ignoring an index that
     /// was not selected. A no-op on a read-only field.
     ///
-    /// Unlike [`FormField::select_option`], this does not update
-    /// [`FormField::value`].
+    /// The field's [`FormField::value`] is kept in step with the selection so
+    /// that serialization agrees with what is shown: when the deselected option
+    /// is the one held in `value` the value is cleared, otherwise an unrelated
+    /// valid selection keeps its value. For a single-valued field
+    /// ([`FieldType::Radio`], [`FieldType::Checkbox`], [`FieldType::ComboBox`])
+    /// deselecting the current choice therefore leaves the field unselected
+    /// instead of still exporting as checked (D08-PDF-02).
     pub fn deselect_option(&mut self, index: usize) {
-        if !self.is_read_only {
-            self.selected_indices.retain(|&i| i != index);
+        if self.is_read_only {
+            return;
+        }
+        if !self.selected_indices.contains(&index) {
+            return;
+        }
+        self.selected_indices.retain(|&i| i != index);
+        // Only clear `value` when it was the text of the option just removed.
+        let cleared_value =
+            self.options.get(index).map(|o| o.as_str()) == Some(self.value.as_str());
+        if cleared_value {
+            match self.field_type {
+                // Single-valued controls have nothing left selected.
+                FieldType::Radio | FieldType::Checkbox | FieldType::ComboBox => self.value.clear(),
+                // A list box may still hold other selections; adopt the last one
+                // so the value string stays consistent with `selected_indices`.
+                FieldType::ListBox => {
+                    self.value = self
+                        .selected_indices
+                        .last()
+                        .and_then(|&i| self.options.get(i))
+                        .cloned()
+                        .unwrap_or_default();
+                }
+                _ => self.value.clear(),
+            }
         }
     }
     /// Clears both [`FormField::selected_indices`] and [`FormField::value`].
@@ -252,7 +292,12 @@ impl FormField {
             FieldType::Checkbox | FieldType::Radio => PdfFormField::CheckBox {
                 name: self.name.clone(),
                 rect: self.rect,
-                checked: !self.value.is_empty() && self.value != "Off" && self.value != "false",
+                // A checkbox/radio is checked when it has a live selection. The
+                // selection is authoritative (it is what `select_option`/
+                // `deselect_option` maintain); `value` is kept in step for
+                // callers that only read it, but a stale non-empty `value` alone
+                // must not resurrect a cleared selection (D08-PDF-02).
+                checked: !self.selected_indices.is_empty(),
             },
             FieldType::Button => PdfFormField::Button {
                 name: self.name.clone(),
@@ -279,6 +324,23 @@ impl FormField {
                     value: self.value.clone(),
                 }
             }
+        }
+    }
+
+    /// Whether this field currently holds a value that satisfies its own field
+    /// kind, used by [`Form::validate`] for required-field checking.
+    ///
+    /// * A choice field ([`FieldType::ListBox`], [`FieldType::ComboBox`]) is
+    ///   satisfied by at least one valid selected index, or (for the combo, whose
+    ///   value is a single option's text) by a non-empty value. A selection whose
+    ///   index no longer addresses [`FormField::options`] does not count.
+    /// * Every other type is satisfied by a non-empty [`FormField::value`].
+    pub fn has_a_value_for_its_kind(&self) -> bool {
+        let has_valid_selection = self.selected_indices.iter().any(|&i| i < self.options.len());
+        match self.field_type {
+            FieldType::ListBox => has_valid_selection,
+            FieldType::ComboBox => has_valid_selection || !self.value.is_empty(),
+            _ => !self.value.is_empty(),
         }
     }
 
@@ -419,14 +481,15 @@ impl Form {
     /// Validates every field and returns the problems found, in field order. An
     /// empty result means the form is valid.
     ///
-    /// The only rule checked at present is that a field marked
-    /// [`FormField::is_required`] has a non-empty [`FormField::value`]; in
-    /// particular a required list or combo box whose selection lives only in
-    /// [`FormField::selected_indices`] is reported as missing.
+    /// A required field is valid when it holds a value *for its own kind*: a
+    /// free-text field needs a non-empty [`FormField::value`], while the choice
+    /// types need a selection — a [`FieldType::ListBox`] is satisfied by any
+    /// selected index and a [`FieldType::ComboBox`] by its value or selection
+    /// (D08-PDF-03). A selected index out of range cannot satisfy the field.
     pub fn validate(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
         for field in &self.fields {
-            if field.is_required && field.value.is_empty() {
+            if field.is_required && !field.has_a_value_for_its_kind() {
                 errors.push(ValidationError {
                     field_id: field.id.clone(),
                     field_name: field.name.clone(),
@@ -613,5 +676,94 @@ mod tests {
         manager.set_current_form(Some("form-1".to_string()));
         assert_eq!(manager.form_count(), 1);
         assert!(manager.get_current_form().is_some());
+    }
+
+    fn choice_field(field_type: FieldType) -> FormField {
+        FormField::new(
+            "field-1".to_string(),
+            "choice".to_string(),
+            field_type,
+            1,
+            Rect::new(100, 100, 200, 30),
+        )
+        .with_options(vec!["A".to_string(), "B".to_string(), "C".to_string()])
+    }
+
+    /// D08-PDF-01: a ComboBox is single-select, so a second selection replaces
+    /// the first and the exported value follows the current choice.
+    #[test]
+    fn combo_box_keeps_a_single_selection_and_exports_it() {
+        let mut field = choice_field(FieldType::ComboBox);
+        field.select_option(0);
+        field.select_option(1);
+        assert_eq!(field.selected_indices, vec![1]);
+        assert_eq!(field.value, "B");
+        match field.to_pdf_form_field() {
+            PdfFormField::ComboBox { value, .. } => assert_eq!(value, "B"),
+            other => panic!("expected a ComboBox, got {other:?}"),
+        }
+    }
+
+    /// D08-PDF-02: deselecting the selected option of a checkbox/radio clears
+    /// the value so the field no longer exports as checked, while deselecting a
+    /// different index leaves the valid selection intact.
+    #[test]
+    fn deselecting_a_choice_clears_the_checkbox_value() {
+        let mut field = choice_field(FieldType::Checkbox);
+        field.select_option(0);
+        field.deselect_option(0);
+        assert!(field.selected_indices.is_empty());
+        assert!(field.value.is_empty());
+        match field.to_pdf_form_field() {
+            PdfFormField::CheckBox { checked, .. } => assert!(!checked),
+            other => panic!("expected a CheckBox, got {other:?}"),
+        }
+
+        // Deselecting a non-selected index must not clear an unrelated choice.
+        field.select_option(2);
+        field.deselect_option(0);
+        assert_eq!(field.selected_indices, vec![2]);
+        assert_eq!(field.value, "C");
+    }
+
+    /// D08-PDF-02: a checkbox that was never selected but has an unrelated
+    /// non-empty value must not export as checked.
+    #[test]
+    fn checkbox_export_is_driven_by_selection_not_stale_value() {
+        let mut field = choice_field(FieldType::Checkbox);
+        field.value = "Off".to_string();
+        match field.to_pdf_form_field() {
+            PdfFormField::CheckBox { checked, .. } => assert!(!checked),
+            other => panic!("expected a CheckBox, got {other:?}"),
+        }
+    }
+
+    /// D08-PDF-03: a required ListBox/ComboBox with a live selection validates;
+    /// an empty or out-of-range selection does not.
+    #[test]
+    fn required_choice_fields_validate_on_selection() {
+        let mut form = Form::new("f".to_string(), "F".to_string());
+        let mut list = choice_field(FieldType::ListBox).required();
+        list.select_option(1);
+        form.add_field(list);
+        assert!(form.validate().is_empty(), "a selected required ListBox must validate");
+
+        // Out-of-range selection does not count as a value.
+        let mut form = Form::new("f".to_string(), "F".to_string());
+        let mut list = choice_field(FieldType::ListBox).required();
+        list.selected_indices = vec![99];
+        form.add_field(list);
+        assert_eq!(form.validate().len(), 1);
+    }
+
+    /// D08-PDF-04: the password mask counts characters, not UTF-8 bytes.
+    #[test]
+    fn password_mask_counts_characters() {
+        let mut field = choice_field(FieldType::Text);
+        field.is_password = true;
+        field.value = "中文".to_string();
+        assert_eq!(field.get_display_value(), "**");
+        field.value = "aé中".to_string();
+        assert_eq!(field.get_display_value(), "***");
     }
 }

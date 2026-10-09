@@ -520,8 +520,26 @@ pub trait WidgetHandle: Sized {
 
 // ── Global callback registry ──────────────────────────────────
 
+use crate::signal::ConnectionHandle;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+
+/// Which of a widget's own signals a stored [`ConnectionHandle`] belongs to.
+///
+/// `on_click` connects to `BaseWidget::clicked` and `on_close` to
+/// `BaseWidget::closed`; removal must disconnect through the matching signal, so
+/// the kind is recorded alongside the handle (D08-A-01).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SignalKind {
+    Clicked,
+    Closed,
+}
+
+/// A recorded subscription made by `on_click` / `on_close`.
+struct SignalConnection {
+    kind: SignalKind,
+    handle: ConnectionHandle,
+}
 
 thread_local! {
     // # Why the per-cell `allow(clippy::missing_const_for_thread_local)`
@@ -546,6 +564,33 @@ thread_local! {
     static VALUE_CALLBACKS: RefCell<HashMap<ObjectId, Vec<ValueChangedCallback>>> =
         RefCell::new(HashMap::new());
 
+    /// The signal connections `on_click` / `on_close` made for each widget.
+    ///
+    /// `on_click` and `on_close` connect to the widget's **own** `clicked` /
+    /// `closed` signals, so their callbacks are held by the signal rather than in
+    /// `CLICK_CALLBACKS`. Removing them therefore means disconnecting the handle
+    /// the connect returned — the value that used to be discarded. This table
+    /// remembers each handle (and which signal it belongs to) so
+    /// [`remove_callbacks`] can run the real unsubscribe instead of only
+    /// clearing the legacy tables (D08-A-01). Dropping the handle's `Connection`
+    /// also releases the captured callback, which plain table-clearing did not.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static SIGNAL_CONNECTIONS: RefCell<HashMap<ObjectId, Vec<SignalConnection>>> =
+        RefCell::new(HashMap::new());
+
+    /// A per-widget removal generation, bumped every time `remove_callbacks` runs.
+    ///
+    /// `dispatch_trigger` takes a widget's callbacks out of the table, then a
+    /// `ValueCallGuard`/`ClickCallGuard` puts them back on drop. If the callback
+    /// itself called `remove_callbacks`, the guard's unconditional restore would
+    /// re-register a handler the caller had just removed (D08-A-02). The guard
+    /// records the generation it started with and, on drop, restores the callbacks
+    /// **only if the generation is unchanged** — so a removal during dispatch wins
+    /// over the restore, while an ordinary panic (which does not change the
+    /// generation) still re-registers.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static CALLBACK_GENERATIONS: RefCell<HashMap<ObjectId, u64>> = RefCell::new(HashMap::new());
+
     /// How many callbacks have been requested for an id with no mounted widget.
     ///
     /// Thread-local like the two tables it counts for: a widget id is only meaningful on the
@@ -555,13 +600,37 @@ thread_local! {
     ///
     /// The initializer *is* `const` and the lint still fires, because clippy reports
     /// `missing_const_for_thread_local` for the **whole `thread_local!` block** when any cell in it
-    /// cannot be `const` — and the two `HashMap` tables above cannot be. The allow is therefore on
-    /// every cell, matching `widget::runtime`'s registry block, rather than only on the two that
+    /// cannot be `const` — and the three `HashMap` tables above cannot be. The allow is therefore on
+    /// every cell, matching `widget::runtime`'s registry block, rather than only on the cells that
     /// need it: a per-cell allow that does not cover the reported span does not silence it, and
     /// moving the allow to the block would hide a genuine finding in a cell that really can be
     /// `const`.
     #[allow(clippy::missing_const_for_thread_local)]
     static UNWIRED_BINDINGS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// The current removal generation for `id`, defaulting to `0`.
+fn callback_generation(id: ObjectId) -> u64 {
+    CALLBACK_GENERATIONS
+        .with(|map| map.try_borrow().ok().and_then(|map| map.get(&id).copied()))
+        .unwrap_or(0)
+}
+
+/// Bump `id`'s removal generation, returning the new value.
+///
+/// Uses `try_borrow_mut` for the same re-entrancy reason as [`remove_callbacks`]: a
+/// refused borrow cannot be helped here, so the previous value is returned and the
+/// bump is skipped (the caller is already removing callbacks from the tables, which
+/// is the operation that matters).
+fn bump_callback_generation(id: ObjectId) -> u64 {
+    CALLBACK_GENERATIONS.with(|map| match map.try_borrow_mut() {
+        Ok(mut map) => {
+            let next = map.get(&id).copied().unwrap_or(0).wrapping_add(1);
+            map.insert(id, next);
+            next
+        }
+        Err(_) => callback_generation(id),
+    })
 }
 
 /// Registers `f` as the click callback for `widget_id`.
@@ -609,7 +678,12 @@ fn register_click_callback<F: FnMut() + Send + 'static>(widget_id: ObjectId, f: 
             }
         })
     });
-    if connected.is_none() {
+    if let Some(handle) = connected {
+        // Record the handle so `remove_callbacks` can really unsubscribe. The
+        // returned `ConnectionHandle` used to be discarded, which left the widget
+        // signal holding the callback after an explicit removal (D08-A-01).
+        record_signal_connection(widget_id, SignalKind::Clicked, handle);
+    } else {
         // `warn!`, not `debug!`. The condition is not routine: it means the caller asked for a
         // callback that will never run, because there is no widget at this id. It happens for
         // real — a handle built from an id the runtime never mounted (a declarative document
@@ -650,7 +724,11 @@ fn register_close_callback<F: FnMut() + Send + 'static>(widget_id: ObjectId, f: 
             }
         })
     });
-    if connected.is_none() {
+    if let Some(handle) = connected {
+        // Same recording as `register_click_callback`: the close subscription must
+        // be removable, not just dropped on the floor (D08-A-01).
+        record_signal_connection(widget_id, SignalKind::Closed, handle);
+    } else {
         // Same reasoning as `register_click_callback`: a close handler that can never run is the
         // failure a caller cannot see from the outside.
         log::warn!(
@@ -721,11 +799,20 @@ fn take_value_callbacks(widget_id: ObjectId) -> Vec<ValueChangedCallback> {
 struct ClickCallGuard {
     widget_id: ObjectId,
     callbacks: Option<Vec<ClickCallback>>,
+    /// The removal generation captured when the guard was built. On drop the
+    /// callbacks are restored only if it still matches, so a `remove_callbacks`
+    /// that ran *inside* the callback is not undone by this restore (D08-A-02).
+    generation: u64,
 }
 
 impl Drop for ClickCallGuard {
     fn drop(&mut self) {
         if let Some(callbacks) = self.callbacks.take() {
+            if callback_generation(self.widget_id) != self.generation {
+                // The callbacks were removed while they were dispatched; honour the
+                // removal instead of resurrecting them.
+                return;
+            }
             CLICK_CALLBACKS.with(|map| {
                 if let Ok(mut map) = map.try_borrow_mut() {
                     // **Prepend**, don't replace: a callback registered while the dispatch was in
@@ -752,11 +839,16 @@ impl Drop for ClickCallGuard {
 struct ValueCallGuard {
     widget_id: ObjectId,
     callbacks: Option<Vec<ValueChangedCallback>>,
+    /// See [`ClickCallGuard::generation`].
+    generation: u64,
 }
 
 impl Drop for ValueCallGuard {
     fn drop(&mut self) {
         if let Some(callbacks) = self.callbacks.take() {
+            if callback_generation(self.widget_id) != self.generation {
+                return;
+            }
             VALUE_CALLBACKS.with(|map| {
                 if let Ok(mut map) = map.try_borrow_mut() {
                     map.entry(self.widget_id).or_default().splice(0..0, callbacks);
@@ -772,14 +864,37 @@ impl Drop for ValueCallGuard {
     }
 }
 
+/// Record a subscription made to a widget's own signal, for later removal.
+///
+/// `kind` is ignored when the widget is not live at removal time (the runtime
+/// entry will be gone), so the entry is still useful as bookkeeping; it is
+/// cleared by [`remove_callbacks`] either way.
+fn record_signal_connection(widget_id: ObjectId, kind: SignalKind, handle: ConnectionHandle) {
+    SIGNAL_CONNECTIONS.with(|map| {
+        if let Ok(mut map) = map.try_borrow_mut() {
+            map.entry(widget_id).or_default().push(SignalConnection { kind, handle });
+        }
+    });
+}
+
 /// Remove all registered callbacks for the given widget id.
 ///
 /// Call this when a widget is destroyed to prevent callback leaks
 /// from thread-local storage.
 ///
+/// Besides clearing the legacy `CLICK_CALLBACKS` / `VALUE_CALLBACKS` tables,
+/// this disconnects the widget's own `clicked` / `closed` signals at the handles
+/// `on_click` / `on_close` recorded, so an explicitly removed handler really
+/// stops running and its captured resources are released (D08-A-01). Without
+/// that step the connect-time handle was discarded and the signal kept invoking
+/// a callback the caller had unmounted.
+///
 /// Uses `try_borrow_mut` to avoid panicking when called re-entrantly
 /// (e.g. during callback dispatch when a handle is dropped).
 pub fn remove_callbacks(id: ObjectId) {
+    // Bump the generation first: a guard that is mid-dispatch on this thread must
+    // see the change and decline to restore the callbacks it holds (D08-A-02).
+    bump_callback_generation(id);
     CLICK_CALLBACKS.with(|map| {
         if let Ok(mut map) = map.try_borrow_mut() {
             map.remove(&id);
@@ -790,6 +905,26 @@ pub fn remove_callbacks(id: ObjectId) {
             map.remove(&id);
         }
     });
+    // Disconnect the signal subscriptions this widget's handles made. The
+    // handles are taken out of the table first so a re-entrant removal cannot see
+    // the same handles twice, then applied against the live widget.
+    let connections: Vec<SignalConnection> = SIGNAL_CONNECTIONS
+        .with(|map| map.try_borrow_mut().ok().and_then(|mut map| map.remove(&id)))
+        .unwrap_or_default();
+    if !connections.is_empty() {
+        crate::widget::runtime::with_widget_mut(id, |widget| {
+            for connection in &connections {
+                match connection.kind {
+                    SignalKind::Clicked => {
+                        widget.base().clicked.disconnect(connection.handle);
+                    }
+                    SignalKind::Closed => {
+                        widget.base().closed.disconnect(connection.handle);
+                    }
+                }
+            }
+        });
+    }
 }
 
 /// Registers `f` as a value-changed callback for `widget_id`.
@@ -878,7 +1013,11 @@ pub fn dispatch_trigger(widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
             // scope, including on unwind, so a panicking callback cannot silently
             // unregister itself. **Every** callback runs: a widget with two handlers
             // must fire both, which is what `Vec` here is for.
-            let guard = ClickCallGuard { widget_id, callbacks: Some(callbacks) };
+            let guard = ClickCallGuard {
+                widget_id,
+                callbacks: Some(callbacks),
+                generation: callback_generation(widget_id),
+            };
             for callback in guard.callbacks.as_ref().expect("set just above") {
                 if let Ok(mut f) = callback.try_borrow_mut() {
                     f();
@@ -897,7 +1036,11 @@ pub fn dispatch_trigger(widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
                 return false;
             }
             let text = crate::get_widget_text(widget_id);
-            let guard = ValueCallGuard { widget_id, callbacks: Some(callbacks) };
+            let guard = ValueCallGuard {
+                widget_id,
+                callbacks: Some(callbacks),
+                generation: callback_generation(widget_id),
+            };
             for callback in guard.callbacks.as_ref().expect("set just above") {
                 if let Ok(mut f) = callback.try_borrow_mut() {
                     f(text.clone());
@@ -3819,6 +3962,126 @@ mod tests {
     fn closing_a_window_without_a_close_callback_is_not_a_panic() {
         let id = crate::platform::get_platform().create_window("probe", 0, 0, 320, 240);
         WindowHandle::from_raw(id).close();
+    }
+
+    /// D08-A-01: `remove_callbacks` must disconnect the widget's own click signal,
+    /// so an explicitly removed handler really stops firing.
+    #[test]
+    fn remove_callbacks_unsubscribes_the_production_click_signal() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+        let id = crate::widget::runtime::register(Box::new(crate::widget::Button::new(
+            "probe".to_string(),
+            crate::core::Rect::new(0, 0, 80, 24),
+        )))
+        .expect("a button mounts");
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        {
+            let calls = calls.clone();
+            // Register through the real production path, not the legacy table. The
+            // slot must be `Send`, so the counter is an `Arc<AtomicUsize>`.
+            register_click_callback(id, move || {
+                calls.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        // Sanity: it is connected and fires once.
+        let _ = crate::widget::runtime::with_widget_mut(id, |widget| widget.base().clicked.emit());
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "the click callback must fire before removal");
+
+        remove_callbacks(id);
+        let _ = crate::widget::runtime::with_widget_mut(id, |widget| widget.base().clicked.emit());
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "a removed click callback must not fire again");
+
+        crate::widget::runtime::unregister(id);
+    }
+
+    /// D08-A-01: the same for the close signal.
+    #[test]
+    fn remove_callbacks_unsubscribes_the_production_close_signal() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+        let id = crate::widget::runtime::register(Box::new(crate::widget::Window::new(
+            "probe".to_string(),
+            crate::core::Rect::new(0, 0, 320, 240),
+        )))
+        .expect("a window mounts");
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        {
+            let calls = calls.clone();
+            register_close_callback(id, move || {
+                calls.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        let _ = crate::widget::runtime::with_widget_mut(id, |widget| widget.base().closed.emit());
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "the close callback must fire before removal");
+
+        remove_callbacks(id);
+        let _ = crate::widget::runtime::with_widget_mut(id, |widget| widget.base().closed.emit());
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "a removed close callback must not fire again");
+
+        crate::widget::runtime::unregister(id);
+    }
+
+    /// D08-A-02: a value callback that removes its own subscription during
+    /// dispatch must not be resurrected by the guard's restore.
+    #[test]
+    fn cancelling_a_value_callback_from_inside_it_stays_cancelled() {
+        let id: ObjectId = 4310;
+        remove_callbacks(id);
+        let ran = alloc::rc::Rc::new(core::cell::Cell::new(0usize));
+        let counter = ran.clone();
+        VALUE_CALLBACKS.with(|map| {
+            map.borrow_mut().insert(
+                id,
+                alloc::vec![alloc::rc::Rc::new(core::cell::RefCell::new(move |_text: String| {
+                    counter.set(counter.get() + 1);
+                    // Remove the subscription from inside the dispatch.
+                    remove_callbacks(id);
+                }))],
+            );
+        });
+
+        assert!(dispatch_trigger(id, WidgetTriggerKind::ValueChanged), "the callback runs once");
+        assert_eq!(ran.get(), 1);
+        // The guard must not restore the callbacks the callback itself removed.
+        assert!(!dispatch_trigger(id, WidgetTriggerKind::ValueChanged));
+        assert_eq!(ran.get(), 1, "a callback that cancelled itself must not run again");
+        remove_callbacks(id);
+    }
+
+    /// A panicking value callback must still be restored, because a panic does not
+    /// change the removal generation (the guard's restore path is unchanged there).
+    ///
+    /// The existing `a_panicking_value_callback_stays_registered` covers the same
+    /// guarantee; this variant additionally runs after the generation mechanism was
+    /// added, pinning that it did not break the panic path.
+    #[test]
+    fn a_panicking_value_callback_survives_the_generation_guard() {
+        let id: ObjectId = 4311;
+        remove_callbacks(id);
+        let ran = std::sync::Arc::new(core::sync::atomic::AtomicUsize::new(0));
+        let counter = ran.clone();
+        VALUE_CALLBACKS.with(|map| {
+            map.borrow_mut().insert(
+                id,
+                alloc::vec![alloc::rc::Rc::new(core::cell::RefCell::new(move |_text: String| {
+                    counter.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+                    panic!("intentional");
+                }))],
+            );
+        });
+
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            dispatch_trigger(id, WidgetTriggerKind::ValueChanged);
+        }));
+        assert_eq!(ran.load(core::sync::atomic::Ordering::SeqCst), 1);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            dispatch_trigger(id, WidgetTriggerKind::ValueChanged);
+        }));
+        assert_eq!(
+            ran.load(core::sync::atomic::Ordering::SeqCst),
+            2,
+            "a panicking callback must stay registered"
+        );
+        remove_callbacks(id);
     }
 
     /// The `WindowState` fields, each with the reason it is allowed to exist.

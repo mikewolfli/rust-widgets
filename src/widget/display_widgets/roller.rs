@@ -15,7 +15,7 @@ use crate::widget::capability::coercion::{expect_u32, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -139,15 +139,29 @@ impl Roller {
         // face round 28 up to 32, so the drawn row disagreed with the named one on the one
         // font size every default roller uses.
         const DEFAULT_FONT_SIZE: f32 = 16.0;
-        if self.font_size <= DEFAULT_FONT_SIZE {
+        // The row scales with the font the wheel actually **draws** with, not only with the
+        // caller-set `font_size`: `draw` prefers `style.font` when the theme or caller set one, so
+        // measuring the row from `font_size` alone let a styled font overflow its own row and be
+        // clipped by the wheel band (D09-STYLE-02).
+        let drawn_size = self.wheel_font().size();
+        if drawn_size <= DEFAULT_FONT_SIZE {
             return dimensions::ROLLER_ROW_HEIGHT;
         }
         // A caller with a larger font gets a proportionally larger row. The base is the
         // named row at the named font, and never `rect`: the two are unrelated facts.
         // `font_size` is clamped to `>= 4.0` by the setter, so the divisor is never zero.
-        let scaled = (self.font_size / DEFAULT_FONT_SIZE * dimensions::ROLLER_ROW_HEIGHT as f32)
-            .round() as u32;
+        let scaled =
+            (drawn_size / DEFAULT_FONT_SIZE * dimensions::ROLLER_ROW_HEIGHT as f32).round() as u32;
         scaled.max(dimensions::ROLLER_ROW_HEIGHT)
+    }
+
+    /// The font the wheel draws its rows with: the resolved `style.font` when set, otherwise the
+    /// caller-set `font_size` in the crate's default sans-serif face.
+    ///
+    /// This is the same choice `draw` makes, named once so `size_hint` and `item_height` cannot
+    /// describe a different control from the one painted (D09-STYLE-02).
+    fn wheel_font(&self) -> Font {
+        effective_font(self.style()).clone()
     }
 
     /// The total content height for all visible items.
@@ -194,10 +208,18 @@ impl Widget for Roller {
     }
 
     fn size_hint(&self) -> Size {
-        // Estimate width from the longest option string.
-        let char_width = self.font_size * 0.6;
-        let max_len = self.options.iter().map(|s| s.len()).max().unwrap_or(10);
-        let width = (max_len as f32 * char_width).ceil().max(80.0) as u32;
+        // Estimate width from the longest option string, measured with the **effective font**
+        // through the shared estimate rather than a per-character `font_size * 0.6` guess: the
+        // drawn font may come from `style.font`, and a `len()` byte count over-measures non-ASCII
+        // (D09-STYLE-02).
+        let font = self.wheel_font();
+        let width = self
+            .options
+            .iter()
+            .map(|s| estimate_text_width(s, &font, 1.0))
+            .max()
+            .unwrap_or(80)
+            .max(80);
         // The height is the wheel's own band, which `wheel_band` draws from, so the two
         // cannot describe different controls: this is the `content_height` the control
         // has always reported, now also the height it paints at.
@@ -371,6 +393,8 @@ impl Draw for Roller {
 
         let font =
             self.style().font.clone().unwrap_or_else(|| Font::simple("sans-serif", self.font_size));
+        // `item_height` derives its row from the same font, so the wheel band cannot clip the
+        // glyphs it draws (D09-STYLE-02).
 
         // ── The wheel actually painted ──
         //
@@ -737,6 +761,38 @@ mod tests {
         assert!(
             svg.contains(&format!("height=\"{}\"", roller.item_height())),
             "the centre row is a row, not the wheel: {svg}"
+        );
+    }
+
+    // ── D09-STYLE-02: the row and hint measure with the font the paint uses ──
+
+    /// A styled font larger than the caller-set `font_size` must grow the drawn row and the hint.
+    ///
+    /// `draw` prefers `style.font`; `item_height` and `size_hint` must agree with it, or the wheel
+    /// band clips the taller glyphs it paints.
+    #[test]
+    fn a_styled_font_grows_the_roller_row_and_hint() {
+        let options = || vec!["one".to_string(), "two".to_string(), "three".to_string()];
+        let baseline = Roller::new(options(), Rect::new(0, 0, 200, 120));
+        let base_row = baseline.item_height();
+        let base_hint = baseline.size_hint();
+
+        let mut big = Roller::new(options(), Rect::new(0, 0, 200, 120));
+        big.set_style(
+            crate::style::WidgetStyle::default().with_font(crate::core::Font::simple("Test", 40.0)),
+        );
+        let big_row = big.item_height();
+        let big_hint = big.size_hint();
+
+        assert!(
+            big_row > base_row,
+            "a styled font must grow the drawn row: {big_row} vs {base_row}"
+        );
+        assert!(
+            big_hint.width > base_hint.width,
+            "a styled font must widen the hint: {} vs {}",
+            big_hint.width,
+            base_hint.width
         );
     }
 }

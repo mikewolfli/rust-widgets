@@ -154,7 +154,11 @@ function readNameList(lib, symbol, custom) {
   } else {
     lib[symbol](buffer, required + 1);
   }
-  return buffer.toString('utf8').split(' ').filter(Boolean);
+  // The ABI writes a NUL terminator after `required` bytes of payload. Decoding the
+  // whole `required + 1` buffer folded that terminator into the last item
+  // (`["light", "dark\u0000"]`), so the final name never matched a plain string
+  // comparison (D08-B-02). Decode exactly the payload length instead.
+  return buffer.toString('utf8', 0, required).split(' ').filter(Boolean);
 }
 
 // ---------------------------------------------------------------------------
@@ -916,7 +920,11 @@ class RustWidgets {
     const kind = kindOut.deref();
     const num = readInt64(numOut.deref());
     if (kind === RW_VALUE_NULL) return null;
-    if (kind === RW_VALUE_BOOL) return num !== 0;
+    // `num` is a BigInt, so it must be compared against the BigInt literal `0n`.
+    // `num !== 0` compared a BigInt with a Number, which is always true (the `!==`
+    // operator never coerces), so every ABI BOOL decoded as `true` regardless of the
+    // payload — a `false` property (wire `0`) read back as `true` (D08-B-01).
+    if (kind === RW_VALUE_BOOL) return num !== 0n;
     if (kind === RW_VALUE_INT || kind === RW_VALUE_UINT) return num;
     if (kind === RW_VALUE_FLOAT) return f64FromBits(num);
     if (

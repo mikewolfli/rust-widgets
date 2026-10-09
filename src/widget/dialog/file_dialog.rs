@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! File dialog widget.
-use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -15,7 +15,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// File dialog mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -452,6 +452,10 @@ impl Draw for FileDialog {
         // The **frame**, not the control's rectangle: see `frame_rect`.
         let rect = self.frame_rect();
         let style = self.style().clone();
+        // The **effective font** — the resolved theme/caller font — for the title, placeholder,
+        // labels, file name and buttons, so the dialog honours the theme body font and the user's
+        // text scale (D09-STYLE-01).
+        let font = effective_font(&style);
 
         // Chrome colours resolve explicit style first, then the theme's resolved style
         // for this control, and only then fall back to a literal. The style step alone
@@ -529,7 +533,7 @@ impl Draw for FileDialog {
         let title_bar_band = ControlMetrics::top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
         context.fill_rect(title_bar_band, accent);
         if !self.title.is_empty() {
-            let title_font = Font::default();
+            let title_font = font;
             let title_line = context.text_line(title_bar_band, &title_font);
             context.draw_text_fitted(
                 Rect::new(
@@ -558,7 +562,7 @@ impl Draw for FileDialog {
         // would be the same defect in miniature, with the list's own explanation hanging
         // out of it. Only when even a line does not fit is the list clamped to what
         // remains, rather than reaching below the button row.
-        let placeholder_line_h = context.measure_text("M", &Font::default()).height.max(1) as i32;
+        let placeholder_line_h = context.measure_text("M", font).height.max(1) as i32;
         let list_min_h = placeholder_line_h + 4;
         let reserved_below = SEL_H + SELECTED_STRIP_GAP;
         let list_h = if button_top - list_y >= list_min_h {
@@ -582,7 +586,7 @@ impl Draw for FileDialog {
         // explains the empty list were outside the well it belongs to. Drawn only when the
         // list is non-empty, so a squeezed dialog emits no `<text …></text>`.
         let placeholder = tr!("dialog.file_dialog.file_list_placeholder");
-        let placeholder_font = Font::default();
+        let placeholder_font = font;
         if list_rect.height > 0 && !placeholder.is_empty() {
             let placeholder_band = Rect::new(
                 list_rect.x + 6,
@@ -619,7 +623,7 @@ impl Draw for FileDialog {
         let sel_fits = sel_y >= list_y + list_h as i32 + 4;
         if sel_fits {
             let sel_label = tr!("dialog.file_dialog.file_name");
-            let sel_label_font = Font::default();
+            let sel_label_font = font;
             let sel_band = Rect::new(rect.x + 10, sel_y, 66, sel_h as u32);
             let sel_line = context.text_line(sel_band, &sel_label_font);
             context.draw_text_fitted(
@@ -636,7 +640,7 @@ impl Draw for FileDialog {
             context.draw_rect(fname_rect, border);
             // Guarded: an unguarded draw of an empty file name emits `<text …></text>`.
             if !fname.is_empty() {
-                let fname_font = Font::default();
+                let fname_font = font;
                 let fname_band = Rect::new(
                     fname_rect.x + 4,
                     fname_rect.y,
@@ -657,7 +661,7 @@ impl Draw for FileDialog {
             // is what the list is for. This keeps the control's content reachable at a
             // size where the strip has no room, rather than silently dropping it.
             let fname = self.selected_file().unwrap_or("");
-            let fname_font = Font::default();
+            let fname_font = font;
             let band = Rect::new(
                 list_rect.x + 6,
                 list_rect.y,
@@ -682,7 +686,6 @@ impl Draw for FileDialog {
         };
         let labels = vec![ok_label, tr!("common.button.cancel")];
         let row = super::message_box::action_row_geometry(context, &labels, button_band, true);
-        let font = Font::default();
         // The accept button is the dialog's call to action: the theme's accent, with its
         // contrast colour as the label — the same pairing `WidgetRole::Primary` uses.
         let ok_rect = row.buttons[0];

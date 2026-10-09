@@ -897,9 +897,18 @@ impl GpuRenderer for WgpuRenderer {
     }
 
     fn render_frame(&mut self) -> Result<(), String> {
-        // Offscreen rendering is driven via `render_draw_commands_rgba8`.
-        // A real swapchain-based frame loop will be added when surface integration lands.
-        Ok(())
+        // # Why this is an error and not a silent `Ok` (D09-GPU-01)
+        //
+        // This renderer exposes GPU draw entry points (`render_fill_rect_gpu`,
+        // `render_draw_commands_rgba8`, …) that rasterise offscreen, but it has no swapchain or
+        // present path: there is no way to put a frame on a window from here. Returning `Ok(())`
+        // while drawing nothing is the same kind of untruth as reporting a GPU-accelerated scene
+        // backend that only round-trips through the CPU — it tells the caller a frame was
+        // presented when none was. Offscreen work belongs to the `render_*_rgba8` methods; a
+        // real frame loop must be added before this can succeed.
+        Err("WgpuRenderer has no present/swapchain path; render offscreen with the \
+             render_*_rgba8 methods instead"
+            .to_string())
     }
 
     fn memory_usage(&self) -> u64 {

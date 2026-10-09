@@ -22,7 +22,7 @@
 //! declarative path, CSS selectors and the C ABI), publishes a property contract,
 //! and has interaction and lifecycle tests.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -31,6 +31,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_f32, expect_string
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -490,7 +491,7 @@ impl Draw for SplashScreen {
         context.draw_text(
             Point::new(centre_x, text_y),
             &self.title,
-            &Font::default(),
+            effective_font(&style),
             ink,
             HorizontalAlignment::Center,
         );
@@ -499,7 +500,7 @@ impl Draw for SplashScreen {
             context.draw_text(
                 Point::new(centre_x, text_y + BODY_GAP),
                 &self.subtitle,
-                &Font::default(),
+                effective_font(&style),
                 muted_ink,
                 HorizontalAlignment::Center,
             );
@@ -520,15 +521,15 @@ impl Draw for SplashScreen {
         // not use, which pushed the label below the button.
         if let Some(skip) = self.skip_rect() {
             context.draw_rect(skip, border);
-            let skip_font = Font::default();
-            let label_height = context.measure_text("Skip", &skip_font).height as i32;
+            let skip_font = effective_font(&style);
+            let label_height = context.measure_text("Skip", skip_font).height as i32;
             context.draw_text(
                 Point::new(
                     skip.x + skip.width as i32 / 2,
                     skip.y + (skip.height as i32 - label_height) / 2,
                 ),
                 "Skip",
-                &skip_font,
+                skip_font,
                 muted_ink,
                 HorizontalAlignment::Center,
             );

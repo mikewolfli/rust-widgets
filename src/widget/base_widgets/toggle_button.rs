@@ -10,7 +10,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, estimate_text_width, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Toggle button state enumeration.
@@ -283,7 +283,7 @@ impl Widget for ToggleButton {
         // The comment was therefore describing an agreement the code did not have: a `Button` and a
         // `ToggleButton` with the same caption reported different widths, and the gap widened with
         // every non-ASCII character (a CJK caption measured three times its drawn width).
-        let label_width = estimate_text_width(self.text(), &crate::core::Font::default(), 1.0);
+        let label_width = estimate_text_width(self.text(), effective_font(self.style()), 1.0);
         ControlMetrics::implicit_size(
             Size::new(label_width, dimensions::FONT_SIZE_BASE + 4),
             EdgeOffsets::symmetric(dimensions::BUTTON_PADDING_V, dimensions::BUTTON_PADDING_H),
@@ -558,8 +558,9 @@ impl Draw for ToggleButton {
                     bg_color.contrast_color()
                 }
             });
-            let default_font = crate::core::Font::default();
-            let font = style.font.as_ref().unwrap_or(&default_font);
+            // The effective font, taken through the shared accessor so the hint and the ink
+            // measure with one font (D09-STYLE-02).
+            let font = effective_font(style);
             // The label is centred in the button's own rectangle through the shared primitive:
             // a glyph origin is the box's top-left, so the old `rect.y + rect.height / 2` put
             // that edge on the middle line and drew the text half a line low.
@@ -1047,6 +1048,28 @@ mod checked_visibility_tests {
         assert_ne!(
             plain, latched,
             "a toggle whose on state draws the same as its off state is not a toggle"
+        );
+    }
+
+    // ── D09-STYLE-02: the hint measures with the font the paint uses ──
+
+    /// A caller-authored `style.font` must widen the toggle hint.
+    #[test]
+    fn a_custom_font_grows_the_toggle_button_hint() {
+        let baseline = ToggleButton::new("A wide label".to_string(), Rect::new(0, 0, 200, 40));
+        let base_hint = baseline.size_hint();
+
+        let mut big = ToggleButton::new("A wide label".to_string(), Rect::new(0, 0, 200, 40));
+        big.set_style(
+            crate::style::WidgetStyle::default().with_font(crate::core::Font::simple("Test", 30.0)),
+        );
+        let big_hint = big.size_hint();
+
+        assert!(
+            big_hint.width > base_hint.width,
+            "a larger font must widen the toggle hint: {} vs {}",
+            big_hint.width,
+            base_hint.width
         );
     }
 }

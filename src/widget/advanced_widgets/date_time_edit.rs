@@ -18,7 +18,7 @@
 //! * [`DateTimeEdit::set_datetime`] rejects an invalid or out-of-range value
 //!   silently rather than clamping it.
 //! * Ordering is by date first, then by time.
-use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -31,6 +31,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -654,8 +655,10 @@ impl Draw for DateTimeEdit {
         .unwrap_or_else(|| self.datetime.to_string());
         // Vertically centred through the shared primitive: `rect.y + height / 2` puts the
         // glyph box's top edge on the field's middle line, so the value sat half a line low.
-        let font = Font::default();
-        let line = context.text_line(rect, &font);
+        // The **effective font** — the resolved theme/caller font — so the value honours the theme
+        // body font and the user's text scale (D09-STYLE-01).
+        let font = effective_font(&style);
+        let line = context.text_line(rect, font);
         context.draw_text_fitted(
             Rect {
                 x: rect.x + 6,
@@ -664,7 +667,7 @@ impl Draw for DateTimeEdit {
                 height: line.height,
             },
             &text,
-            &font,
+            font,
             ink,
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
@@ -702,6 +705,7 @@ impl DateTimeEdit {
             &self.datetime.date,
             &self.minimum.date,
             &self.maximum.date,
+            effective_font(self.base.style()),
         );
     }
 }

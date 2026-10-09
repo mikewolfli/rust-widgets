@@ -19,6 +19,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::display_widgets::switch::Switch;
+use crate::widget::metrics::role_font;
 use crate::widget::metrics::SwitchGeometry;
 use crate::widget::numeric::ordered_clamp;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -435,7 +436,9 @@ impl Draw for MaterialSnackbar {
 
         // ── Message text (left side) ──
         if !self.message.is_empty() {
-            let font = crate::core::Font::new("sans-serif", 14.0, false, false);
+            // The message takes the **effective font** at its role size, so the theme family and the
+            // user's text scale reach it (D09-STYLE-01).
+            let font = role_font(&style, 14.0);
             let metrics = context.measure_text(&self.message, &font);
 
             let text_x = bar_rect.x + 16;
@@ -455,7 +458,7 @@ impl Draw for MaterialSnackbar {
 
         // ── Action text (right side, if non-empty) ──
         if !self.action_text.is_empty() {
-            let action_font = crate::core::Font::new("sans-serif", 14.0, true, false);
+            let action_font = role_font(&style, 14.0).with_bold(true);
             let metrics = context.measure_text(&self.action_text, &action_font);
 
             let action_x = bar_rect.x + bar_rect.width as i32 - metrics.width as i32 - 16;
@@ -503,7 +506,7 @@ impl EventHandler for MaterialSnackbar {
 
                 // Check if the click is in the action area (right side)
                 if !self.action_text.is_empty() {
-                    let action_font = crate::core::Font::new("sans-serif", 14.0, true, false);
+                    let action_font = role_font(self.style(), 14.0).with_bold(true);
                     let action_area_width =
                         context_proxy_measure_text(&self.action_text, &action_font) + 32;
 
@@ -781,7 +784,7 @@ impl Draw for CupertinoAlertDialog {
         // panel is squeezed. It is fitted to the panel instead of measured at its full
         // width: a title wider than the dialog used to start at a negative x (its origin is
         // centred from its *unfitted* width) and run out of both sides.
-        let title_font = crate::core::Font::new("sans-serif", 17.0, true, false);
+        let title_font = role_font(&style, 17.0).with_bold(true);
         if !self.title.is_empty() {
             let title_metrics = context.measure_text("M", &title_font);
             let title_y = dialog_rect.y + ((dialog_height as i32 * 24) / 100).max(0);
@@ -800,7 +803,7 @@ impl Draw for CupertinoAlertDialog {
         }
 
         // ── Message ──
-        let msg_font = crate::core::Font::new("sans-serif", 14.0, false, false);
+        let msg_font = role_font(&style, 14.0);
         if !self.message.is_empty() {
             let msg_metrics = context.measure_text("M", &msg_font);
             let msg_y = dialog_rect.y + ((dialog_height as i32 * 46) / 100).max(0);
@@ -831,7 +834,7 @@ impl Draw for CupertinoAlertDialog {
         );
 
         // ── Buttons ──
-        let button_font = crate::core::Font::new("sans-serif", 17.0, false, false);
+        let button_font = role_font(&style, 17.0);
         let button_metrics = context.measure_text("M", &button_font);
         let has_cancel = !self.cancel_text.is_empty();
 
@@ -1509,8 +1512,8 @@ impl Draw for MaterialNavigationRail {
         }
 
         let item_height = 72u32;
-        let icon_font = crate::core::Font::new("sans-serif", 14.0, false, false);
-        let label_font = crate::core::Font::new("sans-serif", 12.0, false, false);
+        let icon_font = role_font(&style, 14.0);
+        let label_font = role_font(&style, 12.0);
 
         for (i, item) in self.items.iter().enumerate() {
             let item_y = rect.y + (i as u32 * item_height) as i32;

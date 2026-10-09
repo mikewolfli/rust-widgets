@@ -5,6 +5,8 @@
 use super::event_queue::EventSender;
 #[cfg(not(alloc_frugal))]
 use super::types::Event;
+#[cfg(not(alloc_frugal))]
+use crate::compat::Condvar;
 use crate::compat::{format, lock, Box, HashMap, Instant, MiniToString, Mutex, String, Vec};
 use crate::core::ObjectId;
 use alloc::sync::Arc;
@@ -50,8 +52,66 @@ struct TimerState {
     running: bool,
 }
 
+/// Shared timer state plus the signal the worker waits on (D09-EVT-05).
+///
+/// # Why the worker no longer polls every 2 ms
+///
+/// The old worker slept a fixed 2 ms between scans, so an idle `EventLoop` kept a
+/// thread waking ~500 times per second and re-locking the timer map even with **zero**
+/// timers registered, and the scan cost grew linearly with the number of live timers.
+/// The signal below lets the worker block until something actually changes.
+///
+/// The worker waits on `state`'s monitor under `signal`. Every mutation of the timer
+/// set (`start_timer`, `stop_timer`, `stop_timers_for_target`, `clear`, and the drop of
+/// the manager's last handle) notifies it, so:
+///
+/// * with no timers, it parks on the monitor until a timer is added or the manager stops;
+/// * with timers, it parks at most until the earliest deadline (`wait_timeout`), so a due
+///   timer is not delayed beyond the clock resolution;
+/// * a concurrent add/remove/stop interrupts the park immediately rather than waiting
+///   out the previous deadline.
+///
+/// The classic condition-variable pattern is preserved: the flag (`running`) and the
+/// set (which timers exist) are only read while holding the same mutex the notifier
+/// holds when it changes them, so no wake-up can be lost between a state change and the
+/// park.
+#[cfg(not(alloc_frugal))]
+struct TimerShared {
+    state: Mutex<TimerState>,
+    signal: Condvar,
+    /// Number of worker iterations observed since the manager was created.
+    ///
+    /// This is a diagnostic counter, and it is what lets a regression test assert that an
+    /// idle manager **stops polling** rather than waking on a fixed interval (D09-EVT-05):
+    /// a parked worker does not increment it, whereas the old 2 ms scan did. It is kept
+    /// uncompiled-out so the timer producer (`Event::timer`) that the event-variant gate
+    /// scans for stays in this file's production region; the single relaxed atomic
+    /// increment per worker iteration is negligible next to the work the worker does.
+    #[allow(dead_code)]
+    wake_count: core::sync::atomic::AtomicU64,
+}
+
+#[cfg(not(alloc_frugal))]
+impl TimerShared {
+    /// Wakes the worker after a state change (a timer added, removed, or stopped).
+    fn notify(&self) {
+        self.signal.notify_one();
+    }
+
+    /// The earliest `next_fire` among the registered timers, if any.
+    ///
+    /// Called with the state lock held. `None` means "no timer to wait for", which is
+    /// what makes the worker block indefinitely instead of polling.
+    fn nearest_deadline(state: &TimerState) -> Option<Instant> {
+        state.timers.values().map(|entry| entry.next_fire).min()
+    }
+}
+
 /// Emits timer events into the event queue for one-shot and repeating timers.
 pub struct TimerManager {
+    #[cfg(not(alloc_frugal))]
+    state: Arc<TimerShared>,
+    #[cfg(alloc_frugal)]
     state: Arc<Mutex<TimerState>>,
     #[cfg(not(alloc_frugal))]
     thread_handle: Option<thread::JoinHandle<()>>,
@@ -72,20 +132,34 @@ impl TimerManager {
     /// Create a timer manager bound to an event sender.
     #[cfg(not(alloc_frugal))]
     pub fn new(sender: EventSender) -> Self {
-        let state = Arc::new(Mutex::new(TimerState { timers: HashMap::new(), running: true }));
+        let shared = Arc::new(TimerShared {
+            state: Mutex::new(TimerState { timers: HashMap::new(), running: true }),
+            signal: Condvar::new(),
+            wake_count: core::sync::atomic::AtomicU64::new(0),
+        });
 
-        let worker_state = Arc::clone(&state);
+        let worker_shared = Arc::clone(&shared);
         let worker_sender = sender;
+        // D09-EVT-05: the worker parks on the condvar instead of polling.
+        //
+        // * No timers -> `wait` (unbounded) until notified. An idle manager therefore
+        //   performs **no** periodic wake-ups.
+        // * Timers present -> `wait_timeout` for the nearest deadline, so a short timer
+        //   fires as soon as it is due rather than on a fixed 2 ms tick, and a late
+        //   notification recomputes the wait rather than delaying the next check.
         let thread_handle = thread::spawn(move || loop {
-            let now = Instant::now();
-            let mut due_events = Vec::new();
+            worker_shared.wake_count.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+            let mut due_events: Vec<(ObjectId, u32)> = Vec::new();
 
             {
-                let mut guard = lock(&worker_state);
+                let mut guard = lock(&worker_shared.state);
                 if !guard.running {
                     return;
                 }
 
+                let now = Instant::now();
+
+                // Collect everything already due and advance repeating deadlines.
                 let keys: Vec<(ObjectId, u32)> = guard.timers.keys().copied().collect();
                 for key in keys {
                     if let Some(entry) = guard.timers.get_mut(&key) {
@@ -108,18 +182,39 @@ impl TimerManager {
                         }
                     }
                 }
+
+                if due_events.is_empty() {
+                    // Nothing to emit: park until the nearest deadline, or indefinitely when
+                    // no timer is registered. `spurious_wakeup` loops rather than assuming
+                    // the notification was the one we expected — the state is re-read under
+                    // the lock each time, which is the condition-variable contract.
+                    match TimerShared::nearest_deadline(&guard) {
+                        Some(deadline) => {
+                            let wait_for = deadline.saturating_duration_since(Instant::now());
+                            // A deadline already in the past collapses to a zero timeout,
+                            // which returns immediately; the next loop iteration then fires
+                            // it, so no due timer is missed.
+                            let _ = worker_shared.signal.wait_timeout(guard, wait_for);
+                        }
+                        None => {
+                            guard = worker_shared
+                                .signal
+                                .wait(guard)
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        }
+                    }
+                    continue;
+                }
             }
 
             for (target, id) in due_events {
                 if worker_sender.post(target, Event::timer(id)).is_err() {
-                    lock(&worker_state).timers.remove(&(target, id));
+                    lock(&worker_shared.state).timers.remove(&(target, id));
                 }
             }
-
-            thread::sleep(Duration::from_millis(2));
         });
 
-        Self { state, thread_handle: Some(thread_handle) }
+        Self { state: shared, thread_handle: Some(thread_handle) }
     }
 
     /// Creates a timer manager for `mini`, which has no background thread.
@@ -134,9 +229,29 @@ impl TimerManager {
     }
 
     /// Acquire the lock on timer state, recovering from poisoning.
+    #[cfg(not(alloc_frugal))]
+    fn lock_timers(&self) -> crate::compat::MutexGuard<'_, TimerState> {
+        lock(&self.state.state)
+    }
+
+    /// Acquire the lock on timer state, recovering from poisoning.
+    #[cfg(alloc_frugal)]
     fn lock_timers(&self) -> crate::compat::MutexGuard<'_, TimerState> {
         lock(&self.state)
     }
+
+    /// Wake the worker after a state change (D09-EVT-05).
+    ///
+    /// A no-op under `mini`, which has no worker thread and no condvar; the caller's
+    /// `pump` observes the changed set directly.
+    #[cfg(not(alloc_frugal))]
+    fn notify_worker(&self) {
+        self.state.notify();
+    }
+
+    /// Wake the worker after a state change (D09-EVT-05).
+    #[cfg(alloc_frugal)]
+    fn notify_worker(&self) {}
 
     /// Start or replace a timer for `(target, id)`.
     pub fn start_timer(
@@ -152,12 +267,21 @@ impl TimerManager {
 
         let entry = TimerEntry { interval, repeating, next_fire: next_fire_deadline(interval)? };
         self.lock_timers().timers.insert((target, id), entry);
+        // The worker may be parked indefinitely (no timers) or until an older deadline;
+        // an added timer can be nearer than that, so it must be woken to recompute.
+        self.notify_worker();
         Ok(())
     }
 
     /// Stop one timer by `(target, id)`.
     pub fn stop_timer(&self, target: ObjectId, id: u32) -> bool {
-        self.lock_timers().timers.remove(&(target, id)).is_some()
+        let removed = self.lock_timers().timers.remove(&(target, id)).is_some();
+        if removed {
+            // The stopped timer may have been the nearest deadline; the worker must
+            // recompute rather than wake at a deadline that no longer exists.
+            self.notify_worker();
+        }
+        removed
     }
 
     /// Stop all timers belonging to one target.
@@ -165,12 +289,28 @@ impl TimerManager {
         let mut guard = self.lock_timers();
         let before = guard.timers.len();
         guard.timers.retain(|(timer_target, _), _| *timer_target != target);
-        before.saturating_sub(guard.timers.len())
+        let removed = before.saturating_sub(guard.timers.len());
+        drop(guard);
+        if removed > 0 {
+            // The nearest deadline may have belonged to this target.
+            self.notify_worker();
+        }
+        removed
     }
 
     /// Remove all active timers.
     pub fn clear(&self) {
-        self.lock_timers().timers.clear();
+        let had_timers = {
+            let mut guard = self.lock_timers();
+            let had = !guard.timers.is_empty();
+            guard.timers.clear();
+            had
+        };
+        if had_timers {
+            // Waking here turns "cleared" into a prompt recompute instead of the
+            // worker sleeping out a deadline for a timer that no longer exists.
+            self.notify_worker();
+        }
     }
 
     /// Pump due timers synchronously, posting their `Event::Timer` events.
@@ -220,10 +360,14 @@ impl TimerManager {
 impl Drop for TimerManager {
     fn drop(&mut self) {
         {
-            let mut guard = lock(&self.state);
+            let mut guard = lock(&self.state.state);
             guard.running = false;
             guard.timers.clear();
         }
+        // D09-EVT-05: the worker may be parked in `wait` (no timers) or `wait_timeout`,
+        // so clearing `running` is not enough — it has to be woken to observe the flag,
+        // or `join` below would block until its next deadline.
+        self.state.signal.notify_all();
         // `mini` has no `JoinHandle` here — the field is `Option<()>` to keep this
         // body shared with the threaded arm — so there is nothing to join and no
         // worker to stop beyond clearing `running` above.
@@ -361,6 +505,124 @@ mod tests {
         let result = manager.start_timer(5, 1, Duration::MAX, false);
         assert!(result.is_err(), "an unrepresentable time must be an Err, not a panic");
         assert!(manager.stop_timer(5, 1), "the previous timer must still be present");
+    }
+
+    /// D09-EVT-05: with zero timers the worker parks instead of polling every 2 ms.
+    ///
+    /// # The defect this pins
+    ///
+    /// The worker slept a fixed 2 ms each round, so an idle `TimerManager` woke ~500
+    /// times per second and re-locked the timer map for nothing. The worker now blocks on
+    /// the condition variable when the set is empty, so the number of worker iterations
+    /// over a quiet window must stay at the handful needed to reach the park — not the
+    /// dozens a 2 ms poll produces.
+    #[test]
+    fn idle_manager_does_not_poll_periodically() {
+        let queue = EventQueue::new();
+        let manager = TimerManager::new(queue.sender());
+
+        // Give the worker time to take the lock once and park. A 2 ms poll would run
+        // ~75 iterations in this window; a parked worker runs a small constant (with
+        // headroom for the odd spurious wake-up).
+        thread::sleep(Duration::from_millis(150));
+        let iterations = manager.state.wake_count.load(core::sync::atomic::Ordering::SeqCst);
+        assert!(
+            iterations < 20,
+            "an idle TimerManager must not poll periodically; it ran {iterations} worker \
+             iterations in 150 ms, which is a fixed-interval scan rather than a park"
+        );
+    }
+
+    /// D09-EVT-05: a short timer is delivered promptly once started from a parked worker.
+    ///
+    /// The parked worker must be woken by the registration (`notify_one`) and fire at the
+    /// deadline, not be stranded until an old timeout elapses.
+    #[test]
+    fn a_short_timer_started_from_a_parked_worker_is_not_delayed() {
+        let queue = EventQueue::new();
+        let manager = TimerManager::new(queue.sender());
+
+        // Let the worker reach the unbounded wait first, so the registration must wake it.
+        thread::sleep(Duration::from_millis(30));
+
+        let start = Instant::now();
+        manager
+            .start_timer(21, 5, Duration::from_millis(20), false)
+            .expect("a short timer should start");
+
+        let deadline = start + Duration::from_millis(500);
+        let mut fired_at = None;
+        while Instant::now() < deadline {
+            if let Some((target, event, _)) = queue.dequeue() {
+                if target == 21 && matches!(event, Event::Timer { id: 5 }) {
+                    fired_at = Some(Instant::now());
+                    break;
+                }
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+
+        let fired_at = fired_at.expect("the short timer must fire");
+        let latency = fired_at.saturating_duration_since(start);
+        assert!(
+            latency < Duration::from_millis(250),
+            "a 20 ms timer must not be delayed beyond tolerance; it took {latency:?} \
+             to be observed"
+        );
+    }
+
+    /// D09-EVT-05: concurrent add/remove/stop from another thread wake the parked worker
+    /// and the manager still stops (joins) without deadlock.
+    ///
+    /// The worker parks with an empty set; the mutations below happen while it is parked,
+    /// so each must notify or the worker would either miss the wake or block the final
+    /// `drop`/`join`. A watchdog thread turns a deadlock into a test failure rather than a
+    /// hung suite.
+    #[test]
+    fn concurrent_mutations_wake_a_parked_worker_without_deadlock() {
+        use std::sync::mpsc::channel;
+
+        let (done_tx, done_rx) = channel();
+        let worker = thread::spawn(move || {
+            let queue = EventQueue::new();
+            let manager = TimerManager::new(queue.sender());
+
+            // Park with no timers.
+            thread::sleep(Duration::from_millis(20));
+
+            // Add, clear, and stop while parked; none may block.
+            manager.start_timer(1, 1, Duration::from_millis(5), false).unwrap();
+            manager.stop_timers_for_target(1);
+            manager.start_timer(2, 2, Duration::from_millis(5), true).unwrap();
+            assert!(manager.stop_timer(2, 2));
+            manager.clear();
+
+            // A timer started after all that must still fire, proving the worker was
+            // woken and stayed live rather than exiting on a lost notification.
+            manager.start_timer(3, 3, Duration::from_millis(10), false).unwrap();
+            let deadline = Instant::now() + Duration::from_millis(500);
+            let mut fired = false;
+            while Instant::now() < deadline {
+                if let Some((target, event, _)) = queue.dequeue() {
+                    if target == 3 && matches!(event, Event::Timer { id: 3 }) {
+                        fired = true;
+                        break;
+                    }
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
+            assert!(fired, "a timer started after the parked mutations must still fire");
+
+            // Dropping the manager joins the parked worker; this must return.
+            drop(manager);
+            let _ = done_tx.send(());
+        });
+
+        match done_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(()) => {}
+            Err(_) => panic!("the timer worker deadlocked on a concurrent mutation or stop"),
+        }
+        worker.join().expect("the timer worker thread must join cleanly");
     }
 }
 

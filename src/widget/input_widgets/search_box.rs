@@ -19,7 +19,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -187,6 +187,21 @@ impl SearchBox {
         self.restoring_history = false;
         self.text_changed.emit(self.text.clone());
         self.base.request_redraw();
+    }
+
+    /// Appends platform-committed text to the query (D09-INPUT-01).
+    ///
+    /// The desktop backends deliver a printable character or an IME commit as
+    /// `Event::TextInput`/`Event::ImeCommit`, not as a `KeyPress`. Both that variant and the
+    /// `KeyPress` printable arm funnel through here so the append — and the `changed` signal it
+    /// emits through `set_text` — has a single implementation. Control characters are dropped so a
+    /// stray one cannot replace the query with a non-printing value.
+    fn append_committed_text(&mut self, text: &str) {
+        let mut next = self.text.clone();
+        next.extend(text.chars().filter(|c| !c.is_control()));
+        if next != self.text {
+            self.set_text(next);
+        }
     }
 }
 
@@ -434,8 +449,9 @@ impl Draw for SearchBox {
         );
 
         // — Text / Placeholder —
-        let default_font = crate::core::Font::default();
-        let font = self.font().unwrap_or(&default_font);
+        // The **effective font** — the resolved theme/caller font, via the shared accessor — so the
+        // value/placeholder honours the theme body font and the user's text scale (D09-STYLE-01).
+        let font = effective_font(self.style());
         // The typed text is the control's ink, so it follows the theme; the previous literal
         // `30,30,30` was written for a light field and rendered at 1.7:1 once the field's own
         // background resolved to a dark surface. The placeholder stays dimmer than the ink on
@@ -580,12 +596,20 @@ impl EventHandler for SearchBox {
                         // Character input
                         if let Some(ch) = char::from_u32(*key) {
                             if ch.is_ascii_graphic() || ch == ' ' {
-                                let mut next = self.text.clone();
-                                next.push(ch);
-                                self.set_text(next);
+                                self.append_committed_text(&ch.to_string());
                             }
                         }
                     }
+                }
+            }
+            // Platform-committed text (D09-INPUT-01). This is where a printable character or an
+            // IME commit actually arrives from the desktop backends, so without this branch the
+            // search box received `TextInput` and dropped it — typing only worked because the
+            // `KeyPress` path happened to be fed by the same producers. An unfocused box ignores it,
+            // matching the key path above.
+            Event::TextInput { text } | Event::ImeCommit { text } => {
+                if self.focused {
+                    self.append_committed_text(text);
                 }
             }
             _ => {
@@ -632,6 +656,65 @@ mod tests {
 
         sb.set_text("world");
         assert_eq!(*captured.lock().unwrap(), Some("world".to_string()));
+    }
+
+    // ─── D09-INPUT-01: platform-committed text reaches the query ───
+
+    /// A `TextInput` from the platform must be appended to the query.
+    ///
+    /// # The defect this pins (D09-INPUT-01)
+    ///
+    /// The desktop backends deliver a printable character or an IME commit as `Event::TextInput`,
+    /// not as a `KeyPress`; the handler only matched `KeyPress`, so committed text was dropped. The
+    /// test feeds `TextInput` to prove that path itself is wired.
+    #[test]
+    fn text_input_is_appended_to_the_query() {
+        let mut sb = SearchBox::new(Rect::new(0, 0, 200, 32));
+        sb.set_focused(true);
+        sb.handle_event(&Event::TextInput { text: "hé".to_string() });
+        assert_eq!(sb.text(), "hé");
+    }
+
+    /// An IME commit is appended the same way.
+    #[test]
+    fn ime_commit_is_appended_to_the_query() {
+        let mut sb = SearchBox::new(Rect::new(0, 0, 200, 32));
+        sb.set_focused(true);
+        sb.handle_event(&Event::ime_commit("你好"));
+        assert_eq!(sb.text(), "你好");
+    }
+
+    /// Committed text emits `text_changed` once with the new value.
+    #[test]
+    fn text_input_emits_text_changed() {
+        let mut sb = SearchBox::new(Rect::new(0, 0, 200, 32));
+        sb.set_focused(true);
+        let last = Arc::new(Mutex::new(String::new()));
+        sb.text_changed.connect({
+            let last = Arc::clone(&last);
+            move |val: Arc<String>| *last.lock().unwrap() = val.to_string()
+        });
+        sb.handle_event(&Event::TextInput { text: "abc".to_string() });
+        assert_eq!(sb.text(), "abc");
+        assert_eq!(*last.lock().unwrap(), "abc");
+    }
+
+    /// An unfocused box ignores committed text, matching the key gate.
+    #[test]
+    fn unfocused_ignores_text_input() {
+        let mut sb = SearchBox::new(Rect::new(0, 0, 200, 32));
+        sb.handle_event(&Event::TextInput { text: "X".to_string() });
+        assert_eq!(sb.text(), "");
+    }
+
+    /// A disabled box ignores committed text.
+    #[test]
+    fn disabled_ignores_text_input() {
+        let mut sb = SearchBox::new(Rect::new(0, 0, 200, 32));
+        sb.set_enabled(false);
+        sb.set_focused(true);
+        sb.handle_event(&Event::TextInput { text: "X".to_string() });
+        assert_eq!(sb.text(), "");
     }
 
     #[test]

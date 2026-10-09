@@ -28,7 +28,7 @@
 #[cfg(full_widgets)]
 use crate::compat::Vec;
 use crate::compat::{Rc, RefCell, String, ToString};
-use crate::core::{Alignment, Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Alignment, Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 #[cfg(full_widgets)]
 use crate::layout::{
@@ -46,7 +46,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 #[cfg(full_widgets)]
 use crate::widget::composite::CompositeBuilder;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 #[cfg(full_widgets)]
 use crate::widget::WidgetFactory;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
@@ -387,7 +387,14 @@ impl GroupBox {
     /// below it must yield to. Deriving it here (rather than using a `16` literal) is what lets
     /// a larger font push the content down instead of overlapping the title.
     fn title_band_height(&self) -> u32 {
-        Font::default().size().max(1.0) as u32
+        // The **effective font** — the resolved theme/caller font, the same one the title is painted
+        // with — so the band and the ink cannot disagree (D09-STYLE-01).
+        self.title_font().size().max(1.0) as u32
+    }
+
+    /// The font the group's title is drawn with: the resolved theme/caller font (D09-STYLE-01).
+    fn title_font(&self) -> crate::core::Font {
+        effective_font(self.style()).clone()
     }
 
     /// The top edge the frame's content begins at, below the title band and its gap.
@@ -612,7 +619,7 @@ impl Draw for GroupBox {
         // guarding nothing: measuring an empty string is cheap and yields `0`, which is exactly the
         // honest answer, so an empty title now caches `Some(0)` and the `.unwrap_or_else` fallbacks
         // stop being reached from a `draw`ed control at all.
-        let metrics = context.measure_text(&self.title, &Font::default());
+        let metrics = context.measure_text(&self.title, &self.title_font());
         self.cached_title_width = Some(metrics.width);
         // Draw base widget
         let rect = self.geometry();
@@ -737,7 +744,7 @@ impl Draw for GroupBox {
             context.draw_text(
                 Point::from_f32(title_rect.x as f32, title_rect.y as f32),
                 &self.title,
-                &Font::default(),
+                &self.title_font(),
                 text_color,
                 HorizontalAlignment::Left,
             );

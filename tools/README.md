@@ -12,11 +12,36 @@ holds the logic when the check needs real parsing. `tools/lib_python.sh` and
 Run them all:
 
 ```bash
-for s in tools/check_*.sh; do
-  n=$(basename "$s" .sh)
-  if timeout 400 bash "$s" >/tmp/$n.out 2>&1; then echo "PASS $n"; else echo "FAIL $n"; fi
-done
+bash tools/run_all_gates.sh                # every gate, one PASS/FAIL/NOT-RUN line each
+bash tools/run_all_gates.sh --summary      # add the per-gate output
+bash tools/run_all_gates.sh --summary --filter check_abi.sh   # one gate
 ```
+
+`run_all_gates.sh` is the **single** maintenance entry point. It bounds each gate with
+`tools/lib_timeout.sh`'s `rw_run_bounded` and stops when the whole-run budget is spent,
+reporting the gates it did not reach as `NOT-RUN`.
+
+**Do not wrap the runner in an outer `timeout`** and do not hand-roll a
+`for s in tools/check_*.sh; do timeout 400 bash "$s"; done` loop. Both were recommended
+here once; both are wrong. The tools' own `rw_run_bounded` already sets an internal bound,
+so an outer `timeout` stacks a second timer on top and, as measured in round 52, makes
+**every** gate report failure (PASS:0/FAIL:30) while each script run alone exits 0. The
+hand-rolled loop also has no `rw_run_bounded` on a host without GNU `timeout`, where it
+simply reports `timeout: command not found`. (D08-C-01.)
+
+### What the runner's exit status means
+
+The runner exits non-zero for **any** of:
+
+* one or more gates `FAIL`;
+* one or more gates `TIMEOUT` (an inconclusive result must not read as success);
+* one or more gates `NOT-RUN` because the whole-run budget was exhausted (that is
+  verification which did not happen);
+* a `--filter` that matched **no** gate (an empty selection verified nothing).
+
+`exit 0` therefore means "every selected gate ran and passed", not merely "nothing
+failed". `SKIP` (a gate that reports `unsupported host`) is the one non-pass that does not
+fail the run, because the gate itself ran and answered honestly. (D08-G-01.)
 
 `check_apple_native.sh` reports "unsupported host" and fails on any non-macOS host by
 design: it verifies AppKit/UIKit entry points, which cannot be checked elsewhere. Every
@@ -54,7 +79,7 @@ compares all three and names the file to update when they disagree.
 | `build_ios_testapp.sh`, `run_ios_testapp.sh` | Builds and runs the iOS Simulator app. |
 | `run_wayland_compositor_tests.sh` | Runs the Wayland tests against a real compositor. |
 | `smoke_demos.sh` | Smoke-runs every demo. |
-| `gtk_check.py`, `gtk_property_check.py` | Inspect a live GTK widget tree (needs a display). |
+| `gtk_source_snapshot.py` | Writes the Linux/GTK canvas source, with crate-internal imports and platform-dependent bodies replaced, into a scratch directory for **offline reading**. This is a *source snapshot generator, not a compile check* — the real GTK compile check is the `linux-gtk` CI job (`cargo check --features desktop,gtk-native` on a host with GTK 3). Renamed from `gtk_check.py`, whose name and README line overstated it (D08-G-04). |
 | `missing_docs_report.py` | Reports public items lacking docs; a report, not a gate. |
 | `audit_text_contrast.py` | Reads the committed `snapshots/svg/` files and reports the WCAG contrast ratio of every `<text>` against the element painted under it. **Deliberately not a gate**: a disabled label and a watermark are *supposed* to be faint, so a low ratio is not by itself a defect. It is the evidence generator that says which of 188 controls deserve a look. |
 | `audit_appearance.py`, `audit_theme_tokens.py`, `audit_kind_sharing.py`, `audit_control_gaps.py`, `audit_platform_create_coverage.py`, `audit_text_y.py` | Audits, not gates — they quantify a class of defect so the fixes can be prioritised. `audit_platform_create_coverage.sh` (the gate) is what asserts `UNRESOLVED (0)`. |

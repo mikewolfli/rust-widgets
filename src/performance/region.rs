@@ -113,6 +113,41 @@ impl DirtyRegionTracker {
         self.merged = false;
         id
     }
+    /// Records `rect` as dirty, coalescing to one covering region once the tracker is over its
+    /// `max_regions` limit, and returns the id of the region the damage landed in.
+    ///
+    /// # Why this is not `optimize` (D09-RENDER-01)
+    ///
+    /// `optimize` sorts by layer/priority and **truncates**, which drops regions — the pixels
+    /// they covered are then never repainted and stay stale. A renderer cannot do that. Instead,
+    /// once the count would exceed the limit, every currently tracked region is replaced by their
+    /// single bounding rectangle and the new one is unioned into it. The count collapses to one,
+    /// which bounds both the later `merge` (whose cost grows with the count) and the per-region
+    /// repaint loop, while **no damaged pixel is lost**: a bounding rectangle contains every
+    /// region it was formed from, and the new rect is contained by construction.
+    ///
+    /// Returns the id of the region now holding the damage — the freshly added region when it was
+    /// appended, or the single coalesced region's new id otherwise.
+    pub fn add_coalescing_beyond_capacity(&mut self, rect: Rect) -> RegionId {
+        if self.regions.len() < self.max_regions {
+            return self.add(rect);
+        }
+        // Over (or exactly at) capacity: fold everything, including the new rect, into one
+        // covering region so the damage is bounded without being dropped.
+        let mut bounding = rect;
+        let mut layer = 0u32;
+        let mut priority = 0u8;
+        for region in self.regions.drain(..) {
+            bounding = bounding.union(&region.rect);
+            layer = layer.max(region.layer);
+            priority = priority.max(region.priority);
+        }
+        let coalesced = DirtyRegion::new(bounding).with_layer(layer).with_priority(priority);
+        let id = coalesced.id;
+        self.regions.push(coalesced);
+        self.merged = false;
+        id
+    }
     /// Records `rect` as dirty with the given retention `priority` and returns
     /// its new id.
     ///
@@ -163,6 +198,24 @@ impl DirtyRegionTracker {
     pub fn len(&self) -> usize {
         self.regions.len()
     }
+    /// Returns the configured [`DirtyRegionTracker::optimize`] limit.
+    pub fn max_regions(&self) -> usize {
+        self.max_regions
+    }
+    /// Returns `true` when more regions are tracked than the configured limit.
+    ///
+    /// # Why this is a query and not an automatic action (D09-RENDER-01)
+    ///
+    /// `optimize` *drops* regions once it is over capacity, which is correct for a compositor
+    /// that only wants a hint but wrong for a renderer: a dropped region is a band of the surface
+    /// that is never repainted and therefore shows stale pixels. A renderer that learns it is over
+    /// capacity must instead cover **all** the damage with one repaint, so it needs to *ask*
+    /// whether the tracker is over the limit without the tracker having already thrown damage
+    /// away. This method answers that question; the decision about what to do with it belongs to
+    /// the caller that knows how it paints.
+    pub fn over_capacity(&self) -> bool {
+        self.regions.len() > self.max_regions
+    }
     /// Borrows all tracked regions, in insertion order until a merge reorders
     /// them.
     pub fn regions(&self) -> &[DirtyRegion] {
@@ -185,10 +238,24 @@ impl DirtyRegionTracker {
     /// performed here on [`DirtyRegion`] rather than by handing a bare `Vec<Rect>` to
     /// `merge_intersecting_rects`, because that helper cannot carry the metadata the union
     /// must preserve.
+    ///
+    /// # Cost (D09-RENDER-01)
+    ///
+    /// Unioning bounding boxes is transitive: a union can grow to reach a region the scan already
+    /// passed, so the scan restarts from the beginning after each union. That is what makes the
+    /// work grow with the square of the region count in the worst case, and it is why the caller
+    /// must bound the count *before* calling this: [`DirtyRegionTracker::over_capacity`] lets a
+    /// renderer switch to a single covering repaint instead of merging an unbounded bag. The
+    /// regions are sorted by left edge first so that the restart is cheap for the clustered
+    /// damage a frame actually produces, and the ordering never changes the result because a
+    /// union is commutative in geometry and the metadata merge is a `max`.
     pub fn merge(&mut self) {
         if self.merged || self.regions.len() <= 1 {
             return;
         }
+        // Sorting by left edge does not change which rectangles end up in which union; it only
+        // makes the restarts below walk regions that are near each other in `x`.
+        self.regions.sort_by_key(|region| region.rect.x);
         let mut merged: Vec<DirtyRegion> = Vec::with_capacity(self.regions.len());
         for mut current in self.regions.drain(..) {
             let mut i = 0;
@@ -363,5 +430,44 @@ mod tests {
         assert_eq!(region.rect, Rect::new(0, 0, 15, 15));
         assert_eq!(region.layer, 3, "the union sits on the top layer");
         assert_eq!(region.priority, 50, "and keeps the highest priority");
+    }
+
+    /// Adding past the capacity coalesces to one covering region and keeps every pixel covered,
+    /// unlike `optimize`, which would truncate and drop damage. (D09-RENDER-01)
+    #[test]
+    fn add_coalescing_beyond_capacity_covers_all_damage() {
+        let mut tracker = DirtyRegionTracker::with_max_regions(4);
+        // Three disjoint regions: still under the limit, so they stay separate.
+        for i in 0..3 {
+            tracker.add(Rect::new(i * 10, 0, 4, 4));
+        }
+        assert_eq!(tracker.len(), 3, "under capacity nothing is coalesced");
+
+        // The fourth fills the limit exactly.
+        tracker.add(Rect::new(100, 100, 4, 4));
+        assert_eq!(tracker.len(), 4);
+
+        // The fifth pushes past it: everything folds into one covering region.
+        tracker.add_coalescing_beyond_capacity(Rect::new(200, 200, 4, 4));
+        assert_eq!(tracker.len(), 1, "over capacity the damage collapses to one region");
+        let region = tracker.regions[0].rect;
+        assert!(region.contains_rect(&Rect::new(0, 0, 4, 4)));
+        assert!(region.contains_rect(&Rect::new(100, 100, 4, 4)));
+        assert!(region.contains_rect(&Rect::new(200, 200, 4, 4)));
+        assert!(!tracker.over_capacity());
+    }
+
+    /// `over_capacity` reports the limit without dropping anything: it is a query, so the regions
+    /// are untouched. (D09-RENDER-01)
+    #[test]
+    fn over_capacity_reports_without_dropping() {
+        let mut tracker = DirtyRegionTracker::with_max_regions(2);
+        assert!(!tracker.over_capacity());
+        tracker.add(Rect::new(0, 0, 1, 1));
+        tracker.add(Rect::new(2, 0, 1, 1));
+        assert!(!tracker.over_capacity(), "exactly at the limit is not over");
+        tracker.add(Rect::new(4, 0, 1, 1));
+        assert!(tracker.over_capacity(), "one past the limit is over");
+        assert_eq!(tracker.len(), 3, "the query must not have dropped the excess");
     }
 }

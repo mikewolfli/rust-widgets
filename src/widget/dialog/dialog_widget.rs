@@ -10,7 +10,7 @@
 //! and `PopupWindow` (a chrome-only popup), which `WidgetKind::Dialog` was previously
 //! aliased to.
 
-use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -19,7 +19,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -481,9 +481,11 @@ impl Draw for Dialog {
         // origin is the glyph's top edge, so `text_line` is what places it on the strip's
         // middle line. The old `rect.y + (bar - title_h) / 2` measured against a height the
         // strip did not have, and a bare literal `y` would reintroduce exactly that.
-        let title_font = Font::default();
+        // The **effective font** — the resolved theme/caller font — so the title honours the theme
+        // body font and the user's text scale (D09-STYLE-01).
+        let title_font = effective_font(&style);
         let band = ControlMetrics::band_inset(bar, 0);
-        let title_line = context.text_line(band, &title_font);
+        let title_line = context.text_line(band, title_font);
         context.draw_text_fitted(
             Rect::new(
                 rect.x + 8,
@@ -492,7 +494,7 @@ impl Draw for Dialog {
                 title_line.height.max(1),
             ),
             &self.title,
-            &title_font,
+            title_font,
             ink,
             HorizontalAlignment::Left,
         );
@@ -725,6 +727,36 @@ mod tests {
         assert!(
             mid_width > 0 && mid_width < settled_width,
             "a revealing frame must be smaller than a settled one: mid={mid_width} settled={settled_width}"
+        );
+    }
+
+    // ── D09-STYLE-01: the dialog title consumes the resolved theme/caller font ──
+
+    /// A caller-authored `style.font` must change the title the dialog paints.
+    ///
+    /// # The defect this pins
+    ///
+    /// The title bar built a `Font::default()` by hand, so the theme body font and the user's text
+    /// scale never reached a dialog title. It now reads `metrics::effective_font`.
+    #[test]
+    fn a_custom_font_changes_the_dialog_title_ink() {
+        let render = |font: Option<crate::core::Font>| {
+            let mut d = Dialog::with_title("Settings", Rect::new(0, 0, 400, 300));
+            if let Some(font) = font {
+                d.set_style(crate::style::WidgetStyle::default().with_font(font));
+            }
+            d.open();
+            while d.tick(1000) {}
+            let svg = crate::widget::svg::render_to_svg(&mut d);
+            crate::widget::svg::text_ink_box(&svg).map(|(x, _, right, _)| right - x).unwrap_or(0)
+        };
+
+        let base_ink = render(None);
+        let big_ink = render(Some(crate::core::Font::simple("Test", 30.0)));
+        assert!(base_ink > 0, "the default title must paint ink for this test to mean anything");
+        assert!(
+            big_ink > base_ink,
+            "a larger font must widen the painted title ink: {big_ink} vs {base_ink}"
         );
     }
 }

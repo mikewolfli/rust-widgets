@@ -15,7 +15,7 @@
 //! map [`super::A11yRole`] to their corresponding `NSAccessibilityRole`
 //! string constants for NSAccessibility protocol conformance.
 
-use super::AccessibilityBridge;
+use super::{A11yState, AccessibilityBridge};
 use crate::compat::{HashMap, MiniToString, Mutex, String};
 use crate::core::ObjectId;
 use cocoa::base::{id, nil};
@@ -30,6 +30,8 @@ extern "C" {
 /// macOS NSAccessibility bridge implementation.
 pub struct MacOSAccessibilityBridge {
     names: Mutex<HashMap<ObjectId, String>>,
+    /// Full accessibility state per widget (D09-A11Y-02), mirrored from `submit_node_state`.
+    nodes: Mutex<HashMap<ObjectId, A11yState>>,
     /// Mapping from widget ObjectId to native NSView/NSControl pointer (as *mut c_void).
     native_handles: Mutex<HashMap<ObjectId, usize>>,
 }
@@ -52,7 +54,11 @@ unsafe fn autoreleased_nsstring(s: &str) -> id {
 impl MacOSAccessibilityBridge {
     /// Create an empty bridge with no names or native handles registered.
     pub fn new() -> Self {
-        Self { names: Mutex::new(HashMap::new()), native_handles: Mutex::new(HashMap::new()) }
+        Self {
+            names: Mutex::new(HashMap::new()),
+            nodes: Mutex::new(HashMap::new()),
+            native_handles: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Register a native Cocoa handle for the given widget id.
@@ -103,6 +109,36 @@ impl AccessibilityBridge for MacOSAccessibilityBridge {
 
     fn accessibility_name(&self, id: ObjectId) -> Option<String> {
         crate::compat::try_lock(&self.names).and_then(|names| names.get(&id).cloned())
+    }
+
+    /// Stores the full node state (D09-A11Y-02) alongside the name, so a VoiceOver client can be
+    /// handed a control's role, value and checked state rather than only its name.
+    fn submit_node_state(&self, id: ObjectId, state: &A11yState) {
+        if let Some(mut names) = crate::compat::try_lock(&self.names) {
+            names.insert(id, state.label.clone());
+        }
+        if let Some(mut nodes) = crate::compat::try_lock(&self.nodes) {
+            nodes.insert(id, state.clone());
+        }
+    }
+
+    fn node_state(&self, id: ObjectId) -> Option<A11yState> {
+        crate::compat::try_lock(&self.nodes).and_then(|nodes| nodes.get(&id).cloned())
+    }
+
+    /// Removes the name and state entries on unmount (D09-A11Y-03), so the maps do not keep one
+    /// entry per historical widget id.
+    fn unregister_node(&self, id: ObjectId) {
+        if let Some(mut names) = crate::compat::try_lock(&self.names) {
+            names.remove(&id);
+        }
+        if let Some(mut nodes) = crate::compat::try_lock(&self.nodes) {
+            nodes.remove(&id);
+        }
+    }
+
+    fn node_count(&self) -> usize {
+        crate::compat::try_lock(&self.nodes).map(|nodes| nodes.len()).unwrap_or(0)
     }
 
     fn notify_name_changed(&self, id: ObjectId) {
@@ -238,5 +274,43 @@ mod tests {
         fn assert_sync<T: Sync>() {}
         assert_send::<MacOSAccessibilityBridge>();
         assert_sync::<MacOSAccessibilityBridge>();
+    }
+
+    /// D09-A11Y-02: the full state is stored and read back, not only the label.
+    #[test]
+    fn submitted_state_is_stored_in_full_not_only_the_label() {
+        use crate::platform::accessibility::{A11yRole, A11yState};
+        let bridge = MacOSAccessibilityBridge::new();
+        let full = A11yState {
+            role: A11yRole::CheckBox,
+            label: "Dark mode".to_string(),
+            description: "Toggle the theme".to_string(),
+            enabled: true,
+            checked: Some(true),
+            children: vec![8, 9],
+            ..A11yState::default()
+        };
+        bridge.submit_node_state(4, &full);
+        assert_eq!(bridge.node_state(4), Some(full), "every field round-trips");
+        assert_eq!(bridge.accessibility_name(4).as_deref(), Some("Dark mode"));
+    }
+
+    /// D09-A11Y-03: unmount removes both the name and the state entry.
+    #[test]
+    fn unmount_removes_entries_so_counts_return_to_baseline() {
+        use crate::platform::accessibility::{A11yRole, A11yState};
+        let bridge = MacOSAccessibilityBridge::new();
+        let id = 12u64;
+        bridge.submit_node_state(
+            id,
+            &A11yState { role: A11yRole::Button, label: "Go".to_string(), ..A11yState::default() },
+        );
+        assert_eq!(bridge.node_count(), 1);
+        assert!(bridge.accessibility_name(id).is_some());
+
+        bridge.unregister_node(id);
+        assert_eq!(bridge.node_count(), 0, "the node is gone");
+        assert!(bridge.accessibility_name(id).is_none(), "and the name is gone");
+        assert!(bridge.node_state(id).is_none(), "and the state is gone");
     }
 }

@@ -75,7 +75,7 @@ pub enum A11yRole {
 // ─── Accessibility state ────────────────────────────────────────────────
 
 /// Full accessibility state for a single node in the accessibility tree.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct A11yState {
     /// Semantic role of this node.
     pub role: A11yRole,
@@ -798,6 +798,20 @@ impl From<WidgetKind> for A11yRole {
 // ─── Platform accessibility bridge trait ────────────────────────────────
 
 /// Trait for platform-specific accessibility integration.
+///
+/// # The full-state contract (D09-A11Y-02)
+///
+/// The original trait could carry exactly one field of a node — the accessible *name* — plus
+/// payload-less `notify_*` calls. That made the widget-derived [`A11yState`] (role, description,
+/// enabled/focused/selected/expanded, value, checked/mixed, children) collapse to its label at the
+/// bridge boundary, so a screen reader could learn a control's name but not what it *is*. The three
+/// methods below are the missing half of that contract: [`Self::submit_node_state`] carries the
+/// whole state, [`Self::node_state`] reads it back so the pump is observable end-to-end, and
+/// [`Self::unregister_node`] removes it on unmount.
+///
+/// Every new method has a default body, so an implementor that has not adopted the full-state
+/// contract still compiles and still behaves sensibly: the default `submit_node_state` forwards the
+/// one field the old contract could carry, rather than silently dropping the node.
 pub trait AccessibilityBridge: Send + Sync {
     /// Set the accessible name (label) for a widget.
     fn set_accessibility_name(&self, id: ObjectId, name: &str);
@@ -816,6 +830,52 @@ pub trait AccessibilityBridge: Send + Sync {
     /// accessibility bridges should override this to expose ARIA
     /// properties to assistive technologies.
     fn set_aria_properties(&self, _id: ObjectId, _props: &AriaProperties) {}
+
+    /// Submit a node's **complete** derived state, creating or replacing it (D09-A11Y-02).
+    ///
+    /// This is the full-state entry point [`crate::widget::a11y_submit::submit_mounted`] calls. A
+    /// bridge that models the accessibility tree stores the whole [`A11yState`] — role, description,
+    /// enabled/focused/selected/expanded, value, checked/mixed and child relations — rather than the
+    /// label alone, so a screen reader can query what the control *is* and not only its name.
+    ///
+    /// The default keeps the one-field behaviour of the pre-D09-A11Y-02 contract for a backend
+    /// that has not yet adopted the richer one: it forwards the label and drops nothing a caller
+    /// could previously have expected to arrive.
+    fn submit_node_state(&self, id: ObjectId, state: &A11yState) {
+        self.set_accessibility_name(id, &state.label);
+    }
+
+    /// Read back the last state submitted for `id`, if this bridge models a tree (D09-A11Y-02).
+    ///
+    /// A pull accessor paired with [`Self::submit_node_state`], so a test can assert the pump
+    /// carried the *whole* state rather than only proving the function was called. A bridge that
+    /// stores no node state answers `None`, which is the honest "this backend does not model the
+    /// tree" statement rather than a fabricated default.
+    fn node_state(&self, _id: ObjectId) -> Option<A11yState> {
+        None
+    }
+
+    /// Remove a node's recorded state and name on unmount (D09-A11Y-03).
+    ///
+    /// The counterpart of [`Self::submit_node_state`]. Without it, `submit_unmounted` could only
+    /// blank the name, leaving one entry per historical widget id in the bridge's maps for the life
+    /// of the process — unbounded growth across create/destroy cycles, because the runtime hands out
+    /// a monotonically increasing id per mount.
+    ///
+    /// The default preserves the pre-D09-A11Y-03 behaviour for a bridge that keeps no removable
+    /// entry: it clears the name to the empty string. A bridge that owns a node store removes the
+    /// entry outright.
+    fn unregister_node(&self, id: ObjectId) {
+        self.set_accessibility_name(id, "");
+    }
+
+    /// Number of nodes this bridge currently records, for lifecycle accounting (D09-A11Y-03).
+    ///
+    /// A repeated mount/unmount must return this to its baseline; a bridge that keeps no node store
+    /// answers `0`, which is honest rather than misleading because it models no nodes to count.
+    fn node_count(&self) -> usize {
+        0
+    }
 }
 
 // ─── Default A11yProvider implementation ────────────────────────────────

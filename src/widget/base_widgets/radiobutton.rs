@@ -13,8 +13,8 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{
-    dimensions, estimate_line_height, estimate_text_width, ControlMetrics, FocusRing,
-    FOCUS_RING_WIDTH,
+    dimensions, effective_font, estimate_line_height, estimate_text_width, ControlMetrics,
+    FocusRing, FOCUS_RING_WIDTH,
 };
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -117,9 +117,12 @@ impl RadioButton {
     fn hit_area(&self) -> Rect {
         let rect = self.geometry();
         // The line box, derived the same way `RenderContext::text_line` derives it: a single
-        // line of `Font::default()` centred in the control's rectangle. The two must agree,
+        // line of the effective font centred in the control's rectangle. The two must agree,
         // because the disc's vertical position follows the line.
-        let line = vertical_line_box(rect, &Font::default());
+        // The effective font — the resolved theme/caller font, not the default (D09-STYLE-01) —
+        // so the hit region measures the label with the same font the paint uses.
+        let font = effective_font(self.style());
+        let line = vertical_line_box(rect, font);
         let (center, radius) = self.indicator_geometry(&line);
         let indicator =
             Rect::new(center.x - radius as i32, center.y - radius as i32, radius * 2, radius * 2);
@@ -130,11 +133,11 @@ impl RadioButton {
             // No label to reach, so the indicator alone is the target.
             indicator
         } else {
-            // The label's width is an *estimate* (`chars * 3/5 em`), deliberately conservative:
-            // the region must never extend past the text the user can see, and this path has no
-            // render context to measure with. The painter may therefore draw a slightly wider
-            // label than the hit region — the safe direction.
-            let label_width = self.text.chars().count() as u32 * (line.height * 3 / 5).max(1);
+            // The label's width uses the **same** shared measurement the painter's ruler and
+            // `implicit_size` use (D09-CTRL-02): the old `chars().count() * 3/5 em` estimate
+            // under-counts wide glyphs, so the visible label could extend past this region and its
+            // tail was not clickable.
+            let label_width = estimate_text_width(&self.text, font, 1.0);
             Rect::new(
                 indicator.x,
                 indicator.y,
@@ -157,15 +160,17 @@ impl RadioButton {
     /// arithmetic — the copy that could disagree with a checkbox sitting beside it in the same
     /// form the moment either changed.
     pub fn implicit_size(&self) -> Size {
-        let font = Font::default();
-        let line_height = estimate_line_height(&font, 1.0);
+        // Measure with the effective font, so the intrinsic size grows with the theme body font
+        // and the user's text scale exactly as the painted label does (D09-STYLE-01).
+        let font = effective_font(self.style());
+        let line_height = estimate_line_height(font, 1.0);
         let disc = (INDICATOR_RADIUS * 2).min(line_height);
         let content_width = if self.text.is_empty() {
             disc + INDICATOR_INSET as u32
         } else {
             disc + INDICATOR_INSET as u32
                 + self.label_gap() as u32
-                + estimate_text_width(&self.text, &font, 1.0)
+                + estimate_text_width(&self.text, font, 1.0)
         };
         let floor =
             Size::new(dimensions::TOUCH_TARGET_MIN.min(content_width.max(disc)), line_height);
@@ -462,8 +467,8 @@ impl Draw for RadioButton {
         let rect = self.geometry();
         let style = self.style();
         let enabled = self.base.is_enabled();
-        let font = Font::default();
-        let line = context.text_line(rect, &font);
+        let font = effective_font(style);
+        let line = context.text_line(rect, font);
 
         // The indicator is a **fixed-size** disc at the left edge, vertically centred on the
         // label's own line box, not a fraction of the caller's rectangle. `min(w, h) / 4` made
@@ -591,7 +596,7 @@ impl Draw for RadioButton {
                     line.height,
                 ),
                 &self.text,
-                &font,
+                font,
                 label_ink,
                 HorizontalAlignment::Left,
             );
@@ -1251,5 +1256,142 @@ mod tests {
             "the selected dot must paint the declared `radio_button:checked` colour {expected}; \
              got: {dot}"
         );
+    }
+
+    // ── D09-CTRL-02: the hit area uses the same text measurement as painting ──
+
+    /// A press on the **tail** of a wide-glyph label must select the radio button.
+    ///
+    /// # The defect this pins
+    ///
+    /// `hit_area()` estimated the label as `chars().count() * 3/5 em`; wide glyphs advance more, so
+    /// the visible label extended past the estimated region and its tail was not clickable. The
+    /// region is now measured with the shared `estimate_text_width`, the same ruler the painter uses.
+    #[test]
+    fn a_press_on_the_tail_of_a_wide_label_selects_the_radio() {
+        let mut rb = RadioButton::new(Rect::new(0, 0, 400, 30));
+        rb.set_text("WWWWWWWW".to_string());
+
+        let area = rb.hit_area();
+        let old_estimate = {
+            let line_height = Font::default().size().max(1.0) as u32;
+            "WWWWWWWW".chars().count() as u32 * (line_height * 3 / 5).max(1)
+        };
+        assert!(
+            area.width > old_estimate,
+            "the measured label must exceed the old char-count estimate (was {old_estimate}, region {})",
+            area.width
+        );
+
+        // A press just inside the region's right edge (the tail of the visible label) must select.
+        let tail = Point::new(area.x + area.width as i32 - 1, area.y + area.height as i32 / 2);
+        rb.handle_event(&Event::MousePress { pos: tail, button: 1, modifiers: 0 });
+        assert!(rb.is_checked(), "the tail of a wide label must be inside the hit area");
+    }
+
+    /// `i` and `W` must not be measured as the same width, so the wider label gets a wider target.
+    #[test]
+    fn narrow_and_wide_labels_are_measured_by_the_shared_ruler() {
+        let mut narrow = RadioButton::new(Rect::new(0, 0, 400, 30));
+        narrow.set_text("iiii".to_string());
+        let mut wide = RadioButton::new(Rect::new(0, 0, 400, 30));
+        wide.set_text("WWWW".to_string());
+
+        assert!(
+            narrow.hit_area().width < wide.hit_area().width,
+            "`W` advances more than `i`, so a wide label's target must be wider: {} vs {}",
+            narrow.hit_area().width,
+            wide.hit_area().width
+        );
+    }
+
+    // ── D09-STYLE-01: the radio button consumes the resolved theme/caller font ──
+
+    /// A caller-authored `style.font` must drive the hint, the hit region and the painted label.
+    #[test]
+    fn a_custom_font_grows_the_radio_hint_and_the_drawn_label() {
+        let text = "Choice";
+        let mut baseline = RadioButton::new(Rect::new(0, 0, 200, 30));
+        baseline.set_text(text.to_string());
+        let base_hint = baseline.implicit_size();
+        let base_ink = label_ink_width(&mut baseline);
+
+        let mut big = RadioButton::new(Rect::new(0, 0, 200, 30));
+        big.set_text(text.to_string());
+        big.set_style(crate::style::WidgetStyle::default().with_font(Font::simple("Test", 28.0)));
+        let big_hint = big.implicit_size();
+        let big_ink = label_ink_width(&mut big);
+
+        assert!(
+            big_hint.width > base_hint.width,
+            "a larger font must widen the hint: {} vs {}",
+            big_hint.width,
+            base_hint.width
+        );
+        assert!(
+            big_hint.height > base_hint.height,
+            "a larger font must raise the hint: {} vs {}",
+            big_hint.height,
+            base_hint.height
+        );
+        assert!(
+            big_ink > base_ink,
+            "a larger font must widen the painted label ink: {big_ink} vs {base_ink}"
+        );
+    }
+
+    /// A text scale above 1.0, resolved through the theme, must widen the hint.
+    #[test]
+    fn a_theme_text_scale_above_one_grows_the_radio_hint() {
+        use crate::style::environment::{
+            install_environment, uninstall_environment, EnvironmentProvider,
+        };
+        use crate::style::MotionPreference;
+
+        struct Scaled(f32);
+        impl EnvironmentProvider for Scaled {
+            fn text_scale(&self) -> f32 {
+                self.0
+            }
+            fn motion_preference(&self) -> MotionPreference {
+                MotionPreference::NoPreference
+            }
+        }
+
+        let _guard = crate::style::theme_test_guard();
+        let previous = install_environment(Box::new(Scaled(1.0)));
+        {
+            let mut manager = crate::theme::global_theme_manager();
+            manager.register_theme(crate::theme::Theme::default());
+            manager.set_appearance(crate::theme::AppearanceMode::Light);
+        }
+        let mut at_one = RadioButton::new(Rect::new(0, 0, 200, 30));
+        at_one.set_text("Scaled choice".to_string());
+        crate::theme::apply_active_theme(&mut at_one);
+        let hint_one = at_one.implicit_size();
+
+        install_environment(Box::new(Scaled(1.5)));
+        let mut scaled = RadioButton::new(Rect::new(0, 0, 200, 30));
+        scaled.set_text("Scaled choice".to_string());
+        crate::theme::apply_active_theme(&mut scaled);
+        let hint_large = scaled.implicit_size();
+
+        let _ = uninstall_environment();
+        if let Some(previous) = previous {
+            install_environment(previous);
+        }
+
+        assert!(
+            hint_large.width > hint_one.width,
+            "a text scale above 1.0 must widen the radio hint: {} vs {}",
+            hint_large.width,
+            hint_one.width
+        );
+    }
+
+    /// The ink width of the label a radio paints, read back from an SVG render.
+    fn label_ink_width(radio: &mut RadioButton) -> i32 {
+        let svg = crate::widget::svg::render_to_svg(radio);
+        crate::widget::svg::text_ink_box(&svg).map(|(x, _, right, _)| right - x).unwrap_or(0)
     }
 }

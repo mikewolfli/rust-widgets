@@ -32,6 +32,40 @@ fn jstring_to_string(env: &mut JNIEnv<'_>, input: &JString) -> String {
     env.get_string(input).map(|s| s.into()).unwrap_or_default()
 }
 
+/// Convert a Java string to a `CString`, throwing a Java exception on a NUL.
+///
+/// A Java `String` may legitimately contain U+0000, but a C string cannot: the C
+/// ABI reads these arguments with `CStr::from_ptr`, which stops at the first
+/// NUL. The previous `CString::new(..).unwrap_or_default()` turned such a value
+/// into an **empty** string — a silently different value, with no error the
+/// caller could observe (D09-JNI-03). This throws
+/// `java.lang.IllegalArgumentException` from the JNI frame instead, so the
+/// wrapper boundary reports the input it cannot represent; the caller supplies
+/// the value used when a Java exception is already pending.
+fn jstring_to_cstring(
+    env: &mut JNIEnv<'_>,
+    input: &JString<'_>,
+    fallback: &'static str,
+) -> std::ffi::CString {
+    let value = jstring_to_string(env, input);
+    match std::ffi::CString::new(value) {
+        Ok(c) => c,
+        Err(_) => {
+            // `with_nul` is `InteriorNul`; the payload is the value up to the NUL.
+            let _ = env.throw_new(
+                "java/lang/IllegalArgumentException",
+                "string contains a NUL (U+0000) character, which the C string ABI cannot \
+                 represent",
+            );
+            // A CString cannot hold the rejected value, but the JNI function must
+            // still return *something*; the pending Java exception aborts the call
+            // before this value is observed. An empty C string is the documented
+            // "no value" shape the previous code also produced.
+            std::ffi::CString::new(fallback).expect("the fallback literal has no interior NUL")
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helper: create a Java String from a *const c_char C string pointer
 // ---------------------------------------------------------------------------
@@ -51,6 +85,27 @@ fn c_string_to_jstring(env: &mut JNIEnv<'_>, ptr: *const std::ffi::c_char) -> js
         }
     }
     env.new_string(&rust_str).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+
+// ---------------------------------------------------------------------------
+// Helper: validate a signed JNI size against the unsigned C ABI
+// ---------------------------------------------------------------------------
+
+/// Validate a signed `jint` size for the unsigned C ABI and throw on a negative.
+///
+/// The Java API takes `int width` / `int height`, but the C ABI takes
+/// `u32`. `width as juint` reinterprets `-1` as `4294967295`, so a negative
+/// size asked the library for a control as large as an unsigned 32-bit value
+/// can be, instead of being reported as invalid (D09-JNI-02). This throws
+/// `java.lang.IllegalArgumentException` from the JNI frame, matching the
+/// class-level contract that invalid arguments raise.
+fn checked_size(env: &mut JNIEnv<'_>, value: jint, name: &str) -> juint {
+    if value < 0 {
+        let message = format!("{name} must be non-negative, got {value}");
+        let _ = env.throw_new("java/lang/IllegalArgumentException", message);
+        return 0;
+    }
+    value as juint
 }
 
 // ===========================================================================
@@ -99,10 +154,10 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeCreateWindow
     width: jint,
     height: jint,
 ) -> jlong {
-    let title_str = jstring_to_string(&mut env, &title);
-    let c_title = std::ffi::CString::new(title_str).unwrap_or_default();
-    crate::bindings::rw_create_window(c_title.as_ptr(), x, y, width as juint, height as juint)
-        as jlong
+    let c_title = jstring_to_cstring(&mut env, &title, "");
+    let width = checked_size(&mut env, width, "width");
+    let height = checked_size(&mut env, height, "height");
+    crate::bindings::rw_create_window(c_title.as_ptr(), x, y, width, height) as jlong
 }
 
 /// Macro to generate a widget creation JNI function for widgets that take
@@ -122,16 +177,10 @@ macro_rules! jni_create_widget_with_text {
             width: jint,
             height: jint,
         ) -> jlong {
-            let text_str = jstring_to_string(&mut env, &text);
-            let c_text = std::ffi::CString::new(text_str).unwrap_or_default();
-            crate::bindings::$c_func(
-                parent as u64,
-                c_text.as_ptr(),
-                x,
-                y,
-                width as juint,
-                height as juint,
-            ) as jlong
+            let c_text = jstring_to_cstring(&mut env, &text, "");
+            let width = checked_size(&mut env, width, "width");
+            let height = checked_size(&mut env, height, "height");
+            crate::bindings::$c_func(parent as u64, c_text.as_ptr(), x, y, width, height) as jlong
         }
     };
 }
@@ -144,7 +193,7 @@ macro_rules! jni_create_widget_no_text {
         #[no_mangle]
         #[doc = concat!("JNI entry point for Java `", stringify!($name), "`.")]
         pub extern "system" fn $name(
-            _env: JNIEnv<'_>,
+            mut env: JNIEnv<'_>,
             _class: JClass<'_>,
             parent: jlong,
             x: jint,
@@ -152,7 +201,9 @@ macro_rules! jni_create_widget_no_text {
             width: jint,
             height: jint,
         ) -> jlong {
-            crate::bindings::$c_func(parent as u64, x, y, width as juint, height as juint) as jlong
+            let width = checked_size(&mut env, width, "width");
+            let height = checked_size(&mut env, height, "height");
+            crate::bindings::$c_func(parent as u64, x, y, width, height) as jlong
         }
     };
 }
@@ -241,18 +292,18 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeCreateMessag
     width: jint,
     height: jint,
 ) -> jlong {
-    let title_str = jstring_to_string(&mut env, &title);
-    let text_str = jstring_to_string(&mut env, &text);
-    let c_title = std::ffi::CString::new(title_str).unwrap_or_default();
-    let c_text = std::ffi::CString::new(text_str).unwrap_or_default();
+    let c_title = jstring_to_cstring(&mut env, &title, "");
+    let c_text = jstring_to_cstring(&mut env, &text, "");
+    let width = checked_size(&mut env, width, "width");
+    let height = checked_size(&mut env, height, "height");
     crate::bindings::rw_create_message_box(
         parent as u64,
         c_title.as_ptr(),
         c_text.as_ptr(),
         x,
         y,
-        width as juint,
-        height as juint,
+        width,
+        height,
     ) as jlong
 }
 
@@ -271,16 +322,10 @@ macro_rules! jni_create_dialog {
             width: jint,
             height: jint,
         ) -> jlong {
-            let title_str = jstring_to_string(&mut env, &title);
-            let c_title = std::ffi::CString::new(title_str).unwrap_or_default();
-            crate::bindings::$c_func(
-                parent as u64,
-                c_title.as_ptr(),
-                x,
-                y,
-                width as juint,
-                height as juint,
-            ) as jlong
+            let c_title = jstring_to_cstring(&mut env, &title, "");
+            let width = checked_size(&mut env, width, "width");
+            let height = checked_size(&mut env, height, "height");
+            crate::bindings::$c_func(parent as u64, c_title.as_ptr(), x, y, width, height) as jlong
         }
     };
 }
@@ -340,8 +385,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeSetWidgetTex
     widget_id: jlong,
     text: JString<'_>,
 ) {
-    let text_str = jstring_to_string(&mut env, &text);
-    let c_text = std::ffi::CString::new(text_str).unwrap_or_default();
+    let c_text = jstring_to_cstring(&mut env, &text, "");
     crate::bindings::rw_set_widget_text(widget_id as u64, c_text.as_ptr());
 }
 
@@ -384,7 +428,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeIsWidgetEnab
 #[no_mangle]
 /// JNI entry point for Java `nativeSetWidgetGeometry`.
 pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeSetWidgetGeometry(
-    _env: JNIEnv<'_>,
+    mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     widget_id: jlong,
     x: jint,
@@ -392,13 +436,9 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeSetWidgetGeo
     width: jint,
     height: jint,
 ) {
-    crate::bindings::rw_set_widget_geometry(
-        widget_id as u64,
-        x,
-        y,
-        width as juint,
-        height as juint,
-    );
+    let width = checked_size(&mut env, width, "width");
+    let height = checked_size(&mut env, height, "height");
+    crate::bindings::rw_set_widget_geometry(widget_id as u64, x, y, width, height);
 }
 
 // ===========================================================================
@@ -413,8 +453,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeComboBoxAddI
     combo_box: jlong,
     text: JString<'_>,
 ) -> jboolean {
-    let text_str = jstring_to_string(&mut env, &text);
-    let c_text = std::ffi::CString::new(text_str).unwrap_or_default();
+    let c_text = jstring_to_cstring(&mut env, &text, "");
     if crate::bindings::rw_combo_box_add_item(combo_box as u64, c_text.as_ptr()) {
         1
     } else {
@@ -495,8 +534,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeListBoxAddIt
     list_box: jlong,
     text: JString<'_>,
 ) -> jboolean {
-    let text_str = jstring_to_string(&mut env, &text);
-    let c_text = std::ffi::CString::new(text_str).unwrap_or_default();
+    let c_text = jstring_to_cstring(&mut env, &text, "");
     if crate::bindings::rw_list_box_add_item(list_box as u64, c_text.as_ptr()) {
         1
     } else {
@@ -608,10 +646,8 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeMenuAddItem(
     text: JString<'_>,
     shortcut: JString<'_>,
 ) -> jlong {
-    let text_str = jstring_to_string(&mut env, &text);
-    let c_text = std::ffi::CString::new(text_str).unwrap_or_default();
-    let shortcut_str = jstring_to_string(&mut env, &shortcut);
-    let c_shortcut = std::ffi::CString::new(shortcut_str).unwrap_or_default();
+    let c_text = jstring_to_cstring(&mut env, &text, "");
+    let c_shortcut = jstring_to_cstring(&mut env, &shortcut, "");
     crate::bindings::rw_menu_add_item(parent_menu as u64, c_text.as_ptr(), c_shortcut.as_ptr())
         as jlong
 }
@@ -687,8 +723,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeSetClipboard
     _class: JClass<'_>,
     text: JString<'_>,
 ) -> jboolean {
-    let text_str = jstring_to_string(&mut env, &text);
-    let c_text = std::ffi::CString::new(text_str).unwrap_or_default();
+    let c_text = jstring_to_cstring(&mut env, &text, "");
     if crate::bindings::rw_set_clipboard_text(c_text.as_ptr()) {
         1
     } else {

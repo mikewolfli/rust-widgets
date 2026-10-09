@@ -3,20 +3,12 @@
 
 //! Render scene composition and auto-backend selection.
 use crate::compat::{lock, Mutex, OnceLock, Vec};
-// `GpuRenderError`'s `Display` impl and its `UploadFailed` payload are the only
-// users of these two names, and both sit behind `gpu-wgpu`. Importing them
-// unconditionally made a `--features gpu` build (which enables the render module
-// without the wgpu path) warn about unused imports.
-#[cfg(feature = "gpu-wgpu")]
-use crate::compat::{fmt, String};
 use crate::core::Color;
 #[cfg(feature = "quality-management")]
 use crate::quality::QualityManager;
 use crate::render::{
     PaintBackend, RenderCommand, SoftwarePaintBackend, SoftwareRenderConfig, SoftwareSurface,
 };
-#[cfg(feature = "gpu-wgpu")]
-use crate::wgpu_backend::WgpuRenderer;
 
 /// Backend selected by automatic compose path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,22 +143,34 @@ impl RenderScene {
     /// Compose scene layers to target surface using automatic backend strategy.
     ///
     /// Strategy is unified across desktop and embedded builds:
-    /// - when `gpu-wgpu` is enabled and runtime GPU initialization succeeds,
-    ///   use GPU for supported command sets;
-    /// - otherwise fall back to CPU software rendering.
+    /// - scene composition is performed on the **software** rasteriser, which is the only
+    ///   path that actually draws a scene here;
+    /// - the WGPU renderer remains available for its genuine GPU operations (the
+    ///   `render_*_gpu` entry points), but it is not the auto scene backend because it adds
+    ///   no acceleration to that path.
+    ///
+    /// # Why auto selects software (D09-GPU-01)
+    ///
+    /// The previous auto path entered `compose_scene_to_surface_wgpu`, which first drew the
+    /// whole scene on the CPU with a `SoftwarePaintBackend`, then uploaded the finished RGBA
+    /// frame to a GPU texture, copied it into a readable buffer, waited on `device.poll(Wait)`,
+    /// and copied every pixel back to the CPU. That is a full CPU draw *plus* a full-frame
+    /// upload, a GPU→CPU readback and a blocking device wait — strictly more work than the
+    /// software path, and no acceleration, because the scene was never drawn on the GPU. Selecting
+    /// it and then reporting [`AutoRenderBackend::GpuWgpu`] told the caller it had GPU-accelerated
+    /// rendering when it had not, which is the form of dishonesty the issue calls out. The auto
+    /// path now reports the software backend it actually uses. Moving scene rasterisation onto the
+    /// GPU (and presenting without a routine readback) is the larger change that could make this
+    /// variant honest again; until then, no routine frame pays for a round trip it does not use.
+    ///
+    /// The [`AutoRenderBackend::GpuWgpu`] variant is retained so the enum and the
+    /// `last_auto_render_backend` contract stay source-compatible (principle #21).
     pub fn compose_to_config_auto(
         &self,
         surface: &mut SoftwareSurface,
         clear: Color,
         config: Option<SoftwareRenderConfig>,
     ) -> AutoRenderBackend {
-        #[cfg(feature = "gpu-wgpu")]
-        {
-            if compose_scene_to_surface_wgpu(self, surface, clear, config).is_ok() {
-                set_last_auto_render_backend(AutoRenderBackend::GpuWgpu);
-                return AutoRenderBackend::GpuWgpu;
-            }
-        }
         compose_scene_to_surface_software(self, surface, clear, config);
         set_last_auto_render_backend(AutoRenderBackend::CpuSoftware);
         AutoRenderBackend::CpuSoftware
@@ -178,6 +182,8 @@ fn compose_scene_to_surface_software(
     clear: Color,
     config: Option<SoftwareRenderConfig>,
 ) {
+    #[cfg(feature = "quality-management")]
+    let start_time = std::time::Instant::now();
     let mut backend = SoftwarePaintBackend::new(surface.size(), surface.dpi_scale());
     backend.set_size(surface.size());
     backend.apply_render_config(surface.render_config());
@@ -186,67 +192,18 @@ fn compose_scene_to_surface_software(
     // then present (swap back→front) to display it.
     surface.buffer.back.copy_from_slice(backend.frame_rgba());
     surface.buffer.present();
+    // Frame timing is recorded here now that the software path is the auto scene backend, so the
+    // quality manager's frame statistics keep measuring real frames (D09-GPU-01).
+    #[cfg(feature = "quality-management")]
+    {
+        let mut quality_manager = lock(global_quality_manager());
+        quality_manager.finish_frame(start_time.elapsed());
+    }
 }
 #[cfg(feature = "quality-management")]
 fn global_quality_manager() -> &'static Mutex<QualityManager> {
     static MANAGER: OnceLock<Mutex<QualityManager>> = OnceLock::new();
     MANAGER.get_or_init(|| Mutex::new(QualityManager::new()))
-}
-#[cfg(feature = "gpu-wgpu")]
-#[derive(Debug)]
-pub enum GpuRenderError {
-    SurfaceSizeZero,
-    RendererUnavailable,
-    UploadFailed(String),
-}
-#[cfg(feature = "gpu-wgpu")]
-impl fmt::Display for GpuRenderError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            GpuRenderError::SurfaceSizeZero => {
-                write!(f, "surface size must be > 0 for gpu compose")
-            }
-            GpuRenderError::RendererUnavailable => write!(f, "wgpu renderer unavailable"),
-            GpuRenderError::UploadFailed(e) => write!(f, "upload failed: {e}"),
-        }
-    }
-}
-#[cfg(feature = "gpu-wgpu")]
-impl core::error::Error for GpuRenderError {}
-#[cfg(feature = "gpu-wgpu")]
-fn compose_scene_to_surface_wgpu(
-    scene: &RenderScene,
-    surface: &mut SoftwareSurface,
-    clear: Color,
-    config: Option<SoftwareRenderConfig>,
-) -> Result<(), GpuRenderError> {
-    let size = surface.size();
-    if size.width == 0 || size.height == 0 {
-        return Err(GpuRenderError::SurfaceSizeZero);
-    }
-    let renderer = cached_wgpu_renderer().ok_or(GpuRenderError::RendererUnavailable)?;
-    let start_time = std::time::Instant::now();
-    let mut backend = SoftwarePaintBackend::new(size, surface.dpi_scale());
-    backend.set_size(size);
-    backend.apply_render_config(surface.render_config());
-    scene.compose_with_backend_config(&mut backend, clear, config);
-    let pixels = renderer
-        .upload_rgba8_and_readback(size.width, size.height, backend.frame_rgba())
-        .map_err(GpuRenderError::UploadFailed)?;
-    surface.buffer.back = pixels;
-    surface.buffer.present();
-    let frame_duration = start_time.elapsed();
-    #[cfg(feature = "quality-management")]
-    {
-        let mut quality_manager = lock(global_quality_manager());
-        quality_manager.finish_frame(frame_duration);
-    }
-    Ok(())
-}
-#[cfg(feature = "gpu-wgpu")]
-fn cached_wgpu_renderer() -> Option<&'static WgpuRenderer> {
-    static RENDERER: OnceLock<Option<WgpuRenderer>> = OnceLock::new();
-    RENDERER.get_or_init(|| WgpuRenderer::new().ok()).as_ref()
 }
 
 #[cfg(test)]
@@ -470,13 +427,10 @@ mod tests {
         let scene = RenderScene::new();
         let mut surface = SoftwareSurface::new(Size::new(5, 5), 1.0);
         let backend = scene.compose_to_config_auto(&mut surface, Color::BLACK, None);
-        // Either GpuWgpu (when gpu-wgpu feature available and runtime succeeds)
-        // or CpuSoftware (fallback)
-        assert!(
-            backend == AutoRenderBackend::CpuSoftware || backend == AutoRenderBackend::GpuWgpu,
-            "expected either CpuSoftware or GpuWgpu, got {:?}",
-            backend
-        );
+        // The auto scene backend is software: that is the path that actually draws, and it is
+        // reported truthfully rather than as a GPU backend that only round-trips through the CPU
+        // (D09-GPU-01).
+        assert_eq!(backend, AutoRenderBackend::CpuSoftware);
     }
 
     #[test]
@@ -493,11 +447,50 @@ mod tests {
         let mut surface = SoftwareSurface::new(Size::new(5, 5), 1.0);
         let config = SoftwareRenderConfig { aa_samples_per_axis: 8 };
         let backend = scene.compose_to_config_auto(&mut surface, Color::WHITE, Some(config));
-        assert!(
-            backend == AutoRenderBackend::CpuSoftware || backend == AutoRenderBackend::GpuWgpu,
-            "expected either CpuSoftware or GpuWgpu, got {:?}",
-            backend
+        assert_eq!(backend, AutoRenderBackend::CpuSoftware);
+    }
+
+    /// The auto scene path must not advertise GPU acceleration it does not provide, and must
+    /// paint the scene correctly. (D09-GPU-01)
+    ///
+    /// # What this pins
+    ///
+    /// `compose_to_config_auto` used to route the scene through a WGPU helper that drew the whole
+    /// scene on the CPU, uploaded the finished frame, read it back and waited synchronously on the
+    /// device — then reported [`AutoRenderBackend::GpuWgpu`]. That was both slower than software
+    /// and untruthful about the acceleration. This asserts the reported backend matches the one
+    /// that actually drew, and that the drawn pixels are right.
+    #[test]
+    fn auto_scene_backend_is_truthfully_software_and_paints_correctly() {
+        let mut scene = RenderScene::new();
+        let mut layer = SceneLayer::new(0);
+        layer.push(RenderCommand::FillRect {
+            rect: Rect::new(2, 3, 4, 5),
+            color: Color::rgba(40, 80, 120, 255),
+        });
+        scene.add_layer(layer);
+
+        let mut surface = SoftwareSurface::new(Size::new(32, 24), 1.0);
+        let reported = scene.compose_to_config_auto(&mut surface, Color::BLACK, None);
+
+        assert_eq!(
+            reported,
+            AutoRenderBackend::CpuSoftware,
+            "the backend must be reported as the one that actually drew the scene"
         );
+        assert_eq!(
+            last_auto_render_backend(),
+            AutoRenderBackend::CpuSoftware,
+            "the diagnostic must agree with the return value"
+        );
+
+        // A pixel inside the rect is the fill colour; one outside is the clear colour — the scene
+        // really was rasterised, not merely accepted.
+        let stride = 32usize * 4;
+        let inside = 3 * stride + 3 * 4;
+        assert_eq!(&surface.frame_rgba()[inside..inside + 4], &[40, 80, 120, 255]);
+        let outside = 0;
+        assert_eq!(&surface.frame_rgba()[outside..outside + 4], &[0, 0, 0, 255]);
     }
 
     // ── AutoRenderBackend global functions ──────────────────────────────

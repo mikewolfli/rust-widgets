@@ -7,7 +7,7 @@
 //! iOS 13+ large title nav bar), back button with arrow, and translucent
 //! background effect.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -16,7 +16,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, lerp_f32, lerp_i32, lerp_u32, ControlMetrics};
+use crate::widget::metrics::{dimensions, lerp_f32, lerp_i32, lerp_u32, role_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -354,7 +354,7 @@ impl Draw for CupertinoNavigationBar {
         // settled at either end draws exactly what it drew before.
         if !self.title.is_empty() {
             let title_font =
-                Font::new("sans-serif", lerp_f32(18.0, 34.0, collapse), collapse > 0.5, false);
+                role_font(&style, lerp_f32(18.0, 34.0, collapse)).with_bold(collapse > 0.5);
             let metrics = context.measure_text(&self.title, &title_font);
             let leading_x = bar_rect.x + 16;
             let centred_x = bar_rect.x + (bar_rect.width as i32 - metrics.width as i32) / 2;
@@ -374,7 +374,7 @@ impl Draw for CupertinoNavigationBar {
 
         // ── Back button (left side) ──
         if self.back_button_visible {
-            let label_font = Font::new("sans-serif", 17.0, false, false);
+            let label_font = role_font(&style, 17.0);
             // The affordance sits on the bar, so the theme's primary is contrast-checked
             // against it rather than assumed legible.
             let action = primary.contrast_color().blend(&primary, 0.85);

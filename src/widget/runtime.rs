@@ -31,6 +31,7 @@
 // `Point` is used by the hit-test API below, which is a core capability of the
 // registry rather than a `full_widgets` extra: every profile that can mount a widget
 // must be able to answer "which widget is under this point?".
+use crate::compat::Rc;
 use crate::core::{ObjectId, Point, Rect, Size};
 use crate::event::{Event, FocusReason};
 use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
@@ -2916,9 +2917,49 @@ thread_local! {
     /// caches answering the same question, each free to forget to invalidate on a
     /// resize. Keeping it beside the damage tracker means the frame and the damage it
     /// describes cannot get out of step.
+    ///
+    /// # Why the frame is shared, not owned (D09-RENDER-04)
+    ///
+    /// The frame is held behind an [`Rc`] so handing it to an incremental repaint —
+    /// or answering a frame that has no damage — is a pointer clone, not a `width * height * 4`
+    /// copy. Before this, `render_frame_cached` cloned the whole buffer to obtain `previous`,
+    /// then `render_frame_incremental` copied it again to return it, then the result was cloned
+    /// once more into this cache: three full-frame copies for a frame that drew nothing.
     #[allow(clippy::missing_const_for_thread_local)]
-    static LAST_FRAME: RefCell<HashMap<ObjectId, (Size, Vec<u8>)>> = RefCell::new(HashMap::new());
+    static LAST_FRAME: RefCell<HashMap<ObjectId, (Size, Rc<Vec<u8>>)>> =
+        RefCell::new(HashMap::new());
 }
+
+// Counts full-frame buffer copies performed by the incremental frame cache. Test-only.
+//
+// # Why a counter rather than a custom allocator (D09-RENDER-04)
+//
+// The defect is a *count* — a no-damage frame copied its RGBA buffer three times. A global
+// `GlobalAlloc` shim would count every allocation in the process, including the renderer's own
+// scratch buffers, and could not separate the cache's copies from them. The cache performs a
+// small, known set of full-buffer copies, so counting exactly those is the precise witness the
+// regression test asserts on. Compiled only under `cfg(test)` (principle #28).
+#[cfg(test)]
+thread_local! {
+    static FRAME_CACHE_COPIES: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+/// Records one full-frame copy made by the incremental cache. (D09-RENDER-04)
+#[cfg(test)]
+fn note_frame_cache_copy() {
+    FRAME_CACHE_COPIES.with(|cell| cell.set(cell.get() + 1));
+}
+
+/// Resets and returns the full-frame copy counter. (D09-RENDER-04)
+#[cfg(test)]
+pub(crate) fn take_frame_cache_copies() -> usize {
+    FRAME_CACHE_COPIES.with(|cell| cell.replace(0))
+}
+
+/// No-op stand-in so non-test builds compile the same call sites. (D09-RENDER-04)
+#[cfg(not(test))]
+#[inline(always)]
+fn note_frame_cache_copy() {}
 
 /// Sets the repaint policy for a mounted widget.
 ///
@@ -2973,6 +3014,19 @@ pub fn repaint_mode(id: ObjectId) -> RepaintMode {
 /// than a narrow one.
 ///
 /// Returns `true` when the damage was recorded.
+///
+/// # The region count is bounded here (D09-RENDER-01)
+///
+/// The tracker a widget accumulates damage in has a `max_regions` limit, but that limit only
+/// took effect in `optimize()` — which this module never calls — so a widget invalidating many
+/// small rectangles in one frame grew the tracker without bound. Downstream that meant a
+/// quadratic `merge`, and up to one full widget-tree traversal per region. The bound is applied
+/// at the point damage is recorded: past the limit, the tracked regions are folded into their
+/// single bounding rectangle, which keeps one region and loses no pixels. `merge` and the
+/// per-region repaint then each stay bounded.
+///
+/// The fold happens rather than an early return because dropping damage would be a wrong
+/// picture — see [`crate::performance::DirtyRegionTracker::add_coalescing_beyond_capacity`].
 pub fn mark_dirty_rect(id: ObjectId, rect: Rect) -> bool {
     let recorded = REPAINT
         .try_with(|map| {
@@ -2983,7 +3037,7 @@ pub fn mark_dirty_rect(id: ObjectId, rect: Rect) -> bool {
             if state.mode == RepaintMode::Full {
                 return false;
             }
-            state.tracker.add(rect);
+            state.tracker.add_coalescing_beyond_capacity(rect);
             true
         })
         .ok()
@@ -3221,22 +3275,52 @@ pub fn render_frame_cached(id: ObjectId, size: Size, clear: crate::core::Color) 
         return None;
     }
 
-    // Clone the previous frame only when one of the right size exists; a mismatch is
-    // treated as absent so the callee falls back to a full paint.
+    // Take a shared handle to the previous frame — a pointer clone, not a pixel copy. A frame of
+    // the wrong size is treated as absent so the callee falls back to a full paint.
+    // (D09-RENDER-04)
     let previous = LAST_FRAME
         .try_with(|map| {
             map.borrow()
                 .get(&id)
                 .filter(|(stored, _)| *stored == size)
-                .map(|(_, frame)| frame.clone())
+                .map(|(_, frame)| Rc::clone(frame))
         })
         .ok()
         .flatten();
 
-    let frame = render_frame_incremental(id, size, clear, previous.as_deref())?;
+    // # No-damage fast path (D09-RENDER-04)
+    //
+    // When the mode repaints only damage and nothing is damaged, the previous frame *is* the
+    // frame. The old code still ran the incremental machinery: it copied the cached buffer into
+    // `previous`, copied it again in `render_frame_incremental` via `carried.to_vec()`, and copied
+    // it a third time back into the cache. Here the cache is left exactly as it is and only the
+    // single copy needed to hand an owned buffer to the caller is made. `Full` mode is excluded
+    // because it must repaint regardless, and a missing previous cannot take this path.
+    if let Some(previous) = &previous {
+        if repaint_mode(id) != RepaintMode::Full && dirty_rects(id).is_empty() {
+            // A frame with no damage also proves the surface settled, which is the `Adaptive`
+            // mode's reset point — `render_frame_incremental` clears the run on this path, and
+            // this fast path must do the same or `Adaptive` would stay latched after an animation
+            // ends (the exact failure the run counter exists to avoid).
+            let _ = REPAINT.try_with(|map| {
+                if let Some(state) = map.borrow_mut().get_mut(&id) {
+                    state.large_damage_run = 0;
+                }
+            });
+            note_frame_cache_copy(); // the single copy that becomes the caller's frame
+            return Some(previous.as_ref().clone());
+        }
+    }
 
+    let frame =
+        render_frame_incremental(id, size, clear, previous.as_deref().map(|rc| rc.as_slice()))?;
+
+    // The freshly produced frame must be both cached and returned; wrapping it in an `Rc` for the
+    // cache shares the buffer and costs the one unavoidable clone that hands an owned buffer to
+    // the caller. (D09-RENDER-04)
+    note_frame_cache_copy();
     let _ = LAST_FRAME.try_with(|map| {
-        map.borrow_mut().insert(id, (size, frame.clone()));
+        map.borrow_mut().insert(id, (size, Rc::new(frame.clone())));
     });
     Some(frame)
 }
@@ -3455,6 +3539,7 @@ pub fn children_of(id: ObjectId) -> Vec<ObjectId> {
 mod tests {
     use super::*;
     use crate::core::{Color, Point};
+    use crate::platform::accessibility::AccessibilityBridge as _;
     use crate::widget::special_widgets::code_editor::CodeEditor;
 
     // ── BLUE23 §3.3 -- the animation bus ────────────────────────────────────────
@@ -4661,6 +4746,166 @@ mod tests {
         unregister(id);
     }
 
+    /// A no-damage cached frame must not copy the full RGBA buffer three times. (D09-RENDER-04)
+    ///
+    /// # What this pins
+    ///
+    /// `render_frame_cached` cloned `LAST_FRAME` into `previous`, `render_frame_incremental`
+    /// copied the carried buffer again to return it, and the result was cloned a third time back
+    /// into the cache — three full-frame copies for a frame that drew nothing. The copy counter
+    /// observes the cache's own full-buffer copies, so this asserts the count directly rather
+    /// than inferring it from timing.
+    #[test]
+    fn an_undamaged_cached_frame_copies_the_buffer_once() {
+        let id = register(sample_editor("fn main() {}")).expect("registry");
+        let size = Size::new(96, 64);
+
+        // First paint fills the cache (a full paint; its cost is not what this test bounds).
+        let first = render_frame_cached(id, size, Color::rgb(3, 3, 3)).expect("first frame");
+        assert!(set_repaint_mode(id, RepaintMode::Dirty));
+
+        // No damage: the cached frame is returned unchanged, with a single copy.
+        let _ = take_frame_cache_copies();
+        let second = render_frame_cached(id, size, Color::rgb(3, 3, 3)).expect("second frame");
+        let copies = take_frame_cache_copies();
+
+        assert_eq!(second, first, "an undamaged frame must not change a pixel");
+        assert_eq!(
+            copies, 1,
+            "a no-damage cached frame must copy its buffer once (for the owned return), not three times"
+        );
+
+        unregister(id);
+    }
+
+    /// `Full` mode must not deep-copy a previous frame it will not read. (D09-RENDER-04)
+    #[test]
+    fn full_mode_does_not_copy_an_unused_previous_frame() {
+        let id = register(sample_editor("fn main() {}")).expect("registry");
+        let size = Size::new(64, 48);
+
+        // Prime the cache, then force `Full`: every call repaints whole and ignores `previous`.
+        render_frame_cached(id, size, Color::rgb(1, 1, 1)).expect("first frame");
+        assert!(set_repaint_mode(id, RepaintMode::Full));
+
+        let _ = take_frame_cache_copies();
+        render_frame_cached(id, size, Color::rgb(1, 1, 1)).expect("second frame");
+        let copies = take_frame_cache_copies();
+
+        // A full paint makes one copy for the cache/return, but the *unused* previous frame is
+        // not cloned on top of that. Three was the old count.
+        assert!(
+            copies <= 1,
+            "Full mode must not clone the previous frame it ignores; copied {copies} times"
+        );
+
+        unregister(id);
+    }
+
+    /// The cached no-damage fast path must keep `Adaptive`'s reset behaviour. (D09-RENDER-04)
+    ///
+    /// # Why this is a regression test and not just a copy count
+    ///
+    /// The no-damage fast path in `render_frame_cached` returns the cached frame without going
+    /// through `render_frame_incremental`. That callee clears the `Adaptive` run counter on a
+    /// no-damage frame — its documented proof that the surface settled. If the fast path had
+    /// skipped the reset, `Adaptive` would latch after a burst of large damage and never return to
+    /// regioning, which is the exact failure the run counter exists to prevent.
+    #[test]
+    fn cached_no_damage_frame_still_resets_the_adaptive_run() {
+        let size = Size::new(160, 120);
+        let id = register(sample_editor("fn main() {}")).expect("registry");
+        assert!(set_repaint_mode(id, RepaintMode::Adaptive));
+
+        // Build up the run with whole-surface damage through the cached entry point.
+        render_frame_cached(id, size, Color::rgb(1, 1, 1)).expect("first frame");
+        for _ in 0..ADAPTIVE_LARGE_DAMAGE_RUN {
+            assert!(mark_dirty_rect(id, Rect::new(0, 0, 160, 120)));
+            render_frame_cached(id, size, Color::rgb(1, 1, 1)).expect("frame");
+        }
+        assert_eq!(adaptive_large_damage_run(id), ADAPTIVE_LARGE_DAMAGE_RUN);
+
+        // No damage: the cached fast path runs, and it must clear the run.
+        let _ = render_frame_cached(id, size, Color::rgb(1, 1, 1)).expect("frame");
+        assert_eq!(
+            adaptive_large_damage_run(id),
+            0,
+            "a no-damage cached frame must reset the Adaptive run, or the mode latches"
+        );
+
+        unregister(id);
+    }
+
+    /// High-cardinality damage recorded through `mark_dirty_rect` must be bounded at record time,
+    /// so the frame does not do one widget-tree traversal per region. (D09-RENDER-01)
+    ///
+    /// # What this pins
+    ///
+    /// The tracker's `max_regions` limit was only applied by `optimize()`, which the runtime
+    /// never called, so a widget invalidating hundreds of small rectangles grew the tracker
+    /// without bound and the repaint loop issued up to that many full draws. `mark_dirty_rect` now
+    /// folds the damage into one covering region once the limit is reached, and this asserts the
+    /// bounded count that results.
+    #[test]
+    fn many_small_damage_rects_are_bounded_and_keep_all_damage() {
+        let id = register(sample_editor("fn main() {}")).expect("registry");
+        assert!(set_repaint_mode(id, RepaintMode::Dirty));
+
+        // Far more rects than the default capacity (100).
+        for i in 0..500 {
+            assert!(mark_dirty_rect(id, Rect::new(i, 0, 1, 1)));
+        }
+
+        let regions = dirty_rects(id);
+        assert!(
+            regions.len() <= 100,
+            "exceeding the region capacity must bound the region count, got {}",
+            regions.len()
+        );
+        // No damage was dropped: the union of the returned regions covers every recorded rect
+        // (they span x = 0..=499, y = 0).
+        let union =
+            regions.iter().copied().reduce(|a, b| a.union(&b)).expect("at least one region");
+        assert!(union.x <= 0, "the union must start at the leftmost damage: {union:?}");
+        assert!(
+            union.right() >= 500,
+            "the union must reach the rightmost damage (x=499): {union:?}"
+        );
+
+        unregister(id);
+    }
+
+    /// The record-time bound must not change what is repainted: a bounded frame matches a full
+    /// repaint pixel for pixel. (D09-RENDER-01)
+    #[test]
+    fn bounded_high_cardinality_repaint_matches_a_full_repaint() {
+        let _guard = crate::style::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Light);
+        let size = Size::new(120, 80);
+
+        let full_id = register(sample_editor("fn main() {}")).expect("registry");
+        let expected = render_frame_cached(full_id, size, Color::WHITE).expect("frame");
+
+        let dirty_id = register(sample_editor("fn main() {}")).expect("registry");
+        assert!(set_repaint_mode(dirty_id, RepaintMode::Dirty));
+        let first = render_frame_cached(dirty_id, size, Color::WHITE).expect("frame");
+        assert_eq!(first, expected, "the first frame is a full paint either way");
+
+        // Damage far exceeding capacity, spread over the surface.
+        for i in 0..400i32 {
+            assert!(mark_dirty_rect(dirty_id, Rect::new(i % 120, (i / 120) * 20, 1, 1)));
+        }
+        let second = render_frame_cached(dirty_id, size, Color::WHITE).expect("frame");
+        assert_eq!(
+            second, expected,
+            "a capacity-bounded repaint must produce the same pixels as a full repaint"
+        );
+
+        unregister(full_id);
+        unregister(dirty_id);
+    }
+
     /// A frame rendered with no damage must return the previous frame's pixels
     /// unchanged, which is the whole saving: no draw calls, same result.
     #[test]
@@ -5580,6 +5825,67 @@ mod tests {
         unregister(child);
     }
 
+    /// D09-POINTER-01: the stylus event family reaches a control through
+    /// `Platform::route_pointer_event` end to end.
+    ///
+    /// This is the producer/consumer boundary made testable without a device: a host (or this
+    /// test) constructs `PointerPress`/`PointerMove`/`PointerRelease` and routes them through
+    /// the public platform entry point; the `SignaturePad` under the point must consume the
+    /// whole lifecycle and retain the pressure. Before the fix the pad began strokes only from
+    /// `MousePress`/`TouchBegin`, so this route delivered a press the pad ignored.
+    #[test]
+    #[cfg(full_widgets)]
+    fn platform_pointer_routing_delivers_stylus_events_to_a_signature_pad() {
+        let mut parent =
+            crate::widget::container_widgets::groupbox::GroupBox::new(Rect::new(0, 0, 300, 300));
+        let pad_id =
+            register(Box::new(crate::widget::special_widgets::signature_pad::SignaturePad::new(
+                Rect::new(40, 40, 200, 120),
+            )))
+            .expect("registry");
+        set_geometry(pad_id, Rect::new(40, 40, 200, 120));
+        parent.add_child(pad_id);
+        let parent = register(Box::new(parent)).expect("registry");
+
+        let backend = crate::platform::platform_facts();
+
+        // A pen contact inside the pad: press, move, release, all through the public route.
+        assert!(
+            backend.route_pointer_event(
+                parent,
+                &Event::pointer_press(Point::new(60, 80), 1, 0.3, 0.0, 0.0),
+                Point::new(60, 80),
+            ),
+            "the press must be accepted by the pad under the point"
+        );
+        backend.route_pointer_event(
+            parent,
+            &Event::pointer_move(Point::new(120, 100), 0.8, 0.0, 0.0),
+            Point::new(120, 100),
+        );
+        backend.route_pointer_event(
+            parent,
+            &Event::pointer_release(Point::new(120, 100), 1, 0.0),
+            Point::new(120, 100),
+        );
+
+        // The pad consumed the sequence: one committed stroke whose first point is the press
+        // position and whose pressure was retained.
+        with_widget(pad_id, |widget| {
+            let pad = (widget as &dyn core::any::Any)
+                .downcast_ref::<crate::widget::special_widgets::signature_pad::SignaturePad>()
+                .expect("the registered widget is a SignaturePad");
+            assert_eq!(pad.stroke_count(), 1, "the routed stylus gesture must commit one stroke");
+            let stroke = &pad.strokes()[0];
+            assert_eq!(stroke.points()[0], Point::new(60, 80));
+            assert!((pad.last_pressure() - 0.8).abs() < 1e-6, "pressure was retained");
+        })
+        .expect("the pad is mounted");
+
+        unregister(parent);
+        unregister(pad_id);
+    }
+
     /// Establishes a deterministic tab order for a test, independent of whatever
     /// other widgets the shared thread-local registry happens to hold.
     fn set_focus_order_for_test(ids: &[ObjectId]) {
@@ -6009,6 +6315,10 @@ mod tests {
     struct A11yRecorder {
         names: std::sync::Mutex<Vec<(ObjectId, String)>>,
         states: std::sync::Mutex<Vec<ObjectId>>,
+        /// D09-A11Y-02: the complete state submitted per node, readable back through `node_state`.
+        nodes: std::sync::Mutex<
+            std::collections::HashMap<ObjectId, crate::platform::accessibility::A11yState>,
+        >,
     }
 
     impl A11yRecorder {
@@ -6016,6 +6326,7 @@ mod tests {
             Self {
                 names: std::sync::Mutex::new(Vec::new()),
                 states: std::sync::Mutex::new(Vec::new()),
+                nodes: std::sync::Mutex::new(std::collections::HashMap::new()),
             }
         }
     }
@@ -6039,6 +6350,27 @@ mod tests {
             self.states.lock().unwrap().push(id);
         }
         fn notify_focus_changed(&self, _id: ObjectId) {}
+        // D09-A11Y-02/D09-A11Y-03: the substitute keeps the full node store the platform bridges
+        // keep, so a test can read the whole submitted state back and watch the store return to
+        // baseline across mount/unmount cycles — the observable assertions the defects require.
+        fn submit_node_state(
+            &self,
+            id: ObjectId,
+            state: &crate::platform::accessibility::A11yState,
+        ) {
+            self.names.lock().unwrap().push((id, state.label.clone()));
+            self.nodes.lock().unwrap().insert(id, state.clone());
+        }
+        fn node_state(&self, id: ObjectId) -> Option<crate::platform::accessibility::A11yState> {
+            self.nodes.lock().unwrap().get(&id).cloned()
+        }
+        fn unregister_node(&self, id: ObjectId) {
+            self.names.lock().unwrap().retain(|(recorded, _)| *recorded != id);
+            self.nodes.lock().unwrap().remove(&id);
+        }
+        fn node_count(&self) -> usize {
+            self.nodes.lock().unwrap().len()
+        }
     }
 
     /// Installs a recording bridge for one test, removing it on the way out even on panic.
@@ -6092,6 +6424,73 @@ mod tests {
         );
         let states = recorder.states.lock().unwrap().clone();
         assert_eq!(states.len(), 3, "and each node's creation was reported: {states:?}");
+
+        // D09-A11Y-02: the node the bridge received carries the derived *role*, not only the name.
+        // Before the full-state contract, the mount path sent `label` alone, so a screen reader
+        // could read "Save" but not know it was a button.
+        assert_eq!(
+            recorder.node_state(label).map(|s| s.role),
+            Some(crate::platform::accessibility::A11yRole::Label),
+            "a label's role reaches the bridge"
+        );
+        assert_eq!(
+            recorder.node_state(button).map(|s| s.role),
+            Some(crate::platform::accessibility::A11yRole::Button),
+            "a button's role reaches the bridge"
+        );
+        assert_eq!(
+            recorder.node_state(checkbox).map(|s| s.role),
+            Some(crate::platform::accessibility::A11yRole::CheckBox),
+            "a check box's role reaches the bridge"
+        );
+        // And the check box's checked state, which the label-only contract could never carry.
+        assert_eq!(
+            recorder.node_state(checkbox).and_then(|s| s.checked),
+            Some(false),
+            "an unchecked box reports `Some(false)`, not `None`"
+        );
+    }
+
+    /// D09-A11Y-03: repeated mount/unmount cycles return the bridge's node store to baseline.
+    ///
+    /// The defect was a name map that blanked to `""` on unmount and kept one entry per historical
+    /// widget id. Because the runtime allocates a fresh monotonically increasing id per mount, the
+    /// counts must be compared across *distinct* ids — a cycle reusing one id would pass even if the
+    /// store grew.
+    #[test]
+    fn repeated_mount_unmount_returns_the_bridge_store_to_baseline() {
+        let recorder: &'static A11yRecorder = Box::leak(Box::new(A11yRecorder::new()));
+        crate::widget::a11y_submit::install_bridge(recorder);
+        let _guard = A11yGuard;
+
+        let baseline = recorder.node_count();
+        assert_eq!(baseline, 0, "a fresh bridge records no nodes");
+
+        for cycle in 0..5 {
+            let id = register(Box::new(crate::widget::Label::new(
+                format!("cycle-{cycle}"),
+                crate::core::Rect::new(0, 0, 80, 24),
+            )))
+            .expect("mount");
+            assert_eq!(recorder.node_count(), baseline + 1, "one live node in cycle {cycle}");
+            assert!(
+                recorder.node_state(id).is_some(),
+                "the mounted node is recorded in cycle {cycle}"
+            );
+            assert!(unregister(id), "the mounted id is present in cycle {cycle}");
+            assert_eq!(
+                recorder.node_count(),
+                baseline,
+                "the store returns to baseline after cycle {cycle}"
+            );
+            assert!(
+                recorder.node_state(id).is_none(),
+                "and the node itself is gone after cycle {cycle}"
+            );
+        }
+
+        let names = recorder.names.lock().unwrap();
+        assert!(names.is_empty(), "no historical id left a blanked name entry behind: {names:?}");
     }
 
     /// Unmounting a control tears its node down; re-registering a never-mounted id does not.

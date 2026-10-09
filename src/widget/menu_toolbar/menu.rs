@@ -12,7 +12,7 @@
 //! row is, so the run is a layout answer rather than a second accumulator.
 
 use crate::compat::Vec;
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::layout::{
     AlignItems, FlexDirection, FlexLayout, FlexWrap, JustifyContent, LayoutParams,
@@ -28,7 +28,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::composite::CompositeBuilder;
 use crate::widget::menu_toolbar::popup_reveal::{PopupReveal, RevealDirection};
-use crate::widget::metrics::dimensions;
+use crate::widget::metrics::{dimensions, effective_font};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetFactory, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// A single item in a menu.
@@ -1003,6 +1003,10 @@ impl Draw for Menu {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
         let style = self.base.style().clone();
+        // The **effective font** — the resolved theme/caller font — used for the heading, every
+        // entry label and every shortcut, so the menu honours the theme body font and the user's
+        // text scale (D09-STYLE-01).
+        let font = effective_font(&style);
         let theme = crate::style::resolved_theme_style("menu");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
@@ -1058,12 +1062,11 @@ impl Draw for Menu {
         // difference between the strip and the line box. Passing the strip's midline put the
         // glyph's top *at* the centre, so a 14 px label in a 20 px heading ended at y = 24 —
         // four pixels below the strip it belongs to.
-        let heading_font = Font::default();
-        let heading_text_h = context.measure_text("M", &heading_font).height;
+        let heading_text_h = context.measure_text("M", font).height;
         context.draw_text(
             Point::new(rect.x + 8, rect.y + (heading_h as i32 - heading_text_h as i32) / 2),
             &self.title,
-            &heading_font,
+            font,
             ink,
             HorizontalAlignment::Left,
         );
@@ -1155,7 +1158,7 @@ impl Draw for Menu {
                 // covered by no bundled face, so it drew as an 8x8 bitmap block). An unchecked row
                 // draws nothing, which is what the old blank-space string achieved.
                 if item.is_checked() {
-                    let line = context.text_line(indicator, &Font::default());
+                    let line = context.text_line(indicator, font);
                     let side = line.height.max(1);
                     let tick = Rect::new(
                         indicator.x + (indicator.width as i32 - side as i32) / 2,
@@ -1167,9 +1170,9 @@ impl Draw for Menu {
                 }
             }
             context.draw_text_fitted(
-                context.text_line(label, &Font::default()),
+                context.text_line(label, font),
                 item.text(),
-                &Font::default(),
+                font,
                 fg,
                 HorizontalAlignment::Left,
             );
@@ -1183,9 +1186,9 @@ impl Draw for Menu {
                     row.height,
                 );
                 context.draw_text_fitted(
-                    context.text_line(trailing, &Font::default()),
+                    context.text_line(trailing, font),
                     item.shortcut(),
-                    &Font::default(),
+                    font,
                     fg,
                     HorizontalAlignment::Right,
                 );
@@ -1815,6 +1818,36 @@ mod tests {
             capability.events.iter().any(|event| event.name == "submenu_requested"),
             "an emitted event must be published: {:?}",
             capability.events.iter().map(|e| e.name).collect::<Vec<_>>()
+        );
+    }
+
+    // ── D09-STYLE-01: the menu consumes the resolved theme/caller font ──
+
+    /// A caller-authored `style.font` must change the heading and entry rows the menu paints.
+    ///
+    /// # The defect this pins
+    ///
+    /// The heading and every row label built a `Font::default()` by hand, so the theme body font
+    /// and the user's text scale never reached a menu. They now read `metrics::effective_font`.
+    #[test]
+    fn a_custom_font_changes_the_menu_ink_width() {
+        let render = |font: Option<crate::core::Font>| {
+            let mut menu = Menu::new("File", Rect::new(0, 0, 260, 140));
+            menu.add_action("Open");
+            if let Some(font) = font {
+                menu.set_style(crate::style::WidgetStyle::default().with_font(font));
+            }
+            menu.open_at(Point::new(0, 0), Rect::new(0, 0, 1000, 800));
+            let svg = crate::widget::svg::render_to_svg(&mut menu);
+            crate::widget::svg::text_ink_box(&svg).map(|(x, _, right, _)| right - x).unwrap_or(0)
+        };
+
+        let base_ink = render(None);
+        let big_ink = render(Some(crate::core::Font::simple("Test", 30.0)));
+        assert!(base_ink > 0, "the default menu must paint ink for this test to mean anything");
+        assert!(
+            big_ink > base_ink,
+            "a larger font must widen the painted menu ink: {big_ink} vs {base_ink}"
         );
     }
 }

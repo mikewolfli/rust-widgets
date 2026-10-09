@@ -132,7 +132,7 @@ pub use types::{
 mod tests {
     use super::*;
     use crate::core::Color;
-    use crate::style::WidgetState;
+    use crate::style::{WidgetState, WidgetStyle};
 
     /// Builds a theme whose override table holds exactly the given entries.
     ///
@@ -370,6 +370,138 @@ mod tests {
         // Only the light default is registered on a fresh manager.
         assert!(!manager.set_appearance(AppearanceMode::Dark));
         assert_eq!(manager.current_theme_name(), "default");
+    }
+
+    // ── D09-THEME-01: multiple themes of one appearance must resolve deterministically ──
+
+    /// Builds a light/dark theme with a distinct name and appearance, so a test can register
+    /// several that share one appearance.
+    fn named_theme(name: &str, appearance: AppearanceMode) -> Theme {
+        Theme { name: name.to_string(), appearance, ..Theme::default() }
+    }
+
+    /// Two themes of each appearance: `set_appearance` must pick the **first registered**, not a
+    /// map-order-dependent one, so the result is stable across runs and profiles.
+    #[test]
+    fn set_appearance_picks_the_first_registered_of_an_appearance() {
+        let mut manager = ThemeManager::new();
+        manager.register_theme(named_theme("light-a", AppearanceMode::Light));
+        manager.register_theme(named_theme("light-b", AppearanceMode::Light));
+        manager.register_theme(named_theme("dark-a", AppearanceMode::Dark));
+        manager.register_theme(named_theme("dark-b", AppearanceMode::Dark));
+
+        assert!(manager.set_appearance(AppearanceMode::Light));
+        assert_eq!(
+            manager.current_theme_name(),
+            "default",
+            "the seeded light theme registered first"
+        );
+        assert!(manager.set_appearance(AppearanceMode::Dark));
+        assert_eq!(manager.current_theme_name(), "dark-a", "the first dark theme registered wins");
+        // Repeating the request is idempotent and still deterministic.
+        assert!(manager.set_appearance(AppearanceMode::Dark));
+        assert_eq!(manager.current_theme_name(), "dark-a");
+    }
+
+    /// The tie-break is independent of the order in which same-appearance themes are *queried*, and
+    /// holds when the first-registered theme is re-registered under the same name.
+    #[test]
+    fn re_registering_a_theme_keeps_its_registration_priority() {
+        let mut manager = ThemeManager::new();
+        manager.register_theme(named_theme("first-dark", AppearanceMode::Dark));
+        manager.register_theme(named_theme("second-dark", AppearanceMode::Dark));
+        // Update `first-dark` in place; it must not lose its priority slot.
+        manager.register_theme(named_theme("first-dark", AppearanceMode::Dark));
+
+        assert!(manager.set_appearance(AppearanceMode::Dark));
+        assert_eq!(manager.current_theme_name(), "first-dark");
+    }
+
+    /// The environment-driven switch uses the same deterministic selection, so a host that reports
+    /// `Dark` always lands on the first-registered dark theme (D09-THEME-01).
+    #[test]
+    fn environment_appearance_switch_uses_the_same_tie_break() {
+        let _guard = theme_test_guard();
+        let mut manager = ThemeManager::new();
+        manager.register_theme(named_theme("dark-1", AppearanceMode::Dark));
+        manager.register_theme(named_theme("dark-2", AppearanceMode::Dark));
+
+        assert!(manager.set_appearance(AppearanceMode::Dark));
+        assert_eq!(manager.current_theme_name(), "dark-1");
+    }
+
+    // ── D09-THEME-02: colour variants must not silently become black on a non-finite factor ──
+
+    /// A `NaN` factor used to round every channel to `NaN` and cast to `0`, so both helpers
+    /// returned black while claiming to clamp. The policy now normalises to the identity factor
+    /// (`0.0`), leaving the source colour unchanged.
+    #[test]
+    fn colour_variants_treat_nan_as_the_identity_factor() {
+        let c = Color::rgba(120, 60, 200, 128);
+        assert_eq!(c.dark_variant(f32::NAN), c, "NaN dark_variant must leave the colour unchanged");
+        assert_eq!(
+            c.light_variant(f32::NAN),
+            c,
+            "NaN light_variant must leave the colour unchanged"
+        );
+        // The specific old defect: NaN must not produce black.
+        assert_ne!(c.dark_variant(f32::NAN), Color::rgba(0, 0, 0, 128));
+    }
+
+    /// `±∞` clamps to the nearer endpoint, matching the documented `[0.0, 1.0]` range
+    /// (D09-THEME-02).
+    #[test]
+    fn colour_variants_saturate_infinities_to_the_endpoints() {
+        let c = Color::rgba(120, 60, 200, 128);
+        assert_eq!(c.dark_variant(f32::INFINITY), Color::rgba(0, 0, 0, 128), "+∞ darkens fully");
+        assert_eq!(c.dark_variant(f32::NEG_INFINITY), c, "-∞ leaves the colour unchanged");
+        assert_eq!(
+            c.light_variant(f32::INFINITY),
+            Color::rgba(255, 255, 255, 128),
+            "+∞ lightens fully"
+        );
+        assert_eq!(c.light_variant(f32::NEG_INFINITY), c, "-∞ leaves the colour unchanged");
+    }
+
+    /// Finite out-of-range factors clamp, and the endpoints behave exactly as documented.
+    #[test]
+    fn colour_variants_clamp_finite_factors_and_honour_endpoints() {
+        let c = Color::rgba(120, 60, 200, 128);
+        assert_eq!(c.dark_variant(0.0), c, "factor 0.0 is the identity");
+        assert_eq!(c.dark_variant(1.0), Color::rgba(0, 0, 0, 128), "factor 1.0 is black");
+        assert_eq!(c.dark_variant(2.0), c.dark_variant(1.0), "out-of-range clamps to 1.0");
+        assert_eq!(c.dark_variant(-1.0), c, "out-of-range clamps to 0.0");
+        assert_eq!(c.light_variant(0.0), c);
+        assert_eq!(c.light_variant(1.0), Color::rgba(255, 255, 255, 128), "factor 1.0 is white");
+        assert_eq!(c.light_variant(2.0), c.light_variant(1.0));
+        assert_eq!(c.light_variant(-1.0), c);
+    }
+
+    // ── D09-STYLE-04: opacity write paths must not leave NaN in style state ──
+
+    /// The builder, the shared helper, and the resolved theme token all agree that a `NaN`
+    /// opacity is opaque (`1.0`) rather than `NaN`, and that infinities clamp to the endpoints.
+    #[test]
+    fn opacity_write_paths_normalize_non_finite_values() {
+        // Builder path.
+        assert_eq!(WidgetStyle::default().with_opacity(f32::NAN).opacity, Some(1.0));
+        assert_eq!(WidgetStyle::default().with_opacity(f32::INFINITY).opacity, Some(1.0));
+        assert_eq!(WidgetStyle::default().with_opacity(f32::NEG_INFINITY).opacity, Some(0.0));
+        assert_eq!(WidgetStyle::default().with_opacity(2.0).opacity, Some(1.0));
+        assert_eq!(WidgetStyle::default().with_opacity(-1.0).opacity, Some(0.0));
+        assert_eq!(WidgetStyle::default().with_opacity(0.5).opacity, Some(0.5));
+        // The shared helper itself.
+        assert_eq!(crate::style::normalized_opacity(f32::NAN), 1.0);
+        assert_eq!(crate::style::normalized_opacity(f32::INFINITY), 1.0);
+        assert_eq!(crate::style::normalized_opacity(f32::NEG_INFINITY), 0.0);
+        // Theme token path: the resolved style must not carry `NaN`.
+        let mut manager = ThemeManager::new();
+        let mut token = ThemeStyleToken::default();
+        token.opacity = Some(f32::NAN);
+        let theme = theme_with_overrides(&[("probe", token)]);
+        manager.register_theme(theme);
+        let resolved = manager.resolve_style("probe");
+        assert_eq!(resolved.opacity, Some(1.0), "a NaN token must resolve to opaque, not NaN");
     }
 
     /// The global manager is seeded with both appearances, so the previously

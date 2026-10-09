@@ -4,14 +4,14 @@
 //! `Toast` — one transient notification, without the queue.
 
 use super::item::ToastLevel;
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// The horizontal padding of a toast's message from the accent stripe: 12.
@@ -358,8 +358,10 @@ impl Draw for Toast {
         // half-line error as `height / 2`, only in the opposite shape. The close button on
         // this same toast already sat at the true centre, so the message and its own dismiss
         // control disagreed about the row they shared.
-        let font = Font::default();
-        let line = context.text_line(band, &font);
+        // The message takes the **effective font** — the resolved theme/caller font — so the theme
+        // body font and the user's text scale reach it (D09-STYLE-01).
+        let font = effective_font(&style);
+        let line = context.text_line(band, font);
         // Bounded to end before the close button, so a long message cannot run under it.
         let text_width = self
             .close_rect()
@@ -369,7 +371,7 @@ impl Draw for Toast {
             context.draw_text_fitted(
                 Rect { x: text_x, y: line.y, width: text_width, height: line.height },
                 &self.message,
-                &font,
+                font,
                 text_color,
                 HorizontalAlignment::Left,
             );

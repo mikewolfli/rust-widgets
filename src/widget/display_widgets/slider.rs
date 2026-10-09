@@ -316,10 +316,42 @@ impl Slider {
             }
         }
     }
+    /// The tick count for the current range, capped at 100.
+    ///
+    /// # Why the arithmetic is `i64` (D09-CTRL-01)
+    ///
+    /// `((maximum - minimum) / tick_interval) + 1` in `i32` overflows for a legal `i32::MIN..=i32::MAX`
+    /// range before the `.min(100)` cap can apply. Computing the span in `i64` keeps the division
+    /// exact and the cap meaningful, and the tick *values* are derived through `tick_value` below so a
+    /// tick index cannot itself overflow the `i32` domain.
+    fn tick_count(&self) -> u32 {
+        if self.tick_interval <= 0 {
+            return 0;
+        }
+        let span = self.maximum as i64 - self.minimum as i64;
+        let interval = self.tick_interval as i64;
+        // `span >= 0` by the range invariant, so truncating division is a floor here.
+        let total = span / interval + 1;
+        total.clamp(0, 100) as u32
+    }
+
+    /// The value at tick `index`, saturating at `maximum`.
+    ///
+    /// The index is converted through `i64` first: `minimum + index * tick_interval` in `i32` could
+    /// overflow at the domain's top for a coarse interval (D09-CTRL-01).
+    fn tick_value(&self, index: u32) -> i32 {
+        let value = self.minimum as i64 + index as i64 * self.tick_interval as i64;
+        value.clamp(self.minimum as i64, self.maximum as i64) as i32
+    }
+
     /// Returns value for a given pixel position.
     fn pixel_pos_to_value(&self, pos: f32) -> i32 {
         let rect = self.geometry();
-        let range = (self.maximum - self.minimum) as f32;
+        // The span and the relative offset are computed in `f64`, not `i32` (D09-CTRL-01): a legal
+        // `i32::MIN..=i32::MAX` range has no `i32` difference, so `(maximum - minimum) as f32`
+        // panicked in a checked build and wrapped to a wrong — even negative — span otherwise.
+        // `f64` represents every `i32` exactly and their difference without loss.
+        let range = self.maximum as f64 - self.minimum as f64;
         // The handle is `SLIDER_SIZE` wide and `value_to_pixel_pos` centres it on the position it
         // returns, so that function's travel stops half a handle short of each end. This one used the
         // **full** width, which made the two calculations non-inverses: the value 0 was drawn at
@@ -328,7 +360,7 @@ impl Slider {
         // zoom of the range, so it was not a rounding artefact. Sharing the inset makes the two
         // exact inverses, which the round-trip test pins.
         let inset = SLIDER_SIZE / 2.0;
-        match self.orientation {
+        let relative = match self.orientation {
             Orientation::Horizontal => {
                 let travel = (rect.width as f32 - inset * 2.0).max(0.0);
                 if travel == 0.0 {
@@ -338,9 +370,7 @@ impl Slider {
                 // The pixel is measured from the left edge, but the value runs in reading order, so
                 // the direction converts between the two frames. Without it an RTL slider reported
                 // the *inverse* value of the position a user clicked — the defect this fixes.
-                let relative = self.direction.left_fraction_to_begin_fraction(left_fraction);
-                let value = self.minimum as f32 + range * relative;
-                value.round() as i32
+                self.direction.left_fraction_to_begin_fraction(left_fraction)
             }
             Orientation::Vertical => {
                 let travel = (rect.height as f32 - inset * 2.0).max(0.0);
@@ -349,11 +379,14 @@ impl Slider {
                 }
                 // Vertical runs top-to-bottom in every direction: the block axis is not mirrored, so
                 // the direction must not be applied here.
-                let relative = 1.0 - ((pos - rect.y as f32 - inset) / travel).clamp(0.0, 1.0);
-                let value = self.minimum as f32 + range * relative;
-                value.round() as i32
+                1.0 - ((pos - rect.y as f32 - inset) / travel).clamp(0.0, 1.0)
             }
-        }
+        };
+        let value = self.minimum as f64 + range * relative as f64;
+        // `round()` then a saturating cast: a value at the far end can round a hair past the bound,
+        // and `f64 as i32` saturates rather than wrapping, so the answer stays inside `[minimum,
+        // maximum]` even at the `i32` extremes.
+        ordered_clamp_i32(value.round() as i32, self.minimum, self.maximum)
     }
     /// Returns pixel position for a given value.
     fn value_to_pixel_pos(&self, value: i32) -> f32 {
@@ -369,25 +402,27 @@ impl Slider {
             Orientation::Horizontal => (rect.width as f32 - inset * 2.0).max(0.0),
             Orientation::Vertical => (rect.height as f32 - inset * 2.0).max(0.0),
         };
-        let range = (self.maximum - self.minimum) as f32;
+        // Same `f64` reasoning as `pixel_pos_to_value` (D09-CTRL-01): the span and the
+        // `clamped - minimum` offset overflow `i32` for a full-`i32` range.
+        let range = self.maximum as f64 - self.minimum as f64;
         if range == 0.0 {
             return match self.orientation {
                 Orientation::Horizontal => rect.x as f32 + inset,
                 Orientation::Vertical => rect.y as f32 + rect.height as f32 / 2.0,
             };
         }
-        let relative = (clamped - self.minimum) as f32 / range;
+        let relative = (clamped as f64 - self.minimum as f64) / range;
         match self.orientation {
             Orientation::Horizontal => {
                 // The value runs in reading order; the pixel is measured from the left edge. The
                 // direction is the single conversion between the two, and it is the same one
                 // `pixel_pos_to_value` applies in reverse — so a handle drawn at a position reads
                 // back as the value that put it there.
-                let left_fraction = self.direction.begin_fraction_to_left_fraction(relative);
+                let left_fraction = self.direction.begin_fraction_to_left_fraction(relative as f32);
                 rect.x as f32 + inset + travel * left_fraction
             }
             Orientation::Vertical => {
-                rect.y as f32 + inset + travel * (1.0 - relative) // Invert Y axis
+                rect.y as f32 + inset + travel * (1.0 - relative as f32) // Invert Y axis
             }
         }
     }
@@ -909,11 +944,9 @@ impl Draw for Slider {
                 // performance issues with large ranges and small intervals).
                 if self.tick_position != TickPosition::NoTicks && self.tick_interval > 0 {
                     let tick_height = dimensions::SLIDER_TRACK_HEIGHT * 2;
-                    let total_ticks =
-                        ((self.maximum - self.minimum) / self.tick_interval) as u32 + 1;
-                    let tick_count = total_ticks.min(100);
+                    let tick_count = self.tick_count();
                     for i in 0..tick_count {
-                        let value = self.minimum + i as i32 * self.tick_interval;
+                        let value = self.tick_value(i);
                         let tick_x = self.value_to_pixel_pos(value);
                         if self.tick_position == TickPosition::TicksAbove
                             || self.tick_position == TickPosition::TicksBothSides
@@ -966,11 +999,9 @@ impl Draw for Slider {
                 // performance issues with large ranges and small intervals).
                 if self.tick_position != TickPosition::NoTicks && self.tick_interval > 0 {
                     let tick_width = dimensions::SLIDER_TRACK_HEIGHT * 2;
-                    let total_ticks =
-                        ((self.maximum - self.minimum) / self.tick_interval) as u32 + 1;
-                    let tick_count = total_ticks.min(100);
+                    let tick_count = self.tick_count();
                     for i in 0..tick_count {
-                        let value = self.minimum + i as i32 * self.tick_interval;
+                        let value = self.tick_value(i);
                         let tick_y = self.value_to_pixel_pos(value);
                         if self.tick_position == TickPosition::TicksAbove
                             || self.tick_position == TickPosition::TicksBothSides
@@ -1930,5 +1961,107 @@ mod tests {
             i32::MAX,
             "a step that would overflow must saturate at the maximum, not wrap negative"
         );
+    }
+
+    // ── D09-CTRL-01: the value↔pixel mappings and the tick count must not overflow `i32` ──
+
+    /// A full-`i32` range must map value↔pixel without overflowing, in both orientations.
+    ///
+    /// # The defect this pins
+    ///
+    /// `pixel_pos_to_value` computed `(maximum - minimum) as f32` and `value_to_pixel_pos` computed
+    /// `(clamped - minimum) as f32` in `i32`. For a legal `i32::MIN..=i32::MAX` range the span has no
+    /// `i32` representation, so a checked build panicked and a wrapping one produced a wrong — even
+    /// negative — span. Both now compute in `f64`, so this test reaching its assertions at all is the
+    /// regression check for the panic, and the round trip pins the correct result.
+    #[test]
+    fn a_full_range_maps_between_value_and_pixel_in_both_orientations() {
+        for orientation in [Orientation::Horizontal, Orientation::Vertical] {
+            let mut slider = make_slider();
+            slider.set_orientation(orientation);
+            slider.set_range(i32::MIN, i32::MAX);
+
+            // Endpoints and midpoints map to finite pixels and stay inside the domain. The exact
+            // `i32` value cannot survive a round trip over a 2^32-wide span sampled by ~180 pixels
+            // (one pixel is ~12 million values), so the meaningful inverse is checked on the
+            // **pixel**: a value mapped to a pixel must map back to a value on the same pixel.
+            for value in [i32::MIN, i32::MIN + 1, -1, 0, 1, i32::MAX - 1, i32::MAX] {
+                let pixel = slider.value_to_pixel_pos(value);
+                assert!(
+                    pixel.is_finite(),
+                    "{orientation:?}: value {value} must map to a finite pixel"
+                );
+                let back = slider.pixel_pos_to_value(pixel);
+                assert!(
+                    back >= i32::MIN && back <= i32::MAX,
+                    "{orientation:?}: value {value} -> pixel {pixel} -> {back}, must stay in domain"
+                );
+                let recovered_pixel = slider.value_to_pixel_pos(back);
+                assert!(
+                    (recovered_pixel - pixel).abs() <= 1.0,
+                    "{orientation:?}: value {value} -> pixel {pixel} -> value {back} -> pixel \
+                     {recovered_pixel}, the pixel must be recovered"
+                );
+            }
+
+            // The extremes land at the two ends of the travel, and the minimum is below the maximum
+            // in pixel order (a wrapped span would invert this).
+            let min_px = slider.value_to_pixel_pos(i32::MIN);
+            let max_px = slider.value_to_pixel_pos(i32::MAX);
+            assert!(min_px.is_finite() && max_px.is_finite());
+            match orientation {
+                Orientation::Horizontal => assert!(min_px < max_px),
+                Orientation::Vertical => assert!(max_px < min_px, "the maximum sits on top"),
+            }
+        }
+    }
+
+    /// A full-range slider with ticks must not panic and must cap the drawn ticks at 100.
+    ///
+    /// The old tick count computed `(maximum - minimum) / tick_interval + 1` in `i32`, which
+    /// overflowed for the full-`i32` span *before* the `.min(100)` cap could bound it. The cap is now
+    /// applied to a span computed in `i64`.
+    #[test]
+    fn a_full_range_tick_count_is_capped_and_does_not_panic() {
+        let mut slider = make_slider();
+        slider.set_range(i32::MIN, i32::MAX);
+        slider.set_tick_interval(1);
+        assert_eq!(slider.tick_count(), 100, "the tick count is capped at 100");
+
+        // A coarse interval over the full span is likewise well-defined and in range.
+        slider.set_tick_interval(100_000_000);
+        let count = slider.tick_count();
+        assert!(count >= 1 && count <= 100, "a coarse interval yields 1..=100 ticks, got {count}");
+
+        // Every tick value is inside the domain (the index conversion goes through `i64`).
+        slider.set_tick_interval(i32::MAX);
+        for index in 0..slider.tick_count() {
+            let value = slider.tick_value(index);
+            assert!(
+                value >= i32::MIN && value <= i32::MAX,
+                "tick {index} must stay inside the domain, got {value}"
+            );
+        }
+        // A zero or negative interval yields no ticks (rather than dividing by zero).
+        slider.set_tick_interval(0);
+        assert_eq!(slider.tick_count(), 0);
+    }
+
+    /// A full-range slider with ticks enabled must actually paint without panicking, in both
+    /// orientations — the drawing path is the one the report is about.
+    #[test]
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn a_full_range_slider_paints_its_ticks_without_panicking() {
+        for orientation in [Orientation::Horizontal, Orientation::Vertical] {
+            let mut slider = make_slider();
+            slider.set_orientation(orientation);
+            slider.set_range(i32::MIN, i32::MAX);
+            slider.set_value(0);
+            slider.set_tick_interval(1_000_000_000);
+            slider.set_tick_position(TickPosition::TicksBothSides);
+            let svg =
+                crate::widget::svg::render_widget_to_svg(&mut slider, Rect::new(0, 0, 200, 30));
+            assert!(svg.starts_with("<svg"), "{orientation:?}: the draw must produce a document");
+        }
     }
 }

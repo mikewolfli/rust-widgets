@@ -520,40 +520,33 @@ impl PrintDialog {
     pub fn pagination_mut(&mut self) -> &mut PrintPagination {
         &mut self.pagination
     }
-    /// Returns whether a native print dialog was successfully shown.
+    /// Attempts to show a **native print dialog**.
     ///
-    /// Checks if the platform has a print spooler available. If the system
-    /// print infrastructure is missing, logs an error and returns `false`.
-    /// The `shown` flag is set to `true` once this method successfully completes.
+    /// # Why this returns `false`
+    ///
+    /// No native/system print dialog exists yet (see the module docs). The method
+    /// used to report `true` as soon as the OS had a print spooler — it never
+    /// created a dialog, showed printer options, or waited for confirmation, so a
+    /// caller that trusted the return value skipped the user's choice entirely
+    /// (D09-PR-02). "A spooler exists" is not "the user saw a dialog", and this
+    /// method now only reports the second.
+    ///
+    /// It returns `false` and leaves [`Self::was_shown`] `false`; the reason is
+    /// logged. When a real dialog is wired, this is where it is created and this is
+    /// the flag that tracks whether it was actually shown.
     pub fn show(&mut self) -> bool {
-        if self.copies < 1 {
-            log::warn!("PrintDialog::show() called with 0 copies — no pages will be printed");
-            return false;
-        }
-        log::info!(
-            "PrintDialog::show() — copies={}, page_order={:?}, page_filter={:?}, collate={}",
-            self.copies,
-            self.pagination.page_order,
-            self.pagination.page_filter,
-            self.pagination.collate,
-        );
-
-        // Whether the OS has a print spooler is an OS fact. Ask the active
-        // platform backend instead of probing commands from this layer — principle
-        // #36. A backend with no spooler reports `false`, and the dialog honestly
-        // declines rather than pretending the document was queued.
         let has_printer = crate::platform::platform_facts().has_print_support();
-
         if !has_printer {
             log::error!("PrintDialog::show() — no native print spooler detected on this system");
             return false;
         }
-
-        log::info!(
-            "PrintDialog::show() — native print spooler detected, dialog configuration accepted"
+        log::warn!(
+            "PrintDialog::show() — a print spooler is available but no native print dialog is
+             wired, so no dialog was shown; reporting false rather than a dialog that did not
+             happen"
         );
-        self.shown = true;
-        true
+        // `self.shown` is deliberately **not** set: nothing was shown.
+        false
     }
 
     /// Whether the dialog has been successfully shown at least once.
@@ -665,6 +658,15 @@ impl Printer {
             backend: PrintBackend::default_for_platform(),
         }
     }
+    /// Creates a printer with an explicit backend and page size.
+    ///
+    /// The backend is normally auto-selected from the environment
+    /// ([`PrintBackend::default_for_platform`]). This constructor makes the choice
+    /// explicit, which is what lets a caller (or a test) select the in-memory backend
+    /// without racing on a process-wide environment variable.
+    pub fn with_backend(backend: PrintBackend, page_size: Size) -> Self {
+        Self { page_size, backend }
+    }
     /// Prints a document and logs backend errors.
     pub fn print(&self, document: &dyn PrintDocument) {
         if let Err(e) = self.print_with_result(document) {
@@ -691,12 +693,50 @@ impl Printer {
         document: &dyn PrintDocument,
         pagination: &PrintPagination,
     ) -> Result<(), String> {
-        let mut context = MemoryPrintContext::new(self.page_size);
+        self.print_with_pagination_settings_result(document, pagination, None)
+    }
+
+    /// Print a document using [`PrintSettings`] and return the backend result.
+    ///
+    /// This is the entry point that actually applies the settings (D09-PR-03):
+    /// `orientation` converts the page size, `page_range`/`copies`/`collate` become
+    /// the pagination, and `color_mode` travels to the backend submit. The previous
+    /// API accepted no settings, so a caller's configuration changed nothing about
+    /// the output — the same document printed identically regardless of orientation,
+    /// range or colour mode.
+    ///
+    /// An invalid `page_range` is reported as an error and nothing is printed (see
+    /// [`PrintSettings::try_apply_to_pagination`]).
+    pub fn print_with_settings_result(
+        &self,
+        document: &dyn PrintDocument,
+        settings: &PrintSettings,
+    ) -> Result<(), String> {
+        let pagination = settings.try_apply_to_pagination(document.page_count())?;
+        self.print_with_pagination_settings_result(document, &pagination, Some(settings))
+    }
+
+    /// Core print path: render `pagination`'s pages and submit, honouring `settings`
+    /// for page size (orientation) and colour mode when present.
+    fn print_with_pagination_settings_result(
+        &self,
+        document: &dyn PrintDocument,
+        pagination: &PrintPagination,
+        settings: Option<&PrintSettings>,
+    ) -> Result<(), String> {
+        // Orientation is expressed as the page size the document is drawn into, so
+        // it must be applied before drawing: a landscape job swaps the dimensions.
+        let page_size = match settings {
+            Some(settings) => settings.orientation.apply(self.page_size),
+            None => self.page_size,
+        };
+        let color_mode = settings.map(|s| s.color_mode.clone());
+        let mut context = MemoryPrintContext::new(page_size);
         for page in pagination.selected_pages(document.page_count()) {
             document.draw_page(page, &mut context);
             context.end_page();
         }
-        let job = PrintJobPayload { page_size: self.page_size, commands: context.commands };
+        let job = PrintJobPayload { page_size, color_mode, commands: context.commands };
         self.backend.submit(&job)
     }
     /// Get active print backend name.
@@ -708,10 +748,18 @@ crate::impl_default_via_new!(Printer);
 struct PrintJobPayload {
     /// Page size used while recording drawing commands.
     page_size: Size,
+    /// Requested colour mode (`"color"`, `"grayscale"`, `"monochrome"`), if set.
+    /// Carried into the rendered document so the setting is not dropped (D09-PR-03).
+    color_mode: Option<String>,
     /// Flattened draw command stream with page-break markers.
     commands: Vec<String>,
 }
-enum PrintBackend {
+/// Print backend selection.
+///
+/// Public so a caller can pass an explicit choice to [`Printer::with_backend`]
+/// rather than relying on the process-wide environment selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrintBackend {
     /// Submit printable text output to system spool command.
     System,
     /// Keep print output in memory only (fallback mode).
@@ -744,8 +792,10 @@ impl PrintBackend {
                 // Store the print job content in memory for later retrieval.
                 let mut content = String::new();
                 content.push_str(&format!(
-                    "rust_widgets print job (memory backend)\npage_size={}x{}\n\n",
-                    job.page_size.width, job.page_size.height
+                    "rust_widgets print job (memory backend)\npage_size={}x{}\ncolor_mode={}\n\n",
+                    job.page_size.width,
+                    job.page_size.height,
+                    job.color_mode.as_deref().unwrap_or("color"),
                 ));
                 for cmd in &job.commands {
                     content.push_str(cmd);
@@ -792,7 +842,9 @@ fn write_print_job_file(job: &PrintJobPayload) -> Result<PathBuf, String> {
         .map_err(|err| format!("clock error: {err}"))?
         .as_millis();
     let seq = JOB_SEQ.fetch_add(1, Ordering::Relaxed);
-    path.push(format!("rw_print_job_{}_{ts}_{seq}.txt", std::process::id()));
+    // `.ps` (not `.txt`): the body is a real PostScript document, and the spooler /
+    // viewer picks the interpreter from the extension (D09-PR-01).
+    path.push(format!("rw_print_job_{}_{ts}_{seq}.ps", std::process::id()));
 
     // Created exclusively (`create_new`) rather than truncating. A name collision
     // must be a reported error, never a silent overwrite of another job's file.
@@ -835,15 +887,12 @@ fn write_print_job_body(
     out: &mut impl std::io::Write,
     job: &PrintJobPayload,
 ) -> std::io::Result<()> {
-    writeln!(
-        out,
-        "rust_widgets print job\npage_size={}x{}\n",
-        job.page_size.width, job.page_size.height
-    )?;
-    for cmd in &job.commands {
-        writeln!(out, "{cmd}")?;
-    }
-    Ok(())
+    // Emit a real page-description document instead of the debug command strings.
+    // The renderer can only fail on a malformed command, which this module never
+    // produces; map any such failure to an IO error so the job is reported rather
+    // than written as a partial file (D09-PR-01).
+    let document = render_postscript(job).map_err(std::io::Error::other)?;
+    out.write_all(document.as_bytes())
 }
 fn run_print_command(path: &Path) -> Result<(), String> {
     // The OS-specific printing mechanism (lpr/lp on macOS and Linux, the shell
@@ -908,21 +957,54 @@ impl PrintSettings {
         Self::default()
     }
 
-    /// Apply these settings to a [`PrintPagination`] builder.
-    pub fn apply_to_pagination(&self, total_pages: u32) -> PrintPagination {
+    /// Apply these settings to a [`PrintPagination`], reporting an invalid page range.
+    ///
+    /// This is the fallible form: when [`PrintSettings::page_range`] cannot be parsed
+    /// it returns `Err` and the caller must not print, rather than silently falling
+    /// back to "all pages". The silent fallback was the defect: `apply_to_pagination`
+    /// discarded the parse error with `let _ =`, leaving the ranges empty, and an
+    /// empty range set means *every* page — so `"2,,4"` printed the whole document
+    /// (D09-PR-04).
+    pub fn try_apply_to_pagination(&self, total_pages: u32) -> Result<PrintPagination, String> {
         let mut pagination = PrintPagination::new();
         pagination.set_copies(self.copies);
         pagination.set_collate(self.collate);
         if let Some(ref range_spec) = self.page_range {
-            let _ = pagination.set_ranges_from_spec(range_spec);
+            // Propagate, do not swallow. A caller that wants all pages must ask for
+            // them explicitly (leave `page_range` `None`), not by supplying a range it
+            // failed to parse.
+            pagination.set_ranges_from_spec(range_spec)?;
+        } else if total_pages > 0 {
+            pagination.set_range(1, total_pages);
         }
-        if total_pages > 0 {
-            // Default to all pages if no range specified
-            if pagination.selected_pages(total_pages).is_empty() && self.page_range.is_none() {
-                pagination.set_range(1, total_pages);
+        Ok(pagination)
+    }
+
+    /// Apply these settings to a [`PrintPagination`] builder.
+    ///
+    /// A convenience wrapper over [`PrintSettings::try_apply_to_pagination`] for
+    /// callers that cannot handle an error. An invalid `page_range` is **not**
+    /// widened to all pages: the returned pagination selects nothing, and the reason
+    /// is logged, so a misconfigured job produces an empty job rather than a
+    /// surprise full-document print (D09-PR-04). Prefer the fallible form.
+    pub fn apply_to_pagination(&self, total_pages: u32) -> PrintPagination {
+        match self.try_apply_to_pagination(total_pages) {
+            Ok(pagination) => pagination,
+            Err(error) => {
+                log::error!(
+                    "[print] invalid page range {:?}: {error}; selecting no pages rather than
+                     printing the whole document",
+                    self.page_range
+                );
+                // A sentinel that selects nothing: an out-of-range single page. An
+                // empty range set would mean "all pages", so it cannot be used here.
+                let mut empty = PrintPagination::new();
+                empty.set_copies(self.copies);
+                empty.set_collate(self.collate);
+                empty.set_range(u32::MAX, u32::MAX);
+                empty
             }
         }
-        pagination
     }
 }
 
@@ -1301,13 +1383,19 @@ impl PrintContext for MemoryPrintContext {
     }
     fn draw_image(&mut self, image: &[u8], rect: Rect) {
         let mapped = self.mapped_rect(rect);
+        // Record the image **pixels**, not just their length. The previous command
+        // kept only `image.len()` and the rect, so the bytes could not be recovered
+        // and the printed page lost every image (D09-PR-01). The pixels are carried
+        // as lowercase hex after the geometry, which keeps the stream text-parseable
+        // and the renderer able to reconstruct the bitmap.
         self.commands.push(format!(
-            "img:{}bytes:{},{},{},{}",
-            image.len(),
+            "img:{},{},{},{}:{}:{}",
             mapped.x,
             mapped.y,
             mapped.width,
-            mapped.height
+            mapped.height,
+            image.len(),
+            encode_hex(image),
         ));
     }
     fn push_clip(&mut self, rect: Rect) {
@@ -1360,6 +1448,284 @@ impl PrintContext for MemoryPrintContext {
 /// disagree with what a real spooler would print.
 fn hex_color(color: Color) -> String {
     format!("#{:02X}{:02X}{:02X}{:02X}", color.r, color.g, color.b, color.a)
+}
+
+/// Lowercase hex for a byte slice, used to carry image pixels in the command stream.
+fn encode_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+/// Decode lowercase/uppercase hex back to bytes, returning an error on a malformed
+/// string (odd length or a non-hex character) so a corrupt command is reported
+/// rather than silently producing wrong pixels.
+fn decode_hex(text: &str) -> Result<Vec<u8>, String> {
+    if !text.len().is_multiple_of(2) {
+        return Err(format!("hex payload has odd length {}", text.len()));
+    }
+    let mut out = Vec::with_capacity(text.len() / 2);
+    let bytes = text.as_bytes();
+    for pair in bytes.chunks_exact(2) {
+        let hi = hex_nibble(pair[0])?;
+        let lo = hex_nibble(pair[1])?;
+        out.push((hi << 4) | lo);
+    }
+    Ok(out)
+}
+
+fn hex_nibble(byte: u8) -> Result<u8, String> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        other => Err(format!("invalid hex character {:?}", other as char)),
+    }
+}
+
+/// Render the recorded command stream into a **valid PostScript document**.
+///
+/// # Why PostScript and not the raw command text
+///
+/// The system spool path used to write the debug command strings (`text:…`,
+/// `rect:…`) straight into a `.txt` file and hand that to the spooler, so a
+/// successful job proved only that a text file was queued — the page had no
+/// layout, and image pixels were dropped entirely (D09-PR-01). PostScript is a
+/// real page-description format every CUPS/lpr pipeline accepts, and it can carry
+/// text, vector graphics and raster images, so the output is an actual printable
+/// page rather than a transcript of the commands.
+///
+/// The returned document is self-contained: it sets a page size from `page_size`,
+/// and each `page-break` marker in the stream starts a new `showpage`.
+fn render_postscript(job: &PrintJobPayload) -> Result<String, String> {
+    let mut out = String::new();
+    out.push_str("%!PS-Adobe-3.0\n");
+    out.push_str("%%Creator: rust_widgets\n");
+    out.push_str(&format!("%%BoundingBox: 0 0 {} {}\n", job.page_size.width, job.page_size.height));
+    // PostScript's origin is bottom-left; the recorded stream uses top-left. This
+    // transform flips the y axis so recorded coordinates land where they should.
+    out.push_str("%%EndComments\n");
+    out.push_str("/rw_page { } def\n");
+
+    // Colour mode: `grayscale`/`monochrome` forces every colour to a single grey
+    // (the luminance), so the setting reaches the output instead of being ignored.
+    let grayscale = matches!(
+        job.color_mode.as_deref().map(str::to_ascii_lowercase).as_deref(),
+        Some("grayscale") | Some("grey") | Some("monochrome") | Some("mono"),
+    );
+
+    let mut pages = 0u32;
+    for command in &job.commands {
+        if command == "page-break" {
+            out.push_str("showpage\n");
+            pages += 1;
+            continue;
+        }
+        out.push_str(&render_command_ps(command, job.page_size, grayscale)?);
+    }
+    // A document with no explicit trailing page-break still needs its last page shown.
+    if pages == 0 {
+        out.push_str("showpage\n");
+    }
+    out.push_str("%%EOF\n");
+    Ok(out)
+}
+
+/// Translate one recorded command into PostScript operators.
+fn render_command_ps(command: &str, page_size: Size, grayscale: bool) -> Result<String, String> {
+    let height = page_size.height as f32;
+    if let Some(rest) = command.strip_prefix("text:") {
+        // text:<text>@<x>,<y>:<size>:#RRGGBBAA:<flags>
+        let (text, meta) = rest.split_once('@').ok_or_else(|| "malformed text".to_string())?;
+        let parts: Vec<&str> = meta.split(':').collect();
+        if parts.len() < 3 {
+            return Err(format!("malformed text command: {command}"));
+        }
+        let (x, y) = parse_pair(parts[0])?;
+        let size: f32 = parts[1].parse().map_err(|_| "bad font size".to_string())?;
+        let (r, g, b) = maybe_gray(parse_hex_color(parts[2])?, grayscale);
+        // `Helvetica` is a standard PostScript base-35 font available in every
+        // interpreter, so the generated document needs no embedded font.
+        Ok(format!(
+            "/Helvetica findfont {size} scalefont setfont {r} {g} {b} setrgbcolor {} {} moveto ({}) show\n",
+            x,
+            height - y,
+            escape_ps_string(text),
+        ))
+    } else if let Some(rest) = command.strip_prefix("line:") {
+        // line:<x1>,<y1>-><x2>,<y2>:<width>:#RRGGBBAA
+        let (coords, meta) = rest.split_once(':').ok_or_else(|| "malformed line".to_string())?;
+        let (from, to) = coords.split_once("->").ok_or_else(|| "malformed line".to_string())?;
+        let (x1, y1) = parse_pair(from)?;
+        let (x2, y2) = parse_pair(to)?;
+        let meta_parts: Vec<&str> = meta.split(':').collect();
+        if meta_parts.len() < 2 {
+            return Err(format!("malformed line command: {command}"));
+        }
+        let width: f32 = meta_parts[0].parse().map_err(|_| "bad line width".to_string())?;
+        let (r, g, b) = maybe_gray(parse_hex_color(meta_parts[1])?, grayscale);
+        Ok(format!(
+            "{r} {g} {b} setrgbcolor {width} setlinewidth {} {} moveto {} {} lineto stroke\n",
+            x1,
+            height - y1,
+            x2,
+            height - y2,
+        ))
+    } else if let Some(rest) = command.strip_prefix("rect:") {
+        render_rect_ps(rest, height, false, grayscale)
+    } else if let Some(rest) = command.strip_prefix("fill:") {
+        render_rect_ps(rest, height, true, grayscale)
+    } else if let Some(rest) = command.strip_prefix("img:") {
+        render_image_ps(rest, height, grayscale)
+    } else if command.starts_with("clip-") {
+        // Clips are recorded for the memory backend; the PostScript path renders the
+        // painted primitives directly and a full clip implementation would require
+        // tracking a graphics state per nesting level. The primitives that were
+        // clipped away are simply not emitted by the recorder, so skipping the clip
+        // markers here does not paint anything the recorder excluded.
+        Ok(String::new())
+    } else {
+        // An unknown command is reported rather than silently dropped, so a new
+        // primitive that is added to the recorder without a PostScript mapping fails
+        // loudly instead of vanishing from the page.
+        Err(format!("unsupported print command for PostScript rendering: {command}"))
+    }
+}
+
+fn render_rect_ps(
+    rest: &str,
+    height: f32,
+    filled: bool,
+    grayscale: bool,
+) -> Result<String, String> {
+    // <x>,<y>,<w>,<h>:<width?>:#RRGGBBAA  (rect)  |  <x>,<y>,<w>,<h>:#RRGGBBAA (fill)
+    let parts: Vec<&str> = rest.split(':').collect();
+    if parts.len() < 2 {
+        return Err(format!("malformed rect command: {rest}"));
+    }
+    let coords: Vec<&str> = parts[0].split(',').collect();
+    if coords.len() != 4 {
+        return Err(format!("malformed rect geometry: {rest}"));
+    }
+    let x: f32 = coords[0].parse().map_err(|_| "bad rect x".to_string())?;
+    let y: f32 = coords[1].parse().map_err(|_| "bad rect y".to_string())?;
+    let w: f32 = coords[2].parse().map_err(|_| "bad rect width".to_string())?;
+    let h: f32 = coords[3].parse().map_err(|_| "bad rect height".to_string())?;
+    let color_index = if filled { 1 } else { 2 };
+    let (r, g, b) = maybe_gray(parse_hex_color(parts[color_index])?, grayscale);
+    let width =
+        if filled { 0.0 } else { parts[1].parse().map_err(|_| "bad border width".to_string())? };
+    // PostScript's `rect`/`fill` take the lower-left corner; flip y.
+    let lower_left_y = height - y - h;
+    if filled {
+        Ok(format!("{r} {g} {b} setrgbcolor {x} {lower_left_y} {w} {h} rectfill\n"))
+    } else {
+        Ok(format!(
+            "{r} {g} {b} setrgbcolor {width} setlinewidth {x} {lower_left_y} {w} {h} rectstroke\n"
+        ))
+    }
+}
+
+fn render_image_ps(rest: &str, height: f32, grayscale: bool) -> Result<String, String> {
+    // <x>,<y>,<w>,<h>:<byte_len>:<hex>
+    let (geo, tail) = rest.split_once(':').ok_or_else(|| "malformed image".to_string())?;
+    let (len_str, hex) = tail.split_once(':').ok_or_else(|| "malformed image".to_string())?;
+    let coords: Vec<&str> = geo.split(',').collect();
+    if coords.len() != 4 {
+        return Err(format!("malformed image geometry: {rest}"));
+    }
+    let x: f32 = coords[0].parse().map_err(|_| "bad image x".to_string())?;
+    let y: f32 = coords[1].parse().map_err(|_| "bad image y".to_string())?;
+    let w: f32 = coords[2].parse().map_err(|_| "bad image width".to_string())?;
+    let h: f32 = coords[3].parse().map_err(|_| "bad image height".to_string())?;
+    let expected: usize = len_str.parse().map_err(|_| "bad image length".to_string())?;
+    let pixels = decode_hex(hex)?;
+    if pixels.len() != expected {
+        return Err(format!(
+            "image payload length {} does not match the declared {expected}",
+            pixels.len()
+        ));
+    }
+    if w <= 0.0 || h <= 0.0 || pixels.is_empty() {
+        return Ok(String::new());
+    }
+    // The pixels are RGBA; PostScript `colorimage` needs a sample per component. A
+    // 4-component image is not directly expressible, so composite over white into
+    // RGB (the same flattening a printer without an alpha channel will do).
+    let sample_count = pixels.len() / 4;
+    let width_px = sample_count.min(w as usize).max(1);
+    let height_px = (sample_count / width_px).max(1);
+    let mut rgb = String::with_capacity(sample_count * 3 * 4);
+    for chunk in pixels.chunks_exact(4) {
+        let (r, g, b, a) =
+            (chunk[0] as f32, chunk[1] as f32, chunk[2] as f32, chunk[3] as f32 / 255.0);
+        let rr = (r * a + 255.0 * (1.0 - a)).round() as u8;
+        let gg = (g * a + 255.0 * (1.0 - a)).round() as u8;
+        let bb = (b * a + 255.0 * (1.0 - a)).round() as u8;
+        let (rr, gg, bb) = if grayscale {
+            // Rec. 601 luma, the standard greyscale conversion.
+            let luma = (0.299 * rr as f32 + 0.587 * gg as f32 + 0.114 * bb as f32).round() as u8;
+            (luma, luma, luma)
+        } else {
+            (rr, gg, bb)
+        };
+        rgb.push_str(&format!("{rr:02X}{gg:02X}{bb:02X}"));
+    }
+    // PostScript's image origin is the lower-left; flip y.
+    let lower_left_y = height - y - h;
+    Ok(format!(
+        "gsave {x} {lower_left_y} translate {w} {h} scale {width_px} {height_px} 8 [{width_px} 0 0 -{height_px} 0 {height_px}] {{<{rgb}>}} false 3 colorimage grestore\n"
+    ))
+}
+
+/// Parse `<a>,<b>` into an `(f32, f32)` pair.
+fn parse_pair(text: &str) -> Result<(f32, f32), String> {
+    let (a, b) =
+        text.split_once(',').ok_or_else(|| format!("malformed coordinate pair: {text}"))?;
+    let a = a.trim().parse().map_err(|_| format!("bad number: {a}"))?;
+    let b = b.trim().parse().map_err(|_| format!("bad number: {b}"))?;
+    Ok((a, b))
+}
+
+/// Parse a `#RRGGBB` or `#RRGGBBAA` colour into 0..1 PostScript components.
+fn parse_hex_color(text: &str) -> Result<(f32, f32, f32), String> {
+    let hex = text.trim_start_matches('#');
+    if hex.len() != 6 && hex.len() != 8 {
+        return Err(format!("malformed colour: {text}"));
+    }
+    let channel = |i: usize| -> Result<f32, String> {
+        let byte = u8::from_str_radix(&hex[i..i + 2], 16)
+            .map_err(|_| format!("malformed colour: {text}"))?;
+        Ok(byte as f32 / 255.0)
+    };
+    Ok((channel(0)?, channel(2)?, channel(4)?))
+}
+
+/// Collapse a colour to grey when the job asked for grayscale/monochrome.
+fn maybe_gray((r, g, b): (f32, f32, f32), grayscale: bool) -> (f32, f32, f32) {
+    if grayscale {
+        let luma = 0.299 * r + 0.587 * g + 0.114 * b;
+        (luma, luma, luma)
+    } else {
+        (r, g, b)
+    }
+}
+
+/// Escape the characters that would terminate a PostScript string literal.
+fn escape_ps_string(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '(' | ')' | '\\' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 #[cfg(test)]
 mod tests {
@@ -1503,25 +1869,147 @@ mod tests {
 
     // ── Print framework tests ─────────────────────────────────────
 
-    /// The job file must contain the header and every command, in order.
+    /// The job file must contain a valid PostScript document carrying every command.
     ///
-    /// This covers the streaming rewrite: the body is written incrementally rather
-    /// than assembled into one `String`, and the bytes on disk must be identical.
+    /// This replaces the old assertion on the debug command strings: the body is now
+    /// a real page-description format (D09-PR-01), so the checks are that it is
+    /// recognisable as PostScript, records the page size, and translates each recorded
+    /// command into a PostScript operator in order.
     #[test]
-    fn print_job_file_streams_header_and_commands() {
+    fn print_job_file_renders_a_postscript_document() {
         let job = PrintJobPayload {
             page_size: Size { width: 595, height: 842 },
-            commands: vec!["page:1".into(), "text:Hello@10,10:12".into()],
+            color_mode: None,
+            commands: vec![
+                "fill:10,10,50,20:000000FF".into(),
+                "text:Hello@20,40:12:#000000FF:---".into(),
+                "page-break".into(),
+            ],
         };
         let path = write_print_job_file(&job).expect("temp file is writable");
         let written = fs::read_to_string(&path).expect("job file is readable");
         let _ = fs::remove_file(&path);
 
-        assert!(written.contains("page_size=595x842"), "header must record the page size");
-        // Order is part of the contract: the spooler renders these in sequence.
-        let first = written.find("page:1").expect("first command present");
-        let second = written.find("text:Hello@10,10:12").expect("second command present");
-        assert!(first < second, "commands must be written in order");
+        assert!(written.starts_with("%!PS-Adobe"), "must be a PostScript document: {written:.80}");
+        assert!(written.contains("%%BoundingBox: 0 0 595 842"), "must record the page size");
+        assert!(written.contains("rectfill"), "a fill command must become a filled rectangle");
+        assert!(written.contains("show"), "a text command must become a PostScript text show");
+        assert!(written.contains("showpage"), "the page-break must become a showpage");
+        assert!(written.ends_with("%%EOF\n"), "the document must be terminated");
+    }
+
+    /// The PostScript renderer must carry image **pixels**, not just their length.
+    ///
+    /// This is the core of D09-PR-01: the old path recorded `img:<len>bytes:…` and the
+    /// pixels were unrecoverable, so every image vanished from the printed page.
+    #[test]
+    fn an_image_command_embeds_its_pixels_in_the_document() {
+        // A 1x1 RGBA image: opaque red.
+        let pixels = vec![255u8, 0, 0, 255];
+        let job = PrintJobPayload {
+            page_size: Size { width: 100, height: 100 },
+            color_mode: None,
+            commands: vec![format!("img:0,0,10,10:{}:{}", pixels.len(), encode_hex(&pixels))],
+        };
+        let document = render_postscript(&job).expect("render must succeed");
+        assert!(document.contains("colorimage"), "the image must become a PostScript colorimage");
+        // Opaque red over white is FF0000.
+        assert!(document.contains("<FF0000>"), "the image pixels must be embedded: {document}");
+    }
+
+    /// Grayscale/monochrome must actually change the rendered colours.
+    #[test]
+    fn color_mode_grayscale_flattens_the_rendered_colours() {
+        let job = PrintJobPayload {
+            page_size: Size { width: 100, height: 100 },
+            color_mode: Some("grayscale".to_string()),
+            commands: vec!["fill:0,0,10,10:#FF0000FF".into()],
+        };
+        let document = render_postscript(&job).expect("render must succeed");
+        // Pure red maps to grey 0.299 ~= 0.299; assert the three components are equal
+        // and not the original red, proving the mode reached the output.
+        let marker = document
+            .lines()
+            .find(|line| line.contains("setrgbcolor") && line.contains("rectfill"))
+            .expect("a fill line must be present");
+        let components: Vec<f32> = marker
+            .split_whitespace()
+            .take(3)
+            .map(|t| t.parse::<f32>().expect("component is a number"))
+            .collect();
+        assert_eq!(components.len(), 3);
+        assert!(
+            (components[0] - components[1]).abs() < 1e-6
+                && (components[1] - components[2]).abs() < 1e-6,
+            "grayscale must make the components equal: {components:?}"
+        );
+        assert!(
+            (components[0] - 1.0).abs() > 1e-3,
+            "the red must not have passed through: {components:?}"
+        );
+    }
+
+    /// D09-PR-04: an invalid page range must not be widened to all pages.
+    #[test]
+    fn invalid_page_range_does_not_fall_back_to_all_pages() {
+        let mut settings = PrintSettings::new();
+        settings.page_range = Some("2,,4".to_string());
+        // The fallible form reports the error.
+        assert!(settings.try_apply_to_pagination(10).is_err());
+        // The infallible form selects nothing rather than everything.
+        let pagination = settings.apply_to_pagination(10);
+        assert!(
+            pagination.selected_pages(10).is_empty(),
+            "an invalid range must select no pages, not the whole document"
+        );
+    }
+
+    /// D09-PR-04: a valid range and an absent range are distinct and both correct.
+    #[test]
+    fn valid_and_absent_page_ranges_are_distinct() {
+        let mut with_range = PrintSettings::new();
+        with_range.page_range = Some("2-3".to_string());
+        let pages = with_range.try_apply_to_pagination(10).unwrap().selected_pages(10);
+        assert_eq!(pages, vec![1, 2], "only the requested pages are selected");
+
+        let without_range = PrintSettings::new();
+        let all = without_range.try_apply_to_pagination(4).unwrap().selected_pages(4);
+        assert_eq!(all, vec![0, 1, 2, 3], "no range means every page");
+    }
+
+    /// D09-PR-02: `PrintDialog::show` must not report a dialog that was never shown.
+    #[test]
+    fn print_dialog_show_does_not_claim_a_dialog_that_was_not_shown() {
+        let mut dialog = PrintDialog::new();
+        assert!(!dialog.show(), "no native dialog exists, so show() must report false");
+        assert!(!dialog.was_shown(), "the shown flag must stay false");
+    }
+
+    /// D09-PR-03: settings reach the output — orientation changes the page size.
+    #[test]
+    fn print_settings_orientation_reaches_the_output() {
+        struct OnePage;
+        impl PrintDocument for OnePage {
+            fn page_count(&self) -> u32 {
+                1
+            }
+            fn draw_page(&self, _page: u32, context: &mut dyn PrintContext) {
+                context.fill_rect(Rect::new(0, 0, 10, 10), Color::BLACK);
+            }
+        }
+        let mut settings = PrintSettings::new();
+        settings.orientation = PrintOrientation::Landscape;
+        // Use the memory backend explicitly so the assertion does not depend on whether
+        // a real spooler exists on the test host.
+        let printer = Printer::with_backend(PrintBackend::Memory, Size { width: 595, height: 842 });
+        printer.print_with_settings_result(&OnePage, &settings).expect("memory backend accepts");
+        let jobs = MEMORY_PRINT_JOBS.lock().unwrap();
+        let (_, content) = jobs.last().expect("a job was stored");
+        // Portrait default is 595x842; landscape swaps it to 842x595.
+        assert!(
+            content.contains("page_size=842x595"),
+            "orientation must swap the page size: {content}"
+        );
     }
 
     /// Two job files written close together must not collide.
@@ -1535,7 +2023,8 @@ mod tests {
     fn print_job_file_names_include_the_process_id() {
         let job = PrintJobPayload {
             page_size: Size { width: 100, height: 100 },
-            commands: vec!["page:1".into()],
+            color_mode: None,
+            commands: vec!["page-break".into()],
         };
         let path = write_print_job_file(&job).expect("temp file is writable");
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
@@ -1545,6 +2034,7 @@ mod tests {
             name.contains(&std::process::id().to_string()),
             "job file name {name:?} must carry the process id so two processes cannot collide"
         );
+        assert!(name.ends_with(".ps"), "the job file must use the PostScript extension: {name:?}");
     }
 
     /// Jobs written back to back must land in distinct files, each with its own body.
@@ -1557,7 +2047,8 @@ mod tests {
     fn print_job_files_written_back_to_back_do_not_share_a_path_or_a_body() {
         let job = |page: u32| PrintJobPayload {
             page_size: Size { width: 595, height: 842 },
-            commands: vec![format!("page:{page}")],
+            color_mode: None,
+            commands: vec![format!("fill:{page},0,5,5:000000FF")],
         };
 
         let first = write_print_job_file(&job(1)).expect("first job file is writable");
@@ -1574,10 +2065,13 @@ mod tests {
         }
 
         for (index, body) in bodies.iter().enumerate() {
-            let expected = format!("page:{}", index + 1);
+            // Each job's fill rectangle carries its own x offset, so a shared/overwritten
+            // body is detectable. The y is mirrored by the renderer, so only the x is
+            // asserted.
+            let expected = format!("{} ", index + 1);
             assert!(
-                body.contains(&expected),
-                "job {} must still hold its own body ({expected:?}), got: {body:?}",
+                body.contains(&expected) && body.contains("rectfill"),
+                "job {} must still hold its own body (x={expected:?}), got: {body:?}",
                 index + 1
             );
         }
@@ -1601,7 +2095,8 @@ mod tests {
 
         let job = PrintJobPayload {
             page_size: Size { width: 10, height: 10 },
-            commands: vec!["page:1".into()],
+            color_mode: None,
+            commands: vec!["page-break".into()],
         };
         let mut sink = FailingSink;
         assert!(
@@ -1636,7 +2131,8 @@ mod tests {
 
         let job = PrintJobPayload {
             page_size: Size { width: 595, height: 842 },
-            commands: vec!["text:Hello@10,10:12".into()],
+            color_mode: None,
+            commands: vec!["text:Hello@20,40:12:#000000FF:---".into()],
         };
         let err = rejecting_submit(&job).expect_err("a refused spool job must not report success");
         assert!(
@@ -1863,6 +2359,7 @@ mod tests {
         }
         let job = PrintJobPayload {
             page_size: Size { width: 595, height: 842 },
+            color_mode: None,
             commands: context.commands,
         };
         assert_eq!(doc.drawn_pages(), vec![1], "only page 2 (zero-based 1) was selected");

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Tool button widget.
-use crate::core::{Color, Font, HorizontalAlignment, Rect};
+use crate::core::{Color, HorizontalAlignment, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -11,7 +11,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, estimate_line_height, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::path::{Path, PathBuf};
@@ -399,8 +399,9 @@ impl ToolButton {
     fn content_bands(&self, content: Rect) -> (Rect, Rect) {
         // The label's unit is a *line*, and the line height comes from the shared estimate rather
         // than a literal: a control that floors to a number the renderer does not agree with would
-        // give its label a band that clips the glyphs it draws.
-        let line = crate::widget::metrics::estimate_line_height(&Font::default(), 1.0).max(1);
+        // give its label a band that clips the glyphs it draws. The line is measured with the
+        // **effective font** so the band matches the text the draw path paints (D09-STYLE-01).
+        let line = estimate_line_height(effective_font(self.style()), 1.0).max(1);
         let reserved = (dimensions::TOOL_BUTTON_ICON_SIZE
             + dimensions::TOOL_BUTTON_ICON_SPACING / 2)
             .min(content.height);
@@ -694,7 +695,9 @@ impl Draw for ToolButton {
         // Both are `RenderContext::text_line`-free here: the label's box is centred on its own
         // middle line, and the arrow sits in the room `content_box` reserved, so neither can drift
         // from the band that was laid out for it.
-        let font = Font::default();
+        // The **effective font** — the resolved theme/caller font — not a hardcoded default, so
+        // the label honours the theme body font and the user's text scale (D09-STYLE-01).
+        let font = effective_font(self.style());
         let has_popup = matches!(
             self.popup_mode,
             ToolButtonPopupMode::MenuButtonPopup | ToolButtonPopupMode::InstantPopup
@@ -709,7 +712,7 @@ impl Draw for ToolButton {
             // an `x` here *and* asking for `Center` would centre twice: the renderer offsets by
             // `(free + 1) / 2` from the origin it is given, so a pre-shifted origin lands the ink
             // half a box to the leading side.
-            context.draw_text_line(box_, &self.text, &font, fg, HorizontalAlignment::Center);
+            context.draw_text_line(box_, &self.text, font, fg, HorizontalAlignment::Center);
         }
         if has_popup {
             // The arrow lives in the trailing strip `content_box` already removed from the content,
@@ -1217,12 +1220,40 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    // ── D09-STYLE-01: the label consumes the resolved theme/caller font ──
+
+    /// A caller-authored `style.font` must change the label the tool button paints.
+    ///
+    /// # The defect this pins
+    ///
+    /// `draw` built a `Font::default()` by hand, so the theme body font and the user's text scale
+    /// never reached a text-mode tool button's label. It now reads `metrics::effective_font`.
+    #[test]
+    fn a_custom_font_changes_the_tool_button_label_ink() {
+        let render = |font: Option<crate::core::Font>| {
+            let mut btn = ToolButton::new("Label", Rect::new(0, 0, 160, 60));
+            btn.set_button_style(ToolButtonStyle::TextOnly);
+            if let Some(font) = font {
+                btn.set_style(crate::style::WidgetStyle::default().with_font(font));
+            }
+            let svg = crate::widget::svg::render_widget_to_svg(&mut btn, Rect::new(0, 0, 160, 60));
+            crate::widget::svg::text_ink_box(&svg).map(|(x, _, right, _)| right - x).unwrap_or(0)
+        };
+
+        let base_ink = render(None);
+        let big_ink = render(Some(crate::core::Font::simple("Test", 34.0)));
+        assert!(base_ink > 0, "the default label must paint ink for this test to mean anything");
+        assert!(
+            big_ink > base_ink,
+            "a larger font must widen the painted label: {big_ink} vs {base_ink}"
+        );
+    }
+
     /// The smallest valid PNG: a 2x2 truecolour-with-alpha image whose first pixel is opaque red.
     ///
     /// Written out as bytes rather than produced by an encoder so the fixture works wherever the
     /// `image` feature is on, including builds without the encoder side. The same fixture `avatar`
     /// uses, so both controls are held to one "a real image decodes" baseline.
-    #[cfg(all(feature = "image", not(alloc_frugal)))]
     const MINIMAL_PNG: &[u8] = &[
         0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, // PNG signature
         0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, // IHDR, 13 data bytes

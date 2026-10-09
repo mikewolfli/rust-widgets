@@ -25,11 +25,12 @@
 
 use alloc::vec::Vec;
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::render::RenderContext;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::role_font;
 use crate::widget::special_widgets::finance::indicators;
 use crate::widget::special_widgets::finance::layout::{
     panel_colors, IndexAxis, PanelColors, PlotArea, PriceAxis, PANEL_MIN_CONTRAST,
@@ -466,7 +467,7 @@ impl IndicatorChart {
             context.draw_text(
                 Point { x: area.rect.x - 6 - width, y: y - 6 },
                 &text,
-                &Font::simple("Sans", 10.0),
+                &role_font(self.style(), 10.0),
                 self.chrome().ink.with_alpha(190),
                 HorizontalAlignment::Left,
             );
@@ -494,7 +495,7 @@ impl IndicatorChart {
             );
         }
         context.draw_rect(area.rect, chrome.grid);
-        let font = Font::simple("Sans", 12.0);
+        let font = role_font(self.style(), 12.0);
         let line = context.text_line(area.rect, &font);
         context.draw_text_fitted(
             line,
@@ -675,7 +676,7 @@ impl Draw for IndicatorChart {
                 context.draw_text(
                     Point { x: label_x.max(area.rect.x), y: area.rect.y + 2 },
                     &text,
-                    &Font::simple("Sans", 11.0),
+                    &role_font(self.style(), 11.0),
                     chrome.ink,
                     HorizontalAlignment::Left,
                 );

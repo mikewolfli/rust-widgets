@@ -7,7 +7,7 @@
 //! drag handle, title, and optional content. Supports show/hide, drag-to-dismiss,
 //! and overlay-click-to-dismiss. Emits a `dismissed` signal when closed.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -15,6 +15,7 @@ use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -388,14 +389,16 @@ impl Draw for ModalBottomSheet {
         // the title half a line below its own row, and the content area below then started
         // from `title_y + height`, which only looked right because both ends shared the error.
         let title_y = handle_y + handle_height as i32 + 12;
-        let title_font = Font::simple("sans-serif", 16.0);
-        let title_metrics = context.measure_text(&self.title, &title_font);
+        // The **effective font** — the resolved theme/caller font — rather than the fixed 16 px
+        // sans-serif this used to build (D09-STYLE-01).
+        let title_font = effective_font(&style);
+        let title_metrics = context.measure_text(&self.title, title_font);
         if !self.title.is_empty() {
             let title_x = rect.x + (rect.width as i32 - title_metrics.width as i32) / 2;
             context.draw_text(
                 Point::new(title_x.max(rect.x), title_y),
                 &self.title,
-                &title_font,
+                title_font,
                 ink,
                 HorizontalAlignment::Left,
             );

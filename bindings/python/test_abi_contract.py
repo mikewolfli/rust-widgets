@@ -194,6 +194,32 @@ def _check_drop_event_free_once(rw: RustWidgets) -> None:
         setattr(rw.lib, "rw_free_bytes", original_free_bytes)
 
 
+def _check_no_prefix_name_lists(rw: RustWidgets) -> None:
+    """The two-argument enumerators must be called without an extra prefix.
+
+    ``widget_kind_names()`` / ``theme_names()`` wrap C ABI functions whose
+    signature is ``(out, cap)``. The wrapper used to prepend an empty ``b""``
+    argument, so ctypes raised ``ArgumentError`` before the library was ever
+    reached (D08-B-03): the calls returned no list at all, not an empty one.
+
+    The check asserts the calls reach the library and return real names, and
+    that every returned name is NUL-free (D08-B-02's terminator leak).
+    """
+    kinds = rw.widget_kind_names()
+    assert isinstance(kinds, list) and kinds, "widget_kind_names must return names"
+    assert all(isinstance(name, str) and name for name in kinds), kinds
+    assert all("\x00" not in name for name in kinds), (
+        f"a name carries the NUL terminator: {kinds}"
+    )
+    # A known control name must be present verbatim, proving the split is clean.
+    assert "button" in kinds, f"expected 'button' among control names: {kinds[:8]}"
+
+    themes = rw.theme_names()
+    assert isinstance(themes, list) and themes, "theme_names must return names"
+    assert all("\x00" not in name for name in themes), themes
+    print(f"  no-prefix name lists ({len(kinds)} kinds, {len(themes)} themes): ok")
+
+
 def main() -> int:
     try:
         rw = RustWidgets()
@@ -207,6 +233,7 @@ def main() -> int:
         ("property string kinds", _check_property_string_kinds),
         ("empty drag payload", _check_empty_drag_payload),
         ("drop event freed once", _check_drop_event_free_once),
+        ("no-prefix name lists", _check_no_prefix_name_lists),
     ]
     for title, check in checks:
         try:

@@ -188,6 +188,9 @@ PASS=0
 FAIL=0
 SKIPPED=0
 TIMED_OUT=0
+# How many gates the filter selected. Zero means the filter matched nothing — a
+# distinct failure from "all selected gates passed" (D08-G-01).
+SELECTED=0
 
 FAILED_GATES=()
 SKIPPED_GATES=()
@@ -227,6 +230,7 @@ for gate in tools/check_*.sh; do
   fi
 
   announce "$name"
+  SELECTED=$((SELECTED + 1))
 
   if run_budget_exhausted; then
     # Reported, not dropped: a gate that never ran is a piece of the verification
@@ -313,6 +317,22 @@ fi
 # A timeout leaves the run inconclusive, so it must not exit 0 — that would let a
 # wedged gate masquerade as a clean run.
 if [[ "$TIMED_OUT" -gt 0 ]]; then
+  exit 1
+fi
+
+# Gates that never started (the whole-run budget was exhausted) are verification
+# that did not happen. Exiting 0 for them would let `PASS=n FAIL=0 NOT-RUN=m` read
+# as a clean run to a CI job that only inspects the exit code (D08-G-01).
+if [[ "${#NOT_RUN_GATES[@]}" -gt 0 ]]; then
+  echo "not a clean run: ${#NOT_RUN_GATES[@]} gate(s) were never reached (whole-run budget exhausted)" >&2
+  exit 1
+fi
+
+# A filter that matched nothing ran no verification at all. Treating that as
+# success is the empty-selection half of D08-G-01: `--filter no_such_gate` printed
+# all-zero counts and exited 0.
+if [[ "$SELECTED" -eq 0 ]]; then
+  echo "no gates matched the filter${FILTER:+ \"$FILTER\"}; nothing was verified" >&2
   exit 1
 fi
 

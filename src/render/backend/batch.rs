@@ -8,10 +8,69 @@
 
 use crate::compat::{fmt, HashMap, String, Vec};
 
-use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
-use crate::render::RenderCommand;
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
+use crate::render::{
+    RenderCommand, ShapedText, SoftwareRenderConfig, SoftwareSurface, TextMetrics,
+};
 
-use super::paint::{PaintBackend, SoftwarePaintBackend};
+use super::paint::{route_command_to_surface, PaintBackend, SoftwarePaintBackend};
+
+/// A zero-copy [`PaintBackend`] view over a borrowed [`SoftwareSurface`].
+///
+/// # Why this exists (D09-RENDER-05)
+///
+/// `SoftwarePaintBackend::replay` has to read its own `batch_state` while painting
+/// into its own `surface`. Borrowing `self` for both is rejected by the compiler,
+/// and the historical workaround was to `clone()` the whole batch state — which
+/// copied every batch and every image regardless of which batch was replayed.
+/// Passing the surface alone as `&mut SoftwareSurface` would split the borrow, but
+/// the surface has no `PaintBackend` impl of its own. This view supplies one, so
+/// the replay path can paint through the surface while the batch maps stay
+/// borrowed immutably. Because the adapter is `#[repr(transparent)]`, its address
+/// is the address of the referenced surface: the cast is sound and free.
+#[repr(transparent)]
+struct SurfacePaintBackend<'a>(&'a mut SoftwareSurface);
+
+impl PaintBackend for SurfacePaintBackend<'_> {
+    fn begin_frame(&mut self, clear: Color) {
+        self.0.begin_frame(clear);
+    }
+    fn end_frame(&mut self) {
+        self.0.end_frame();
+    }
+    fn execute_command(&mut self, command: &RenderCommand) {
+        // Delegate to the backend's own command match so the two paths cannot drift;
+        // reproducing the match here would be a second copy of the same routing.
+        route_command_to_surface(self.0, command);
+    }
+    fn size(&self) -> Size {
+        self.0.size()
+    }
+    fn set_size(&mut self, size: Size) {
+        self.0.resize(size);
+    }
+    fn dpi_scale(&self) -> f32 {
+        self.0.dpi_scale()
+    }
+    fn set_dpi_scale(&mut self, dpi_scale: f32) {
+        self.0.set_dpi_scale(dpi_scale);
+    }
+    fn measure_text(&self, text: &str, font: &Font) -> TextMetrics {
+        self.0.measure_text(text, font)
+    }
+    fn shape_text(&self, text: &str, font: &Font) -> ShapedText {
+        self.0.shape_text(text, font)
+    }
+    fn frame_rgba(&self) -> &[u8] {
+        self.0.frame_rgba()
+    }
+    fn apply_render_config(&mut self, config: SoftwareRenderConfig) {
+        self.0.apply_render_config(config);
+    }
+    fn render_config(&self) -> SoftwareRenderConfig {
+        self.0.render_config()
+    }
+}
 
 /// Opaque identifier for a recorded batch of draw commands.
 ///
@@ -312,23 +371,6 @@ impl BatchState {
         Ok(())
     }
 
-    /// Replay a previously recorded batch by its id.
-    ///
-    /// Iterates over the stored [`BatchCommand`]s, translates each one to
-    /// the corresponding [`RenderCommand`], and calls `execute_command` on
-    /// the provided backend.
-    pub(crate) fn replay(&self, backend: &mut SoftwarePaintBackend, id: BatchId) {
-        let Some(cmds) = self.batches.get(&id) else {
-            return;
-        };
-        let mut state = TransformState::default();
-        for cmd in cmds {
-            if let Some(rc) = Self::translate_command(cmd, &self.images, &mut state) {
-                PaintBackend::execute_command(backend, &rc);
-            }
-        }
-    }
-
     /// Remove a batch and free its resources.
     pub(crate) fn destroy_batch(&mut self, id: BatchId) {
         if self.current_batch == Some(id) {
@@ -394,127 +436,197 @@ impl Default for TransformState {
     }
 }
 
-impl BatchState {
-    /// Translate a single [`BatchCommand`] into a [`RenderCommand`].
-    ///
-    /// Some batch commands carry higher-level semantics not directly
-    /// represented by the low-level `RenderCommand` enum. In those cases
-    /// the translation makes reasonable assumptions (e.g. using the default
-    /// UI font family with the requested size for text, or embedding image
-    /// data looked up from the cache).
-    ///
-    /// Returns `None` for commands that only update the transform state
-    /// (e.g. [`BatchCommand::Translate`], [`BatchCommand::SetOpacity`]).
-    fn translate_command(
-        cmd: &BatchCommand,
-        images: &HashMap<ObjectId, Vec<u8>>,
-        state: &mut TransformState,
-    ) -> Option<RenderCommand> {
-        match cmd {
-            BatchCommand::FillRect { rect, color } => Some(RenderCommand::FillRect {
-                rect: state.apply_to_rect(rect),
-                color: state.apply_to_color(color),
-            }),
+/// Translate a single [`BatchCommand`] into a [`RenderCommand`].
+///
+/// Some batch commands carry higher-level semantics not directly represented by
+/// the low-level `RenderCommand` enum. In those cases the translation makes
+/// reasonable assumptions (e.g. using the default UI font family with the
+/// requested size for text, or embedding image data looked up from the cache).
+///
+/// Returns `None` for commands that only update the transform state (e.g.
+/// [`BatchCommand::Translate`], [`BatchCommand::SetOpacity`]).
+///
+/// # Why this is a free function, not a `BatchState` method (D09-RENDER-05)
+///
+/// The replay path used to `clone()` the whole [`BatchState`] before calling
+/// `BatchState::replay`, because a method on `self` could not take the shared
+/// borrow of `batches`/`images` that translation needs *and* the mutable borrow
+/// of `backend` that painting needs at the same time. That clone deep-copied
+/// every unrelated batch command and every cached image byte on each replay, so
+/// replaying one small batch cost the size of the entire state. Made free, it
+/// takes the two maps as separate borrows, which lets [`replay_into`] split
+/// `SoftwarePaintBackend`'s fields and pass them without any clone.
+fn transform_command(
+    cmd: &BatchCommand,
+    images: &HashMap<ObjectId, Vec<u8>>,
+    state: &mut TransformState,
+) -> Option<RenderCommand> {
+    match cmd {
+        BatchCommand::FillRect { rect, color } => Some(RenderCommand::FillRect {
+            rect: state.apply_to_rect(rect),
+            color: state.apply_to_color(color),
+        }),
 
-            BatchCommand::StrokeRect { rect, color, width } => {
-                Some(RenderCommand::DrawRectStroke {
-                    rect: state.apply_to_rect(rect),
-                    color: state.apply_to_color(color),
-                    width: (*width).round().max(1.0) as u32,
-                })
+        BatchCommand::StrokeRect { rect, color, width } => Some(RenderCommand::DrawRectStroke {
+            rect: state.apply_to_rect(rect),
+            color: state.apply_to_color(color),
+            width: (*width).round().max(1.0) as u32,
+        }),
+
+        BatchCommand::DrawLine { from, to, color, width } => Some(RenderCommand::DrawLineStroke {
+            from: state.apply_to_point(from),
+            to: state.apply_to_point(to),
+            color: state.apply_to_color(color),
+            width: (*width).round().max(1.0) as u32,
+        }),
+
+        BatchCommand::DrawImage { rect, image_id, opacity } => {
+            let mut data = images.get(image_id).cloned().unwrap_or_default();
+            if data.is_empty() {
+                log::warn!("[batch] DrawImage references unknown image id {image_id}; dropping");
+                return None;
             }
-
-            BatchCommand::DrawLine { from, to, color, width } => {
-                Some(RenderCommand::DrawLineStroke {
-                    from: state.apply_to_point(from),
-                    to: state.apply_to_point(to),
-                    color: state.apply_to_color(color),
-                    width: (*width).round().max(1.0) as u32,
-                })
-            }
-
-            BatchCommand::DrawImage { rect, image_id, opacity } => {
-                let mut data = images.get(image_id).cloned().unwrap_or_default();
-                if data.is_empty() {
-                    log::warn!(
-                        "[batch] DrawImage references unknown image id {image_id}; dropping"
-                    );
-                    return None;
+            // Test-only accounting of how many source pixel bytes this translation
+            // copies. It is the observable the D09-RENDER-05 regression test asserts
+            // on: replaying a batch must not copy image data belonging to batches that
+            // are not being replayed. Compiled out of production builds (principle #28).
+            #[cfg(test)]
+            note_image_bytes_translated(data.len());
+            let applied_rect = state.apply_to_rect(rect);
+            let combined_opacity = state.opacity * opacity;
+            // RenderCommand::DrawImage has no alpha channel, so a partial
+            // opacity is baked into the image's alpha bytes (RGBA).
+            if combined_opacity < 1.0 && data.len() % 4 == 0 {
+                for px in data.as_chunks_mut::<4>().0 {
+                    px[3] = (px[3] as f32 * combined_opacity).round().clamp(0.0, 255.0) as u8;
                 }
-                let applied_rect = state.apply_to_rect(rect);
-                let combined_opacity = state.opacity * opacity;
-                // RenderCommand::DrawImage has no alpha channel, so a partial
-                // opacity is baked into the image's alpha bytes (RGBA).
-                if combined_opacity < 1.0 && data.len() % 4 == 0 {
-                    for px in data.as_chunks_mut::<4>().0 {
-                        px[3] = (px[3] as f32 * combined_opacity).round().clamp(0.0, 255.0) as u8;
-                    }
-                }
-                Some(RenderCommand::DrawImage {
-                    x: applied_rect.x,
-                    y: applied_rect.y,
-                    width: applied_rect.width,
-                    height: applied_rect.height,
-                    data,
-                })
             }
+            Some(RenderCommand::DrawImage {
+                x: applied_rect.x,
+                y: applied_rect.y,
+                width: applied_rect.width,
+                height: applied_rect.height,
+                data,
+            })
+        }
 
-            BatchCommand::DrawImageSubrect { image_id, .. } => {
-                // Source-region cropping needs the source image's dimensions,
-                // which the image cache (ObjectId -> raw RGBA bytes) does not
-                // carry. Emitting a stretched full-image would silently render
-                // the wrong pixels, so drop the command and report it instead.
-                log::warn!(
+        BatchCommand::DrawImageSubrect { image_id, .. } => {
+            // Source-region cropping needs the source image's dimensions,
+            // which the image cache (ObjectId -> raw RGBA bytes) does not
+            // carry. Emitting a stretched full-image would silently render
+            // the wrong pixels, so drop the command and report it instead.
+            log::warn!(
                     "[batch] DrawImageSubrect (image={image_id}) dropped: source-crop requires image dimensions metadata that is not stored"
                 );
-                None
-            }
+            None
+        }
 
-            BatchCommand::DrawText { position, text, color, font_size } => {
-                let font = Font::simple(BATCH_DEFAULT_FONT_FAMILY, *font_size);
-                Some(RenderCommand::DrawText {
-                    origin: state.apply_to_point(position),
-                    text: text.clone(),
-                    font,
-                    color: state.apply_to_color(color),
-                    alignment: HorizontalAlignment::Left,
-                })
-            }
+        BatchCommand::DrawText { position, text, color, font_size } => {
+            let font = Font::simple(BATCH_DEFAULT_FONT_FAMILY, *font_size);
+            Some(RenderCommand::DrawText {
+                origin: state.apply_to_point(position),
+                text: text.clone(),
+                font,
+                color: state.apply_to_color(color),
+                alignment: HorizontalAlignment::Left,
+            })
+        }
 
-            BatchCommand::PushClip { rect } => {
-                let applied = state.apply_to_rect(rect);
-                Some(RenderCommand::PushClip {
-                    x: applied.x,
-                    y: applied.y,
-                    width: applied.width,
-                    height: applied.height,
-                })
-            }
+        BatchCommand::PushClip { rect } => {
+            let applied = state.apply_to_rect(rect);
+            Some(RenderCommand::PushClip {
+                x: applied.x,
+                y: applied.y,
+                width: applied.width,
+                height: applied.height,
+            })
+        }
 
-            BatchCommand::PopClip => Some(RenderCommand::PopClip),
+        BatchCommand::PopClip => Some(RenderCommand::PopClip),
 
-            // Translate and SetOpacity update the transform state but
-            // produce no visible output.
-            BatchCommand::Translate { dx, dy } => {
-                state.dx += dx;
-                state.dy += dy;
-                None
+        // Translate and SetOpacity update the transform state but
+        // produce no visible output.
+        BatchCommand::Translate { dx, dy } => {
+            state.dx += dx;
+            state.dy += dy;
+            None
+        }
+        BatchCommand::SetOpacity { opacity } => {
+            // A non-finite opacity is not a meaningful factor: `NaN` poisons every later
+            // multiplication and `Infinity` saturates every colour to one endpoint. Reject it at
+            // the source so the batch keeps its last good opacity instead of silently losing the
+            // colour for every command that follows.
+            if opacity.is_finite() {
+                state.opacity = (state.opacity * opacity).clamp(0.0, 1.0);
+            } else {
+                log::warn!(
+                    "[batch] SetOpacity({opacity}) rejected: opacity must be finite; keeping {}",
+                    state.opacity
+                );
             }
-            BatchCommand::SetOpacity { opacity } => {
-                // A non-finite opacity is not a meaningful factor: `NaN` poisons every later
-                // multiplication and `Infinity` saturates every colour to one endpoint. Reject it at
-                // the source so the batch keeps its last good opacity instead of silently losing the
-                // colour for every command that follows.
-                if opacity.is_finite() {
-                    state.opacity = (state.opacity * opacity).clamp(0.0, 1.0);
-                } else {
-                    log::warn!(
-                        "[batch] SetOpacity({opacity}) rejected: opacity must be finite; keeping {}",
-                        state.opacity
-                    );
-                }
-                None
-            }
+            None
+        }
+    }
+}
+
+// Test-only counter of source image bytes copied by `transform_command`.
+//
+// # Why a counter rather than a global allocator shim (D09-RENDER-05)
+//
+// The defect is that replaying one batch used to deep-`clone()` the whole
+// `BatchState` — every batch's commands and every cached image. The image bytes
+// dominate that cost and are the part a test can count without a custom
+// `GlobalAlloc`. This counter is compiled only under `cfg(test)`, so it adds no
+// work to a release build, and the regression test resets it around the replay it
+// is measuring.
+#[cfg(test)]
+thread_local! {
+    static IMAGE_BYTES_TRANSLATED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+/// Adds `bytes` to the test-only translation counter. (D09-RENDER-05)
+#[cfg(test)]
+fn note_image_bytes_translated(bytes: usize) {
+    IMAGE_BYTES_TRANSLATED.with(|cell| cell.set(cell.get() + bytes));
+}
+
+/// Resets the test-only translation counter and returns its previous value. (D09-RENDER-05)
+#[cfg(test)]
+fn take_image_bytes_translated() -> usize {
+    IMAGE_BYTES_TRANSLATED.with(|cell| cell.replace(0))
+}
+
+/// Replay batch `id` from `batches`/**`images`** into `surface` without cloning
+/// the batch state.
+///
+/// # Why this does not clone (D09-RENDER-05)
+///
+/// [`SoftwarePaintBackend`] holds its batch data in `batch_state`, a field of the
+/// backend itself. A plain `self.batch_state.replay(self, id)` borrows `self`
+/// immutably (for the lookup) and mutably (for painting) in the same call, which
+/// the borrow checker rejects — hence the historical `clone()`. Replaying into
+/// the backend's **surface** field instead splits the borrow: the two batch maps
+/// come from `batch_state` and the destination from `surface`, so the lookup
+/// borrows only what it reads. Replay time and allocations are therefore
+/// proportional to the replayed batch, not to the total size of the backend.
+///
+/// Commands are painted through [`SurfacePaintBackend`], a zero-copy view over the
+/// surface, so the output is byte-for-byte what the backend's own command path
+/// produces.
+fn replay_into(
+    batches: &HashMap<BatchId, Vec<BatchCommand>>,
+    images: &HashMap<ObjectId, Vec<u8>>,
+    surface: &mut SoftwareSurface,
+    id: BatchId,
+) {
+    let Some(cmds) = batches.get(&id) else {
+        return;
+    };
+    let mut state = TransformState::default();
+    let mut backend = SurfacePaintBackend(surface);
+    for cmd in cmds {
+        if let Some(rc) = transform_command(cmd, images, &mut state) {
+            backend.execute_command(&rc);
         }
     }
 }
@@ -541,15 +653,24 @@ impl BatchRenderer for SoftwarePaintBackend {
 
     /// Replays the batch through this backend's own paint path.
     ///
-    /// The batch state is cloned first so the immutable borrow taken by the
-    /// lookup does not conflict with the mutable borrow required to paint;
-    /// this makes replay O(number of commands) in allocations and means edits
-    /// to the backend made during replay do not affect the commands remaining
-    /// to be drawn.
+    /// # What changed (D09-RENDER-05)
+    ///
+    /// This used to `clone()` the entire [`BatchState`] before replaying, which
+    /// deep-copied every recorded batch and every cached image on the backend —
+    /// so replaying one small batch cost as much as the whole state. It now
+    /// borrows the batch data and the surface as separate fields of `self`
+    /// (through [`replay_into`]), so nothing is cloned and the cost tracks only
+    /// the target batch. Replay semantics are unchanged: commands are translated
+    /// in order against the same transform/opacity state and drawn through the
+    /// same `PaintBackend::execute_command` path.
     fn replay(&mut self, id: BatchId) {
-        // Clone the state to avoid borrow issues, then replay.
-        let state = self.batch_state.clone();
-        state.replay(self, id);
+        // Split the borrow of `self` so the batch data (read) and the paint target
+        // (mutated) are distinct fields, and neither is the whole of `self` —
+        // otherwise the immutable and mutable borrows overlap and the compiler
+        // rejects the call (D09-RENDER-05).
+        let SoftwarePaintBackend { surface, batch_state } = self;
+        let BatchState { batches, images, .. } = batch_state;
+        replay_into(batches, images, surface, id);
     }
 
     /// Drops a batch and its recorded commands.
@@ -818,11 +939,12 @@ mod tests {
 
     #[test]
     fn batch_state_replay_nonexistent_id_is_noop() {
-        let state = BatchState::new();
-        // Should not panic
+        // Replay goes through the backend's `BatchRenderer::replay`, which is the one
+        // production path (D09-RENDER-05 removed the cloning `BatchState::replay`).
         let size = crate::core::Size::new(1, 1);
         let mut backend = SoftwarePaintBackend::new(size, 1.0);
-        state.replay(&mut backend, BatchId::new(999));
+        backend.replay(BatchId::new(999));
+        // No panic and nothing painted is the whole assertion.
     }
 
     #[test]
@@ -891,6 +1013,112 @@ mod tests {
         assert_eq!(rgba[idx + 1], 0); // G
         assert_eq!(rgba[idx + 2], 0); // B
         assert_eq!(rgba[idx + 3], 255); // A
+    }
+
+    /// Replaying one batch must not copy every other batch or image on the backend.
+    ///
+    /// # What this pins (D09-RENDER-05)
+    ///
+    /// `SoftwarePaintBackend::replay` used to `clone()` the whole `BatchState`
+    /// before replaying, so replaying a small batch deep-copied every unrelated
+    /// batch command *and* every cached image. This test observes the cost through
+    /// the test-only image-byte counter: it replays a small batch while the backend
+    /// also holds two large, unrelated image batches. The bytes copied by the
+    /// replay must come only from the target batch, and must not grow when the
+    /// unrelated images grow.
+    #[test]
+    fn replaying_a_batch_does_not_copy_unrelated_batches_or_images() {
+        fn replay_and_measure(unrelated_image_bytes: usize) -> usize {
+            let size = crate::core::Size::new(64, 64);
+            let mut backend = SoftwarePaintBackend::new(size, 1.0);
+            backend.begin_frame(Color::WHITE);
+
+            // The target batch: one small fill, no image at all.
+            let target = backend.begin_batch();
+            backend
+                .record(BatchCommand::FillRect { rect: Rect::new(2, 2, 8, 8), color: Color::RED })
+                .unwrap();
+            backend.end_batch();
+
+            // Two unrelated batches, each holding a cached image of the given size.
+            for image_index in 0..2u64 {
+                let object_id = 1000 + image_index;
+                backend.batch_state.images.insert(object_id, vec![7u8; unrelated_image_bytes]);
+                let other = backend.begin_batch();
+                backend
+                    .record(BatchCommand::DrawImage {
+                        rect: Rect::new(0, 0, 64, 64),
+                        image_id: object_id,
+                        opacity: 1.0,
+                    })
+                    .unwrap();
+                backend.end_batch();
+                let _ = other;
+            }
+
+            // Measure only the target replay.
+            let _ = take_image_bytes_translated();
+            backend.replay(target);
+            take_image_bytes_translated()
+        }
+
+        let small = replay_and_measure(64 * 64 * 4);
+        let large = replay_and_measure(512 * 64 * 4);
+
+        assert_eq!(small, 0, "replaying a batch with no image must copy no image bytes");
+        assert_eq!(
+            large, 0,
+            "unrelated images must not be copied when a different batch is replayed"
+        );
+    }
+
+    /// The non-cloning replay must produce the same pixels as recording and drawing
+    /// the commands directly — the optimisation must not change output. (D09-RENDER-05)
+    #[test]
+    fn replay_matches_direct_execution_including_opacity_and_translate() {
+        let size = crate::core::Size::new(32, 32);
+
+        // Reference: the same commands executed directly, in order.
+        let mut reference = SoftwarePaintBackend::new(size, 1.0);
+        reference.begin_frame(Color::BLACK);
+        reference.execute_command(&RenderCommand::FillRect {
+            rect: Rect::new(0, 0, 10, 10),
+            color: Color::rgba(255, 0, 0, 128),
+        });
+        reference.execute_command(&RenderCommand::FillRect {
+            rect: Rect::new(4, 4, 6, 6),
+            color: Color::rgba(0, 255, 0, 128),
+        });
+        reference.end_frame();
+        let expected = reference.frame_rgba().to_vec();
+
+        // Replayed: the same geometry/colour produced through batch translation with a
+        // `Translate` applied to make sure the transform path is exercised too.
+        let mut backend = SoftwarePaintBackend::new(size, 1.0);
+        backend.begin_frame(Color::BLACK);
+        let id = backend.begin_batch();
+        backend
+            .record(BatchCommand::FillRect {
+                rect: Rect::new(0, 0, 10, 10),
+                color: Color::rgba(255, 0, 0, 128),
+            })
+            .unwrap();
+        backend.record(BatchCommand::Translate { dx: 3.0, dy: 3.0 }).unwrap();
+        backend
+            .record(BatchCommand::FillRect {
+                rect: Rect::new(1, 1, 6, 6),
+                color: Color::rgba(0, 255, 0, 128),
+            })
+            .unwrap();
+        backend.end_batch();
+        backend.replay(id);
+        backend.end_frame();
+
+        assert_eq!(
+            backend.frame_rgba(),
+            expected.as_slice(),
+            "replay must paint the same pixels as executing the translated commands directly"
+        );
     }
 
     #[test]

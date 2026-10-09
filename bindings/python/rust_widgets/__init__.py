@@ -55,6 +55,70 @@ RW_VALUE_INT = 2
 RW_VALUE_UINT = 3
 RW_VALUE_FLOAT = 4
 RW_VALUE_STRING = 5
+
+
+class _UnsignedArgumentValidator:
+    """A ``ctypes.CDLL`` proxy that rejects negative values for unsigned sizes.
+
+    The C ABI takes control geometry as *unsigned* integers, but ctypes silently
+    wraps a negative Python ``int`` modulo 2**32 (``-1`` becomes 4294967295), so
+    a caller's negative width reached the library as the largest possible width
+    with no error (D09-JNI-02). This proxy checks the trailing ``width`` / ``height``
+    of every geometry call — which the binding declares as two ``c_uint``
+    ``argtypes`` — before forwarding to the real function, and raises
+    ``ValueError`` instead of passing an impossible size.
+
+    It is intentionally transparent for everything else: an unknown attribute or
+    a function whose ``argtypes`` do not end in the ``(…, c_uint, c_uint)`` shape
+    is handed through unchanged.
+    """
+
+    def __init__(self, lib):  # type: ignore[no-untyped-def]
+        self._lib = lib
+        self._cache: dict = {}
+
+    def __getattr__(self, name):  # type: ignore[no-untyped-def]
+        target = getattr(self._lib, name)
+        if name in self._cache:
+            return self._cache[name]
+        argtypes = getattr(target, "argtypes", None)
+        if not argtypes or len(argtypes) < 2:
+            return target
+        # Only the geometry tail `(…, c_uint, c_uint)` is validated; the function
+        # still returns its own restype unchanged.
+        if argtypes[-1] is not _C_UINT or argtypes[-2] is not _C_UINT:
+            return target
+        wrapper = _SizeCheckedCall(target)
+        self._cache[name] = wrapper
+        return wrapper
+
+
+class _SizeCheckedCall:
+    """Callable wrapper around a ctypes function whose last two args are sizes."""
+
+    def __init__(self, target):  # type: ignore[no-untyped-def]
+        self._target = target
+
+    def __call__(self, *args):  # type: ignore[no-untyped-def]
+        if len(args) >= 2:
+            for label, value in (("width", args[-2]), ("height", args[-1])):
+                if isinstance(value, bool):
+                    continue
+                if isinstance(value, int) and value < 0:
+                    raise ValueError(
+                        f"{label} must be non-negative, got {value}; a negative value would "
+                        "wrap to a huge unsigned size at the C ABI boundary"
+                    )
+        return self._target(*args)
+
+    def __getattr__(self, name):  # type: ignore[no-untyped-def]
+        return getattr(self._target, name)
+
+
+# The exact ctypes unsigned type the geometry ``argtypes`` use, resolved once so
+# the proxy can recognise the tail without importing ctypes at class-definition
+# time. `_C_UINT` is set after `ctypes` is imported below.
+_C_UINT = ctypes.c_uint
 # Colour and rectangle properties travel as their CSS-style string form
 # (`#RRGGBBAA` and `x,y,w,h`) in the string slot, with a distinct kind so a
 # caller can tell one from free text. Every binding must accept these and free
@@ -232,6 +296,7 @@ class RustWidgets:
         extra_dirs: Optional[list[str | Path]] = None,
     ):
         self._lib: Optional[ctypes.CDLL] = None
+        self._validated_lib: Optional[_UnsignedArgumentValidator] = None
         self._lib_path: Optional[str] = None
         if lib_path is not None:
             self._lib_path = str(lib_path)
@@ -243,7 +308,16 @@ class RustWidgets:
 
     @property
     def lib(self) -> ctypes.CDLL:
-        """The loaded ``ctypes.CDLL`` instance (lazy)."""
+        """The loaded ``ctypes.CDLL`` instance (lazy), with unsigned sizes validated.
+
+        Returns a thin proxy (not the bare ``CDLL``) so that every call whose
+        declared ``argtypes`` end in two ``c_uint`` — the ``(…, x, y, width,
+        height)`` geometry tail shared by every ``rw_create_*`` — has those two
+        values checked to be non-negative first. ctypes would otherwise wrap a
+        negative ``int`` modulo 2**32, so ``create_button(..., -1, -1)`` asked
+        the library for a 4294967295×4294967295 control (D09-JNI-02). Apps that
+        need the raw ``CDLL`` can read ``self._lib``.
+        """
         if self._lib is None:
             path = (
                 self._lib_path
@@ -253,7 +327,8 @@ class RustWidgets:
             self._lib = ctypes.cdll.LoadLibrary(path)
             self._lib_path = path
             self._setup_argtypes()
-        return self._lib
+            self._validated_lib = _UnsignedArgumentValidator(self._lib)
+        return self._validated_lib  # type: ignore[return-value]
 
     def _setup_argtypes(self) -> None:
         """Declare argument and return types on all C functions."""
@@ -418,7 +493,7 @@ class RustWidgets:
         L.rw_hide_widget.restype = None
 
         L.rw_destroy_widget.argtypes = [c_uint64]
-        L.rw_destroy_widget.restype = None
+        L.rw_destroy_widget.restype = c_bool
 
         # ------------------------------------------------------------------ #
         # Generic (name-based) creation and property access                  #
@@ -894,9 +969,20 @@ class RustWidgets:
 
     @staticmethod
     def _encode(text: Optional[str]) -> Optional[bytes]:
-        """Encode a Python string to a null-terminated utf-8 byte string."""
+        """Encode a Python string to a null-terminated utf-8 byte string.
+
+        A string containing U+0000 is rejected rather than silently truncated:
+        the C ABI reads these arguments with `CStr::from_ptr`, which stops at the
+        first NUL, so an embedded NUL made the library see only the prefix while
+        the caller believed the whole value was passed (D09-JNI-03).
+        """
         if text is None:
             return None
+        if "\x00" in text:
+            raise ValueError(
+                "string contains a NUL (U+0000) character, which the C string ABI cannot "
+                "represent; the value would be silently truncated at the NUL"
+            )
         return text.encode("utf-8")
 
     @staticmethod
@@ -1129,9 +1215,16 @@ class RustWidgets:
         """Hide a widget."""
         self.lib.rw_hide_widget(widget_id)
 
-    def destroy_widget(self, widget_id: int) -> None:
-        """Destroy ``widget_id`` and release every resource it owns."""
-        self.lib.rw_destroy_widget(widget_id)
+    def destroy_widget(self, widget_id: int) -> bool:
+        """Destroy ``widget_id``, returning whether a live widget was destroyed.
+
+        The C ABI's ``rw_destroy_widget`` returns a bool that distinguishes
+        "a widget existed and was destroyed" from "the id was unknown or already
+        destroyed". The wrapper used to declare the return as ``None`` and drop
+        that value, so a caller could not tell a real teardown from a no-op on a
+        stale id (D09-PY-01). It is now propagated unchanged.
+        """
+        return bool(self.lib.rw_destroy_widget(widget_id))
 
     # ------------------------------------------------------------------ #
     # Generic (name-based) creation and property access                   #
@@ -1166,11 +1259,15 @@ class RustWidgets:
 
     def widget_kind_names(self) -> list[str]:
         """Every control name the library can create."""
-        return self._read_name_list(self.lib.rw_widget_kind_names, b"")
+        # `rw_widget_kind_names(out, cap)` takes no leading argument. Passing an
+        # empty prefix must therefore be **no** extra argument, not an empty bytes
+        # value: the previous `b""` became a third positional argument and every
+        # call raised `ctypes.ArgumentError` before reaching the library (D08-B-03).
+        return self._read_name_list(self.lib.rw_widget_kind_names, ())
 
     def widget_property_names(self, widget_id: int) -> list[str]:
         """The property names ``widget_id`` publishes."""
-        return self._read_name_list(self.lib.rw_widget_property_names, widget_id)
+        return self._read_name_list(self.lib.rw_widget_property_names, (widget_id,))
 
     def get_widget_property(self, widget_id: int, name: str):
         """Read a property by name; ``None`` when the widget or name is unknown.
@@ -1239,7 +1336,9 @@ class RustWidgets:
 
     def theme_names(self) -> list[str]:
         """Names of the registered themes."""
-        return self._read_name_list(self.lib.rw_theme_names, b"")
+        # `rw_theme_names(out, cap)`: no leading argument, as with
+        # `widget_kind_names` (D08-B-03).
+        return self._read_name_list(self.lib.rw_theme_names, ())
 
     def set_high_contrast(self, enabled: bool) -> None:
         """Enable or disable the high-contrast override for every control."""
@@ -1319,8 +1418,7 @@ class RustWidgets:
         """
         tokens = self._read_name_list(
             self.lib.rw_widget_property_tokens,
-            widget_id,
-            self._encode(name),
+            (widget_id, self._encode(name)),
         )
         return tokens
 
@@ -1374,23 +1472,27 @@ class RustWidgets:
         """How many children ``parent``'s layout holds, without applying it."""
         return int(self.lib.rw_widget_layout_child_count(parent))
 
-    def _read_name_list(self, func, first_arg, second_arg=None) -> list[str]:
-        """Calls a ``(out, cap) -> required`` enumerator and splits the result.
+    def _read_name_list(self, func, prefix) -> list[str]:
+        """Calls a ``(*prefix, out, cap) -> required`` enumerator and splits the result.
 
         The ABI always reports the full byte length, so one size query followed
         by one read is enough; a name list that grew between the two calls would
         simply be truncated on the second, which the next call would correct.
 
-        ``second_arg`` carries the extra leading argument the two-argument
-        enumerators need (``rw_widget_property_tokens`` takes the property name
-        before ``out``/``cap``); the one-argument callers leave it ``None``.
+        ``prefix`` carries the enumerator's own leading arguments, in order, as a
+        tuple — ``()`` for the two-argument enumerators (`rw_widget_kind_names`,
+        `rw_theme_names`), ``(widget_id,)`` or ``(widget_id, name)`` for the ones
+        that take an address. Passing the prefix as a tuple is what keeps a
+        zero-argument case from becoming a spurious extra positional argument
+        (D08-B-03).
         """
-        prefix = (first_arg,) if second_arg is None else (first_arg, second_arg)
         required = func(*prefix, None, 0)
         if required == 0:
             return []
         buffer = ctypes.create_string_buffer(required + 1)
         func(*prefix, buffer, required + 1)
+        # `buffer.value` stops at the NUL, so the terminator the ABI writes after
+        # the payload is never folded into the last name.
         return buffer.value.decode("utf-8").split()
 
     def _read_string(self, func, widget_id, index) -> str:
@@ -1799,8 +1901,13 @@ class RustWidgets:
     def set_render_aa_samples_per_axis(self, samples: int) -> int:
         """Set anti-aliasing samples per axis (clamped to [1, 8]).
 
+        A negative `samples` is rejected rather than wrapped to a huge unsigned
+        value and then clamped to the maximum 8 (D09-JNI-02).
+
         Returns the clamped value.
         """
+        if samples < 0:
+            raise ValueError(f"samples must be non-negative, got {samples}")
         return self.lib.rw_set_render_aa_samples_per_axis(samples)
 
     def get_render_aa_samples_per_axis(self) -> int:
@@ -1810,8 +1917,13 @@ class RustWidgets:
     def set_embedded_target_fps(self, fps: int) -> int:
         """Set the embedded engine target FPS (clamped to [1, 240]).
 
+        A negative `fps` is rejected rather than wrapped to a huge unsigned value
+        and then clamped to the maximum 240 (D09-JNI-02).
+
         Returns the clamped value.
         """
+        if fps < 0:
+            raise ValueError(f"fps must be non-negative, got {fps}")
         return self.lib.rw_set_embedded_target_fps(fps)
 
     def get_embedded_target_fps(self) -> int:

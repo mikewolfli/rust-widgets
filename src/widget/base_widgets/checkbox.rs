@@ -15,7 +15,9 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::dimensions;
-use crate::widget::metrics::{estimate_line_height, estimate_text_width, ControlMetrics};
+use crate::widget::metrics::{
+    effective_font, estimate_line_height, estimate_text_width, ControlMetrics,
+};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -138,17 +140,25 @@ impl CheckBox {
 
     fn hit_area(&self) -> Rect {
         let rect = self.geometry();
-        // The renderer's line height for the default font is one em, which is what
+        // The effective font — the resolved theme/caller font, not the default (D09-STYLE-01).
+        // The hit region must measure the label with the *same* font the paint uses, so the
+        // visible tail of a wide label stays clickable.
+        let font = effective_font(self.style());
+        // The renderer's line height for the effective font is one em, which is what
         // `measure_text` returns; using the font size directly keeps this derivation identical to
         // the draw path's without needing a context here.
-        let line_height = Font::default().size().max(1.0) as u32;
+        let line_height = font.size().max(1.0) as u32;
         let line_y = rect.y + ((rect.height as i32 - line_height as i32) / 2).max(0);
         let indicator = self.indicator_rect(line_height, line_y);
         let contents = if self.text.is_empty() {
             indicator
         } else {
-            // Indicator through the end of the label, on the indicator's own row.
-            let label_width = self.text.chars().count() as u32 * (line_height * 3 / 5).max(1);
+            // Indicator through the end of the label, on the indicator's own row. The label width
+            // comes from the **same** shared measurement the `implicit_size` and the painter's ruler
+            // use (D09-CTRL-02): the old `chars().count() * 3/5 em` estimate under-counts wide glyphs
+            // (`W`, CJK), so the visible label could extend past this region and its tail was not
+            // clickable.
+            let label_width = estimate_text_width(&self.text, font, 1.0);
             Rect::new(
                 indicator.x,
                 indicator.y,
@@ -171,15 +181,17 @@ impl CheckBox {
     /// beside it, which named the *indicator* constant as a literal — the very copy that would stop
     /// matching once `INDICATOR_SIZE` changed.
     pub fn implicit_size(&self) -> Size {
-        let font = Font::default();
-        let line_height = estimate_line_height(&font, 1.0);
+        // Measure with the effective font, so the intrinsic size grows with the theme body font
+        // and the user's text scale exactly as the painted label does (D09-STYLE-01).
+        let font = effective_font(self.style());
+        let line_height = estimate_line_height(font, 1.0);
         let gap = self.label_gap() as u32;
         let indicator = INDICATOR_SIZE.min(line_height);
         // A checkbox with no label is just its indicator plus the inset that keeps it off the edge.
         let content_width = if self.text.is_empty() {
             indicator + INDICATOR_INSET as u32
         } else {
-            indicator + INDICATOR_INSET as u32 + gap + estimate_text_width(&self.text, &font, 1.0)
+            indicator + INDICATOR_INSET as u32 + gap + estimate_text_width(&self.text, font, 1.0)
         };
         let floor = Size::new(
             dimensions::TOUCH_TARGET_MIN.min(content_width.max(dimensions::CHECKBOX_BOX)),
@@ -514,8 +526,8 @@ impl Draw for CheckBox {
         // layout to the next. The line box is the honest reference — it is what the label
         // beside the box is aligned to, and it is measured rather than assumed, so a larger
         // theme font grows the indicator with the text it accompanies.
-        let font = Font::default();
-        let line = context.text_line(rect, &font);
+        let font = effective_font(style);
+        let line = context.text_line(rect, font);
         // The same derivation the hit test uses, so the box that is drawn is the box that responds.
         let checkbox_rect = self.indicator_rect(line.height, line.y);
 
@@ -622,7 +634,7 @@ impl Draw for CheckBox {
                     line.height,
                 ),
                 &self.text,
-                &font,
+                font,
                 text_color,
                 HorizontalAlignment::Left,
             );
@@ -845,6 +857,68 @@ mod tests {
             CheckState::Unchecked,
             "a press on the empty part of the row must not toggle the checkbox"
         );
+    }
+
+    // ── D09-CTRL-02: the hit area uses the same text measurement as painting ──
+
+    /// A press on the **tail** of a wide-glyph label must reach the checkbox.
+    ///
+    /// # The defect this pins
+    ///
+    /// `hit_area()` estimated the label as `chars().count() * 3/5 em`. Wide glyphs (`W`, CJK)
+    /// advance more than that, so the visible label extended past the estimated region and a click on
+    /// its right-hand glyphs landed outside the target. The region is now measured with the shared
+    /// `estimate_text_width`, the same ruler the painter uses.
+    #[test]
+    fn a_press_on_the_tail_of_a_wide_label_reaches_the_checkbox() {
+        let mut cb = CheckBox::new(Rect::new(0, 0, 400, 30));
+        cb.set_text("WWWWWWWW".to_string());
+
+        let area = cb.hit_area();
+        // The measured label must be wider than the old character-count estimate would have allowed,
+        // so the region really covers the wide glyphs.
+        let old_estimate = {
+            let line_height = Font::default().size().max(1.0) as u32;
+            "WWWWWWWW".chars().count() as u32 * (line_height * 3 / 5).max(1)
+        };
+        assert!(
+            area.width > old_estimate,
+            "the measured label must exceed the old char-count estimate (was {old_estimate}, region {})",
+            area.width
+        );
+
+        // A press just inside the region's right edge (the tail of the visible label) must toggle.
+        let tail = Point::new(area.x + area.width as i32 - 1, area.y + area.height as i32 / 2);
+        cb.handle_event(&Event::MousePress { pos: tail, button: 1, modifiers: 0 });
+        assert_eq!(
+            cb.state(),
+            CheckState::Checked,
+            "the tail of a wide label must be inside the hit area"
+        );
+    }
+
+    /// `i` and `W` must not be measured as the same width, and both must stay reachable.
+    #[test]
+    fn narrow_and_wide_labels_are_measured_by_the_shared_ruler() {
+        let mut narrow = CheckBox::new(Rect::new(0, 0, 400, 30));
+        narrow.set_text("iiii".to_string());
+        let mut wide = CheckBox::new(Rect::new(0, 0, 400, 30));
+        wide.set_text("WWWW".to_string());
+
+        assert!(
+            narrow.hit_area().width < wide.hit_area().width,
+            "`W` advances more than `i`, so a wide label's target must be wider: {} vs {}",
+            narrow.hit_area().width,
+            wide.hit_area().width
+        );
+
+        // Each label's own tail is clickable.
+        let tail = Point::new(
+            wide.hit_area().x + wide.hit_area().width as i32 - 1,
+            wide.hit_area().y + wide.hit_area().height as i32 / 2,
+        );
+        wide.handle_event(&Event::MousePress { pos: tail, button: 1, modifiers: 0 });
+        assert_eq!(wide.state(), CheckState::Checked, "the wide label's tail must be clickable");
     }
 
     #[test]
@@ -1250,5 +1324,121 @@ mod tests {
         // Unchecking hands the report back to the momentary states.
         cb.set_state(CheckState::Unchecked);
         assert_eq!(cb.widget_state(), WidgetState::Hover);
+    }
+
+    // ── D09-STYLE-01: the checkbox consumes the resolved theme/caller font ──
+
+    /// A caller-authored `style.font` must drive both the measured hint and the painted label.
+    ///
+    /// # The defect this pins
+    ///
+    /// `implicit_size()` and `draw()` both built a `Font::default()` by hand, so a checkbox
+    /// beside a themed button rendered its own label in the default face at the default size no
+    /// matter what the theme resolved or the user scaled. The two now read
+    /// `metrics::effective_font`, which prefers `style.font`.
+    #[test]
+    fn a_custom_font_grows_the_checkbox_hint_and_the_drawn_label() {
+        let text = "Label";
+        let baseline = CheckBox::new(Rect::new(0, 0, 200, 30));
+        let mut baseline = baseline;
+        baseline.set_text(text.to_string());
+        let base_hint = baseline.implicit_size();
+        let base_ink = label_ink_width(&mut baseline, text);
+
+        let mut big = CheckBox::new(Rect::new(0, 0, 200, 30));
+        big.set_text(text.to_string());
+        // A face twice the default size: `effective_font` must pick it up in both paths.
+        big.set_style(crate::style::WidgetStyle::default().with_font(Font::simple("Test", 28.0)));
+
+        let big_hint = big.implicit_size();
+        let big_ink = label_ink_width(&mut big, text);
+
+        assert_eq!(
+            big.style().font.as_ref().map(Font::size),
+            Some(28.0),
+            "the style carries the font"
+        );
+        assert!(
+            big_hint.width > base_hint.width,
+            "a larger font must widen the hint: {} vs {}",
+            big_hint.width,
+            base_hint.width
+        );
+        assert!(
+            big_hint.height > base_hint.height,
+            "a larger font must raise the hint: {} vs {}",
+            big_hint.height,
+            base_hint.height
+        );
+        assert!(
+            big_ink > base_ink,
+            "a larger font must widen the painted label ink: {big_ink} vs {base_ink}"
+        );
+    }
+
+    /// A text scale above 1.0, resolved through the theme, must widen the hint and the label.
+    ///
+    /// This exercises the real causal chain — environment provider → theme body font →
+    /// `style.font` → `effective_font` — rather than only setting a font by hand, so it fails if
+    /// any link (including the theme scale) is unplugged.
+    #[test]
+    fn a_theme_text_scale_above_one_grows_the_checkbox_hint() {
+        use crate::style::environment::{
+            install_environment, uninstall_environment, EnvironmentProvider,
+        };
+        use crate::style::MotionPreference;
+
+        struct Scaled(f32);
+        impl EnvironmentProvider for Scaled {
+            fn text_scale(&self) -> f32 {
+                self.0
+            }
+            fn motion_preference(&self) -> MotionPreference {
+                MotionPreference::NoPreference
+            }
+        }
+
+        let _guard = crate::style::theme_test_guard();
+        let previous = install_environment(Box::new(Scaled(1.0)));
+        {
+            let mut manager = crate::theme::global_theme_manager();
+            manager.register_theme(crate::theme::Theme::default());
+            manager.set_appearance(crate::theme::AppearanceMode::Light);
+        }
+        let mut at_one = CheckBox::new(Rect::new(0, 0, 200, 30));
+        at_one.set_text("Scaled label".to_string());
+        crate::theme::apply_active_theme(&mut at_one);
+        let hint_one = at_one.implicit_size();
+        let font_one = at_one.style().font.as_ref().map(Font::size).unwrap_or(0.0);
+
+        // The device now asks for 150% text.
+        install_environment(Box::new(Scaled(1.5)));
+        let mut at_one_and_a_half = CheckBox::new(Rect::new(0, 0, 200, 30));
+        at_one_and_a_half.set_text("Scaled label".to_string());
+        crate::theme::apply_active_theme(&mut at_one_and_a_half);
+        let hint_large = at_one_and_a_half.implicit_size();
+        let font_large = at_one_and_a_half.style().font.as_ref().map(Font::size).unwrap_or(0.0);
+
+        let _ = uninstall_environment();
+        if let Some(previous) = previous {
+            install_environment(previous);
+        }
+
+        assert!(
+            font_large > font_one,
+            "the theme body font must scale with the device text preference: {font_large} vs {font_one}"
+        );
+        assert!(
+            hint_large.width > hint_one.width,
+            "a text scale above 1.0 must widen the checkbox hint: {} vs {}",
+            hint_large.width,
+            hint_one.width
+        );
+    }
+
+    /// The ink width of the label a checkbox paints, read back from an SVG render.
+    fn label_ink_width(cb: &mut CheckBox, _text: &str) -> i32 {
+        let svg = crate::widget::svg::render_to_svg(cb);
+        crate::widget::svg::text_ink_box(&svg).map(|(x, _, right, _)| right - x).unwrap_or(0)
     }
 }

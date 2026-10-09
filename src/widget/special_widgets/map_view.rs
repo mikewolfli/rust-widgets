@@ -3,7 +3,7 @@
 
 //! MapView widget.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -12,6 +12,7 @@ use crate::widget::capability::coercion::expect_f32;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -546,7 +547,7 @@ impl Draw for MapView {
                 context.draw_text_fitted(
                     Rect::new(label_left, sy as i32 - half, label_width, 14),
                     &marker.label,
-                    &Font::default(),
+                    effective_font(&style),
                     ink,
                     HorizontalAlignment::Left,
                 );
@@ -556,7 +557,7 @@ impl Draw for MapView {
         context.draw_text_fitted(
             Rect::new(rect.x + 8, rect.y + 4, rect.width.saturating_sub(16), 14),
             &format!("Center ({:.1}, {:.1})  Zoom {:.2}x", self.center_x, self.center_y, self.zoom),
-            &Font::default(),
+            effective_font(&style),
             ink,
             HorizontalAlignment::Left,
         );

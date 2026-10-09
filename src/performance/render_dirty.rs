@@ -43,15 +43,30 @@ pub fn render_dirty_regions(
     ctx: &mut crate::render::RenderContext,
     mut render_all: impl FnMut(&mut crate::render::RenderContext),
 ) {
-    // 1. Merge overlapping regions
+    // 1. Bound the work *before* merging (D09-RENDER-01).
+    //
+    // `merge` restarts its scan after each union, so its cost grows with the square of the
+    // region count, and the per-region loop below would issue up to one full widget-tree
+    // traversal per region. A tracker holding more regions than its `max_regions` is precisely
+    // the high-cardinality case both of those are worst at, so it is answered with a single
+    // repaint over the bounding rectangle of **all** the damage — one traversal, and every
+    // damaged pixel still covered, because a bounding rectangle by construction contains every
+    // region. This is deliberately *not* `optimize()`: that would truncate the region list and
+    // leave the dropped areas stale (see `DirtyRegionTracker::over_capacity`).
+    if tracker.over_capacity() {
+        paint_bounding_rect(tracker, ctx, &mut render_all);
+        return;
+    }
+
+    // 2. Merge overlapping regions
     tracker.merge();
 
-    // 2. If no dirty regions, skip
+    // 3. If no dirty regions, skip
     if tracker.is_empty() {
         return;
     }
 
-    // 3. Decide by covered *area*, not by region count. See
+    // 4. Decide by covered *area*, not by region count. See
     //    `FULL_REPAINT_AREA_RATIO` for why the count was the wrong measure.
     let frame = ctx.size();
     let frame_area = u64::from(frame.width) * u64::from(frame.height);
@@ -68,19 +83,33 @@ pub fn render_dirty_regions(
         frame_area == 0 || (covered as f32) >= (frame_area as f32) * FULL_REPAINT_AREA_RATIO;
 
     if too_large {
-        if let Some(bounding) = tracker.get_bounding_rect() {
-            ctx.push_clip(bounding.x, bounding.y, bounding.width, bounding.height);
-            render_all(ctx);
-            ctx.pop_clip();
-        }
-        tracker.clear();
+        paint_bounding_rect(tracker, ctx, &mut render_all);
         return;
     }
 
-    // 4. Otherwise, redraw each dirty region separately
+    // 5. Otherwise, redraw each dirty region separately
     let regions: Vec<Rect> = tracker.regions().iter().map(|r| r.rect).collect();
     for rect in regions {
         ctx.push_clip(rect.x, rect.y, rect.width, rect.height);
+        render_all(ctx);
+        ctx.pop_clip();
+    }
+    tracker.clear();
+}
+
+/// Repaints once, clipped to the bounding rectangle of every tracked region, then clears.
+///
+/// The single-pass answer for damage that is too large or too scattered to region: one widget
+/// traversal under one clip that still covers all the damage. A no-op when nothing is tracked
+/// (the bounding rectangle is `None`), which keeps the empty case consistent with the per-region
+/// path. (D09-RENDER-01)
+fn paint_bounding_rect(
+    tracker: &mut DirtyRegionTracker,
+    ctx: &mut crate::render::RenderContext,
+    render_all: &mut impl FnMut(&mut crate::render::RenderContext),
+) {
+    if let Some(bounding) = tracker.get_bounding_rect() {
+        ctx.push_clip(bounding.x, bounding.y, bounding.width, bounding.height);
         render_all(ctx);
         ctx.pop_clip();
     }
@@ -215,5 +244,107 @@ mod tests {
             regions.len(),
             "forty regions covering 1000 px of a 1_000_000 px frame must not fall back"
         );
+    }
+
+    /// Over the tracker's capacity the paint collapses to a single covering pass, and no damage
+    /// is dropped. (D09-RENDER-01)
+    ///
+    /// # Why this pins the *bound* and not just the count
+    ///
+    /// The defect was that `max_regions` only took effect in `optimize()`, which the runtime
+    /// never called, so a high-cardinality frame did up to one full widget-tree traversal per
+    /// region — hundreds of traversals for hundreds of tiny rects. The assertion is that the
+    /// number of paint passes is bounded (one), regardless of how many regions arrived.
+    #[test]
+    fn high_cardinality_damage_collapses_to_a_bounded_number_of_passes() {
+        // Well over the default `max_regions` (100).
+        let regions: Vec<Rect> = (0..500).map(|i| Rect::new(i, 0, 2, 2)).collect();
+        let paints = paints_for(&regions, Size::new(4000, 4000));
+        assert_eq!(
+            paints, 1,
+            "more regions than the tracker's capacity must paint once, not once per region"
+        );
+    }
+
+    /// A tracker under capacity still regions, so the bound is a threshold and not a blanket
+    /// "always one pass". (D09-RENDER-01)
+    #[test]
+    fn at_capacity_still_regions_separately() {
+        // Exactly the default capacity: `over_capacity` is `>`, so this stays on the per-region
+        // path and the count is preserved.
+        let regions: Vec<Rect> = (0..100).map(|i| Rect::new(i * 10, 0, 2, 2)).collect();
+        assert_eq!(paints_for(&regions, Size::new(4000, 4000)), 100);
+    }
+
+    /// High-cardinality damage must paint every damaged pixel — the bounded path covers all the
+    /// damage, it does not drop any. (D09-RENDER-01)
+    #[test]
+    fn high_cardinality_damage_paints_every_damaged_pixel() {
+        let frame = Size::new(64, 64);
+        let clear = Color::rgb(0, 0, 0);
+        let ink = Color::rgb(255, 255, 255);
+
+        // The damage is 300 single-pixel regions scattered across the frame — over capacity, and
+        // spread wider than any single row, so covering them in one pass requires a bounding
+        // rectangle rather than a clever clip.
+        let damaged: Vec<Rect> = (0..300)
+            .map(|i| {
+                let x = i % 60;
+                let y = (i / 60) * 4;
+                Rect::new(x, y, 1, 1)
+            })
+            .collect();
+
+        // The bounding rectangle of the damage: what the single covering pass is clipped to.
+        let mut bounding = damaged[0];
+        for rect in &damaged[1..] {
+            bounding = bounding.union(rect);
+        }
+
+        // Reference: an unclipped paint of the ink, then read only inside the bounding rect.
+        let mut reference = SoftwarePaintBackend::new(frame, 1.0);
+        reference.begin_frame(clear);
+        let mut ref_ctx = RenderContext::new(&mut reference);
+        ref_ctx.fill_rect(bounding, ink);
+        drop(ref_ctx);
+        reference.end_frame();
+        let expected = reference.frame_rgba().to_vec();
+
+        // Under the capacity-bounded path: seed a black frame, then render the damage.
+        let mut backend = SoftwarePaintBackend::new(frame, 1.0);
+        backend.begin_frame(clear);
+        let mut tracker = DirtyRegionTracker::new();
+        for rect in &damaged {
+            tracker.add(*rect);
+        }
+        let mut painted = 0usize;
+        {
+            let mut ctx = RenderContext::new(&mut backend);
+            render_dirty_regions(&mut tracker, &mut ctx, |ctx| {
+                painted += 1;
+                // The closure is what a widget would do: paint its area.
+                ctx.fill_rect(Rect::new(0, 0, frame.width, frame.height), ink);
+            });
+        }
+        backend.end_frame();
+
+        assert_eq!(painted, 1, "the bounded path paints once");
+        assert_eq!(
+            backend.frame_rgba(),
+            expected.as_slice(),
+            "every pixel inside the covering clip must match a full repaint: damage must not be dropped"
+        );
+        // And, explicitly, each damaged pixel is now the ink rather than the stale clear colour.
+        let stride = frame.width as usize * 4;
+        let got = backend.frame_rgba();
+        for rect in &damaged {
+            let at = rect.y as usize * stride + rect.x as usize * 4;
+            assert_eq!(
+                &got[at..at + 4],
+                &[255, 255, 255, 255],
+                "damage at {rect:?} was not repainted"
+            );
+        }
+        assert!(tracker.is_empty(), "the damage is consumed");
     }
 }

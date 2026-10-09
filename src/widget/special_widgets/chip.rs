@@ -3,7 +3,7 @@
 
 //! Chip widget.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -11,7 +11,7 @@ use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -176,8 +176,19 @@ impl Chip {
         self.base.request_redraw();
     }
 
-    fn chip_width(item: &ChipItem, padding: i32) -> i32 {
-        (item.label.chars().count() as i32) * 8 + padding * 2
+    /// The width a chip needs for `item`, using the shared text measurement.
+    ///
+    /// # Why the shared ruler (D09-CTRL-02)
+    ///
+    /// The box used `chars().count() * 8`, a flat per-character estimate that under-counts wide
+    /// glyphs (CJK, `W`) relative to the real advances the painter uses. A label wider than its
+    /// estimated box was then clipped/fitted earlier than necessary. Measuring with
+    /// [`estimate_text_width`] — the same ruler `implicit_size` and the painter share — makes the box
+    /// fit the text it actually draws.
+    fn chip_width(&self, item: &ChipItem, padding: i32) -> i32 {
+        // The **effective font** — the resolved theme/caller font — so the chip box and the label are
+        // measured with the same font the row paints with (D09-STYLE-01 / D09-STYLE-02).
+        estimate_text_width(&item.label, effective_font(self.style()), 1.0) as i32 + padding * 2
     }
 
     /// The band the chip row occupies: full width, `CHIP_HEIGHT` tall, centred in the
@@ -199,7 +210,7 @@ impl Chip {
         let band = self.row_band();
         let mut x = band.x + dimensions::CHIP_PADDING_H as i32;
         for (i, item) in self.items.iter().enumerate() {
-            let width = Self::chip_width(item, self.chip_padding).max(10);
+            let width = self.chip_width(item, self.chip_padding).max(10);
             if i == index {
                 // Only the width is content-driven; the height is the chip's own, so the
                 // chip sits in the row band rather than at the control's top edge.
@@ -508,7 +519,7 @@ impl Draw for Chip {
             context.draw_text_line(
                 chip_rect,
                 &item.label,
-                &Font::default(),
+                effective_font(&style),
                 label_ink,
                 HorizontalAlignment::Left,
             );
@@ -519,6 +530,7 @@ impl Draw for Chip {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::Font;
     use std::sync::{Arc, Mutex};
 
     fn sample_items() -> Vec<ChipItem> {
@@ -826,5 +838,40 @@ mod tests {
             WidgetState::Selected,
             "a chosen member outranks the list's own hover"
         );
+    }
+
+    // ── D09-CTRL-02: the chip box is measured with the shared text ruler ──
+
+    /// A wide-glyph (CJK) chip must be wide enough for its label rather than truncated early.
+    ///
+    /// # The defect this pins
+    ///
+    /// `chip_width` estimated `chars().count() * 8`, which counts a CJK scalar as one narrow cell.
+    /// The real advance is far wider, so the chip box was narrower than the text it drew and the
+    /// label was fitted/truncated far sooner than necessary. The box now uses the shared
+    /// `estimate_text_width`, so it fits the label it paints, and the click target is that same box.
+    #[test]
+    fn a_wide_glyph_chip_is_wide_enough_for_its_label() {
+        let label = "\u{4e2d}\u{6587}"; // two CJK scalars
+        let mut chip = Chip::new(Rect::new(0, 0, 300, 36));
+        chip.set_items(vec![ChipItem::new("a", label)]);
+
+        let measured = estimate_text_width(label, &Font::default(), 1.0) as i32;
+        let old_estimate = label.chars().count() as i32 * 8;
+        assert!(
+            measured > old_estimate,
+            "CJK advances wider than the old per-char estimate (was {old_estimate}, measured {measured})"
+        );
+
+        let rect = chip.chip_rect(0).expect("one item has one chip");
+        assert!(
+            rect.width as i32 >= measured + chip.chip_padding * 2,
+            "the chip box must hold the measured label plus its padding, got width {}",
+            rect.width
+        );
+
+        // The click target is that same box, so a press in its right-hand part still hits.
+        let inside = Point::new(rect.x + rect.width as i32 - 1, rect.y + rect.height as i32 / 2);
+        assert_eq!(chip.hit_index(inside), Some(0));
     }
 }

@@ -712,6 +712,14 @@ impl EventHandler for Switch {
                     self.toggle();
                 }
             }
+            // D09-EVT-02: a withdrawn contact clears the latch without toggling. The
+            // platform may normalise a `TouchCancel` to a `TouchEnd`; the internal cancel
+            // event reroutes it so a cancelled gesture never flips the switch.
+            #[cfg(feature = "touch")]
+            event if crate::event::translator::is_touch_cancel(event) => {
+                self.pressed = false;
+                self.base.request_redraw();
+            }
             #[cfg(feature = "touch")]
             Event::Tap { .. } if enabled => {
                 self.toggle();
@@ -917,6 +925,39 @@ mod tests {
         let mut sw = Switch::new(Rect::new(0, 0, 60, 30));
         sw.handle_event(&Event::KeyPress { key: 32, modifiers: 0 });
         assert!(sw.is_checked());
+    }
+
+    /// D09-EVT-02: a touch cancel clears the latch without toggling.
+    ///
+    /// A `TouchCancel` normalised to a `TouchEnd` used to commit the toggle. The internal
+    /// cancel event must clear the pressed latch and leave the state unchanged.
+    #[cfg(feature = "touch")]
+    #[test]
+    fn switch_touch_cancel_does_not_toggle() {
+        let mut sw = Switch::new(Rect::new(0, 0, 60, 30));
+        let p = Point::new(10, 10);
+        // Arm via a touch begin inside the control.
+        sw.handle_event(&Event::TouchBegin { pos: p, touch_id: 1 });
+        assert!(!sw.is_checked());
+
+        let cancel = crate::event::translator::touch_cancel(p, 1);
+        sw.handle_event(&cancel);
+        assert!(!sw.is_checked(), "a cancelled touch must not toggle the switch");
+
+        // The latch is clear: a following end must not commit either.
+        sw.handle_event(&Event::TouchEnd { pos: p, touch_id: 1 });
+        assert!(!sw.is_checked(), "a cancelled press must not stay armed");
+    }
+
+    /// D09-EVT-02: a normal touch end still toggles — the cancel path does not regress it.
+    #[cfg(feature = "touch")]
+    #[test]
+    fn switch_normal_touch_end_still_toggles() {
+        let mut sw = Switch::new(Rect::new(0, 0, 60, 30));
+        let p = Point::new(10, 10);
+        sw.handle_event(&Event::TouchBegin { pos: p, touch_id: 1 });
+        sw.handle_event(&Event::TouchEnd { pos: p, touch_id: 1 });
+        assert!(sw.is_checked(), "a completed touch still toggles");
     }
 
     #[test]

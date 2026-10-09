@@ -4,8 +4,33 @@
 //! Event queue implementation.
 use super::types::{Event, EventPriority};
 use crate::compat::mpsc::{Receiver, Sender};
-use crate::compat::{format, mpsc, String};
+use crate::compat::{format, mpsc, String, Vec};
 use crate::core::ObjectId;
+
+/// Index of the earliest envelope at the highest priority present (D09-EVT-06).
+///
+/// Priority dominates arrival order; among events of that same priority the earliest (lowest
+/// index, which is the oldest because the buffer is in FIFO order) wins. `buffered` is never
+/// empty at the call site, but the empty case returns `0` rather than panicking so the helper
+/// has no reachable panic of its own.
+fn highest_priority_index(buffered: &[EventEnvelope]) -> usize {
+    let mut best = 0usize;
+    for (index, envelope) in buffered.iter().enumerate() {
+        if priority_rank(envelope.priority) > priority_rank(buffered[best].priority) {
+            best = index;
+        }
+    }
+    best
+}
+
+/// Orders the priorities so a larger value means "dispatch first" (High > Normal > Idle).
+fn priority_rank(priority: EventPriority) -> u8 {
+    match priority {
+        EventPriority::High => 2,
+        EventPriority::Normal => 1,
+        EventPriority::Idle => 0,
+    }
+}
 #[derive(Debug, Clone)]
 struct EventEnvelope {
     target: ObjectId,
@@ -62,6 +87,48 @@ impl EventQueue {
             Ok(envelope) => Some((envelope.target, envelope.event, envelope.priority)),
             Err(_) => None,
         }
+    }
+
+    /// Dequeues the highest-priority event available, preserving FIFO within a priority
+    /// (D09-EVT-06).
+    ///
+    /// # Why this is needed
+    ///
+    /// The `mini` event pump dequeued the oldest event regardless of priority, so the
+    /// metadata the queue stores was never consulted at dispatch: a Normal/Idle event posted
+    /// before a High one was dispatched first, and a sustained FIFO load could delay a High
+    /// event without bound. This method gives the pump the same "High before Normal before
+    /// Idle" selection the threaded loop performs in its phased dispatch, so both profiles
+    /// agree on the ordering semantics.
+    ///
+    /// # How selection is done over a FIFO channel
+    ///
+    /// The channel offers no peek, so the currently available events are drained, the first
+    /// of the highest present priority is chosen, and the rest are re-posted **in their
+    /// original order**. Draining a bounded snapshot and re-appending preserves the relative
+    /// order of the unselected events, which is what keeps same-priority events FIFO.
+    ///
+    /// This is intended for the single-threaded `mini` pump; there, no producer can post
+    /// concurrently while the drain/re-post runs. If it were called on a profile with
+    /// concurrent producers, an event posted during the drain would be appended ahead of the
+    /// re-posted remainder, which is the documented caveat for a non-atomic selection.
+    pub fn dequeue_priority_first(&self) -> Option<(ObjectId, Event, EventPriority)> {
+        let mut buffered: Vec<EventEnvelope> = Vec::new();
+        while let Ok(envelope) = self.receiver.try_recv() {
+            buffered.push(envelope);
+        }
+        if buffered.is_empty() {
+            return None;
+        }
+
+        // Pick the earliest event at the highest priority present.
+        let chosen = highest_priority_index(&buffered);
+        let selected = buffered.remove(chosen);
+        // Re-post the remainder in order so same-priority ordering is preserved.
+        for envelope in buffered {
+            let _ = self.sender.inner.send(envelope);
+        }
+        Some((selected.target, selected.event, selected.priority))
     }
     /// Dequeues the next event, blocking if none available.
     ///
@@ -139,6 +206,87 @@ mod tests {
         assert_eq!(t1, 10);
         assert_eq!(t2, 20);
         assert!(q.dequeue().is_none());
+    }
+
+    /// D09-EVT-06: a High event posted after Normal/Idle work is selected first.
+    #[test]
+    fn priority_first_selects_high_over_earlier_normal_and_idle() {
+        let q = EventQueue::new();
+        let sender = q.sender();
+
+        sender.post_with_priority(1, Event::Paint, EventPriority::Normal).unwrap();
+        sender.post_with_priority(2, Event::Paint, EventPriority::Idle).unwrap();
+        sender.post_with_priority(3, Event::Paint, EventPriority::High).unwrap();
+
+        let (target, _, priority) = q.dequeue_priority_first().expect("one event must be selected");
+        assert_eq!(priority, EventPriority::High, "High must be selected over older Normal/Idle");
+        assert_eq!(target, 3);
+
+        // The remainder keeps FIFO among the lower priorities: Normal (posted first) then Idle.
+        let (target, _, priority) = q.dequeue_priority_first().unwrap();
+        assert_eq!(priority, EventPriority::Normal);
+        assert_eq!(target, 1);
+        let (target, _, priority) = q.dequeue_priority_first().unwrap();
+        assert_eq!(priority, EventPriority::Idle);
+        assert_eq!(target, 2);
+        assert!(q.dequeue_priority_first().is_none());
+    }
+
+    /// D09-EVT-06: Normal is selected over an earlier Idle event.
+    #[test]
+    fn priority_first_selects_normal_over_earlier_idle() {
+        let q = EventQueue::new();
+        let sender = q.sender();
+
+        sender.post_idle(1, Event::Paint).unwrap();
+        sender.post_with_priority(2, Event::Paint, EventPriority::Normal).unwrap();
+
+        let (target, _, priority) = q.dequeue_priority_first().unwrap();
+        assert_eq!(priority, EventPriority::Normal, "Normal outranks the older Idle event");
+        assert_eq!(target, 2);
+        let (target, _, priority) = q.dequeue_priority_first().unwrap();
+        assert_eq!(priority, EventPriority::Idle);
+        assert_eq!(target, 1);
+    }
+
+    /// D09-EVT-06: among events of the same priority, arrival order (FIFO) is preserved.
+    #[test]
+    fn priority_first_preserves_fifo_within_a_priority() {
+        let q = EventQueue::new();
+        let sender = q.sender();
+
+        for id in 0..4u64 {
+            sender.post_with_priority(id, Event::Paint, EventPriority::High).unwrap();
+        }
+        let mut order = Vec::new();
+        while let Some((target, _, priority)) = q.dequeue_priority_first() {
+            assert_eq!(priority, EventPriority::High);
+            order.push(target);
+        }
+        assert_eq!(order, vec![0, 1, 2, 3], "same-priority events must stay in FIFO order");
+    }
+
+    /// D09-EVT-06: an empty queue selects nothing.
+    #[test]
+    fn priority_first_on_empty_queue_returns_none() {
+        let q = EventQueue::new();
+        assert!(q.dequeue_priority_first().is_none());
+    }
+
+    /// D09-EVT-06: an all-Idle queue still yields every event, in order.
+    #[test]
+    fn priority_first_drains_idle_only_queue_in_order() {
+        let q = EventQueue::new();
+        let sender = q.sender();
+        for id in 0..3u64 {
+            sender.post_idle(id, Event::Paint).unwrap();
+        }
+        let mut order = Vec::new();
+        while let Some((target, _, priority)) = q.dequeue_priority_first() {
+            assert_eq!(priority, EventPriority::Idle);
+            order.push(target);
+        }
+        assert_eq!(order, vec![0, 1, 2]);
     }
 
     /// `dequeue_blocking` only exists where threads do, so this test does too.

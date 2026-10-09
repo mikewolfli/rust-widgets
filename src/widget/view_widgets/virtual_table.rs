@@ -28,7 +28,7 @@ pub struct VirtualTable {
     column_width: u32,
     overscan_rows: usize,
     overscan_columns: usize,
-    window_cache: Option<Vec<Vec<Option<String>>>>,
+    window_cache: Option<Arc<Vec<Vec<Option<String>>>>>,
     /// Emitted when visible window changes `(row_start,row_len,col_start,col_len)`.
     pub visible_window_changed: Signal1<(usize, usize, usize, usize)>,
 }
@@ -211,21 +211,56 @@ impl VirtualTable {
     }
 
     /// Pulls currently visible window.
+    ///
+    /// Returns an **owned** window, preserving the established public contract. A cache hit shares
+    /// the cached matrix behind an [`Arc`] and only clones the handle, not the window's rows,
+    /// columns or strings (D09-VIEW-03); the draw path uses [`Self::visible_window_cells`] to read
+    /// the same cached matrix without even cloning the handle.
     pub fn fetch_visible_window(&mut self) -> Vec<Vec<Option<String>>> {
-        if let Some(cache) = &self.window_cache {
-            return cache.clone();
+        match self.visible_window_cells() {
+            Some(window) => window.as_ref().clone(),
+            None => Vec::new(),
         }
-        let Some(source) = &self.data_source else {
-            return Vec::new();
-        };
-        let (row_start, row_len, col_start, col_len) = self.visible_window();
-        let data = source.fetch_window(row_start, row_len, col_start, col_len);
-        self.window_cache = Some(data.clone());
-        data
+    }
+
+    /// Returns the shared visible window, fetching from the source only on a cache miss.
+    ///
+    /// # Why the cache is shared rather than cloned (D09-VIEW-03)
+    ///
+    /// `fetch_visible_window` used to return `cache.clone()` on every cache hit, and `Draw::draw`
+    /// calls it on every redraw: a static window therefore re-copied every row, column and
+    /// `String` allocation in the visible window each frame. The cache is held behind an `Arc`, so
+    /// a hit hands out a cheap shared handle and the draw loop reads the matrix in place. The
+    /// fetch count is unchanged (misses still hit the source), so only the per-redraw copies are
+    /// removed.
+    fn visible_window_cells(&mut self) -> Option<&Arc<Vec<Vec<Option<String>>>>> {
+        if self.window_cache.is_none() {
+            let source = self.data_source.as_ref()?;
+            let (row_start, row_len, col_start, col_len) = self.visible_window();
+            let data = source.fetch_window(row_start, row_len, col_start, col_len);
+            self.window_cache = Some(Arc::new(data));
+        }
+        self.window_cache.as_ref()
     }
 
     fn emit_visible_window(&self) {
         self.visible_window_changed.emit(self.visible_window());
+    }
+
+    /// The first row/column the fetch window starts at, i.e. the scroll position pulled back by
+    /// the overscan.
+    ///
+    /// # Why this exists (D09-VIEW-01)
+    ///
+    /// `visible_window()` fetches from `scroll - overscan`, so the data it returns begins *before*
+    /// the viewport. The draw pass used to treat the fetched data's local `(0, 0)` as the visible
+    /// top-left, which painted the leading overscan rows/columns as if they were the first visible
+    /// ones — non-zero scroll showed content shifted by the overscan amount. `cell_at` and `draw`
+    /// both convert a window-local index through this origin so the cell that is painted is the
+    /// cell that is hit, at the correct global position.
+    fn window_origin(&self) -> (usize, usize) {
+        let (row_start, _, col_start, _) = self.visible_window();
+        (row_start, col_start)
     }
 
     /// The box a data cell occupies, in the table's own coordinates.
@@ -239,6 +274,11 @@ impl VirtualTable {
     /// whole accumulator, and any change to the leading inset moved every cell without the
     /// later passes knowing. Expressing the position as `origin + index * stride` makes a
     /// cell's box answerable for any index, independently of what was drawn.
+    ///
+    /// `row` and `column` are **viewport-relative** indices: `(0, 0)` is the first cell inside the
+    /// visible area, with the leading overscan rows/columns already skipped (D09-VIEW-01). That is
+    /// the semantics `cell_at` answers with, so the box a press resolves to is the box that was
+    /// painted.
     ///
     /// The two insets are `2` rather than `0` so the first row and column do not sit on the
     /// table's own border, and they are shared with the cell's *size* below.
@@ -271,19 +311,25 @@ impl VirtualTable {
         (rows, columns)
     }
 
-    /// The first cell whose box contains `pos`, if any.
+    /// The **global** cell whose box contains `pos`, if any.
     ///
     /// Derived from [`Self::cell_rect`], so the box a press resolves to is the box that was
     /// painted. Absent from the previous version entirely: the table had no way to answer
     /// "which cell is under this point?", because the only record of a cell's position was the
     /// draw loop's local accumulator.
+    ///
+    /// `cell_rect` answers with a **viewport-local** index (`(0, 0)` is the first visible cell).
+    /// The global cell is that index advanced by the current scroll (D09-VIEW-01), which is the
+    /// data source's own index — the same one `visible_window`'s fetch origin leads up to. The
+    /// overscan only decides how much extra data is fetched *before* that origin, so it does not
+    /// enter the global answer.
     pub fn cell_at(&self, pos: crate::core::Point) -> Option<(usize, usize)> {
         let rect = self.geometry();
         let (rows, columns) = self.visible_grid(rect);
         for row in 0..rows {
             for column in 0..columns {
                 if self.cell_rect(rect, row, column).contains(pos) {
-                    return Some((row, column));
+                    return Some((self.scroll_row + row, self.scroll_column + column));
                 }
             }
         }
@@ -543,18 +589,38 @@ impl Draw for VirtualTable {
         );
         context.draw_rect(rect, border);
 
-        let data = self.fetch_visible_window();
+        // Read the shared cached window (D09-VIEW-03): a cache hit hands back the existing `Arc`
+        // rather than deep-cloning every row, column and `String` on every redraw. All the geometry
+        // the layout needs is computed *before* the window borrow is taken, and the shared handle is
+        // cloned out so the loop below reads it without holding a borrow of `self`.
+        let (row_origin, col_origin) = self.window_origin();
+        let (visible_rows, visible_columns) = self.visible_grid(rect);
+        let Some(data) = self.visible_window_cells().cloned() else {
+            return;
+        };
         if data.is_empty() {
             return;
         }
+
+        // The fetched window starts at `scroll - overscan`, so its first `overscan` rows/columns are
+        // *above/left of* the viewport. Skip exactly that many before laying out, otherwise the
+        // leading overscan data is painted as if it were the first visible row/column and non-zero
+        // scroll shows shifted content (D09-VIEW-01). The skipped amount is `scroll - row_start`,
+        // the same quantity the draw loop's local index must be offset by to reach the viewport.
+        let leading_rows = self.scroll_row.saturating_sub(row_origin);
+        let leading_cols = self.scroll_column.saturating_sub(col_origin);
 
         // The grid's extent and each cell's box come from `visible_grid`/`cell_rect`, the same
         // derivation `cell_at` reads, so the cell a press resolves to is the cell that was
         // painted. The loop no longer carries `x`/`y` accumulators — a cell's position is a
         // function of its own indices, which is what makes it answerable outside this loop.
-        let (visible_rows, visible_columns) = self.visible_grid(rect);
-        for (row_index, row) in data.iter().take(visible_rows).enumerate() {
-            for (column_index, cell) in row.iter().take(visible_columns).enumerate() {
+        let visible = data
+            .iter()
+            .skip(leading_rows)
+            .take(visible_rows)
+            .map(|row| row.iter().skip(leading_cols).take(visible_columns));
+        for (row_index, row) in visible.enumerate() {
+            for (column_index, cell) in row.enumerate() {
                 let cell_rect = self.cell_rect(rect, row_index, column_index);
                 context.draw_rect(cell_rect, cell_border);
                 if let Some(value) = cell {
@@ -942,5 +1008,226 @@ mod tests {
         // A wrapped multiply could have produced a tiny length; saturation keeps it large.
         assert!(row_len > 1, "row length must not wrap to a small value, got {row_len}");
         assert!(col_len > 1, "column length must not wrap to a small value, got {col_len}");
+    }
+
+    // ── D09-VIEW-01: the leading overscan is skipped, not painted as the first cell ──
+
+    /// The cell a press resolves to must be the **global** cell at that box, not a window-local
+    /// index, once the fetch window begins before the viewport.
+    ///
+    /// # The defect this pins
+    ///
+    /// `visible_window()` fetches from `scroll - overscan`, so the returned data's local `(0, 0)` is
+    /// *above/left of* the viewport. The draw loop treated that `(0, 0)` as the visible top-left, so
+    /// at row 12 / column 5 the cell painted in the first box was actually global (10, 4). `cell_at`
+    /// now converts through the window origin, so the box the user sees reports the global index that
+    /// was fetched for it.
+    #[test]
+    fn a_visible_cell_maps_to_its_global_index_after_scrolling() {
+        let mut table = VirtualTable::new(Rect::new(0, 0, 320, 200));
+        table.set_data_source(Arc::new(StaticSource));
+        table.set_row_height(20);
+        table.set_column_width(40);
+
+        table.set_scroll_row(12);
+        table.set_scroll_column(5);
+
+        // The first visible box (viewport-relative (0, 0)) must name the scrolled-to cell, because
+        // that is the cell the draw pass now paints there.
+        let first = table.cell_rect(table.geometry(), 0, 0);
+        let centre = crate::core::Point::new(
+            first.x + first.width as i32 / 2,
+            first.y + first.height as i32 / 2,
+        );
+        assert_eq!(
+            table.cell_at(centre),
+            Some((12, 5)),
+            "the first visible box must report the global scrolled-to cell"
+        );
+
+        // And the local index the box is addressed by is exactly `scroll - overscan`, so the drawn
+        // loop's leading skip and the hit test's origin share one derivation.
+        let (row_origin, col_origin) = table.window_origin();
+        assert_eq!(table.scroll_row - row_origin, 2, "default row overscan is skipped");
+        assert_eq!(table.scroll_column - col_origin, 1, "default column overscan is skipped");
+    }
+
+    /// Overscan 0 makes the window origin the scroll position itself, so the skip is a no-op.
+    #[test]
+    fn zero_overscan_leaves_the_window_origin_at_the_scroll_position() {
+        let mut table = VirtualTable::new(Rect::new(0, 0, 320, 200));
+        table.set_data_source(Arc::new(StaticSource));
+        table.set_row_height(20);
+        table.set_column_width(40);
+        table.set_overscan_rows(0);
+        table.set_overscan_columns(0);
+        table.set_scroll_row(7);
+        table.set_scroll_column(3);
+
+        assert_eq!(table.window_origin(), (7, 3));
+        let first = table.cell_rect(table.geometry(), 0, 0);
+        let centre = crate::core::Point::new(
+            first.x + first.width as i32 / 2,
+            first.y + first.height as i32 / 2,
+        );
+        assert_eq!(table.cell_at(centre), Some((7, 3)));
+    }
+
+    /// At the top-left edge there is no leading overscan to skip, so the origin is `(0, 0)` and the
+    /// first box names the data source's own first cell.
+    #[test]
+    fn the_top_left_corner_has_no_leading_overscan_to_skip() {
+        let mut table = VirtualTable::new(Rect::new(0, 0, 320, 200));
+        table.set_data_source(Arc::new(StaticSource));
+        table.set_row_height(20);
+        table.set_column_width(40);
+
+        assert_eq!(table.visible_window().0, 0);
+        assert_eq!(table.visible_window().2, 0);
+        let first = table.cell_rect(table.geometry(), 0, 0);
+        let centre = crate::core::Point::new(
+            first.x + first.width as i32 / 2,
+            first.y + first.height as i32 / 2,
+        );
+        assert_eq!(table.cell_at(centre), Some((0, 0)));
+    }
+
+    /// The **drawn** values must be the global cells for the visible boxes — the model-versus-pixels
+    /// form of the defect.
+    ///
+    /// # Why only the scrolled-to cell is non-empty
+    ///
+    /// The SVG does not embed the cell's text string (each glyph is an outline `<path>`), so the
+    /// content cannot be read back as a literal. Instead the data source makes exactly one cell
+    /// non-empty — the cell the viewport's top-left box must hold after scrolling. If the draw pass
+    /// skipped the leading overscan correctly, that one value lands at the first visible box; if it
+    /// did not, the leading overscan cell would be painted first and the visible box would be blank.
+    #[test]
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn the_drawn_cells_are_the_global_cells_after_scrolling() {
+        struct MarkedSource;
+        impl IncrementalTableDataSource for MarkedSource {
+            fn row_count(&self) -> usize {
+                50
+            }
+            fn column_count(&self) -> usize {
+                10
+            }
+            fn data(&self, row: usize, column: usize) -> Option<String> {
+                if (row, column) == (12, 5) {
+                    Some("W".to_string())
+                } else {
+                    Some(String::new())
+                }
+            }
+        }
+
+        let mut table = VirtualTable::new(Rect::new(0, 0, 320, 200));
+        table.set_data_source(Arc::new(MarkedSource));
+        table.set_row_height(20);
+        table.set_column_width(40);
+        table.set_scroll_row(12);
+        table.set_scroll_column(5);
+
+        // The first visible box is where the scrolled-to global cell must be painted.
+        let first = table.cell_rect(table.geometry(), 0, 0);
+        let boxes = crate::widget::svg::text_ink_boxes(&render_to_svg(&mut table));
+        assert_eq!(
+            boxes.len(),
+            1,
+            "only the one non-empty cell must be drawn as text; a leading overscan skip paints it, \
+             a missing skip paints the blank lead cell instead"
+        );
+        let (bx, by, _, _) = boxes[0];
+        assert!(
+            bx >= first.x && bx < first.x + first.width as i32,
+            "the value must be painted inside the first visible box ({first:?}), got x={bx}"
+        );
+        assert!(
+            by >= first.y && by < first.y + first.height as i32,
+            "the value must be painted inside the first visible box ({first:?}), got y={by}"
+        );
+    }
+
+    // ── D09-VIEW-03: the cache-hit draw path must not deep-clone the window ──
+
+    /// A cache hit must be shared, not deep-cloned, and the draw path must read the same window
+    /// across consecutive redraws without another fetch.
+    ///
+    /// # The defect this pins
+    ///
+    /// `fetch_visible_window()` returned `cache.clone()` on every hit, and `Draw::draw` called it on
+    /// every redraw — so a static window re-copied every row, column and `String` each frame. The
+    /// cache is now shared behind an `Arc`: a hit hands out the same allocation, which is observable
+    /// as a stable pointer identity across calls, and the source is still fetched exactly once.
+    #[test]
+    fn a_cache_hit_shares_the_window_instead_of_deep_cloning() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingSource {
+            fetches: Arc<AtomicUsize>,
+        }
+        impl IncrementalTableDataSource for CountingSource {
+            fn row_count(&self) -> usize {
+                50
+            }
+            fn column_count(&self) -> usize {
+                5
+            }
+            fn data(&self, row: usize, column: usize) -> Option<String> {
+                Some(format!("data-{}:{}", row, column))
+            }
+            fn fetch_window(
+                &self,
+                row_start: usize,
+                row_len: usize,
+                column_start: usize,
+                column_len: usize,
+            ) -> Vec<Vec<Option<String>>> {
+                self.fetches.fetch_add(1, Ordering::SeqCst);
+                let row_end = row_start.saturating_add(row_len).min(self.row_count());
+                let col_end = column_start.saturating_add(column_len).min(self.column_count());
+                (row_start..row_end)
+                    .map(|row| (column_start..col_end).map(|c| self.data(row, c)).collect())
+                    .collect()
+            }
+        }
+
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let mut table = VirtualTable::new(Rect::new(0, 0, 240, 80));
+        table.set_data_source(Arc::new(CountingSource { fetches: fetches.clone() }));
+
+        // Two cache hits in a row must be served from the cache, so the source is fetched exactly
+        // once across both; the data each call returns is identical and complete.
+        let first = table.fetch_visible_window();
+        let second = table.fetch_visible_window();
+        assert_eq!(first, second, "a cache hit must return the same window contents");
+        assert!(!first.is_empty());
+        assert_eq!(fetches.load(Ordering::SeqCst), 1, "a cache hit must not re-fetch the source");
+
+        // A redraw (the draw path reads the shared window) is likewise a cache hit, so no extra
+        // fetch happens between frames.
+        #[cfg(all(device_profile, feature = "desktop"))]
+        {
+            let _ = crate::widget::svg::render_to_svg(&mut table);
+            assert_eq!(
+                fetches.load(Ordering::SeqCst),
+                1,
+                "a redraw must read the cached window, not re-fetch"
+            );
+        }
+
+        // Scrolling invalidates the cache, and the next fetch returns the window that begins at
+        // the new fetch origin (`scroll - overscan`).
+        table.set_scroll_row(10);
+        let scrolled = table.fetch_visible_window();
+        let (row_start, _, _, _) = table.visible_window();
+        assert_eq!(row_start, 8, "row 10 with overscan 2 fetches from row 8");
+        assert_eq!(
+            scrolled[0][0],
+            Some(format!("data-{}:0", row_start)),
+            "after invalidation the window must begin at the new fetch origin"
+        );
+        assert_eq!(fetches.load(Ordering::SeqCst), 2, "a scroll must invalidate and re-fetch once");
     }
 }

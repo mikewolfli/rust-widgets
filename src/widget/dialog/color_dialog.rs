@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Color dialog widget.
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -13,7 +13,7 @@ use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Color dialog for picking RGBA colors.
@@ -418,6 +418,9 @@ impl Draw for ColorDialog {
         // The theme reads take and release the global manager's lock internally, so no
         // guard is held across the draw (the mutex is not re-entrant).
         let style = self.base.style().clone();
+        // The **effective font** — the resolved theme/caller font — for the title, the hex readout
+        // and the buttons (D09-STYLE-01).
+        let font = effective_font(&style);
         let theme = crate::style::resolved_theme_style("color_dialog");
         // `color_dialog` is absent from `WidgetRole::for_kind_name`'s table, so it classifies
         // as `Surface` and resolves to `theme.colors.background` — the window's own fill. A
@@ -486,7 +489,7 @@ impl Draw for ColorDialog {
         // authority instead of the size the control was designed at.
         let title_bar_band = ControlMetrics::top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
         context.fill_rect(title_bar_band, title_bar);
-        let title_font = Font::default();
+        let title_font = font;
         let title_line = context.text_line(title_bar_band, &title_font);
         context.draw_text_fitted(
             Rect::new(
@@ -515,7 +518,7 @@ impl Draw for ColorDialog {
         // Color preview. Drawn only when a band's worth of room is left between the
         // title bar and the button row; on a shorter dialog the picker takes that space
         // instead, which is the trade the fit test in `preview_row_top` makes.
-        let preview_font = Font::default();
+        let preview_font = font;
         let preview_text =
             format!("{} {}", tr!("color_dialog.current_color"), self.current_color.to_hex_rgba());
         if let Some(preview_y) = self.preview_row_top() {
@@ -550,7 +553,6 @@ impl Draw for ColorDialog {
         let band = Rect::new(rect.x, self.button_row_top(), rect.width, Self::BUTTON_HEIGHT as u32);
         let labels = vec![tr!("common.button.ok"), tr!("common.button.cancel")];
         let row = super::message_box::action_row_geometry(context, &labels, band, true);
-        let font = Font::default();
         let ok_rect = row.buttons[0];
         context.fill_rect(ok_rect, accent);
         context.draw_text_line(ok_rect, &labels[0], &font, accent_ink, HorizontalAlignment::Center);

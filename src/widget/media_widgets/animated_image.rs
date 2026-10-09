@@ -22,6 +22,7 @@ use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// A single frame of animation data.
@@ -381,7 +382,7 @@ impl Draw for AnimatedImage {
             // widget's chrome — there is no frame data here at all — so both now follow the
             // theme instead of pinning the control to one appearance.
             context.fill_rounded_rect(rect, 4, base_bg);
-            let font = crate::core::Font::default();
+            let font = effective_font(&style);
             let text = "No frames loaded";
             // Centred on the vertical midline and **fitted** to the control's width. The
             // label is 16 characters at 14 px, so it is wider than a control narrower than
@@ -473,7 +474,7 @@ impl Draw for AnimatedImage {
 
             // Frame counter overlay at top-right.
             let counter_text = format!("{}/{}", self.current_frame + 1, self.frames.len());
-            let font = crate::core::Font::default();
+            let font = effective_font(&style);
             let metrics = context.measure_text(&counter_text, &font);
             let cx = rect.x + rect.width as i32 - metrics.width as i32 - 4;
             let cy = rect.y + 2;

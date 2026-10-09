@@ -19,9 +19,25 @@
 //! ```
 
 use alloc::sync::Arc;
-use crossbeam_channel::{unbounded, Receiver, Sender};
+use crossbeam_channel::{bounded, Receiver, Sender};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+/// Maximum number of pending events the watcher keeps in memory (D09-WATCH-01).
+///
+/// The channel is bounded so the queue cannot grow without limit when the consumer
+/// pauses; a single notify callback fans out to at most one event per matching
+/// path, so a large checkout or an editor that rewrites many files at once can
+/// otherwise enqueue an unbounded burst. The initial deliverable cardinality
+/// (one `FileChanged` plus one `WatchError` per watched directory) is far below
+/// this bound, so the bound is only ever reached under a genuine storm.
+pub(crate) const ASSET_EVENT_CAPACITY: usize = 1024;
+
+/// Maximum number of events one [`AssetWatcher::poll_events`] call may take
+/// (D09-WATCH-01). The rest stay queued and are delivered on later calls, so the
+/// per-call synchronous work is bounded while delivery is still eventual.
+pub(crate) const ASSET_POLL_BATCH_LIMIT: usize = 256;
 
 /// Events produced by the `AssetWatcher`.
 #[derive(Debug, Clone)]
@@ -47,6 +63,15 @@ pub enum AssetEvent {
     },
 }
 
+/// The pending `FileChanged` events, coalesced by path (D09-WATCH-01).
+///
+/// One entry per path rather than one per change: an editor save or a build tool
+/// that touches the same file many times must not enqueue that many events. The
+/// value is the newest change for the path, so a coalesce can only drop a
+/// duplicate notification of the same path and never the fact that the path
+/// changed.
+type EventMap = HashMap<PathBuf, AssetEvent>;
+
 /// A generic file watcher that monitors a directory for file changes matching
 /// a user-supplied predicate.
 ///
@@ -61,8 +86,13 @@ pub struct AssetWatcher {
 
 impl AssetWatcher {
     /// Create a new `AssetWatcher` with no active watch.
+    ///
+    /// The event channel is bounded (D09-WATCH-01) and its callback coalesces
+    /// repeated changes by path, so a burst that outruns the consumer cannot grow
+    /// the queue without limit. A coalesced duplicate is dropped; the fact that a
+    /// path changed is never dropped.
     pub fn new() -> Self {
-        let (sender, receiver) = unbounded();
+        let (sender, receiver) = bounded(ASSET_EVENT_CAPACITY);
         Self { watcher: None, sender, receiver }
     }
 
@@ -93,26 +123,43 @@ impl AssetWatcher {
     }
 
     /// Internal implementation shared by `watch_directory` and `watch`.
+    ///
+    /// The callback buffers matching `FileChanged` events in a path-keyed map and
+    /// flushes that map to the bounded channel *after* each notify event. Two
+    /// properties follow (D09-WATCH-01): a burst touching the same path collapses
+    /// to one pending event, and a flush that finds the channel full leaves the
+    /// still-pending events in the map instead of dropping them, so the pending set
+    /// is bounded at `ASSET_EVENT_CAPACITY + (paths in one notify event)` rather
+    /// than unbounded. The next callback retries the flush, and the consumer
+    /// freeing queue space lets it drain.
     fn watch_internal<P>(&mut self, dir: &Path, recursive: bool, filter: P) -> Result<(), String>
     where
         P: Fn(&Path) -> bool + Send + 'static,
     {
         let sender = self.sender.clone();
+        // Coalesced pending events live in the notify callback closure, which is
+        // owned by the watcher and runs on the notify backend thread (D09-WATCH-01).
+        let mut pending: EventMap = HashMap::new();
         let mut watcher: RecommendedWatcher = RecommendedWatcher::new(
             move |res: Result<Event, notify::Error>| match res {
                 Ok(event) => {
                     if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
+                        // One event per matching path: a single notify callback may
+                        // describe several paths, and the consumer expects one
+                        // `FileChanged` per changed file (its filter already saw
+                        // those paths). The newest change for a path replaces the
+                        // pending one so repeated changes collapse.
+                        let timestamp = std::time::SystemTime::now();
                         for path in &event.paths {
                             if filter(path) {
-                                if let Err(e) = sender.send(AssetEvent::FileChanged {
-                                    path: path.to_path_buf(),
-                                    kind: event.kind,
-                                    timestamp: std::time::SystemTime::now(),
-                                }) {
-                                    log::error!("[asset] Watcher send failed: {e:?}");
-                                }
+                                let path = path.to_path_buf();
+                                pending.insert(
+                                    path.clone(),
+                                    AssetEvent::FileChanged { path, kind: event.kind, timestamp },
+                                );
                             }
                         }
+                        flush_pending(&sender, &mut pending);
                     }
                 }
                 Err(e) => {
@@ -146,11 +193,21 @@ impl AssetWatcher {
         Ok(())
     }
 
-    /// Drain all currently buffered events from the channel.
+    /// Take up to [`ASSET_POLL_BATCH_LIMIT`] buffered events from the channel.
+    ///
+    /// The per-call work is bounded (D09-WATCH-01): a consumer that paused through
+    /// a storm delivers the backlog over successive calls instead of materializing
+    /// the whole queue in one `Vec`. The call is also non-blocking: when the batch
+    /// limit is reached the caller returns immediately rather than waiting to fill
+    /// the rest of the batch, so a poll on a nearly-idle queue does not stall the
+    /// frame loop. Whatever is left stays queued and is delivered by the next call.
     pub fn poll_events(&self) -> Vec<AssetEvent> {
-        let mut events = Vec::new();
-        while let Ok(event) = self.receiver.try_recv() {
-            events.push(event);
+        let mut events = Vec::with_capacity(ASSET_POLL_BATCH_LIMIT.min(ASSET_EVENT_CAPACITY));
+        for _ in 0..ASSET_POLL_BATCH_LIMIT {
+            match self.receiver.try_recv() {
+                Ok(event) => events.push(event),
+                Err(_) => break,
+            }
         }
         events
     }
@@ -167,6 +224,23 @@ impl AssetWatcher {
 }
 
 crate::impl_default_via_new!(AssetWatcher);
+
+/// Flush coalesced pending events to the bounded channel (D09-WATCH-01).
+///
+/// Events that do not fit stay in `pending` so the next callback retries them;
+/// nothing is dropped merely because the queue is momentarily full. Once a path's
+/// event has been flushed it is removed from `pending` so it is not re-sent.
+fn flush_pending(sender: &Sender<AssetEvent>, pending: &mut EventMap) {
+    pending.retain(|_, event| match sender.try_send(event.clone()) {
+        Ok(()) => false,
+        Err(crossbeam_channel::TrySendError::Full(_)) => true,
+        Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+            // No receiver can ever observe this event; keeping it would only
+            // grow the map for a consumer that is gone.
+            false
+        }
+    });
+}
 
 // File-watcher tests need `tempfile`, which is unavailable on wasm32 (no FS).
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -261,6 +335,136 @@ mod tests {
         assert!(calls > 0, "Expected at least one filter call, got {}", calls);
 
         Ok(())
+    }
+
+    /// D09-WATCH-01: many changes to the same path coalesce to one pending event,
+    /// and the newest change is the one kept — so nothing uniquely necessary is
+    /// lost.
+    ///
+    /// Coalescing lives in the notify callback (`flush_pending`), which a test
+    /// cannot drive without a real filesystem event, so this drives that function
+    /// directly. Sending raw events to the channel (bypassing `flush_pending`)
+    /// would test the channel, not the coalescing.
+    #[test]
+    fn asset_watcher_burst_on_one_path_collapses_and_is_delivered() {
+        let (tx, rx) = crossbeam_channel::bounded::<AssetEvent>(ASSET_EVENT_CAPACITY);
+        let mut pending: EventMap = HashMap::new();
+
+        let path = PathBuf::from("assets/icon.png");
+        let kind = EventKind::Modify(notify::event::ModifyKind::Any);
+        // A burst the callback's own map sees: many changes to one path before any
+        // flush. The map must hold one entry per path, not one per change.
+        for i in 0..5_000u64 {
+            pending.insert(
+                path.clone(),
+                AssetEvent::FileChanged {
+                    path: path.clone(),
+                    kind,
+                    timestamp: std::time::SystemTime::UNIX_EPOCH
+                        + std::time::Duration::from_millis(i),
+                },
+            );
+        }
+        assert_eq!(pending.len(), 1, "a burst on one path must collapse in the pending map");
+
+        flush_pending(&tx, &mut pending);
+        assert!(pending.is_empty(), "a within-capacity flush must drain the pending map");
+
+        // Exactly one delivered change, and it is the newest update for the path.
+        let events: Vec<AssetEvent> = rx.try_iter().collect();
+        assert_eq!(events.len(), 1, "many changes to one path must deliver one event");
+        let AssetEvent::FileChanged { path: got, timestamp, .. } = &events[0] else {
+            panic!("expected FileChanged, got {events:?}");
+        };
+        assert_eq!(got, &path);
+        assert_eq!(
+            *timestamp,
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(4_999),
+            "the newest change for the path must be the one delivered"
+        );
+    }
+
+    /// D09-WATCH-01: when the channel is full, the flush keeps the still-pending
+    /// events instead of dropping them, so the pending set is bounded and nothing
+    /// necessary is lost; the consumer freeing space lets a later flush finish.
+    #[test]
+    fn asset_watcher_flush_is_bounded_and_retries_when_full() {
+        // A deliberately tiny channel so the full case is reachable without a
+        // multi-thousand-element fixture.
+        let (tx, rx) = crossbeam_channel::bounded::<AssetEvent>(3);
+        let mut pending: EventMap = HashMap::new();
+        let kind = EventKind::Create(notify::event::CreateKind::File);
+        for i in 0..10u64 {
+            let path = PathBuf::from(format!("assets/{i}.png"));
+            pending.insert(
+                path.clone(),
+                AssetEvent::FileChanged {
+                    path,
+                    kind,
+                    timestamp: std::time::SystemTime::UNIX_EPOCH
+                        + std::time::Duration::from_millis(i),
+                },
+            );
+        }
+
+        flush_pending(&tx, &mut pending);
+        assert_eq!(tx.len(), 3, "the flush must fill the channel but not exceed it");
+        assert_eq!(pending.len(), 7, "the events that did not fit must stay pending, not be lost");
+
+        // The consumer frees space; a second flush delivers the rest.
+        let mut got = 0usize;
+        loop {
+            got += rx.try_iter().count();
+            flush_pending(&tx, &mut pending);
+            if pending.is_empty() {
+                break;
+            }
+        }
+        got += rx.try_iter().count();
+        assert_eq!(got, 10, "every pending event must eventually be delivered");
+        assert!(pending.is_empty(), "nothing is left pending once the consumer drains");
+    }
+
+    /// D09-WATCH-01: a paused consumer then resuming yields bounded per-call work,
+    /// and the final set of changed paths is still recoverable.
+    #[test]
+    fn asset_watcher_paused_consumer_drains_in_bounded_batches() {
+        let watcher = AssetWatcher::new();
+        let sender = watcher.sender.clone();
+        let kind = EventKind::Create(notify::event::CreateKind::File);
+
+        // Fill past the batch limit (without exceeding capacity, so nothing is
+        // left behind in the callback's pending map).
+        let pushed = ASSET_POLL_BATCH_LIMIT * 2;
+        for i in 0..pushed {
+            sender
+                .send(AssetEvent::FileChanged {
+                    path: PathBuf::from(format!("assets/tex/{i}.png")),
+                    kind,
+                    timestamp: std::time::SystemTime::now(),
+                })
+                .expect("send stays within capacity");
+        }
+
+        let mut drained = 0usize;
+        let mut calls = 0usize;
+        loop {
+            let batch = watcher.poll_events();
+            assert!(
+                batch.len() <= ASSET_POLL_BATCH_LIMIT,
+                "one poll exceeded the batch limit: {}",
+                batch.len()
+            );
+            if batch.is_empty() {
+                break;
+            }
+            drained += batch.len();
+            calls += 1;
+        }
+
+        assert_eq!(drained, pushed, "every queued event must eventually be delivered");
+        assert_eq!(calls, 2, "work is spread over ceil(pushed / batch_limit) calls, not one");
+        assert_eq!(watcher.poll_events().len(), 0, "the queue is empty in the end");
     }
 
     #[test]

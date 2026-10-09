@@ -7,7 +7,7 @@
 //! topmost page along with a navigation bar. It supports push, pop, and pop-to-root
 //! operations, similar to SwiftUI NavigationStack or UINavigationController.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -16,6 +16,7 @@ use crate::widget::capability::coercion::expect_usize;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -360,34 +361,37 @@ impl Draw for NavigationStack {
         // Back button (if can_pop)
         if self.can_pop() {
             let back_text = "< Back";
-            let back_font = Font::simple("sans-serif", 13.0);
+            // The **effective font** — the resolved theme/caller font — for the back label and the
+            // title, rather than the fixed 13/15 px sans-serif faces this used to build
+            // (D09-STYLE-01).
+            let back_font = effective_font(&style);
             let back_color = self.base.disabled_ink_on(accent, surface);
             // The line box is derived from the *font in use*, not from a literal. `+ 14` was shared
             // by this 13 pt label and the 15 pt title below, so it was the correct descent for
             // neither: a glyph origin is the top edge of its box, so an offset that does not come
             // from the font puts one of the two rows off its own middle line. `text_line` is the
             // crate's one derivation for "where does this font's line sit in this band".
-            let back_line = context.text_line(nav_rect, &back_font);
+            let back_line = context.text_line(nav_rect, back_font);
             context.draw_text(
                 Point::new(nav_rect.x + 8, back_line.y),
                 back_text,
-                &back_font,
+                back_font,
                 back_color,
                 HorizontalAlignment::Left,
             );
         }
 
         // Title
-        let title_font = Font::simple("sans-serif", 15.0);
+        let title_font = effective_font(&style);
         let title = self.display_title();
         let text_color = self.base.disabled_ink_on(ink, surface);
-        let metrics = context.measure_text(&title, &title_font);
+        let metrics = context.measure_text(&title, title_font);
         let title_x = nav_rect.x + (nav_rect.width as i32 - metrics.width as i32) / 2;
-        let title_line = context.text_line(nav_rect, &title_font);
+        let title_line = context.text_line(nav_rect, title_font);
         context.draw_text(
             Point::new(title_x.max(nav_rect.x + 4), title_line.y),
             &title,
-            &title_font,
+            title_font,
             text_color,
             HorizontalAlignment::Left,
         );

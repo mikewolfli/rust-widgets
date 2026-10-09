@@ -8,7 +8,7 @@
 //! signal when the animation finishes. Animated shapes are rendered
 //! based on the animation progress value.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
@@ -18,6 +18,7 @@ use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 
 /// The value type for a Rive state machine input.
@@ -677,7 +678,7 @@ impl Draw for RiveWidget {
             // widget's chrome — there is no animation data here at all — so both now follow
             // the theme instead of pinning the control to one appearance.
             context.fill_rounded_rect(rect, 4, base_bg);
-            let font = Font::default();
+            let font = effective_font(&style);
             let text = "No Rive animation loaded";
             // Centred on the vertical midline and fitted to the control's width: the label
             // is 24 characters at 14 px, wider than most controls it is drawn into, and
@@ -769,7 +770,7 @@ impl Draw for RiveWidget {
         }
 
         // Draw animation name label at top.
-        let font = Font::default();
+        let font = effective_font(&style);
         let name_text = format!("Rive: {}", self.animation_name);
         let name_metrics = context.measure_text(&name_text, &font);
         let name_x = rect.x + 4;

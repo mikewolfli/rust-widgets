@@ -3,7 +3,7 @@
 
 //! MarkdownEditor widget.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -11,6 +11,7 @@ use crate::undo::{TextSnapshotCommand, UndoStack};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -424,7 +425,7 @@ impl Draw for MarkdownEditor {
         context.draw_text_fitted(
             header_band,
             &header,
-            &Font::default(),
+            effective_font(&style),
             header_ink,
             HorizontalAlignment::Left,
         );
@@ -440,7 +441,7 @@ impl Draw for MarkdownEditor {
             context.draw_text(
                 Point::new(rect.x + 12, y),
                 rendered,
-                &Font::default(),
+                effective_font(&style),
                 color,
                 HorizontalAlignment::Left,
             );

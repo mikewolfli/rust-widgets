@@ -14,6 +14,7 @@ use super::types::{
 };
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::render::RenderContext;
+use crate::widget::metrics::effective_font;
 use crate::widget::text_utils::floor_char_boundary;
 use crate::widget::{Draw, Widget};
 use alloc::format;
@@ -266,14 +267,14 @@ impl CodeEditor {
             context.draw_text(
                 Point::new(tab_rect.x + 6, tab_rect.y + strip_height - 6),
                 &label,
-                &Font::default(),
+                self.chrome_font(),
                 if index == active { chrome.ink } else { chrome.dim_ink },
                 HorizontalAlignment::Left,
             );
             if index == active && dirty {
                 // Centred on the label's own line box, in the trailing slot the width above
                 // reserved for the marker, so the dot sits beside the title rather than over it.
-                let line = context.measure_text(&label, &Font::default());
+                let line = context.measure_text(&label, self.chrome_font());
                 let radius = (line.height as f32 * 0.16).round().max(1.0) as u32;
                 let dot_x = tab_rect.x + tab_rect.width as i32 - 6 - radius as i32;
                 let dot_y = tab_rect.y + strip_height - 6 + (line.height as i32 / 2) - 1;
@@ -310,7 +311,7 @@ impl CodeEditor {
         context.draw_text(
             Point::new(rect.x + 8, top + 20),
             &query_summary,
-            &Font::default(),
+            self.chrome_font(),
             chrome.dim_ink,
             HorizontalAlignment::Left,
         );
@@ -318,13 +319,13 @@ impl CodeEditor {
         // The previous version used `space_advance * 8.0` — a hand-written constant multiplied by a
         // made-up column count — which put the query field at a fixed x that had no relation to where
         // the summary actually ended. Measuring both makes the gap between them what it claims to be.
-        let summary_font = Font::default();
+        let summary_font = self.chrome_font();
         let summary_advance = context.backend().measure_text(&query_summary, &summary_font).width;
         let query_x = rect.x + 8 + summary_advance as i32 + self.cell_width() as i32;
         context.draw_text(
             Point::new(query_x, top + 20),
             if self.find.query.is_empty() { "(type to search)" } else { &self.find.query },
-            &Font::default(),
+            self.chrome_font(),
             chrome.ink,
             HorizontalAlignment::Left,
         );
@@ -334,7 +335,7 @@ impl CodeEditor {
             context.draw_text(
                 Point::new(rect.x + 8, row_two + 18),
                 "Replace",
-                &Font::default(),
+                self.chrome_font(),
                 chrome.dim_ink,
                 HorizontalAlignment::Left,
             );
@@ -345,7 +346,7 @@ impl CodeEditor {
                 } else {
                     &self.find.replacement
                 },
-                &Font::default(),
+                self.chrome_font(),
                 chrome.ink,
                 HorizontalAlignment::Left,
             );
@@ -366,7 +367,7 @@ impl CodeEditor {
         context.draw_text(
             Point::new(close.x + 9, close.y + 19),
             "x",
-            &Font::default(),
+            self.chrome_font(),
             close_color,
             HorizontalAlignment::Left,
         );
@@ -406,11 +407,11 @@ impl CodeEditor {
                     // Centred on the row by the line box, not by a hand-tuned fraction of the
                     // row height: `row_height * 0.78` was an ascent for one particular font
                     // and row size, so the numbers drifted off centre whenever either moved.
-                    let number_box = context.measure_text("0", &Font::default()).height as i32;
+                    let number_box = context.measure_text("0", self.chrome_font()).height as i32;
                     context.draw_text(
                         Point::new(rect.x + fold_width, y + (row_height as i32 - number_box) / 2),
                         &format!("{}", line + 1),
-                        &Font::default(),
+                        self.chrome_font(),
                         if line == self.cursor.head.line { chrome.ink } else { chrome.dim_ink },
                         HorizontalAlignment::Left,
                     );
@@ -442,11 +443,11 @@ impl CodeEditor {
                 // The origin is the glyph box's top edge, so the row is centred by half the
                 // line box; the `* 0.78` that used to be here was a hand-tuned ascent for one
                 // font size, and it moved with the font rather than with the row.
-                let line_box = context.measure_text("M", &Font::default()).height as i32;
+                let line_box = context.measure_text("M", self.chrome_font()).height as i32;
                 context.draw_text(
                     Point::new(rect.x + 2, y + (row_height as i32 - line_box) / 2),
                     marker,
-                    &Font::default(),
+                    self.chrome_font(),
                     marker_ink,
                     HorizontalAlignment::Left,
                 );
@@ -964,7 +965,7 @@ impl CodeEditor {
             context.draw_text(
                 Point::new(x, y + (row_height * 0.75) as i32),
                 &label,
-                &Font::default(),
+                self.chrome_font(),
                 marker.severity.color(),
                 HorizontalAlignment::Left,
             );
@@ -1082,7 +1083,7 @@ impl CodeEditor {
         // which is why `Plain Text  1 lines` and `Ln 1, Col 1` both ended up painted past
         // the control.
         let status_band = Rect::new(rect.x + 8, top + 5, rect.width.saturating_sub(20), 16);
-        let font = Font::default();
+        let font = self.chrome_font();
         // A reduced level is part of the editor's state, so it belongs on the
         // status row: a silently disabled feature reads as a bug, while a named
         // one reads as a decision the user can act on.
@@ -1189,7 +1190,7 @@ impl CodeEditor {
             context.draw_text(
                 Point::new(rect.x + 8, row_y + 19),
                 &label,
-                &Font::default(),
+                self.chrome_font(),
                 chrome.ink,
                 HorizontalAlignment::Left,
             );
@@ -1223,7 +1224,7 @@ impl CodeEditor {
             context.draw_text(
                 Point::new(rect.x + 8, row_y + 19),
                 &item.label,
-                &Font::default(),
+                self.chrome_font(),
                 color,
                 HorizontalAlignment::Left,
             );
@@ -1231,7 +1232,7 @@ impl CodeEditor {
                 context.draw_text(
                     Point::new(rect.x + rect.width as i32 - 8, row_y + 19),
                     shortcut,
-                    &Font::default(),
+                    self.chrome_font(),
                     chrome.dim_ink,
                     HorizontalAlignment::Right,
                 );
@@ -1258,6 +1259,16 @@ fn byte_to_char_index(editor: &CodeEditor, line: usize, byte: usize) -> usize {
 impl CodeEditor {
     pub(crate) fn line_height(&self) -> f32 {
         self.config.line_advance.max(1.0)
+    }
+
+    /// The font the editor's **chrome** draws with: the resolved theme/caller font.
+    ///
+    /// The document body has its own monospace face ([`CodeEditor::font`], from
+    /// `CodeEditorConfig`), but the tab strip, find bar, gutter numbers, status row, completion list
+    /// and context menu are ordinary UI chrome and take the theme's face and text scale
+    /// (D09-STYLE-01). Named once so every chrome site measures and paints with the same font.
+    pub(crate) fn chrome_font(&self) -> &Font {
+        effective_font(self.style())
     }
 
     /// The horizontal advance of one character cell.

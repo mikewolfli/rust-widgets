@@ -16,7 +16,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -612,9 +612,11 @@ impl Draw for FindReplaceDialog {
         // "Find:" label. Bounded by the label column, so it truncates there rather than
         // running into the input it names.
         let label_rect = Rect::new(x, find_row.y, label_col, find_row.height);
-        let font = crate::core::Font::simple("sans-serif", 12.0);
-        let label_line = self.text_line(label_rect, &font, context);
-        context.draw_text_fitted(label_line, "Find:", &font, ink, HorizontalAlignment::Left);
+        // The **effective font** — the resolved theme/caller font — for every label and field in
+        // the bar, rather than the fixed 12 px sans-serif this used to build (D09-STYLE-01).
+        let font = effective_font(&style);
+        let label_line = self.text_line(label_rect, font, context);
+        context.draw_text_fitted(label_line, "Find:", font, ink, HorizontalAlignment::Left);
         x += label_col as i32 + GAP;
 
         // Find text input background. The field is only drawn when the row genuinely
@@ -630,11 +632,11 @@ impl Draw for FindReplaceDialog {
             // `<text …></text>`, an empty element that the rasteriser never produces.
             let display_text = if self.find_text.is_empty() { "" } else { &self.find_text };
             if !display_text.is_empty() {
-                let input_line = self.text_line(input_rect, &font, context);
+                let input_line = self.text_line(input_rect, font, context);
                 context.draw_text_fitted(
                     input_line,
                     display_text,
-                    &font,
+                    font,
                     ink,
                     HorizontalAlignment::Left,
                 );
@@ -646,11 +648,11 @@ impl Draw for FindReplaceDialog {
         let mc_rect = Rect::new(x, find_row.y, BTN_SIZE, find_row.height);
         let mc_color = if self.match_case { accent } else { field.blend(&ink, 0.15) };
         context.fill_rect(mc_rect, mc_color);
-        let mc_line = self.text_line(mc_rect, &font, context);
+        let mc_line = self.text_line(mc_rect, font, context);
         context.draw_text_fitted(
             mc_line,
             "Aa",
-            &font,
+            font,
             if self.match_case { accent_ink } else { ink },
             HorizontalAlignment::Left,
         );
@@ -660,11 +662,11 @@ impl Draw for FindReplaceDialog {
         let ww_rect = Rect::new(x, find_row.y, BTN_SIZE, find_row.height);
         let ww_color = if self.whole_word { accent } else { field.blend(&ink, 0.15) };
         context.fill_rect(ww_rect, ww_color);
-        let ww_line = self.text_line(ww_rect, &font, context);
+        let ww_line = self.text_line(ww_rect, font, context);
         context.draw_text_fitted(
             ww_line,
             "W",
-            &font,
+            font,
             if self.whole_word { accent_ink } else { ink },
             HorizontalAlignment::Left,
         );
@@ -674,11 +676,11 @@ impl Draw for FindReplaceDialog {
         let rx_rect = Rect::new(x, find_row.y, BTN_SIZE, find_row.height);
         let rx_color = if self.use_regex { accent } else { field.blend(&ink, 0.15) };
         context.fill_rect(rx_rect, rx_color);
-        let rx_line = self.text_line(rx_rect, &font, context);
+        let rx_line = self.text_line(rx_rect, font, context);
         context.draw_text_fitted(
             rx_line,
             ".*",
-            &font,
+            font,
             if self.use_regex { accent_ink } else { ink },
             HorizontalAlignment::Left,
         );
@@ -688,11 +690,11 @@ impl Draw for FindReplaceDialog {
         let ha_rect = Rect::new(x, find_row.y, BTN_SIZE, find_row.height);
         let ha_color = if self.highlight_all { accent } else { field.blend(&ink, 0.15) };
         context.fill_rect(ha_rect, ha_color);
-        let ha_line = self.text_line(ha_rect, &font, context);
+        let ha_line = self.text_line(ha_rect, font, context);
         context.draw_text_fitted(
             ha_line,
             "H",
-            &font,
+            font,
             if self.highlight_all { accent_ink } else { ink },
             HorizontalAlignment::Left,
         );
@@ -737,8 +739,8 @@ impl Draw for FindReplaceDialog {
 
         // "Replace:" label
         let rl_rect = Rect::new(x2, replace_row.y, label_col, replace_row.height);
-        let rl_line = self.text_line(rl_rect, &font, context);
-        context.draw_text_fitted(rl_line, "Rpl:", &font, ink, HorizontalAlignment::Left);
+        let rl_line = self.text_line(rl_rect, font, context);
+        context.draw_text_fitted(rl_line, "Rpl:", font, ink, HorizontalAlignment::Left);
         x2 += label_col as i32 + GAP;
 
         // Replace text input background. Drawn only when there is room, for the same
@@ -749,11 +751,11 @@ impl Draw for FindReplaceDialog {
             context.draw_rect_stroke(r_input_rect, border, 1);
             let r_text = if self.replace_text.is_empty() { "" } else { &self.replace_text };
             if !r_text.is_empty() {
-                let r_input_line = self.text_line(r_input_rect, &font, context);
+                let r_input_line = self.text_line(r_input_rect, font, context);
                 context.draw_text_fitted(
                     r_input_line,
                     r_text,
-                    &font,
+                    font,
                     ink,
                     HorizontalAlignment::Left,
                 );
@@ -764,15 +766,15 @@ impl Draw for FindReplaceDialog {
         // Replace button
         let rep_rect = Rect::new(x2, replace_row.y, ARROW_BTN, replace_row.height);
         context.fill_rect(rep_rect, muted);
-        let rep_line = self.text_line(rep_rect, &font, context);
-        context.draw_text_fitted(rep_line, "R", &font, muted_ink, HorizontalAlignment::Left);
+        let rep_line = self.text_line(rep_rect, font, context);
+        context.draw_text_fitted(rep_line, "R", font, muted_ink, HorizontalAlignment::Left);
         x2 += ARROW_BTN as i32 + GAP;
 
         // Replace All button
         let ra_rect = Rect::new(x2, replace_row.y, ARROW_BTN, replace_row.height);
         context.fill_rect(ra_rect, muted);
-        let ra_line = self.text_line(ra_rect, &font, context);
-        context.draw_text_fitted(ra_line, "RA", &font, muted_ink, HorizontalAlignment::Left);
+        let ra_line = self.text_line(ra_rect, font, context);
+        context.draw_text_fitted(ra_line, "RA", font, muted_ink, HorizontalAlignment::Left);
     }
 }
 

@@ -13,7 +13,7 @@
 //! whenever the date changes.
 
 use super::date_utils::{days_in_month, parse_iso_date, MONTH_NAMES};
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -21,7 +21,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, role_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -275,8 +275,8 @@ impl Draw for MobileDatePicker {
         // The font follows the row **as painted**, so a band clamped shorter than the nominal
         // five rows shrinks its type with it instead of overflowing the rows it sits in.
         let font_size = (row_height as f32 * 0.38).clamp(9.0, 15.0);
-        let font = Font::new("sans-serif", font_size, false, false);
-        let arrow_font = Font::new("sans-serif", (font_size * 1.3).max(10.0), true, false);
+        let font = role_font(&style, font_size);
+        let arrow_font = role_font(&style, (font_size * 1.3).max(10.0)).with_bold(true);
 
         // Prepare column data: (offset_into_items, visible_items_list)
         let year_items: Vec<String> =

@@ -1,23 +1,36 @@
 #!/usr/bin/env python3
-"""Compile-check the Linux/GTK canvas code on a non-Linux host.
+"""Snapshot the Linux/GTK canvas source into a standalone, compilable-in-isolation form.
 
-Copies `platform/linux/canvas.rs` into the scratch crate /tmp/gtkcheck, replacing
-only the crate-internal imports and the bodies that need real platform state.
-Every GTK/gdk/cairo call is preserved verbatim so the API surface is genuinely
-type-checked, unlike a cfg-gated no-op.
+**This is a source generator, not a compile check.** It copies
+`platform/linux/canvas.rs` into a throwaway scratch directory, replacing only the
+crate-internal imports and the bodies that need real platform state, so a
+developer can open the GTK call surface on a non-Linux host. It does **not**
+invoke a compiler — the real compile check for this file is the `linux-gtk` CI job
+in `.github/workflows/ci.yml`, which runs `cargo check --features desktop,gtk-native`
+on a machine with GTK 3 installed. `exit 0` therefore means *the snapshot was
+written*, nothing more.
 
-Usage: python3 tools/gtk_check.py
+The name used to be `gtk_check.py` and its README line claimed it "inspects a live
+GTK widget tree", both of which overstated what it does: it never compiled and
+never touched a live tree (D08-G-04). The honest name and contract are the fix.
+
+Usage: python3 tools/gtk_source_snapshot.py [--out DIR]
+Exit 0 = snapshot written; non-zero = generation failed.
 """
 
+import argparse
 import io
+import os
 import re
 import sys
+import tempfile
 
-SOURCE = "/Users/mikewolfli/Desktop/workspace/rust-widgets/src/platform/linux/canvas.rs"
-TARGET = "/tmp/gtkcheck/src/canvas_linux.rs"
-SHIM_FILE = "/tmp/gtkcheck/src/shim.rs"
+# Resolve the source relative to this file's repository root rather than a
+# developer-specific absolute path (D08-G-04). `tools/` sits directly under it.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SOURCE = os.path.join(REPO_ROOT, "src", "platform", "linux", "canvas.rs")
 
-SHIM = '''// Auto-generated shim for the GTK compile check. Do not edit.
+SHIM = '''// Auto-generated shim for the GTK source snapshot. Do not edit.
 pub type ObjectId = u64;
 
 #[derive(Clone, Copy, Debug)]
@@ -94,6 +107,17 @@ pub mod log {
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--out",
+        help="Directory to write the snapshot into (default: a fresh temp dir).",
+    )
+    args = parser.parse_args()
+
+    if not os.path.isfile(SOURCE):
+        print("source not found: %s" % SOURCE, file=sys.stderr)
+        return 2
+
     src = io.open(SOURCE, encoding="utf-8").read()
 
     # 1. Drop the crate-internal cfg gate.
@@ -138,16 +162,22 @@ def main() -> int:
         + src[doc_end:]
     )
 
-    io.open(TARGET, "w", encoding="utf-8").write(src)
-    io.open(SHIM_FILE, "w", encoding="utf-8").write(SHIM)
-    io.open("/tmp/gtkcheck/src/main.rs", "w", encoding="utf-8").write(
-        '#[macro_use]\npub mod shim;\nmod canvas_linux;\n\n'
-        '/// Re-exports the shim under the crate root so `crate::widget::...`\n'
-        '/// paths inside the copied file resolve.\n'
-        'pub use shim::{widget, Event, Color as ShimColor, LinuxPlatform};\n'
-        '\nfn main() {\n    println!("gtk canvas compile check");\n}\n'
+    # Write the snapshot. A unique, caller-supplied or freshly created directory
+    # keeps two runs from clobbering each other; the old fixed `/tmp/gtkcheck` was
+    # shared by every checkout (D08-G-04).
+    out_dir = args.out or tempfile.mkdtemp(prefix="rw_gtk_snapshot_")
+    os.makedirs(out_dir, exist_ok=True)
+    canvas_path = os.path.join(out_dir, "canvas_linux.rs")
+    shim_path = os.path.join(out_dir, "shim.rs")
+    with io.open(canvas_path, "w", encoding="utf-8") as handle:
+        handle.write(src)
+    with io.open(shim_path, "w", encoding="utf-8") as handle:
+        handle.write(SHIM)
+    print("wrote", canvas_path, "and", shim_path)
+    print(
+        "NOTE: this is a source snapshot only; the real GTK compile check is the "
+        "`linux-gtk` CI job (cargo check --features desktop,gtk-native)."
     )
-    print("wrote", TARGET, "and", SHIM_FILE)
     return 0
 
 

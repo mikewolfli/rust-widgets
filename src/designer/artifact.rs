@@ -285,15 +285,47 @@ mod tests {
     const PROJECT: &str = r#"{"window":{"id":"w","title":"T","width":640,"height":480,
         "layout":{"type":"vbox","children":[{"label":{"text":"Hi"}}]}}}"#;
 
-    /// A throwaway project root.
+    /// A throwaway project root that removes itself when the test ends.
     ///
-    /// Keyed by name rather than by process id so a test can call it twice and observe the second
-    /// run's outcome — which is how the `Created` → `Unchanged` transition is checked.
-    fn temp_root(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("rw_artifact_{name}"));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create the temp root");
-        dir
+    /// The directory name includes this process's id, so two test processes
+    /// (different feature sets, different workspaces) running the same test cannot
+    /// delete each other's artifacts — the previous name-only path
+    /// (`temp_dir()/rw_artifact_{name}`) was shared across processes and the eager
+    /// `remove_dir_all` at the start of one could wipe files another had just
+    /// written (D08-G-03). Within one process the same `name` still maps to the
+    /// same directory, so a test can call the helper twice (via `TempRoot::path`)
+    /// and observe the `Created` → `Unchanged` transition.
+    ///
+    /// Cleanup is RAII: `Drop` removes the tree even when the test panics, so no
+    /// artifacts are left behind and the next run starts clean without needing an
+    /// eager wipe.
+    struct TempRoot {
+        path: std::path::PathBuf,
+    }
+
+    impl TempRoot {
+        fn new(name: &str) -> Self {
+            // `std::process::id()` separates concurrent test processes; `name`
+            // separates the tests within one process.
+            let dir =
+                std::env::temp_dir().join(format!("rw_artifact_{}_{name}", std::process::id()));
+            // A fresh, exclusive directory: create it, and if a previous aborted run
+            // left one, remove that first. Because the path is process-unique, this
+            // removal can only ever touch this process's own leftovers.
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("create the temp root");
+            Self { path: dir }
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
     }
 
     #[test]
@@ -346,15 +378,15 @@ mod tests {
 
     #[test]
     fn a_first_write_creates_and_a_second_reports_unchanged() {
-        let root = temp_root("first_then_unchanged");
-        let first = regenerate_into(&root, PROJECT, 640, 480).expect("first generation");
+        let root = TempRoot::new("first_then_unchanged");
+        let first = regenerate_into(root.path(), PROJECT, 640, 480).expect("first generation");
         assert_eq!(first.len(), 2);
         assert!(
             first.iter().all(|outcome| matches!(outcome, ArtifactOutcome::Created(_))),
             "nothing existed, so both files are created: {first:?}"
         );
 
-        let second = regenerate_into(&root, PROJECT, 640, 480).expect("second generation");
+        let second = regenerate_into(root.path(), PROJECT, 640, 480).expect("second generation");
         assert!(
             second.iter().all(|outcome| matches!(outcome, ArtifactOutcome::Unchanged(_))),
             "the same document must produce the same bytes, so nothing is rewritten: {second:?}"
@@ -364,28 +396,29 @@ mod tests {
 
     #[test]
     fn a_changed_document_reports_updated() {
-        let root = temp_root("updated");
-        regenerate_into(&root, PROJECT, 640, 480).expect("first generation");
+        let root = TempRoot::new("updated");
+        regenerate_into(root.path(), PROJECT, 640, 480).expect("first generation");
 
         let changed = PROJECT.replace("\"Hi\"", "\"Changed\"");
-        let outcomes = regenerate_into(&root, &changed, 640, 480).expect("second generation");
+        let outcomes = regenerate_into(root.path(), &changed, 640, 480).expect("second generation");
         assert!(
             outcomes.iter().any(|outcome| matches!(outcome, ArtifactOutcome::Updated(_))),
             "a changed document must report an update: {outcomes:?}"
         );
 
-        let written = std::fs::read_to_string(root.join("src/generated/ui_default.rs"))
+        let written = std::fs::read_to_string(root.path().join("src/generated/ui_default.rs"))
             .expect("the file exists");
         assert!(written.contains("Changed"), "the new text must be on disk");
     }
 
     #[test]
     fn the_missing_directory_is_created() {
-        let root = temp_root("mkdir");
+        let root = TempRoot::new("mkdir");
         // Nothing exists under root yet, including `src/`.
-        assert!(!root.join(ArtifactPaths::DIR).exists());
-        regenerate_into(&root, PROJECT, 640, 480).expect("generation must create its directory");
-        assert!(root.join(ArtifactPaths::DIR).is_dir());
+        assert!(!root.path().join(ArtifactPaths::DIR).exists());
+        regenerate_into(root.path(), PROJECT, 640, 480)
+            .expect("generation must create its directory");
+        assert!(root.path().join(ArtifactPaths::DIR).is_dir());
     }
 
     #[test]
@@ -393,34 +426,35 @@ mod tests {
         // Exercised through `write_one`, which is where the check lives: a caller that bypassed the
         // generator and handed over marker-less text must not be able to create a file the drift
         // gate would then skip.
-        let root = temp_root("no_marker");
+        let root = TempRoot::new("no_marker");
         let artifact = Artifact {
-            path: root.join("src/generated/bad.rs").to_string_lossy().into_owned(),
+            path: root.path().join("src/generated/bad.rs").to_string_lossy().into_owned(),
             source: String::from("pub fn build_ui() {}\n"),
             report: Default::default(),
         };
         let error = write_one(&artifact).unwrap_err();
         assert!(error.contains("without the generated marker"), "got: {error}");
         assert!(
-            !root.join("src/generated/bad.rs").exists(),
+            !root.path().join("src/generated/bad.rs").exists(),
             "a refused write must leave nothing behind"
         );
     }
 
     #[test]
     fn a_nonexistent_project_root_is_created_rather_than_reported_as_a_read_failure() {
-        let root = temp_root("nested").join("deep").join("project");
+        let temp = TempRoot::new("nested");
+        let root = temp.path().join("deep").join("project");
         regenerate_into(&root, PROJECT, 640, 480).expect("generation must create the whole path");
         assert!(root.join("src/generated/ui_default.rs").is_file());
     }
 
     #[test]
     fn a_malformed_document_reports_the_parse_error_and_writes_nothing() {
-        let root = temp_root("malformed");
-        let error = regenerate_into(&root, "not json", 640, 480).unwrap_err();
+        let root = TempRoot::new("malformed");
+        let error = regenerate_into(root.path(), "not json", 640, 480).unwrap_err();
         assert!(error.contains("could not be parsed"), "got: {error}");
         assert!(
-            !root.join(ArtifactPaths::DIR).exists(),
+            !root.path().join(ArtifactPaths::DIR).exists(),
             "a parse failure must not leave a half-written layout behind"
         );
     }

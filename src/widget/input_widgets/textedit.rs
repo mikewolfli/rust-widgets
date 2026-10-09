@@ -1013,6 +1013,17 @@ impl EventHandler for TextEdit {
             Event::MouseRelease { button, .. } if *button == 1 => {
                 self.end_drag();
             }
+            // Platform-committed text (D09-INPUT-01), routed into the same `insert_str` the
+            // `KeyPress` printable arm below calls. This is where a printable character or an IME
+            // commit actually arrives from the desktop backends, so without this branch typing did
+            // not reach the value. `read_only` is checked here for the same reason it is checked in
+            // the key path — a read-only editor must not accept committed text either.
+            Event::TextInput { text } | Event::ImeCommit { text } => {
+                if !self.focused || self.read_only {
+                    return;
+                }
+                self.insert_str(text);
+            }
             Event::KeyPress { key, modifiers } => {
                 // An unfocused editor owns no keys — see the `focused` field for what that prevents.
                 if !self.focused {
@@ -1806,6 +1817,65 @@ mod tests {
         // `set_text` leaves the caret at the end, which is the position this control used to have
         // implicitly; every test below that cares about the caret places it explicitly.
         te
+    }
+
+    // ─── D09-INPUT-01: platform-committed text reaches the value ───
+
+    /// A `TextInput` from the platform must enter the editor's value.
+    ///
+    /// # The defect this pins (D09-INPUT-01)
+    ///
+    /// The desktop backends deliver a printable character or an IME commit as `Event::TextInput`,
+    /// not as a `KeyPress`; the handler only matched `KeyPress`, so committed text was dropped. The
+    /// test feeds `TextInput` to prove that path itself is wired.
+    #[test]
+    fn text_input_enters_the_value() {
+        let mut te = editor("");
+        te.handle_event(&Event::TextInput { text: "héllo".to_string() });
+        assert_eq!(te.text(), "héllo");
+    }
+
+    /// An IME commit enters the value the same way.
+    #[test]
+    fn ime_commit_enters_the_value() {
+        let mut te = editor("");
+        te.handle_event(&Event::ime_commit("你好"));
+        assert_eq!(te.text(), "你好");
+    }
+
+    /// A `TextInput` replaces a selection rather than appending to it.
+    #[test]
+    fn text_input_replaces_the_selection() {
+        let mut te = editor("abcdef");
+        te.select_all();
+        te.handle_event(&Event::TextInput { text: "Z".to_string() });
+        assert_eq!(te.text(), "Z", "the committed text replaced the selected range");
+    }
+
+    /// Committed text respects `max_length`.
+    #[test]
+    fn text_input_respects_the_max_length() {
+        let mut te = editor("");
+        te.set_max_length(Some(3));
+        te.handle_event(&Event::TextInput { text: "abcdef".to_string() });
+        assert!(te.text().len() <= 3, "the limit applies: got {:?}", te.text());
+    }
+
+    /// A read-only editor ignores committed text, just as it ignores a printable key.
+    #[test]
+    fn read_only_ignores_text_input() {
+        let mut te = editor("locked");
+        te.set_read_only(true);
+        te.handle_event(&Event::TextInput { text: "X".to_string() });
+        assert_eq!(te.text(), "locked");
+    }
+
+    /// An unfocused editor ignores committed text, matching the key gate.
+    #[test]
+    fn unfocused_ignores_text_input() {
+        let mut te = TextEdit::new(Rect::new(0, 0, 300, 200));
+        te.handle_event(&Event::TextInput { text: "X".to_string() });
+        assert_eq!(te.text(), "");
     }
 
     /// Typing mid-document inserts **at the caret** instead of at the end.

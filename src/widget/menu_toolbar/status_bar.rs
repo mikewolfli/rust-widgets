@@ -16,7 +16,7 @@
 //! given rather than a subtraction from the message's width.
 
 use crate::compat::{String, ToString, Vec};
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::layout::{
     AlignItems, FlexDirection, FlexLayout, FlexWrap, JustifyContent, LayoutParams,
@@ -29,7 +29,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::composite::CompositeBuilder;
-use crate::widget::metrics::dimensions;
+use crate::widget::metrics::{dimensions, effective_font};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetFactory, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Status bar widget — shows status messages and permanent widgets.
@@ -360,7 +360,9 @@ impl Draw for StatusBar {
             style.border_color.unwrap_or_else(|| band.contrast_color().with_alpha(60)),
         );
 
-        let font = Font::default();
+        // The **effective font** — the resolved theme/caller font — so both messages honour the
+        // theme body font and the user's text scale (D09-STYLE-01).
+        let font = effective_font(style);
 
         // Glue the strip's ink to the strip's own fill, rather than to a literal: the fill is
         // what the theme resolved, so the ink follows it into either appearance.
@@ -373,9 +375,9 @@ impl Draw for StatusBar {
         // Temporary message (left side).
         if !self.message.is_empty() {
             context.draw_text_fitted(
-                context.text_line(message_box, &font),
+                context.text_line(message_box, font),
                 &self.message,
-                &font,
+                font,
                 ink,
                 HorizontalAlignment::Left,
             );
@@ -394,9 +396,9 @@ impl Draw for StatusBar {
             // least as wide as the grip's reserve, and the text is anchored to the column's
             // trailing edge rather than to the strip's.
             context.draw_text_fitted(
-                context.text_line(permanent_box, &font),
+                context.text_line(permanent_box, font),
                 &self.permanent_message,
-                &font,
+                font,
                 muted,
                 HorizontalAlignment::Right,
             );

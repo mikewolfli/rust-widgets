@@ -394,18 +394,37 @@ impl Platform for MacOSObjc2Platform {
     }
 
     fn destroy_widget(&self, widget_id: ObjectId) -> bool {
-        let existed = self.state.destroy_widget(widget_id);
-
-        // Release the retained AppKit objects. A window must be closed (and taken
-        // off screen) rather than merely detached: `removeFromSuperview` on an
-        // `NSWindow` does nothing useful, so a logically destroyed window could
-        // stay visible. `destroy_native_handle` distinguishes the two by the
-        // object's own runtime class, so it does not need the pre-destroy kind, and
-        // runs only on the main thread — off it, it logs and skips.
+        // Native teardown runs **before** the logical state is dropped, so that a
+        // main-thread refusal can be reported without having already lost the handle.
+        //
+        // A window must be closed (and taken off screen) rather than merely detached:
+        // `removeFromSuperview` on an `NSWindow` does nothing useful, so a logically
+        // destroyed window could stay visible. `destroy_native_handle` distinguishes the
+        // two by the object's own runtime class, so it does not need the pre-destroy kind.
+        //
+        // # Why the result decides whether the state is dropped
+        //
+        // Off the AppKit main thread the native call is refused. Previously the order was
+        // reversed and the refusal was ignored: the state record was deleted first and the
+        // call returned `existed`, so the window stayed on screen while the caller had no
+        // id left to retry with (D08-P-02). Now a refusal keeps every bookkeeping entry and
+        // reports failure, so a main-thread retry can finish the teardown.
         #[cfg(all(target_os = "macos", feature = "macos"))]
         {
-            super::native::destroy_native_handle(widget_id);
+            match super::native::destroy_native_handle(widget_id) {
+                super::native::NativeDestroyOutcome::RefusedOffMainThread => {
+                    log::warn!(
+                        "[macos-objc2] destroy_widget: native teardown refused off the main \
+                         thread; keeping the widget {widget_id} so it can be retried there"
+                    );
+                    return false;
+                }
+                super::native::NativeDestroyOutcome::Destroyed
+                | super::native::NativeDestroyOutcome::NoNativeObject => {}
+            }
         }
+
+        let existed = self.state.destroy_widget(widget_id);
 
         // Drop every bookkeeping entry that names this widget, including any queued
         // trigger events that would otherwise fire for a widget that no longer

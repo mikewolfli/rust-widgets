@@ -22,30 +22,70 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// A single continuous pen stroke, stored as a polyline of points.
+///
+/// Each point carries the normalized tip pressure the device reported when the
+/// point was taken, so a stroke records not just *where* the pen went but *how
+/// hard* it pressed. Mouse and touch input report a neutral pressure (see
+/// [`SignatureStroke::push`]), so a stroke drawn with them is uniform.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SignatureStroke {
     points: Vec<Point>,
+    /// Normalized tip pressure (`0.0..=1.0`) for the point at the same index in
+    /// `points`. Always the same length as `points`.
+    pressures: Vec<f32>,
 }
+
+/// The pressure a mouse or touch contact reports: neutral, so a stroke drawn with
+/// it keeps the pad's configured width (D09-POINTER-01).
+const NEUTRAL_PRESSURE: f32 = 1.0;
 
 impl SignatureStroke {
     /// Creates an empty stroke.
     pub fn new() -> Self {
-        Self { points: Vec::new() }
+        Self { points: Vec::new(), pressures: Vec::new() }
     }
 
     /// Creates a stroke from a list of points.
+    ///
+    /// The points carry a neutral pressure, so a stroke built this way renders at
+    /// the pad's configured width. Use [`SignatureStroke::push_with_pressure`] to
+    /// attach real per-point pressure.
     pub fn from_points(points: Vec<Point>) -> Self {
-        Self { points }
+        let pressures = vec![NEUTRAL_PRESSURE; points.len()];
+        Self { points, pressures }
     }
 
-    /// Appends a point to the stroke.
+    /// Appends a point to the stroke with neutral pressure.
     pub fn push(&mut self, point: Point) {
+        self.push_with_pressure(point, NEUTRAL_PRESSURE);
+    }
+
+    /// Appends a point and the normalized tip pressure reported with it.
+    ///
+    /// The pressure is clamped to `0.0..=1.0`; a non-finite value collapses to the
+    /// neutral pressure rather than poisoning the stroke's width (D09-POINTER-01).
+    pub fn push_with_pressure(&mut self, point: Point, pressure: f32) {
+        let clamped =
+            if pressure.is_finite() { pressure.clamp(0.0, 1.0) } else { NEUTRAL_PRESSURE };
         self.points.push(point);
+        self.pressures.push(clamped);
     }
 
     /// Returns the stroke's points.
     pub fn points(&self) -> &[Point] {
         &self.points
+    }
+
+    /// Returns the normalized tip pressure recorded for each point, in the same
+    /// order and of the same length as [`Self::points`].
+    pub fn pressures(&self) -> &[f32] {
+        &self.pressures
+    }
+
+    /// Returns the pressure recorded with the most recent point, or the neutral
+    /// pressure when the stroke is empty.
+    pub fn last_pressure(&self) -> f32 {
+        self.pressures.last().copied().unwrap_or(NEUTRAL_PRESSURE)
     }
 
     /// Returns the number of points in the stroke.
@@ -103,6 +143,21 @@ pub struct SignaturePad {
     /// "when was this signed" -- which is the caller's to attach and must not gate
     /// whether ink can be drawn.
     last_point_at: Option<Instant>,
+    /// The tip pressure reported with the most recent pointer event, normalized to
+    /// `0.0..=1.0`. Retained so a caller can read the last pen datum even after the
+    /// stroke commits, and so the pressure datum is never silently discarded
+    /// (D09-POINTER-01).
+    last_pressure: f32,
+    /// The stylus tilt (about X then Y, in device degrees) reported with the most
+    /// recent pointer event. Retained for the same reason as `last_pressure`; the pad
+    /// does not yet shape ink from tilt, so it is stored rather than dropped
+    /// (D09-POINTER-01).
+    last_tilt: (f32, f32),
+    /// When `true` (the default) a stroke's per-segment width follows the tip
+    /// pressure a pen reports, so pressing harder draws a wider line. When `false`
+    /// every segment uses [`Self::stroke_width`]. A mouse or touch contact reports a
+    /// neutral pressure, so both settings render the same width for them.
+    pressure_affects_width: bool,
     /// Emitted with no payload whenever the committed stroke set changes.
     pub changed: GenericSignal,
     /// Emitted with the final stroke when a drag is released and committed.
@@ -121,6 +176,9 @@ impl SignaturePad {
             min_point_distance: 1.5,
             min_point_interval_ms: 10,
             last_point_at: None,
+            last_pressure: NEUTRAL_PRESSURE,
+            last_tilt: (0.0, 0.0),
+            pressure_affects_width: true,
             changed: GenericSignal::new(),
             stroke_completed: Signal1::new(),
         }
@@ -189,6 +247,45 @@ impl SignaturePad {
         self.base.request_redraw();
     }
 
+    /// Returns the tip pressure reported with the most recent pointer event,
+    /// normalized to `0.0..=1.0` (D09-POINTER-01).
+    ///
+    /// This is the retained pen datum: a `PointerMove` carrying pressure updates it
+    /// even when the point itself is dropped by the sampling rule, so the value is
+    /// queryable rather than silently discarded. A mouse or touch contact reports the
+    /// neutral `1.0`.
+    pub fn last_pressure(&self) -> f32 {
+        self.last_pressure
+    }
+
+    /// Returns the stylus tilt (about X, then Y, in device degrees) reported with the
+    /// most recent pointer event (D09-POINTER-01).
+    ///
+    /// The pad retains tilt but does not yet shape ink from it; this accessor exists so
+    /// the datum is observable instead of being dropped on the floor.
+    pub fn last_tilt(&self) -> (f32, f32) {
+        self.last_tilt
+    }
+
+    /// Returns whether tip pressure modulates the drawn stroke width.
+    pub fn pressure_affects_width(&self) -> bool {
+        self.pressure_affects_width
+    }
+
+    /// Enables or disables pressure-driven stroke width and requests a redraw when the
+    /// setting changes.
+    ///
+    /// When enabled, each segment is drawn at the pad's configured width scaled by the
+    /// pressure of the points that bound it, so a pen that presses harder draws a
+    /// heavier line. When disabled, every segment uses [`Self::stroke_width`]
+    /// regardless of pressure.
+    pub fn set_pressure_affects_width(&mut self, enabled: bool) {
+        if self.pressure_affects_width != enabled {
+            self.pressure_affects_width = enabled;
+            self.base.request_redraw();
+        }
+    }
+
     /// Returns the minimum distance between recorded points, in pixels.
     pub fn min_point_distance(&self) -> f32 {
         self.min_point_distance
@@ -240,16 +337,48 @@ impl SignaturePad {
         self.current.is_some()
     }
 
-    fn begin_stroke(&mut self, point: Point) {
+    /// Begins a stroke at `point`.
+    ///
+    /// `pressure` and `tilt` are the pen data (if any) reported with the press: the
+    /// pressure seeds the first point's width, and both are retained on the pad so
+    /// they remain queryable through [`Self::last_pressure`]/[`Self::last_tilt`]
+    /// (D09-POINTER-01). A mouse or touch press passes the neutral pressure and zero
+    /// tilt.
+    fn begin_stroke_with(&mut self, point: Point, pressure: f32, tilt: (f32, f32)) {
+        self.record_pen_data(pressure, tilt);
         let mut stroke = SignatureStroke::new();
-        stroke.push(point);
+        stroke.push_with_pressure(point, self.last_pressure);
         self.current = Some(stroke);
         // The clock starts with the stroke, so the first interval is measured
         // against the press rather than against whenever a pointer last moved.
         self.last_point_at = Some(Instant::now());
     }
 
+    /// Begins a stroke at `point` with neutral pen data.
+    fn begin_stroke(&mut self, point: Point) {
+        self.begin_stroke_with(point, NEUTRAL_PRESSURE, (0.0, 0.0));
+    }
+
+    /// Retains the pressure/tilt a pointer event reported so they stay queryable, and
+    /// clamps a non-finite pressure to neutral (D09-POINTER-01).
+    fn record_pen_data(&mut self, pressure: f32, tilt: (f32, f32)) {
+        self.last_pressure =
+            if pressure.is_finite() { pressure.clamp(0.0, 1.0) } else { NEUTRAL_PRESSURE };
+        self.last_tilt = (
+            if tilt.0.is_finite() { tilt.0 } else { 0.0 },
+            if tilt.1.is_finite() { tilt.1 } else { 0.0 },
+        );
+    }
+
+    /// Extends the in-progress stroke to `point` with neutral pen data.
     fn extend_stroke(&mut self, point: Point) {
+        self.extend_stroke_with(point, NEUTRAL_PRESSURE, (0.0, 0.0));
+    }
+
+    /// Extends the in-progress stroke to `point`, attributing `pressure` to the new
+    /// point(s) so the stroke's width can follow the pen (D09-POINTER-01).
+    fn extend_stroke_with(&mut self, point: Point, pressure: f32, tilt: (f32, f32)) {
+        self.record_pen_data(pressure, tilt);
         // The clock is read once, before the borrow of `self.current`, so the event's
         // arrival time is a fact about this call rather than about the point's fate.
         let now = Instant::now();
@@ -265,6 +394,9 @@ impl SignaturePad {
         // through a borrow that outlives them.
         let min_distance = self.min_point_distance;
         let min_interval_ms = self.min_point_interval_ms;
+        // The pressure attributed to the new point(s): the caller's datum, already
+        // clamped by `record_pen_data`, which the interpolation below interpolates.
+        let new_pressure = self.last_pressure;
 
         let Some(current) = self.current.as_mut() else {
             return;
@@ -272,7 +404,7 @@ impl SignaturePad {
         let Some(last) = current.points().last().copied() else {
             // A stroke always begins with a point, but a caller-built empty `current`
             // must not silently swallow the move.
-            current.push(point);
+            current.push_with_pressure(point, new_pressure);
             self.last_point_at = Some(now);
             self.base.request_redraw();
             return;
@@ -297,11 +429,19 @@ impl SignaturePad {
         // two events would deposit two points and the pad would draw one straight
         // edge, which is the polygonisation this control was reported for.
         if distance > min_distance && min_interval_ms > 0 {
-            for step in interpolation_steps(last, point, distance, min_distance) {
-                current.push(step);
+            let from_pressure = current.last_pressure();
+            for (step, step_pressure) in interpolation_steps_with_pressure(
+                last,
+                point,
+                distance,
+                min_distance,
+                from_pressure,
+                new_pressure,
+            ) {
+                current.push_with_pressure(step, step_pressure);
             }
         }
-        current.push(point);
+        current.push_with_pressure(point, new_pressure);
         self.last_point_at = Some(now);
         self.base.request_redraw();
     }
@@ -316,6 +456,20 @@ impl SignaturePad {
         self.stroke_completed.emit(stroke);
         self.changed.emit();
         self.base.request_redraw();
+    }
+
+    /// Discards the in-progress stroke without committing it (D09-EVT-02).
+    ///
+    /// This is the cancel counterpart of [`Self::end_stroke`]: the platform withdrew the
+    /// contact (a `TouchCancel`), so the stroke must not be saved or announced. Unlike
+    /// `end_stroke` it emits neither `stroke_completed` nor `changed`, so a cancelled
+    /// gesture leaves the committed strokes and the change signal untouched. It is a no-op
+    /// when no stroke is in progress.
+    fn cancel_stroke(&mut self) {
+        if self.current.take().is_some() {
+            self.last_point_at = None;
+            self.base.request_redraw();
+        }
     }
 }
 
@@ -376,6 +530,12 @@ impl WidgetProperties for SignaturePad {
             "stroke_color" => Ok(CapabilityValue::Color(self.stroke_color())),
             "min_point_distance" => Ok(CapabilityValue::Float(self.min_point_distance() as f64)),
             "min_point_interval_ms" => Ok(CapabilityValue::UInt(self.min_point_interval_ms())),
+            // D09-POINTER-01: the retained pen datum is published so a designer or a host can
+            // observe it instead of it being silently dropped.
+            "pressure_affects_width" => Ok(CapabilityValue::Bool(self.pressure_affects_width())),
+            "last_pressure" => Ok(CapabilityValue::Float(self.last_pressure() as f64)),
+            "last_tilt_x" => Ok(CapabilityValue::Float(self.last_tilt().0 as f64)),
+            "last_tilt_y" => Ok(CapabilityValue::Float(self.last_tilt().1 as f64)),
             _ => base_property_get(self, name),
         }
     }
@@ -402,6 +562,18 @@ impl WidgetProperties for SignaturePad {
                 self.set_min_point_interval_ms(expect_usize(value)? as u64);
                 Ok(())
             }
+            "pressure_affects_width" => match value {
+                CapabilityValue::Bool(enabled) => {
+                    self.set_pressure_affects_width(enabled);
+                    Ok(())
+                }
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            },
+            // The retained pen datum is a report of what the device sent, so it is read-only:
+            // writing it would fabricate a fact about the input device.
+            "last_pressure" | "last_tilt_x" | "last_tilt_y" => {
+                Err(CapabilityAccessError::ReadOnlyProperty)
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -413,6 +585,10 @@ impl WidgetProperties for SignaturePad {
             "stroke_color",
             "min_point_distance",
             "min_point_interval_ms",
+            "pressure_affects_width",
+            "last_pressure",
+            "last_tilt_x",
+            "last_tilt_y",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -439,12 +615,28 @@ impl EventHandler for SignaturePad {
             Event::MousePress { pos, button: 1, .. } if rect.contains_point(*pos) => {
                 self.begin_stroke(*pos);
             }
+            // D09-POINTER-01: a stylus press starts a stroke exactly like a mouse press, and
+            // the pen pressure/tilt it carries seed the first point's width and are retained
+            // (see `last_pressure`/`last_tilt`). A `PointerPress` with a non-primary button is
+            // a barrel switch, not the tip, so it does not begin a stroke — the same rule the
+            // mouse arm applies to button 1.
+            Event::PointerPress { pos, button: 1, pressure, tilt_x, tilt_y }
+                if rect.contains_point(*pos) =>
+            {
+                self.begin_stroke_with(*pos, *pressure, (*tilt_x, *tilt_y));
+            }
             #[cfg(feature = "touch")]
             Event::TouchBegin { pos, .. } if rect.contains_point(*pos) => {
                 self.begin_stroke(*pos);
             }
-            Event::MouseMove { pos } | Event::PointerMove { pos, .. } if self.in_progress() => {
+            Event::MouseMove { pos } if self.in_progress() => {
                 self.extend_stroke(*pos);
+            }
+            // D09-POINTER-01: a stylus move extends the stroke and its pressure/tilt are
+            // attributed to the new point(s) rather than dropped, so the ink's width follows
+            // the pen.
+            Event::PointerMove { pos, pressure, tilt_x, tilt_y } if self.in_progress() => {
+                self.extend_stroke_with(*pos, *pressure, (*tilt_x, *tilt_y));
             }
             #[cfg(feature = "touch")]
             Event::TouchMove { pos, .. } if self.in_progress() => {
@@ -453,9 +645,26 @@ impl EventHandler for SignaturePad {
             Event::MouseRelease { .. } if self.in_progress() => {
                 self.end_stroke();
             }
+            // D09-POINTER-01: a stylus release ends the stroke. The release's own pressure is
+            // retained (it is the last datum the device sent) but does not add a point: the
+            // lift-off position is the stroke's last move, so committing here would append a
+            // duplicated or jumpy terminal point.
+            Event::PointerRelease { pressure, .. } if self.in_progress() => {
+                let tilt = self.last_tilt;
+                self.record_pen_data(*pressure, tilt);
+                self.end_stroke();
+            }
             #[cfg(feature = "touch")]
             Event::TouchEnd { .. } if self.in_progress() => {
                 self.end_stroke();
+            }
+            // D09-EVT-02: a withdrawn contact abandons the in-progress stroke instead of
+            // saving it. A platform `TouchCancel` (which may arrive normalised as an end)
+            // is rerouted to this internal cancel event, so the cancelled stroke is neither
+            // committed nor announced via `stroke_completed`/`changed`.
+            #[cfg(feature = "touch")]
+            event if crate::event::translator::is_touch_cancel(event) => {
+                self.cancel_stroke();
             }
             _ => { /* Other events are not relevant */ }
         }
@@ -524,11 +733,23 @@ impl Draw for SignaturePad {
 
         // Draw committed strokes.
         for stroke in &self.strokes {
-            draw_stroke(context, stroke, self.stroke_color, self.stroke_width);
+            draw_stroke(
+                context,
+                stroke,
+                self.stroke_color,
+                self.stroke_width,
+                self.pressure_affects_width,
+            );
         }
         // Draw the in-progress stroke on top.
         if let Some(current) = &self.current {
-            draw_stroke(context, current, self.stroke_color, self.stroke_width);
+            draw_stroke(
+                context,
+                current,
+                self.stroke_color,
+                self.stroke_width,
+                self.pressure_affects_width,
+            );
         }
 
         // Empty-state hint: a baseline that reads like a signature line.
@@ -546,13 +767,16 @@ impl Draw for SignaturePad {
 }
 
 /// The intermediate points to lay between `from` and `to` so that no drawn segment is
-/// longer than `min_distance`.
+/// longer than `min_distance`, each with a linearly interpolated tip pressure
+/// (D09-POINTER-01).
 ///
 /// The count is `ceil(distance / min_distance) - 1`, which spaces the inserted points at
 /// the same resolution the pad accepts directly: a slow stroke and a fast one therefore
 /// produce strokes of the **same** geometric fidelity, which is the property the old
 /// distance-only rule could not express. When `min_distance` is `0` there is no resolution
-/// to honour and nothing is inserted.
+/// to honour and nothing is inserted. The pressure of an inserted point is the linear blend
+/// of the two endpoint pressures, so a stroke that fades from a light touch to a hard press
+/// keeps a smooth width ramp instead of stepping.
 ///
 /// # Why a free function
 ///
@@ -560,7 +784,14 @@ impl Draw for SignaturePad {
 /// widget: taking the threshold as a parameter is what lets the caller hold a mutable
 /// borrow of the stroke while the count is computed, and it makes the spacing rule testable
 /// without constructing a pad.
-fn interpolation_steps(from: Point, to: Point, distance: f32, min_distance: f32) -> Vec<Point> {
+fn interpolation_steps_with_pressure(
+    from: Point,
+    to: Point,
+    distance: f32,
+    min_distance: f32,
+    from_pressure: f32,
+    to_pressure: f32,
+) -> Vec<(Point, f32)> {
     if min_distance <= 0.0 || !distance.is_finite() || !min_distance.is_finite() {
         return Vec::new();
     }
@@ -571,29 +802,70 @@ fn interpolation_steps(from: Point, to: Point, distance: f32, min_distance: f32)
     let mut out = Vec::with_capacity(steps - 1);
     for i in 1..steps {
         let t = i as f32 / steps as f32;
-        out.push(Point::new(
+        let point = Point::new(
             from.x + ((to.x - from.x) as f32 * t).round() as i32,
             from.y + ((to.y - from.y) as f32 * t).round() as i32,
-        ));
+        );
+        let pressure = from_pressure + (to_pressure - from_pressure) * t;
+        out.push((point, pressure));
     }
     out
 }
 
 /// Draws a single stroke as a connected polyline.
-fn draw_stroke(context: &mut RenderContext, stroke: &SignatureStroke, color: Color, width: u32) {
+///
+/// When `pressure_affects_width` is `true`, each segment's width is `width` scaled by the
+/// mean pressure of the points that bound it, floored at 1 so a light touch still leaves
+/// visible ink (D09-POINTER-01). A stroke whose points all carry the neutral pressure — every
+/// mouse or touch stroke — therefore renders at exactly `width`, so enabling the feature
+/// changes nothing for a device that reports no pressure.
+fn draw_stroke(
+    context: &mut RenderContext,
+    stroke: &SignatureStroke,
+    color: Color,
+    width: u32,
+    pressure_affects_width: bool,
+) {
     let points = stroke.points();
+    let pressures = stroke.pressures();
     match points.len() {
         0 => {}
         1 => {
             // A single point renders as a dot.
-            context.draw_line_stroke_aa(points[0], points[0], color, width.max(2));
+            let pressure = pressures.first().copied().unwrap_or(NEUTRAL_PRESSURE);
+            let dot_width = segment_width(width, pressure, pressure, pressure_affects_width);
+            context.draw_line_stroke_aa(points[0], points[0], color, dot_width.max(2));
         }
         _ => {
-            for pair in points.windows(2) {
-                context.draw_line_stroke_aa(pair[0], pair[1], color, width);
+            for (index, pair) in points.windows(2).enumerate() {
+                let from_pressure = pressures.get(index).copied().unwrap_or(NEUTRAL_PRESSURE);
+                let to_pressure = pressures.get(index + 1).copied().unwrap_or(NEUTRAL_PRESSURE);
+                let segment =
+                    segment_width(width, from_pressure, to_pressure, pressure_affects_width);
+                context.draw_line_stroke_aa(pair[0], pair[1], color, segment);
             }
         }
     }
+}
+
+/// The drawn width of one segment, derived from the configured `width` and the tip pressure
+/// at its two ends (D09-POINTER-01).
+///
+/// Pressure scales the width linearly and the result is floored at `1`, so a zero-pressure
+/// segment still leaves a hairline rather than disappearing. With `pressure_affects_width`
+/// off, the configured width is returned unchanged.
+fn segment_width(
+    width: u32,
+    from_pressure: f32,
+    to_pressure: f32,
+    pressure_affects_width: bool,
+) -> u32 {
+    if !pressure_affects_width {
+        return width.max(1);
+    }
+    let mean = ((from_pressure + to_pressure) * 0.5).clamp(0.0, 1.0);
+    let scaled = (width as f32 * mean).round();
+    (scaled as u32).max(1)
 }
 
 #[cfg(test)]
@@ -660,16 +932,39 @@ mod tests {
     fn interpolation_spaces_points_at_the_pads_own_resolution() {
         // 10 px at a 1.5 px threshold: `ceil(10 / 1.5) = 7` steps, so 6 inserted points, the
         // first at `t = 1/7` (x = 1.43 -> 1) and the last at `t = 6/7` (x = 8.57 -> 9).
-        let steps = interpolation_steps(Point::new(0, 0), Point::new(10, 0), 10.0, 1.5);
+        let steps = interpolation_steps_with_pressure(
+            Point::new(0, 0),
+            Point::new(10, 0),
+            10.0,
+            1.5,
+            NEUTRAL_PRESSURE,
+            NEUTRAL_PRESSURE,
+        );
         assert_eq!(steps.len(), 6);
-        assert_eq!(steps[0], Point::new(1, 0));
-        assert_eq!(steps[5], Point::new(9, 0));
+        assert_eq!(steps[0].0, Point::new(1, 0));
+        assert_eq!(steps[5].0, Point::new(9, 0));
 
         // A hop shorter than the threshold has no interior to fill.
-        assert!(interpolation_steps(Point::new(0, 0), Point::new(1, 0), 1.0, 1.5).is_empty());
+        assert!(interpolation_steps_with_pressure(
+            Point::new(0, 0),
+            Point::new(1, 0),
+            1.0,
+            1.5,
+            NEUTRAL_PRESSURE,
+            NEUTRAL_PRESSURE,
+        )
+        .is_empty());
 
         // A zero threshold means "no resolution to honour", not "divide by zero".
-        assert!(interpolation_steps(Point::new(0, 0), Point::new(100, 0), 100.0, 0.0).is_empty());
+        assert!(interpolation_steps_with_pressure(
+            Point::new(0, 0),
+            Point::new(100, 0),
+            100.0,
+            0.0,
+            NEUTRAL_PRESSURE,
+            NEUTRAL_PRESSURE,
+        )
+        .is_empty());
     }
 
     /// The interval rule accepts a point that has not moved, once enough time has passed.
@@ -776,11 +1071,151 @@ mod tests {
         assert_eq!(p.stroke_count(), 1);
     }
 
+    /// D09-EVT-02: a touch cancel abandons the in-progress stroke without committing it.
+    ///
+    /// A `TouchCancel` normalised to a `TouchEnd` used to call `end_stroke`, saving the
+    /// interrupted stroke and firing `stroke_completed`/`changed`. The internal cancel event
+    /// must discard it silently. An earlier committed stroke must be untouched.
+    #[test]
+    #[cfg(feature = "touch")]
+    fn touch_cancel_discards_the_in_progress_stroke() {
+        let mut p = pad();
+
+        // One committed stroke.
+        p.handle_event(&crate::event::Event::touch_begin(5, 5, 1));
+        p.handle_event(&crate::event::Event::touch_move(40, 40, 1));
+        p.handle_event(&crate::event::Event::touch_end(40, 40, 1));
+        assert_eq!(p.stroke_count(), 1);
+
+        let changed = Arc::new(AtomicUsize::new(0));
+        let c = changed.clone();
+        p.changed.connect(move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+        let completed = Arc::new(AtomicUsize::new(0));
+        let cc = completed.clone();
+        p.stroke_completed.connect(move |_| {
+            cc.fetch_add(1, Ordering::SeqCst);
+        });
+
+        // Begin a second stroke, then cancel it.
+        p.handle_event(&crate::event::Event::touch_begin(60, 60, 2));
+        p.handle_event(&crate::event::Event::touch_move(80, 80, 2));
+        let cancel = crate::event::translator::touch_cancel(crate::core::Point::new(80, 80), 2);
+        p.handle_event(&cancel);
+
+        assert_eq!(p.stroke_count(), 1, "a cancelled stroke must not be committed");
+        assert_eq!(changed.load(Ordering::SeqCst), 0, "a cancel must not emit `changed`");
+        assert_eq!(
+            completed.load(Ordering::SeqCst),
+            0,
+            "a cancel must not emit `stroke_completed`"
+        );
+
+        // A normal touch end still commits.
+        p.handle_event(&crate::event::Event::touch_begin(90, 90, 3));
+        p.handle_event(&crate::event::Event::touch_end(90, 90, 3));
+        assert_eq!(p.stroke_count(), 2, "a completed stroke still commits");
+    }
+
     #[test]
     fn stroke_width_is_floored_at_one() {
         let mut p = pad();
         p.set_stroke_width(0);
         assert_eq!(p.stroke_width(), 1);
+    }
+
+    /// D09-POINTER-01: a `PointerPress`/`PointerMove`/`PointerRelease` sequence begins,
+    /// extends and commits a stroke — the same lifecycle as the mouse and touch paths.
+    ///
+    /// Before the fix a stroke could only start from `MousePress`/`TouchBegin`, so a pen
+    /// contact produced no ink at all.
+    #[test]
+    fn pointer_events_record_a_stroke() {
+        let mut p = pad();
+        p.handle_event(&Event::pointer_press(Point::new(10, 20), 1, 0.3, 0.0, 0.0));
+        assert!(p.current.is_some(), "a stylus press must begin a stroke");
+        p.handle_event(&Event::pointer_move(Point::new(40, 40), 0.5, 0.0, 0.0));
+        p.handle_event(&Event::pointer_move(Point::new(80, 50), 0.7, 0.0, 0.0));
+        p.handle_event(&Event::pointer_release(Point::new(80, 50), 1, 0.0));
+
+        assert_eq!(p.stroke_count(), 1, "a stylus gesture commits exactly one stroke");
+        let stroke = &p.strokes()[0];
+        assert_eq!(stroke.points()[0], Point::new(10, 20), "the stroke starts at the press");
+        assert_eq!(stroke.points().last().copied(), Some(Point::new(80, 50)));
+    }
+
+    /// D09-POINTER-01: the pressure a pen reports is retained per point and queryable, so it
+    /// is not silently dropped as it was when `PointerMove` only forwarded the position.
+    #[test]
+    fn pointer_pressure_is_recorded_per_point_and_retained() {
+        let mut p = pad();
+        p.handle_event(&Event::pointer_press(Point::new(10, 20), 1, 0.25, 0.0, 0.0));
+        assert!((p.last_pressure() - 0.25).abs() < 1e-6, "the press pressure is retained");
+        p.handle_event(&Event::pointer_move(Point::new(40, 40), 0.75, 0.0, 0.0));
+        assert!((p.last_pressure() - 0.75).abs() < 1e-6, "a move updates the retained pressure");
+        p.handle_event(&Event::pointer_release(Point::new(40, 40), 1, 0.9));
+
+        let stroke = &p.strokes()[0];
+        assert_eq!(stroke.pressures().len(), stroke.points().len(), "pressure tracks every point");
+        // The press and the single accepted move carry the reported pressures; interpolation
+        // (if any) blends between them, so the endpoints are exact.
+        assert!((stroke.pressures()[0] - 0.25).abs() < 1e-6);
+        assert!((stroke.last_pressure() - 0.75).abs() < 1e-6);
+        // The release's own pressure is retained on the pad even though it adds no point.
+        assert!((p.last_pressure() - 0.9).abs() < 1e-6);
+    }
+
+    /// D09-POINTER-01: pen pressure changes the drawn stroke width, so the datum reaches a
+    /// **visible** behaviour rather than being recorded and ignored.
+    ///
+    /// `segment_width` is the drawing kernel, so it is asserted directly: a light press draws
+    /// a thinner segment than a hard one at the same configured width, and disabling
+    /// pressure-driven width makes both fall back to the configured width.
+    #[test]
+    fn pressure_scales_the_drawn_segment_width() {
+        // 10 px configured: a full-pressure segment stays 10, a light one is thinner.
+        assert_eq!(segment_width(10, 1.0, 1.0, true), 10);
+        assert_eq!(segment_width(10, 0.2, 0.2, true), 2);
+        assert_eq!(segment_width(10, 0.0, 0.0, true), 1, "a zero-pressure segment is a hairline");
+
+        // Pressure off: the configured width wins regardless of the datum.
+        assert_eq!(segment_width(10, 0.2, 0.2, false), 10);
+
+        // A stroke's width is derived from the pressure recorded at its points.
+        let mut p = pad();
+        p.set_stroke_width(10);
+        p.handle_event(&Event::pointer_press(Point::new(0, 0), 1, 0.1, 0.0, 0.0));
+        p.handle_event(&Event::pointer_move(Point::new(60, 0), 0.1, 0.0, 0.0));
+        let light = &p.current.as_ref().expect("in progress").pressures()[0];
+        assert!((*light - 0.1).abs() < 1e-6);
+        assert_eq!(segment_width(10, *light, *light, true), 1, "a light stroke draws thin");
+
+        // The datum is queryable through the published property contract too.
+        assert_eq!(p.get("last_pressure").expect("readable"), CapabilityValue::Float(0.1));
+        assert_eq!(p.get("pressure_affects_width").expect("readable"), CapabilityValue::Bool(true));
+        p.set("pressure_affects_width", CapabilityValue::Bool(false)).expect("writable");
+        assert!(!p.pressure_affects_width());
+    }
+
+    /// D09-POINTER-01: the tilt a pen reports is retained rather than dropped, even though
+    /// the pad does not yet shape ink from it.
+    #[test]
+    fn pointer_tilt_is_retained() {
+        let mut p = pad();
+        p.handle_event(&Event::pointer_press(Point::new(10, 20), 1, 0.5, 0.25, -0.5));
+        assert_eq!(p.last_tilt(), (0.25, -0.5));
+        assert_eq!(p.get("last_tilt_x").expect("readable"), CapabilityValue::Float(0.25));
+        assert_eq!(p.get("last_tilt_y").expect("readable"), CapabilityValue::Float(-0.5));
+    }
+
+    /// D09-POINTER-01: a non-tip `PointerPress` (a barrel switch) must not begin a stroke,
+    /// matching the mouse arm's primary-button rule.
+    #[test]
+    fn pointer_press_with_a_non_primary_button_does_not_begin_a_stroke() {
+        let mut p = pad();
+        p.handle_event(&Event::pointer_press(Point::new(10, 20), 2, 0.5, 0.0, 0.0));
+        assert!(p.current.is_none(), "a barrel switch must not draw ink");
     }
 
     #[test]

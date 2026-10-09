@@ -9,7 +9,7 @@
 //! [`BarcodeScanner::detect_barcode`]; without such an injection the widget
 //! never reports a detection.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -17,7 +17,7 @@ use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::ControlMetrics;
+use crate::widget::metrics::{role_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// The height of the scan-result overlay band pinned to the viewfinder's bottom: 50.
@@ -286,10 +286,6 @@ impl Draw for BarcodeScanner {
             return;
         }
 
-        // Create fonts
-        let small_font = Font::new("sans-serif", 11.0, false, false);
-        let normal_font = Font::new("sans-serif", 13.0, false, false);
-
         // Every colour below is chrome, not content: this widget is a *simulated*
         // viewfinder that connects to no camera (see the type's own docs), so the
         // dark backdrop, the brackets, the sweep line, the overlay and the status
@@ -302,6 +298,10 @@ impl Draw for BarcodeScanner {
         // mutex is not re-entrant).
         let style = self.base.style().clone();
         let theme = crate::style::resolved_theme_style("barcode_scanner");
+        // The scanner's chrome faces take the **effective font** at their role sizes, so the theme
+        // family and the user's text scale reach them (D09-STYLE-01).
+        let small_font = role_font(&style, 11.0);
+        let normal_font = role_font(&style, 13.0);
         let text_color = style
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))

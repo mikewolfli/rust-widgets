@@ -7,7 +7,7 @@
 //! displays a dropdown list of suggestions as the user types. The user can
 //! select a suggestion with the keyboard (Enter) or by clicking.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -19,6 +19,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -115,6 +116,20 @@ impl AutoCompleteEdit {
         self.filter_suggestions();
         self.text_changed.emit(cloned);
         self.base.request_redraw();
+    }
+
+    /// Appends committed text to the field and re-runs completion (D09-INPUT-01).
+    ///
+    /// The single append entry point shared by the `KeyPress` printable arm and the
+    /// `TextInput`/`ImeCommit` branch: control characters are filtered, and the result drives
+    /// `set_text` so the filtered suggestions, the undo push and the `text_changed` signal all
+    /// behave exactly as they do for a typed character.
+    fn append_committed_text(&mut self, text: &str) {
+        let mut next = self.text.clone();
+        next.extend(text.chars().filter(|c| !c.is_control()));
+        if next != self.text {
+            self.set_text(next);
+        }
     }
 
     /// Adds a single suggestion to the suggestion list.
@@ -557,10 +572,15 @@ impl Draw for AutoCompleteEdit {
         context.draw_rounded_rect_stroke(rect, 4, border_color, 1);
 
         // Draw text
-        let font = Font::simple("sans-serif", 13.0);
+        // The **effective font** — the resolved theme/caller font — so the value and the
+        // suggestion rows honour the theme body font and the user's text scale (D09-STYLE-01).
+        let font = effective_font(&style);
         let padding = 6i32;
         let text_x = rect.x + padding;
-        let text_y = rect.y + padding + 13;
+        // The glyph origin is the line box's top edge, so the vertical anchor comes from
+        // `text_line` rather than the fixed `padding + 13` that assumed a 13 px face.
+        let input_line = context.text_line(rect, font);
+        let text_y = input_line.y;
 
         let display_text = if self.text.is_empty() { "Type to search..." } else { &self.text };
         // Empty field = placeholder: the resolved ink damped toward the fill, so the
@@ -618,11 +638,11 @@ impl Draw for AutoCompleteEdit {
 
             if let Some(suggestion) = self.filtered_suggestions.get(i) {
                 let item_text_x = item_rect.x + 4;
-                let item_text_y = item_rect.y + 16;
+                let item_text_y = context.text_line(item_rect, font).y;
                 context.draw_text(
                     Point::new(item_text_x, item_text_y),
                     suggestion,
-                    &font,
+                    font,
                     dropdown_text,
                     HorizontalAlignment::Left,
                 );
@@ -664,7 +684,6 @@ impl EventHandler for AutoCompleteEdit {
             }
             Event::KeyPress { key, modifiers } => {
                 if *key == key_codes::ENTER {
-                    // Enter
                     if self.show_dropdown {
                         self.select_highlighted();
                     }
@@ -684,11 +703,11 @@ impl EventHandler for AutoCompleteEdit {
                 } else if *modifiers == 2 && *key == 89 {
                     let _ = self.redo();
                 } else if *key >= 32 && *key <= 126 {
-                    // Printable ASCII — append to text
-                    let c = char::from_u32(*key).unwrap_or(' ');
-                    let mut new_text = self.text.clone();
-                    new_text.push(c);
-                    self.set_text(new_text);
+                    // Printable ASCII — append through the shared committed-text entry point so the
+                    // keyboard path and the platform's `TextInput` path stay in lockstep.
+                    if let Some(c) = char::from_u32(*key) {
+                        self.append_committed_text(&c.to_string());
+                    }
                 } else if *key == key_codes::BACKSPACE {
                     // Backspace
                     if !self.text.is_empty() {
@@ -697,6 +716,14 @@ impl EventHandler for AutoCompleteEdit {
                         self.set_text(new_text);
                     }
                 }
+            }
+            // Platform-committed text (D09-INPUT-01). A printable character or an IME commit reaches
+            // the widget as `TextInput`/`ImeCommit`, not as a `KeyPress`, so this branch is what
+            // actually receives typing from the desktop backends. It funnels into the shared
+            // `append_committed_text`, which filters control characters and drives `set_text`, the
+            // same entry point the printable key arm uses. The `is_enabled` guard above already ran.
+            Event::TextInput { text } | Event::ImeCommit { text } => {
+                self.append_committed_text(text);
             }
             _ => {
                 self.base.handle_event(event);
@@ -887,5 +914,55 @@ mod tests {
         assert_eq!(edit.max_visible(), 1);
         edit.set("max_visible", CapabilityValue::UInt(3)).unwrap();
         assert_eq!(edit.max_visible(), 3);
+    }
+
+    // ─── D09-INPUT-01: platform-committed text reaches the value ───
+
+    /// A `TextInput` from the platform must be appended to the field.
+    ///
+    /// # The defect this pins (D09-INPUT-01)
+    ///
+    /// The desktop backends deliver a printable character or an IME commit as `Event::TextInput`,
+    /// not as a `KeyPress`; the handler only matched `KeyPress`, so committed text was dropped. The
+    /// test feeds `TextInput` to prove that path itself is wired.
+    #[test]
+    fn text_input_is_appended_to_the_value() {
+        let mut edit = AutoCompleteEdit::new(Rect::new(0, 0, 200, 30));
+        edit.handle_event(&Event::TextInput { text: "hé".to_string() });
+        assert_eq!(edit.text(), "hé");
+    }
+
+    /// An IME commit is appended the same way.
+    #[test]
+    fn ime_commit_is_appended_to_the_value() {
+        let mut edit = AutoCompleteEdit::new(Rect::new(0, 0, 200, 30));
+        edit.handle_event(&Event::ime_commit("你好"));
+        assert_eq!(edit.text(), "你好");
+    }
+
+    /// Committed text re-runs completion and emits `text_changed`.
+    #[test]
+    fn text_input_emits_text_changed_and_filters() {
+        let mut edit = AutoCompleteEdit::new(Rect::new(0, 0, 200, 30));
+        edit.add_suggestion("Apple".to_string());
+        edit.add_suggestion("Banana".to_string());
+        let last = std::sync::Arc::new(Mutex::new(String::new()));
+        edit.text_changed.connect({
+            let last = std::sync::Arc::clone(&last);
+            move |text| *last.lock().unwrap() = text.to_string()
+        });
+        edit.handle_event(&Event::TextInput { text: "Ap".to_string() });
+        assert_eq!(edit.text(), "Ap");
+        assert_eq!(*last.lock().unwrap(), "Ap");
+        assert!(edit.is_showing_dropdown(), "the committed text must re-run completion");
+    }
+
+    /// A disabled field ignores committed text.
+    #[test]
+    fn disabled_ignores_text_input() {
+        let mut edit = AutoCompleteEdit::new(Rect::new(0, 0, 200, 30));
+        edit.set_enabled(false);
+        edit.handle_event(&Event::TextInput { text: "X".to_string() });
+        assert_eq!(edit.text(), "");
     }
 }

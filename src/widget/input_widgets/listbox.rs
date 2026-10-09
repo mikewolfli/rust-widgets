@@ -493,6 +493,13 @@ impl ListBox {
     /// "auto-scaling" means for a list whose row height is settable. The fraction leaves a small
     /// vertical margin so a descender is not clipped at the row's own edge.
     fn row_font(&self) -> Font {
+        // Prefer the resolved theme/caller font when the style names one, so the list honours the
+        // theme body font and the user's text scale; otherwise keep the row-height-derived face
+        // this control has always used (D09-STYLE-01). One method, so `draw`, the `font_size`
+        // property and the hit tests all read the same font.
+        if let Some(font) = self.style().font.as_ref() {
+            return font.clone();
+        }
         let size = (self.row_height() * 0.7).clamp(8.0, 32.0);
         Font::new("sans-serif", size, false, false)
     }

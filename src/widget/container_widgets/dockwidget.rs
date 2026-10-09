@@ -11,6 +11,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -815,10 +816,12 @@ impl Draw for DockWidget {
         // first glyph, which is what made a left-docked panel unreadable. The label's leading edge is
         // the bar's leading end, so it starts at the top of the column exactly as it starts at the
         // left of the row.
-        let title_font = Font::default();
+        // The **effective font** — the resolved theme/caller font — so the title honours the theme
+        // body font and the user's text scale (D09-STYLE-01).
+        let title_font = effective_font(&style);
         // The line box is measured in the *device* scale, so it is used at its own width; the
         // centring arithmetic below casts once, here, rather than at each of the two bands.
-        let title_h = context.measure_text("M", &title_font).height.max(1) as i32;
+        let title_h = context.measure_text("M", title_font).height.max(1) as i32;
         let title_color = self.base.disabled_ink_on(ink, title_bar_color);
         // The trailing end is where the buttons live, so the label is bounded by however many are
         // actually shown -- one gap before the first, one after each button.
@@ -836,7 +839,7 @@ impl Draw for DockWidget {
                         title_h as u32,
                     ),
                     &self.title,
-                    &title_font,
+                    title_font,
                     title_color,
                     HorizontalAlignment::Left,
                 );
@@ -848,7 +851,7 @@ impl Draw for DockWidget {
                     title_h as u32,
                     title_bar.height.saturating_sub(buttons + TITLE_BUTTON_GAP),
                 );
-                self.draw_vertical_title(context, label, &title_font, title_color);
+                self.draw_vertical_title(context, label, title_font, title_color);
             }
         }
         // Draw close button if enabled
