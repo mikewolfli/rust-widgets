@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::Event;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, Signal1};
@@ -13,6 +13,7 @@ use crate::widget::capability::coercion::{expect_u32, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -526,9 +527,9 @@ impl Draw for VirtualList {
             // own box rather than drawn at an unbounded length. `draw_text` places a string and
             // never asks whether it fits; the sibling `list_view` already fits its rows, and this
             // one let a long label run past the control's right edge.
-            let row_font = Font::default();
+            let row_font = effective_font(&style);
             let row_box = Rect::new(rect.x + 4, y, rect.width.saturating_sub(8), self.row_height);
-            context.draw_text_line(row_box, &text, &row_font, ink, HorizontalAlignment::Left);
+            context.draw_text_line(row_box, &text, row_font, ink, HorizontalAlignment::Left);
         }
     }
 }

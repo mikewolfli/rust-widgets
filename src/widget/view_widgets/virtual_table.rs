@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use crate::core::{Color, Font, HorizontalAlignment, Rect};
+use crate::core::{Color, HorizontalAlignment, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -13,6 +13,7 @@ use crate::widget::capability::coercion::{expect_u32, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -629,9 +630,9 @@ impl Draw for VirtualTable {
                     // a line low; `text_line` derives the centred box. Fitting keeps a wide value
                     // from spilling into the next column.
                     context.draw_text_fitted(
-                        context.text_line(cell_rect, &Font::default()),
+                        context.text_line(cell_rect, effective_font(&style)),
                         value,
-                        &Font::default(),
+                        effective_font(&style),
                         ink,
                         HorizontalAlignment::Left,
                     );

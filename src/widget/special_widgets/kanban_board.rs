@@ -958,7 +958,7 @@ impl KanbanBoard {
         // A WIP limit is only worth showing when it is reached, which is the state a
         // user has to act on.
         let header_color = if at_limit { chrome.at_limit() } else { chrome.text() };
-        let header_font = role_font(&self.base.style(), 13.0);
+        let header_font = role_font(self.base.style(), 13.0);
         let header_line = context.text_line(header_rect, &header_font);
         context.draw_text(
             Point::new(header_rect.x + CARD_PADDING, header_line.y),
@@ -975,7 +975,7 @@ impl KanbanBoard {
         } else {
             cards.len().to_string()
         };
-        let badge_font = role_font(&self.base.style(), 11.0);
+        let badge_font = role_font(self.base.style(), 11.0);
         let badge_metrics = context.measure_text(&badge, &badge_font);
         let badge_line = context.text_line(header_rect, &badge_font);
         context.draw_text(
@@ -1033,8 +1033,8 @@ impl KanbanBoard {
         // The title and the description are placed from the card's own box: the literals
         // `+ 20` and `+ 38` described a 48 px card, so any other `CARD_HEIGHT` drew the
         // description past the card's bottom edge. A card is `CARD_HEIGHT` tall by contract.
-        let title_font = role_font(&self.base.style(), 12.0);
-        let desc_font = role_font(&self.base.style(), 10.0);
+        let title_font = role_font(self.base.style(), 12.0);
+        let desc_font = role_font(self.base.style(), 10.0);
         let title_line = context.text_line(card_rect, &title_font);
         // The done marker used to be a `✓` (U+2713) prefix on the title string. No bundled
         // face covers that code point, so the text path fell back to an 8x8 bitmap and drew a
@@ -1125,7 +1125,7 @@ impl KanbanBoard {
         context.fill_rounded_rect(ghost, 6, chrome.ghost().with_alpha(230));
         context.draw_rounded_rect_stroke(ghost, 6, chrome.insertion(), 2);
         if !label.is_empty() {
-            let ghost_font = role_font(&self.base.style(), 12.0);
+            let ghost_font = role_font(self.base.style(), 12.0);
             let ghost_line = context.text_line(ghost, &ghost_font);
             context.draw_text(
                 Point::new(ghost.x + CARD_PADDING, ghost_line.y),

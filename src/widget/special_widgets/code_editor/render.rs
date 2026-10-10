@@ -320,7 +320,7 @@ impl CodeEditor {
         // made-up column count — which put the query field at a fixed x that had no relation to where
         // the summary actually ended. Measuring both makes the gap between them what it claims to be.
         let summary_font = self.chrome_font();
-        let summary_advance = context.backend().measure_text(&query_summary, &summary_font).width;
+        let summary_advance = context.backend().measure_text(&query_summary, summary_font).width;
         let query_x = rect.x + 8 + summary_advance as i32 + self.cell_width() as i32;
         context.draw_text(
             Point::new(query_x, top + 20),
@@ -1110,7 +1110,7 @@ impl CodeEditor {
             } else {
                 format!("Ln {}, Col {}", self.cursor.head.line + 1, self.cursor.head.column + 1)
             };
-            let width = context.measure_text(&right_label, &font).width;
+            let width = context.measure_text(&right_label, font).width;
             // The caret label keeps its own strip at the right; the left label is fitted
             // into what is left, which is the information order a reader expects (where the
             // cursor is matters more than how many lines the file has).
@@ -1123,7 +1123,7 @@ impl CodeEditor {
             context.draw_text_fitted(
                 strip,
                 &right_label,
-                &font,
+                font,
                 chrome.dim_ink,
                 HorizontalAlignment::Right,
             );
@@ -1137,7 +1137,7 @@ impl CodeEditor {
         context.draw_text_fitted(
             caret_rect,
             &left_label,
-            &font,
+            font,
             chrome.dim_ink,
             HorizontalAlignment::Left,
         );
@@ -1154,7 +1154,7 @@ impl CodeEditor {
         context.draw_text_fitted(
             tally,
             &diagnostics,
-            &font,
+            font,
             chrome.dim_ink,
             HorizontalAlignment::Right,
         );

@@ -498,7 +498,8 @@ impl Draw for ChartWidget {
         // and its chrome now come from one derivation, so they cannot disagree.
         let style = self.base.style().clone();
         let (surface, ink) = Self::panel_colors_with(Some(&style));
-        let plot = PlotArea::of(rect);
+        let label_row_height = self.category_label_line_height(context);
+        let plot = PlotArea::of(rect, label_row_height);
         let border = style
             .border_color
             .or_else(|| crate::style::resolved_theme_style("chart").and_then(|t| t.border_color))
@@ -592,14 +593,11 @@ struct PlotArea {
 
 /// Distance from the plot baseline down to the top of the axis label row.
 const LABEL_ROW_TOP: i32 = 12;
-/// Line-box height of an axis label, in pixels. The label font is 10 pt, and the renderer's
-/// line box is one em, so the two agree by construction.
-const LABEL_ROW_HEIGHT: i32 = 10;
 
 /// The margin between the axis label row's bottom edge and the control's own edge: 1 px.
 ///
-/// The row's height is the line box, so without this the label's last pixel lands exactly on
-/// the border stroke — visible in `chart.svg` as the category names sitting on the frame.
+/// The row's height is the label's **measured** line box, so without this the label's last pixel
+/// lands exactly on the border stroke.
 const LABEL_ROW_BOTTOM_GUARD: i32 = 1;
 
 /// Width of the value-axis label column, in pixels.
@@ -612,25 +610,28 @@ const LABEL_ROW_BOTTOM_GUARD: i32 = 1;
 const AXIS_LABEL_COLUMN: i32 = 34;
 
 impl PlotArea {
-    /// Derives the plot area from the control's rectangle.
-    fn of(rect: Rect) -> Self {
+    /// Derives the plot area from the control's rectangle and the axis label row height.
+    ///
+    /// # Why the label height is a parameter and not a constant
+    ///
+    /// The bottom margin must cover the category-label row, whose height is the **measured** line
+    /// box of the font the labels are actually drawn in. That was a fixed `10` while the drawn font
+    /// is the style's effective font (`14 pt` by default), so the reservation was four pixels short
+    /// and the `A B C D` glyphs descended past the control's bottom edge — the P5 census caught it
+    /// as a `chart` path escaping the box at `y = 120.66` in a 120 px box. Deriving the margin from
+    /// the same font the labels use is what keeps the reservation and the ink in agreement, at any
+    /// text scale (principle #50).
+    fn of(rect: Rect, label_row_height: i32) -> Self {
         const PADDING: i32 = 8;
-        // The bottom margin has to cover the axis label row, which starts 12 px below the
-        // baseline and is one 10 px line box tall, **plus** the one pixel that keeps the row's
-        // last pixel inside the control. It was 20, so the row's bottom edge landed exactly on
-        // the control's last pixel and any extra (a taller font, a scaled DPI) pushed it past.
-        // It was then `12 + 10`, which put the row's bottom pixel *on* the frame's own stroke:
-        // `chart.svg` drew the `A B C D` category labels at y=110..120 in a 120 px box, i.e.
-        // flush with the border. `LABEL_ROW_BOTTOM_GUARD` states the reservation in the same
-        // units the label uses and leaves the one pixel the border needs.
-        const BOTTOM_MARGIN: i32 = LABEL_ROW_TOP + LABEL_ROW_HEIGHT + LABEL_ROW_BOTTOM_GUARD;
+        let label_row_height = label_row_height.max(1);
+        let bottom_margin = LABEL_ROW_TOP + label_row_height + LABEL_ROW_BOTTOM_GUARD;
         // The left margin is the value-axis label column, not just the panel padding: the axis
         // draws its tick values in this strip, so the plot region has to start after them. It
         // was `PADDING` alone, which left no room for a label and is why the axis could not be
         // drawn at all before it was widened.
         let left = rect.x.saturating_add(AXIS_LABEL_COLUMN);
         let right = rect.x.saturating_add(rect.width as i32).saturating_sub(PADDING);
-        let baseline_y = rect.y.saturating_add(rect.height as i32).saturating_sub(BOTTOM_MARGIN);
+        let baseline_y = rect.y.saturating_add(rect.height as i32).saturating_sub(bottom_margin);
         let top_y = rect.y.saturating_add(PADDING);
         Self { left, right, baseline_y, top_y, outer_left: rect.x }
     }
@@ -831,6 +832,7 @@ impl ChartWidget {
         let axis_ink = ink.legible_on(surface, 4.5).with_alpha(190);
         let grid_ink = surface.blend(&axis_ink, 0.18);
         let font = role_font(self.style(), 10.0);
+        let label_height = context.measure_text("M", &font).height.max(1) as i32;
 
         for step in 0..TICKS {
             let fraction = step as f64 / (TICKS - 1) as f64;
@@ -840,13 +842,13 @@ impl ChartWidget {
             // the right edge of the plot so a bar can be read against it.
             context.draw_line(Point::new(area.left, y), Point::new(area.right, y), grid_ink);
             // The label sits in the margin the plot area reserved, vertically centred on its
-            // tick. `text_line` is given a one-line-tall band around the tick's own row so a
-            // tick at the top or bottom of the axis keeps its label inside the panel.
+            // tick. `text_line` is given a band one **measured** line tall around the tick's own
+            // row so a tick at the top or bottom of the axis keeps its label inside the panel.
             let band = Rect {
                 x: area.axis_margin_left(),
-                y: y - LABEL_ROW_HEIGHT / 2,
+                y: y - label_height / 2,
                 width: (area.left - area.axis_margin_left()).max(0) as u32,
-                height: LABEL_ROW_HEIGHT as u32,
+                height: label_height as u32,
             };
             let line = context.text_line(band, &font);
             context.draw_text_fitted(
@@ -859,6 +861,17 @@ impl ChartWidget {
         }
     }
 
+    /// The height of the category-label row, measured from the font the labels are drawn in.
+    ///
+    /// The category labels use the style's effective font (see `draw_truncated_label`), so the
+    /// reservation the plot area makes for their row has to be measured from that same font rather
+    /// than assumed. A fixed reservation that disagrees with the drawn font is what let the `A B C
+    /// D` glyphs descend past the control's bottom edge (the P5 census `chart` escape).
+    fn category_label_line_height(&self, context: &mut RenderContext) -> i32 {
+        let font = effective_font(self.style());
+        context.measure_text("M", font).height.max(1) as i32
+    }
+
     /// Draws vertical bars for series `series_index`.
     ///
     /// When the widget holds several series they are drawn side by side within
@@ -869,7 +882,7 @@ impl ChartWidget {
             Some(data) if !data.is_empty() => data,
             _ => return,
         };
-        let area = PlotArea::of(rect);
+        let area = PlotArea::of(rect, self.category_label_line_height(context));
         let (min, max) = self.plot_range();
         let series_total = self.series.len().max(1);
         let slot = (area.right - area.left).max(1) / data.len() as i32;
@@ -920,7 +933,7 @@ impl ChartWidget {
             Some(data) if data.len() >= 2 => data,
             _ => return,
         };
-        let area = PlotArea::of(rect);
+        let area = PlotArea::of(rect, self.category_label_line_height(context));
         let (min, max) = self.plot_range();
         let color = Self::series_color(series_index);
         let points: Vec<Point> = data
@@ -969,7 +982,7 @@ impl ChartWidget {
             Some(data) if data.len() >= 2 => data,
             _ => return,
         };
-        let area = PlotArea::of(rect);
+        let area = PlotArea::of(rect, self.category_label_line_height(context));
         let (min, max) = self.plot_range();
         let color = Self::series_color(series_index);
         let points: Vec<Point> = data
@@ -1035,7 +1048,7 @@ impl ChartWidget {
             Some(data) if !data.is_empty() => data,
             _ => return,
         };
-        let area = PlotArea::of(rect);
+        let area = PlotArea::of(rect, self.category_label_line_height(context));
         let mut cumulative = 0.0f64;
         let totals: Vec<(f64, f64)> = data
             .iter()
@@ -1107,7 +1120,7 @@ impl ChartWidget {
         if !max.is_finite() || max <= 0.0 {
             return;
         }
-        let area = PlotArea::of(rect);
+        let area = PlotArea::of(rect, self.category_label_line_height(context));
         let available_height = area.baseline_y.saturating_sub(area.top_y).max(1);
         let stage_height = (available_height / data.len() as i32).max(1);
         let available_width = (area.right - area.left).max(1);
@@ -1160,7 +1173,7 @@ impl ChartWidget {
         if bar_count == 0 {
             return;
         }
-        let area = PlotArea::of(rect);
+        let area = PlotArea::of(rect, self.category_label_line_height(context));
         let mut min = f64::INFINITY;
         let mut max = f64::NEG_INFINITY;
         for bar in data.as_chunks::<VALUES_PER_BAR>().0.iter().take(bar_count) {
@@ -1239,7 +1252,7 @@ impl ChartWidget {
         if box_count == 0 {
             return;
         }
-        let area = PlotArea::of(rect);
+        let area = PlotArea::of(rect, self.category_label_line_height(context));
         let mut min = f64::INFINITY;
         let mut max = f64::NEG_INFINITY;
         for group in data.as_chunks::<VALUES_PER_BOX>().0.iter().take(box_count) {
@@ -1368,7 +1381,7 @@ impl ChartWidget {
             Some(data) if !data.is_empty() => data,
             _ => return,
         };
-        let area = PlotArea::of(rect);
+        let area = PlotArea::of(rect, self.category_label_line_height(context));
         let (min, max) = self.plot_range();
         let color = Self::series_color(series_index);
         let slot = (area.right - area.left).max(1) / data.len() as i32;

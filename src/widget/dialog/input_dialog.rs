@@ -642,7 +642,7 @@ impl Draw for InputDialog {
         context.fill_rect(title_bar_band, accent);
         if !self.title.is_empty() {
             let title_font = font;
-            let title_line = context.text_line(title_bar_band, &title_font);
+            let title_line = context.text_line(title_bar_band, title_font);
             context.draw_text_fitted(
                 Rect::new(
                     rect.x + 8,
@@ -651,7 +651,7 @@ impl Draw for InputDialog {
                     title_line.height.max(1),
                 ),
                 &self.title,
-                &title_font,
+                title_font,
                 accent_ink,
                 HorizontalAlignment::Left,
             );
@@ -662,13 +662,13 @@ impl Draw for InputDialog {
         let body =
             ControlMetrics::content_below_top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
         let label_font = font;
-        let label_line_h = context.measure_text("M", &label_font).height.max(1);
+        let label_line_h = context.measure_text("M", label_font).height.max(1);
         // Label. Its box is the row above the entry field, which is what bounds a label
         // longer than the dialog instead of the dialog's own width. Guarded on the text
         // being non-empty so a labelless dialog emits no `<text …></text>`.
         let label_band = ControlMetrics::top_band(body, label_line_h);
         if !self.label_text.is_empty() {
-            let label_line = context.text_line(label_band, &label_font);
+            let label_line = context.text_line(label_band, label_font);
             context.draw_text_fitted(
                 Rect::new(
                     body.x + 10,
@@ -677,7 +677,7 @@ impl Draw for InputDialog {
                     label_line.height.max(1),
                 ),
                 &self.label_text,
-                &label_font,
+                label_font,
                 ink,
                 HorizontalAlignment::Left,
             );
@@ -701,7 +701,7 @@ impl Draw for InputDialog {
         // shared primitive, which the old `input_y + ((26 - h) / 2)` re-derived by hand.
         if !display_text.is_empty() {
             let input_font = font;
-            let input_line = context.text_line(input_band, &input_font);
+            let input_line = context.text_line(input_band, input_font);
             context.draw_text_fitted(
                 Rect::new(
                     input_band.x + 4,
@@ -710,7 +710,7 @@ impl Draw for InputDialog {
                     input_line.height.max(1),
                 ),
                 &display_text,
-                &input_font,
+                input_font,
                 ink,
                 HorizontalAlignment::Left,
             );
@@ -723,7 +723,8 @@ impl Draw for InputDialog {
         // tall frame (the old `rect.height - 40`) or clipping at a short one.
         let button_band = ControlMetrics::bottom_band(rect, dimensions::DIALOG_BUTTON_HEIGHT);
         let labels = vec![tr!("common.button.ok"), tr!("common.button.cancel")];
-        let row = super::message_box::action_row_geometry(context, &labels, button_band, true);
+        let row =
+            super::message_box::action_row_geometry(context, font, &labels, button_band, true);
         let ok_rect = row.buttons[0];
         context.fill_rect(ok_rect, accent);
         context.draw_text_line(ok_rect, &labels[0], font, accent_ink, HorizontalAlignment::Center);

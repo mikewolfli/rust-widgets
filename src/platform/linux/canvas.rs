@@ -192,9 +192,13 @@ pub(crate) fn mount_canvas(
         let translated = match event.event_type() {
             gdk::EventType::TouchBegin => TouchPhase::Begin,
             gdk::EventType::TouchUpdate => TouchPhase::Update,
-            // Both an end and a cancel terminate the contact. A cancel reported as
-            // nothing would leave `PinchGesture` holding a phantom finger forever.
-            gdk::EventType::TouchEnd | gdk::EventType::TouchCancel => TouchPhase::End,
+            // A cancel is *not* a completed end: the platform withdrew the contact, so the
+            // gesture must be abandoned without committing (D09-EVT-02). It is carried as
+            // its own phase so consumers reset their latches without firing
+            // `clicked`/`toggled`/a stroke commit. A bare `TouchEnd` here would let a
+            // cancelled gesture look like a successful tap.
+            gdk::EventType::TouchCancel => TouchPhase::Cancel,
+            gdk::EventType::TouchEnd => TouchPhase::End,
             _ => return glib::Propagation::Proceed,
         };
         let position = Point::new(touch.position().0 as i32, touch.position().1 as i32);
@@ -208,6 +212,10 @@ pub(crate) fn mount_canvas(
             TouchPhase::Begin => Event::TouchBegin { pos: absolute, touch_id },
             TouchPhase::Update => Event::TouchMove { pos: absolute, touch_id },
             TouchPhase::End => Event::TouchEnd { pos: absolute, touch_id },
+            // The internal touch-cancel event: the translator and touch-aware controls
+            // recognise it and clear their contact/latch state without synthesising a
+            // completed release (D09-EVT-02).
+            TouchPhase::Cancel => crate::event::translator::touch_cancel(absolute, touch_id),
         };
         if forward_pointer_to_platform(id, &widget_event, absolute) {
             widget.queue_draw();
@@ -559,6 +567,8 @@ enum TouchPhase {
     Begin,
     Update,
     End,
+    /// The platform withdrew the contact: abandon the gesture without committing it.
+    Cancel,
 }
 
 /// Translates a GDK key event into a widget [`Event`].

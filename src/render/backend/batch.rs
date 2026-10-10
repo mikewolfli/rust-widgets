@@ -581,6 +581,7 @@ fn transform_command(
 // is measuring.
 #[cfg(test)]
 thread_local! {
+    #[allow(clippy::missing_const_for_thread_local)]
     static IMAGE_BYTES_TRANSLATED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
 }
 

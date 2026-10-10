@@ -618,9 +618,8 @@ pub(crate) const DIALOG_BUTTON_SPACING: u32 = dimensions::BUTTON_ICON_SPACING;
 /// the *row* height other dialogs reserve. Presenting this through [`Hints::preferred`] is what
 /// lets the row's layout answer "how wide are you" from a real measurement, and it keeps a
 /// button's own height tied to the font it draws its label in.
-pub(crate) fn action_button_hints(context: &RenderContext, label: &str) -> Hints {
-    let font = Font::default();
-    let line = context.measure_text(label, &font).height.max(1);
+pub(crate) fn action_button_hints(context: &RenderContext, font: &Font, label: &str) -> Hints {
+    let line = context.measure_text(label, font).height.max(1);
     Hints::fixed(DIALOG_BUTTON_WIDTH as u32, line)
 }
 
@@ -661,7 +660,13 @@ impl MessageBox {
         // sized for "OK" ends up eliding "Annuler".
         let labels: Vec<String> =
             self.buttons.iter().map(|button| button.translated_label()).collect();
-        let row = action_row_geometry(context, &labels, Rect::new(0, 0, 0, 0), false);
+        let row = action_row_geometry(
+            context,
+            effective_font(self.base.style()),
+            &labels,
+            Rect::new(0, 0, 0, 0),
+            false,
+        );
         let row_height = dimensions::DIALOG_TITLE_BAR_HEIGHT.max(row.row.height);
         let height = dimensions::DIALOG_TITLE_BAR_HEIGHT
             .saturating_add(row_height)
@@ -701,7 +706,14 @@ impl MessageBox {
         let labels: Vec<String> =
             self.buttons.iter().map(|button| button.translated_label()).collect();
         let place = !self.buttons.is_empty();
-        action_row_geometry(&context, &labels, button_band, place).hit(pos)
+        action_row_geometry(
+            &context,
+            effective_font(self.base.style()),
+            &labels,
+            button_band,
+            place,
+        )
+        .hit(pos)
     }
 }
 
@@ -821,7 +833,7 @@ impl Draw for MessageBox {
         context.fill_rect(title_bar_band, title_bar);
         if !self.title.is_empty() {
             let title_font = font;
-            let title_line = context.text_line(title_bar_band, &title_font);
+            let title_line = context.text_line(title_bar_band, title_font);
             context.draw_text_fitted(
                 Rect::new(
                     rect.x + 8,
@@ -830,7 +842,7 @@ impl Draw for MessageBox {
                     title_line.height.max(1),
                 ),
                 &self.title,
-                &title_font,
+                title_font,
                 ink,
                 HorizontalAlignment::Left,
             );
@@ -846,7 +858,7 @@ impl Draw for MessageBox {
             ControlMetrics::content_below_top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
         let icon = self.icon_name();
         let body_font = font;
-        let body_line_h = context.measure_text("M", &body_font).height.max(1) as i32;
+        let body_line_h = context.measure_text("M", body_font).height.max(1) as i32;
         // The icon column is a fixed square at the frame's own margin, so a wide scalar cannot
         // overlap the message beside it and the message's start is the same whether or not a
         // severity icon is shown.
@@ -871,7 +883,8 @@ impl Draw for MessageBox {
         // begin, whatever the buttons' widths and their labels' translations turn out to be.
         let labels: Vec<String> =
             self.buttons.iter().map(|button| button.translated_label()).collect();
-        let row = action_row_geometry(context, &labels, button_band, !self.buttons.is_empty());
+        let row =
+            action_row_geometry(context, font, &labels, button_band, !self.buttons.is_empty());
         let message_area =
             ControlMetrics::content_above_bottom_band(body, dimensions::DIALOG_BUTTON_HEIGHT);
         // The message band ends where the row begins, measured from the row rather than from a
@@ -889,7 +902,7 @@ impl Draw for MessageBox {
         // an empty element the rasteriser never produces. The line box is centred on the
         // message band through the shared primitive rather than at a literal `y`.
         if !self.text.is_empty() {
-            let message_line = context.text_line(message_band, &body_font);
+            let message_line = context.text_line(message_band, body_font);
             context.draw_text_fitted(
                 Rect::new(
                     message_band.x,
@@ -898,7 +911,7 @@ impl Draw for MessageBox {
                     message_line.height.max(1),
                 ),
                 &self.text,
-                &body_font,
+                body_font,
                 ink,
                 HorizontalAlignment::Left,
             );
@@ -934,7 +947,7 @@ impl Draw for MessageBox {
             context.draw_text_line(
                 *button_rect,
                 &button.translated_label(),
-                &font,
+                font,
                 fg,
                 HorizontalAlignment::Center,
             );
@@ -1010,6 +1023,7 @@ impl ActionRowGeometry {
 /// font and its gaps do not.
 pub(crate) fn action_row_geometry(
     context: &RenderContext,
+    font: &Font,
     labels: &[String],
     band: Rect,
     place: bool,
@@ -1035,11 +1049,12 @@ pub(crate) fn action_row_geometry(
             // spaced. The first button carries no leading margin either: the row's own edge is
             // its edge, and a margin there would be room the row reserves but never spends.
             let leading = if index == 0 { 0 } else { DIALOG_BUTTON_SPACING };
-            ChildInfo::new(context_row_id(index), action_button_hints(context, label)).with_params(
-                // `EdgeOffsets::new` is `(top, right, bottom, left)`: the gap before a button is
-                // its *left* margin, which is the last argument.
-                LayoutParams::new().with_margins(EdgeOffsets::new(0, 0, 0, leading)),
-            )
+            ChildInfo::new(context_row_id(index), action_button_hints(context, font, label))
+                .with_params(
+                    // `EdgeOffsets::new` is `(top, right, bottom, left)`: the gap before a button is
+                    // its *left* margin, which is the last argument.
+                    LayoutParams::new().with_margins(EdgeOffsets::new(0, 0, 0, leading)),
+                )
         })
         .collect();
     // The row is a real layout, handed the buttons by their measured hints. `justify_content`
@@ -1215,7 +1230,7 @@ mod tests {
         let ctx = RenderContext::new(&mut backend);
         let labels = vec!["OK".to_string(), "Cancel".to_string()];
         let band = Rect::new(0, 92, 240, 28);
-        let row = action_row_geometry(&ctx, &labels, band, true);
+        let row = action_row_geometry(&ctx, &Font::default(), &labels, band, true);
         assert_eq!(row.buttons.len(), 2, "one rect per label");
         // The last button ends at the content box's trailing edge: that is what "right-anchored"
         // means, and it is the property a count-based stride only satisfies by coincidence.
@@ -1269,7 +1284,7 @@ mod tests {
         let ctx = RenderContext::new(&mut backend);
         let labels: Vec<String> = (0..6).map(|i| format!("Button {i}")).collect();
         let band = Rect::new(0, 92, 120, 28);
-        let row = action_row_geometry(&ctx, &labels, band, true);
+        let row = action_row_geometry(&ctx, &Font::default(), &labels, band, true);
         assert_eq!(
             row.row.x, band.x,
             "an oversized row is anchored to the band's leading edge, not centred on it"
@@ -1297,7 +1312,7 @@ mod tests {
         let ctx = RenderContext::new(&mut backend);
         let labels = vec!["OK".to_string(), "Cancel".to_string()];
         let band = Rect::new(0, 92, 240, 28);
-        let row = action_row_geometry(&ctx, &labels, band, true);
+        let row = action_row_geometry(&ctx, &Font::default(), &labels, band, true);
         for (index, button) in row.button_rects().iter().enumerate() {
             let centre =
                 Point::new(button.x + button.width as i32 / 2, button.y + button.height as i32 / 2);

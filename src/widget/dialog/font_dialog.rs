@@ -336,7 +336,7 @@ impl Draw for FontDialog {
         context.fill_rect(title_bar_band, accent);
         let title_font = font;
         let title_label = tr!("dialog.font.select_font");
-        let title_line = context.text_line(title_bar_band, &title_font);
+        let title_line = context.text_line(title_bar_band, title_font);
         context.draw_text_fitted(
             Rect::new(
                 rect.x + 8,
@@ -345,7 +345,7 @@ impl Draw for FontDialog {
                 title_line.height.max(1),
             ),
             &title_label,
-            &title_font,
+            title_font,
             accent_ink,
             HorizontalAlignment::Left,
         );
@@ -460,14 +460,14 @@ impl Draw for FontDialog {
         // same pair cannot disagree about the button width, the gap between them or where the
         // row's left edge falls. The labels are centred in their buttons and fitted to them.
         let labels = vec![tr!("dialog.ok"), tr!("dialog.cancel")];
-        let row = super::message_box::action_row_geometry(context, &labels, button_band, true);
+        let row = super::message_box::action_row_geometry(context, font, &labels, button_band, true);
         let ok_rect = row.buttons[0];
         context.fill_rect(ok_rect, accent);
-        context.draw_text_line(ok_rect, &labels[0], &font, accent_ink, HorizontalAlignment::Center);
+        context.draw_text_line(ok_rect, &labels[0], font, accent_ink, HorizontalAlignment::Center);
         let cancel_rect = row.buttons[1];
         context.fill_rect(cancel_rect, surface.blend(&ink, 0.1));
         context.draw_rect(cancel_rect, border);
-        context.draw_text_line(cancel_rect, &labels[1], &font, ink, HorizontalAlignment::Center);
+        context.draw_text_line(cancel_rect, &labels[1], font, ink, HorizontalAlignment::Center);
     }
 }
 

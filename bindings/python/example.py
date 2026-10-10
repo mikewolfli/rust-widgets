@@ -7,6 +7,14 @@ Prerequisites:
 
 Run:
     python example.py
+
+Event loop model:
+    This example owns its own main thread, so it drives the library with
+    ``rw.pump_frame()`` once per frame and then polls the trigger queues. If you
+    would rather let the platform own the loop, call ``rw.run()`` instead -- but
+    note that ``rw.run()`` blocks until the loop exits and does not return to a
+    polling loop. See the comment in the event-loop section for the input-source
+    caveat.
 """
 
 from __future__ import annotations
@@ -160,12 +168,36 @@ def main() -> None:
     print("[rust-widgets] Press Ctrl+C to exit.\n")
 
     # ------------------------------------------------------------------ #
-    # 8. Event loop with polling                                          #
+    # 8. Event loop                                                       #
     # ------------------------------------------------------------------ #
+    #
+    # This example drives the library **one frame at a time** with
+    # ``rw.pump_frame()``. That is the shape a host needs when it owns its own main
+    # thread and wants to poll triggers between frames.
+    #
+    # The alternative -- ``rw.run()`` -- hands this thread to the platform's native
+    # loop and does not return until the loop exits, so a ``while True: poll`` loop
+    # placed after it would never run. Before ``pump_frame`` existed the example
+    # called ``poll_widget_triggered()`` in a loop that never drove the runtime at
+    # all, so the window was shown but no frame was ever produced (D09-PY-04).
+    #
+    # NOTE ON INPUT SOURCES: ``pump_frame`` advances the library's frame (drains the
+    # trigger queue, advances animations, reports repaint demand). It does **not**
+    # pump a toolkit's X11/GTK/Win32 message queue. On a backend whose user input
+    # arrives from such a queue, ``rw.run()`` (or your own native message loop) is
+    # what delivers that input; use ``pump_frame`` when the events you consume come
+    # from the library's own queue (host-injected triggers, tests, library-painted
+    # backends) and you must keep the main thread.
+    FRAME_INTERVAL_MS = 16  # ~60 Hz
     start_time = time.time()
     poll_count = 0
     try:
         while True:
+            # Drive exactly one frame: dispatch queued triggers, advance animations
+            # and translations. The returned flag says whether an animation still
+            # owes another frame; polling the queues below is valid either way.
+            rw.pump_frame(FRAME_INTERVAL_MS)
+
             # Poll for simple widget triggers (returns widget id)
             triggered = rw.poll_widget_triggered()
             if triggered != 0:
@@ -211,8 +243,11 @@ def main() -> None:
             if poll_count % 100 == 0:
                 print(f"[heartbeat] {elapsed:.1f}s elapsed, {poll_count} polls")
 
-            # Small sleep to avoid busy-waiting
-            time.sleep(0.01)
+            # Sleep for the rest of the frame's budget. ``pump_frame`` did the
+            # library work; this keeps the loop at ~60 Hz instead of busy-waiting.
+            # (A host that has no other work could use a longer sleep on a still
+            # window; 16 ms is the simple, always-correct choice.)
+            time.sleep(FRAME_INTERVAL_MS / 1000.0)
 
     except KeyboardInterrupt:
         print("\n[rust-widgets] Ctrl+C pressed.")

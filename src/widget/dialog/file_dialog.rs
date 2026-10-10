@@ -534,7 +534,7 @@ impl Draw for FileDialog {
         context.fill_rect(title_bar_band, accent);
         if !self.title.is_empty() {
             let title_font = font;
-            let title_line = context.text_line(title_bar_band, &title_font);
+            let title_line = context.text_line(title_bar_band, title_font);
             context.draw_text_fitted(
                 Rect::new(
                     rect.x + 8,
@@ -543,7 +543,7 @@ impl Draw for FileDialog {
                     title_line.height.max(1),
                 ),
                 &self.title,
-                &title_font,
+                title_font,
                 accent_ink,
                 HorizontalAlignment::Left,
             );
@@ -594,7 +594,7 @@ impl Draw for FileDialog {
                 list_rect.width.saturating_sub(12),
                 list_rect.height,
             );
-            let placeholder_line = context.text_line(placeholder_band, &placeholder_font);
+            let placeholder_line = context.text_line(placeholder_band, placeholder_font);
             context.draw_text_fitted(
                 Rect::new(
                     placeholder_band.x,
@@ -603,7 +603,7 @@ impl Draw for FileDialog {
                     placeholder_line.height.max(1),
                 ),
                 &placeholder,
-                &placeholder_font,
+                placeholder_font,
                 // Dimmed toward the field, then held to the text floor: a fixed 50% blend
                 // measured 3.65:1 on the light field, so the line explaining what the empty
                 // list is for was itself hard to read.
@@ -625,11 +625,11 @@ impl Draw for FileDialog {
             let sel_label = tr!("dialog.file_dialog.file_name");
             let sel_label_font = font;
             let sel_band = Rect::new(rect.x + 10, sel_y, 66, sel_h as u32);
-            let sel_line = context.text_line(sel_band, &sel_label_font);
+            let sel_line = context.text_line(sel_band, sel_label_font);
             context.draw_text_fitted(
                 Rect::new(sel_band.x, sel_line.y, sel_band.width, sel_line.height.max(1)),
                 &sel_label,
-                &sel_label_font,
+                sel_label_font,
                 ink,
                 HorizontalAlignment::Left,
             );
@@ -647,11 +647,11 @@ impl Draw for FileDialog {
                     fname_rect.width.saturating_sub(8),
                     fname_rect.height,
                 );
-                let fname_line = context.text_line(fname_band, &fname_font);
+                let fname_line = context.text_line(fname_band, fname_font);
                 context.draw_text_fitted(
                     fname_line,
                     fname,
-                    &fname_font,
+                    fname_font,
                     ink,
                     HorizontalAlignment::Left,
                 );
@@ -669,8 +669,8 @@ impl Draw for FileDialog {
                 list_rect.height,
             );
             if !fname.is_empty() && band.height > 0 {
-                let line = context.text_line(band, &fname_font);
-                context.draw_text_fitted(line, fname, &fname_font, ink, HorizontalAlignment::Left);
+                let line = context.text_line(band, fname_font);
+                context.draw_text_fitted(line, fname, fname_font, ink, HorizontalAlignment::Left);
             }
         }
         // OK/Cancel buttons. The pair is right-aligned inside the frame through the shared
@@ -685,16 +685,17 @@ impl Draw for FileDialog {
             tr!("common.button.open")
         };
         let labels = vec![ok_label, tr!("common.button.cancel")];
-        let row = super::message_box::action_row_geometry(context, &labels, button_band, true);
+        let row =
+            super::message_box::action_row_geometry(context, font, &labels, button_band, true);
         // The accept button is the dialog's call to action: the theme's accent, with its
         // contrast colour as the label — the same pairing `WidgetRole::Primary` uses.
         let ok_rect = row.buttons[0];
         context.fill_rect(ok_rect, accent);
-        context.draw_text_line(ok_rect, &labels[0], &font, accent_ink, HorizontalAlignment::Center);
+        context.draw_text_line(ok_rect, &labels[0], font, accent_ink, HorizontalAlignment::Center);
         let cancel_rect = row.buttons[1];
         context.fill_rect(cancel_rect, surface.blend(&ink, 0.1));
         context.draw_rect(cancel_rect, border);
-        context.draw_text_line(cancel_rect, &labels[1], &font, ink, HorizontalAlignment::Center);
+        context.draw_text_line(cancel_rect, &labels[1], font, ink, HorizontalAlignment::Center);
     }
 }
 

@@ -8,7 +8,7 @@
 //! a `changed` signal and collapses the list.
 
 use crate::compat::{String, ToString, Vec};
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -20,7 +20,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -526,9 +526,10 @@ impl Draw for Dropdown {
         // Both labels on the collapsed row sit on the field's own line box: a glyph origin is
         // the box's top-left edge, so the old `geo.y + geo.height / 2` put that edge on the
         // field's middle line and drew the value and the indicator half a line low.
-        let field_line = context.text_line(geo, &Font::default());
+        let font = effective_font(self.style());
+        let field_line = context.text_line(geo, font);
         let geometry = self.field_geometry(field_line.height);
-        let label_line = context.text_line(geometry.label_box, &Font::default());
+        let label_line = context.text_line(geometry.label_box, font);
 
         let (label, color) = match self.selected_text() {
             Some(text) => (text, text_color),
@@ -544,7 +545,7 @@ impl Draw for Dropdown {
                 label_line.height,
             ),
             label,
-            &Font::default(),
+            font,
             color,
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
@@ -583,11 +584,11 @@ impl Draw for Dropdown {
             let item_x = item_geo.x + PADDING;
             // The row's own line box, for the same reason as the collapsed field above: a
             // halved height here places the glyph box's top edge on the row's middle line.
-            let item_line = context.text_line(item_geo, &Font::default());
+            let item_line = context.text_line(item_geo, font);
             context.draw_text(
                 Point::new(item_x, item_line.y),
                 &self.items[i],
-                &Font::default(),
+                font,
                 item_color,
                 HorizontalAlignment::Left,
             );

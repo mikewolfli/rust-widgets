@@ -720,6 +720,41 @@ impl Event {
             }
         }
     }
+
+    /// Returns `true` if this event begins a pointer gesture (mouse, stylus or touch).
+    ///
+    /// The three input families each have a press-start variant, and the runtime's pointer
+    /// router treats them identically so a press latches its target regardless of the device
+    /// (D09-EVT-01). The legacy `MouseDown` spelling is included so a host that still emits it
+    /// keeps the same ownership guarantee.
+    pub fn starts_pointer_gesture(&self) -> bool {
+        match self {
+            Self::MousePress { .. } | Self::PointerPress { .. } | Self::MouseDown(_) => true,
+            #[cfg(feature = "touch")]
+            Self::TouchBegin { .. } => true,
+            _ => false,
+        }
+    }
+
+    /// Returns `true` if this event ends a pointer gesture (mouse, stylus or touch).
+    ///
+    /// This is the counterpart of [`Event::starts_pointer_gesture`]: the runtime releases
+    /// pointer capture once a gesture-ending event has been delivered, so the next press can
+    /// take a fresh target. A `TouchCancel` is a gesture end too — it stops the gesture even
+    /// though it must not activate the control (that distinction is the consumer's).
+    pub fn ends_pointer_gesture(&self) -> bool {
+        match self {
+            Self::MouseRelease { .. } | Self::PointerRelease { .. } | Self::MouseUp(_) => true,
+            #[cfg(feature = "touch")]
+            Self::TouchEnd { .. } => true,
+            // The internal touch-cancel event lives in the `touch`-gated translator module,
+            // so it is only recognisable when that capability is compiled in.
+            #[cfg(feature = "touch")]
+            _ => crate::event::translator::is_touch_cancel(self),
+            #[cfg(not(feature = "touch"))]
+            _ => false,
+        }
+    }
 }
 /// Trait implemented by event targets.
 pub trait EventHandler {

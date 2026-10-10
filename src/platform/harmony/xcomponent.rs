@@ -975,11 +975,11 @@ fn dispatch_one_touch(
         TouchEventType::Down => crate::event::Event::touch_begin(position.x, position.y, touch_id),
         TouchEventType::Up => crate::event::Event::touch_end(position.x, position.y, touch_id),
         TouchEventType::Move => crate::event::Event::touch_move(position.x, position.y, touch_id),
-        // A cancelled gesture and an unknown type are not events the widget layer defines.
-        // The recognizers reset on `TouchEnd`, which is also what cancelling means for them,
-        // so a cancel is delivered as an end rather than being dropped: a finger that the
-        // system took away must not leave a recognizer mid-gesture forever.
-        TouchEventType::Cancel => crate::event::Event::touch_end(position.x, position.y, touch_id),
+        // The system withdrew the contact. Delivered as the internal touch-cancel event
+        // rather than a `TouchEnd` (D09-EVT-02): the translator and recognizers still
+        // reset their tracking — a finger the system took away must not leave a recognizer
+        // mid-gesture — but a cancelled tap must not activate a control or commit a stroke.
+        TouchEventType::Cancel => crate::event::translator::touch_cancel(position, touch_id),
         TouchEventType::Unknown => return,
     };
     if crate::platform::platform_facts().route_pointer_event(widget_id, &event, position) {

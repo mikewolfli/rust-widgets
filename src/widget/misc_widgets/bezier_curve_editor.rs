@@ -15,6 +15,7 @@ use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -488,7 +489,7 @@ impl Draw for BezierCurveEditor {
         );
 
         // ── Labels ──
-        let font = crate::core::Font::default();
+        let font = effective_font(&style);
         let cp1_label =
             format!("CP1: ({:.2}, {:.2})", self.control_point1.0, self.control_point1.1);
         let cp2_label =
@@ -497,7 +498,7 @@ impl Draw for BezierCurveEditor {
         context.draw_text(
             Point::new(rect.x + 4, rect.y + 12),
             &cp1_label,
-            &font,
+            font,
             // The labels name which control point is which, so the hue is information and stays
             // — but it has to be *readable* on the surface, which the handle's own colour is not:
             // the handle is a disc with a contrasting outline, so its fill only has to be visible
@@ -509,7 +510,7 @@ impl Draw for BezierCurveEditor {
         context.draw_text(
             Point::new(rect.x + 4, rect.y + 26),
             &cp2_label,
-            &font,
+            font,
             cp2_color.legible_on(surface, 4.5),
             HorizontalAlignment::Left,
         );

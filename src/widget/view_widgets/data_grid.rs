@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::Event;
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
@@ -16,7 +16,7 @@ use crate::widget::capability::coercion::{expect_column_filters, expect_sort_spe
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::ControlMetrics;
+use crate::widget::metrics::{effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// The margin a data grid leaves between its own frame and its cells: 2 px on every edge.
@@ -836,9 +836,9 @@ impl Draw for DataGrid {
                         // real centred box. Fitting as well keeps a long value inside its own
                         // column instead of bleeding right.
                         context.draw_text_fitted(
-                            context.text_line(cell_rect, &Font::default()),
+                            context.text_line(cell_rect, effective_font(&style)),
                             text,
-                            &Font::default(),
+                            effective_font(&style),
                             ink,
                             HorizontalAlignment::Left,
                         );

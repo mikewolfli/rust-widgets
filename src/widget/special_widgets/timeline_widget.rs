@@ -3,14 +3,14 @@
 
 //! TimelineWidget for basic time-range visualization.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::dimensions;
+use crate::widget::metrics::{dimensions, effective_font};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -447,7 +447,7 @@ impl Draw for TimelineWidget {
                 context.draw_text_line(
                     label_band,
                     &item.label,
-                    &Font::default(),
+                    effective_font(&style),
                     text_color,
                     HorizontalAlignment::Left,
                 );

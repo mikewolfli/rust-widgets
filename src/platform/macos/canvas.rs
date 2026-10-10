@@ -439,6 +439,8 @@ enum TouchPhase {
     Began,
     Moved,
     Ended,
+    /// AppKit withdrew the contact: abandon the gesture without committing it.
+    Cancelled,
 }
 
 /// `-touchesBeganWithEvent:` — one or more fingers landed on the canvas.
@@ -461,12 +463,14 @@ extern "C" fn touches_ended(this: &Object, _cmd: Sel, event: id) {
 
 /// `-touchesCancelledWithEvent:` — AppKit withdrew the contact.
 ///
-/// Reported as an end, because the recognisers need a terminator for every begin: a
-/// `TouchBegin` with no matching `TouchEnd` leaves `PinchGesture` holding a phantom
-/// finger forever, and the next real pinch then measures against it.
+/// Carried as its own `Cancelled` phase rather than an end (D09-EVT-02): a cancelled
+/// contact must still terminate the recogniser's tracking (a `TouchBegin` with no
+/// terminator leaves `PinchGesture` holding a phantom finger), but it must **not** be
+/// treated as a successful lift. The internal cancel event lets controls reset their
+/// latches without firing `clicked`/`toggled`/a stroke commit.
 #[cfg(feature = "touch")]
 extern "C" fn touches_cancelled(this: &Object, _cmd: Sel, event: id) {
-    forward_touches(this, event, TouchPhase::Ended);
+    forward_touches(this, event, TouchPhase::Cancelled);
 }
 
 /// Translates AppKit touches into widget touch events and delivers them.
@@ -537,6 +541,12 @@ fn forward_touches(this: &Object, event: id, phase: TouchPhase) {
                     TouchPhase::Began => Event::TouchBegin { pos: position, touch_id },
                     TouchPhase::Moved => Event::TouchMove { pos: position, touch_id },
                     TouchPhase::Ended => Event::TouchEnd { pos: position, touch_id },
+                    // The internal touch-cancel event: the translator and touch-aware
+                    // controls clear state without synthesising a completed release
+                    // (D09-EVT-02).
+                    TouchPhase::Cancelled => {
+                        crate::event::translator::touch_cancel(position, touch_id)
+                    }
                 };
                 if crate::platform::platform_facts().route_pointer_event(
                     widget_id,

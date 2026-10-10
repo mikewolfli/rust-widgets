@@ -1535,13 +1535,13 @@ impl Draw for LottieWidget {
             // Centred on the vertical midline and fitted to the control's width: the label
             // is 25 characters at 14 px, wider than most controls it is drawn into, and
             // without the fit it ran past the panel and out of the SVG snapshot.
-            let metrics = context.measure_text(text, &font);
+            let metrics = context.measure_text(text, font);
             let text_y = rect.y + (rect.height as i32 - metrics.height as i32) / 2;
             let line = Rect::new(rect.x, text_y, rect.width, metrics.height);
             context.draw_text_fitted(
                 line,
                 text,
-                &font,
+                font,
                 placeholder_text,
                 HorizontalAlignment::Center,
             );
@@ -1579,7 +1579,7 @@ impl Draw for LottieWidget {
         let font = effective_font(&style);
         let counter_text =
             format!("{}/{} FPS:{:.0}", self.current_frame + 1, self.total_frames, self.frame_rate);
-        let c_metrics = context.measure_text(&counter_text, &font);
+        let c_metrics = context.measure_text(&counter_text, font);
         let cx = rect.x + rect.width as i32 - c_metrics.width as i32 - 4;
         let cy = rect.y + 2;
         let pill_w = c_metrics.width as u32 + 8;
@@ -1594,7 +1594,7 @@ impl Draw for LottieWidget {
         context.draw_text(
             Point::new(cx, cy),
             &counter_text,
-            &font,
+            font,
             Color::WHITE,
             HorizontalAlignment::Left,
         );
@@ -2228,7 +2228,7 @@ mod tests {
         let width = 200usize;
         let mut count = 0usize;
         let mut x_sum = 0f64;
-        for (i, px) in backend.frame_rgba().chunks_exact(4).enumerate() {
+        for (i, px) in backend.frame_rgba().as_chunks::<4>().0.iter().enumerate() {
             if px[0] > 200 && px[1] < 80 && px[2] < 80 {
                 count += 1;
                 x_sum += (i % width) as f64;

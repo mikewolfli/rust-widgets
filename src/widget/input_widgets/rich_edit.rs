@@ -13,6 +13,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::text_utils::floor_char_boundary;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use std::cell::RefCell;
@@ -241,7 +242,7 @@ impl RichEdit {
     pub fn byte_offset_at_point(&self, pos: crate::core::Point) -> usize {
         let rect = self.geometry();
         let padding = 4;
-        let font = crate::core::Font::default();
+        let font = effective_font(self.style());
         let line_height = font.effective_line_height().max(1.0) as i32;
         let first_line_y = rect.y + padding + line_height;
         let row = ((pos.y - first_line_y).max(0) / line_height.max(1)) as usize;
@@ -345,14 +346,14 @@ impl RichEdit {
     ///
     /// The result is a character boundary by construction, because it is only ever returned at one.
     pub fn byte_offset_at_x(&self, line: &str, x: i32) -> usize {
-        let font = crate::core::Font::default();
+        let font = effective_font(self.style());
         let padding = 4;
         let target = (x - padding).max(0) as f32;
         let mut best = 0usize;
         for (index, ch) in line.char_indices() {
-            let midpoint = crate::widget::metrics::estimate_text_width(&line[..index], &font, 1.0)
+            let midpoint = crate::widget::metrics::estimate_text_width(&line[..index], font, 1.0)
                 as f32
-                + crate::widget::metrics::estimate_text_width(&ch.to_string(), &font, 1.0) as f32
+                + crate::widget::metrics::estimate_text_width(&ch.to_string(), font, 1.0) as f32
                     / 2.0;
             if target < midpoint {
                 break;
@@ -633,7 +634,7 @@ impl Draw for RichEdit {
         // Draw border
         context.draw_rect(rect, if self.read_only { border.blend(&paper, 0.50) } else { border });
         // Draw text content — all lines
-        let font = crate::core::Font::default();
+        let font = effective_font(self.style());
         let line_height = 16i32;
         let padding = 2i32;
         let mut line_y = rect.y + padding + line_height;
@@ -677,10 +678,10 @@ impl Draw for RichEdit {
                 if from < to {
                     let left = rect.x
                         + padding
-                        + crate::widget::metrics::estimate_text_width(&line[..from], &font, 1.0)
+                        + crate::widget::metrics::estimate_text_width(&line[..from], font, 1.0)
                             as i32;
                     let width =
-                        crate::widget::metrics::estimate_text_width(&line[from..to], &font, 1.0);
+                        crate::widget::metrics::estimate_text_width(&line[from..to], font, 1.0);
                     context.fill_rect(
                         crate::core::Rect::new(
                             left,
@@ -696,7 +697,7 @@ impl Draw for RichEdit {
             context.draw_text(
                 crate::core::Point::new(rect.x + padding, line_y),
                 line,
-                &font,
+                font,
                 ink,
                 HorizontalAlignment::Left,
             );
@@ -722,7 +723,7 @@ impl Draw for RichEdit {
                     // with — so the caret and the ink cannot disagree about where a character ends.
                     let prefix: String = line.chars().take(col).collect();
                     let advance =
-                        crate::widget::metrics::estimate_text_width(&prefix, &font, 1.0) as i32;
+                        crate::widget::metrics::estimate_text_width(&prefix, font, 1.0) as i32;
                     let cursor_x = rect.x + padding + advance;
                     // The caret is the selection indicator, so it carries the accent rather than
                     // a fixed black the user could not find on a dark page.

@@ -143,6 +143,7 @@ bool rw_poll_drop_event(uint64_t* source_out, uint64_t* target_out, char** mime_
 uint64_t rw_poll_menu_triggered(void);
 unsigned int rw_poll_widget_trigger_event(uint64_t* widget_id_out);
 uint64_t rw_poll_widget_triggered(void);
+bool rw_pump_frame(unsigned int delta_ms);
 unsigned int rw_python_binding_status(void);
 unsigned int rw_python_reserved(void);
 void rw_quit(void);

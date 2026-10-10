@@ -15,7 +15,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::dimensions;
+use crate::widget::metrics::{dimensions, effective_font};
 use crate::widget::text_utils::floor_char_boundary;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use std::cell::RefCell;
@@ -477,9 +477,9 @@ impl TextEdit {
     pub fn layout_rows(&self) -> Vec<RowSpan> {
         let rect = self.geometry();
         let padding = 4;
-        let font = Font::default();
+        let font = self.text_font();
         let interior_width = rect.width.saturating_sub(padding as u32 * 2);
-        self.rows_for(interior_width, &font, |ch| {
+        self.rows_for(interior_width, font, |ch| {
             // One measurement per character, matching the painter — and taken from the **renderer's**
             // own metrics rather than an estimate model.
             //
@@ -492,8 +492,21 @@ impl TextEdit {
             // for a hit test, the break could sit at a different character than the one the painter
             // wrapped at. Measuring through `measure_text` makes the table and the ink the same
             // answer.
-            self.char_advance(ch, &font)
+            self.char_advance(ch, font)
         })
+    }
+
+    /// The resolved body font the control paints and measures text with.
+    ///
+    /// Draw and the caret/hit-test helpers must read the same font, so a themed or scaled body font
+    /// reaches both the ink and the arithmetic that places the caret and maps a click to an offset.
+    fn text_font(&self) -> &Font {
+        effective_font(self.style())
+    }
+
+    /// The line box the effective font occupies, shared by the paint grid and the hit test.
+    fn line_box_height(&self) -> i32 {
+        self.text_font().effective_line_height().max(1.0) as i32
     }
 
     /// The advance of one character under the renderer's own metrics.
@@ -512,7 +525,7 @@ impl TextEdit {
         let mut measurement =
             crate::render::SoftwarePaintBackend::new(crate::core::Size::new(0, 0), 1.0);
         let context = crate::render::RenderContext::new(&mut measurement);
-        context.measure_text(text, &Font::default()).width
+        context.measure_text(text, self.text_font()).width
     }
 
     /// The row spans the value lays out into at `interior_width`.
@@ -565,14 +578,14 @@ impl TextEdit {
     /// The top of a laid-out row within the control, in control coordinates.
     fn row_top(&self, row: usize) -> i32 {
         let padding = 4;
-        let line_height = Font::default().effective_line_height().max(1.0) as i32;
+        let line_height = self.line_box_height();
         self.geometry().y + padding + row as i32 * line_height
     }
 
     /// How many whole rows fit in the interior.
     fn visible_row_count(&self) -> usize {
         let padding = 4;
-        let line_height = Font::default().effective_line_height().max(1.0) as i32;
+        let line_height = self.line_box_height();
         let usable = self.geometry().height as i32 - padding * 2;
         // At least one, so a control shorter than a single row still shows a row rather than
         // dividing by zero or scrolling past everything.
@@ -614,7 +627,7 @@ impl TextEdit {
             return 0;
         }
         let padding = 4;
-        let line_height = Font::default().effective_line_height().max(1.0) as i32;
+        let line_height = self.line_box_height();
         let origin_x = self.geometry().x + padding;
         let row = ((pos.y - self.row_top(0)).max(0) / line_height) as usize;
         let row = (self.first_visible_row + row).min(rows.len() - 1);
@@ -629,7 +642,7 @@ impl TextEdit {
         let mut best = span.start;
         let mut prefix_width = 0u32;
         for (index, ch) in line.char_indices() {
-            let advance = self.char_advance(ch, &Font::default());
+            let advance = self.char_advance(ch, self.text_font());
             // The midpoint decides which side of a character's centre the pointer is on, which is
             // what makes clicking the left half of a glyph put the caret before it.
             if target < prefix_width + advance / 2 {
@@ -1243,7 +1256,7 @@ impl Draw for TextEdit {
             // The placeholder is de-emphasised from the control's own ink rather than being a
             // fixed grey that a dark theme would render illegible.
             let text_color = if self.text.is_empty() { ink.blend(&field, 0.45) } else { ink };
-            let font = Font::default();
+            let font = self.text_font();
             // `line_wrap` used to be stored, published (`get`/`set`/schema row/round-trip test) and
             // read by nothing: this was a single `draw_text` that ran the whole document off the
             // right edge and past the bottom. It was even commented as a placeholder -- "in real
@@ -1258,7 +1271,7 @@ impl Draw for TextEdit {
                 rect.width.saturating_sub(padding as u32 * 2),
                 rect.height.saturating_sub(padding as u32 * 2),
             );
-            self.draw_text_layout(context, display_text, interior, &font, text_color);
+            self.draw_text_layout(context, display_text, interior, font, text_color);
         }
 
         // ── The caret and the selection ──
@@ -1267,9 +1280,8 @@ impl Draw for TextEdit {
         // and column the glyphs actually occupy. Measured any other way it would drift under wrapping,
         // which is the whole reason the table exists.
         if !self.text.is_empty() {
-            let font = Font::default();
             let rows = self.layout_rows();
-            let line_height = font.effective_line_height().max(1.0) as i32;
+            let line_height = self.line_box_height();
             let interior_width = rect.width.saturating_sub(padding as u32 * 2);
 
             // The selection band first, so the glyphs stay legible on top of it.

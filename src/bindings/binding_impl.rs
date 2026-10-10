@@ -165,6 +165,43 @@ pub extern "C" fn rw_quit() {
         crate::quit();
     })
 }
+#[no_mangle]
+/// Drives **one frame** of the library without starting a blocking native loop.
+///
+/// # Why this exists alongside [`rw_run`]
+///
+/// [`rw_run`] hands the thread to the platform's own loop and does not return until
+/// the loop exits. That is the right shape for a C host whose main thread is free to
+/// block, but it is unusable from a host that must keep control of its own main
+/// thread — a Python `example.py` that wants to poll triggers, an editor plug-in, a
+/// test harness. The previous advice ("call `rw_run` before your polling loop") could
+/// not work: control never returns to the polling loop (D09-PY-04).
+///
+/// This entry point is that host's frame step. It performs exactly the frame a
+/// platform loop performs internally — drain the trigger queue, advance animations by
+/// `delta_ms`, apply pending translations, and report repaint demand — through the
+/// same single frame driver (`crate::drive_frame`), so there is one frame contract
+/// and not two. A host that owns its loop calls this once per frame instead of
+/// calling `rw_run`, and then reads the `rw_poll_*` functions for the events this
+/// frame dispatched.
+///
+/// # What it does not do
+///
+/// It does **not** pump a toolkit's event source (a GTK/X11 event queue, a Win32
+/// message pump). A backend whose user input arrives from such a source still needs
+/// [`rw_run`] (or the host's own native message loop) to receive that input; a host
+/// that only calls this and never pumps its toolkit sees no pointer input. The method
+/// is the *frame* step, not the *input* source — the same division
+/// `Platform::run` documents for a backend whose loop is externally driven.
+///
+/// Returns whether another frame is owed (an animation is still settling). A host
+/// that ignores the answer still receives every queued trigger; it simply may not
+/// paint the final settle frame of an animation until its next call. In the
+/// allocation-frugal profile there is no animation bus, so the honest answer is
+/// always `false` — the same answer `crate::drive_frame` gives there.
+pub extern "C" fn rw_pump_frame(delta_ms: c_uint) -> CBool {
+    c_try!({ crate::drive_frame(delta_ms).needs_another_frame })
+}
 
 /// Destroy a widget created by any `rw_create_*` call.
 ///
@@ -4508,27 +4545,29 @@ mod tests {
             //
             // # What the two return values mean, verified rather than assumed
             //
-            // `route_pointer_event` answers "did this reach a live widget":
+            // `route_pointer_event` answers "did this reach a live widget". The press lands on
+            // the button, so it takes pointer capture (D09-EVT-01); the release at (400,400) is
+            // therefore delivered back to the button that owns the gesture, even though that
+            // point hits no widget:
             //
-            // * the **press** returns `true` — the point hit the button;
-            // * the **release at (400,400)** returns `false` — that point hits nothing, and this
-            //   widget does not take pointer *capture*. `Button::press` sets its own `grabbed`
-            //   flag, which makes it paint as held, but it never calls `capture_pointer`, so
-            //   `capturing_widget()` is `None` and the release resolves against the hit test like
-            //   any other event.
+            // * the **press** returns `true` — the point hit the button, which captured the
+            //   pointer;
+            // * the **release at (400,400)** returns `true` — capture routes it to the button;
+            //   the button sees a release outside its bounds and cancels the gesture.
             //
-            // Both readings were wrong before I checked: I first asserted a queued trigger (the
-            // queue carries *host-injected* triggers, not clicks — a click emits the widget's own
-            // signal), then asserted the outside release was delivered (it is not, and should not
-            // be). The signal count is the assertion that distinguishes "the button acted" from
-            // "the event went somewhere".
+            // Before D09-EVT-01 the outside release returned `false` — it was dropped by the hit
+            // test and never reached the button, so the button's own press latch stayed armed
+            // until some *later* unrelated release fired a spurious click. Capture is what keeps
+            // the release paired with its press. The signal count is the assertion that
+            // distinguishes "the button acted" from "the event went somewhere": it must stay
+            // `0` because an outside release cancels rather than activates.
             assert!(
                 rw_dispatch_pointer_event(window, PRESS, 60, 45, 0),
-                "a press inside the button must reach it"
+                "a press inside the button must reach it and take the gesture"
             );
             assert!(
-                !rw_dispatch_pointer_event(window, RELEASE, 400, 400, 0),
-                "a release outside every widget must be reported, not silently dropped"
+                rw_dispatch_pointer_event(window, RELEASE, 400, 400, 0),
+                "the outside release must be routed back to the widget that owns the gesture"
             );
             assert_eq!(
                 clicks.load(std::sync::atomic::Ordering::SeqCst),

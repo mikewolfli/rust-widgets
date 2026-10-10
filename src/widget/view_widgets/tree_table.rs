@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::core::{Color, Font, HorizontalAlignment, Rect};
+use crate::core::{Color, HorizontalAlignment, Rect};
 use crate::event::Event;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
@@ -14,6 +14,7 @@ use crate::widget::capability::coercion::expect_usize;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -593,9 +594,9 @@ impl Draw for TreeTable {
                     let band =
                         Rect::new(text_x, y, (x + col_w - text_x).max(0) as u32, self.row_height);
                     context.draw_text_fitted(
-                        context.text_line(band, &Font::default()),
+                        context.text_line(band, effective_font(&style)),
                         &text,
-                        &Font::default(),
+                        effective_font(&style),
                         ink,
                         HorizontalAlignment::Left,
                     );

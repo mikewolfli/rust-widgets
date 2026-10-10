@@ -29,7 +29,7 @@ buffer instead. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ```toml
 [dependencies]
-rust_widgets = "2.8.3"
+rust_widgets = "2.8.4"
 ```
 
 Pick **exactly one device profile**. They are mutually exclusive — `mini` and `embedded` compile parts
@@ -37,11 +37,11 @@ of the crate *out*, so combining one with `desktop` is not a lowest common denom
 build:
 
 ```toml
-rust_widgets = { version = "2.8.3", features = ["desktop"] }                       # default
-rust_widgets = { version = "2.8.3", default-features = false, features = ["tablet"] }
-rust_widgets = { version = "2.8.3", default-features = false, features = ["mobile"] }
-rust_widgets = { version = "2.8.3", default-features = false, features = ["embedded"] }
-rust_widgets = { version = "2.8.3", default-features = false, features = ["mini"] }
+rust_widgets = { version = "2.8.4", features = ["desktop"] }                       # default
+rust_widgets = { version = "2.8.4", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "2.8.4", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "2.8.4", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "2.8.4", default-features = false, features = ["mini"] }
 ```
 
 > `cargo check --features embedded` is **wrong**: `desktop` is a default feature, so that command
@@ -372,7 +372,7 @@ payload the caller did not ask for is wrong there. A profile build that wants ic
 
 ## Language bindings
 
-The `C ABI` lives in `src/bindings/` and exposes every control through **145 `rw_*` functions** with a
+The `C ABI` lives in `src/bindings/` and exposes every control through **146 `rw_*` functions** with a
 capability-based property and event model. C, C++, Python and Java (JNI) bindings are exercised in CI;
 the generated header is checked for drift by `tools/check_abi.sh`.
 
@@ -404,7 +404,7 @@ MIT — see [LICENSE](LICENSE).
 - Issues: [GitHub Issues](https://github.com/mikewolfli/rust-widgets/issues)
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.8.3-blue)]()
+[![version](https://img.shields.io/badge/version-2.8.4-blue)]()
 [![tests](https://img.shields.io/badge/tests-6300%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 [![controls](https://img.shields.io/badge/controls-180-blue)]()

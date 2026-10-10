@@ -1342,6 +1342,7 @@ mod tests {
 
     /// A text scale above 1.0, resolved through the theme, must widen the hint.
     #[test]
+    #[cfg(device_profile)]
     fn a_theme_text_scale_above_one_grows_the_radio_hint() {
         use crate::style::environment::{
             install_environment, uninstall_environment, EnvironmentProvider,

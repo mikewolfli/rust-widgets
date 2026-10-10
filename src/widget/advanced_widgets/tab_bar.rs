@@ -14,6 +14,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::container_widgets::tabwidget::{TabPosition, TabShape};
+use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -624,13 +625,14 @@ impl TabBar {
     /// `char`, each advancing by the font size — rather than inventing a second one. It
     /// is only reached before the first `draw`, because `draw_tab` records the measured
     /// width in [`Self::measured_title_widths`] from then on.
-    /// The font tab labels are drawn and measured with: the resolved theme/caller font, falling
-    /// back to the fixed Arial face this control used before (D09-STYLE-01).
+    /// The font tab labels are drawn and measured with: the resolved theme/caller font at the
+    /// tab's role size, so the title honours the theme body font and the user's text scale
+    /// (D09-STYLE-01).
     ///
     /// Named once so `compute_tab_width`, `draw_tab` and `draw` all measure with the font the
     /// labels are painted with — a reserved width and its ink cannot disagree.
     fn label_font(&self) -> Font {
-        self.style().font.clone().unwrap_or_else(|| Font::simple("Arial", TAB_FONT_SIZE))
+        role_font(self.style(), TAB_FONT_SIZE)
     }
 
     fn compute_tab_width(&self, index: usize) -> u32 {

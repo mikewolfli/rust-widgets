@@ -220,6 +220,54 @@ def _check_no_prefix_name_lists(rw: RustWidgets) -> None:
     print(f"  no-prefix name lists ({len(kinds)} kinds, {len(themes)} themes): ok")
 
 
+def _check_pump_frame_drives_a_frame(rw: RustWidgets) -> None:
+    """``pump_frame`` must exist, drive a frame, and report the owed-frame flag.
+
+    # The defect this pins (D09-PY-04)
+
+    The shipped example polled triggers in a ``while True`` loop but never drove the
+    runtime: it called neither ``rw_run`` (which would block and never return to the
+    loop) nor any frame step, so the window never produced a frame. ``rw_pump_frame``
+    is the frame step a main-thread-owning host needs, and this check proves the ABI
+    symbol and the Python wrapper actually reach it rather than only existing in the
+    header.
+    """
+    assert hasattr(rw, "pump_frame"), "the wrapper must expose pump_frame"
+    assert hasattr(rw.lib, "rw_pump_frame"), (
+        "the shared library must export rw_pump_frame; the example's loop depends on it"
+    )
+
+    window = rw.create_window("pump-contract", 0, 0, 320, 240)
+    assert window, "create_window must return a live id"
+
+    # One frame with no animation in flight must still return a bool, not raise.
+    owed = rw.pump_frame(16)
+    assert isinstance(owed, bool), f"pump_frame must return bool, got {type(owed)!r}"
+
+    # A negative delta is an input error, not a silent wrap to a huge unsigned value
+    # (the D09-JNI-02 boundary class) -- the wrapper rejects it explicitly.
+    try:
+        rw.pump_frame(-1)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("pump_frame must reject a negative delta_ms")
+
+    # A frame must not corrupt the backend's trigger queue: a trigger injected after
+    # the pump must still be observable through the poll API. (`pump_frame` dispatches
+    # whatever is already queued -- that is its job -- so the check injects *after* the
+    # frame and reads it back, which is the contract the example relies on.)
+    button = rw.create_button(window, "pump", 10, 10, 80, 24)
+    assert button, "create_button must return a live id"
+    rw.pump_frame(16)
+    rw.inject_widget_trigger_event(button, 1)
+    widget_id, kind = rw.poll_widget_trigger_event()
+    assert widget_id == button and kind == 1, (
+        f"a trigger injected after a frame must be deliverable, got ({widget_id}, {kind})"
+    )
+    print("  pump_frame drives a frame and preserves triggers: ok")
+
+
 def main() -> int:
     try:
         rw = RustWidgets()
@@ -234,6 +282,7 @@ def main() -> int:
         ("empty drag payload", _check_empty_drag_payload),
         ("drop event freed once", _check_drop_event_free_once),
         ("no-prefix name lists", _check_no_prefix_name_lists),
+        ("pump_frame drives a frame", _check_pump_frame_drives_a_frame),
     ]
     for title, check in checks:
         try:

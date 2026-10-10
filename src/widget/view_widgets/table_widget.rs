@@ -12,7 +12,7 @@ use crate::widget::capability::coercion::expect_selection_mode;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::ControlMetrics;
+use crate::widget::metrics::{effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::collections::HashMap;
@@ -731,9 +731,9 @@ impl Draw for TableWidget {
                         let cell = crate::core::Rect::new(x, y, col_w, row_h as u32);
                         if !text.is_empty() {
                             context.draw_text_fitted(
-                                context.text_line(cell, &crate::core::Font::default()),
+                                context.text_line(cell, effective_font(&style)),
                                 &text,
-                                &crate::core::Font::default(),
+                                effective_font(&style),
                                 ink,
                                 HorizontalAlignment::Left,
                             );

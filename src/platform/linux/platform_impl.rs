@@ -744,9 +744,15 @@ impl Platform for LinuxPlatform {
                         gtk::gdk::EventType::TouchUpdate => {
                             crate::event::Event::TouchMove { pos: point, touch_id }
                         }
-                        // A cancel terminates the contact like an end does; reporting nothing
-                        // would leave `PinchGesture` holding a phantom finger forever.
-                        gtk::gdk::EventType::TouchEnd | gtk::gdk::EventType::TouchCancel => {
+                        // A cancel withdraws the contact: it terminates tracking without
+                        // committing a completed gesture (D09-EVT-02). Emitting `TouchEnd`
+                        // here would let a cancelled tap activate a control, so the internal
+                        // cancel event is produced instead; the translator and touch-aware
+                        // controls consume it by clearing state without a release.
+                        gtk::gdk::EventType::TouchCancel => {
+                            crate::event::translator::touch_cancel(point, touch_id)
+                        }
+                        gtk::gdk::EventType::TouchEnd => {
                             crate::event::Event::TouchEnd { pos: point, touch_id }
                         }
                         _ => return glib::Propagation::Proceed,

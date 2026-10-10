@@ -1072,7 +1072,9 @@ impl TimeEdit {
 
         let centre = self.clock_centre();
         let radius = face.width as f32 / 2.0;
-        let font = Font::default();
+        // The **effective font** — the resolved theme/caller font — so the clock numerals honour
+        // the theme body font and the user's text scale (D09-STYLE-01).
+        let font = effective_font(self.style());
         let muted = plate.blend(&ink, 0.45);
         // The rims, so the two rings' extents are visible rather than only implied by where the
         // numerals happen to land.
@@ -1094,7 +1096,7 @@ impl TimeEdit {
                 cos,
                 &hour.to_string(),
                 if self.hovered_hand == Some(ClockHand::Hour) { ink } else { muted },
-                &font,
+                font,
             );
             // Minutes: in five-minute steps, which is what the minute ring selects.
             let minute = step * 5;
@@ -1106,7 +1108,7 @@ impl TimeEdit {
                 cos,
                 &format!("{minute:02}"),
                 if self.hovered_hand == Some(ClockHand::Minute) { ink } else { muted },
-                &font,
+                font,
             );
         }
 

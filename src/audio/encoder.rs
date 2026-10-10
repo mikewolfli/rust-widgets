@@ -79,7 +79,7 @@ fn encode_wav(buffer: &AudioBuffer) -> Result<Vec<u8>, String> {
     // so an incomplete final frame must be rejected here rather than written
     // into a file our own decoder then refuses (D08-M-03).
     let channels_usize = channels as usize;
-    if buffer.samples.len() % channels_usize != 0 {
+    if !buffer.samples.len().is_multiple_of(channels_usize) {
         return Err(format!(
             "WAV encoding requires a whole number of frames: {} samples is not a multiple of the
              {channels}-channel frame size (the buffer ends with {} sample(s) of an incomplete

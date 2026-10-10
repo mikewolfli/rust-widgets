@@ -1992,10 +1992,6 @@ mod tests {
                     "{orientation:?}: value {value} must map to a finite pixel"
                 );
                 let back = slider.pixel_pos_to_value(pixel);
-                assert!(
-                    back >= i32::MIN && back <= i32::MAX,
-                    "{orientation:?}: value {value} -> pixel {pixel} -> {back}, must stay in domain"
-                );
                 let recovered_pixel = slider.value_to_pixel_pos(back);
                 assert!(
                     (recovered_pixel - pixel).abs() <= 1.0,
@@ -2031,16 +2027,24 @@ mod tests {
         // A coarse interval over the full span is likewise well-defined and in range.
         slider.set_tick_interval(100_000_000);
         let count = slider.tick_count();
-        assert!(count >= 1 && count <= 100, "a coarse interval yields 1..=100 ticks, got {count}");
+        assert!((1..=100).contains(&count), "a coarse interval yields 1..=100 ticks, got {count}");
 
-        // Every tick value is inside the domain (the index conversion goes through `i64`).
+        // The full-span ticks are monotonic: `tick_value` walks `minimum + index * interval` in
+        // `i64` and clamps at `maximum`, so a wrapped/overflowing intermediate would invert the
+        // order. This is the meaningful domain property; an `i32` value cannot be out of `i32`
+        // range, so a `MIN..=MAX` check would be vacuous.
         slider.set_tick_interval(i32::MAX);
+        let mut previous: Option<i32> = None;
         for index in 0..slider.tick_count() {
             let value = slider.tick_value(index);
-            assert!(
-                value >= i32::MIN && value <= i32::MAX,
-                "tick {index} must stay inside the domain, got {value}"
-            );
+            if let Some(previous) = previous {
+                assert!(
+                    value >= previous,
+                    "tick {index} ({value}) must not precede tick {} ({previous})",
+                    index - 1
+                );
+            }
+            previous = Some(value);
         }
         // A zero or negative interval yields no ticks (rather than dividing by zero).
         slider.set_tick_interval(0);

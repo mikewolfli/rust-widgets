@@ -496,8 +496,7 @@ mod tests {
         assert_eq!(crate::style::normalized_opacity(f32::NEG_INFINITY), 0.0);
         // Theme token path: the resolved style must not carry `NaN`.
         let mut manager = ThemeManager::new();
-        let mut token = ThemeStyleToken::default();
-        token.opacity = Some(f32::NAN);
+        let token = ThemeStyleToken { opacity: Some(f32::NAN), ..ThemeStyleToken::default() };
         let theme = theme_with_overrides(&[("probe", token)]);
         manager.register_theme(theme);
         let resolved = manager.resolve_style("probe");

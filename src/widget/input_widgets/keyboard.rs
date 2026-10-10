@@ -8,7 +8,7 @@
 //! Special keys (Enter, Backspace, Space) also emit dedicated signals.
 
 use crate::compat::{format, vec, String, ToString, Vec};
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -17,6 +17,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -604,7 +605,7 @@ impl Draw for Keyboard {
         // than a fixed light grey.
         let text_color = ink;
 
-        let default_font = Font::default();
+        let font = effective_font(&style);
 
         for (row_idx, row_keys) in self.keys.iter().enumerate() {
             let total_ratio: f32 = row_keys.iter().map(|k| k.width_ratio).sum();
@@ -687,7 +688,7 @@ impl Draw for Keyboard {
                     context.draw_text_line(
                         inner,
                         &label,
-                        &default_font,
+                        font,
                         key_text,
                         HorizontalAlignment::Center,
                     );

@@ -855,6 +855,13 @@ fn is_visible(id: ObjectId) -> bool {
 /// A widget that holds pointer capture receives the event even when the pointer is not
 /// over it, so a drag can continue past its origin widget.
 ///
+/// The router itself owns the capture for the duration of a press gesture (D09-EVT-01):
+/// the widget the press lands on becomes the gesture owner, and every subsequent move and
+/// the final release are delivered to it regardless of where the pointer is. Without that,
+/// releasing after dragging off a control left its own press latch armed, so a *later*
+/// unrelated release on the control could fire a spurious click. Capture is released once
+/// the gesture-ending event has been delivered, so the next press takes a fresh owner.
+///
 /// Returns whether a widget accepted the event.
 pub fn dispatch_pointer_event(root: ObjectId, event: &Event, point: Point) -> bool {
     let target = widget_at(root, point);
@@ -862,9 +869,27 @@ pub fn dispatch_pointer_event(root: ObjectId, event: &Event, point: Point) -> bo
     // A control that captured the pointer keeps receiving events even when the
     // cursor leaves it — that is what lets a drag continue past its origin widget.
     // Hover still follows the true position, so highlights stay honest.
+    //
+    // A *new* gesture-start event always re-targets: the pointer going down again is a
+    // fresh press, so any leftover capture from a previous gesture is dropped first and
+    // the press is hit-tested normally. Without that, a capture that outlived its gesture
+    // (for example a host delivered a press but never a release) would swallow every
+    // later press, and nothing could ever take the pointer again.
+    let starts = event.starts_pointer_gesture();
+    if starts && capturing_widget().is_some() {
+        let _ = release_pointer_capture();
+    }
     if let Some(captured) = capturing_widget() {
         if is_mounted(captured) && !modal_blocks(captured) {
-            return dispatch_event(captured, event);
+            // A gesture-ending event closes the capture *after* delivery, so this is the
+            // last event the capturer sees under this ownership. The control's own latch
+            // (`pressed`/`grabbed`) is cleared by its handler, and the router then forgets
+            // the capture so the next press can re-target.
+            let handled = dispatch_event(captured, event);
+            if event.ends_pointer_gesture() {
+                let _ = release_pointer_capture();
+            }
+            return handled;
         }
         // The capturer is gone (or blocked by a modal); drop the capture rather
         // than routing into nothing.
@@ -872,7 +897,16 @@ pub fn dispatch_pointer_event(root: ObjectId, event: &Event, point: Point) -> bo
         return false;
     }
     match target {
-        Some(target) if !modal_blocks(target) => dispatch_event(target, event),
+        Some(target) if !modal_blocks(target) => {
+            // The widget under a press becomes the gesture owner for its whole duration,
+            // even if the pointer leaves before the release (D09-EVT-01). A control may also
+            // call `capture_pointer` itself for a longer-lived drag; the router only needs to
+            // guarantee that a plain press→drag→release always completes on the same widget.
+            if starts {
+                let _ = capture_pointer(target);
+            }
+            dispatch_event(target, event)
+        }
         _ => false,
     }
 }
@@ -2941,6 +2975,7 @@ thread_local! {
 // regression test asserts on. Compiled only under `cfg(test)` (principle #28).
 #[cfg(test)]
 thread_local! {
+    #[allow(clippy::missing_const_for_thread_local)]
     static FRAME_CACHE_COPIES: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
 }
 
@@ -5865,12 +5900,14 @@ mod tests {
         );
         backend.route_pointer_event(
             parent,
-            &Event::pointer_release(Point::new(120, 100), 1, 0.0),
+            &Event::pointer_release(Point::new(120, 100), 1, 0.6),
             Point::new(120, 100),
         );
 
         // The pad consumed the sequence: one committed stroke whose first point is the press
-        // position and whose pressure was retained.
+        // position and whose per-point pressures were retained. The release's own pressure is the
+        // last datum the device sent, so it becomes the pad's retained `last_pressure` even though
+        // it adds no point (the lift-off position is the last accepted move).
         with_widget(pad_id, |widget| {
             let pad = (widget as &dyn core::any::Any)
                 .downcast_ref::<crate::widget::special_widgets::signature_pad::SignaturePad>()
@@ -5878,7 +5915,15 @@ mod tests {
             assert_eq!(pad.stroke_count(), 1, "the routed stylus gesture must commit one stroke");
             let stroke = &pad.strokes()[0];
             assert_eq!(stroke.points()[0], Point::new(60, 80));
-            assert!((pad.last_pressure() - 0.8).abs() < 1e-6, "pressure was retained");
+            assert!(
+                (stroke.pressures()[0] - 0.3).abs() < 1e-6,
+                "the press pressure must be recorded on the stroke's first point"
+            );
+            assert!(
+                (stroke.last_pressure() - 0.8).abs() < 1e-6,
+                "the move pressure must be recorded on the stroke's last point"
+            );
+            assert!((pad.last_pressure() - 0.6).abs() < 1e-6, "the release datum was retained");
         })
         .expect("the pad is mounted");
 
@@ -6160,6 +6205,118 @@ mod tests {
         release_pointer_capture();
         unregister(parent);
         unregister(right);
+    }
+
+    /// D09-EVT-01: a press that drags off the control and is released elsewhere must
+    /// still be delivered *back* to the control that owns the gesture, so its own press
+    /// latch is cleared by the release rather than left armed.
+    ///
+    /// Before this the runtime resolved every release against the current position, so a
+    /// release outside the button never reached it. The button kept its `grabbed`/`pressed`
+    /// latch set, and a *later*, unrelated release that happened to land on the button
+    /// then fired a spurious `clicked`. This test drives the full runtime sequence the
+    /// issue's acceptance criterion names: press on A → move out over B → release over the
+    /// blank → release again on A. Neither release may activate anything, and after the
+    /// first (outside) release the button must hold no grab and no capture.
+    #[test]
+    fn a_press_released_off_the_control_is_delivered_back_and_clears_its_latch() {
+        use crate::event::mouse_button;
+
+        release_pointer_capture();
+        let parent = register(Box::new(crate::widget::container_widgets::groupbox::GroupBox::new(
+            Rect::new(0, 0, 300, 300),
+        )))
+        .expect("registry");
+
+        // Two buttons side by side, plus a blank area to the right to release into.
+        let mut a = crate::widget::base_widgets::button::Button::new(
+            "A".to_string(),
+            Rect::new(20, 20, 80, 30),
+        );
+        a.set_geometry(Rect::new(20, 20, 80, 30));
+        let a = register(Box::new(a)).expect("registry");
+        with_widget_mut(parent, |widget| widget.add_child(a));
+
+        let mut b = crate::widget::base_widgets::button::Button::new(
+            "B".to_string(),
+            Rect::new(130, 20, 80, 30),
+        );
+        b.set_geometry(Rect::new(130, 20, 80, 30));
+        let b = register(Box::new(b)).expect("registry");
+        with_widget_mut(parent, |widget| widget.add_child(b));
+
+        let clicks_a = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter_a = std::sync::Arc::clone(&clicks_a);
+        with_widget_mut(a, |widget| {
+            widget.base().clicked.connect(move || {
+                counter_a.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            });
+        });
+        let clicks_b = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter_b = std::sync::Arc::clone(&clicks_b);
+        with_widget_mut(b, |widget| {
+            widget.base().clicked.connect(move || {
+                counter_b.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            });
+        });
+
+        // Press inside A: A takes the gesture.
+        assert!(dispatch_pointer_event(
+            parent,
+            &Event::MousePress {
+                pos: Point::new(40, 35),
+                button: mouse_button::PRIMARY,
+                modifiers: 0
+            },
+            Point::new(40, 35),
+        ));
+        assert_eq!(capturing_widget(), Some(a), "the pressed control must own the gesture");
+
+        // Drag out over B, then release on the blank at (280, 280) — over no child.
+        dispatch_pointer_event(
+            parent,
+            &Event::MouseMove { pos: Point::new(160, 35) },
+            Point::new(160, 35),
+        );
+        assert!(
+            dispatch_pointer_event(
+                parent,
+                &Event::MouseRelease { pos: Point::new(280, 280), button: mouse_button::PRIMARY },
+                Point::new(280, 280),
+            ),
+            "the off-widget release must be routed back to the gesture owner, not dropped"
+        );
+
+        // The gesture ended: no capture remains, A holds no grab, and nothing activated.
+        assert_eq!(capturing_widget(), None, "the gesture-ending release must release the capture");
+        assert!(
+            !with_widget_mut(a, |w| w.base().is_grabbed()).unwrap_or(true),
+            "A's grab must be cleared by the release that ended its gesture"
+        );
+        assert_eq!(clicks_a.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(clicks_b.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        // Re-enter and release on A again with no matching press. Because the earlier
+        // gesture was properly closed, this stray release must not fire A's `clicked`.
+        dispatch_pointer_event(
+            parent,
+            &Event::MouseMove { pos: Point::new(40, 35) },
+            Point::new(40, 35),
+        );
+        dispatch_pointer_event(
+            parent,
+            &Event::MouseRelease { pos: Point::new(40, 35), button: mouse_button::PRIMARY },
+            Point::new(40, 35),
+        );
+        assert_eq!(
+            clicks_a.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a stray release must not activate a control whose earlier gesture was cancelled"
+        );
+
+        unregister(a);
+        unregister(b);
+        unregister(parent);
     }
 
     // -----------------------------------------------------------------------

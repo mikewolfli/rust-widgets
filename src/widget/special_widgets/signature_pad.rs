@@ -1191,8 +1191,17 @@ mod tests {
         assert!((*light - 0.1).abs() < 1e-6);
         assert_eq!(segment_width(10, *light, *light, true), 1, "a light stroke draws thin");
 
-        // The datum is queryable through the published property contract too.
-        assert_eq!(p.get("last_pressure").expect("readable"), CapabilityValue::Float(0.1));
+        // The datum is queryable through the published property contract too. The value
+        // round-trips through the property channel as `f64` (the capability value kind),
+        // so compare within a tolerance rather than by bit equality: `0.1_f32` widened to
+        // `f64` is `0.10000000149...`, not the literal `0.1`.
+        match p.get("last_pressure").expect("readable") {
+            CapabilityValue::Float(value) => assert!(
+                (value - 0.1).abs() < 1e-6,
+                "last_pressure must read back the retained datum, got {value}"
+            ),
+            other => panic!("last_pressure must be a Float, got {other:?}"),
+        }
         assert_eq!(p.get("pressure_affects_width").expect("readable"), CapabilityValue::Bool(true));
         p.set("pressure_affects_width", CapabilityValue::Bool(false)).expect("writable");
         assert!(!p.pressure_affects_width());

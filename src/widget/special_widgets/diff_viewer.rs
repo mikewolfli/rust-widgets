@@ -3,7 +3,7 @@
 
 //! DiffViewer widget.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -346,8 +346,8 @@ impl Draw for DiffViewer {
             divider,
         );
 
-        // The LEFT/RIGHT column headings are ordinary chrome, so they take the **effective font**
-        // (D09-STYLE-01). The diff line bodies keep a fixed code face, as the issue records.
+        // The LEFT/RIGHT column headings and the diff line bodies take the **effective font**
+        // (D09-STYLE-01), so the theme body font and the user's text scale reach them.
         context.draw_text(
             Point::new(rect.x + 8, rect.y + 16),
             "LEFT",
@@ -390,7 +390,7 @@ impl Draw for DiffViewer {
                 context.draw_text(
                     Point::new(rect.x + 8, y),
                     text,
-                    &Font::default(),
+                    effective_font(&style),
                     text_color,
                     HorizontalAlignment::Left,
                 );
@@ -399,7 +399,7 @@ impl Draw for DiffViewer {
                 context.draw_text(
                     Point::new(mid_x + 8, y),
                     text,
-                    &Font::default(),
+                    effective_font(&style),
                     text_color,
                     HorizontalAlignment::Left,
                 );

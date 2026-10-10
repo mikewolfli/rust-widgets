@@ -7,7 +7,12 @@
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: `src/render/backend/scene.rs:12` (`use crate::wgpu_backend::WgpuRenderer`). Built only under `--features gpu-wgpu`.
+//! **State:** Reserved: the `gpu-wgpu` renderer is built only under `--features gpu-wgpu` and
+//! currently has no production caller. The auto scene path was deliberately moved off it in
+//! D09-GPU-01 (it drew the whole scene on the CPU, then round-tripped the frame through the GPU,
+//! so it added work without accelerating anything — see `src/render/backend/scene.rs`). The
+//! renderer is kept compiled for the planned on-GPU scene rasterisation described there, not as a
+//! live code path; the rasteriser and its tests remain the reference for the command set.
 mod commands;
 mod raster;
 mod renderer;

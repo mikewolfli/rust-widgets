@@ -389,13 +389,13 @@ impl Draw for AnimatedImage {
             // 224 px; without the fit it ran past the panel and, in the SVG snapshot, past
             // the picture. The glyph origin is the glyph's top (`ascent` is inside the line
             // box, not above it), so half the height is the right centring offset.
-            let metrics = context.measure_text(text, &font);
+            let metrics = context.measure_text(text, font);
             let text_y = rect.y + (rect.height as i32 - metrics.height as i32) / 2;
             let line = Rect::new(rect.x, text_y, rect.width, metrics.height);
             context.draw_text_fitted(
                 line,
                 text,
-                &font,
+                font,
                 placeholder_text,
                 HorizontalAlignment::Center,
             );
@@ -475,7 +475,7 @@ impl Draw for AnimatedImage {
             // Frame counter overlay at top-right.
             let counter_text = format!("{}/{}", self.current_frame + 1, self.frames.len());
             let font = effective_font(&style);
-            let metrics = context.measure_text(&counter_text, &font);
+            let metrics = context.measure_text(&counter_text, font);
             let cx = rect.x + rect.width as i32 - metrics.width as i32 - 4;
             let cy = rect.y + 2;
             // Background pill for counter.
@@ -491,7 +491,7 @@ impl Draw for AnimatedImage {
             context.draw_text(
                 Point::new(cx, cy),
                 &counter_text,
-                &font,
+                font,
                 Color::WHITE,
                 HorizontalAlignment::Left,
             );

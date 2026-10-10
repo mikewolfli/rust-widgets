@@ -436,7 +436,7 @@ impl Draw for ProgressDialog {
         // Guarded on the text being non-empty so a titleless dialog emits no `<text …></text>`.
         if !self.title.is_empty() {
             let title_font = font;
-            let title_line = context.text_line(title_bar_band, &title_font);
+            let title_line = context.text_line(title_bar_band, title_font);
             context.draw_text_fitted(
                 Rect::new(
                     rect.x + 8,
@@ -445,7 +445,7 @@ impl Draw for ProgressDialog {
                     title_line.height.max(1),
                 ),
                 &self.title,
-                &title_font,
+                title_font,
                 ink,
                 HorizontalAlignment::Left,
             );
@@ -460,12 +460,12 @@ impl Draw for ProgressDialog {
         let content =
             ControlMetrics::content_above_bottom_band(body, dimensions::DIALOG_BUTTON_HEIGHT);
         let label_font = font;
-        let label_line_h = context.measure_text("M", &label_font).height.max(1);
+        let label_line_h = context.measure_text("M", label_font).height.max(1);
         // Label: the top row of the content area, bounded by it rather than by `rect.y + 48`.
         // Guarded on the text being non-empty so a labelless dialog emits no empty `<text>`.
         if !self.label_text.is_empty() {
             let label_band = ControlMetrics::top_band(content, label_line_h);
-            let label_line = context.text_line(label_band, &label_font);
+            let label_line = context.text_line(label_band, label_font);
             context.draw_text_fitted(
                 Rect::new(
                     content.x + 10,
@@ -474,7 +474,7 @@ impl Draw for ProgressDialog {
                     label_line.height.max(1),
                 ),
                 &self.label_text,
-                &label_font,
+                label_font,
                 ink,
                 HorizontalAlignment::Left,
             );
@@ -525,7 +525,7 @@ impl Draw for ProgressDialog {
         // trailing-anchored; the helper still owns the *size*, which is the part that was
         // duplicated.
         let labels = vec![self.cancel_button_text.clone()];
-        let row = super::message_box::action_row_geometry(context, &labels, button_band, false);
+        let row = super::message_box::action_row_geometry(context, font, &labels, button_band, false);
         let btn_w = row.buttons[0].width;
         let btn_x = (rect.x + rect.width as i32 / 2 - btn_w as i32 / 2).max(rect.x);
         let btn_rect = Rect::new(btn_x, button_band.y, btn_w, button_band.height.max(1));

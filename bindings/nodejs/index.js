@@ -212,6 +212,7 @@ function loadFunctions(libName) {
     rw_init: [void_t, []],
     rw_run: [void_t, []],
     rw_quit: [void_t, []],
+    rw_pump_frame: [cbool, [uint]],
 
     // ── Widget create (return uint64 widget ID; 0 = error) ─────────────
     rw_create_window: [uint64, ["string", int, int, uint, uint]],
@@ -588,6 +589,28 @@ class RustWidgets {
   /** Signal the event loop to quit. */
   quit() {
     this._lib.rw_quit();
+  }
+
+  /**
+   * Drive one frame of the library without entering the blocking loop.
+   *
+   * `run()` hands the calling thread to the native loop and does not return until
+   * the loop exits, so it cannot be combined with a polling loop in the same thread.
+   * A host that must keep its own main thread calls this once per frame instead and
+   * then polls the trigger queues (D09-PY-04).
+   *
+   * It advances the library frame (drains the trigger queue, advances animations,
+   * applies pending translations) but does **not** pump a toolkit's native message
+   * queue; a backend whose input comes from such a queue still needs `run()`.
+   *
+   * @param {number} [deltaMs=16] elapsed milliseconds since the previous frame.
+   * @returns {boolean} whether another frame is owed (an animation is still settling).
+   */
+  pumpFrame(deltaMs = 16) {
+    if (!Number.isInteger(deltaMs) || deltaMs < 0) {
+      throw new RangeError("deltaMs must be a non-negative integer");
+    }
+    return this._lib.rw_pump_frame(deltaMs);
   }
 
   // ── Widget creation ───────────────────────────────────────────────

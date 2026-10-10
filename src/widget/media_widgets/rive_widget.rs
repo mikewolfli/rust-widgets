@@ -683,13 +683,13 @@ impl Draw for RiveWidget {
             // Centred on the vertical midline and fitted to the control's width: the label
             // is 24 characters at 14 px, wider than most controls it is drawn into, and
             // without the fit it ran past the panel and out of the SVG snapshot.
-            let metrics = context.measure_text(text, &font);
+            let metrics = context.measure_text(text, font);
             let text_y = rect.y + (rect.height as i32 - metrics.height as i32) / 2;
             let line = Rect::new(rect.x, text_y, rect.width, metrics.height);
             context.draw_text_fitted(
                 line,
                 text,
-                &font,
+                font,
                 placeholder_text,
                 HorizontalAlignment::Center,
             );
@@ -772,7 +772,7 @@ impl Draw for RiveWidget {
         // Draw animation name label at top.
         let font = effective_font(&style);
         let name_text = format!("Rive: {}", self.animation_name);
-        let name_metrics = context.measure_text(&name_text, &font);
+        let name_metrics = context.measure_text(&name_text, font);
         let name_x = rect.x + 4;
         // Origin is the glyph box's top edge, so it is the same `+ 2` the backdrop uses;
         // the removed `+ ascent` had pushed the label half a line down inside its own pill.
@@ -787,14 +787,14 @@ impl Draw for RiveWidget {
         context.draw_text(
             Point::new(name_x, name_y),
             &name_text,
-            &font,
+            font,
             Color::WHITE,
             HorizontalAlignment::Left,
         );
 
         // Draw progress percentage at top-right.
         let progress_text = format!("{:.0}%", self.animation_progress * 100.0);
-        let p_metrics = context.measure_text(&progress_text, &font);
+        let p_metrics = context.measure_text(&progress_text, font);
         let px = rect.x + rect.width as i32 - p_metrics.width as i32 - 6;
         // Same top-edge origin as the name label: no ascent term, or the percentage sits
         // half a line low in its pill.
@@ -805,7 +805,7 @@ impl Draw for RiveWidget {
         context.draw_text(
             Point::new(px, py),
             &progress_text,
-            &font,
+            font,
             Color::WHITE,
             HorizontalAlignment::Left,
         );
@@ -830,7 +830,7 @@ impl Draw for RiveWidget {
         // State machine inputs count.
         if !self.state_machine_inputs.is_empty() {
             let input_text = format!("Inputs: {}", self.state_machine_inputs.len());
-            let input_metrics = context.measure_text(&input_text, &font);
+            let input_metrics = context.measure_text(&input_text, font);
             let input_x = rect.x + rect.width as i32 - input_metrics.width as i32 - 6;
             // `input_y` is the intended *top* edge, not a baseline, so the ascent term is
             // dropped; subtracting it had pulled the label half a line up off that edge.
@@ -838,7 +838,7 @@ impl Draw for RiveWidget {
             context.draw_text(
                 Point::new(input_x, input_y),
                 &input_text,
-                &font,
+                font,
                 Color::rgba(120, 80, 160, 180),
                 HorizontalAlignment::Left,
             );

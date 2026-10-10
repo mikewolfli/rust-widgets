@@ -7,7 +7,7 @@
 //! a thumbnail strip at the bottom. It supports keyboard navigation (arrow keys),
 //! thumbnail selection via click, and emits a signal when the selected image changes.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -16,6 +16,7 @@ use crate::widget::capability::coercion::expect_usize;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -361,12 +362,12 @@ impl Draw for ImageGallery {
                 self.style().border_radius.unwrap_or(0),
                 Color::BLACK,
             );
-            let font = Font::default();
+            let font = effective_font(&style);
             let text = "No images in gallery";
             // Fitted to the control's width: 20 characters at 14 px is wider than a
             // gallery laid out in a narrow pane, and the label used to be placed from the
             // box centre outward, so half of it fell outside.
-            let metrics = context.measure_text(text, &font);
+            let metrics = context.measure_text(text, font);
             let text_y = rect.y + (rect.height as i32 - metrics.height as i32) / 2;
             let line = Rect::new(rect.x, text_y, rect.width, metrics.height);
             // One step from the panel toward the panel's own contrast colour: a placeholder
@@ -390,7 +391,7 @@ impl Draw for ImageGallery {
             } else {
                 bg.blend(&panel_ink, disabled_weight)
             };
-            context.draw_text_fitted(line, text, &font, label_color, HorizontalAlignment::Center);
+            context.draw_text_fitted(line, text, font, label_color, HorizontalAlignment::Center);
             return;
         }
 
@@ -450,7 +451,7 @@ impl Draw for ImageGallery {
 
         // Draw current image info in preview area.
         if let Some(image) = self.images.get(self.current_index) {
-            let font = Font::default();
+            let font = effective_font(&style);
 
             // Draw image label / filename centered.
             let display_name = image
@@ -459,7 +460,7 @@ impl Draw for ImageGallery {
                 .unwrap_or_else(|| image.path.rsplit('/').next().unwrap_or(&image.path));
             // The origin is the glyph box's *top* edge, so the label reads as centred on the
             // band at one third of the preview rather than half a line below its middle.
-            let name_metrics = context.measure_text(display_name, &font);
+            let name_metrics = context.measure_text(display_name, font);
             let name_y =
                 preview_rect.y + preview_rect.height as i32 / 3 - name_metrics.height as i32 / 2;
             // The name is host-supplied, so a long one overflowed both edges of the preview: the
@@ -470,14 +471,14 @@ impl Draw for ImageGallery {
             context.draw_text_fitted(
                 Rect::new(preview_rect.x, name_y, preview_rect.width, name_metrics.height),
                 display_name,
-                &font,
+                font,
                 name_ink,
                 HorizontalAlignment::Center,
             );
 
             // Draw dimensions.
             let dim_text = format!("{}x{}", image.width, image.height);
-            let dim_metrics = context.measure_text(&dim_text, &font);
+            let dim_metrics = context.measure_text(&dim_text, font);
             let dim_x = preview_rect.x + (preview_rect.width as i32 - dim_metrics.width as i32) / 2;
             // Same as the filename above: half a *line box* about the band, not half an
             // ascent below it.
@@ -486,14 +487,14 @@ impl Draw for ImageGallery {
             context.draw_text(
                 Point::new(dim_x, dim_y),
                 &dim_text,
-                &font,
+                font,
                 dim_ink,
                 HorizontalAlignment::Left,
             );
 
             // Image index indicator.
             let index_text = format!("{}/{}", self.current_index + 1, self.images.len());
-            let index_metrics = context.measure_text(&index_text, &font);
+            let index_metrics = context.measure_text(&index_text, font);
             let index_x =
                 preview_rect.x + preview_rect.width as i32 - index_metrics.width as i32 - 8;
             let pill_w = index_metrics.width as u32 + 8;
@@ -510,7 +511,7 @@ impl Draw for ImageGallery {
             context.draw_text(
                 Point::new(index_x, index_y),
                 &index_text,
-                &font,
+                font,
                 stage_ink,
                 HorizontalAlignment::Left,
             );
@@ -621,14 +622,14 @@ impl Draw for ImageGallery {
             // Draw image label under thumbnail.
             if let Some(image) = self.images.get(img_idx) {
                 if let Some(ref label) = image.label {
-                    let font = Font::default();
+                    let font = effective_font(&style);
                     let label_text = if label.len() > 10 {
                         let boundary = crate::widget::text_utils::floor_char_boundary(label, 8);
                         format!("{}..", &label[..boundary])
                     } else {
                         label.clone()
                     };
-                    let label_metrics = context.measure_text(&label_text, &font);
+                    let label_metrics = context.measure_text(&label_text, font);
                     let label_x =
                         thumb_x + (self.thumbnail_size as i32 - label_metrics.width as i32) / 2;
                     // Top-aligned caption under the thumbnail, not a centred box: the origin
@@ -638,7 +639,7 @@ impl Draw for ImageGallery {
                     context.draw_text(
                         Point::new(label_x, label_y),
                         &label_text,
-                        &font,
+                        font,
                         dim_ink,
                         HorizontalAlignment::Left,
                     );

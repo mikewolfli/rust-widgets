@@ -23,7 +23,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::sync::Arc;
@@ -989,7 +989,7 @@ impl Draw for ListView {
             let layout = self.list_layout();
             let row_count = self.row_count();
             let current_row = self.focused_row;
-            let font = crate::core::Font::default();
+            let font = effective_font(&style);
             // The row-*index* arithmetic is in `usize` (it comes from the model) and the way to get
             // back to the row's number is to make the whole grid arithmetic `u32`, so the sole cast is
             // at the two ends. `index / columns` reports the line, `index % columns` the column within
@@ -1038,9 +1038,9 @@ impl Draw for ListView {
                             )
                         };
                         context.draw_text_fitted(
-                            context.text_line(band, &font),
+                            context.text_line(band, font),
                             &text,
-                            &font,
+                            font,
                             ink,
                             align,
                         );

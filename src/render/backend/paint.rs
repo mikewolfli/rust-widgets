@@ -217,6 +217,7 @@ impl PaintBackend for SoftwarePaintBackend {
 // release builds (principle #28).
 #[cfg(test)]
 thread_local! {
+    #[allow(clippy::missing_const_for_thread_local)]
     static IMAGE_BYTES_DRAWN_WITHOUT_COPY: core::cell::Cell<usize> =
         const { core::cell::Cell::new(0) };
 }

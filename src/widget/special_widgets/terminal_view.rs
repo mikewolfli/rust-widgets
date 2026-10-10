@@ -3,7 +3,7 @@
 
 //! TerminalView widget.
 
-use crate::core::{Color, Font, HorizontalAlignment, Rect};
+use crate::core::{Color, HorizontalAlignment, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -12,6 +12,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -374,8 +375,8 @@ impl Draw for TerminalView {
         // line's top 10 px above the edge and let the glyphs paint 4 px below it. Reserving
         // one line height plus a margin keeps the prompt inside the frame, and it also
         // subtracts that row from the output area below so the two cannot overlap.
-        let prompt_font = Font::default();
-        let prompt_line_height = context.measure_text("M", &prompt_font).height.max(1);
+        let prompt_font = effective_font(&style);
+        let prompt_line_height = context.measure_text("M", prompt_font).height.max(1);
         let prompt_row_height = prompt_line_height + 6;
         let body_height = rect.height.saturating_sub(prompt_row_height);
 
@@ -388,7 +389,7 @@ impl Draw for TerminalView {
             context.draw_text_fitted(
                 line_bounds,
                 line,
-                &prompt_font,
+                prompt_font,
                 output_color,
                 HorizontalAlignment::Left,
             );
@@ -401,7 +402,7 @@ impl Draw for TerminalView {
         context.draw_text_fitted(
             prompt_bounds,
             &prompt_text,
-            &prompt_font,
+            prompt_font,
             prompt_color,
             HorizontalAlignment::Left,
         );
@@ -414,7 +415,7 @@ impl Draw for TerminalView {
         // `cursor.is_visible()` is a caret that never blinks, which is the state this control was
         // in before it had one at all.
         if self.base.is_enabled() && self.cursor.is_visible() {
-            let typed = context.measure_text(&prompt_text, &prompt_font);
+            let typed = context.measure_text(&prompt_text, prompt_font);
             let caret_x = (rect.x + 8 + typed.width as i32)
                 .min(rect.x + rect.width as i32 - 2)
                 .max(rect.x + 8);

@@ -3,13 +3,14 @@
 
 //! Arc widget — circular progress/indicator (BLUE13 R2.1).
 use crate::compat::{format, String};
-use crate::core::{deg_to_rad, Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{deg_to_rad, Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
 use crate::widget::capability::coercion::{expect_bool, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::numeric::ordered_clamp_u32;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -409,8 +410,8 @@ impl Draw for Arc {
         // reading, and the raster backend hides the overflow while the SVG one shows it.
         let text = self.format_value_text();
         if !text.is_empty() && inner_radius > 0 {
-            let font = Font::default();
-            let metrics = context.measure_text(&text, &font);
+            let font = effective_font(self.style());
+            let metrics = context.measure_text(&text, font);
             let hole = inner_radius.saturating_mul(2);
             // A one-pixel margin on each side of the hole, so the glyphs do not touch the
             // ring they sit inside.
@@ -423,7 +424,7 @@ impl Draw for Arc {
                 context.draw_text(
                     Point::new(text_x, text_y),
                     &text,
-                    &font,
+                    font,
                     text_color,
                     HorizontalAlignment::Left,
                 );

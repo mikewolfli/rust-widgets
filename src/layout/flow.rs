@@ -875,7 +875,6 @@ mod tests {
             spacing: -10,
             wrap: false,
             padding: 0,
-            ..FlowLayoutConfig::default()
         });
         layout.add_child(Box::new(TestWidget::new(1, 10, 10)));
         layout.add_child(Box::new(TestWidget::new(2, 10, 10)));
@@ -895,7 +894,6 @@ mod tests {
             spacing: -10,
             wrap: false,
             padding: 0,
-            ..FlowLayoutConfig::default()
         });
         layout.add_child(Box::new(TestWidget::new(1, 10, 10)));
         layout.add_child(Box::new(TestWidget::new(2, 10, 10)));
@@ -915,7 +913,6 @@ mod tests {
             spacing: -5,
             wrap: true,
             padding: 0,
-            ..FlowLayoutConfig::default()
         });
         // Three 10-wide children in a 15-wide area with spacing -5: the first two fit on
         // the first line, the third wraps.

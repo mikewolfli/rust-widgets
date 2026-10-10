@@ -14,7 +14,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::dimensions;
+use crate::widget::metrics::{dimensions, effective_font};
 use crate::widget::text_utils::floor_char_boundary;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -425,7 +425,7 @@ impl TextArea {
     /// Always at least one, because a control shorter than a single line still has to show something
     /// rather than dividing by zero or scrolling past everything.
     fn visible_line_count(&self) -> usize {
-        let first_line_top = FIRST_LINE_INSET + (LINE_H - Font::default().size_i32()) / 2;
+        let first_line_top = FIRST_LINE_INSET + (LINE_H - self.line_box_height()) / 2;
         let usable = self.geometry().height as i32 - first_line_top;
         ((usable / LINE_H).max(1)) as usize
     }
@@ -645,6 +645,11 @@ impl TextArea {
             return;
         }
         let before = self.text.clone();
+        // Typing (or committing IME text, or pasting) over a selection replaces it — the same rule
+        // the single-character `insert` applies. Without this the caret's range was left in place
+        // and the committed text was spliced in *after* the selected run instead of over it, so a
+        // `TextInput` onto a selection appended rather than replaced.
+        let replaced = self.replace_selection();
         let at = floor_char_boundary(&self.text, self.cursor_pos.min(self.text.len()));
         let mut next = self.text.clone();
         next.insert_str(at, text);
@@ -657,7 +662,9 @@ impl TextArea {
         }
         self.cursor_pos = floor_char_boundary(&self.text, at + text.len());
         self.selection_anchor = None;
-        self.record_edit(before);
+        if replaced || self.text != before {
+            self.record_edit(before);
+        }
         self.base.request_redraw();
     }
 
@@ -779,7 +786,7 @@ impl TextArea {
     fn byte_index_at(&self, pos: Point) -> usize {
         let rect = self.geometry();
         let origin_x = rect.x + dimensions::TEXT_FIELD_PADDING_H as i32;
-        let text_top = rect.y + FIRST_LINE_INSET + (LINE_H - Font::default().size_i32()) / 2;
+        let text_top = rect.y + FIRST_LINE_INSET + (LINE_H - self.line_box_height()) / 2;
 
         let row = ((pos.y - text_top).max(0) / LINE_H) as usize;
         // The viewport row is translated to the logical line it paints, so a click after scrolling
@@ -1179,8 +1186,9 @@ impl Draw for TextArea {
         // value sit on the same row when the two are laid out at the same height. Deriving
         // the band from the *first line* rather than from the whole control is what keeps a
         // 120 px text area from putting its first line halfway down the control.
+        let font = self.text_font();
         let first_band = Rect::new(origin_x, rect.y + FIRST_LINE_INSET, rect.width, LINE_H as u32);
-        let first_line = context.text_line(first_band, &Font::default());
+        let first_line = context.text_line(first_band, font);
         let text_top = first_line.y;
 
         if self.text.is_empty() && !self.placeholder.is_empty() && !self.focused {
@@ -1188,7 +1196,7 @@ impl Draw for TextArea {
             context.draw_text(
                 Point::new(origin_x, text_top),
                 &self.placeholder,
-                &Font::default(),
+                font,
                 placeholder_color,
                 HorizontalAlignment::Left,
             );
@@ -1250,7 +1258,7 @@ impl Draw for TextArea {
                 context.draw_text(
                     Point::new(origin_x, y),
                     line,
-                    &Font::default(),
+                    font,
                     text_color,
                     HorizontalAlignment::Left,
                 );
@@ -1273,6 +1281,24 @@ impl Draw for TextArea {
 }
 
 impl TextArea {
+    /// The resolved body font the control paints and measures text with.
+    ///
+    /// Draw and the caret/hit-test helpers must read the same font, so a themed or scaled body font
+    /// reaches both the ink and the arithmetic that places the caret and maps a click to an offset.
+    fn text_font(&self) -> &Font {
+        effective_font(self.style())
+    }
+
+    /// The line box the effective font occupies, shared by the paint grid and the hit test.
+    ///
+    /// The paint path centres each row's glyph box in its [`LINE_H`] band via `text_line`, which
+    /// derives the box from the font's **effective** line height — so the grid arithmetic must read
+    /// the same number here rather than the point size (`size_i32`), which only equals the line
+    /// height for a font with no explicit leading.
+    fn line_box_height(&self) -> i32 {
+        self.text_font().effective_line_height().max(1.0) as i32
+    }
+
     /// The band colour a selection is painted in.
     ///
     /// Derived from the field's own ink and fill rather than a fixed blue, so a selection reads on
@@ -1333,7 +1359,7 @@ impl TextArea {
         let mut measurement =
             crate::render::SoftwarePaintBackend::new(crate::core::Size::new(0, 0), 1.0);
         let context = RenderContext::new(&mut measurement);
-        context.measure_text(text, &Font::default()).width as i32
+        context.measure_text(text, self.text_font()).width as i32
     }
 
     /// The byte offset the horizontal coordinate `x` points at, **within `line`**.
@@ -1343,7 +1369,6 @@ impl TextArea {
     /// character boundary by construction.
     fn column_at_x(&self, line: &str, x: i32) -> usize {
         let target = x.max(0) as f32;
-        let font = Font::default();
         let mut best = 0usize;
         let mut prefix_width = 0.0f32;
         for (index, ch) in line.char_indices() {
@@ -1352,7 +1377,6 @@ impl TextArea {
             // conventional rule and the one that makes clicking the left half of a glyph put the
             // caret before it.
             if target < prefix_width + advance / 2.0 {
-                let _ = (font, ch);
                 break;
             }
             prefix_width += advance;
@@ -1367,7 +1391,7 @@ impl TextArea {
             crate::render::SoftwarePaintBackend::new(crate::core::Size::new(0, 0), 1.0);
         let context = RenderContext::new(&mut measurement);
         let ch = line[byte_index..].chars().next().unwrap_or(' ');
-        context.measure_text(&ch.to_string(), &Font::default()).width as f32
+        context.measure_text(&ch.to_string(), self.text_font()).width as f32
     }
 
     /// Computes the screen-space Y coordinate of the cursor (top of cursor line).

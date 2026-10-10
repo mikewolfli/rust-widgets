@@ -198,7 +198,13 @@ crate::impl_default_via_new!(EventHandlerMap);
 
 // ── Global thread-local event handler map ──────────────────────
 
+// `HashMap::new()` allocates, so `EventHandlerMap::new()` is not a `const fn` and this entry's
+// initializer genuinely cannot be made const. Clippy's `missing_const_for_thread_local` fires
+// only against the OpenHarmony std (the host toolchain does not raise it), and `#[allow]` applied
+// to the `thread_local!` invocation itself is ignored — it has to sit on the inner `static`, which
+// is why the attribute is written there rather than on the macro.
 thread_local! {
+    #[allow(clippy::missing_const_for_thread_local)]
     static GLOBAL_EVENT_HANDLERS: RefCell<EventHandlerMap> = RefCell::new(EventHandlerMap::new());
 
     /// Bumped by [`clear_global_handlers`], so an in-flight [`invoke_global_handler`] can tell that the
@@ -212,6 +218,7 @@ thread_local! {
     /// "clear all" was honoured for everything except the handler asking for it, and its captured
     /// resources stayed alive. Comparing the generation captured at invoke time against the current one
     /// makes a clear invalidate the pending restore, so the running handler is dropped like the rest.
+    #[allow(clippy::missing_const_for_thread_local)]
     static HANDLER_GENERATION: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
 }
 

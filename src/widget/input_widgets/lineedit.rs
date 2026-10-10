@@ -3180,6 +3180,7 @@ mod composition_tests {
 
     /// A text scale above 1.0, resolved through the theme, must widen the hint.
     #[test]
+    #[cfg(device_profile)]
     fn a_theme_text_scale_above_one_grows_the_line_edit_hint() {
         use crate::style::environment::{
             install_environment, uninstall_environment, EnvironmentProvider,
@@ -3305,6 +3306,7 @@ mod composition_tests {
     /// Committed text emits `text_changed` once with the new value, and the edit is undoable.
     #[test]
     fn text_input_emits_changed_and_is_undoable() {
+        use crate::compat::Vec;
         use std::sync::{Arc, Mutex};
         let mut field = LineEdit::new(Rect::new(0, 0, 200, 24));
         field.set_focused(true);

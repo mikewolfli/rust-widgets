@@ -367,6 +367,9 @@ class RustWidgets:
         L.rw_quit.argtypes = []
         L.rw_quit.restype = None
 
+        L.rw_pump_frame.argtypes = [c_uint]
+        L.rw_pump_frame.restype = c_bool
+
         # ------------------------------------------------------------------ #
         # Widget creation  — all return u64 (0 = failure)                     #
         #                                                                     #
@@ -1027,12 +1030,49 @@ class RustWidgets:
         self.lib.rw_init()
 
     def run(self) -> None:
-        """Enter the native event loop. Blocks until :meth:`quit` is called."""
+        """Enter the native event loop. Blocks until :meth:`quit` is called.
+
+        This does not return to the caller until the loop exits, so it cannot be
+        combined with a polling loop in the same thread. A host that must keep its
+        own main thread should call :meth:`pump_frame` once per frame instead and
+        then poll :meth:`poll_widget_triggered` / :meth:`poll_widget_trigger_event`.
+        """
         self.lib.rw_run()
 
     def quit(self) -> None:
         """Signal the event loop to exit."""
         self.lib.rw_quit()
+
+    def pump_frame(self, delta_ms: int = 16) -> bool:
+        """Drive one frame of the library without entering the blocking loop.
+
+        ``run()`` hands the calling thread to the native loop and does not return
+        until the loop exits, which a host that must keep its own main thread (a
+        polling Python script, an editor plug-in) cannot use. This method is that
+        host's frame step: it drains the trigger queue, advances animations by
+        *delta_ms*, applies pending translations, and reports repaint demand -- the
+        same frame the platform loops perform internally -- and then returns so the
+        caller can poll :meth:`poll_widget_triggered` and friends.
+
+        It does **not** pump a toolkit event source (X11/GTK/Win32 messages). A
+        backend whose user input arrives from such a source still needs
+        :meth:`run` (or the host's own native message loop); a caller that only
+        pumps frames and never pumps its toolkit receives no pointer input.
+
+        Parameters
+        ----------
+        delta_ms
+            Milliseconds elapsed since the previous frame (default: one 60 Hz
+            frame).
+
+        Returns
+        -------
+        bool
+            ``True`` when another frame is owed (an animation is still settling).
+        """
+        if delta_ms < 0:
+            raise ValueError("delta_ms must not be negative")
+        return bool(self.lib.rw_pump_frame(delta_ms))
 
     # ------------------------------------------------------------------ #
     # Public API — Widget creation                                       #

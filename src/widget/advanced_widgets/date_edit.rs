@@ -916,17 +916,43 @@ const WEEKDAY_INITIALS: [&str; 7] = ["S", "M", "T", "W", "T", "F", "S"];
 /// `date` is the month to lay out and the day to mark; `minimum`/`maximum` decide which cells are
 /// muted. The grid geometry is derived from the field's own rect so a field placed anywhere opens
 /// its popup in the same relative position.
+/// The three resolved chrome colours the calendar grid paints with.
+///
+/// Bundled so [`draw_month_grid`] keeps a readable arity: the three tones travel
+/// together from the caller's resolved style and are meaningless apart. Adding a
+/// fourth chrome tone (a hover fill, say) then extends one type rather than the
+/// argument list of every call site.
+#[derive(Clone, Copy)]
+pub(crate) struct GridChrome {
+    /// The field's own surface tone, used to derive the popup's slightly recessed plate.
+    pub(crate) surface: Color,
+    /// The grid's edge colour.
+    pub(crate) border: Color,
+    /// The primary ink (day numbers, weekday initials).
+    pub(crate) ink: Color,
+}
+
+/// Paints the calendar month grid for `date`, shared by [`DateEdit`] and
+/// [`super::date_time_edit::DateTimeEdit`].
+///
+/// This is the **one** implementation of the calendar popup. [`DateEdit`] and [`DateTimeEdit`] show
+/// the same grid -- their own docs say so -- and previously each carried a near-verbatim ~100-line
+/// copy, so a change to one (cell size, the accent source, the six-week rule) would silently leave
+/// the other behind. Both now delegate here.
+///
+/// `date` is the month to lay out and the day to mark; `minimum`/`maximum` decide which cells are
+/// muted. The grid geometry is derived from the field's own rect so a field placed anywhere opens
+/// its popup in the same relative position.
 pub(crate) fn draw_month_grid(
     context: &mut RenderContext,
     field: Rect,
-    surface: Color,
-    border: Color,
-    ink: Color,
+    chrome: GridChrome,
     date: &Date,
     minimum: &Date,
     maximum: &Date,
     font: &Font,
 ) {
+    let GridChrome { surface, border, ink } = chrome;
     let grid_w = POPUP_CELL_W * 7;
     let grid_h = POPUP_CELL_H * 7;
     let popup = Rect::new(
@@ -1029,9 +1055,7 @@ impl DateEdit {
         draw_month_grid(
             context,
             field,
-            surface,
-            border,
-            ink,
+            GridChrome { surface, border, ink },
             &self.date,
             &self.minimum,
             &self.maximum,

@@ -16,8 +16,6 @@
 //! widget cannot drift from the SVG chart renderer. Without the feature
 //! (tablet/mobile) a compact local preamble is used instead.
 
-#[cfg(not(feature = "chart"))]
-use crate::core::Font;
 use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -32,8 +30,6 @@ use crate::widget::chart_widgets::charts::{
     compute_cartesian_layout, draw_cartesian_axes, draw_x_ticks, draw_y_ticks, CartesianLayout,
 };
 use crate::widget::chart_widgets::{finite_samples, is_finite_sample};
-#[cfg(not(feature = "chart"))]
-use crate::widget::metrics::effective_font;
 #[cfg(not(feature = "chart"))]
 use crate::widget::metrics::role_font;
 // Shared with the engine-backed path so the `not(feature = "chart")` fallback cannot

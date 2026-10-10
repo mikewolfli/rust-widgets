@@ -142,58 +142,115 @@ impl BoxLayout {
             return scaled;
         }
 
-        let mut total_assigned: u32 = assigned.iter().sum();
-        while total_assigned < primary {
-            let mut grew = false;
-            for (index, item) in self.items.iter().enumerate() {
-                if total_assigned >= primary {
-                    break;
-                }
-                // A `Fixed` item has already taken its exact constrained size and must not
-                // absorb leftover room.
-                if is_fixed(index) {
-                    continue;
-                }
-                let max_allowed =
-                    item.constraints.max.unwrap_or(u32::MAX).max(item.constraints.min);
-                if assigned[index] < max_allowed {
-                    assigned[index] = assigned[index].saturating_add(1);
-                    total_assigned = total_assigned.saturating_add(1);
-                    grew = true;
-                }
+        // Grow/shrink are *batch* passes, not one-pixel loops. The difference is not cosmetic:
+        // a legal constraint such as `LayoutConstraints::new(0, Some(u32::MAX))` on a `Fixed` item
+        // makes the initial allocation `u32::MAX`, so the old `while total > primary { ... -1 }`
+        // loop needed ~4.29e9 iterations (minutes of a stalled layout thread) on an item count of
+        // one. Each iteration below moves a whole batch of pixels, so the complexity is bounded by
+        // the number of items, never by the pixel deficit.
+        let mut total_assigned = assigned.iter().fold(0u64, |acc, &v| acc + v as u64);
+        let primary_u64 = primary as u64;
+        // Largest distance any item can still grow. A `Fixed` item has already taken its exact
+        // constrained size, so it contributes 0 — the grow pass must not stretch it toward the
+        // container (the previous per-pixel loop skipped the same items).
+        let mut grow_room: u64 = 0;
+        for (index, item) in self.items.iter().enumerate() {
+            if is_fixed(index) {
+                continue;
             }
-            if !grew {
-                break;
-            }
+            let max_allowed = item.constraints.max.unwrap_or(u32::MAX).max(item.constraints.min);
+            grow_room += max_allowed.saturating_sub(assigned[index]) as u64;
         }
-        while total_assigned > primary {
-            let mut shrank = false;
-            for (index, _item) in self.items.iter().enumerate().rev() {
-                if total_assigned <= primary {
-                    break;
+        if total_assigned < primary_u64 {
+            let deficit = primary_u64 - total_assigned;
+            if grow_room > 0 {
+                let to_grow = deficit.min(grow_room);
+                let mut remainder = to_grow;
+                for (index, item) in self.items.iter().enumerate() {
+                    if remainder == 0 {
+                        break;
+                    }
+                    if is_fixed(index) {
+                        continue;
+                    }
+                    let max_allowed =
+                        item.constraints.max.unwrap_or(u32::MAX).max(item.constraints.min);
+                    let room = max_allowed.saturating_sub(assigned[index]) as u64;
+                    if room == 0 {
+                        continue;
+                    }
+                    // Give each item its proportional share (in u64, so the product is exact)
+                    // capped at its remaining room; `remainder` tracks what is still unassigned.
+                    let share = ((to_grow as u128 * room as u128) / grow_room as u128) as u64;
+                    let give = share.min(room).min(remainder);
+                    assigned[index] = assigned[index].saturating_add(give as u32);
+                    remainder -= give;
                 }
-                let min_allowed = self.items[index].constraints.min;
-                if assigned[index] > min_allowed {
-                    assigned[index] = assigned[index].saturating_sub(1);
-                    total_assigned = total_assigned.saturating_sub(1);
-                    shrank = true;
+                // Proportional rounding can leave a few pixels unassigned. Hand them to any item
+                // that still has room so the parent is filled exactly (never partially).
+                if remainder > 0 {
+                    for (index, item) in self.items.iter().enumerate() {
+                        if remainder == 0 {
+                            break;
+                        }
+                        if is_fixed(index) {
+                            continue;
+                        }
+                        let max_allowed =
+                            item.constraints.max.unwrap_or(u32::MAX).max(item.constraints.min);
+                        let room = max_allowed.saturating_sub(assigned[index]) as u64;
+                        let give = room.min(remainder);
+                        assigned[index] = assigned[index].saturating_add(give as u32);
+                        remainder -= give;
+                    }
                 }
+                let _ = to_grow - remainder;
             }
-            if !shrank {
-                // Nothing is above its minimum and the total is still too large, which
-                // can now only happen if a `max` below the summed minima was pinned above
-                // its own minimum. Reducing from the largest allocation keeps the sum
-                // inside `primary` instead of returning an overflowing vector.
-                let Some((largest_index, _)) = assigned
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, value)| **value > 0)
-                    .max_by_key(|(_, value)| **value)
-                else {
-                    break;
-                };
-                assigned[largest_index] = assigned[largest_index].saturating_sub(1);
-                total_assigned = total_assigned.saturating_sub(1);
+        } else if total_assigned > primary_u64 {
+            let excess = total_assigned - primary_u64;
+            // Largest distance any item can still shrink down to its own minimum. A `Fixed` item
+            // has no `max`-driven slack, but it may still be scaled down here, exactly as before.
+            let shrink_room: u64 = self
+                .items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| assigned[index].saturating_sub(item.constraints.min) as u64)
+                .sum();
+            if shrink_room > 0 {
+                let to_shrink = excess.min(shrink_room);
+                let mut remainder = to_shrink;
+                for (index, item) in self.items.iter().enumerate().rev() {
+                    if remainder == 0 {
+                        break;
+                    }
+                    let room = assigned[index].saturating_sub(item.constraints.min) as u64;
+                    if room == 0 {
+                        continue;
+                    }
+                    let share = ((to_shrink as u128 * room as u128) / shrink_room as u128) as u64;
+                    let take = share.min(room).min(remainder);
+                    assigned[index] = assigned[index].saturating_sub(take as u32);
+                    remainder -= take;
+                }
+                total_assigned -= to_shrink - remainder;
+            }
+            if total_assigned > primary_u64 {
+                // Every item is now at its own minimum and the total is still too large — which can
+                // only happen if a `max` below the summed minima pinned an item above its minimum.
+                // Reducing from the largest allocation restores invariant 1 without an unbounded
+                // loop; the `min` floor is the only thing that had to yield here already.
+                while total_assigned > primary_u64 {
+                    let Some((largest_index, _)) = assigned
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, value)| **value > 0)
+                        .max_by_key(|(_, value)| **value)
+                    else {
+                        break;
+                    };
+                    assigned[largest_index] = assigned[largest_index].saturating_sub(1);
+                    total_assigned = total_assigned.saturating_sub(1);
+                }
             }
         }
         assigned
@@ -477,5 +534,60 @@ mod tests {
         let b = rect_of(&out, 2);
         assert_eq!(a.width + b.width, 1_000_000_000, "the pieces sum to the budget exactly");
         assert!(a.width.abs_diff(b.width) <= 1, "an overflowing min sum still splits evenly");
+    }
+
+    /// A legal `Fixed` constraint with `max = u32::MAX` must not stall the layout. The old
+    /// per-pixel shrink loop needed ~4.29e9 iterations to bring the initial `u32::MAX`
+    /// allocation down to the 100px parent; the batch pass converges in one traversal.
+    ///
+    /// The assertions also pin the resulting geometry: the sum must land inside the parent.
+    #[test]
+    fn a_max_fixed_constraint_is_allocated_in_one_batch_not_by_pixel_iteration() {
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        layout.add_widget(1, 1);
+        layout.set_constraints(1, LayoutConstraints::new(0, Some(u32::MAX)));
+        layout.set_size_policy(1, SizePolicy::Fixed);
+
+        let rect = Rect::new(0, 0, 100, 50);
+        let out = placed(&layout, rect);
+        let a = rect_of(&out, 1);
+        assert!(a.width <= 100, "the allocation must be inside the parent, got {}", a.width);
+        assert!(a.x + a.width as i32 <= rect.x + rect.width as i32, "right edge: {a:?}");
+    }
+
+    /// A huge grow deficit (an expanding item with room far beyond the parent) must be satisfied
+    /// by bounded proportional batches, and the total must still equal the parent exactly.
+    #[test]
+    fn a_large_grow_deficit_is_shared_without_per_pixel_iteration() {
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        layout.add_widget(1, 1);
+        layout.add_widget(2, 1);
+        // Both start at 0 (min 0) and have effectively unbounded room.
+        layout.set_constraints(1, LayoutConstraints::new(0, Some(u32::MAX)));
+        layout.set_constraints(2, LayoutConstraints::new(0, Some(u32::MAX)));
+
+        let out = placed(&layout, Rect::new(0, 0, 100, 50));
+        let a = rect_of(&out, 1);
+        let b = rect_of(&out, 2);
+        assert_eq!(a.width + b.width, 100, "the whole parent is filled exactly");
+        assert!(a.width.abs_diff(b.width) <= 1, "equal rooms split near-evenly");
+    }
+
+    /// Growing must respect an item's `max`: the surplus that the capped item cannot take is
+    /// absorbed by a neighbour that still has room, and the total stays inside the parent.
+    #[test]
+    fn grow_batches_respect_max_and_pass_leftover_to_a_roomy_neighbour() {
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        layout.add_widget(1, 1);
+        layout.add_widget(2, 1);
+        layout.set_constraints(1, LayoutConstraints::new(0, Some(30)));
+        layout.set_constraints(2, LayoutConstraints::new(0, Some(u32::MAX)));
+
+        let out = placed(&layout, Rect::new(0, 0, 100, 50));
+        let a = rect_of(&out, 1);
+        let b = rect_of(&out, 2);
+        assert_eq!(a.width, 30, "the capped item stops at its max");
+        assert_eq!(b.width, 70, "the roomy neighbour takes the leftover");
+        assert_eq!(a.width + b.width, 100, "the parent is exactly filled");
     }
 }

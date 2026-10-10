@@ -5,6 +5,50 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.8.4 (2026-10-10) — Verification pass: pointer-gesture ownership, end-to-end touch cancel, and theme fonts everywhere
+
+Backward compatible for every public signature. This release closes gaps that a full source
+re-verification of every item in `docs/issues/issue-20261008.md` uncovered — places that had been
+*marked* fixed but were not, or were only half-wired.
+
+### 1. A pointer release now returns to the control that was pressed
+
+`dispatch_pointer_event` resolved every release against the pointer's *current* position, so a press
+that dragged off a control and released elsewhere never reached that control. Its own press latch
+(`grabbed`/`pressed`) stayed armed, and a **later, unrelated** release on the control could fire a
+spurious `clicked`. The router now takes pointer capture on a press, delivers the following moves and
+the final release back to the pressed control, and drops the capture when the gesture ends (a fresh
+press re-targets). `Event` gains `starts_pointer_gesture` / `ends_pointer_gesture`.
+
+### 2. A cancelled touch is no longer reported as a completed one
+
+The internal `touch_cancel` event and its consumers already existed, but no backend produced it:
+Linux (both the canvas and the window), macOS and Harmony still normalised `TouchCancel` to a bare
+`TouchEnd`, so a system-withdrawn contact could still activate a control or commit a stroke. Each of
+those backends now emits the cancel event. Windows' `TOUCHINPUT` carries no cancel flag, so it
+honestly does not synthesise one.
+
+### 3. Theme font and user text scale reach every ordinary control
+
+The `effective_font` / `role_font` helpers were only partially wired. `textarea`, `textedit`,
+`rich_edit`, `dropdown`, `tag_input`, `keyboard`, the `time_edit` clock face, `tab_bar`, and the
+view/special/display widgets (`data_grid`, `grid_table`, `table_widget`, `tree_table`, `tree_view`,
+`list_view`, `virtual_list`, `virtual_table`, `image_gallery`, `arc`, `color_picker`, `diff_viewer`,
+`gantt_widget`, `timeline_widget`, `terminal_view`, `bezier_curve_editor`, `message_box`) now draw and
+measure with the resolved theme font, so a custom face or a scaled body font reaches their text.
+
+### 4. Python packaging
+
+`bindings/python/setup.py` invokes `cargo` through `subprocess.run([...], cwd=project_root, check=True)`
+rather than a shell string (a checkout path with spaces or shell metacharacters no longer breaks or
+alters the build), and its distribution `url` now points at the real repository.
+
+### 5. Lint and cross-target cleanliness
+
+`cargo clippy --all-targets -- -D warnings` is clean on the host and on the OpenHarmony target; the
+HarmonyOS cross-target gate (`tools/check_harmony_cross.sh`) passes all six steps, including a real
+link of the ArkUI XComponent bridge against the SDK's `libace_ndk.z`.
+
 ## 2.8.3 (2026-09-30) — The Window Paints Its Own Controls Again: desktop resize, a real HarmonyOS input bridge, and one cross-platform layout contract
 
 Backward compatible for every public signature; one new public accessor and one new module are

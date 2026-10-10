@@ -297,7 +297,7 @@ impl Draw for HeroAnimation {
             // glyph. That is why the label started at a negative x and the second line never
             // appeared.
             let lines = ["HeroAnimation", "Set source & target"];
-            let metrics = context.measure_text("Hg", &font);
+            let metrics = context.measure_text("Hg", font);
             let first_y = rect.y + (rect.height as i32 - metrics.height as i32 * 2) / 2;
             for (index, line) in lines.iter().enumerate() {
                 context.draw_text_fitted(
@@ -308,7 +308,7 @@ impl Draw for HeroAnimation {
                         metrics.height,
                     ),
                     line,
-                    &font,
+                    font,
                     ink,
                     HorizontalAlignment::Center,
                 );
@@ -360,13 +360,13 @@ impl Draw for HeroAnimation {
         // foreground instead of the fixed mid-grey that made it unreadable on a dark shell.
         let progress_text = format!("Progress: {:.0}%", t * 100.0);
         let font = effective_font(&style);
-        let metrics = context.measure_text(&progress_text, &font);
+        let metrics = context.measure_text(&progress_text, font);
         let text_x = rect.x + (rect.width as i32 - metrics.width as i32) / 2;
         let text_y = rect.y + rect.height as i32 - 10;
         context.draw_text(
             Point::new(text_x, text_y),
             &progress_text,
-            &font,
+            font,
             ink,
             HorizontalAlignment::Left,
         );
@@ -386,7 +386,7 @@ impl Draw for HeroAnimation {
             (false, false) => None,
         };
         if let Some((text, color)) = label {
-            context.draw_text_fitted(label_band, text, &font, color, HorizontalAlignment::Left);
+            context.draw_text_fitted(label_band, text, font, color, HorizontalAlignment::Left);
         }
     }
 }

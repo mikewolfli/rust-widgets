@@ -1,6 +1,7 @@
 """setup.py for the rust-widgets Python bindings package."""
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -31,9 +32,19 @@ def _build_cdylib() -> None:
 
     project_root = _here.parent.parent
     print(f"[rust-widgets] Building cdylib in {project_root} ...", file=sys.stderr)
-    ret = os.system(f"cd {project_root} && cargo build --release")
-    if ret != 0:
-        raise SystemError("cargo build --release failed")
+    # Invoke cargo through an argument vector with ``cwd`` rather than a shell
+    # string. Building a ``cd {project_root} && cargo build`` command would let a
+    # checkout path containing spaces or shell metacharacters be split and
+    # interpreted by the shell (D09-PY-02); passing ``cwd`` keeps the path as
+    # data and stops ``cargo`` failures from being swallowed.
+    try:
+        subprocess.run(
+            ["cargo", "build", "--release"],
+            cwd=project_root,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        raise SystemError(f"cargo build --release failed: {exc}") from exc
     print("[rust-widgets] Build complete.", file=sys.stderr)
 
 
@@ -50,7 +61,7 @@ setup(
     long_description=_long_description,
     long_description_content_type="text/markdown",
     author="rust-widgets contributors",
-    url="https://github.com/your-org/rust-widgets",
+    url="https://github.com/mikewolfli/rust-widgets",
     license="MIT OR Apache-2.0",
     packages=find_packages(where="."),
     package_dir={"": "."},

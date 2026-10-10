@@ -11,7 +11,7 @@ use crate::widget::capability::coercion::expect_usize;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::ControlMetrics;
+use crate::widget::metrics::{effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::sync::Arc;
@@ -453,7 +453,7 @@ impl Draw for TreeView {
         if let Some(ref model) = self.model {
             let indent = TREE_INDENT;
             let node_count = model.node_count();
-            let font = crate::core::Font::default();
+            let font = effective_font(&style);
             for i in 0..node_count {
                 // The row's own rectangle comes from the same derivation the hit test uses, so a
                 // click cannot land on a row other than the one that was painted.
@@ -476,9 +476,9 @@ impl Draw for TreeView {
                             row.height,
                         );
                         context.draw_text_fitted(
-                            context.text_line(cell, &font),
+                            context.text_line(cell, font),
                             &path,
-                            &font,
+                            font,
                             ink,
                             HorizontalAlignment::Left,
                         );

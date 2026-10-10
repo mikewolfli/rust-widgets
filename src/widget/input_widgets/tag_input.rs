@@ -18,7 +18,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -587,7 +587,7 @@ impl Draw for TagInput {
         let mut current_x = rect.x + TAG_PADDING;
         let chip_y = self.chip_row_y();
         let max_width = rect.width as i32 - TAG_PADDING * 2;
-        let default_font = crate::core::Font::default();
+        let font = effective_font(&style);
 
         // ── Draw tag chips ──
         for tag in &self.tags {
@@ -614,16 +614,10 @@ impl Draw for TagInput {
             // The origin is the glyph box's top edge, so the row's centre is half the
             // difference of the line boxes — `chip_y + TAG_HEIGHT/2` began the box half a
             // line below the chip's middle.
-            let tag_metrics = context.measure_text(tag, &default_font);
+            let tag_metrics = context.measure_text(tag, font);
             let text_origin =
                 Point::new(text_x, chip_y + (TAG_HEIGHT - tag_metrics.height as i32) / 2);
-            context.draw_text(
-                text_origin,
-                tag,
-                &default_font,
-                text_color,
-                HorizontalAlignment::Left,
-            );
+            context.draw_text(text_origin, tag, font, text_color, HorizontalAlignment::Left);
 
             // Close button circle. It is the chip's *contrast* colour rather than white: on a
             // light-accent theme a white circle on the chip is a low-contrast disc, and the
@@ -711,18 +705,18 @@ impl Draw for TagInput {
         // field: `tag_input.svg` put a 14 px line at `y = 4` inside a band running `4..28`.
         // The chip labels in this same file already centred themselves correctly; the field
         // was the one place that had not been brought in line.
-        let input_line = context.text_line(input_band, &default_font);
+        let input_line = context.text_line(input_band, font);
         let drawn = context.draw_text_fitted(
             input_line,
             display_text,
-            &default_font,
+            font,
             input_text_color,
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
 
         // ── Cursor (when focused and input is active) ──
         if self.focused && is_enabled && self.cursor_blink.is_visible() {
-            let cursor_x = input_x + 4 + context.measure_text(&drawn, &default_font).width as i32;
+            let cursor_x = input_x + 4 + context.measure_text(&drawn, font).width as i32;
             // The caret spans the line box it follows, so it marks the same row the text does.
             let cursor_y1 = input_line.y;
             let cursor_y2 = input_line.y + input_line.height as i32;

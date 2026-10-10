@@ -1081,16 +1081,16 @@ mod tests {
 
         bw.handle_event(&Event::pointer_press(Point::new(20, 30), 1, 0.6, 0.0, 0.0));
         assert!(bw.is_grabbed(), "a PointerPress inside must take the grab");
-        assert!(bw.is_mouse_pressed(), "a PointerPress inside must arm pressed");
+        assert!(bw.is_pressed(), "a PointerPress inside must arm pressed");
 
         // A move while grabbed re-resolves `pressed` from whether the point is still inside.
         bw.handle_event(&Event::pointer_move(Point::new(400, 400), 0.6, 0.0, 0.0));
-        assert!(!bw.is_mouse_pressed(), "dragging off clears the painted pressed state");
+        assert!(!bw.is_pressed(), "dragging off clears the painted pressed state");
         assert!(bw.is_grabbed(), "the grab survives the drag");
 
         bw.handle_event(&Event::pointer_release(Point::new(400, 400), 1, 0.0));
         assert!(!bw.is_grabbed(), "a PointerRelease must drop the grab");
-        assert!(!bw.is_mouse_pressed(), "a PointerRelease must clear pressed");
+        assert!(!bw.is_pressed(), "a PointerRelease must clear pressed");
     }
 
     /// D09-POINTER-01: a `PointerPress` of a non-primary button (a barrel switch) is not a
@@ -1100,7 +1100,7 @@ mod tests {
         let mut bw = make_base();
         bw.handle_event(&Event::pointer_press(Point::new(20, 30), 2, 0.6, 0.0, 0.0));
         assert!(!bw.is_grabbed(), "a secondary button must not take the grab");
-        assert!(!bw.is_mouse_pressed(), "a secondary button must not arm pressed");
+        assert!(!bw.is_pressed(), "a secondary button must not arm pressed");
     }
 
     /// The base must **not** invent a `clicked` signal.

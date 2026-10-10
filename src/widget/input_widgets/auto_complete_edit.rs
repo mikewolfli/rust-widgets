@@ -595,7 +595,7 @@ impl Draw for AutoCompleteEdit {
         context.draw_text(
             Point::new(text_x, text_y),
             display_text,
-            &font,
+            font,
             input_text_color,
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );

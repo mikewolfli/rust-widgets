@@ -331,7 +331,7 @@ impl Draw for SearchBar {
             let _cancel_rect = Rect::new(cancel_x, rect.y, cancel_width, rect.height);
             let cancel_font = font;
             let cancel_text = "Cancel";
-            let metrics = context.measure_text(cancel_text, &cancel_font);
+            let metrics = context.measure_text(cancel_text, cancel_font);
             let text_x = cancel_x + (cancel_width as i32 - metrics.width as i32) / 2;
             // Centre the label on the cancel area. The origin is the glyph box's top edge, so
             // half the *line box* is the correct offset; the `+ ascent` began the glyph box
@@ -340,7 +340,7 @@ impl Draw for SearchBar {
             context.draw_text(
                 Point::new(text_x, text_y),
                 cancel_text,
-                &cancel_font,
+                cancel_font,
                 // The cancel label is the control's accent — an actionable affordance — so it
                 // follows the resolved border colour rather than a fixed blue.
                 accent.unwrap_or(Color::rgba(52, 120, 246, 255)),
@@ -432,20 +432,20 @@ impl Draw for SearchBar {
             // Draw placeholder text. Same centring fix as the typed branch below: `ascent` is
             // inside the line box, so adding it to an already-centred y put the hint half a line
             // low, and the fixed grey could not read on a themed field.
-            let metrics = context.measure_text(&self.placeholder, &font);
+            let metrics = context.measure_text(&self.placeholder, font);
             if text_width >= metrics.width {
                 let text_y = rect.y + (rect.height as i32 - metrics.height as i32) / 2;
                 context.draw_text_fitted(
                     Rect::new(text_left, text_y, text_width.max(1), metrics.height.max(1)),
                     &self.placeholder,
-                    &font,
+                    font,
                     field_ink.blend(&field_color, 0.45),
                     value_align,
                 );
             }
         } else {
             // Draw text
-            let metrics = context.measure_text(&self.text, &font);
+            let metrics = context.measure_text(&self.text, font);
             if text_width >= metrics.width {
                 // Two defects in one origin. It added `ascent` on top of an already-centred y —
                 // the renderer's origin is the glyph's **top** edge, so the label sat half a
@@ -460,7 +460,7 @@ impl Draw for SearchBar {
                         metrics.height.max(1),
                     ),
                     &self.text,
-                    &font,
+                    font,
                     field_ink,
                     value_align,
                 );

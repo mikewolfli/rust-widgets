@@ -172,7 +172,7 @@ pub fn estimate_line_height(font: &crate::core::Font, scale: f32) -> u32 {
 /// text-emitting control per frame. The default is instead built once behind a process-wide
 /// [`OnceLock`](crate::compat::OnceLock) and handed out as `&'static Font`. The returned borrow
 /// is tied to `style` (or to that static), never to a value that dies at the end of this call.
-pub fn effective_font<'a>(style: &'a WidgetStyle) -> &'a Font {
+pub fn effective_font(style: &WidgetStyle) -> &Font {
     fn default_font() -> &'static Font {
         use crate::compat::OnceLock;
         static DEFAULT: OnceLock<Font> = OnceLock::new();

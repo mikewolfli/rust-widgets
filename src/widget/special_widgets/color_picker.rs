@@ -3,7 +3,7 @@
 
 //! ColorPicker widget.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
@@ -13,6 +13,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// Interactive color picker with HSV controls and preset swatches.
@@ -515,9 +516,9 @@ impl Draw for ColorPicker {
 
         // The hex readout takes the row immediately below the palette, which the palette's own
         // rectangle now leaves for it.
-        let hex_font = Font::default();
+        let hex_font = effective_font(&style);
         let hex_text = self.hex_rgba();
-        let hex_height = context.measure_text(&hex_text, &hex_font).height as i32;
+        let hex_height = context.measure_text(&hex_text, hex_font).height as i32;
         let palette = self.palette_rect();
         let hex_band = Rect::new(
             rect.x + 8,
@@ -528,7 +529,7 @@ impl Draw for ColorPicker {
         context.draw_text_fitted(
             hex_band,
             &hex_text,
-            &hex_font,
+            hex_font,
             // The readout is chrome sitting on the panel, so it is the resolved ink rather than
             // a literal that was tuned for one appearance.
             ink.legible_on(panel, 4.5),

@@ -490,7 +490,7 @@ impl Draw for ColorDialog {
         let title_bar_band = ControlMetrics::top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
         context.fill_rect(title_bar_band, title_bar);
         let title_font = font;
-        let title_line = context.text_line(title_bar_band, &title_font);
+        let title_line = context.text_line(title_bar_band, title_font);
         context.draw_text_fitted(
             Rect::new(
                 rect.x + 8,
@@ -499,7 +499,7 @@ impl Draw for ColorDialog {
                 title_line.height.max(1),
             ),
             &tr!("color_dialog.title"),
-            &title_font,
+            title_font,
             ink,
             HorizontalAlignment::Left,
         );
@@ -536,11 +536,11 @@ impl Draw for ColorDialog {
                 rect.width.saturating_sub(88),
                 Self::PREVIEW_HEIGHT as u32,
             );
-            let line = context.text_line(band, &preview_font);
+            let line = context.text_line(band, preview_font);
             context.draw_text_fitted(
                 Rect::new(band.x, line.y, band.width.max(1), line.height.max(1)),
                 &preview_text,
-                &preview_font,
+                preview_font,
                 ink,
                 HorizontalAlignment::Left,
             );
@@ -552,14 +552,14 @@ impl Draw for ColorDialog {
         // falls. The labels are centred in their buttons and fitted to them.
         let band = Rect::new(rect.x, self.button_row_top(), rect.width, Self::BUTTON_HEIGHT as u32);
         let labels = vec![tr!("common.button.ok"), tr!("common.button.cancel")];
-        let row = super::message_box::action_row_geometry(context, &labels, band, true);
+        let row = super::message_box::action_row_geometry(context, font, &labels, band, true);
         let ok_rect = row.buttons[0];
         context.fill_rect(ok_rect, accent);
-        context.draw_text_line(ok_rect, &labels[0], &font, accent_ink, HorizontalAlignment::Center);
+        context.draw_text_line(ok_rect, &labels[0], font, accent_ink, HorizontalAlignment::Center);
         let cancel_rect = row.buttons[1];
         context.fill_rect(cancel_rect, surface);
         context.draw_rect(cancel_rect, border);
-        context.draw_text_line(cancel_rect, &labels[1], &font, ink, HorizontalAlignment::Center);
+        context.draw_text_line(cancel_rect, &labels[1], font, ink, HorizontalAlignment::Center);
     }
 }
 

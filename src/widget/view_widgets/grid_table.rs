@@ -9,7 +9,7 @@
 #[cfg(not(alloc_frugal))]
 use std::sync::Arc;
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -17,6 +17,7 @@ use crate::widget::capability::coercion::expect_usize;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -921,9 +922,9 @@ impl Draw for GridTableWidget {
                     _ => alloc::format!("Column {}", ci + 1),
                 };
                 context.draw_text_fitted(
-                    context.text_line(cell_rect, &Font::default()),
+                    context.text_line(cell_rect, effective_font(&style)),
                     &header_text,
-                    &Font::default(),
+                    effective_font(&style),
                     header_text_color,
                     HorizontalAlignment::Left,
                 );
@@ -968,9 +969,9 @@ impl Draw for GridTableWidget {
                 // The row-number cell is the band; centring by hand drew the digits half a line
                 // low. Right alignment keeps the numbers flush with the gutter's inner edge.
                 context.draw_text_fitted(
-                    context.text_line(cell_rect, &Font::default()),
+                    context.text_line(cell_rect, effective_font(&style)),
                     &abs_row.to_string(),
-                    &Font::default(),
+                    effective_font(&style),
                     header_text_color,
                     HorizontalAlignment::Right,
                 );
@@ -1019,9 +1020,9 @@ impl Draw for GridTableWidget {
                     // low; `text_line` derives the centred box, and fitting keeps a long value
                     // inside its column instead of running under the next one.
                     context.draw_text_fitted(
-                        context.text_line(cell_rect, &Font::default()),
+                        context.text_line(cell_rect, effective_font(&style)),
                         &text,
-                        &Font::default(),
+                        effective_font(&style),
                         cell_text_color,
                         HorizontalAlignment::Left,
                     );

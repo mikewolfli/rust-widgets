@@ -699,9 +699,7 @@ impl DateTimeEdit {
         super::date_edit::draw_month_grid(
             context,
             field,
-            surface,
-            border,
-            ink,
+            super::date_edit::GridChrome { surface, border, ink },
             &self.datetime.date,
             &self.minimum.date,
             &self.maximum.date,
