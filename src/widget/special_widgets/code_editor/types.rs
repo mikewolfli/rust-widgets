@@ -268,6 +268,37 @@ impl TextPosition {
     }
 }
 
+/// Why a version-guarded edit was refused (BLUE26 B26.08).
+///
+/// The two variants need different caller reactions, which is why they are not one error: a stale
+/// revision means "re-read the text and recompute the fix", while a read-only refusal means "stop
+/// asking". Folding them would make a caller retry a read-only edit forever, or abandon an edit that
+/// would succeed after a refresh.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditRejection {
+    /// The document's revision moved past the one the edit was computed against.
+    StaleRevision {
+        /// The revision the caller computed against.
+        expected: u64,
+        /// The revision the document is actually at.
+        actual: u64,
+    },
+    /// The editor is read-only, or the range lies in a locked span.
+    ReadOnly,
+}
+
+impl core::fmt::Display for EditRejection {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::StaleRevision { expected, actual } => write!(
+                f,
+                "edit computed against revision {expected} but the document is at {actual}"
+            ),
+            Self::ReadOnly => f.write_str("the editor or the target range is read-only"),
+        }
+    }
+}
+
 /// Caret position plus the anchor used for range selection.
 ///
 /// `head` is the movable end, `anchor` the fixed end; `head == anchor` means

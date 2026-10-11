@@ -94,6 +94,25 @@ impl TargetProfile {
             Self::Stripped => MINI_CHILD_CAPACITY,
         }
     }
+
+    /// The [`TargetSpec`] this generation target describes (BLUE26 B26.01/B26.06).
+    ///
+    /// # Why the triple is `"unknown"` here, honestly
+    ///
+    /// This type collapses `desktop`/`tablet`/`mobile` into one `Default`, because they emit
+    /// identical code — so it genuinely cannot name *which* triple a `Default` target is for. A
+    /// probe built from it therefore carries a `Describable` level rather than a built-verified one,
+    /// which is the honest answer: the designer knows the API surface but not the device. Naming a
+    /// triple here would be a guess, and a guessed triple is exactly the unattributed fact B26.06
+    /// removes.
+    ///
+    /// [`TargetSpec`]: crate::widget::capability::TargetSpec
+    pub fn target_spec(self) -> crate::widget::capability::TargetSpec {
+        crate::widget::capability::TargetSpec {
+            profile: self.feature_hint(),
+            triple: "unknown",
+        }
+    }
 }
 
 /// The `MiniVec` capacity under `alloc_frugal`. Matches `BaseWidget`'s storage.
@@ -426,6 +445,36 @@ fn host_profile_matches(target: TargetProfile) -> bool {
     host_is_stripped == (target == TargetProfile::Stripped)
 }
 
+/// A [`TargetProbe`] for `name`, carrying the target and the verification level (BLUE26 B26.06).
+///
+/// # Why this exists beside [`availability`]
+///
+/// [`availability`] answers "may I emit this?" with a four-state verdict tuned to generation. This
+/// answers "what is true about the target?" with a [`TargetProbe`] that names the target and states
+/// *how* the answer was reached — which is what a caller that must report a support claim (rather
+/// than decide whether to emit) needs. The two share the same underlying probe (`factory.create`),
+/// so they cannot disagree about whether a control is buildable.
+///
+/// # Why the level is never `BuiltVerified` here
+///
+/// A generation run happens on a host whose profile need not be the target's, and this type does
+/// not carry the target's triple — so a probe from it is at best `Describable`. Claiming
+/// `BuiltVerified` would require a target build to have actually run, which this call cannot know.
+///
+/// [`TargetProbe`]: crate::widget::capability::TargetProbe
+#[cfg(full_widgets)]
+pub fn target_probe(factory: &WidgetFactory, name: &str, target: TargetProfile) -> crate::widget::capability::TargetProbe {
+    use crate::widget::capability::CurrentBuildVerdict;
+    let verdict = if factory.create(name, crate::core::Rect::new(0, 0, 1, 1), "").is_some() {
+        CurrentBuildVerdict::Usable
+    } else if factory.capability(name).is_some() {
+        CurrentBuildVerdict::Unbuildable
+    } else {
+        CurrentBuildVerdict::Unknown
+    };
+    crate::widget::capability::probe_capability(name, target.target_spec(), verdict)
+}
+
 /// A human-readable reason for a non-`Local` availability answer.
 fn availability_reason(availability: Availability) -> String {
     match availability {
@@ -504,6 +553,25 @@ fn emit_default_mode(
          \x20   let _ = report;\n",
     );
     body
+}
+
+/// The declared schema of `property` on the control `widget_name` names, when the registry has one.
+///
+/// Used by the emitter's schema pre-check. Returns `None` for a control or property the registry
+/// does not describe — the honest answer, because an absent schema means "nothing was declared",
+/// not "anything is accepted", and only a declared constraint can refuse a value.
+fn declared_property_schema(
+    factory: &WidgetFactory,
+    widget_name: &str,
+    property: &str,
+) -> Option<crate::widget::capability::PropertySchema> {
+    let capability = factory.capability(widget_name)?;
+    let wanted = crate::widget::capability::normalize_key(property);
+    capability
+        .properties
+        .iter()
+        .find(|schema| crate::widget::capability::normalize_key(schema.name) == wanted)
+        .copied()
 }
 
 /// Emits one `Node::new(..)` expression, recursing into children.
@@ -625,6 +693,37 @@ fn emit_node(
                 node_label(path, &node.widget)
             ));
             continue;
+        }
+        // # The schema pre-check: the same validator the runtime write and the loader use
+        //
+        // A declared value the property's own schema refuses is reported here rather than emitted,
+        // for the reason the root's `width`/`height` are: a generated program whose own
+        // `ApplyReport` is full of refusals for a document the loader rejects too is telling the
+        // author nothing they cannot learn earlier. The check calls
+        // `capability::validate_property_value` — the *same* function `write_property` and the
+        // JSON loader call — so the three paths cannot disagree about what a property accepts
+        // (BLUE26 B26.02). An unknown control or property is not this check's business; those are
+        // reported by the availability probe and by the runtime contract respectively.
+        if let Some(schema) = declared_property_schema(factory, &node.widget, &name) {
+            // The JSON value is read through the loader's own conversion, so the pre-check judges
+            // the value the loader would have written rather than a second reading of it.
+            let declared_value =
+                crate::json::to_capability_value(&value, Some(schema.value_kind));
+            if let Some(declared_value) = declared_value {
+                if let Err(violation) =
+                    crate::widget::capability::validate_property_value(&name, &schema, &declared_value)
+                {
+                    report.unsupported.push(GenerationGap {
+                        path: path.to_vec(),
+                        widget: node.widget.clone(),
+                        reason: format!(
+                            "`{name}` on {} is not emitted: {violation}",
+                            node_label(path, &node.widget)
+                        ),
+                    });
+                    continue;
+                }
+            }
         }
         line.push_str(&format!(".prop({}, {})", quote(&name), capability_value_expr(&value)));
         report.properties_emitted += 1;
@@ -1759,6 +1858,88 @@ mod tests {
             availability("definitely_not_a_control", TargetProfile::Default),
             Availability::Unknown
         ));
+    }
+
+    /// B26.06: a probe must name its target and never claim `BuiltVerified` from a collapsed
+    /// `TargetProfile`, whose triple is genuinely unknown.
+    #[test]
+    fn a_target_probe_names_its_target_and_is_never_speculatively_verified() {
+        let factory = WidgetFactory::new_with_defaults();
+        let probe = target_probe(&factory, "button", TargetProfile::Default);
+        assert_eq!(probe.target.profile, "desktop");
+        assert_eq!(probe.target.triple, "unknown", "a collapsed profile cannot name a triple");
+        assert!(
+            !probe.is_conclusive(),
+            "a probe from a host whose profile may differ from the target must not be built-verified"
+        );
+        assert!(probe.describe().contains("desktop"), "the line must name the target");
+
+        // An unknown name is unverified, not unsupported — the same discipline as `availability`.
+        let unknown = target_probe(&factory, "definitely_not_a_control", TargetProfile::Default);
+        assert!(!unknown.availability.is_unsupported());
+        assert!(!unknown.availability.is_usable());
+    }
+
+    /// B26.02: a property literal the declared schema refuses must be reported at generation time
+    /// through the same validator the runtime write and the loader use — and not emitted as a write
+    /// the generated program would refuse on itself.
+    ///
+    /// `progress_circle.value` declares `[0.0, 1.0]`; `1.5` is outside it. Before the pre-check the
+    /// generator emitted `.prop("value", Float(1.5))` and the generated program's own `ApplyReport`
+    /// carried the refusal, so the author learned about a document error only after compiling and
+    /// running the target.
+    #[test]
+    fn a_value_the_schema_refuses_is_reported_rather_than_emitted() {
+        const REFUSED: &str = r#"{
+          "window": { "id": "root", "layout": { "type": "vbox", "children": [
+            { "progress_circle": { "id": "p", "value": 1.5 } }
+          ] } }
+        }"#;
+
+        let request = GenerationRequest {
+            json: String::from(REFUSED),
+            target: TargetProfile::Default,
+            width: 320,
+            height: 240,
+            function_name: String::from("build_refused"),
+        };
+        let generated = generate(&request).expect("the document still generates, with the gap listed");
+
+        assert!(!generated.report.is_clean(), "a refused property is not a clean run");
+        let gap = generated
+            .report
+            .unsupported
+            .iter()
+            .find(|gap| gap.reason.contains("`value`"))
+            .unwrap_or_else(|| panic!("no gap names the refused property: {:?}", generated.report));
+        assert!(gap.reason.contains("1.5"), "the reason must name the offending value: {}", gap.reason);
+        assert!(
+            !generated.source.contains("Float(1.5)"),
+            "the doomed write must not be emitted:\n{}",
+            generated.source
+        );
+
+        // The boundary value is inside the declared range, so it is emitted and the run is clean.
+        const ACCEPTED: &str = r#"{
+          "window": { "id": "root", "layout": { "type": "vbox", "children": [
+            { "progress_circle": { "id": "p", "value": 1.0 } }
+          ] } }
+        }"#;
+        let ok = generate(&GenerationRequest {
+            json: String::from(ACCEPTED),
+            target: TargetProfile::Default,
+            width: 320,
+            height: 240,
+            function_name: String::from("build_accepted"),
+        })
+        .expect("the document generates");
+        // The boundary value travels (Rust spells `1.0f64` as `1`), and nothing was refused.
+        assert!(
+            ok.source.contains(".prop(\"value\""),
+            "the in-range value must be emitted:\n{}",
+            ok.source
+        );
+        assert!(ok.report.unsupported.is_empty(), "{:?}", ok.report);
     }
 
     #[test]

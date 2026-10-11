@@ -100,6 +100,7 @@ mod element;
 mod event_route;
 mod events;
 mod layout;
+mod layout_schema;
 mod loader;
 pub mod project;
 mod properties;
@@ -120,6 +121,10 @@ pub use layout::{
     forget_layout, parse_layout_kind, place_widget_in_layout, preview_layout, store_layout,
     ChildLayoutAttrs, ChildPlacement, DeclarativeLayoutKind,
 };
+pub use layout_schema::{
+    schema_for_type as layout_schema_for_type, supported_types as supported_layout_types,
+    validate_layout_object, LayoutDiagnostic, LayoutIssue, LayoutKindSchema, LayoutParam, ParamKind,
+};
 /// Wires one declared event binding to a live control — the single-call entry a **generated**
 /// program uses (rule #98).
 ///
@@ -133,6 +138,11 @@ pub use loader::bind_event_binding;
 pub use loader::{is_loader_owned_key, load_layout_from_str, JsonLoader};
 pub use project::{JsonProject, ProjectNode, MAX_DEPTH as PROJECT_MAX_DEPTH};
 pub use properties::is_widget_property;
+/// The crate's single JSON→`CapabilityValue` reading, for the generator's schema pre-check.
+///
+/// Re-exported rather than duplicated: the loader's write and the generator's pre-check must agree
+/// about what a document's value *is* before they can agree about whether it is acceptable.
+pub(crate) use properties::to_capability_value;
 
 /// The capability registry used to resolve a JSON widget name to a constructor
 /// and to look up a property's declared value kind.
@@ -152,7 +162,7 @@ pub(crate) fn schema_factory() -> crate::widget::WidgetFactory {
 }
 
 /// A registry that answers "not registered" in a build without the full widget
-/// set, so [`properties::declared_kind`] can keep a single code path.
+/// set, so [`properties::declared_schema`] can keep a single code path.
 #[cfg(not(full_widgets))]
 #[derive(Debug, Default)]
 pub(crate) struct EmptyFactory;

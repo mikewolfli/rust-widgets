@@ -159,6 +159,30 @@ fn declare_cfg_aliases() {
         println!("cargo:rustc-cfg=cjk_outline_face");
     }
 
+    // ── The build's own target triple, for the capability snapshot (BLUE26 B26.01) ──
+    //
+    // A designer's manifest must record *which* target its facts describe, and the
+    // target triple is the build's own fact — the compiler already knows it and
+    // `CARGO_CFG_TARGET_OS` alone cannot distinguish `x86_64-apple-darwin` from
+    // `aarch64-apple-darwin` or `thumbv7em-none-eabihf` from `armv7-unknown-linux-ohos`.
+    //
+    // It travels as a **value** (`cargo:rustc-env`), not as a cfg flag and not as a
+    // table of recognised triples. A closed list was the earlier shape and it was
+    // wrong twice over: every triple the crate is built for had to be listed in two
+    // places (here and in the reader), and a triple missing from the reader silently
+    // reported `"unknown"` for a real target — which is exactly the degraded answer
+    // `BLUE26` B26.01/B26.06 exist to remove. Embedded with `env!("RW_TARGET_TRIPLE")`,
+    // the value is a compile-time constant that needs no runtime lookup and no probe,
+    // and no layer above `platform` has to learn what "aarch64" means
+    // (principles #35/#36/#41/#47).
+    println!("cargo:rerun-if-env-changed=TARGET");
+    // A build script is always invoked by Cargo, which always sets `TARGET`; the fallback
+    // exists only so an exotic out-of-tree invocation still compiles, and it is *honest*:
+    // the spec then says the triple was not captured rather than naming the host as if it
+    // were the target.
+    let triple = std::env::var("TARGET").unwrap_or_else(|_| String::from("unknown"));
+    println!("cargo:rustc-env=RW_TARGET_TRIPLE={triple}");
+
     // Re-run when any of the inputs change; Cargo tracks feature changes itself,
     // but the explicit list documents the dependency and keeps `cargo build`
     // correct for out-of-tree invocations that set the env vars directly.

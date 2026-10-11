@@ -124,6 +124,12 @@ pub fn record_capability_error(error: crate::widget::capability::types::Capabili
         CapabilityAccessError::UnknownCommand => {
             (super::ErrorId::INVALID_ARGUMENT, "the widget has no command by that name")
         }
+        // The reason is carried through rather than replaced: unlike the other refusals, whose
+        // kind is the whole message, a constraint violation names *which* bound was broken and
+        // what the value was — the only diagnostic the validator produced (BLUE26 B26.02).
+        CapabilityAccessError::ConstraintViolation { ref reason, .. } => {
+            (super::ErrorId::INVALID_ARGUMENT, reason.as_str())
+        }
     };
     record_last_ffi_error(super::RwError::new(id, message));
 }

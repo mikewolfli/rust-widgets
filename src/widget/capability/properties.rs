@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use super::types::{PropertySchema, PropertyValueKind, WidgetCapability};
+use super::types::{Constraint, PropertySchema, PropertyValueKind, RangeSpec, WidgetCapability};
 use crate::widget::WidgetKind;
 
 // ── Published event schemas (generated from the signals) ─────────

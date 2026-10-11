@@ -795,4 +795,45 @@ mod tests {
         assert_eq!(xs.len(), 2, "two columns: {rects:?}");
         assert_eq!(ys.len(), 2, "two rows: {rects:?}");
     }
+
+    /// B26.05: every layout type token the parser accepts must have a discoverable schema.
+    ///
+    /// `SUPPORTED_TYPES` is the parser's own list; `layout_schema` is the description a designer
+    /// reads. If the two drift, a designer offers a kind the parser rejects, or omits one it
+    /// accepts. This ties them together.
+    #[test]
+    fn every_parsed_kind_has_a_schema() {
+        for token in DeclarativeLayoutKind::SUPPORTED_TYPES {
+            assert!(
+                crate::json::layout_schema_for_type(token).is_some(),
+                "the parser accepts `{token}` but no schema describes it"
+            );
+        }
+    }
+
+    /// B26.05: every kind the schema describes must be parseable — the other direction.
+    #[test]
+    fn every_described_kind_is_parseable() {
+        for token in crate::json::supported_layout_types() {
+            let value = serde_json::json!({ "type": token });
+            assert!(
+                parse_layout_kind(&value).is_ok(),
+                "the schema describes `{token}` but the parser rejects it"
+            );
+        }
+    }
+
+    /// B26.05: a schema's parameters must name the keys the parser actually reads.
+    ///
+    /// A schema that invented a key would tell a designer to emit a field the parser ignores. This
+    /// checks the converse of the diagnostic test: a key the schema calls unknown really is unknown.
+    #[test]
+    fn a_schema_parameter_is_a_key_the_parser_reads() {
+        // `hbox` reads `spacing` and `margin`; both must be in its schema.
+        let hbox = crate::json::layout_schema_for_type("hbox").expect("hbox schema");
+        assert!(hbox.param("spacing").is_some());
+        assert!(hbox.param("margin").is_some());
+        // And a key neither the parser nor the schema knows must be absent from the schema.
+        assert!(hbox.param("nonsense").is_none());
+    }
 }

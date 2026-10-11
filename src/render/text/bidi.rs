@@ -176,4 +176,104 @@ mod tests {
         let ranges = vec![(0, 3), (3, 4)];
         assert_eq!(visual_order(text, &ranges), vec![0, 1], "an LTR line stays in order");
     }
+
+    // ── B26.11 regression cases: Arabic/Hebrew, mixed runs, long strings, missing faces ──────
+
+    /// An all-Arabic line must be painted right to left.
+    ///
+    /// The mirror of the Hebrew case: Arabic is the other script the plan names, and a line that
+    /// reversed for Hebrew but not Arabic would be a script-specific bug the Hebrew test alone
+    /// cannot catch.
+    #[test]
+    fn an_arabic_run_is_reversed() {
+        // `مرحبا` (marhaba), logical-first; visual order is the reverse.
+        let text = "\u{0645}\u{0631}\u{062d}\u{0628}\u{0627}";
+        let reversed: String = text.chars().rev().collect();
+        assert_eq!(visual_string(text), reversed, "an all-RTL Arabic line must be reversed");
+    }
+
+    /// A mixed Arabic + Latin + digit line must keep each run internally readable while placing
+    /// the numbers where the algorithm says.
+    ///
+    /// This is the case a naive reverse gets wrong: the digits and the Latin word inside an RTL
+    /// paragraph must not themselves reverse.
+    #[test]
+    fn a_mixed_arabic_latin_digit_line_keeps_each_run_readable() {
+        let text = "\u{0645}\u{0631}\u{062d}\u{0628}\u{0627} abc 123";
+        let visual = visual_string(text);
+        assert!(visual.contains("abc"), "the Latin run must stay readable: {visual}");
+        assert!(visual.contains("123"), "the digits must stay in order: {visual}");
+        // The digits are a left-to-right run, so they must not read as `321`.
+        assert!(!visual.contains("321"), "digits must not reverse: {visual}");
+        // And the whole line is still a permutation of the input.
+        let mut a: Vec<char> = visual.chars().collect();
+        let mut b: Vec<char> = text.chars().collect();
+        a.sort_unstable();
+        b.sort_unstable();
+        assert_eq!(a, b, "reordering must not drop or duplicate a cluster");
+    }
+
+    /// A long mixed-script line must still be a permutation and stay internally consistent.
+    ///
+    /// Long strings are where an off-by-one in the run scan appears; the single-word cases above
+    /// would not catch it.
+    #[test]
+    fn a_long_mixed_line_is_a_permutation() {
+        let text = "The quick \u{05e9}\u{05dc}\u{05d5}\u{05dd} brown fox \u{0645}\u{0631}\u{062d}\u{0628}\u{0627} jumps 42 over 7 lazy dogs \u{05d0}\u{05d1}\u{05d2}";
+        let ranges = per_char(text);
+        let mut order = visual_order(text, &ranges);
+        order.sort_unstable();
+        assert_eq!(
+            order,
+            (0..ranges.len()).collect::<Vec<_>>(),
+            "a long mixed line must reorder to a permutation"
+        );
+    }
+
+    /// A line of characters no compiled-in face covers must still reorder without panicking and
+    /// without changing the text — a missing face is a *glyph* problem, not an ordering one.
+    ///
+    /// This is the "字体缺失" half of B26.11: the reorder works from bidi *classes*, not from
+    /// glyphs (see the module doc), so the absence of a face must not affect it. Cuneiform is
+    /// deliberately a script no bundled face covers.
+    #[test]
+    fn a_line_with_no_available_face_still_reorders_as_a_permutation() {
+        // U+12000 CUNEIFORM SIGN A, U+12001 CUNEIFORM SIGN AB — no bundled face covers these.
+        let text = "\u{12000}\u{12001}\u{12002}";
+        let ranges = per_char(text);
+        let mut order = visual_order(text, &ranges);
+        order.sort_unstable();
+        assert_eq!(
+            order,
+            (0..ranges.len()).collect::<Vec<_>>(),
+            "a face-less line must still be a valid permutation"
+        );
+    }
+
+    /// The reorder must be independent of how the line was **wrapped**: a bidi line split into two
+    /// visual rows must reorder each row the same way it reorders the whole.
+    ///
+    /// This is the "换行" half of B26.11. Wrapping decides *which* characters are on a row; the
+    /// reorder decides their visual order within it. A row therefore reorders to a permutation of
+    /// its own characters, and the concatenation of the rows is a permutation of the line — the
+    /// property that keeps a wrapped RTL paragraph readable.
+    #[test]
+    fn each_wrapped_row_reorders_independently() {
+        // A two-word RTL line split at the space, as a wrapper would split it.
+        let first = "\u{05e9}\u{05dc}\u{05d5}\u{05dd}"; // shalom
+        let second = "\u{05e2}\u{05d5}\u{05dc}\u{05dd}"; // olam
+        for row in [first, second] {
+            let ranges = per_char(row);
+            let mut order = visual_order(row, &ranges);
+            order.sort_unstable();
+            assert_eq!(
+                order,
+                (0..ranges.len()).collect::<Vec<_>>(),
+                "each wrapped row must reorder to a permutation of itself"
+            );
+            // The row is reversed (all RTL), the same as it would be un-wrapped.
+            let reversed: String = row.chars().rev().collect();
+            assert_eq!(visual_string(row), reversed, "the row's own order must not depend on the split");
+        }
+    }
 }

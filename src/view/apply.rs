@@ -153,6 +153,48 @@ pub enum ViewError {
     },
 }
 
+impl ViewError {
+    /// The `ObjectId` this failure is about, when it has one.
+    ///
+    /// # Why a failure needs to name its node (BLUE26 B26.07)
+    ///
+    /// A report a designer can act on must answer "which **model node** failed?", and the id is the
+    /// join: the caller resolves it through
+    /// [`ViewEngine::tree_index`](crate::view::ViewEngine::tree_index) to the node's stable path and
+    /// key. A failure that named only a property would leave the caller unable to find the node in
+    /// its own model. [`ViewError::UnknownWidgetType`] answers `None` because such a node was never
+    /// created — it has no id, which is why it carries the declared `widget`/`key`/`path` instead.
+    pub fn affected_id(&self) -> Option<crate::core::ObjectId> {
+        match self {
+            ViewError::UnknownWidget { id }
+            | ViewError::PropertyRefused { id, .. }
+            | ViewError::UnknownParent { parent: id } => Some(*id),
+            ViewError::UnknownWidgetType { .. } => None,
+        }
+    }
+
+    /// The affected node's stable location as `"widget#key"` (or `"widget"`), when known.
+    ///
+    /// For a structural failure this is the declared location; for a patch failure it is the id
+    /// spelled out, because the error alone does not carry the tree the id belongs to. A caller that
+    /// wants the *key* rather than the id resolves it through the engine's tree index.
+    pub fn location(&self) -> String {
+        match self {
+            ViewError::UnknownWidgetType { widget, key, path } => {
+                let mut chain = path.clone();
+                chain.push(widget.clone());
+                match key {
+                    Some(key) => format!("{}#{key}", chain.join(" > ")),
+                    None => chain.join(" > "),
+                }
+            }
+            ViewError::UnknownWidget { id } => format!("widget {id}"),
+            ViewError::PropertyRefused { id, name, .. } => format!("widget {id}.{name}"),
+            ViewError::UnknownParent { parent } => format!("parent {parent}"),
+        }
+    }
+}
+
 impl core::fmt::Display for ViewError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
@@ -201,6 +243,36 @@ impl ApplyReport {
     /// Whether every patch was carried out.
     pub fn is_clean(&self) -> bool {
         self.errors.is_empty()
+    }
+
+    /// Whether the batch was **partly** applied: some patches succeeded and some failed.
+    ///
+    /// # Why this is not `!is_clean()`
+    ///
+    /// An update that failed every patch and one that applied all but a single property both have
+    /// a non-empty `errors` list, but they need different handling: the first means the tree is
+    /// not the tree the view asked for, the second means it is, except in one place. A host that
+    /// treats them identically either discards a good tree or hides a real failure (BLUE26 B26.07).
+    pub fn is_partial(&self) -> bool {
+        !self.errors.is_empty() && self.completed() > 0
+    }
+
+    /// Whether the batch applied nothing at all, despite having patches to apply.
+    ///
+    /// A batch with no errors and no work is neither partial nor failed; this returns `false` for
+    /// it, because "nothing failed" is not "everything failed".
+    pub fn failed_entirely(&self) -> bool {
+        !self.errors.is_empty() && self.completed() == 0
+    }
+
+    /// How many patches were carried out, summed over the categories the report counts.
+    ///
+    /// The categories are disjoint by construction: a created control is not a moved or removed
+    /// one, and a written property is a property of some node rather than a node. Summing them is
+    /// therefore a count of *work done*, which is what `is_partial` compares against the failure
+    /// count.
+    pub fn completed(&self) -> usize {
+        self.properties_written + self.widgets_created + self.widgets_removed + self.widgets_moved
     }
 
     /// Total controls destroyed by this batch, including subtree members.
@@ -1307,5 +1379,56 @@ mod tests {
         // The key `a` is claimed by exactly one live control.
         let a_claimants = children.iter().filter(|&&id| layout.node_key(id) == Some("a")).count();
         assert_eq!(a_claimants, 1, "a key must be unique among live controls");
+    }
+
+    /// B26.07: a batch that applied some patches and failed others must report `partial`, not
+    /// `clean` and not `failed_entirely`.
+    #[test]
+    fn a_partly_applied_batch_is_reported_as_partial() {
+        // One refused write and one accepted write: the batch is partial.
+        let mut report =
+            ApplyReport { properties_written: 1, ..ApplyReport::default() };
+        report.errors.push(ViewError::PropertyRefused {
+            id: 1,
+            name: String::from("text"),
+            reason: String::from("read-only"),
+        });
+        assert!(!report.is_clean());
+        assert!(report.is_partial(), "one success and one failure is partial");
+        assert!(!report.failed_entirely());
+        assert_eq!(report.completed(), 1);
+
+        // Nothing succeeded: a total failure, distinct from a partial one.
+        let mut total = ApplyReport::default();
+        total.errors.push(ViewError::UnknownWidget { id: 9 });
+        assert!(!total.is_partial(), "no work completed is not partial");
+        assert!(total.failed_entirely());
+        // An empty batch is neither partial nor failed.
+        let empty = ApplyReport::default();
+        assert!(empty.is_clean());
+        assert!(!empty.is_partial());
+        assert!(!empty.failed_entirely());
+    }
+
+    /// B26.07: a patch failure must name the id it is about, so a host can locate it.
+    #[test]
+    fn a_patch_failure_names_its_affected_id() {
+        let refused = ViewError::PropertyRefused {
+            id: 42,
+            name: String::from("value"),
+            reason: String::from("out of range"),
+        };
+        assert_eq!(refused.affected_id(), Some(42));
+        assert!(refused.location().contains("42"));
+        assert!(refused.location().contains("value"));
+
+        // A structural failure has no id — the node was never created — and says so.
+        let unbuildable = ViewError::UnknownWidgetType {
+            widget: String::from("barchart"),
+            key: Some(String::from("chart")),
+            path: vec![String::from("window")],
+        };
+        assert_eq!(unbuildable.affected_id(), None);
+        assert_eq!(unbuildable.location(), "window > barchart#chart");
     }
 }

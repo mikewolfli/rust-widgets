@@ -10,7 +10,7 @@ use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
 use crate::tr;
-use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::coercion::{expect_i64, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -279,6 +279,9 @@ impl WidgetProperties for ProgressDialog {
         match name {
             "title" => Ok(CapabilityValue::String(self.title().to_string())),
             "label_text" => Ok(CapabilityValue::String(self.label_text().to_string())),
+            "value" => Ok(CapabilityValue::Int(i64::from(self.value()))),
+            "minimum" => Ok(CapabilityValue::Int(i64::from(self.minimum()))),
+            "maximum" => Ok(CapabilityValue::Int(i64::from(self.maximum()))),
             _ => base_property_get(self, name),
         }
     }
@@ -293,12 +296,33 @@ impl WidgetProperties for ProgressDialog {
                 self.set_label_text(expect_string(value)?);
                 Ok(())
             }
+            // `value` is the payload `set_value` carries, so it must be writable through the
+            // property route the command's own documentation points at — publishing `set_value`
+            // while leaving `value` unwritable is the schema/contract disagreement
+            // `capability::properties_tests` catches.
+            "value" => {
+                self.set_value(i32::try_from(expect_i64(value)?)
+                    .map_err(|_| CapabilityAccessError::OutOfRange)?);
+                Ok(())
+            }
+            // `minimum`/`maximum` are the pair `set_range` carries; each is also writable on its
+            // own, which is what makes `set_minimum`/`set_maximum` reachable.
+            "minimum" => {
+                self.set_minimum(i32::try_from(expect_i64(value)?)
+                    .map_err(|_| CapabilityAccessError::OutOfRange)?);
+                Ok(())
+            }
+            "maximum" => {
+                self.set_maximum(i32::try_from(expect_i64(value)?)
+                    .map_err(|_| CapabilityAccessError::OutOfRange)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["title", "label_text", BASE_PROPERTY_NAMES]
+        property_names_of!["title", "label_text", "value", "minimum", "maximum", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `progress_dialog` publishes.

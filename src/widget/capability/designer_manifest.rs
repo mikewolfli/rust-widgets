@@ -58,7 +58,69 @@ mod keys {
     pub(crate) const DEFAULT: &str = "default";
     pub(crate) const PAYLOAD: &str = "payload";
     pub(crate) const SHAPE: &str = "shape";
+    /// The protocol version this document is written in (BLUE26 B26.01).
+    pub(crate) const PROTOCOL: &str = "protocol";
+    /// The library version the document was exported from.
+    pub(crate) const LIBRARY: &str = "library";
+    /// The build profile the facts describe.
+    pub(crate) const PROFILE: &str = "profile";
+    /// The target triple the facts describe.
+    pub(crate) const TRIPLE: &str = "triple";
+    /// A command's parameter shape token (BLUE26 B26.03).
+    pub(crate) const SIGNATURE: &str = "signature";
+    /// A command's parameter name.
+    pub(crate) const PARAMETER: &str = "parameter";
+    /// A command's element kind.
+    pub(crate) const ELEMENT: &str = "element";
+    /// A command's payload arity.
+    pub(crate) const ARITY: &str = "arity";
+    /// A command's side-effect class.
+    pub(crate) const EFFECT: &str = "effect";
+    /// A property's constraint list (BLUE26 B26.02).
+    pub(crate) const CONSTRAINTS: &str = "constraints";
+    /// A constraint's inclusive minimum.
+    pub(crate) const MINIMUM: &str = "minimum";
+    /// A constraint's inclusive maximum.
+    pub(crate) const MAXIMUM: &str = "maximum";
+    /// A constraint's step.
+    pub(crate) const STEP: &str = "step";
+    /// A constraint's decimal places.
+    pub(crate) const PLACES: &str = "places";
+    /// A constraint's kind token.
+    pub(crate) const RULE: &str = "rule";
 }
+
+/// The manifest protocol version this build writes and can read.
+///
+/// # Why this is a number of its own rather than the library version
+///
+/// The two move independently, and coupling them would make one of them lie. The library version
+/// changes for any code change, including ones that do not touch this document; the protocol
+/// version changes only when the document's *shape* does — a new key, a removed key, a changed
+/// meaning. A reader uses the protocol version to decide whether it understands the document at
+/// all, which is a question the library version cannot answer (2.8.4 and 2.9.0 could be the same
+/// protocol, and two protocol versions could ship in one library version during a transition).
+///
+/// # Compatibility rule
+///
+/// A reader accepts a document whose protocol is **at or below** [`MANIFEST_PROTOCOL_VERSION`]:
+/// older documents are readable by construction, because every version so far has only *added*
+/// keys. A document with a **higher** protocol is refused explicitly
+/// ([`ManifestParseError`]), never partially read — a partial read of a newer document is how a
+/// designer silently drops a field it does not understand and re-saves a lossy file.
+///
+/// History:
+/// * `1` — control, aliases, properties, events, commands.
+/// * `2` — adds `protocol`, `library`, `profile` and `triple` (BLUE26 B26.01).
+pub const MANIFEST_PROTOCOL_VERSION: u32 = 2;
+
+/// The oldest protocol version this reader still accepts.
+///
+/// Kept as an explicit number rather than implied by [`MANIFEST_PROTOCOL_VERSION`], because the
+/// two answer different questions: one is "what do I write", the other is "what can I still
+/// read". Dropping support for v1 would be a deliberate change here, not a side effect of
+/// bumping the written version.
+pub const MANIFEST_MIN_PROTOCOL_VERSION: u32 = 1;
 
 /// The designer-facing spelling of a [`PropertyValueKind`].
 ///
@@ -142,6 +204,32 @@ pub struct DesignerProperty {
     pub tokens: Vec<String>,
     /// The value the property holds on a freshly created control.
     pub default_value: CapabilityValue,
+    /// The runtime-enforced constraints, empty when the property has none (BLUE26 B26.02).
+    ///
+    /// A designer renders these directly: a `Range` becomes a bounded slider, a `Required` an
+    /// asterisk. Only constraints the control actually enforces are present (see
+    /// [`Constraint`](crate::widget::capability::Constraint)), so an editor built from them accepts
+    /// exactly what the control accepts.
+    pub constraints: Vec<DesignerConstraint>,
+}
+
+/// One constraint as a designer sees it (BLUE26 B26.02).
+///
+/// A flat, tagged form rather than re-using the runtime [`Constraint`](crate::widget::capability::Constraint)
+/// enum directly, because this is a *wire* type: it must round-trip through JSON with the rest of the
+/// manifest, and a tagged object is the shape a reader can extend without renumbering an enum.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DesignerConstraint {
+    /// The constraint's kind: `"range"`, `"precision"`, or `"required"`.
+    pub kind: &'static str,
+    /// The inclusive minimum, for a `"range"` constraint.
+    pub minimum: Option<f64>,
+    /// The inclusive maximum, for a `"range"` constraint.
+    pub maximum: Option<f64>,
+    /// The step, for a `"range"` constraint that has one.
+    pub step: Option<f64>,
+    /// The decimal places, for a `"precision"` constraint.
+    pub places: Option<u8>,
 }
 
 /// One event as the designer sees it: its name and the type of the value it carries.
@@ -155,9 +243,47 @@ pub struct DesignerEvent {
     pub shape: Option<EventPayloadShape>,
 }
 
+/// One command as the designer sees it: its name, its parameter shape and its effect
+/// (BLUE26 B26.03).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DesignerCommand {
+    /// The published command name.
+    pub name: String,
+    /// The parameter shape: `"none"`, `"value"`, or `"composite"`.
+    pub signature: &'static str,
+    /// The parameter name, empty for a payload-free command.
+    pub parameter: String,
+    /// The declared kind of a `"value"` parameter, empty for the other shapes.
+    pub kind: Option<PropertyValueKind>,
+    /// How many values a `"composite"` payload carries, or `None` for a list.
+    pub arity: Option<usize>,
+    /// The declared kind of each composite element, when homogeneous.
+    pub element: Option<PropertyValueKind>,
+    /// The side-effect class: `"mutates-control"`, `"mutates-collection"`, `"side-effecting"`.
+    pub effect: &'static str,
+}
+
 /// One control's full designer-facing description.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DesignerManifest {
+    /// The capability-manifest protocol version this document is written in.
+    ///
+    /// Present on every manifest so a reader never has to guess: a document without it is
+    /// protocol 1 by definition (see [`MANIFEST_PROTOCOL_VERSION`]), and one with a version
+    /// above what this build writes is refused rather than half-read.
+    pub protocol: u32,
+    /// The library version that produced the document, for diagnostics and support.
+    ///
+    /// Not used to decide compatibility — that is [`Self::protocol`]'s job — but recorded so a
+    /// bug report about a manifest can name the exact build it came from without a guess.
+    pub library: String,
+    /// The build profile the facts describe (BLUE26 B26.01/B26.06).
+    ///
+    /// The question this answers is "which build said so", which is exactly what is missing when
+    /// a `desktop` build's `video_codec` support is read as a claim about a `mini` device.
+    pub profile: String,
+    /// The target triple the facts describe, as `build.rs` captured it.
+    pub triple: String,
     /// The canonical control name.
     pub control: String,
     /// Every name the factory also accepts for this control.
@@ -166,8 +292,8 @@ pub struct DesignerManifest {
     pub properties: Vec<DesignerProperty>,
     /// The events it publishes, with payload types.
     pub events: Vec<DesignerEvent>,
-    /// The commands it accepts.
-    pub commands: Vec<String>,
+    /// The commands it accepts, with parameter shape and effect.
+    pub commands: Vec<DesignerCommand>,
 }
 
 /// Why a designer document could not be read.
@@ -293,6 +419,50 @@ fn push_json_value(out: &mut String, value: &CapabilityValue) {
     }
 }
 
+/// Appends one constraint object (BLUE26 B26.02).
+///
+/// Optional numeric fields are written as `null` when absent rather than omitted, so every
+/// constraint object has the same keys. That is what makes the reader a fixed shape: a missing key
+/// and a `null` value mean the same thing here, and writing one spelling keeps the round trip
+/// byte-stable.
+fn push_constraint(out: &mut String, constraint: &DesignerConstraint) {
+    out.push_str("      {\n        ");
+    push_json_string(out, keys::RULE);
+    out.push_str(": ");
+    push_json_string(out, constraint.kind);
+    out.push_str(",\n        ");
+    push_json_string(out, keys::MINIMUM);
+    out.push_str(": ");
+    push_optional_float(out, constraint.minimum);
+    out.push_str(",\n        ");
+    push_json_string(out, keys::MAXIMUM);
+    out.push_str(": ");
+    push_optional_float(out, constraint.maximum);
+    out.push_str(",\n        ");
+    push_json_string(out, keys::STEP);
+    out.push_str(": ");
+    push_optional_float(out, constraint.step);
+    out.push_str(",\n        ");
+    push_json_string(out, keys::PLACES);
+    out.push_str(": ");
+    match constraint.places {
+        Some(places) => out.push_str(&format!("{places}")),
+        None => out.push_str("null"),
+    }
+    out.push_str("\n      }");
+}
+
+/// Appends an optional float, writing `null` for `None`.
+///
+/// A present value goes through [`push_json_float`], so it keeps the integral-value marker that
+/// distinguishes a float from an int on reload.
+fn push_optional_float(out: &mut String, value: Option<f64>) {
+    match value {
+        Some(inner) => push_json_float(out, inner),
+        None => out.push_str("null"),
+    }
+}
+
 /// Appends a signed integer, ensuring the result re-reads as an `Int`.
 ///
 /// # Why a non-negative `Int` needs more than its digits
@@ -352,6 +522,22 @@ fn push_json_float(out: &mut String, value: f64) {
 fn write_manifest(out: &mut String, manifest: &DesignerManifest) {
     out.push_str("{\n");
     out.push_str("  ");
+    push_json_string(out, keys::PROTOCOL);
+    out.push_str(": ");
+    out.push_str(&format!("{},\n", manifest.protocol));
+    out.push_str("  ");
+    push_json_string(out, keys::LIBRARY);
+    out.push_str(": ");
+    push_json_string(out, &manifest.library);
+    out.push_str(",\n  ");
+    push_json_string(out, keys::PROFILE);
+    out.push_str(": ");
+    push_json_string(out, &manifest.profile);
+    out.push_str(",\n  ");
+    push_json_string(out, keys::TRIPLE);
+    out.push_str(": ");
+    push_json_string(out, &manifest.triple);
+    out.push_str(",\n  ");
     push_json_string(out, keys::CONTROL);
     out.push_str(": ");
     push_json_string(out, &manifest.control);
@@ -391,6 +577,17 @@ fn write_manifest(out: &mut String, manifest: &DesignerManifest) {
         push_json_string(out, keys::DEFAULT);
         out.push_str(": ");
         push_json_value(out, &property.default_value);
+        out.push_str(",\n      ");
+        push_json_string(out, keys::CONSTRAINTS);
+        out.push_str(": [");
+        if !property.constraints.is_empty() {
+            out.push('\n');
+            for (c_index, constraint) in property.constraints.iter().enumerate() {
+                push_constraint(out, constraint);
+                out.push_str(if c_index + 1 == property.constraints.len() { "\n" } else { ",\n" });
+            }
+        }
+        out.push_str("    ]");
         out.push_str("\n    }");
         out.push_str(if index + 1 == manifest.properties.len() { "\n" } else { ",\n" });
     }
@@ -423,17 +620,63 @@ fn write_manifest(out: &mut String, manifest: &DesignerManifest) {
     }
     out.push_str("  ],\n");
 
-    push_array(
-        out,
-        keys::COMMANDS,
-        &manifest.commands,
-        |out, command| {
-            push_json_string(out, command);
-        },
-        false,
-    );
+    out.push_str("  ");
+    push_json_string(out, keys::COMMANDS);
+    out.push_str(": [\n");
+    for (index, command) in manifest.commands.iter().enumerate() {
+        push_command(out, command);
+        out.push_str(if index + 1 == manifest.commands.len() { "\n" } else { ",\n" });
+    }
+    out.push_str("  ]\n");
 
     out.push_str("}\n");
+}
+
+/// Appends one command object, so a designer can validate a binding against its parameter shape.
+///
+/// A command used to be a bare string. A string is enough to *offer* a command but not to check a
+/// wire to it: a designer must know whether it takes an argument, of what type, and whether its
+/// effect warrants a warning (BLUE26 B26.03). The object form carries exactly that — and nothing
+/// else — so the document describes the command the control actually dispatches.
+fn push_command(out: &mut String, command: &DesignerCommand) {
+    out.push_str("    {\n      ");
+    push_json_string(out, keys::NAME);
+    out.push_str(": ");
+    push_json_string(out, &command.name);
+    out.push_str(",\n      ");
+    push_json_string(out, keys::SIGNATURE);
+    out.push_str(": ");
+    push_json_string(out, command.signature);
+    out.push_str(",\n      ");
+    push_json_string(out, keys::PARAMETER);
+    out.push_str(": ");
+    push_json_string(out, &command.parameter);
+    out.push_str(",\n      ");
+    push_json_string(out, keys::KIND);
+    out.push_str(": ");
+    match command.kind {
+        Some(kind) => push_json_string(out, value_kind_token(kind)),
+        None => out.push_str("null"),
+    }
+    out.push_str(",\n      ");
+    push_json_string(out, keys::ELEMENT);
+    out.push_str(": ");
+    match command.element {
+        Some(kind) => push_json_string(out, value_kind_token(kind)),
+        None => out.push_str("null"),
+    }
+    out.push_str(",\n      ");
+    push_json_string(out, keys::ARITY);
+    out.push_str(": ");
+    match command.arity {
+        Some(count) => out.push_str(&format!("{count}")),
+        None => out.push_str("null"),
+    }
+    out.push_str(",\n      ");
+    push_json_string(out, keys::EFFECT);
+    out.push_str(": ");
+    push_json_string(out, command.effect);
+    out.push_str("\n    }");
 }
 
 /// Appends `"key": ["a", "b"]` for a list of strings that needs no nested objects.
@@ -669,6 +912,29 @@ impl<'a> JsonReader<'a> {
         }
     }
 
+    /// Reads a non-negative integer, for keys that are counts or versions.
+    ///
+    /// A dedicated reader rather than [`read_number`](Self::read_number) because a version is a
+    /// `u32` and a parse through `f64` would lose precision above 2^53 and silently accept a
+    /// fractional value (`2.5` would truncate). The digits are parsed directly, and anything that
+    /// is not a plain run of digits — a sign, a fraction, an exponent — is a malformed document.
+    fn read_uint(&mut self) -> Result<u32, ManifestParseError> {
+        self.skip_whitespace();
+        let start = self.cursor;
+        while self.bytes.get(self.cursor).is_some_and(u8::is_ascii_digit) {
+            self.cursor += 1;
+        }
+        if start == self.cursor {
+            return self.fail("expected a non-negative integer");
+        }
+        let Some(text) = core::str::from_utf8(&self.bytes[start..self.cursor]).ok() else {
+            return self.fail("number is not ASCII");
+        };
+        text.parse::<u32>().map_err(|_| ManifestParseError {
+            detail: format!("`{text}` is not a valid version number"),
+        })
+    }
+
     /// Whether the number at the cursor is written with a **leading `+`**.
     ///
     /// # Why the sign is asked about separately
@@ -732,6 +998,7 @@ fn read_property(reader: &mut JsonReader<'_>) -> Result<DesignerProperty, Manife
     let mut readable = None;
     let mut writable = None;
     let mut tokens = Vec::new();
+    let mut constraints = Vec::new();
     let mut default_value = CapabilityValue::Null;
     let mut saw_default = false;
 
@@ -753,6 +1020,7 @@ fn read_property(reader: &mut JsonReader<'_>) -> Result<DesignerProperty, Manife
             k if k == keys::READABLE => readable = Some(reader.read_bool()?),
             k if k == keys::WRITABLE => writable = Some(reader.read_bool()?),
             k if k == keys::TOKENS => tokens = read_string_array(reader)?,
+            k if k == keys::CONSTRAINTS => constraints = read_constraints(reader)?,
             k if k == keys::DEFAULT => {
                 default_value = read_value(reader)?;
                 saw_default = true;
@@ -779,8 +1047,99 @@ fn read_property(reader: &mut JsonReader<'_>) -> Result<DesignerProperty, Manife
         readable: readable.unwrap_or(false),
         writable: writable.unwrap_or(false),
         tokens,
+        constraints,
         default_value: if saw_default { default_value } else { CapabilityValue::Null },
     })
+}
+
+/// Reads a constraint array (BLUE26 B26.02).
+fn read_constraints(reader: &mut JsonReader<'_>) -> Result<Vec<DesignerConstraint>, ManifestParseError> {
+    reader.expect(b'[', "expected `[` to start a constraint list")?;
+    let mut constraints = Vec::new();
+    if reader.peek(b']') {
+        reader.expect(b']', "expected `]`")?;
+        return Ok(constraints);
+    }
+    loop {
+        constraints.push(read_constraint(reader)?);
+        if reader.peek(b',') {
+            reader.expect(b',', "expected `,`")?;
+            continue;
+        }
+        reader.expect(b']', "expected `]` or `,` in a constraint list")?;
+        return Ok(constraints);
+    }
+}
+
+/// Reads one constraint object (BLUE26 B26.02).
+fn read_constraint(reader: &mut JsonReader<'_>) -> Result<DesignerConstraint, ManifestParseError> {
+    reader.expect(b'{', "expected `{` to start a constraint")?;
+    let mut kind: Option<&'static str> = None;
+    let mut minimum = None;
+    let mut maximum = None;
+    let mut step = None;
+    let mut places = None;
+
+    loop {
+        let key = reader.read_key()?;
+        match key.as_str() {
+            k if k == keys::RULE => {
+                let token = reader.read_string()?;
+                kind = Some(constraint_rule_token(&token).ok_or(ManifestParseError {
+                    detail: format!("unknown constraint kind `{token}`"),
+                })?);
+            }
+            k if k == keys::MINIMUM => minimum = read_optional_float(reader)?,
+            k if k == keys::MAXIMUM => maximum = read_optional_float(reader)?,
+            k if k == keys::STEP => step = read_optional_float(reader)?,
+            k if k == keys::PLACES => {
+                if reader.peek(b'n') {
+                    reader.read_null()?;
+                } else {
+                    places = Some(reader.read_uint()? as u8);
+                }
+            }
+            other => {
+                return Err(ManifestParseError {
+                    detail: format!("unexpected key `{other}` in a constraint"),
+                })
+            }
+        }
+        if reader.peek(b',') {
+            reader.expect(b',', "expected `,`")?;
+            continue;
+        }
+        reader.expect(b'}', "expected `}` or `,` in a constraint")?;
+        break;
+    }
+
+    Ok(DesignerConstraint {
+        kind: kind.ok_or(ManifestParseError { detail: "a constraint has no kind".into() })?,
+        minimum,
+        maximum,
+        step,
+        places,
+    })
+}
+
+/// Reads an optional float, consuming `null` as `None`.
+fn read_optional_float(reader: &mut JsonReader<'_>) -> Result<Option<f64>, ManifestParseError> {
+    if reader.peek(b'n') {
+        reader.read_null()?;
+        return Ok(None);
+    }
+    let (value, _is_float) = reader.read_number()?;
+    Ok(Some(value))
+}
+
+/// The constraint-rule tokens a document may carry, and their inverse.
+fn constraint_rule_token(token: &str) -> Option<&'static str> {
+    match token {
+        "range" => Some("range"),
+        "precision" => Some("precision"),
+        "required" => Some("required"),
+        _ => None,
+    }
 }
 
 /// Reads one event object.
@@ -835,6 +1194,141 @@ fn read_event(reader: &mut JsonReader<'_>) -> Result<DesignerEvent, ManifestPars
     })
 }
 
+/// Reads one command object (BLUE26 B26.03).
+///
+/// The signature token is validated against the closed set the writer emits, so a document naming
+/// a signature this build does not understand is refused rather than read as a payload-free command
+/// — which would tell a designer a wire to a value-taking command is legal.
+fn read_command(reader: &mut JsonReader<'_>) -> Result<DesignerCommand, ManifestParseError> {
+    reader.expect(b'{', "expected `{` to start a command")?;
+    let mut name = None;
+    let mut signature: Option<&'static str> = None;
+    let mut parameter = String::new();
+    let mut kind = None;
+    let mut element = None;
+    let mut arity = None;
+    let mut effect: Option<&'static str> = None;
+
+    loop {
+        let key = reader.read_key()?;
+        match key.as_str() {
+            k if k == keys::NAME => name = Some(reader.read_string()?),
+            k if k == keys::SIGNATURE => {
+                let token = reader.read_string()?;
+                signature = Some(command_signature_token(&token).ok_or(ManifestParseError {
+                    detail: format!("unknown command signature `{token}`"),
+                })?);
+            }
+            k if k == keys::PARAMETER => parameter = reader.read_string()?,
+            k if k == keys::KIND => {
+                if reader.peek(b'n') {
+                    reader.read_null()?;
+                } else {
+                    let token = reader.read_string()?;
+                    kind = Some(value_kind_from_token(&token).ok_or(ManifestParseError {
+                        detail: format!("unknown command parameter kind `{token}`"),
+                    })?);
+                }
+            }
+            k if k == keys::ELEMENT => {
+                if reader.peek(b'n') {
+                    reader.read_null()?;
+                } else {
+                    let token = reader.read_string()?;
+                    element = Some(value_kind_from_token(&token).ok_or(ManifestParseError {
+                        detail: format!("unknown command element kind `{token}`"),
+                    })?);
+                }
+            }
+            k if k == keys::ARITY => {
+                if reader.peek(b'n') {
+                    reader.read_null()?;
+                } else {
+                    arity = Some(reader.read_uint()? as usize);
+                }
+            }
+            k if k == keys::EFFECT => {
+                let token = reader.read_string()?;
+                effect = Some(command_effect_token(&token).ok_or(ManifestParseError {
+                    detail: format!("unknown command effect `{token}`"),
+                })?);
+            }
+            other => {
+                return Err(ManifestParseError {
+                    detail: format!("unexpected key `{other}` in a command"),
+                })
+            }
+        }
+        if reader.peek(b',') {
+            reader.expect(b',', "expected `,`")?;
+            continue;
+        }
+        reader.expect(b'}', "expected `}` or `,` in a command")?;
+        break;
+    }
+
+    Ok(DesignerCommand {
+        name: name.ok_or(ManifestParseError { detail: "a command has no name".into() })?,
+        signature: signature
+            .ok_or(ManifestParseError { detail: "a command has no signature".into() })?,
+        parameter,
+        kind,
+        element,
+        arity,
+        effect: effect
+            .ok_or(ManifestParseError { detail: "a command has no effect".into() })?,
+    })
+}
+
+/// The signature tokens a command document may carry, and their inverse.
+///
+/// A `&'static str` rather than the `CommandSignature` enum because the two live in different
+/// layers: this module owns the wire spelling, `command_schema` owns the semantics. The mapping is
+/// the join between them, kept closed so an unknown token is an error.
+fn command_signature_token(token: &str) -> Option<&'static str> {
+    match token {
+        "none" => Some("none"),
+        "value" => Some("value"),
+        "composite" => Some("composite"),
+        _ => None,
+    }
+}
+
+/// The effect tokens a command document may carry, and their inverse.
+fn command_effect_token(token: &str) -> Option<&'static str> {
+    match token {
+        "mutates-control" => Some("mutates-control"),
+        "mutates-collection" => Some("mutates-collection"),
+        "side-effecting" => Some("side-effecting"),
+        _ => None,
+    }
+}
+
+/// Builds a [`DesignerCommand`] from a capability's command schema.
+///
+/// Kept here rather than in `command_schema` so the *wire vocabulary* (`"none"`/`"value"`/
+/// `"composite"`) lives with the rest of the document's vocabulary, while the derivation of the
+/// shape stays in `command_schema`. A command with no derivable schema is dropped by the caller —
+/// publishing a command a designer cannot describe is the gap B26.03 closes.
+pub fn designer_command_from(name: &str, schema: &super::command_schema::CommandSchema) -> DesignerCommand {
+    use super::command_schema::{CommandEffect, CommandSignature};
+    let (signature, parameter, kind, arity, element) = match schema.signature {
+        CommandSignature::PayloadFree => ("none", String::new(), None, None, None),
+        CommandSignature::OneValue { parameter, kind } => {
+            ("value", String::from(parameter), Some(kind), None, None)
+        }
+        CommandSignature::Composite { parameter, arity, element } => {
+            ("composite", String::from(parameter), None, arity, element)
+        }
+    };
+    let effect = match schema.effect {
+        CommandEffect::MutatesControl => "mutates-control",
+        CommandEffect::MutatesCollection => "mutates-collection",
+        CommandEffect::SideEffecting => "side-effecting",
+    };
+    DesignerCommand { name: String::from(name), signature, parameter, kind, arity, element, effect }
+}
+
 /// Reads a JSON value into a [`CapabilityValue`].
 ///
 /// Strings are taken verbatim: `"#DCDCDCFF"` and `"0,0,0,0"` are how the capability table spells a
@@ -883,6 +1377,14 @@ impl DesignerManifest {
         let mut reader = JsonReader::new(text);
         reader.expect(b'{', "expected `{` to start a document")?;
 
+        // Protocol first, but a writer may order keys freely, so the version check happens
+        // **after** the loop: a document that names a future protocol anywhere is refused as a
+        // whole rather than read until the offending key and then abandoned, which would leave a
+        // caller holding a half-built manifest.
+        let mut protocol: Option<u32> = None;
+        let mut library = String::new();
+        let mut profile = String::new();
+        let mut triple = String::new();
         let mut control = None;
         let mut aliases = Vec::new();
         let mut properties = Vec::new();
@@ -892,9 +1394,26 @@ impl DesignerManifest {
         loop {
             let key = reader.read_key()?;
             match key.as_str() {
+                k if k == keys::PROTOCOL => protocol = Some(reader.read_uint()?),
+                k if k == keys::LIBRARY => library = reader.read_string()?,
+                k if k == keys::PROFILE => profile = reader.read_string()?,
+                k if k == keys::TRIPLE => triple = reader.read_string()?,
                 k if k == keys::CONTROL => control = Some(reader.read_string()?),
                 k if k == keys::ALIASES => aliases = read_string_array(&mut reader)?,
-                k if k == keys::COMMANDS => commands = read_string_array(&mut reader)?,
+                k if k == keys::COMMANDS => {
+                    reader.expect(b'[', "expected `[` to start the command list")?;
+                    if !reader.peek(b']') {
+                        loop {
+                            commands.push(read_command(&mut reader)?);
+                            if reader.peek(b',') {
+                                reader.expect(b',', "expected `,`")?;
+                                continue;
+                            }
+                            break;
+                        }
+                    }
+                    reader.expect(b']', "expected `]` after the command list")?;
+                }
                 k if k == keys::PROPERTIES => {
                     reader.expect(b'[', "expected `[` to start the property list")?;
                     if !reader.peek(b']') {
@@ -937,7 +1456,23 @@ impl DesignerManifest {
             break;
         }
 
+        // A document with no `protocol` key is protocol 1 by definition: every document written
+        // before B26.01 lacked it, and reading them as v1 is what keeps an old project openable.
+        let protocol = protocol.unwrap_or(MANIFEST_MIN_PROTOCOL_VERSION);
+        if protocol > MANIFEST_PROTOCOL_VERSION {
+            return Err(ManifestParseError {
+                detail: format!(
+                    "manifest protocol {protocol} is newer than this build understands \
+                     ({MANIFEST_PROTOCOL_VERSION}); refusing to read it partially"
+                ),
+            });
+        }
+
         Ok(Self {
+            protocol,
+            library,
+            profile,
+            triple,
             control: control.ok_or(ManifestParseError {
                 detail: "the document does not name its control".into(),
             })?,
@@ -984,6 +1519,7 @@ pub fn designer_manifest(
             readable: schema.readable,
             writable: schema.writable,
             tokens: schema.accepted_tokens.iter().map(|token| String::from(*token)).collect(),
+            constraints: schema.constraints.iter().map(designer_constraint_from).collect(),
             default_value,
         });
     }
@@ -1000,15 +1536,25 @@ pub fn designer_manifest(
         .collect();
     events.sort_by(|left, right| left.name.cmp(&right.name));
 
-    let mut commands: Vec<String> =
-        capability.commands.iter().map(|command| String::from(*command)).collect();
-    commands.sort();
+    let mut commands: Vec<DesignerCommand> = capability
+        .commands
+        .iter()
+        .filter_map(|command| {
+            super::command_schema::command_schema(command, capability.properties)
+                .map(|schema| designer_command_from(command, &schema))
+        })
+        .collect();
+    commands.sort_by(|left, right| left.name.cmp(&right.name));
 
     let mut aliases: Vec<String> =
         capability.aliases.iter().map(|alias| String::from(*alias)).collect();
     aliases.sort();
 
     Ok(DesignerManifest {
+        protocol: MANIFEST_PROTOCOL_VERSION,
+        library: String::from(env!("CARGO_PKG_VERSION")),
+        profile: String::from(crate::widget::capability::TargetSpec::current().profile),
+        triple: String::from(crate::widget::capability::TargetSpec::current().triple),
         control: capability.canonical_name.into(),
         aliases,
         properties,
@@ -1079,6 +1625,33 @@ pub fn all_capability_manifests_json(
     Ok(out)
 }
 
+/// Builds a [`DesignerConstraint`] from a runtime [`Constraint`](crate::widget::capability::Constraint).
+///
+/// The join between the two layers, kept here so the wire vocabulary (`"range"`/`"precision"`/
+/// `"required"`) lives with the rest of the document's vocabulary while the semantics stay in
+/// `types`. A variant added to the runtime enum without a case here fails to compile, which is the
+/// property that keeps the two from drifting.
+pub fn designer_constraint_from(
+    constraint: &crate::widget::capability::Constraint,
+) -> DesignerConstraint {
+    use crate::widget::capability::Constraint as C;
+    match constraint {
+        C::Range(range) => DesignerConstraint {
+            kind: "range",
+            minimum: Some(range.minimum),
+            maximum: Some(range.maximum),
+            step: range.step,
+            places: None,
+        },
+        C::Precision { places } => {
+            DesignerConstraint { kind: "precision", minimum: None, maximum: None, step: None, places: *places }
+        }
+        C::Required => {
+            DesignerConstraint { kind: "required", minimum: None, maximum: None, step: None, places: None }
+        }
+    }
+}
+
 /// The events a control publishes, as manifest entries.
 ///
 /// Exposed so a consumer that already holds a manifest can reach the event list without going back
@@ -1106,6 +1679,10 @@ mod tests {
 
     fn sample() -> DesignerManifest {
         DesignerManifest {
+            protocol: MANIFEST_PROTOCOL_VERSION,
+            library: String::from(env!("CARGO_PKG_VERSION")),
+            profile: String::from("desktop"),
+            triple: String::from("aarch64-apple-darwin"),
             control: String::from("slider"),
             aliases: vec![String::from("range")],
             properties: vec![DesignerProperty {
@@ -1114,6 +1691,7 @@ mod tests {
                 readable: true,
                 writable: true,
                 tokens: Vec::new(),
+                constraints: Vec::new(),
                 default_value: CapabilityValue::Int(42),
             }],
             events: vec![DesignerEvent {
@@ -1121,7 +1699,15 @@ mod tests {
                 payload: Some(PropertyValueKind::Int),
                 shape: Some(EventPayloadShape::Scalar),
             }],
-            commands: vec![String::from("set_value")],
+            commands: vec![DesignerCommand {
+                name: String::from("set_value"),
+                signature: "value",
+                parameter: String::from("value"),
+                kind: Some(PropertyValueKind::Int),
+                arity: None,
+                element: None,
+                effect: "mutates-control",
+            }],
         }
     }
 
@@ -1343,5 +1929,172 @@ mod tests {
         }
         assert_eq!(value_kind_from_token("no_such_kind"), None);
         assert_eq!(shape_from_token("no_such_shape"), None);
+    }
+
+    /// The document must name its protocol, library, profile and triple (BLUE26 B26.01).
+    ///
+    /// Without these a designer cannot tell which build answered — the whole reason a manifest
+    /// would otherwise read a `desktop` fact as a claim about a `mini` device.
+    #[test]
+    fn a_manifest_declares_its_protocol_and_target_scope() {
+        let json = manifest_to_json(&sample());
+        for key in ["\"protocol\":", "\"library\":", "\"profile\":", "\"triple\":"] {
+            assert!(json.contains(key), "the document must name `{key}`: {json}");
+        }
+        assert!(
+            json.contains(&format!("\"protocol\": {}", MANIFEST_PROTOCOL_VERSION)),
+            "the written protocol must be the current version: {json}"
+        );
+        let reloaded = DesignerManifest::from_json(&json).expect("parses");
+        assert_eq!(reloaded.protocol, MANIFEST_PROTOCOL_VERSION);
+        assert_eq!(reloaded.library, env!("CARGO_PKG_VERSION"));
+    }
+
+    /// A document with no `protocol` key is read as version 1, not refused.
+    ///
+    /// Every project saved before B26.01 lacks the key, and reading them as v1 is what keeps an
+    /// old project openable — the compatibility half of the protocol contract.
+    #[test]
+    fn a_protocol_one_document_is_still_readable() {
+        // Strip the four new keys to reproduce the v1 shape exactly.
+        let json = manifest_to_json(&sample());
+        let stripped: String = json
+            .lines()
+            .filter(|line| {
+                !line.contains("\"protocol\":")
+                    && !line.contains("\"library\":")
+                    && !line.contains("\"profile\":")
+                    && !line.contains("\"triple\":")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let reloaded = DesignerManifest::from_json(&stripped)
+            .expect("a document without a protocol key is protocol 1");
+        assert_eq!(reloaded.protocol, MANIFEST_MIN_PROTOCOL_VERSION);
+    }
+
+    /// A document naming a *newer* protocol must be refused, not partially read.
+    ///
+    /// A partial read of a future document is how a designer silently drops a field it does not
+    /// understand and re-saves a lossy file, so the refusal is the point.
+    #[test]
+    fn a_future_protocol_version_is_refused() {
+        let json = manifest_to_json(&sample()).replace(
+            &format!("\"protocol\": {MANIFEST_PROTOCOL_VERSION}"),
+            &format!("\"protocol\": {}", MANIFEST_PROTOCOL_VERSION + 1),
+        );
+        let result = DesignerManifest::from_json(&json);
+        assert!(result.is_err(), "a newer protocol must be refused");
+        let message = result.unwrap_err().detail;
+        assert!(
+            message.contains("newer"),
+            "the refusal must say the document is newer, not just fail: {message}"
+        );
+    }
+
+    /// A fractional or signed protocol value must be refused rather than truncated.
+    #[test]
+    fn a_malformed_protocol_value_is_refused() {
+        for bad in ["\"protocol\": 2.5", "\"protocol\": -1", "\"protocol\": \"two\""] {
+            let json = manifest_to_json(&sample())
+                .replace(&format!("\"protocol\": {MANIFEST_PROTOCOL_VERSION}"), bad);
+            assert!(
+                DesignerManifest::from_json(&json).is_err(),
+                "`{bad}` must not be read as a protocol version"
+            );
+        }
+    }
+
+    /// A command must carry its parameter shape and effect through the round trip (B26.03).
+    ///
+    /// A command used to be a bare string, which says nothing a designer can validate a binding
+    /// against. This asserts the object form survives — a name plus the three facts a wire check
+    /// needs (shape, parameter, effect).
+    #[test]
+    fn a_typed_command_round_trips() {
+        let mut manifest = sample();
+        manifest.commands = vec![
+            DesignerCommand {
+                name: String::from("set_value"),
+                signature: "value",
+                parameter: String::from("value"),
+                kind: Some(PropertyValueKind::UInt),
+                arity: None,
+                element: None,
+                effect: "mutates-control",
+            },
+            DesignerCommand {
+                name: String::from("toggle"),
+                signature: "none",
+                parameter: String::new(),
+                kind: None,
+                arity: None,
+                element: None,
+                effect: "mutates-control",
+            },
+            DesignerCommand {
+                name: String::from("set_range"),
+                signature: "composite",
+                parameter: String::from("lower"),
+                kind: None,
+                arity: Some(2),
+                element: Some(PropertyValueKind::Float),
+                effect: "mutates-control",
+            },
+        ];
+        let json = manifest_to_json(&manifest);
+        let reloaded = DesignerManifest::from_json(&json).expect("parses");
+        assert_eq!(reloaded.commands, manifest.commands);
+        assert_eq!(manifest_to_json(&reloaded), json, "the command objects must be stable");
+        // The name must be a JSON key, not a bare element, so a reader sees a shape.
+        assert!(json.contains("\"signature\": \"value\""), "{json}");
+        assert!(json.contains("\"effect\": \"mutates-control\""), "{json}");
+    }
+
+    /// An unrecognised command signature or effect must be refused, not defaulted.
+    #[test]
+    fn a_malformed_command_shape_is_refused() {
+        let json = manifest_to_json(&sample());
+        let bad_sig = json.replace("\"signature\": \"value\"", "\"signature\": \"sausage\"");
+        assert_ne!(bad_sig, json, "the signature sentinel must appear");
+        assert!(DesignerManifest::from_json(&bad_sig).is_err());
+
+        let bad_effect =
+            json.replace("\"effect\": \"mutates-control\"", "\"effect\": \"explodes\"");
+        assert_ne!(bad_effect, json, "the effect sentinel must appear");
+        assert!(DesignerManifest::from_json(&bad_effect).is_err());
+    }
+
+    /// A property's constraints must survive the round trip (B26.02).
+    #[test]
+    fn a_constrained_property_round_trips() {
+        use crate::widget::capability::{Constraint, RangeSpec};
+        let mut manifest = sample();
+        manifest.properties[0].constraints = vec![designer_constraint_from(&Constraint::Range(
+            RangeSpec { minimum: 0.0, maximum: 1.0, step: Some(0.05) },
+        ))];
+        let json = manifest_to_json(&manifest);
+        assert!(json.contains("\"constraints\": ["), "the constraint list must appear: {json}");
+        assert!(json.contains("\"rule\": \"range\""), "{json}");
+        let reloaded = DesignerManifest::from_json(&json).expect("parses");
+        assert_eq!(reloaded.properties[0].constraints, manifest.properties[0].constraints);
+        assert_eq!(manifest_to_json(&reloaded), json, "the constraint must be byte-stable");
+    }
+
+    /// An unrecognised constraint kind must be refused, not silently dropped.
+    #[test]
+    fn a_malformed_constraint_is_refused() {
+        use crate::widget::capability::{Constraint, RangeSpec};
+        let mut manifest = sample();
+        manifest.properties[0].constraints =
+            vec![designer_constraint_from(&Constraint::Range(RangeSpec {
+                minimum: 0.0,
+                maximum: 1.0,
+                step: None,
+            }))];
+        let json = manifest_to_json(&manifest);
+        let bad = json.replace("\"rule\": \"range\"", "\"rule\": \"sausage\"");
+        assert_ne!(bad, json, "the sentinel must appear");
+        assert!(DesignerManifest::from_json(&bad).is_err());
     }
 }

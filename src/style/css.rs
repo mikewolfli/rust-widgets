@@ -292,7 +292,11 @@ impl CssParser {
     }
 
     /// Parse CSS text into raw `CssRule` entries.
-    fn parse_rules(css: &str) -> Result<Vec<CssRule>, String> {
+    ///
+    /// Public because a CSS **inspector** must walk the same rules the apply does: exposing the
+    /// parsed rules is what lets `style::css_trace` report a winning rule without a second parser
+    /// (BLUE26 B26.10).
+    pub fn parse_rules(css: &str) -> Result<Vec<CssRule>, String> {
         let mut rules = Vec::new();
         let mut pos = 0;
         let chars: Vec<char> = css.chars().collect();

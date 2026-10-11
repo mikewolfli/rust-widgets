@@ -10,9 +10,9 @@ use super::range_command::TextRangeCommand;
 use super::syntax::{BuiltinHighlighter, LanguageId, LineState, SyntaxHighlighter};
 use super::types::{
     CodeEditorConfig, CompletionSource, CompletionState, ContextMenuState, Cursor, CursorGoal,
-    DiagnosticMarker, DocumentCompletions, DocumentScale, EditorBuffer, FindState, FoldRegion,
-    InlineDiagnostic, MarkerSeverity, MenuItem, ReadOnlySpan, SearchMatch, SearchOptions,
-    SyntaxPalette, TextPosition, TokenKind, TokenSpan, ViewportSnapshot, VisualLine,
+    DiagnosticMarker, DocumentCompletions, DocumentScale, EditRejection, EditorBuffer, FindState,
+    FoldRegion, InlineDiagnostic, MarkerSeverity, MenuItem, ReadOnlySpan, SearchMatch,
+    SearchOptions, SyntaxPalette, TextPosition, TokenKind, TokenSpan, ViewportSnapshot, VisualLine,
     MAX_COMPLETIONS,
 };
 use crate::compat::MiniVec;
@@ -281,6 +281,20 @@ pub struct CodeEditor {
     /// on the accessor rather than on the field — keeping the field unconditional
     /// avoids a cfg-shaped hole in the struct initialiser.
     last_checkpoint_bytes: usize,
+    /// A counter bumped on every committed text change (BLUE26 B26.08).
+    ///
+    /// # Why a text editor needs a version
+    ///
+    /// A host that reacts to `text_changed` — a linter, a source-mapper, a language server — keeps a
+    /// position into the text it was given, and by the time its work completes the document may have
+    /// moved on. Recording the revision with the request and comparing it on return is how the host
+    /// detects "the position I computed is stale" instead of applying an answer to text that no
+    /// longer exists. It is bumped at [`CodeEditor::record_and_settle_inner`], the single choke
+    /// point every edit passes through, so it cannot miss a mutation or count a no-op.
+    ///
+    /// A monotone counter rather than a hash: a hash collides, and a collision here means a stale
+    /// result is accepted as fresh — the exact failure the version exists to prevent.
+    revision: u64,
 
     /// Emitted when text changes.
     pub text_changed: Signal1<String>,
@@ -359,6 +373,7 @@ impl CodeEditor {
             undo_stack: UndoStack::new(),
             restoring_history: false,
             last_checkpoint_bytes: 0,
+            revision: 0,
             text_changed: Signal1::new(),
             cursor_moved: Signal1::new(),
             selection_changed: Signal1::new(),
@@ -747,6 +762,79 @@ impl CodeEditor {
         self.model.borrow().text.borrow().clone()
     }
 
+    /// The document's revision counter, bumped on every committed text change (BLUE26 B26.08).
+    ///
+    /// # How a host uses it
+    ///
+    /// Record this value when handing the text to an asynchronous worker (a linter, an indexer), and
+    /// compare it on return: if it moved, the worker's positions describe text that is gone. The
+    /// counter starts at `0` and only increases, so "unchanged" is an equality test and never a
+    /// guess.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Replaces the half-open character range `[start, end)` with `text`, but only if `expected` is
+    /// still the current [`revision`](Self::revision) (BLUE26 B26.08).
+    ///
+    /// # Why a version-guarded edit is the primitive a tool host needs
+    ///
+    /// An automatic fix — a formatter, an import sorter, a quick-fix — computes a replacement from a
+    /// snapshot of the text and then applies it some time later. If the user typed in between, the
+    /// computed range now covers different text and a blind write would corrupt the document. Passing
+    /// the revision the fix was computed against lets the editor refuse a stale edit rather than
+    /// apply it, which is the only safe ordering when the two cannot be made atomic.
+    ///
+    /// # Why positions are `(line, column)` rather than byte offsets
+    ///
+    /// Column is a **character** index, matching every other position in this editor
+    /// ([`TextPosition`]). A byte offset would depend on the encoding of the surrounding text and
+    /// would place a caret inside a multi-byte character on a later edit; the character column is
+    /// the coordinate the rest of the API already uses.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(new_revision)` — the edit was applied; the caller can chain a second edit against it.
+    /// * `Err(StaleRevision { expected, actual })` — the document moved on; the caller re-reads and
+    ///   recomputes. Nothing was written.
+    /// * `Err(ReadOnly)` — the editor or the range is locked; nothing was written.
+    pub fn replace_range(
+        &mut self,
+        expected: u64,
+        start: TextPosition,
+        end: TextPosition,
+        text: &str,
+    ) -> Result<u64, EditRejection> {
+        if expected != self.revision {
+            return Err(EditRejection::StaleRevision { expected, actual: self.revision });
+        }
+        if !self.is_editable() || !self.is_range_editable(start, end) {
+            return Err(EditRejection::ReadOnly);
+        }
+        // Normalise so a backwards range edits the same span as a forwards one — the caller may hand
+        // over a selection whose anchor is after its head.
+        let (start, end) = if start <= end { (start, end) } else { (end, start) };
+        // A replace that removes nothing and inserts nothing is not an edit. Short-circuiting it
+        // here keeps the revision honest without relying on the splice path to notice, which it
+        // cannot: an empty in-place splice leaves the model identical and reports nothing different
+        // (BLUE26 B26.08).
+        if start == end && text.is_empty() {
+            return Ok(self.revision);
+        }
+        // The caret lands at the end of the inserted text, spelled the same way `splice_payload`
+        // spells it, so a guarded edit and a typed one leave the caret in the same place.
+        let newlines = text.matches('\n').count();
+        let head = if newlines == 0 {
+            TextPosition::new(start.line, start.column + text.chars().count())
+        } else {
+            TextPosition::new(start.line + newlines, trailing_line_len(text))
+        };
+        self.splice_and_record(start, end, text, head);
+        // `splice_and_record` declines a no-op edit, so the revision may be unchanged; report the
+        // current value either way, which is what a chaining caller needs.
+        Ok(self.revision)
+    }
+
     /// Replaces the whole document, pushing one undo checkpoint.
     pub fn set_text(&mut self, text: impl Into<String>) {
         let next = text.into();
@@ -778,6 +866,12 @@ impl CodeEditor {
         // repeating the check.
         self.clamp_cursor_to_document();
         self.refresh_derived_state();
+        // A wholesale replacement is a committed change like any other, so it advances the revision.
+        // `set_text` does not route through `record_and_settle_inner` (it writes the model directly
+        // and clears caches), so the bump is repeated here rather than inherited — otherwise a host
+        // that captured the revision before a `set_text` would see the document change under an
+        // unchanged counter (BLUE26 B26.08).
+        self.revision = self.revision.wrapping_add(1);
         self.text_changed.emit(next);
         self.emit_cursor_and_selection();
         self.base.request_layout();
@@ -1031,6 +1125,14 @@ impl CodeEditor {
         if let Some((first, lines_now, lines_before)) = dirty {
             self.shift_read_only_spans_for_edit(first, lines_now, lines_before);
         }
+        // Whether the document actually changed, decided while the pre-edit snapshot is still
+        // owned here. Used both to skip a pointless dirty flag and to keep the revision honest
+        // (BLUE26 B26.08): a splice that rewrites a line with identical bytes is legitimate but is
+        // not a change, and reporting one would make a host invalidate cached work for nothing.
+        let changed = match &before_snapshot {
+            Some(before) => before != &after,
+            None => true,
+        };
         if !self.restoring_history {
             self.push_checkpoint(checkpoint.range, removed, before_snapshot);
         }
@@ -1051,6 +1153,13 @@ impl CodeEditor {
         // bucket map and is caught by `prepare_minimap` on the next frame.
         self.patch_minimap_line(self.cursor.head.line.min(head.line));
         self.refresh_derived_state_after(dirty);
+        // Every committed edit bumps the revision exactly once, here at the choke point rather than
+        // at each entry point — the entry points that can decline an edit (a locked span, a no-op
+        // replace) return before reaching here, so the counter tracks *accepted* changes only
+        // (BLUE26 B26.08).
+        if changed {
+            self.revision = self.revision.wrapping_add(1);
+        }
         self.text_changed.emit(after);
         self.emit_cursor_and_selection();
         self.base.request_layout();

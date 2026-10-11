@@ -756,7 +756,12 @@ macro_rules! impl_properties_other {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const PROGRESS_CIRCLE_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("value", PropertyValueKind::Float, true, true),
+            // The control bounds the value to `[0.0, 1.0]` (it coerces), so the bound is a fact
+            // about the control rather than a designer's preference: a property editor shows a 0–1
+            // slider, and every write path refuses a value outside it with the property named,
+            // rather than storing one the control would move (BLUE26 B26.02).
+            PropertySchema::new("value", PropertyValueKind::Float, true, true)
+                .constrained(&[Constraint::Range(RangeSpec { minimum: 0.0, maximum: 1.0, step: None })]),
             PropertySchema::new("thickness", PropertyValueKind::Float, true, true),
             PropertySchema::new("indeterminate", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),

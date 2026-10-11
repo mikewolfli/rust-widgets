@@ -115,6 +115,7 @@ mod apply;
 mod breakpoint;
 mod diff;
 mod engine;
+mod identity;
 mod node;
 mod reactive;
 
@@ -122,6 +123,7 @@ pub use apply::{apply, ApplyReport, ViewError};
 pub use breakpoint::{is_current, with_breakpoint, Breakpoint};
 pub use diff::{diff, DiffReport, Patch};
 pub use engine::{Context, View, ViewEngine};
+pub use identity::TreeIndex;
 pub use node::{Host, Node};
 pub use reactive::ReactiveHost;
 

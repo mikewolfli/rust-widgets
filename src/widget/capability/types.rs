@@ -285,6 +285,213 @@ pub enum CapabilityAccessError {
     /// published command distinguishes "the control refuses it" from "the control ran
     /// it" by this variant.
     UnknownCommand,
+    /// The property was found, was writable, and the value was the right type — but it violated a
+    /// constraint the schema declares (BLUE26 B26.02).
+    ///
+    /// # Why this is distinct from [`CapabilityAccessError::OutOfRange`]
+    ///
+    /// `OutOfRange` is a *command* result meaning "the command exists but needs a payload this call
+    /// did not carry". This is a *property* result meaning "the value you supplied is outside the
+    /// range the schema declares". Folding them would make a caller that mistyped a number see the
+    /// same error as one that called a command without its argument — two different mistakes with
+    /// two different fixes.
+    ///
+    /// # Why the property name and the reason are carried
+    ///
+    /// The plan requires the error to contain the property name and the refusal reason, so a
+    /// designer can point at the field and say why. A bare "constraint violated" would leave the
+    /// caller to guess which of several constraints on the property it broke.
+    ConstraintViolation {
+        /// The property whose constraint was violated.
+        property: crate::compat::String,
+        /// Why the value was refused, in the validator's own words.
+        reason: crate::compat::String,
+    },
+}
+
+/// A runtime-enforced constraint on a property's value (BLUE26 B26.02).
+///
+/// # Why an enum rather than separate fields on the schema
+///
+/// Different kinds have different real constraints: an integer has a range, a float additionally
+/// has a precision, a list has a length bound. Separate `Option<…>` fields on [`PropertySchema`]
+/// would let a bool declare a range and a string declare a length, neither of which any validator
+/// should honour. One enum whose variants are meaningful only for the kinds they apply to makes an
+/// inapplicable constraint unrepresentable — and the validator only consults the variant that fits
+/// the declared kind.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Constraint {
+    /// The value must lie within an inclusive numeric range.
+    ///
+    /// Only declared for a property whose control **bounds** the value, so the bound is evidence
+    /// about the control rather than a designer's wish: the control either refuses outside it or
+    /// coerces the value to an end of it, either way the state a reader observes is always inside.
+    /// The validator's answer is the same for both — a write outside the range is refused with the
+    /// bound named — because silently accepting a value the control will move is how an editor ends
+    /// up displaying something the control does not hold (`ProgressCircle::value` clamps to
+    /// `[0.0, 1.0]`, and a designer that wrote `1.5` must learn it will not be stored as such).
+    Range(RangeSpec),
+    /// The number of decimal places a float is held to.
+    ///
+    /// A precision of `Some(n)` means the control rounds to `n` places; `None` means it stores the
+    /// value verbatim. Only declared for a control that actually rounds.
+    Precision {
+        /// Decimal places, or `None` for "no rounding".
+        places: Option<u8>,
+    },
+    /// The value may not be empty (a non-empty string, a non-empty list).
+    Required,
+}
+
+/// An inclusive numeric range, as an editor and a validator both need it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RangeSpec {
+    /// The lowest accepted value.
+    pub minimum: f64,
+    /// The highest accepted value.
+    pub maximum: f64,
+    /// The increment the control steps by, when it has one.
+    ///
+    /// `None` when the control accepts any value in the range — an editor shows a free slider rather
+    /// than a stepped one, which is the honest rendering of a control that does not step.
+    pub step: Option<f64>,
+}
+
+impl RangeSpec {
+    /// Whether `value` lies within the range, inclusive.
+    ///
+    /// A non-finite value is never in range: `NaN` compares false against every bound, and an
+    /// infinity is by definition outside a finite range. Reporting that as "in range" would let an
+    /// editor accept a value the control would clamp to an end.
+    pub fn contains(&self, value: f64) -> bool {
+        value.is_finite() && value >= self.minimum && value <= self.maximum
+    }
+}
+
+/// The outcome of validating a value against a property's constraints (BLUE26 B26.02).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConstraintViolation {
+    /// A numeric value fell outside its declared range.
+    OutOfRange {
+        /// The property the value was for.
+        property: String,
+        /// The offending value.
+        value: f64,
+        /// The declared range.
+        range: RangeSpec,
+    },
+    /// An empty value was supplied for a `Required` property.
+    Empty {
+        /// The property the value was for.
+        property: String,
+    },
+}
+
+impl ConstraintViolation {
+    /// The property this violation is about, so a caller can point at it.
+    pub fn property(&self) -> &str {
+        match self {
+            Self::OutOfRange { property, .. } | Self::Empty { property } => property,
+        }
+    }
+}
+
+impl core::fmt::Display for ConstraintViolation {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::OutOfRange { property, value, range } => write!(
+                f,
+                "property `{property}` rejected {value}: outside the enforced range [{}, {}]",
+                range.minimum, range.maximum
+            ),
+            Self::Empty { property } => {
+                write!(f, "property `{property}` rejected an empty value: it is required")
+            }
+        }
+    }
+}
+
+/// Validates `value` against `schema`'s constraints, returning the first violation.
+///
+/// # One validator for every path (BLUE26 B26.02)
+///
+/// The capability write path ([`WidgetFactory::write_property`]), the JSON loader
+/// (`json::properties::apply_widget_property`) and the generator's pre-check
+/// (`designer::generator::emit_node`) all need the same answer to "is this value acceptable for
+/// this property?". Those three callers reach the rule through here — two of them via
+/// [`validate_constraints`], because they hold the constraint slice rather than a whole schema —
+/// instead of each re-deriving it, which is how three implementations would come to disagree.
+///
+/// A value whose kind does not match the declared kind is **not** rejected here — that is the
+/// property contract's `TypeMismatch`, reported by the write itself. This validator only answers
+/// the *range/required* question, so the two checks do not overlap.
+///
+/// [`WidgetFactory::write_property`]: crate::widget::capability::WidgetFactory::write_property
+pub fn validate_property_value(
+    property: &str,
+    schema: &PropertySchema,
+    value: &CapabilityValue,
+) -> Result<(), ConstraintViolation> {
+    validate_constraints(property, schema.constraints, value)
+}
+
+/// Validates `value` against a constraint slice, returning the first violation.
+///
+/// The same implementation as [`validate_property_value`], for a caller that has the constraints
+/// of a property in hand but not the whole [`PropertySchema`] — the JSON loader and the
+/// generator's pre-check both resolve a property to its declared kind and constraints separately.
+/// Splitting the rule out this way keeps **one** implementation of it while letting those callers
+/// reuse it; a second copy is what the single-validator rule exists to prevent.
+pub fn validate_constraints(
+    property: &str,
+    constraints: &[Constraint],
+    value: &CapabilityValue,
+) -> Result<(), ConstraintViolation> {
+    for constraint in constraints {
+        match constraint {
+            Constraint::Range(range) => {
+                if let Some(number) = numeric_value(value) {
+                    if !range.contains(number) {
+                        return Err(ConstraintViolation::OutOfRange {
+                            property: property.into(),
+                            value: number,
+                            range: *range,
+                        });
+                    }
+                }
+            }
+            Constraint::Precision { .. } => {
+                // Precision is a *documentation* fact for an editor (how many places to show); the
+                // control rounds rather than refusing, so there is nothing to reject.
+            }
+            Constraint::Required => {
+                if is_empty_value(value) {
+                    return Err(ConstraintViolation::Empty { property: property.into() });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The numeric view of a value, for a range check; `None` for a non-numeric value.
+fn numeric_value(value: &CapabilityValue) -> Option<f64> {
+    match value {
+        CapabilityValue::Int(inner) => Some(*inner as f64),
+        CapabilityValue::UInt(inner) => Some(*inner as f64),
+        CapabilityValue::Float(inner) => Some(*inner),
+        _ => None,
+    }
+}
+
+/// Whether a value is "empty" for a `Required` constraint.
+fn is_empty_value(value: &CapabilityValue) -> bool {
+    match value {
+        CapabilityValue::Null => true,
+        CapabilityValue::String(text) => text.is_empty(),
+        CapabilityValue::Tuple(items) => items.is_empty(),
+        _ => false,
+    }
 }
 
 /// Primitive property value kinds used by capability metadata.
@@ -335,7 +542,11 @@ pub enum PropertyValueKind {
 }
 
 /// Metadata for one readable/writable property.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `PartialEq` but not `Eq`: a constraint carries an `f64` bound (see [`RangeSpec`]), which has no
+/// total equality. Nothing in the crate keys a map or set on a schema, so dropping `Eq` is a
+/// non-change for every existing use.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PropertySchema {
     /// The property's name, as accepted by the property API. A widget may
     /// publish several names for the same property (aliases), in which case each
@@ -371,6 +582,29 @@ pub struct PropertySchema {
     /// written before this field existed, so they are migrated to the constructors
     /// rather than hand-edited — see the note on each constructor.
     pub accepted_tokens: &'static [&'static str],
+    /// The runtime-enforced constraints on this property's value, empty when it has none
+    /// (BLUE26 B26.02).
+    ///
+    /// # Why this is a field rather than a second schema
+    ///
+    /// A designer's property editor needs to know a number's range and a float's precision, and
+    /// the *same* facts must be enforced when the capability API writes the property
+    /// ([`WidgetFactory::write_property`]), when the JSON loader applies it
+    /// (`json::properties::apply_widget_property`) and when the generator pre-checks a literal
+    /// (`designer::generator::emit_node`). Keeping the constraints on the schema the control
+    /// already publishes makes those three paths read one declaration (principle #54/#101) through
+    /// [`validate_property_value`]; a second table would be the drift this crate's rules forbid.
+    ///
+    /// # Only real, checkable constraints belong here
+    ///
+    /// A constraint is added only when the control **actually bounds** the value — see
+    /// [`Constraint::Range`] — because a declared bound the control ignores would make an editor
+    /// refuse a legal value or accept one the control will coerce. The constructors leave the slice
+    /// empty, so a property with no constraint declares none rather than a permissive default that
+    /// reads as a real bound.
+    ///
+    /// [`WidgetFactory::write_property`]: crate::widget::capability::WidgetFactory::write_property
+    pub constraints: &'static [Constraint],
 }
 
 impl PropertySchema {
@@ -385,7 +619,7 @@ impl PropertySchema {
         readable: bool,
         writable: bool,
     ) -> Self {
-        Self { name, value_kind, readable, writable, accepted_tokens: &[] }
+        Self { name, value_kind, readable, writable, accepted_tokens: &[], constraints: &[] }
     }
 
     /// A [`PropertyValueKind::Enum`] entry that publishes its legal spellings.
@@ -401,12 +635,39 @@ impl PropertySchema {
         writable: bool,
         accepted_tokens: &'static [&'static str],
     ) -> Self {
-        Self { name, value_kind: PropertyValueKind::Enum, readable, writable, accepted_tokens }
+        Self {
+            name,
+            value_kind: PropertyValueKind::Enum,
+            readable,
+            writable,
+            accepted_tokens,
+            constraints: &[],
+        }
+    }
+
+    /// Attaches runtime-enforced constraints to this schema entry. Chainable and `const`.
+    ///
+    /// # Why a builder rather than more constructors
+    ///
+    /// 1450 schema entries are written with [`Self::new`] and [`Self::enumerated`], and adding a
+    /// constraint arg to either would either break every call site or force a positional `&[]` at
+    /// each one. A chained `const fn` leaves those call sites untouched and makes the handful of
+    /// entries that *do* have a real constraint read as "this property, plus its bound".
+    ///
+    /// `const` so a constrained entry can stay a `static`/`const` item, which is what the
+    /// per-control `*_PROPERTIES` tables are.
+    pub const fn constrained(self, constraints: &'static [Constraint]) -> Self {
+        Self { constraints, ..self }
     }
 
     /// The accepted spellings, or an empty slice for a non-enum property.
     pub const fn accepted_tokens(&self) -> &'static [&'static str] {
         self.accepted_tokens
+    }
+
+    /// The runtime-enforced constraints, or an empty slice when the property has none.
+    pub const fn constraints(&self) -> &'static [Constraint] {
+        self.constraints
     }
 }
 
@@ -656,4 +917,90 @@ pub struct WidgetFactory {
     pub(crate) key_to_index: HashMap<String, usize>,
     pub(crate) kind_to_index: HashMap<WidgetKind, Vec<usize>>,
     pub(crate) constructors: HashMap<String, WidgetCtor>,
+}
+
+#[cfg(test)]
+mod constraint_tests {
+    use super::*;
+
+    fn range_schema() -> PropertySchema {
+        PropertySchema::new("value", PropertyValueKind::Float, true, true)
+            .constrained(&[Constraint::Range(RangeSpec { minimum: 0.0, maximum: 1.0, step: None })])
+    }
+
+    /// A value inside the range is accepted.
+    #[test]
+    fn a_value_inside_the_range_validates() {
+        let schema = range_schema();
+        assert!(validate_property_value("value", &schema, &CapabilityValue::Float(0.5)).is_ok());
+        // The bounds are inclusive.
+        assert!(validate_property_value("value", &schema, &CapabilityValue::Float(0.0)).is_ok());
+        assert!(validate_property_value("value", &schema, &CapabilityValue::Float(1.0)).is_ok());
+    }
+
+    /// A value outside the range is refused, and the violation names the property and the bound.
+    #[test]
+    fn a_value_outside_the_range_is_refused_with_the_reason() {
+        let schema = range_schema();
+        let violation = validate_property_value("value", &schema, &CapabilityValue::Float(1.5))
+            .expect_err("1.5 is outside [0, 1]");
+        assert_eq!(violation.property(), "value");
+        let message = format!("{violation}");
+        assert!(message.contains("value"), "{message}");
+        assert!(message.contains("1.5"), "{message}");
+    }
+
+    /// A non-finite value is never in range, whatever the bounds.
+    #[test]
+    fn a_non_finite_value_is_refused() {
+        let schema = range_schema();
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(
+                validate_property_value("value", &schema, &CapabilityValue::Float(value)).is_err(),
+                "{value} must not be in a finite range"
+            );
+        }
+    }
+
+    /// A property with no constraints accepts every value of its kind.
+    #[test]
+    fn an_unconstrained_property_accepts_anything() {
+        let schema = PropertySchema::new("text", PropertyValueKind::String, true, true);
+        assert!(validate_property_value("text", &schema, &CapabilityValue::String("".into())).is_ok());
+        assert!(validate_property_value("text", &schema, &CapabilityValue::Int(999)).is_ok());
+        assert!(schema.constraints().is_empty(), "no constraint is the honest default");
+    }
+
+    /// A `Required` constraint refuses an empty string and an empty list, but not a zero.
+    #[test]
+    fn required_refuses_emptiness_but_not_zero() {
+        let schema =
+            PropertySchema::new("text", PropertyValueKind::String, true, true)
+                .constrained(&[Constraint::Required]);
+        assert!(validate_property_value("text", &schema, &CapabilityValue::String("".into())).is_err());
+        assert!(validate_property_value("text", &schema, &CapabilityValue::String("x".into())).is_ok());
+        // A zero is a value, not an absence.
+        let numeric = PropertySchema::new("count", PropertyValueKind::Int, true, true)
+            .constrained(&[Constraint::Required]);
+        assert!(validate_property_value("count", &numeric, &CapabilityValue::Int(0)).is_ok());
+    }
+
+    /// A `Precision` constraint documents rather than refuses: the control rounds.
+    #[test]
+    fn precision_documents_without_refusing() {
+        let schema = PropertySchema::new("value", PropertyValueKind::Float, true, true)
+            .constrained(&[Constraint::Precision { places: Some(2) }]);
+        assert!(validate_property_value("value", &schema, &CapabilityValue::Float(1.23456)).is_ok());
+    }
+
+    /// `RangeSpec::contains` must be inclusive and reject non-finite values.
+    #[test]
+    fn range_spec_contains_is_inclusive() {
+        let range = RangeSpec { minimum: -1.0, maximum: 1.0, step: None };
+        assert!(range.contains(-1.0));
+        assert!(range.contains(1.0));
+        assert!(range.contains(0.0));
+        assert!(!range.contains(1.0001));
+        assert!(!range.contains(f64::NAN));
+    }
 }

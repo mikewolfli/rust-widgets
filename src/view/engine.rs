@@ -159,6 +159,16 @@ pub struct ViewEngine {
     /// rooted document; the layer is an additional host the engine keeps for portal
     /// children, and it exists only when something asks for it.
     overlay_layer: Option<ObjectId>,
+    /// Bumped on every mutation of the mounted tree (mount and update).
+    ///
+    /// # Why the engine counts
+    ///
+    /// A [`TreeIndex`](crate::view::TreeIndex) is a snapshot, and a caller that holds one must be
+    /// able to tell whether the tree it describes is still the tree the engine holds. Comparing a
+    /// snapshot's generation against this counter is that check, and it costs one integer: the
+    /// alternative — re-deriving a fingerprint from the tree — would make the check as expensive as
+    /// the snapshot it is checking.
+    generation: u64,
 }
 
 impl core::fmt::Debug for ViewEngine {
@@ -180,6 +190,7 @@ impl ViewEngine {
             viewport: None,
             id_of_path: crate::compat::HashMap::new(),
             overlay_layer: None,
+            generation: 0,
         }
     }
 
@@ -336,6 +347,8 @@ impl ViewEngine {
         self.run_mount_hooks(&root, root_id, &[]);
 
         self.current = Some(root);
+        // The mounted tree changed, so a snapshot taken before this mount is stale.
+        self.generation = self.generation.wrapping_add(1);
         report
     }
 
@@ -519,6 +532,9 @@ impl ViewEngine {
             self.run_mount_hooks_for_created(next, &[], &created);
         }
 
+        // The tree changed, so any snapshot taken before this update is stale.
+        self.generation = self.generation.wrapping_add(1);
+
         report
     }
 
@@ -674,6 +690,130 @@ impl ViewEngine {
     /// on?" without walking the layout.
     pub fn id_at(&self, path: &[usize]) -> Option<ObjectId> {
         self.id_of_path.get(path).copied()
+    }
+
+    /// A counter bumped on every mutation of the mounted tree.
+    ///
+    /// See [`Self::tree_index`]: a [`TreeIndex`](crate::view::TreeIndex) records the generation it
+    /// was built at, and a caller compares the two to tell whether its snapshot is still current.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// A read-only snapshot mapping the mounted tree's stable identity to live `ObjectId`s
+    /// (BLUE26 B26.04).
+    ///
+    /// # What a caller does with it
+    ///
+    /// A runtime inspector resolves a model node to its live control by **key** (stable across
+    /// rebuilds) rather than by **path** (which moves when a sibling is inserted) — see
+    /// [`TreeIndex`](crate::view::TreeIndex) for the identity rules. Returns an empty index when no
+    /// tree is mounted, so a caller needs no separate "is anything mounted?" check.
+    ///
+    /// # Cost
+    ///
+    /// Building the index walks the mounted tree once (`O(nodes)`), which is why it is a method the
+    /// caller invokes when it needs the map rather than something the engine maintains on every
+    /// update. A caller that queries frequently can hold one and rebuild it when
+    /// [`Self::generation`] changes.
+    pub fn tree_index(&self) -> crate::view::TreeIndex {
+        let mut widget_of = crate::compat::HashMap::new();
+        let mut key_of: crate::compat::HashMap<ObjectId, String> = crate::compat::HashMap::new();
+        let mut parent_of = crate::compat::HashMap::new();
+        let mut children_of: crate::compat::HashMap<ObjectId, crate::compat::Vec<ObjectId>> =
+            crate::compat::HashMap::new();
+
+        if let Some(tree) = &self.current {
+            self.collect_identity(tree, &[], &mut widget_of, &mut key_of, &mut parent_of, &mut children_of);
+        }
+
+        crate::view::TreeIndex::build(
+            self.id_of_path.clone(),
+            widget_of,
+            key_of,
+            parent_of,
+            children_of,
+            self.layout.root(),
+            self.generation,
+        )
+    }
+
+    /// Walks `node`'s subtree alongside its paths, filling the identity maps.
+    ///
+    /// The walk is driven by the **declared tree** (`current`) so the widget names are the ones the
+    /// view asked for, while the ids come from `id_of_path` — the same pairing the diff uses, so the
+    /// snapshot cannot describe a node that is not in the mounted tree.
+    fn collect_identity(
+        &self,
+        node: &Node,
+        path: &[usize],
+        widget_of: &mut crate::compat::HashMap<ObjectId, String>,
+        key_of: &mut crate::compat::HashMap<ObjectId, String>,
+        parent_of: &mut crate::compat::HashMap<ObjectId, ObjectId>,
+        children_of: &mut crate::compat::HashMap<ObjectId, crate::compat::Vec<ObjectId>>,
+    ) -> Option<ObjectId> {
+        let id = self.id_of_path.get(path).copied()?;
+        widget_of.insert(id, node.widget.clone());
+        if let Some(key) = &node.key {
+            key_of.insert(id, key.clone());
+        }
+        let mut child_ids = crate::compat::Vec::with_capacity(node.children.len());
+        for (index, child) in node.children.iter().enumerate() {
+            let mut child_path = path.to_vec();
+            child_path.push(index);
+            if let Some(child_id) =
+                self.collect_identity(child, &child_path, widget_of, key_of, parent_of, children_of)
+            {
+                parent_of.insert(child_id, id);
+                child_ids.push(child_id);
+            }
+        }
+        children_of.insert(id, child_ids);
+        Some(id)
+    }
+
+    /// Resolves a [`ViewError`](crate::view::ViewError)'s affected node to its stable identity in
+    /// this engine's current tree (BLUE26 B26.07).
+    ///
+    /// # What a host does with this
+    ///
+    /// An incremental update reports *what* failed but — for a patch failure — only as an
+    /// [`ObjectId`](crate::core::ObjectId), which is a runtime handle with no meaning in the model
+    /// the host rendered from. This joins the two: given the error and a
+    /// [`TreeIndex`](crate::view::TreeIndex) for the tree the batch produced, it returns the node's
+    /// `"widget#key"` location, so a host can highlight the failed node in its own model.
+    ///
+    /// # Why it takes the index rather than building one
+    ///
+    /// A batch has many errors and one tree. Building an index per error would be `O(errors ×
+    /// nodes)`; taking one the caller built once is `O(nodes)` total. The caller already needs the
+    /// index to answer "which nodes did this batch touch", so passing it costs nothing.
+    ///
+    /// Returns `None` when the error names no node (a declared-location failure) or names an id no
+    /// longer in the index — the latter is honest: a node the batch removed has no location in the
+    /// new tree, and reporting a stale one would point the host at the wrong control.
+    pub fn locate_error(
+        &self,
+        error: &crate::view::ViewError,
+        index: &crate::view::TreeIndex,
+    ) -> Option<String> {
+        let id = error.affected_id()?;
+        let widget = index.widget_of(id)?;
+        match index.key_of(id) {
+            Some(key) => Some(format!("{widget}#{key}")),
+            None => {
+                // An unkeyed node is addressed by its path, which the index carries exactly.
+                let path = index.path_of(id)?;
+                let mut rendered = String::new();
+                for (position, index_in_parent) in path.iter().enumerate() {
+                    if position > 0 {
+                        rendered.push('.');
+                    }
+                    rendered.push_str(&format!("{index_in_parent}"));
+                }
+                Some(format!("{widget}@{rendered}"))
+            }
+        }
     }
 
     /// Create and register a node's children, recursing.
@@ -991,6 +1131,132 @@ mod tests {
         let root = engine.layout().root().expect("root");
         assert_eq!(engine.layout().children(root).len(), 1);
         assert_eq!(engine.layout().node_key(engine.layout().children(root)[0]), Some("value"));
+    }
+
+    /// B26.04: the tree index resolves key → id, id → path, node type and parent/child.
+    #[test]
+    fn tree_index_maps_identity_to_live_ids() {
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+        engine.mount(&Text("x".into()), &ids.creator());
+        let index = engine.tree_index();
+
+        assert_eq!(index.root(), Some(10));
+        // The label is keyed `value` under the keyed root.
+        assert_eq!(index.id_of_key(Some(10), "value"), Some(11));
+        assert_eq!(index.path_of(11), Some(&[0usize][..]));
+        assert_eq!(index.widget_of(11), Some("label"));
+        assert_eq!(index.widget_of(10), Some("window"));
+        assert_eq!(index.parent_of(11), Some(10));
+        assert_eq!(index.children_of(10), &[11u64]);
+        assert_eq!(index.key_of(11), Some("value"));
+    }
+
+    /// B26.04: a key stays resolvable after an insertion **above** it, where a path would not.
+    ///
+    /// This is the whole reason the index is keyed by identity: inserting a sibling gives every
+    /// later node a new path, but their ids and keys are unchanged.
+    #[test]
+    fn a_key_survives_an_insertion_that_moves_paths() {
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+        engine.mount(&Rows(vec!["a", "b"]), &ids.creator());
+        let before = engine.tree_index();
+        let b_id = before.id_of_key(Some(index_root(&engine)), "b").expect("b is keyed");
+        let b_path_before = before.path_of(b_id).expect("b is in the index").to_vec();
+
+        // Insert a new first row: `b` moves to a later path but keeps its id.
+        engine.update(&Rows(vec!["x", "a", "b"]), &ids.creator());
+
+        let after = engine.tree_index();
+        let b_id_after = after.id_of_key(Some(index_root(&engine)), "b").expect("b still keyed");
+        assert_eq!(b_id_after, b_id, "the key must resolve to the same live control");
+        let b_path_after = after.path_of(b_id_after).expect("b is still in the index");
+        assert_ne!(
+            b_path_after, b_path_before.as_slice(),
+            "the insertion must actually have moved the path, or this test proves nothing"
+        );
+    }
+
+    /// B26.04: the generation must advance on every mutation, so a snapshot is detectable as stale.
+    #[test]
+    fn the_generation_advances_on_mount_and_update() {
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+        let start = engine.generation();
+        engine.mount(&Rows(vec!["a"]), &ids.creator());
+        let after_mount = engine.generation();
+        assert_ne!(after_mount, start, "mount changes the tree");
+        engine.update(&Rows(vec!["a", "b"]), &ids.creator());
+        assert_ne!(engine.generation(), after_mount, "update changes the tree");
+
+        // A snapshot taken earlier keeps its own generation, so a caller can detect the change.
+        let stale = engine.tree_index();
+        engine.update(&Rows(vec!["a"]), &ids.creator());
+        assert_ne!(stale.generation(), engine.generation());
+    }
+
+    /// B26.04: a removed node must drop out of the index — its id is no longer resolvable.
+    #[test]
+    fn a_removed_keys_mapping_is_invalidated() {
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+        engine.mount(&Rows(vec!["a", "b"]), &ids.creator());
+        let index = engine.tree_index();
+        let root = index_root(&engine);
+        let b_id = index.id_of_key(Some(root), "b").expect("b is keyed");
+
+        engine.update(&Rows(vec!["a"]), &ids.creator());
+
+        let after = engine.tree_index();
+        assert_eq!(after.id_of_key(Some(root), "b"), None, "the removed key must not resolve");
+        assert_eq!(after.path_of(b_id), None, "the removed control is no longer in the tree");
+    }
+
+    /// The root id of the engine's current tree, for a test that needs to scope a key lookup.
+    fn index_root(engine: &ViewEngine) -> ObjectId {
+        engine.tree_index().root().expect("a tree is mounted")
+    }
+
+    /// B26.07: a failure's id must resolve to its stable location through the tree index.
+    ///
+    /// This is the join a runtime inspector needs: the report names an `ObjectId`, and the index
+    /// turns it into a `"widget#key"` the host can match against its own model.
+    #[test]
+    fn a_failure_locates_in_the_tree_by_key() {
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+        engine.mount(&Text("x".into()), &ids.creator());
+        let index = engine.tree_index();
+
+        // The label is id 11 and keyed `value`.
+        let error = super::super::ViewError::UnknownWidget { id: 11 };
+        assert_eq!(engine.locate_error(&error, &index).as_deref(), Some("label#value"));
+
+        // An unkeyed node falls back to its path.
+        struct Keyless;
+        impl View for Keyless {
+            fn build(&self) -> Node {
+                Node::new("window").child(Node::new("label"))
+            }
+        }
+        let mut keyless = ViewEngine::new();
+        let ids2 = Ids::new(20);
+        keyless.mount(&Keyless, &ids2.creator());
+        let keyless_index = keyless.tree_index();
+        let keyless_error = super::super::ViewError::UnknownWidget { id: 21 };
+        assert_eq!(
+            keyless.locate_error(&keyless_error, &keyless_index).as_deref(),
+            Some("label@0")
+        );
+
+        // A declared-location failure names no id, so it has no id-derived location.
+        let structural = super::super::ViewError::UnknownWidgetType {
+            widget: String::from("x"),
+            key: None,
+            path: Vec::new(),
+        };
+        assert_eq!(engine.locate_error(&structural, &index), None);
     }
 
     #[test]

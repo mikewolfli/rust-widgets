@@ -365,6 +365,11 @@ impl WidgetProperties for FileDialog {
         match name {
             "title" => Ok(CapabilityValue::String(self.title().to_string())),
             "modal" => Ok(CapabilityValue::Bool(self.is_modal())),
+            "mode" => Ok(CapabilityValue::String(file_dialog_mode_token(self.mode()).into())),
+            "directory" => Ok(CapabilityValue::String(self.directory().to_string())),
+            "selected_file" => Ok(CapabilityValue::String(
+                self.selected_file().unwrap_or_default().to_string(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -379,12 +384,38 @@ impl WidgetProperties for FileDialog {
                 self.set_modal(expect_bool(value)?);
                 Ok(())
             }
+            // `mode` and `directory` are the two payloads `set_mode` / `set_directory` carry, so
+            // they must be writable through the same route the command's documentation points at.
+            // Declaring them read-only while publishing the commands left the payload with nowhere
+            // to land — the schema/contract disagreement `capability::properties_tests` catches.
+            "mode" => {
+                let token = expect_string(value)?;
+                let mode = file_dialog_mode_from_token(&token)
+                    .ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_mode(mode);
+                Ok(())
+            }
+            "directory" => {
+                self.set_directory(expect_string(value)?);
+                Ok(())
+            }
+            // `selected_file` is the dialog's *output*, chosen by the user through the list; the
+            // property contract deliberately offers no write path for it, so a write is read-only
+            // rather than silently dropped.
+            "selected_file" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["title", "modal", BASE_PROPERTY_NAMES]
+        property_names_of!["title", "modal", "mode", "directory", "selected_file", BASE_PROPERTY_NAMES]
+    }
+
+    fn property_tokens(&self, name: &str) -> &'static [&'static str] {
+        match name {
+            "mode" => FILE_DIALOG_MODE_TOKENS,
+            _ => &[],
+        }
     }
 
     /// Runs one of the commands `file_dialog` publishes.
@@ -419,6 +450,39 @@ impl EventHandler for FileDialog {
         }
     }
 }
+
+/// The accepted spellings of `FileDialog`'s `mode` property, in the order a chooser should
+/// present them.
+///
+/// The schema's own list carried `["text", "integer", "double", "item"]` — the tokens of a
+/// *different* dialog (an input dialog's value type), which no file dialog ever accepted. The list
+/// here is the real one, and `capability::properties_tests` writes every token back through `set`,
+/// so it cannot drift from the control's parser.
+const FILE_DIALOG_MODE_TOKENS: &[&str] =
+    &["open_file", "open_files", "save_file", "select_directory"];
+
+/// The token for a [`FileDialogMode`], the inverse of [`file_dialog_mode_from_token`].
+fn file_dialog_mode_token(mode: FileDialogMode) -> &'static str {
+    match mode {
+        FileDialogMode::OpenFile => "open_file",
+        FileDialogMode::OpenFiles => "open_files",
+        FileDialogMode::SaveFile => "save_file",
+        FileDialogMode::SelectDirectory => "select_directory",
+    }
+}
+
+/// Parses a `mode` token; `None` for an unrecognised spelling, so `set_mode` refuses rather than
+/// defaulting to a mode the caller did not ask for.
+fn file_dialog_mode_from_token(token: &str) -> Option<FileDialogMode> {
+    match token {
+        "open_file" => Some(FileDialogMode::OpenFile),
+        "open_files" => Some(FileDialogMode::OpenFiles),
+        "save_file" => Some(FileDialogMode::SaveFile),
+        "select_directory" => Some(FileDialogMode::SelectDirectory),
+        _ => None,
+    }
+}
+
 impl FileDialog {
     /// The frame the dialog actually paints: at most its intrinsic size, centred in the
     /// area it was given.

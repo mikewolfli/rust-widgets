@@ -45,6 +45,13 @@ pub mod animation;
 /// timelines under one play/pause/seek call.
 pub mod animation_group;
 pub mod css;
+/// The read-only provenance of a computed style value: which rule won each property
+/// (BLUE26 B26.10).
+///
+/// Compiled in every profile that has `css` (no `alloc_frugal` on either — the module is
+/// pure logic over the CSS parser's own rules), and it walks no global state, so a caller
+/// traces an unsaved editor buffer as easily as a registered sheet.
+pub mod css_trace;
 /// Poll-based CSS file watcher that reloads a stylesheet into the global
 /// [`stylesheet::StyleSheetManager`] when the file changes.
 ///
@@ -81,6 +88,7 @@ pub mod theme_state;
 pub use animation::*;
 pub use animation_group::*;
 pub use css::*;
+pub use css_trace::*;
 #[cfg(not(alloc_frugal))]
 pub use css_watcher::*;
 pub use environment::*;

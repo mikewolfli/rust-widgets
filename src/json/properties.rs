@@ -103,9 +103,13 @@ pub(crate) fn resolve_property_name(
 /// rather than a silent coercion, and `true` written to a `String` property does
 /// not become `"true"`.
 ///
+/// Exposed crate-wide because it is the crate's single JSON→[`CapabilityValue`] reading: the
+/// loader's write and the generator's schema pre-check both need it, and a second copy would be a
+/// second answer to "what value does this document mean" (BLUE26 B26.02).
+///
 /// Without a schema the JSON type selects the variant directly; that fallback is
 /// what lets the loader work before a control's schema is registered.
-fn to_capability_value(
+pub(crate) fn to_capability_value(
     value: &Value,
     declared: Option<PropertyValueKind>,
 ) -> Option<CapabilityValue> {
@@ -209,13 +213,15 @@ fn rect_from_json(value: &Value) -> Option<crate::core::Rect> {
     Some(crate::core::Rect::new(x, y, width, height))
 }
 
-/// Look up the declared value kind for a property from the factory schema.
+/// Look up the full declared schema for a property from the factory registry.
 ///
-/// Returns `None` when the schema does not describe the property, which is the
-/// honest answer for a control shipped in a profile without the capability
-/// registry: the write still proceeds by JSON type rather than being blocked on
-/// metadata that is not compiled in.
-fn declared_kind(widget: &dyn crate::widget::Widget, name: &str) -> Option<PropertyValueKind> {
+/// Returns `None` when the schema does not describe the property, which is the honest answer for a
+/// control shipped in a profile without the capability registry: the write then proceeds by JSON
+/// type rather than being blocked on metadata that is not compiled in.
+fn declared_schema(
+    widget: &dyn crate::widget::Widget,
+    name: &str,
+) -> Option<crate::widget::capability::PropertySchema> {
     let factory = crate::json::schema_factory();
     let capability = factory.capability_for_kind_instance(widget)?;
     let wanted = normalize(name);
@@ -223,7 +229,7 @@ fn declared_kind(widget: &dyn crate::widget::Widget, name: &str) -> Option<Prope
         .properties
         .iter()
         .find(|schema| normalize(schema.name) == wanted)
-        .map(|schema| schema.value_kind)
+        .copied()
 }
 
 /// Apply one JSON `key: value` pair to a widget through its property contract.
@@ -232,6 +238,11 @@ fn declared_kind(widget: &dyn crate::widget::Widget, name: &str) -> Option<Prope
 /// every control the contract covers rather than a fixed table. Returns
 /// [`ApplyOutcome::NotAProperty`] when the name is not a property — the caller
 /// may then try a construction-time key.
+///
+/// A value the declared schema's constraints refuse is `Rejected`, through the *same* validator
+/// the capability write path uses (`widget::capability::validate_property_value`): a document may
+/// not load a value a generated program's `.prop(..)` could not write, or the two front ends would
+/// describe different controls from one input (BLUE26 B26.02).
 pub(crate) fn apply_widget_property(
     widget: &mut dyn crate::widget::Widget,
     key: &str,
@@ -241,10 +252,23 @@ pub(crate) fn apply_widget_property(
         return ApplyOutcome::NotAProperty;
     };
 
-    let declared = declared_kind(widget, published);
-    let Some(capability_value) = to_capability_value(value, declared) else {
+    let declared = declared_schema(widget, published);
+    let Some(capability_value) =
+        to_capability_value(value, declared.as_ref().map(|schema| schema.value_kind))
+    else {
         return ApplyOutcome::Rejected;
     };
+
+    if let Some(schema) = declared {
+        if let Err(violation) =
+            crate::widget::capability::validate_property_value(published, &schema, &capability_value)
+        {
+            // Named, not silent: the reason carries the property and the bound it broke, so a
+            // document author can see *why* the value was dropped rather than wondering.
+            log::warn!("JSON layout: property {published:?} rejected the value {value}: {violation}");
+            return ApplyOutcome::Rejected;
+        }
+    }
 
     match widget_property_set(widget, published, capability_value) {
         Ok(()) => ApplyOutcome::Applied,
@@ -374,5 +398,41 @@ mod tests {
         // The JSON spelling is "Text"; the contract publishes "text".
         assert_eq!(resolve_property_name(&button, "Text"), Some("text"));
         assert_eq!(resolve_property_name(&button, "not_there"), None);
+    }
+
+    /// B26.02: a JSON value the declared schema's constraints refuse must be rejected here too, by
+    /// the *same* validator the capability write path uses.
+    ///
+    /// The two front ends must not disagree about one document: a value that `write_property`
+    /// refuses cannot be one the loader happily applies. `progress_circle.value` declares
+    /// `[0.0, 1.0]`, so `1.5` is the sharpest case — the control would have coerced it to `1.0`,
+    /// and the loader would have reported a value the document never gets.
+    #[test]
+    fn a_constraint_violation_is_rejected_not_applied() {
+        use crate::widget::capability::WidgetFactory;
+
+        let factory = WidgetFactory::new_with_defaults();
+        // `1.5` is outside the declared `[0.0, 1.0]` bound.
+        let Some(mut circle) =
+            factory.create("progress_circle", Rect::new(0, 0, 64, 64), "")
+        else {
+            // A profile without the control has no schema either, so there is nothing to check;
+            // the test would prove nothing, and `full_widgets` covers this module's profiles.
+            return;
+        };
+        assert_eq!(
+            apply_widget_property(circle.as_mut(), "value", &serde_json::json!(1.5)),
+            ApplyOutcome::Rejected,
+            "the loader must refuse a value the schema's bound excludes"
+        );
+        // The boundaries themselves are legal, so the refusal is about the bound and not the name.
+        assert_eq!(
+            apply_widget_property(circle.as_mut(), "value", &serde_json::json!(1.0)),
+            ApplyOutcome::Applied
+        );
+        assert_eq!(
+            apply_widget_property(circle.as_mut(), "value", &serde_json::json!(0.25)),
+            ApplyOutcome::Applied
+        );
     }
 }

@@ -1280,6 +1280,96 @@ fn a_hyphenated_command_reaches_the_same_command_as_its_published_spelling() {
     );
 }
 
+/// B26.03: every published command must have a derivable typed schema.
+///
+/// # Why this test is the load-bearing half of B26.03
+///
+/// The command *schema* (`capability::command_schema`) derives a `set_foo` command's parameter
+/// from the control's property list and reads every other verb from an explicit table. The table
+/// is where a newly published verb could silently fall behind — a command with no schema is a
+/// command a designer cannot describe, which is exactly the "name with no type" gap B26.03
+/// closes. So this walks every command of every capability and fails on the first name that
+/// `command_schema` cannot describe.
+///
+/// # Why it does not assert an effect
+///
+/// The effect classification (`MutatesControl` / `MutatesCollection` / `SideEffecting`) is a
+/// designer-facing label, not a dispatch fact, so pinning it here would be asserting a judgement
+/// rather than a contract. The contract is that *some* schema exists for every published name.
+#[test]
+fn every_published_command_has_a_typed_schema() {
+    use crate::widget::capability::command_schema::command_schema;
+
+    let factory = WidgetFactory::new_with_defaults();
+    let mut total = 0usize;
+    let mut undescribed: alloc::vec::Vec<(&'static str, &'static str)> =
+        alloc::vec::Vec::new();
+
+    for capability in factory.capabilities() {
+        for command in capability.commands {
+            total += 1;
+            if command_schema(command, capability.properties).is_none() {
+                undescribed.push((capability.canonical_name, command));
+            }
+        }
+    }
+
+    assert!(total > 0, "no capability publishes commands, so this test proves nothing");
+    assert!(
+        undescribed.is_empty(),
+        "these published commands have no derivable typed schema, so a designer cannot describe \
+         them: {undescribed:?} (described {}/{total})",
+        total - undescribed.len()
+    );
+}
+
+/// B26.03: a `set_foo` command's schema must name the property the dispatcher would write.
+///
+/// The schema derives the parameter from `capability.properties`; the dispatcher
+/// (`WidgetProperties::default_command`) resolves `set_foo` against `property_names()`. The two
+/// must agree, or a designer would show a type for a property the control does not have. This
+/// cross-checks them on a real control instance, which is the one thing the pure derivation test
+/// cannot do.
+#[test]
+fn a_set_command_schema_agrees_with_the_controls_property_list() {
+    use crate::widget::capability::command_schema::command_schema;
+
+    let factory = WidgetFactory::new_with_defaults();
+    let mut checked = 0usize;
+    let mut disagreements: alloc::vec::Vec<(&'static str, &'static str, &'static str)> =
+        alloc::vec::Vec::new();
+
+    for capability in factory.capabilities() {
+        let Some(widget) = factory.create(capability.canonical_name, Rect::new(0, 0, 64, 48), "")
+        else {
+            continue;
+        };
+        let live_names = widget_property_names(widget.as_ref()).unwrap_or(&[]);
+        for command in capability.commands.iter().copied().filter(|name| name.starts_with("set_")) {
+            let Some(schema) = command_schema(command, capability.properties) else {
+                continue;
+            };
+            // A composite setter's payload is not one property (`set_range` writes a pair), so
+            // there is no single property name to cross-check.
+            let Some((parameter, _kind)) = schema.parameter() else {
+                continue;
+            };
+            if !live_names.contains(&parameter) {
+                disagreements.push((capability.canonical_name, command, parameter));
+            }
+            checked += 1;
+        }
+    }
+
+    assert!(checked > 0, "no `set_` command was cross-checked, so this test proves nothing");
+    assert!(
+        disagreements.is_empty(),
+        "these `set_` commands derive a property from the schema that the live control does not \
+         publish, so the schema and `property_names()` disagree: {disagreements:?} \
+         (cross-checked {checked})"
+    );
+}
+
 /// N-W-01: a `u32` chrome metric rejects a value above `u32::MAX` instead of truncating it.
 ///
 /// On a 64-bit host `expect_usize` accepts any `usize`, so a `UInt` of `u32::MAX + 1` passed that
@@ -1309,5 +1399,65 @@ fn window_chrome_metric_rejects_out_of_u32_range() {
     assert_eq!(
         window.set("close_button_size", CapabilityValue::Int(-1)),
         Err(CapabilityAccessError::TypeMismatch)
+    );
+}
+
+/// B26.02: every constraint a schema declares must be actually enforced by its control.
+///
+/// # Why this is the load-bearing half of B26.02
+///
+/// A constraint is a claim that the control refuses (or clamps to) a value outside it. If the claim
+/// is wrong, a designer's editor built from it would refuse a legal value or accept one the control
+/// silently clamps — a "declared bound the control ignores". This test writes a value just outside
+/// each declared range through the **factory** (the schema-aware path) and fails if the write was
+/// accepted, so the constraint cannot be decorative.
+///
+/// It deliberately does not test the value *inside* the range: the control's own tests cover its
+/// normal operation, and asserting it here would duplicate them.
+#[test]
+fn every_declared_range_constraint_is_enforced_on_write() {
+    use crate::widget::capability::{Constraint, RangeSpec};
+
+    let factory = WidgetFactory::new_with_defaults();
+    let mut checked = 0usize;
+
+    for capability in factory.capabilities() {
+        let Some(mut widget) =
+            factory.create(capability.canonical_name, Rect::new(0, 0, 64, 48), "")
+        else {
+            continue;
+        };
+        for schema in capability.properties {
+            if !schema.writable {
+                continue;
+            }
+            for constraint in schema.constraints {
+                let Constraint::Range(RangeSpec { minimum, maximum, .. }) = constraint else {
+                    continue;
+                };
+                // A value one step outside the range must be refused by the factory's schema-aware
+                // write, which runs the same validator the JSON loader and generator pre-check use.
+                let outside = maximum + 1.0;
+                let value = if schema.value_kind == crate::widget::capability::PropertyValueKind::Int
+                {
+                    CapabilityValue::Int(outside as i64)
+                } else {
+                    CapabilityValue::Float(outside)
+                };
+                let result = factory.write_property(widget.as_mut(), schema.name, value);
+                assert!(
+                    matches!(result, Err(CapabilityAccessError::ConstraintViolation { .. })),
+                    "`{}` declares a range [{minimum}, {maximum}] on `{}` but accepted {outside}: {result:?}",
+                    capability.canonical_name,
+                    schema.name
+                );
+                checked += 1;
+            }
+        }
+    }
+
+    assert!(
+        checked > 0,
+        "no capability declares a range constraint, so this test proves nothing"
     );
 }

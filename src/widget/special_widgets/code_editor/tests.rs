@@ -801,3 +801,119 @@ fn every_dark_token_ink_is_lighter_than_its_light_counterpart() {
     }
     assert_eq!(checked, 7, "the loop must actually cover the categories it names");
 }
+
+// ── Text version and version-guarded edits (BLUE26 B26.08) ──────────────────
+
+/// The revision must start at zero and advance on every committed change.
+#[test]
+fn the_revision_advances_on_each_committed_edit() {
+    let mut editor = editor();
+    assert_eq!(editor.revision(), 0, "a fresh document is revision 0");
+    editor.set_text("hello");
+    let after_set = editor.revision();
+    assert!(after_set > 0, "setting the text is a committed change");
+
+    editor.insert("!");
+    assert!(editor.revision() > after_set, "an insert advances the revision");
+}
+
+/// A no-op change must not advance the revision — otherwise a host would treat an unchanged
+/// document as changed and invalidate cached work for nothing.
+#[test]
+fn a_no_op_change_does_not_advance_the_revision() {
+    let mut editor = editor();
+    editor.set_text("hello");
+    let before = editor.revision();
+    // Setting the same text again is not a change.
+    editor.set_text("hello");
+    assert_eq!(editor.revision(), before, "an identical set_text is not an edit");
+
+    // A guarded replace with empty text over an empty range is not a change either.
+    let revision = editor.replace_range(before, TextPosition::new(0, 0), TextPosition::new(0, 0), "")
+        .expect("a same-revision no-op is accepted");
+    assert_eq!(revision, before, "an empty replace is not an edit");
+}
+
+/// A replace against the current revision must apply, and bump the revision.
+#[test]
+fn a_replace_at_the_current_revision_applies() {
+    let mut editor = editor();
+    editor.set_text("hello world");
+    let revision = editor.revision();
+    let next = editor
+        .replace_range(revision, TextPosition::new(0, 6), TextPosition::new(0, 11), "there")
+        .expect("the revision matches");
+    assert_eq!(editor.text(), "hello there");
+    assert!(next > revision, "the applied edit advanced the revision");
+}
+
+/// A replace against a **stale** revision must be refused and leave the text untouched.
+///
+/// This is the whole point of the guard: a fix computed from an old snapshot must not be applied to
+/// text that has since changed.
+#[test]
+fn a_replace_at_a_stale_revision_is_refused() {
+    let mut editor = editor();
+    editor.set_text("hello");
+    let stale = editor.revision();
+    // The document moves on after the caller captured `stale`.
+    editor.insert("!");
+
+    let result = editor.replace_range(stale, TextPosition::new(0, 0), TextPosition::new(0, 1), "H");
+    assert!(
+        matches!(result, Err(EditRejection::StaleRevision { .. })),
+        "a stale edit must be refused, got {result:?}"
+    );
+    assert_eq!(editor.text(), "!hello", "a refused edit must not touch the text");
+}
+
+/// A replace on a read-only editor must be refused, distinctly from a stale one.
+#[test]
+fn a_replace_on_a_read_only_editor_is_refused() {
+    let mut editor = editor();
+    editor.set_text("hello");
+    editor.set_read_only(true);
+    let revision = editor.revision();
+    let result = editor.replace_range(revision, TextPosition::new(0, 0), TextPosition::new(0, 1), "H");
+    assert_eq!(result, Err(EditRejection::ReadOnly));
+    assert_eq!(editor.text(), "hello");
+}
+
+/// A replace over a **backwards** range must edit the same span as a forwards one.
+#[test]
+fn a_backwards_range_edits_the_same_span() {
+    let mut editor = editor();
+    editor.set_text("abcdef");
+    let revision = editor.revision();
+    // `start` after `end`: the caller handed over an unnormalised selection.
+    editor
+        .replace_range(revision, TextPosition::new(0, 4), TextPosition::new(0, 1), "X")
+        .expect("the revision matches");
+    assert_eq!(editor.text(), "aXef", "the range must be normalised before editing");
+}
+
+/// A Unicode edit must be positioned by character, not byte, so a multi-byte neighbour is untouched.
+#[test]
+fn a_unicode_range_edit_uses_character_columns() {
+    let mut editor = editor();
+    editor.set_text("héllo wörld");
+    let revision = editor.revision();
+    // Columns 6..11 are `wörld` in *characters*; a byte column would land mid-codepoint.
+    editor
+        .replace_range(revision, TextPosition::new(0, 6), TextPosition::new(0, 11), "there")
+        .expect("the revision matches");
+    assert_eq!(editor.text(), "héllo there");
+}
+
+/// A multi-line replacement must leave the caret on the last inserted line.
+#[test]
+fn a_multi_line_replace_places_the_caret_at_the_insertion_end() {
+    let mut editor = editor();
+    editor.set_text("one three");
+    let revision = editor.revision();
+    editor
+        .replace_range(revision, TextPosition::new(0, 4), TextPosition::new(0, 9), "two\nthree")
+        .expect("the revision matches");
+    assert_eq!(editor.text(), "one two\nthree");
+    assert_eq!(editor.caret(), TextPosition::new(1, 5), "the caret ends after the inserted text");
+}

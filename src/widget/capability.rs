@@ -506,6 +506,30 @@ pub use designer_manifest::{
     ManifestParseError,
 };
 
+/// What a capability statement is *about*: the build profile, the target triple, and how
+/// well the fact was verified (BLUE26 B26.01 / B26.06).
+///
+/// Compiled in every profile for the same reason as `designer_manifest`: it is pure data and
+/// predicates over compile-time facts, and its whole point is that a statement is never read
+/// without knowing which target it describes. It walks no registry, so it needs no capability
+/// table.
+pub mod target_facts;
+pub use target_facts::{
+    probe_capability, Availability, CurrentBuildVerdict, TargetProbe, TargetSpec, VerificationLevel,
+};
+
+/// The typed command table a designer validates an event-to-command binding against
+/// (BLUE26 B26.03).
+///
+/// Compiled in every profile: `PropertySchema` and `PropertyValueKind` exist everywhere, and the
+/// module walks no registry — it answers for a command given a control's property list, which the
+/// caller supplies.
+pub mod command_schema;
+pub use command_schema::{
+    command_schema as command_schema_for, described_verbs, describe_command, effect_tokens,
+    is_described_command, CommandEffect, CommandSchema, CommandSignature,
+};
+
 /// The wire-type compatibility table a designer and the code generator share.
 ///
 /// Compiled in every profile for the same reason as `designer_manifest`: it is pure data and
@@ -966,6 +990,20 @@ impl WidgetFactory {
 
         if !property.writable {
             return Err(CapabilityAccessError::ReadOnlyProperty);
+        }
+
+        // The schema's constraints are enforced here, before the write reaches the control, so a
+        // value outside a declared range is reported with the property name and the refused reason
+        // rather than being clamped silently by the control (BLUE26 B26.02). This is the one place
+        // the capability layer can check without a live control's internals — the control remains
+        // the authority for its own final state.
+        if let Err(violation) =
+            crate::widget::capability::types::validate_property_value(property.name, property, &value)
+        {
+            return Err(CapabilityAccessError::ConstraintViolation {
+                property: property.name.into(),
+                reason: crate::compat::format!("{violation}"),
+            });
         }
 
         write_widget_property_by_name(widget, property.name, value)
