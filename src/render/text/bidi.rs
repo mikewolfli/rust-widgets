@@ -273,7 +273,11 @@ mod tests {
             );
             // The row is reversed (all RTL), the same as it would be un-wrapped.
             let reversed: String = row.chars().rev().collect();
-            assert_eq!(visual_string(row), reversed, "the row's own order must not depend on the split");
+            assert_eq!(
+                visual_string(row),
+                reversed,
+                "the row's own order must not depend on the split"
+            );
         }
     }
 }

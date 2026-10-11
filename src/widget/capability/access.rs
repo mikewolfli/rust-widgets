@@ -898,6 +898,13 @@ pub fn default_widget_property_default_value(
         // left `WidgetKind::Chip` with no capability and made the list-box lookup
         // ambiguous.
         WidgetKind::Chip => match property_name {
+            // A control starts with no chips, so the default is an **empty list of the declared
+            // schema** rather than `Null`: `view::apply::resolve_null_reset` substitutes this default
+            // for a dropped binding, and `Null` would be a value the property's schema check refuses
+            // (B26.09).
+            "items" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::special_widgets::chip::CHIP_ITEM_SCHEMA,
+            )),
             "item_count" => CapabilityValue::UInt(0),
             "multi_select" => CapabilityValue::Bool(false),
             "focused_index" => CapabilityValue::Null,

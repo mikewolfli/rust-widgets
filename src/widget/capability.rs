@@ -158,6 +158,17 @@ use crate::widget::container_widgets::toolbox::ToolBox;
 pub mod types;
 pub use types::*;
 
+/// Typed records and record lists — the carrier for a control's collection property (BLUE26 B26.09).
+///
+/// Compiled in every profile for the same reason as `target_facts`: it is pure data and predicates
+/// over `CapabilityValue` and `PropertyValueKind`, which exist everywhere, and it walks no registry.
+/// A caller supplies the schema; the module answers whether a list conforms to it.
+pub mod records;
+pub use records::{
+    as_record_list, describe_records, RecordField, RecordList, RecordOperation, RecordSchema,
+    RecordValue, RecordViolation, EMPTY_RECORD_SCHEMA,
+};
+
 /// The per-control property contract (`WidgetProperties`).
 ///
 /// Compiled in every profile: `Widget::properties_dyn` returns this trait, and
@@ -526,7 +537,7 @@ pub use target_facts::{
 /// caller supplies.
 pub mod command_schema;
 pub use command_schema::{
-    command_schema as command_schema_for, described_verbs, describe_command, effect_tokens,
+    command_schema as command_schema_for, describe_command, described_verbs, effect_tokens,
     is_described_command, CommandEffect, CommandSchema, CommandSignature,
 };
 
@@ -997,9 +1008,11 @@ impl WidgetFactory {
         // rather than being clamped silently by the control (BLUE26 B26.02). This is the one place
         // the capability layer can check without a live control's internals — the control remains
         // the authority for its own final state.
-        if let Err(violation) =
-            crate::widget::capability::types::validate_property_value(property.name, property, &value)
-        {
+        if let Err(violation) = crate::widget::capability::types::validate_property_value(
+            property.name,
+            property,
+            &value,
+        ) {
             return Err(CapabilityAccessError::ConstraintViolation {
                 property: property.name.into(),
                 reason: crate::compat::format!("{violation}"),

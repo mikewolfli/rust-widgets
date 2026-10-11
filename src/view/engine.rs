@@ -724,7 +724,14 @@ impl ViewEngine {
             crate::compat::HashMap::new();
 
         if let Some(tree) = &self.current {
-            self.collect_identity(tree, &[], &mut widget_of, &mut key_of, &mut parent_of, &mut children_of);
+            self.collect_identity(
+                tree,
+                &[],
+                &mut widget_of,
+                &mut key_of,
+                &mut parent_of,
+                &mut children_of,
+            );
         }
 
         crate::view::TreeIndex::build(
@@ -1173,7 +1180,8 @@ mod tests {
         assert_eq!(b_id_after, b_id, "the key must resolve to the same live control");
         let b_path_after = after.path_of(b_id_after).expect("b is still in the index");
         assert_ne!(
-            b_path_after, b_path_before.as_slice(),
+            b_path_after,
+            b_path_before.as_slice(),
             "the insertion must actually have moved the path, or this test proves nothing"
         );
     }
@@ -1216,6 +1224,129 @@ mod tests {
     /// The root id of the engine's current tree, for a test that needs to scope a key lookup.
     fn index_root(engine: &ViewEngine) -> ObjectId {
         engine.tree_index().root().expect("a tree is mounted")
+    }
+
+    /// A view whose one keyed child changes widget type, for the "replaced" case.
+    struct Swapped(bool);
+
+    impl View for Swapped {
+        fn build(&self) -> Node {
+            let child = if self.0 { Node::new("button") } else { Node::new("label") };
+            Node::new("window").key("root").child(child.key("slot"))
+        }
+    }
+
+    /// A view with two siblings claiming one key, for the duplicate-key case.
+    struct Duplicated;
+
+    impl View for Duplicated {
+        fn build(&self) -> Node {
+            duplicated_sibling_fixture()
+        }
+    }
+
+    /// The deliberate key collision the duplicate-key test needs.
+    ///
+    /// In its own function so the declarative key-uniqueness gate can excuse this one chain by name
+    /// (`tools/check_view_keys_are_unique.py`): a collision built where the gate cannot see it is
+    /// the failure mode that gate exists for.
+    fn duplicated_sibling_fixture() -> Node {
+        Node::new("window")
+            .key("root")
+            .children_of([Node::new("label").key("dup"), Node::new("label").key("dup")])
+    }
+
+    /// B26.04: a key claimed twice under one parent must resolve to neither claimant, and the
+    /// snapshot must say so rather than pick one.
+    ///
+    /// A designer that resolved an ambiguous key to an arbitrary control would highlight the wrong
+    /// node and give no hint that the document was at fault.
+    #[test]
+    fn a_duplicated_key_is_not_resolvable_in_the_index() {
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(30);
+        engine.mount(&Duplicated, &ids.creator());
+        let index = engine.tree_index();
+        let root = index_root(&engine);
+
+        assert_eq!(index.id_of_key(Some(root), "dup"), None, "the key identifies neither node");
+        assert_eq!(
+            index.duplicate_keys(),
+            &[(Some(root), String::from("dup"))],
+            "the snapshot must name the collision, so a caller can report it"
+        );
+        // Both claimants are still addressable by path, so the tree itself is intact.
+        assert!(index.id_at(&[0]).is_some());
+        assert!(index.id_at(&[1]).is_some());
+    }
+
+    /// B26.04: replacing a control under one key must produce a new identity, and the old one must
+    /// drop out of the snapshot.
+    #[test]
+    fn a_replaced_control_is_a_new_identity() {
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(40);
+        engine.mount(&Swapped(false), &ids.creator());
+        let before = engine.tree_index();
+        let root = index_root(&engine);
+        let label_id = before.id_of_key(Some(root), "slot").expect("the label is keyed");
+
+        engine.update(&Swapped(true), &ids.creator());
+
+        let after = engine.tree_index();
+        let button_id = after.id_of_key(Some(root), "slot").expect("the button is keyed");
+        assert_ne!(button_id, label_id, "a new control is a new identity");
+        assert_eq!(after.path_of(label_id), None, "the replaced control is gone from the snapshot");
+        assert_eq!(after.widget_of(button_id), Some("button"));
+        assert_eq!(after.widget_of(label_id), None);
+    }
+
+    /// B26.04: a node whose creation failed must be absent from the snapshot rather than indexed
+    /// under an id it never received.
+    ///
+    /// The index pairs the declared tree with `id_of_path`; a node the apply could not create has no
+    /// entry there, so the walk stops at it. Indexing it anyway would hand an inspector an id that
+    /// addresses nothing.
+    #[test]
+    fn a_node_that_failed_to_materialise_is_not_indexed() {
+        // A creator that refuses the label: its subtree never receives ids.
+        let mut engine = ViewEngine::new();
+        let next = Cell::new(50u64);
+        let report = engine.mount(&Text("x".into()), &|node: &Node| {
+            if node.widget == "label" {
+                return None;
+            }
+            let id = next.get();
+            next.set(id + 1);
+            Some(id)
+        });
+
+        assert_eq!(report.errors.len(), 1, "the refused creation must be reported: {report:?}");
+        let index = engine.tree_index();
+        assert_eq!(index.len(), 1, "only the window was created: {index:?}");
+        assert_eq!(index.path_of(50), Some(&[][..]));
+        assert_eq!(index.id_at(&[0]), None, "the failed node has no id to index");
+        assert_eq!(index.id_of_key(Some(50), "value"), None);
+    }
+
+    /// B26.04: two engines have two independent snapshots — neither answers for the other's ids.
+    #[test]
+    fn two_engines_index_their_own_trees() {
+        let mut left = ViewEngine::new();
+        let mut right = ViewEngine::new();
+        left.mount(&Text("l".into()), &Ids::new(60).creator());
+        right.mount(&Text("r".into()), &Ids::new(80).creator());
+
+        let left_index = left.tree_index();
+        let right_index = right.tree_index();
+        let left_root = left_index.root().expect("left is mounted");
+        let right_root = right_index.root().expect("right is mounted");
+        assert_ne!(left_root, right_root, "the engines must not share ids");
+
+        assert_eq!(left_index.id_of_key(Some(left_root), "value"), Some(61));
+        assert_eq!(right_index.id_of_key(Some(right_root), "value"), Some(81));
+        assert_eq!(left_index.path_of(right_root), None, "the other tree is not in this snapshot");
+        assert_eq!(right_index.path_of(left_root), None);
     }
 
     /// B26.07: a failure's id must resolve to its stable location through the tree index.

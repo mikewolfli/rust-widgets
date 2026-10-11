@@ -98,7 +98,7 @@ mod keys {
 /// changes for any code change, including ones that do not touch this document; the protocol
 /// version changes only when the document's *shape* does — a new key, a removed key, a changed
 /// meaning. A reader uses the protocol version to decide whether it understands the document at
-/// all, which is a question the library version cannot answer (2.8.4 and 2.9.0 could be the same
+/// all, which is a question the library version cannot answer (2.8.5 and 2.9.0 could be the same
 /// protocol, and two protocol versions could ship in one library version during a transition).
 ///
 /// # Compatibility rule
@@ -138,6 +138,7 @@ pub fn value_kind_token(kind: PropertyValueKind) -> &'static str {
         PropertyValueKind::Enum => "enum",
         PropertyValueKind::Color => "color",
         PropertyValueKind::Rect => "rect",
+        PropertyValueKind::Records => "records",
     }
 }
 
@@ -156,6 +157,7 @@ pub fn value_kind_from_token(token: &str) -> Option<PropertyValueKind> {
         "enum" => Some(PropertyValueKind::Enum),
         "color" => Some(PropertyValueKind::Color),
         "rect" => Some(PropertyValueKind::Rect),
+        "records" => Some(PropertyValueKind::Records),
         _ => None,
     }
 }
@@ -413,6 +415,29 @@ fn push_json_value(out: &mut String, value: &CapabilityValue) {
                     out.push(',');
                 }
                 push_json_value(out, item);
+            }
+            out.push(']');
+        }
+        CapabilityValue::Records(list) => {
+            // A record list exports as a JSON **array of objects**, each object's keys written by
+            // `push_json_string` so a field name with a quote or a backslash stays valid JSON. This is
+            // the shape a document declares, so the manifest form and the document form are one
+            // representation rather than two (BLUE26 B26.09).
+            out.push('[');
+            for (record_index, record) in list.items().iter().enumerate() {
+                if record_index > 0 {
+                    out.push(',');
+                }
+                out.push('{');
+                for (field_index, (name, value)) in record.fields().iter().enumerate() {
+                    if field_index > 0 {
+                        out.push(',');
+                    }
+                    push_json_string(out, name);
+                    out.push(':');
+                    push_json_value(out, value);
+                }
+                out.push('}');
             }
             out.push(']');
         }
@@ -1053,7 +1078,9 @@ fn read_property(reader: &mut JsonReader<'_>) -> Result<DesignerProperty, Manife
 }
 
 /// Reads a constraint array (BLUE26 B26.02).
-fn read_constraints(reader: &mut JsonReader<'_>) -> Result<Vec<DesignerConstraint>, ManifestParseError> {
+fn read_constraints(
+    reader: &mut JsonReader<'_>,
+) -> Result<Vec<DesignerConstraint>, ManifestParseError> {
     reader.expect(b'[', "expected `[` to start a constraint list")?;
     let mut constraints = Vec::new();
     if reader.peek(b']') {
@@ -1275,8 +1302,7 @@ fn read_command(reader: &mut JsonReader<'_>) -> Result<DesignerCommand, Manifest
         kind,
         element,
         arity,
-        effect: effect
-            .ok_or(ManifestParseError { detail: "a command has no effect".into() })?,
+        effect: effect.ok_or(ManifestParseError { detail: "a command has no effect".into() })?,
     })
 }
 
@@ -1310,7 +1336,10 @@ fn command_effect_token(token: &str) -> Option<&'static str> {
 /// `"composite"`) lives with the rest of the document's vocabulary, while the derivation of the
 /// shape stays in `command_schema`. A command with no derivable schema is dropped by the caller —
 /// publishing a command a designer cannot describe is the gap B26.03 closes.
-pub fn designer_command_from(name: &str, schema: &super::command_schema::CommandSchema) -> DesignerCommand {
+pub fn designer_command_from(
+    name: &str,
+    schema: &super::command_schema::CommandSchema,
+) -> DesignerCommand {
     use super::command_schema::{CommandEffect, CommandSignature};
     let (signature, parameter, kind, arity, element) = match schema.signature {
         CommandSignature::PayloadFree => ("none", String::new(), None, None, None),
@@ -1350,6 +1379,11 @@ fn read_value(reader: &mut JsonReader<'_>) -> Result<CapabilityValue, ManifestPa
     if reader.peek(b'"') {
         return Ok(CapabilityValue::String(reader.read_string()?));
     }
+    // A record list (B26.09). Tested before the number arm for the same reason the booleans are:
+    // `[` is not a digit, so the number arm would report a malformed number for a valid list.
+    if reader.peek(b'[') {
+        return Ok(CapabilityValue::Records(read_record_list(reader)?));
+    }
     let leading_plus = reader.peek_leading_plus();
     let (number, is_float) = reader.read_number()?;
     if is_float {
@@ -1367,9 +1401,62 @@ fn read_value(reader: &mut JsonReader<'_>) -> Result<CapabilityValue, ManifestPa
     Ok(CapabilityValue::UInt(number as u64))
 }
 
+/// Reads a JSON array of objects as a record list (B26.09).
+///
+/// # What it accepts, and why it is strict
+///
+/// One object per record, each object's keys becoming that record's fields in document order, and each
+/// field value read by [`read_value`] — so a nested array or object inside a record is refused by the
+/// same reader that refuses one anywhere else. Strictness is the point: this reader's contract is that
+/// the document it half-understands is one whose next export would silently differ, so an element that
+/// is not an object is an error rather than a skipped element.
+///
+/// # Why the list carries no schema
+///
+/// The manifest describes properties, and this reader has no schema in hand — the same situation the
+/// JSON loader and the C ABI are in. The list therefore carries
+/// [`EMPTY_RECORD_SCHEMA`](crate::widget::capability::EMPTY_RECORD_SCHEMA) and the *property* is what
+/// supplies the record shape; see
+/// [`RecordList::validate_against`](crate::widget::capability::RecordList::validate_against).
+fn read_record_list(
+    reader: &mut JsonReader<'_>,
+) -> Result<crate::widget::capability::RecordList, ManifestParseError> {
+    use crate::widget::capability::{RecordList, RecordValue};
+    reader.expect(b'[', "expected `[` to start a record list")?;
+    let mut items = Vec::new();
+    if reader.peek(b']') {
+        reader.expect(b']', "expected `]`")?;
+        return Ok(RecordList::from_items(&crate::widget::capability::EMPTY_RECORD_SCHEMA, items));
+    }
+    loop {
+        reader.expect(b'{', "expected `{` to start a record")?;
+        let mut record = RecordValue::new();
+        if !reader.peek(b'}') {
+            loop {
+                let name = reader.read_string()?;
+                reader.expect(b':', "expected `:` after a field name")?;
+                record = record.with(name, read_value(reader)?);
+                if reader.peek(b',') {
+                    reader.expect(b',', "expected `,` between fields")?;
+                    continue;
+                }
+                break;
+            }
+        }
+        reader.expect(b'}', "expected `}` to end a record")?;
+        items.push(record);
+        if reader.peek(b',') {
+            reader.expect(b',', "expected `,` between records")?;
+            continue;
+        }
+        reader.expect(b']', "expected `]` to end a record list")?;
+        break;
+    }
+    Ok(RecordList::from_items(&crate::widget::capability::EMPTY_RECORD_SCHEMA, items))
+}
+
 impl DesignerManifest {
-    /// Reads a document written by [`capability_manifest_json`].
-    ///
+    /// Reads a document written by [`capability_manifest_json`].    ///
     /// Every key this writer emits is required, and an unknown key is an error: a document that
     /// this reader half-understands is one whose next export would silently differ from its input,
     /// which is exactly the failure the round-trip check exists to catch.
@@ -1643,12 +1730,20 @@ pub fn designer_constraint_from(
             step: range.step,
             places: None,
         },
-        C::Precision { places } => {
-            DesignerConstraint { kind: "precision", minimum: None, maximum: None, step: None, places: *places }
-        }
-        C::Required => {
-            DesignerConstraint { kind: "required", minimum: None, maximum: None, step: None, places: None }
-        }
+        C::Precision { places } => DesignerConstraint {
+            kind: "precision",
+            minimum: None,
+            maximum: None,
+            step: None,
+            places: *places,
+        },
+        C::Required => DesignerConstraint {
+            kind: "required",
+            minimum: None,
+            maximum: None,
+            step: None,
+            places: None,
+        },
     }
 }
 
@@ -1719,6 +1814,61 @@ mod tests {
         let reloaded = DesignerManifest::from_json(&first).expect("the document this wrote parses");
         let second = manifest_to_json(&reloaded);
         assert_eq!(first, second, "export -> load -> export changed the document");
+    }
+
+    /// A record-list property's value survives the round trip **with its fields** (B26.09).
+    ///
+    /// The control that publishes one today starts empty, so the per-control round-trip check only
+    /// ever exercises `[]`. That would leave the interesting half — field names, values and their
+    /// order — untested, which is exactly the half the writer builds by hand.
+    #[test]
+    fn a_record_list_value_round_trips_with_its_fields() {
+        let mut manifest = sample();
+        let list = crate::widget::capability::RecordList::from_items(
+            &crate::widget::capability::EMPTY_RECORD_SCHEMA,
+            vec![
+                crate::widget::capability::RecordValue::new()
+                    .with("id", CapabilityValue::String(String::from("a")))
+                    .with("label", CapabilityValue::String(String::from("Alpha")))
+                    .with("selected", CapabilityValue::Bool(true))
+                    .with("weight", CapabilityValue::Float(2.5)),
+                // A field whose *name* needs escaping in the document, and one that is spelled
+                // differently from its neighbour, so the order is what is compared rather than a set.
+                crate::widget::capability::RecordValue::new()
+                    .with("id", CapabilityValue::String(String::from("b\"c")))
+                    .with("note", CapabilityValue::String(String::from("no label here"))),
+            ],
+        );
+        let records = CapabilityValue::Records(list.clone());
+        manifest.properties.push(DesignerProperty {
+            name: String::from("items"),
+            kind: crate::widget::capability::PropertyValueKind::Records,
+            readable: true,
+            writable: true,
+            tokens: Vec::new(),
+            constraints: Vec::new(),
+            default_value: records.clone(),
+        });
+
+        let json = manifest_to_json(&manifest);
+        let reloaded = DesignerManifest::from_json(&json).expect("the document this wrote parses");
+        assert_eq!(manifest_to_json(&reloaded), json, "export -> load -> export changed it");
+
+        let restored = &reloaded.properties[reloaded.properties.len() - 1].default_value;
+        let CapabilityValue::Records(round_tripped) = restored else {
+            panic!("`items` must come back as a record list, got {restored:?}");
+        };
+        // Field order is part of the value, so the whole list is compared — a set comparison would
+        // accept a document whose fields were reordered.
+        assert_eq!(round_tripped.items(), list.items());
+        assert_eq!(
+            round_tripped.get(0).expect("first").names(),
+            vec!["id", "label", "selected", "weight"]
+        );
+        assert_eq!(round_tripped.get(0).expect("first").text("label"), "Alpha");
+        assert_eq!(round_tripped.get(1).expect("second").text("id"), "b\"c");
+        // The reloaded list carries no schema, like every other schema-free boundary.
+        assert!(round_tripped.schema().fields.is_empty());
     }
 
     /// A payload-free event keeps its absence of a payload through the round trip.
@@ -2070,9 +2220,12 @@ mod tests {
     fn a_constrained_property_round_trips() {
         use crate::widget::capability::{Constraint, RangeSpec};
         let mut manifest = sample();
-        manifest.properties[0].constraints = vec![designer_constraint_from(&Constraint::Range(
-            RangeSpec { minimum: 0.0, maximum: 1.0, step: Some(0.05) },
-        ))];
+        manifest.properties[0].constraints =
+            vec![designer_constraint_from(&Constraint::Range(RangeSpec {
+                minimum: 0.0,
+                maximum: 1.0,
+                step: Some(0.05),
+            }))];
         let json = manifest_to_json(&manifest);
         assert!(json.contains("\"constraints\": ["), "the constraint list must appear: {json}");
         assert!(json.contains("\"rule\": \"range\""), "{json}");

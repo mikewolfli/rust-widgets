@@ -5,6 +5,128 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.8.5 (2026-10-12) — The designer contract: a schema that says what the parser does, and an identity map that admits when it cannot
+
+Backward compatible for every public signature: this release only *adds* public items (a layout
+schema, a command schema, a tree index, a CSS trace, a resource seam, target facts) and tightens
+three paths that previously answered quietly —
+
+* an out-of-range constrained property is now **refused** at the contract layers instead of applied,
+* a declarative `"orientation": "column"` now means Vertical for `splitter`, as it already did for
+  `flow` and `wrap` (the schema accepted the token and the splitter arm read it as Horizontal),
+* the repository now passes its own `cargo fmt --all -- --check` gate.
+
+Most of this release is the upstream-contract work planned in `docs/plans/blue26.md` for the Rustage
+designer, so several of the sections below describe new *describable* surface rather than fixed
+defects. The per-item evidence — including the reverse-injection proofs that each new gate can
+actually fail — is in `docs/log/log-20261011-1.md`.
+
+### 1. One validator behind the three paths that write a property
+
+`crate::widget::capability::types` publishes `validate_constraints` / `validate_property_value` as
+the single implementation of "is this value inside the constraint the control declared", and both
+the JSON loader and the Rust generator now call it. `apply_widget_property` refuses an out-of-range
+value with the property name and the reason and logs it, instead of writing a value the control
+would have to rewrite; `emit_node` reports a value the schema refuses as a `GenerationGap` instead
+of emitting a `.prop(..)` call that was certain to be rejected. `ProgressCircle::set_value` still
+clamps — the control's own behaviour is unchanged; it is the *contract* layers that now refuse. The
+`Constraint` documentation was corrected to say that it is declared only for properties whose
+control really bounds them, and that the validator's answer is always "refuse, and name the bound".
+
+### 2. A collection property is a typed record list, not a JSON string
+
+`crate::widget::capability::records` adds `RecordValue`/`RecordList` (an ordered, id-keyed list of
+named-field records) with its declared `RecordSchema`, and `CapabilityValue::Records` carries it.
+`chip.items` is the first property published this way — the chip's item list was previously reachable
+only as a `set_items` *command*, whose argument the property API could not carry, so a document's
+`"items": [{ "id": "a", "label": "A" }]` was **silently dropped**: `ProjectNode::scalar_properties`
+skips arrays and nothing else looked at the key. It now travels end to end — the JSON loader, the
+generated program, the C ABI (`RW_VALUE_RECORDS`) and the designer manifest all read and write the
+same array-of-objects form.
+
+What the type guarantees, and why each is a decision rather than a detail:
+
+* **Identity is a field, not a position.** `RecordSchema::id_field` names the field an item's identity
+  lives in, so `RecordList::move_item` (a row move) and `RecordList::move_field` (a column move) both
+  leave every id untouched, and a selection, scroll anchor or pending edit survives a reorder.
+* **A malformed list is refused with the record and the field named.** `validate_against` checks the
+  whole list — required fields, unknown fields, per-field kinds, an empty id where one is required, a
+  duplicate id where ids must be unique — before any item is replaced, so a refused (or withdrawn)
+  update has nothing to roll back.
+* **The library holds no business state.** A `RecordList` is a value the caller owns.
+
+### 3. The declarative layout schema describes what the parser actually does
+
+`crate::json` now re-exports a layout schema: `LAYOUT_KIND_SCHEMAS`/`layout_schema_for_type` (every
+type token and alias with its parameters), `CHILD_ATTR_SCHEMA`/`validate_child_attrs`, and
+`validate_layout_object`, which reports an unknown key, a wrong type, a value the parser would drop,
+and a placement key a non-grid layout ignores. A parameter the constructor cannot honour is
+reported as dropped rather than presented as working.
+
+The axis tokens an `orientation` field accepts are now a **single list** read by both the schema and
+the parser. `splitter` carried its own narrower match (`"vertical" | "v" | "V"`), so `"column"` passed
+the schema's check and came back Horizontal — a document that validated cleanly and laid out along the
+other axis. `splitter`, `flow` and `wrap` now agree on every token, and a test asserts the two readers
+accept exactly the same set, in both directions.
+
+### 4. Commands describe their payload, derived from the control
+
+`crate::widget::capability::command_schema` publishes a typed description per command: its
+signature (`Nullary`/`OneValue`/`Composite`/`Range`), its effect class, and for a composite payload
+its arity and element type. A composite payload's shape is derived from the control's *own*
+property list — a slider and a dial take `(i32, i32)`, an arc and a meter `(u32, u32)`, a
+`range_slider` `(f64, f64)`, the code editor's cursor `(u32, u32)` — so a command cannot advertise a
+shape its control does not have, and a payload that is genuinely not homogeneous reports `None`
+rather than a shape that would not round-trip.
+
+### 5. The view index records identity honestly
+
+`crate::view::TreeIndex` (re-exported from `crate::view::identity`) is a read-only key → `ObjectId`
+map for a mounted tree. A key claimed twice under the same parent is now mappable to **neither**
+claimant and is reported through `duplicate_keys()`. A control that fails to materialise is not
+indexed, a replaced control is a new identity, and two engines index their own trees — so a stale
+index cannot answer for a node that no longer exists. `ObjectId` is deliberately not a persistent
+node id; the key is.
+
+### 6. Target facts keep the captured triple and the reader in step
+
+`crate::widget::capability::target_facts` reports `TargetSpec`/`TargetProbe` — profile, target
+triple and verification level — so a host can tell "queryable in this build", "verified by a real
+build" and "unknown" apart instead of assuming a desktop answer holds for `mini`. The build script's
+triple list is the single declaration, covering the hosts, the iOS device and simulator targets, the
+three `*-unknown-linux-ohos` targets, the Android ABIs and wasm32; a test asserts the reader's arms
+still agree with it, so a missing or misspelled arm fails the suite rather than degrading to
+`"unknown"` in silence.
+
+### 7. A CSS cascade trace that reports what apply cannot honour
+
+`crate::style::css_trace` exposes a read-only `trace_cascade` over caller-described sheets — an
+unsaved editor buffer and a registered sheet are treated alike — returning the winning declaration
+per property with its selector, sheet and priority, and noting `UnparsedSelector`, `UnknownProperty`
+and `InvalidValue`. It reuses the crate's parser and `apply_declarations` instead of restating the
+cascade, and a declaration the apply path cannot honour is not counted as a winner.
+`CssParser::parse_rules` is public so an inspector can run that same parser.
+
+### 8. A logical resource seam for a designer's asset names
+
+`crate::asset::resource` adds a platform-independent `ResourceId` (backslashes normalised, repeated
+separators collapsed, a `..` segment refused), a `ResourceSource` trait whose `contains` and `get`
+are separate so resolving a name need not produce bytes, an `EmbeddedSource` for a static package's
+table, and a `ResourceResolver` that refuses an id two sources claim (`Ambiguous { claimants }`)
+rather than letting registration order decide, with an explicit `resolve_preferring` for the
+"override directory" case. The existing entry points stay path-keyed and are byte-content-keyed
+underneath, so an embedded resource and a file with the same bytes still share one decode.
+
+### 9. Verification and tooling
+
+`render::text::bidi` gains regression cases for Arabic, mixed-direction lines, long lines, a missing
+face and per-row wrapping (the probe found the engine already correct, so this adds coverage, not a
+fix). The repository now satisfies the `rustfmt.toml` it already committed, which is what the CI
+`quality-gates` job's `cargo fmt --all -- --check` asks for. The blur-cost test no longer compares
+single timings: it interleaves the two radii and takes the minimum of five samples, and its
+threshold is anchored on measured values (a sliding window costs ~2.9x, a recomputed one ~16.4x),
+so a busy machine cannot read a working blur as broken.
+
 ## 2.8.4 (2026-10-10) — Verification pass: pointer-gesture ownership, end-to-end touch cancel, and theme fonts everywhere
 
 Backward compatible for every public signature. This release closes gaps that a full source

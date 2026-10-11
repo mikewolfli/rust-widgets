@@ -4,7 +4,7 @@ This chapter provides a comprehensive, module-by-module reference for the
 entire `rust_widgets` public API. Use this as a quick lookup when you need to
 find the right type, function, or trait for your task.
 
-The library version documented here is **2.8.4**. Code examples assume
+The library version documented here is **2.8.5**. Code examples assume
 `use rust_widgets::*;` or explicit paths as shown.
 
 ---
@@ -703,35 +703,62 @@ Associated types: `WebEngineContextMenuRequest`, `WebEngineCookieStore`,
 ### Widget Capability System
 
 ```rust
-pub trait WidgetFactory {
-    fn create(&self, id: ObjectId, parent: Option<ObjectId>, kind: WidgetKind) -> Box<dyn Widget>;
+impl WidgetFactory {
+    pub fn create(&self, kind_or_name: &str, geometry: Rect, text: &str) -> Option<Box<dyn Widget>>;
+    pub fn capability(&self, kind_or_name: &str) -> Option<&WidgetCapability>;
+    pub fn read_property(&self, widget: &dyn Widget, name: &str) -> Result<CapabilityValue, CapabilityAccessError>;
+    pub fn write_property(&self, widget: &mut dyn Widget, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError>;
 }
 
-pub trait WidgetCapability {
-    fn capability(&self) -> &'static str;
-    fn value(&self) -> CapabilityValue;
-    fn schema(&self) -> PropertySchema;
+pub struct WidgetCapability {
+    pub kind: WidgetKind,
+    pub properties: &'static [PropertySchema],
+    pub events: &'static [EventSchema],
+    pub commands: &'static [&'static str],
 }
 
 pub enum CapabilityValue {
+    Null,
     Bool(bool),
     Int(i64),
+    UInt(u64),
     Float(f64),
     String(String),
     Color(Color),
     Rect(Rect),
-    Size(Size),
+    /// A composite payload: a tuple, a list, or a mixed group. Components keep their own kinds.
+    Tuple(Vec<CapabilityValue>),
+    /// An ordered, id-keyed list of records — a collection property. See the Widget System
+    /// chapter, "Collection properties".
+    Records(RecordList),
 }
 
 pub struct PropertySchema {
     pub name: &'static str,
-    pub kind: PropertyValueKind,
-    pub description: &'static str,
+    pub value_kind: PropertyValueKind,
+    pub readable: bool,
+    pub writable: bool,
+    pub accepted_tokens: &'static [&'static str],
+    pub constraints: &'static [Constraint],
+    pub record_schema: Option<&'static RecordSchema>,
 }
 
-pub enum PropertyValueKind { Bool, Int, Float, String, Color, Rect, Size, Enum(Vec<&'static str>) }
+pub enum PropertyValueKind {
+    Bool, Int, UInt, Float,
+    Number,          // integer or decimal, chosen by another property
+    String, Enum, Color, Rect,
+    Records,         // shape declared by `PropertySchema::record_schema`
+}
 
-pub enum CapabilityAccessError { NotFound, WrongType, ReadOnly }
+pub enum CapabilityAccessError {
+    UnknownWidget,
+    UnknownProperty,
+    ReadOnlyProperty,
+    TypeMismatch,
+    UnsupportedOnWidget,
+    OutOfRange,
+    UnknownCommand,
+}
 ```
 
 ### Widget Sub-types

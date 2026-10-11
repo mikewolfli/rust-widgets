@@ -164,24 +164,62 @@ fn declare_cfg_aliases() {
     // A designer's manifest must record *which* target its facts describe, and the
     // target triple is the build's own fact — the compiler already knows it and
     // `CARGO_CFG_TARGET_OS` alone cannot distinguish `x86_64-apple-darwin` from
-    // `aarch64-apple-darwin` or `thumbv7em-none-eabihf` from `armv7-unknown-linux-ohos`.
+    // `aarch64-apple-darwin`, or `armv7-unknown-linux-ohos` from `aarch64-unknown-linux-ohos`.
     //
-    // It travels as a **value** (`cargo:rustc-env`), not as a cfg flag and not as a
-    // table of recognised triples. A closed list was the earlier shape and it was
-    // wrong twice over: every triple the crate is built for had to be listed in two
-    // places (here and in the reader), and a triple missing from the reader silently
-    // reported `"unknown"` for a real target — which is exactly the degraded answer
-    // `BLUE26` B26.01/B26.06 exist to remove. Embedded with `env!("RW_TARGET_TRIPLE")`,
-    // the value is a compile-time constant that needs no runtime lookup and no probe,
-    // and no layer above `platform` has to learn what "aarch64" means
-    // (principles #35/#36/#41/#47).
-    println!("cargo:rerun-if-env-changed=TARGET");
-    // A build script is always invoked by Cargo, which always sets `TARGET`; the fallback
-    // exists only so an exotic out-of-tree invocation still compiles, and it is *honest*:
-    // the spec then says the triple was not captured rather than naming the host as if it
-    // were the target.
-    let triple = std::env::var("TARGET").unwrap_or_else(|_| String::from("unknown"));
-    println!("cargo:rustc-env=RW_TARGET_TRIPLE={triple}");
+    // It travels as a **cfg whose value is the triple** rather than as a `rustc-env` value, so a
+    // build script output that Cargo decides not to re-run degrades to `"unknown"` (a described
+    // state, and one the crate's own test refuses) instead of failing the compile of an unrelated
+    // target with "environment variable not defined at compile time".
+    //
+    // The list below is the **one** declaration of the triples this crate is built for: it is the
+    // checker's value set *and* the gate below. `target_facts::current_triple` reads the very same
+    // strings, and `target_triple_captured` makes the two impossible to drift apart — an earlier
+    // revision listed `aarch64-linux-ohos`, which is not a triple this crate ever emits (the real
+    // OpenHarmony spelling is `aarch64-unknown-linux-ohos`, see `tools/check_harmony_cross.sh`), so
+    // every HarmonyOS build silently reported `"unknown"` for a target it does build.
+    const TARGET_TRIPLES: &[&str] = &[
+        // Hosts the crate is developed and tested on.
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-pc-windows-msvc",
+        // iOS, both the device and its simulator.
+        "aarch64-apple-ios",
+        "aarch64-apple-ios-sim",
+        // OpenHarmony: the primary triple plus both others the cross gate links.
+        "aarch64-unknown-linux-ohos",
+        "armv7-unknown-linux-ohos",
+        "x86_64-unknown-linux-ohos",
+        // Android, the two ABIs CI checks under every profile.
+        "aarch64-linux-android",
+        "x86_64-linux-android",
+        // Browser wasm.
+        "wasm32-unknown-unknown",
+    ];
+    let mut values = String::new();
+    for (index, triple) in TARGET_TRIPLES.iter().enumerate() {
+        if index > 0 {
+            values.push_str(", ");
+        }
+        values.push('"');
+        values.push_str(triple);
+        values.push('"');
+    }
+    println!("cargo:rustc-check-cfg=cfg(target_triple, values({values}))");
+    // Declared so `cfg!(target_triple_captured)` in `target_facts` is not an unexpected cfg.
+    println!("cargo:rustc-check-cfg=cfg(target_triple_captured)");
+    if let Ok(target) = std::env::var("TARGET") {
+        // The compiler's own spelling is authoritative, so the value is emitted verbatim.
+        println!("cargo:rustc-cfg=target_triple=\"{target}\"");
+        // Captured only when the reader can name it back: `target_facts` matches the arms below
+        // against this list, so this flag is true exactly when `current_triple()` is not
+        // `"unknown"`. A triple added to one side and not the other fails
+        // `the_captured_triple_agrees_with_the_reader` rather than degrading quietly.
+        if TARGET_TRIPLES.contains(&target.as_str()) {
+            println!("cargo:rustc-cfg=target_triple_captured");
+        }
+    }
 
     // Re-run when any of the inputs change; Cargo tracks feature changes itself,
     // but the explicit list documents the dependency and keeps `cargo build`

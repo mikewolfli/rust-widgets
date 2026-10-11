@@ -27,6 +27,14 @@
 //! says "a resource is addressed by this name" and "a resolver turns a name into bytes", so two
 //! deployments can agree on the name while disagreeing on the storage.
 //!
+//! The bytes a resolver returns compose with the existing pipeline unchanged:
+//! [`Image::from_bytes`](crate::image::Image::from_bytes) and the content-keyed decode layer already
+//! take bytes rather than a path, so an embedded asset and a file that happens to hold the same
+//! bytes share one decoded entry. What was missing was only the *name* the two deployments agree on
+//! — every existing entry point ([`image::cache::cached_from_path`](crate::image::cache::cached_from_path),
+//! the image widgets' `*_source` properties) is keyed by a filesystem path, which is a location and
+//! therefore the one thing that differs between a run-time load and a static package.
+//!
 //! # Why the id is not a path
 //!
 //! [`ResourceId`] is a `String`, but it is deliberately **normalised as a logical name**, not as a
@@ -59,9 +67,7 @@ impl core::fmt::Display for ResourceIdError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Empty => f.write_str("a resource id cannot be empty"),
-            Self::EscapesRoot => {
-                f.write_str("a resource id cannot contain a `..` segment")
-            }
+            Self::EscapesRoot => f.write_str("a resource id cannot contain a `..` segment"),
         }
     }
 }
@@ -294,12 +300,13 @@ impl ResourceResolver {
             self.sources.iter().filter(|source| source.contains(id)).collect();
         match claimants.len() {
             0 => Err(ResolveError::NotFound { id: id.clone() }),
-            1 => claimants[0]
-                .get(id)
-                .ok_or_else(|| ResolveError::Failed {
-                    id: id.clone(),
-                    reason: format!("source `{}` claimed the id but returned no bytes", claimants[0].name()),
-                }),
+            1 => claimants[0].get(id).ok_or_else(|| ResolveError::Failed {
+                id: id.clone(),
+                reason: format!(
+                    "source `{}` claimed the id but returned no bytes",
+                    claimants[0].name()
+                ),
+            }),
             claimants => Err(ResolveError::Ambiguous { id: id.clone(), claimants }),
         }
     }
@@ -326,7 +333,10 @@ impl ResourceResolver {
             if source.contains(id) {
                 return source.get(id).ok_or_else(|| ResolveError::Failed {
                     id: id.clone(),
-                    reason: format!("source `{}` claimed the id but returned no bytes", source.name()),
+                    reason: format!(
+                        "source `{}` claimed the id but returned no bytes",
+                        source.name()
+                    ),
                 });
             }
         }
@@ -350,7 +360,9 @@ mod tests {
     #[test]
     fn equivalent_spellings_normalise_to_one_id() {
         let canonical = ResourceId::parse("icons/save.png").expect("valid");
-        for spelling in ["./icons/save.png", "icons\\save.png", "icons//save.png", "/icons/save.png"] {
+        for spelling in
+            ["./icons/save.png", "icons\\save.png", "icons//save.png", "/icons/save.png"]
+        {
             assert_eq!(
                 ResourceId::parse(spelling).expect("valid"),
                 canonical,
@@ -443,7 +455,8 @@ mod tests {
         runtime.add(crate::compat::Box::new(source_with("files", &[("icons/save.png", b"disk")])));
         // Package: the same id, a different source, different storage.
         let mut package = ResourceResolver::new();
-        package.add(crate::compat::Box::new(source_with("embedded", &[("icons/save.png", b"bytes")])));
+        package
+            .add(crate::compat::Box::new(source_with("embedded", &[("icons/save.png", b"bytes")])));
         // Both resolve the same id; only the bytes differ, which is the deployment's business.
         assert!(runtime.resolve(&id).is_ok());
         assert!(package.resolve(&id).is_ok());

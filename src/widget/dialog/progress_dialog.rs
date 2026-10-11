@@ -301,20 +301,26 @@ impl WidgetProperties for ProgressDialog {
             // while leaving `value` unwritable is the schema/contract disagreement
             // `capability::properties_tests` catches.
             "value" => {
-                self.set_value(i32::try_from(expect_i64(value)?)
-                    .map_err(|_| CapabilityAccessError::OutOfRange)?);
+                self.set_value(
+                    i32::try_from(expect_i64(value)?)
+                        .map_err(|_| CapabilityAccessError::OutOfRange)?,
+                );
                 Ok(())
             }
             // `minimum`/`maximum` are the pair `set_range` carries; each is also writable on its
             // own, which is what makes `set_minimum`/`set_maximum` reachable.
             "minimum" => {
-                self.set_minimum(i32::try_from(expect_i64(value)?)
-                    .map_err(|_| CapabilityAccessError::OutOfRange)?);
+                self.set_minimum(
+                    i32::try_from(expect_i64(value)?)
+                        .map_err(|_| CapabilityAccessError::OutOfRange)?,
+                );
                 Ok(())
             }
             "maximum" => {
-                self.set_maximum(i32::try_from(expect_i64(value)?)
-                    .map_err(|_| CapabilityAccessError::OutOfRange)?);
+                self.set_maximum(
+                    i32::try_from(expect_i64(value)?)
+                        .map_err(|_| CapabilityAccessError::OutOfRange)?,
+                );
                 Ok(())
             }
             _ => base_property_set(self, name, value),
@@ -322,7 +328,14 @@ impl WidgetProperties for ProgressDialog {
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["title", "label_text", "value", "minimum", "maximum", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "title",
+            "label_text",
+            "value",
+            "minimum",
+            "maximum",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `progress_dialog` publishes.
@@ -549,7 +562,8 @@ impl Draw for ProgressDialog {
         // trailing-anchored; the helper still owns the *size*, which is the part that was
         // duplicated.
         let labels = vec![self.cancel_button_text.clone()];
-        let row = super::message_box::action_row_geometry(context, font, &labels, button_band, false);
+        let row =
+            super::message_box::action_row_geometry(context, font, &labels, button_band, false);
         let btn_w = row.buttons[0].width;
         let btn_x = (rect.x + rect.width as i32 / 2 - btn_w as i32 / 2).max(rect.x);
         let btn_rect = Rect::new(btn_x, button_band.y, btn_w, button_band.height.max(1));

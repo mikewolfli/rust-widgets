@@ -122,8 +122,9 @@ pub use layout::{
     ChildLayoutAttrs, ChildPlacement, DeclarativeLayoutKind,
 };
 pub use layout_schema::{
-    schema_for_type as layout_schema_for_type, supported_types as supported_layout_types,
-    validate_layout_object, LayoutDiagnostic, LayoutIssue, LayoutKindSchema, LayoutParam, ParamKind,
+    child_attrs_honoured_by, schema_for_type as layout_schema_for_type,
+    supported_types as supported_layout_types, validate_child_attrs, validate_layout_object,
+    LayoutDiagnostic, LayoutIssue, LayoutKindSchema, LayoutParam, ParamKind, CHILD_ATTR_SCHEMA,
 };
 /// Wires one declared event binding to a live control — the single-call entry a **generated**
 /// program uses (rule #98).

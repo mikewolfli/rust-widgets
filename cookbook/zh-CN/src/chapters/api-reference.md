@@ -2,7 +2,7 @@
 
 本章提供整个 `rust_widgets` 公共 API 的逐模块完整参考。当你需要为任务查找正确的类型、函数或 trait 时，可将其作为快速查阅手册。
 
-本文档所描述的库版本为 **2.8.4**。代码示例假定已使用 `use rust_widgets::*;` 或按所示使用显式路径。
+本文档所描述的库版本为 **2.8.5**。代码示例假定已使用 `use rust_widgets::*;` 或按所示使用显式路径。
 
 ---
 
@@ -697,35 +697,61 @@ pub trait Draw {
 ### 控件能力系统
 
 ```rust
-pub trait WidgetFactory {
-    fn create(&self, id: ObjectId, parent: Option<ObjectId>, kind: WidgetKind) -> Box<dyn Widget>;
+impl WidgetFactory {
+    pub fn create(&self, kind_or_name: &str, geometry: Rect, text: &str) -> Option<Box<dyn Widget>>;
+    pub fn capability(&self, kind_or_name: &str) -> Option<&WidgetCapability>;
+    pub fn read_property(&self, widget: &dyn Widget, name: &str) -> Result<CapabilityValue, CapabilityAccessError>;
+    pub fn write_property(&self, widget: &mut dyn Widget, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError>;
 }
 
-pub trait WidgetCapability {
-    fn capability(&self) -> &'static str;
-    fn value(&self) -> CapabilityValue;
-    fn schema(&self) -> PropertySchema;
+pub struct WidgetCapability {
+    pub kind: WidgetKind,
+    pub properties: &'static [PropertySchema],
+    pub events: &'static [EventSchema],
+    pub commands: &'static [&'static str],
 }
 
 pub enum CapabilityValue {
+    Null,
     Bool(bool),
     Int(i64),
+    UInt(u64),
     Float(f64),
     String(String),
     Color(Color),
     Rect(Rect),
-    Size(Size),
+    /// 复合载荷：元组、列表或混合组；各分量保留各自的类型。
+    Tuple(Vec<CapabilityValue>),
+    /// 有序且以 id 为键的记录列表——集合属性。见「控件系统」章「集合属性」一节。
+    Records(RecordList),
 }
 
 pub struct PropertySchema {
     pub name: &'static str,
-    pub kind: PropertyValueKind,
-    pub description: &'static str,
+    pub value_kind: PropertyValueKind,
+    pub readable: bool,
+    pub writable: bool,
+    pub accepted_tokens: &'static [&'static str],
+    pub constraints: &'static [Constraint],
+    pub record_schema: Option<&'static RecordSchema>,
 }
 
-pub enum PropertyValueKind { Bool, Int, Float, String, Color, Rect, Size, Enum(Vec<&'static str>) }
+pub enum PropertyValueKind {
+    Bool, Int, UInt, Float,
+    Number,          // 整数或小数，由另一个属性决定
+    String, Enum, Color, Rect,
+    Records,         // 形状由 `PropertySchema::record_schema` 声明
+}
 
-pub enum CapabilityAccessError { NotFound, WrongType, ReadOnly }
+pub enum CapabilityAccessError {
+    UnknownWidget,
+    UnknownProperty,
+    ReadOnlyProperty,
+    TypeMismatch,
+    UnsupportedOnWidget,
+    OutOfRange,
+    UnknownCommand,
+}
 ```
 
 ### 控件子类型

@@ -1468,7 +1468,7 @@ fn apply_properties(widget: &mut dyn Widget, obj: &serde_json::Map<String, Value
     // Iterate the JSON keys rather than a fixed list: that is what lets a control
     // whose properties this module has never seen be configured from JSON.
     for (key, value) in obj {
-        if is_loader_owned_key(key) {
+        if is_loader_owned_key(key) && !crate::json::properties::declares_record_list(widget, key) {
             continue;
         }
         match crate::json::properties::apply_widget_property(widget, key, value) {
@@ -2664,6 +2664,70 @@ mod tests {
         let json = r#"{"window": {"id": "w", "title": "Combo", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"combobox": {"id": "cb", "items": ["One", "Two", "Three"], "current_index": 1, "editable": true, "max_visible_items": 10}}]}}}"#;
         let result = JsonLoader::load(json);
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+    }
+
+    /// B26.09, end to end: a document's record list reaches the live control, typed.
+    ///
+    /// # Why this test exists rather than only the unit tests underneath it
+    ///
+    /// `items` is a **loader-owned** key — `combobox` and `listbox` read it as an array of strings —
+    /// and the name-driven pass skipped every loader-owned key. So each piece could be correct on its
+    /// own (the value converts, the schema validates, the control's `set` works) while the document
+    /// still produced an empty chip group: the value was skipped by the pass and ignored by the
+    /// construction arm. Only a test that starts from a document and reads the live control closes
+    /// that gap.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn load_chip_with_a_record_list_reaches_the_live_control() {
+        use crate::widget::capability::{widget_property_get, CapabilityValue};
+
+        let json = r#"{"window": {"id": "w", "title": "Chips", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"chip": {"id": "chips", "items": [{"id": "a", "label": "Alpha", "selected": true}, {"id": "b", "label": "Beta"}]}}]}}}"#;
+        let layout = JsonLoader::load(json).expect("the document must load");
+        let chip = layout.id("chips").expect("the document names the chip");
+
+        let items = crate::widget::runtime::with_widget(chip, |widget| {
+            widget_property_get(widget, "items")
+        })
+        .expect("the chip is mounted")
+        .expect("`items` is readable");
+        let CapabilityValue::Records(list) = items else {
+            panic!("`items` must read as a record list, got {items:?}");
+        };
+        assert_eq!(list.len(), 2, "the document's two records must reach the control");
+        assert_eq!(list.id_of(0), Some("a"));
+        assert_eq!(list.get_by_id("b").expect("present").text("label"), "Beta");
+        assert!(matches!(
+            list.get_by_id("a").expect("present").get("selected"),
+            Some(CapabilityValue::Bool(true))
+        ));
+        // The list a *control* returns is the control's own schema, so identity lookups work on it.
+        assert_eq!(list.schema().id_field, "id");
+    }
+
+    /// The same document with a list the control's schema refuses leaves the items empty.
+    ///
+    /// A separate test because a second `JsonLoader::load` in one test yields an empty layout — a
+    /// pre-existing single-load behaviour of the loader, not something this case is about. Every
+    /// loader test above loads once for the same reason.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_document_record_list_the_schema_refuses_is_not_applied() {
+        use crate::widget::capability::{widget_property_get, CapabilityValue};
+
+        // `label` is required, so a record without it is refused — with the property and the missing
+        // field named in the log, rather than applied as a half-built chip.
+        let json = r#"{"window": {"id": "w", "title": "Chips", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"chip": {"id": "chips", "items": [{"id": "a"}]}}]}}}"#;
+        let layout = JsonLoader::load(json).expect("the document still loads");
+        let chip = layout.id("chips").expect("the document names the chip");
+
+        let CapabilityValue::Records(list) = crate::widget::runtime::with_widget(chip, |widget| {
+            widget_property_get(widget, "items")
+        })
+        .expect("the chip is mounted")
+        .expect("`items` is readable") else {
+            panic!("`items` must read as a record list");
+        };
+        assert!(list.is_empty(), "a record list the schema refuses must not be applied");
     }
 
     #[test]

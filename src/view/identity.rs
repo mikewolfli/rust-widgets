@@ -65,6 +65,12 @@ pub struct TreeIndex {
     key_to_id: HashMap<(Option<ObjectId>, String), ObjectId>,
     /// The reverse of `path_to_id`, for the "what is this control in the model?" direction.
     id_to_path: HashMap<ObjectId, Vec<usize>>,
+    /// Keys claimed more than once under one parent, sorted for a stable report.
+    ///
+    /// A duplicated key identifies **neither** claimant, so neither is entered in `key_to_id`: this
+    /// list is what keeps the collision from being resolved arbitrarily, and what lets a caller
+    /// explain the missing mapping instead of guessing.
+    duplicated_keys: Vec<(Option<ObjectId>, String)>,
     /// The widget name of each node, so a query can report the node *type* without a second walk.
     widget_of: HashMap<ObjectId, String>,
     /// The parent of each node, or absent for the root.
@@ -112,8 +118,21 @@ impl TreeIndex {
     /// `parent` is `None` for the root's own children. Because a key is scoped to its siblings, the
     /// caller must supply the parent (which it can get from [`Self::id_at`] or from a previous
     /// resolution).
+    ///
+    /// A key claimed by more than one sibling under `parent` answers `None`, because it identifies
+    /// neither of them; [`Self::duplicate_keys`] names the collision. Answering with one of the two
+    /// would send the caller to a control at random, which is worse than saying "not mappable".
     pub fn id_of_key(&self, parent: Option<ObjectId>, key: &str) -> Option<ObjectId> {
         self.key_to_id.get(&(parent, String::from(key))).copied()
+    }
+
+    /// Every key that more than one sibling claims, sorted, with its parent.
+    ///
+    /// A caller that asked for a key and got `None` from [`Self::id_of_key`] asks this to tell
+    /// "there is no such node" from "the document claims that key twice" — two conditions with two
+    /// different fixes, and the second is the one a designer must show.
+    pub fn duplicate_keys(&self) -> &[(Option<ObjectId>, String)] {
+        &self.duplicated_keys
     }
 
     /// The path of `id` in this snapshot, or `None` when the id is not part of it.
@@ -142,12 +161,12 @@ impl TreeIndex {
     }
 
     /// Every keyed node as `(parent, key, id)`, sorted by `(parent, key)` for a stable report.
+    ///
+    /// A duplicated key is absent: it maps to no single node. Ask [`Self::duplicate_keys`] for
+    /// those.
     pub fn keys(&self) -> Vec<(Option<ObjectId>, &str, ObjectId)> {
-        let mut out: Vec<(Option<ObjectId>, &str, ObjectId)> = self
-            .key_to_id
-            .iter()
-            .map(|((parent, key), id)| (*parent, key.as_str(), *id))
-            .collect();
+        let mut out: Vec<(Option<ObjectId>, &str, ObjectId)> =
+            self.key_to_id.iter().map(|((parent, key), id)| (*parent, key.as_str(), *id)).collect();
         out.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
         out
     }
@@ -167,14 +186,34 @@ impl TreeIndex {
         generation: u64,
     ) -> Self {
         // The key map is derived here rather than maintained by the engine, so it cannot drift from
-        // `path_to_id`: a node is in it exactly when it is in the snapshot and declared a key.
+        // `path_to_id`: a node is in it exactly when it is in the snapshot and declared a key —
+        // unless the key is claimed twice under one parent, in which case it identifies neither
+        // claimant and belongs in `duplicated_keys` instead.
+        //
+        // The ambiguity is decided by *removing* the first claimant's entry when a second arrives
+        // and then ignoring every later claimant, rather than by testing whether the map happens to
+        // hold the key: `path_to_id` is a `HashMap`, so this walk's order is unspecified, and a
+        // test on the map's contents would resolve a key claimed three times back to whichever
+        // claimant the walk visited last.
         let mut key_to_id: HashMap<(Option<ObjectId>, String), ObjectId> = HashMap::new();
+        let mut duplicated_keys: Vec<(Option<ObjectId>, String)> = Vec::new();
         for id in path_to_id.values() {
             if let Some(key) = key_of.get(id) {
-                let parent = parent_of.get(id).copied();
-                key_to_id.insert((parent, key.clone()), *id);
+                let claimed = (parent_of.get(id).copied(), key.clone());
+                if duplicated_keys.contains(&claimed) {
+                    // Already known to be ambiguous: a third claimant changes nothing.
+                    continue;
+                }
+                if key_to_id.remove(&claimed).is_some() {
+                    // A second claimant: keeping either id would answer with one of two
+                    // equally-valid candidates, so the key becomes unmappable.
+                    duplicated_keys.push(claimed);
+                } else {
+                    key_to_id.insert(claimed, *id);
+                }
             }
         }
+        duplicated_keys.sort();
         let mut id_to_path: HashMap<ObjectId, Vec<usize>> = HashMap::new();
         for (path, id) in &path_to_id {
             id_to_path.insert(*id, path.clone());
@@ -182,6 +221,7 @@ impl TreeIndex {
         Self {
             path_to_id,
             key_to_id,
+            duplicated_keys,
             id_to_path,
             widget_of,
             parent_of,
@@ -269,5 +309,76 @@ mod tests {
         assert_eq!(index.generation(), 7);
         assert_eq!(index.len(), 3);
         assert!(!index.is_empty());
+    }
+
+    /// A key claimed by two siblings must map to **neither** of them, and must be nameable.
+    ///
+    /// The earlier behaviour kept whichever id the map happened to write last, so a lookup for an
+    /// ambiguous key silently sent the inspector to one of two equally-valid controls — and said
+    /// nothing. `id_of_key` answering `None` plus `duplicate_keys` is the honest pair.
+    #[test]
+    fn a_duplicated_key_is_mappable_to_neither_claimant() {
+        let mut path_to_id = HashMap::new();
+        path_to_id.insert(Vec::new(), 1u64);
+        path_to_id.insert(vec![0usize], 2u64);
+        path_to_id.insert(vec![1usize], 3u64);
+        let mut widget_of = HashMap::new();
+        widget_of.insert(1u64, String::from("window"));
+        widget_of.insert(2u64, String::from("label"));
+        widget_of.insert(3u64, String::from("label"));
+        let mut key_of = HashMap::new();
+        key_of.insert(2u64, String::from("dup"));
+        key_of.insert(3u64, String::from("dup"));
+        let mut parent_of = HashMap::new();
+        parent_of.insert(2u64, 1u64);
+        parent_of.insert(3u64, 1u64);
+        let mut children_of: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
+        children_of.insert(1u64, vec![2u64, 3u64]);
+        let index =
+            TreeIndex::build(path_to_id, widget_of, key_of, parent_of, children_of, Some(1), 1);
+
+        assert_eq!(index.id_of_key(Some(1), "dup"), None, "the key identifies neither claimant");
+        assert_eq!(index.duplicate_keys(), &[(Some(1), String::from("dup"))]);
+        // Neither claimant is reachable *by that key*, so `keys()` must not list a winner either.
+        assert!(index.keys().is_empty(), "{:?}", index.keys());
+        assert_eq!(index.key_of(2), None);
+        assert_eq!(index.key_of(3), None);
+        // Both are still addressable by path — the collision is about the key, not the tree.
+        assert_eq!(index.id_at(&[0]), Some(2));
+        assert_eq!(index.id_at(&[1]), Some(3));
+    }
+
+    /// A key claimed by **three** siblings must stay unmappable.
+    ///
+    /// The snapshot is built by walking a `HashMap`, so a build that decided ambiguity by testing
+    /// whether the map happened to hold the key would resolve a triple collision back to whichever
+    /// claimant the walk reached last. This pins the order-independent answer.
+    #[test]
+    fn a_key_claimed_three_times_is_still_unmappable() {
+        let mut path_to_id = HashMap::new();
+        path_to_id.insert(Vec::new(), 1u64);
+        path_to_id.insert(vec![0usize], 2u64);
+        path_to_id.insert(vec![1usize], 3u64);
+        path_to_id.insert(vec![2usize], 4u64);
+        let mut widget_of = HashMap::new();
+        for id in [1u64, 2, 3, 4] {
+            widget_of.insert(id, String::from("label"));
+        }
+        let mut key_of = HashMap::new();
+        for id in [2u64, 3, 4] {
+            key_of.insert(id, String::from("dup"));
+        }
+        let mut parent_of = HashMap::new();
+        for id in [2u64, 3, 4] {
+            parent_of.insert(id, 1u64);
+        }
+        let mut children_of: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
+        children_of.insert(1u64, vec![2u64, 3u64, 4u64]);
+        let index =
+            TreeIndex::build(path_to_id, widget_of, key_of, parent_of, children_of, Some(1), 2);
+
+        assert_eq!(index.id_of_key(Some(1), "dup"), None, "three claimants map to none of them");
+        assert_eq!(index.duplicate_keys(), &[(Some(1), String::from("dup"))]);
+        assert_eq!(index.keys().len(), 0, "{:?}", index.keys());
     }
 }

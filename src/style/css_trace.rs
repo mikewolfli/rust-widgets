@@ -30,6 +30,14 @@
 //!
 //! The CSS editor, three-way text merge and the model transaction are the host's — this is a
 //! **read-only** seam. It reports; it does not edit a stylesheet.
+//!
+//! # Invalid rules are reported, not silently traced
+//!
+//! A declaration the apply cannot act on is **not** reported as the winner: an unknown property is
+//! ignored by the apply (CSS's own rule) and a refused value leaves the previous value in place, so
+//! reporting either as the computed origin would describe a style the control does not have. Both
+//! become [`TraceNote`]s carrying the parser's own reason, which is what a designer's inspector
+//! shows when a rule has no effect (`BLUE26` B26.10's "支持无效规则错误").
 
 use crate::compat::{format, String, Vec};
 use crate::style::css::{CssDeclaration, CssParser};
@@ -85,6 +93,34 @@ pub enum TraceNote {
     UnparsedSelector {
         /// The selector text as written.
         selector: String,
+        /// The sheet it came from.
+        sheet: String,
+    },
+    /// A declaration whose property this build does not act on.
+    ///
+    /// The apply ignores an unknown property (CSS's own rule), so a trace that reported it as the
+    /// winning value would disagree with the runtime: the inspector would show a value the control
+    /// does not hold. Naming it, with its value, is what lets a designer mark the line as inert.
+    UnknownProperty {
+        /// The property as written.
+        property: String,
+        /// The value that was attached to it.
+        value: String,
+        /// The sheet it came from.
+        sheet: String,
+    },
+    /// A declaration whose value the parser refused.
+    ///
+    /// The apply returns this error and leaves the previous value in place, so the declaration is
+    /// not the winner and must not be reported as one. The reason is carried verbatim from the
+    /// parser, which is the only component that knows why the value is unacceptable.
+    InvalidValue {
+        /// The property as written.
+        property: String,
+        /// The refused value.
+        value: String,
+        /// The parser's own reason.
+        reason: String,
         /// The sheet it came from.
         sheet: String,
     },
@@ -154,6 +190,34 @@ pub fn trace_cascade(
                 continue;
             }
             for declaration in &rule.declarations {
+                // A declaration only wins if the apply could act on it. The two ways it cannot are
+                // reported rather than recorded: an unknown property is ignored by the apply
+                // (CSS's own rule) and a refused value leaves the previous value in place, so
+                // either one reported as the winner would make this trace describe a style the
+                // control does not have — the one failure a provenance tool cannot afford.
+                if !CssParser::is_known_property(&declaration.property) {
+                    notes.push(TraceNote::UnknownProperty {
+                        property: declaration.property.clone(),
+                        value: declaration.value.clone(),
+                        sheet: String::from(sheet.name),
+                    });
+                    continue;
+                }
+                // The value is judged by the parser's own applier on a scratch style, so the
+                // verdict is the apply's and not a second rule set's. The scratch style is
+                // discarded: this asks "would this apply?", not "to what?".
+                let mut scratch = crate::style::WidgetStyle::default();
+                if let Err(reason) =
+                    CssParser::apply_declarations(core::slice::from_ref(declaration), &mut scratch)
+                {
+                    notes.push(TraceNote::InvalidValue {
+                        property: declaration.property.clone(),
+                        value: declaration.value.clone(),
+                        reason,
+                        sheet: String::from(sheet.name),
+                    });
+                    continue;
+                }
                 record(&mut origins, declaration, &rule.selector_text, sheet);
             }
         }
@@ -201,7 +265,11 @@ mod tests {
             None,
             None,
             None,
-            &[TracedSheet { name: "base", css: "Button { background-color: #ff0000; }", priority: 0 }],
+            &[TracedSheet {
+                name: "base",
+                css: "Button { background-color: #ff0000; }",
+                priority: 0,
+            }],
         );
         let origin = trace.origin_of("background-color").expect("the rule set the property");
         assert_eq!(origin.value, "#ff0000");
@@ -320,6 +388,80 @@ mod tests {
         let mut sorted = names.clone();
         sorted.sort_unstable();
         assert_eq!(names, sorted, "the origins must be sorted for a stable report");
+    }
+
+    /// A declaration with an unknown property must be **noted**, not reported as the winner: the
+    /// apply ignores the property, so a trace that called it the winner would disagree with the
+    /// style the control actually holds.
+    #[test]
+    fn an_unknown_property_is_noted_and_not_a_winner() {
+        let trace = trace_cascade(
+            "Button",
+            None,
+            None,
+            None,
+            &[TracedSheet {
+                name: "s",
+                css: "Button { text-sahdow: 1px; color: #111111; }",
+                priority: 0,
+            }],
+        );
+        assert!(!trace.has("text-sahdow"), "an ignored property must not be reported as applied");
+        assert!(trace.has("color"), "the valid declaration still wins");
+        assert_eq!(trace.notes.len(), 1, "{:?}", trace.notes);
+        match &trace.notes[0] {
+            TraceNote::UnknownProperty { property, value, sheet } => {
+                assert_eq!(property, "text-sahdow");
+                assert_eq!(value, "1px");
+                assert_eq!(sheet, "s");
+            }
+            other => panic!("expected an unknown-property note, got {other:?}"),
+        }
+    }
+
+    /// A declaration whose value the parser refuses must be noted with the parser's own reason, and
+    /// must not displace a value an earlier rule set successfully.
+    #[test]
+    fn a_refused_value_is_noted_with_its_reason_and_loses_to_a_valid_one() {
+        let trace = trace_cascade(
+            "Button",
+            None,
+            None,
+            None,
+            &[TracedSheet {
+                name: "s",
+                css: "Button { color: #111111; color: notacolour; }",
+                priority: 0,
+            }],
+        );
+        assert_eq!(
+            trace.origin_of("color").expect("a rule set the property").value,
+            "#111111",
+            "the refused declaration must not win"
+        );
+        assert_eq!(trace.notes.len(), 1, "{:?}", trace.notes);
+        match &trace.notes[0] {
+            TraceNote::InvalidValue { property, value, reason, sheet } => {
+                assert_eq!(property, "color");
+                assert_eq!(value, "notacolour");
+                assert_eq!(sheet, "s");
+                assert!(reason.contains("color"), "the parser's reason must travel: {reason}");
+            }
+            other => panic!("expected an invalid-value note, got {other:?}"),
+        }
+    }
+
+    /// The notes must be sorted, so a report is stable across runs.
+    #[test]
+    fn the_notes_are_deterministically_ordered() {
+        let sheets = [TracedSheet {
+            name: "s",
+            css: "Button { aaa-property: 1; zzz-property: 2; }",
+            priority: 0,
+        }];
+        let first = trace_cascade("Button", None, None, None, &sheets);
+        let second = trace_cascade("Button", None, None, None, &sheets);
+        assert_eq!(first.notes, second.notes, "two runs must render the same report");
     }
 
     /// The description must name the sheet and the value, so a tooltip is useful.

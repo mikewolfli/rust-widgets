@@ -53,8 +53,13 @@ impl ParamKind {
     }
 }
 
-/// One parameter of a layout kind: its JSON key, its type, its default and whether the constructor
-/// honours it.
+/// One parameter of a layout kind: its JSON key, its type, and whether the constructor honours it.
+///
+/// The parser's *tolerant* defaults (an absent `wrap.spacing` is `8`, an absent `grid.columns` is
+/// `2`) are deliberately **not** mirrored here. They are the lenient-parse half of the contract —
+/// "a slightly wrong document still renders" — while this schema answers "what may a document
+/// say?", which is the question a panel and a validator ask. Mirroring them would be a second
+/// declaration of the same numbers, which is the drift this module exists to avoid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayoutParam {
     /// The JSON key, as the parser reads it.
@@ -204,6 +209,83 @@ pub static LAYOUT_KIND_SCHEMAS: &[LayoutKindSchema] = &[
     },
 ];
 
+/// The child-side parameters a declarative layout accepts on a child entry.
+///
+/// A layout document nests its children in the kind object, and a child may carry its own placement
+/// object (`{"stretch": 2, "col": 1}`). Those keys are read by
+/// [`ChildLayoutAttrs::from_value`](crate::json::ChildLayoutAttrs::from_value) and were, like the
+/// kind's own parameters, undiscoverable: a designer's child panel had to hard-code the five names
+/// and could not tell which of them a given layout uses (the grid keys mean nothing to an `hbox`).
+///
+/// `honoured` is the honest answer *per key* rather than per kind: `stretch` is read by every kind
+/// that distributes space, while `col`/`row`/`col_span`/`row_span` are only meaningful to
+/// [`Grid`](crate::layout::GridLayout) and [`UniformGrid`](crate::layout::UniformGridLayout).
+/// A panel greys out what the enclosing kind ignores instead of offering a field that does nothing.
+pub static CHILD_ATTR_SCHEMA: &[LayoutParam] = &[
+    param("stretch", ParamKind::UInt, false, true),
+    param("col", ParamKind::UInt, false, false),
+    param("row", ParamKind::UInt, false, false),
+    param("col_span", ParamKind::UInt, false, false),
+    param("row_span", ParamKind::UInt, false, false),
+];
+
+/// The child-placement keys a layout **kind** actually honours.
+///
+/// Derived from the kind rather than stored per kind, so a kind added to
+/// [`LAYOUT_KIND_SCHEMAS`] cannot forget to declare which of the grid keys it reads.
+pub fn child_attrs_honoured_by(type_token: &str) -> Vec<&'static str> {
+    let grid =
+        matches!(type_token, "grid" | "Grid" | "uniform_grid" | "uniformGrid" | "uniform-grid");
+    CHILD_ATTR_SCHEMA
+        .iter()
+        .filter(|attr| attr.honoured || (grid && attr.key != "stretch"))
+        .map(|attr| attr.key)
+        .collect()
+}
+
+/// Validates one child's placement object against [`CHILD_ATTR_SCHEMA`], reporting unknown keys and
+/// wrong kinds.
+///
+/// `path` locates the child's own object in the document, so the issue reads on the offending node
+/// rather than on the whole layout. A key the enclosing kind ignores is `DroppedField`, which is
+/// what lets a panel explain "`col_span` has no meaning under an `hbox`" instead of showing an
+/// editable field whose value never reaches the layout.
+pub fn validate_child_attrs(
+    obj: &crate::compat::HashMap<String, String>,
+    type_token: &str,
+    path: &[usize],
+) -> Vec<LayoutIssue> {
+    let honoured = child_attrs_honoured_by(type_token);
+    let mut issues = Vec::new();
+    for (key, value) in obj {
+        match CHILD_ATTR_SCHEMA.iter().find(|attr| attr.key == key) {
+            None => issues.push(LayoutIssue {
+                path: path.to_vec(),
+                diagnostic: LayoutDiagnostic::UnknownField { key: key.clone() },
+            }),
+            Some(attr) if !honoured.contains(&attr.key) => issues.push(LayoutIssue {
+                path: path.to_vec(),
+                diagnostic: LayoutDiagnostic::DroppedField {
+                    key: key.clone(),
+                    reason: "the enclosing layout kind places its children itself",
+                },
+            }),
+            Some(attr) => {
+                if !value_matches_kind(value, attr.kind) {
+                    issues.push(LayoutIssue {
+                        path: path.to_vec(),
+                        diagnostic: LayoutDiagnostic::WrongKind {
+                            key: key.clone(),
+                            expected: attr.kind,
+                        },
+                    });
+                }
+            }
+        }
+    }
+    issues
+}
+
 /// The schema for a layout type token, if it names a kind this build knows.
 pub fn schema_for_type(token: &str) -> Option<&'static LayoutKindSchema> {
     LAYOUT_KIND_SCHEMAS.iter().find(|schema| schema.matches(token))
@@ -286,8 +368,7 @@ impl LayoutIssue {
         if self.path.is_empty() {
             self.diagnostic.describe()
         } else {
-            let rendered: Vec<String> =
-                self.path.iter().map(|index| format!("{index}")).collect();
+            let rendered: Vec<String> = self.path.iter().map(|index| format!("{index}")).collect();
             format!("[{}] {}", rendered.join("."), self.diagnostic.describe())
         }
     }
@@ -371,11 +452,17 @@ fn value_matches_kind(value: &str, kind: ParamKind) -> bool {
             let digits = value.strip_prefix('-').unwrap_or(value);
             !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
         }
-        ParamKind::Axis => matches!(
-            value,
-            "horizontal" | "h" | "H" | "vertical" | "v" | "V" | "column"
-        ),
+        ParamKind::Axis => is_axis_token(value),
     }
+}
+
+/// Whether `value` is an axis token the parser understands.
+///
+/// Reads [`crate::json::layout::AXIS_TOKENS`] — the parser's own list — rather than repeating it,
+/// so the schema cannot accept a token the parser misreads. Keeping the two in sync by hand is
+/// exactly how the splitter's `"column"` came to be accepted by the schema and read as Horizontal.
+pub(crate) fn is_axis_token(value: &str) -> bool {
+    crate::json::layout::AXIS_TOKENS.iter().any(|(token, _)| *token == value)
 }
 
 #[cfg(test)]
@@ -437,7 +524,9 @@ mod tests {
     fn an_unknown_field_is_reported() {
         let issues = validate_layout_object(&obj(&[("type", "hbox"), ("spacng", "4")]), &[]);
         assert_eq!(issues.len(), 1);
-        assert!(matches!(issues[0].diagnostic, LayoutDiagnostic::UnknownField { ref key } if key == "spacng"));
+        assert!(
+            matches!(issues[0].diagnostic, LayoutDiagnostic::UnknownField { ref key } if key == "spacng")
+        );
     }
 
     /// A parameter the constructor drops is reported as dropped, distinctly from unknown.
@@ -445,15 +534,16 @@ mod tests {
     fn a_dropped_field_is_reported_as_dropped() {
         let issues = validate_layout_object(&obj(&[("type", "stack"), ("spacing", "4")]), &[]);
         assert_eq!(issues.len(), 1);
-        assert!(matches!(issues[0].diagnostic, LayoutDiagnostic::DroppedField { ref key, .. } if key == "spacing"));
+        assert!(
+            matches!(issues[0].diagnostic, LayoutDiagnostic::DroppedField { ref key, .. } if key == "spacing")
+        );
         assert!(issues[0].describe().contains("not applied"));
     }
 
     /// A wrong-typed value is reported with the expected kind.
     #[test]
     fn a_wrong_kind_is_reported() {
-        let issues =
-            validate_layout_object(&obj(&[("type", "hbox"), ("spacing", "wide")]), &[]);
+        let issues = validate_layout_object(&obj(&[("type", "hbox"), ("spacing", "wide")]), &[]);
         assert_eq!(issues.len(), 1);
         assert!(matches!(
             issues[0].diagnostic,
@@ -464,11 +554,73 @@ mod tests {
     /// A negative value is wrong for a `UInt` parameter but right for an `Int` one.
     #[test]
     fn signed_parameters_accept_negative_values() {
-        assert!(validate_layout_object(&obj(&[("type", "hbox"), ("spacing", "-1")]), &[]).len() == 1);
-        assert!(validate_layout_object(&obj(&[("type", "flow"), ("spacing", "-1")]), &[]).is_empty());
+        assert!(
+            validate_layout_object(&obj(&[("type", "hbox"), ("spacing", "-1")]), &[]).len() == 1
+        );
+        assert!(
+            validate_layout_object(&obj(&[("type", "flow"), ("spacing", "-1")]), &[]).is_empty()
+        );
     }
 
     /// Every declared kind must round-trip through the schema's own token.
+    /// B26.05: a child placement key the schema declares must be one the parser actually reads.
+    ///
+    /// The test goes through the real `ChildLayoutAttrs::from_value` rather than comparing two
+    /// lists: a schema that declared a key the parser ignores would pass a string comparison and
+    /// fail here.
+    #[test]
+    fn a_declared_child_key_is_read_by_the_parser() {
+        use crate::json::ChildLayoutAttrs;
+
+        for attr in CHILD_ATTR_SCHEMA {
+            // A JSON *number*, because that is what `from_value` reads (the validator's own input
+            // is the document's text, which is a different entry point).
+            let json = serde_json::json!({ attr.key: if attr.key == "stretch" { 7 } else { 3 } });
+            let attrs = ChildLayoutAttrs::from_value(&json);
+            let read = match attr.key {
+                "stretch" => attrs.stretch == 7,
+                "col" => attrs.col == Some(3),
+                "row" => attrs.row == Some(3),
+                "col_span" => attrs.col_span == Some(3),
+                "row_span" => attrs.row_span == Some(3),
+                other => panic!("`{other}` is declared by the schema but this test cannot read it"),
+            };
+            assert!(read, "the schema declares `{}` but the parser did not read it", attr.key);
+        }
+    }
+
+    /// B26.05: a grid is told its cell keys are honoured; a box layout's are reported as dropped.
+    #[test]
+    fn only_a_grid_honours_the_cell_keys() {
+        let grid = child_attrs_honoured_by("grid");
+        assert!(grid.contains(&"col_span"), "{grid:?}");
+        let hbox = child_attrs_honoured_by("hbox");
+        assert_eq!(hbox, vec!["stretch"], "a box layout places its children itself: {hbox:?}");
+
+        let mut child = HashMap::new();
+        child.insert(String::from("col"), String::from("1"));
+        assert!(validate_child_attrs(&child, "grid", &[0]).is_empty());
+        let issues = validate_child_attrs(&child, "hbox", &[0]);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(matches!(issues[0].diagnostic, LayoutDiagnostic::DroppedField { .. }));
+        assert_eq!(issues[0].path, vec![0usize]);
+    }
+
+    /// B26.05: an unknown or malformed child key is named rather than ignored.
+    #[test]
+    fn a_child_key_the_schema_does_not_declare_is_reported() {
+        let mut child = HashMap::new();
+        child.insert(String::from("stretc"), String::from("2"));
+        let issues = validate_child_attrs(&child, "grid", &[]);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(matches!(issues[0].diagnostic, LayoutDiagnostic::UnknownField { .. }));
+
+        let mut negative = HashMap::new();
+        negative.insert(String::from("stretch"), String::from("-1"));
+        let issues = validate_child_attrs(&negative, "vbox", &[]);
+        assert!(matches!(issues[0].diagnostic, LayoutDiagnostic::WrongKind { .. }), "{issues:?}");
+    }
+
     #[test]
     fn the_supported_types_list_is_not_empty_and_sorted_consistently() {
         let types = supported_types();
@@ -476,4 +628,3 @@ mod tests {
         assert!(types.contains(&"hbox") && types.contains(&"flex"));
     }
 }
-

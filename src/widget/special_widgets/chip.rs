@@ -33,6 +33,71 @@ impl ChipItem {
     }
 }
 
+/// The declared shape of one chip item, as a record (BLUE26 B26.09).
+///
+/// # Why the control declares this itself
+///
+/// This is the row shape of the `items` property, and the control is what owns both ends of it: the
+/// field names are `ChipItem`'s own field names, and `id` is the identity a selection is held by. A
+/// table elsewhere would be a second declaration of the struct — the drift this crate's single-source
+/// rule exists to prevent — so it lives beside the struct it describes.
+///
+/// `id` and `label` are required because [`ChipItem::new`] requires them; `selected` is optional
+/// because a document that does not mention it means "not selected", which is the same state
+/// `ChipItem::new` starts in.
+pub const CHIP_ITEM_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "id",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::required(
+                "label",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "selected",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+        ],
+        id_field: "id",
+        ids_unique: true,
+        ids_required: true,
+    };
+
+/// The record form of one chip item: `id`, `label` and (only when it is set) `selected`.
+///
+/// `selected: false` is written out rather than omitted, so a read of `Chip::items` and a read of the
+/// `items` property agree on the field set: a consumer that builds a table from the property does not
+/// have to treat a differing arity as a different shape.
+fn chip_item_record(item: &ChipItem) -> crate::widget::capability::RecordValue {
+    crate::widget::capability::RecordValue::new()
+        .with("id", CapabilityValue::String(item.id.clone()))
+        .with("label", CapabilityValue::String(item.label.clone()))
+        .with("selected", CapabilityValue::Bool(item.selected))
+}
+
+/// The item a record describes, or the reason it cannot be read as one.
+///
+/// Refuses a missing or wrongly-typed `id`/`label` rather than defaulting them: a chip with no id
+/// cannot be addressed by a selection, and one with no label cannot be drawn — inventing either would
+/// produce a control the document did not ask for.
+fn chip_item_from_record(
+    record: &crate::widget::capability::RecordValue,
+) -> Result<ChipItem, CapabilityAccessError> {
+    let text = |name: &str| match record.get(name) {
+        Some(CapabilityValue::String(value)) => Ok(value.clone()),
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    };
+    let selected = match record.get("selected") {
+        None | Some(CapabilityValue::Null) => false,
+        Some(CapabilityValue::Bool(flag)) => *flag,
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    Ok(ChipItem { id: text("id")?, label: text("label")?, selected })
+}
+
 /// Horizontal chip list with single or multi select mode.
 pub struct Chip {
     base: BaseWidget,
@@ -334,6 +399,12 @@ impl Widget for Chip {
 impl WidgetProperties for Chip {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            "items" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &CHIP_ITEM_SCHEMA,
+                    self.items().iter().map(chip_item_record).collect(),
+                )))
+            }
             "item_count" => Ok(CapabilityValue::UInt(self.items().len() as u64)),
             "multi_select" => Ok(CapabilityValue::Bool(self.multi_select())),
             "focused_index" => match self.focused_index() {
@@ -347,6 +418,33 @@ impl WidgetProperties for Chip {
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
+            "items" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                // Checked in full **before** anything is replaced, so a refused update leaves the
+                // live items untouched rather than half-swapped. A withdrawn or superseded pending
+                // edit is therefore safe to abandon: nothing has to be rolled back, because nothing
+                // was applied.
+                list.validate_against(&CHIP_ITEM_SCHEMA).map_err(|violation| {
+                    log::warn!("chip.items refused: {violation}");
+                    // The property name and the reason travel back, because B26.02 requires a
+                    // refusal to be pointable: a bare `TypeMismatch` cannot say *which record* and
+                    // *which field* was wrong, and this is the layer that knows.
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("items"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                let mut items = Vec::with_capacity(list.len());
+                for record in list.items() {
+                    items.push(chip_item_from_record(record)?);
+                }
+                // `set_items` is the control's own normalisation (single-select collapses to one
+                // selection), so the property write goes through it rather than restating the rule.
+                self.set_items(items);
+                Ok(())
+            }
             "multi_select" => {
                 self.set_multi_select(expect_bool(value)?);
                 Ok(())
@@ -361,6 +459,7 @@ impl WidgetProperties for Chip {
 
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
+            "items",
             "item_count",
             "multi_select",
             "focused_index",
@@ -371,12 +470,19 @@ impl WidgetProperties for Chip {
 
     /// Runs one of the commands `chip` publishes.
     ///
-    /// Neither published command has a meaning without an argument: `toggle_index`
-    /// names *which* chip to toggle, and `move_focus` takes a signed delta whose
-    /// direction cannot be inferred. Both are therefore refused as
-    /// [`CapabilityAccessError::OutOfRange`] — the names are valid and the arguments
-    /// are what is missing — rather than `UnknownCommand`, which would deny that the
-    /// control has them. `set_items` carries the item list.
+    /// None of the published commands takes no argument: `toggle_index` names *which* chip to toggle,
+    /// `move_focus` takes a signed delta whose direction cannot be inferred, and `set_items` takes the
+    /// item list. All three are therefore refused as [`CapabilityAccessError::OutOfRange`] — the names
+    /// are valid and the arguments are what is missing — rather than `UnknownCommand`, which would
+    /// deny that the control has them.
+    ///
+    /// # Where `set_items`'s payload actually goes
+    ///
+    /// A command's signature carries no argument, so the item list travels through the **`items`
+    /// property** instead ([`Self::set`]) — the same division B26.03 settled for `series` on the chart
+    /// widgets, where a value-carrying operation is a property write and the command form is the
+    /// no-argument half. A caller that reads this name and calls it gets `OutOfRange`, and the
+    /// capability's `items` property is what it should read instead.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "toggle_index" | "move_focus" | "set_items" => Err(CapabilityAccessError::OutOfRange),
@@ -838,6 +944,200 @@ mod tests {
             WidgetState::Selected,
             "a chosen member outranks the list's own hover"
         );
+    }
+
+    // ── B26.09: the item list as a typed collection property ──
+
+    /// The `items` property round-trips the live items, and identity is what it round-trips *by*.
+    ///
+    /// Before B26.09 the item list was reachable only as `set_items`, whose argument the property API
+    /// could not carry: `items` was not a property name at all, so a document's `"items": [..]` had
+    /// nowhere to go.
+    #[test]
+    fn the_items_property_round_trips_the_live_items() {
+        let mut chip = Chip::new(Rect::new(0, 0, 300, 36));
+        chip.set_items(sample_items());
+        chip.set_multi_select(true);
+        assert!(chip.toggle_index(1));
+
+        let CapabilityValue::Records(list) = chip.get("items").expect("readable") else {
+            panic!("`items` must read as a record list");
+        };
+        assert_eq!(list.len(), 3);
+        assert_eq!(list.schema().id_field, "id");
+        assert_eq!(list.id_of(0), Some("bug"));
+        assert_eq!(list.get_by_id("urgent").expect("present").text("label"), "Urgent");
+        assert!(matches!(
+            list.get_by_id("feature").expect("present").get("selected"),
+            Some(CapabilityValue::Bool(true))
+        ));
+        assert!(matches!(
+            list.get_by_id("bug").expect("present").get("selected"),
+            Some(CapabilityValue::Bool(false))
+        ));
+    }
+
+    /// A row move survives a write/read round trip: the item keeps its id and its own fields, and only
+    /// its position changes.
+    #[test]
+    fn a_moved_item_keeps_its_identity_through_a_property_write() {
+        let mut chip = Chip::new(Rect::new(0, 0, 300, 36));
+        chip.set_items(sample_items());
+        chip.set_multi_select(true);
+        assert!(chip.toggle_index(0));
+
+        let CapabilityValue::Records(mut list) = chip.get("items").expect("readable") else {
+            panic!("`items` must read as a record list");
+        };
+        // Move the *selected* item to the end: its selection must travel with it, and the selection is
+        // held by id, so a position-based implementation would lose it.
+        list.move_item(0, 2).expect("both indices are in range");
+        chip.set("items", CapabilityValue::Records(list)).expect("a conforming list is accepted");
+
+        let ids: Vec<&str> = chip.items().iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(ids, vec!["feature", "urgent", "bug"]);
+        assert_eq!(chip.selected_ids(), vec!["bug"]);
+    }
+
+    /// A malformed list is refused **and the live items are untouched** — the whole list is checked
+    /// before anything is replaced.
+    ///
+    /// This is what makes a withdrawn or superseded pending edit safe to abandon: there is no partial
+    /// application to roll back.
+    #[test]
+    fn a_malformed_record_list_is_refused_and_changes_nothing() {
+        use crate::widget::capability::{RecordList, RecordValue, EMPTY_RECORD_SCHEMA};
+
+        let mut chip = Chip::new(Rect::new(0, 0, 300, 36));
+        chip.set_items(sample_items());
+        chip.set_multi_select(true);
+        assert!(chip.toggle_index(1));
+        let before = chip.items().to_vec();
+        let selection_before: Vec<String> =
+            chip.selected_ids().into_iter().map(String::from).collect();
+
+        // Each entry below breaks exactly one rule of `CHIP_ITEM_SCHEMA`.
+        let broken: Vec<(&str, Vec<RecordValue>)> = vec![
+            (
+                "missing label",
+                vec![RecordValue::new().with("id", CapabilityValue::String(String::from("a")))],
+            ),
+            (
+                "unknown field",
+                vec![RecordValue::new()
+                    .with("id", CapabilityValue::String(String::from("a")))
+                    .with("label", CapabilityValue::String(String::from("A")))
+                    .with("weight", CapabilityValue::UInt(1))],
+            ),
+            (
+                "wrong kind",
+                vec![RecordValue::new()
+                    .with("id", CapabilityValue::UInt(1))
+                    .with("label", CapabilityValue::String(String::from("A")))],
+            ),
+            (
+                "duplicate id",
+                vec![
+                    RecordValue::new()
+                        .with("id", CapabilityValue::String(String::from("a")))
+                        .with("label", CapabilityValue::String(String::from("A"))),
+                    RecordValue::new()
+                        .with("id", CapabilityValue::String(String::from("a")))
+                        .with("label", CapabilityValue::String(String::from("B"))),
+                ],
+            ),
+            (
+                "empty id",
+                vec![RecordValue::new()
+                    .with("id", CapabilityValue::String(String::new()))
+                    .with("label", CapabilityValue::String(String::from("A")))],
+            ),
+        ];
+
+        for (label, records) in broken {
+            let list = RecordList::from_items(&EMPTY_RECORD_SCHEMA, records);
+            // The refusal names the property and the reason, so a designer can point at the field
+            // and say why — a bare `TypeMismatch` could not say which record or which field.
+            match chip.set("items", CapabilityValue::Records(list)) {
+                Err(CapabilityAccessError::ConstraintViolation { property, reason }) => {
+                    assert_eq!(property, "items", "`{label}` must name the property");
+                    assert!(!reason.is_empty(), "`{label}` must state a reason");
+                }
+                other => panic!("`{label}` must be refused with a reason, got {other:?}"),
+            }
+            assert_eq!(chip.items(), before.as_slice(), "`{label}` must not change the items");
+            let selection_after: Vec<String> =
+                chip.selected_ids().into_iter().map(String::from).collect();
+            assert_eq!(selection_after, selection_before, "`{label}` must not change selection");
+        }
+
+        // A non-list value is refused for the same reason, and by the same contract.
+        assert_eq!(
+            chip.set("items", CapabilityValue::String(String::from("[]"))),
+            Err(CapabilityAccessError::TypeMismatch)
+        );
+        assert_eq!(chip.items(), before.as_slice());
+    }
+
+    /// An accepted list normalises exactly the way `set_items` does, because the property write goes
+    /// through the control's own setter rather than restating its rules.
+    #[test]
+    fn an_accepted_list_is_normalised_by_the_controls_own_setter() {
+        use crate::widget::capability::{RecordList, RecordValue, EMPTY_RECORD_SCHEMA};
+
+        let mut chip = Chip::new(Rect::new(0, 0, 300, 36));
+        // Single-select: two records claiming `selected` must collapse to one, which is
+        // `set_items`'s normalisation and not a rule the property path may skip.
+        let list = RecordList::from_items(
+            &EMPTY_RECORD_SCHEMA,
+            vec![
+                RecordValue::new()
+                    .with("id", CapabilityValue::String(String::from("a")))
+                    .with("label", CapabilityValue::String(String::from("A")))
+                    .with("selected", CapabilityValue::Bool(true)),
+                RecordValue::new()
+                    .with("id", CapabilityValue::String(String::from("b")))
+                    .with("label", CapabilityValue::String(String::from("B")))
+                    .with("selected", CapabilityValue::Bool(true)),
+            ],
+        );
+        chip.set("items", CapabilityValue::Records(list)).expect("conforming");
+        assert_eq!(chip.selected_ids(), vec!["a"], "single-select keeps only the first claimant");
+
+        // An omitted `selected` means "not selected", which is the state `ChipItem::new` starts in.
+        let mut chip = Chip::new(Rect::new(0, 0, 300, 36));
+        let list = RecordList::from_items(
+            &EMPTY_RECORD_SCHEMA,
+            vec![RecordValue::new()
+                .with("id", CapabilityValue::String(String::from("a")))
+                .with("label", CapabilityValue::String(String::from("A")))],
+        );
+        chip.set("items", CapabilityValue::Records(list)).expect("`selected` is optional");
+        assert_eq!(chip.selected_ids(), Vec::<&str>::new());
+        assert_eq!(chip.items().len(), 1);
+    }
+
+    /// `items` is part of the published contract, and the capability's own table declares it as a
+    /// record list — so a designer that reads the schema learns the field shape rather than guessing.
+    #[test]
+    fn the_items_property_is_published_with_its_record_schema() {
+        let chip = Chip::new(Rect::new(0, 0, 300, 36));
+        assert!(
+            WidgetProperties::property_names(&chip).contains(&"items"),
+            "the published contract must name `items`, not only the `set_items` command"
+        );
+        let schema = crate::widget::capability::CHIP_PROPERTIES
+            .iter()
+            .find(|schema| schema.name == "items")
+            .expect("`items` is declared by the capability table");
+        assert_eq!(schema.value_kind, crate::widget::capability::PropertyValueKind::Records);
+        assert!(schema.readable && schema.writable);
+        let record_schema = schema.record_schema.expect("a `Records` schema names its shape");
+        assert_eq!(record_schema.id_field, "id");
+        assert_eq!(record_schema.names(), vec!["id", "label", "selected"]);
+        assert!(record_schema.ids_unique && record_schema.ids_required);
+        // The control itself carries the same schema, so the two cannot drift.
+        assert_eq!(record_schema, &CHIP_ITEM_SCHEMA);
     }
 
     // ── D09-CTRL-02: the chip box is measured with the shared text ruler ──

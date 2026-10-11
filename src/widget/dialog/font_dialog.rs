@@ -460,7 +460,8 @@ impl Draw for FontDialog {
         // same pair cannot disagree about the button width, the gap between them or where the
         // row's left edge falls. The labels are centred in their buttons and fitted to them.
         let labels = vec![tr!("dialog.ok"), tr!("dialog.cancel")];
-        let row = super::message_box::action_row_geometry(context, font, &labels, button_band, true);
+        let row =
+            super::message_box::action_row_geometry(context, font, &labels, button_band, true);
         let ok_rect = row.buttons[0];
         context.fill_rect(ok_rect, accent);
         context.draw_text_line(ok_rect, &labels[0], font, accent_ink, HorizontalAlignment::Center);

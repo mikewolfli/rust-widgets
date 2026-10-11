@@ -66,8 +66,34 @@ impl ProjectNode {
             .collect()
     }
 
-    /// A text or title argument, if the document declares one.
+    /// Record-list properties: values that are arrays of objects, in document order (BLUE26 B26.09).
     ///
+    /// # Why these are not in [`Self::scalar_properties`]
+    ///
+    /// [`Self::scalar_properties`] deliberately excludes arrays and objects, because "a non-scalar
+    /// value is not a property value" *was* true — and for a record list that made the value **silently
+    /// absent**: a document's `"items": [{"id": "a", "label": "A"}]` was dropped on the floor rather
+    /// than reported, so a generated program produced a chip group with no chips and no diagnostic.
+    ///
+    /// They are returned separately rather than folded into `scalar_properties` because a caller that
+    /// wants scalars (the style and geometry routes) must not receive structure it would have to
+    /// re-classify, and because a record list needs its *declared schema* to be read — which is the
+    /// caller's business, not this method's.
+    ///
+    /// A shape test decides membership: an **array whose every element is an object**, including the
+    /// empty array. An array of numbers (`"series": [1, 2, 3]`) is deliberately left out; it is not a
+    /// record list, and treating it as one would invent fields for it.
+    pub fn record_properties(&self) -> Vec<(String, Value)> {
+        self.properties
+            .iter()
+            .filter(|(_, value)| {
+                matches!(value, Value::Array(items) if items.iter().all(Value::is_object))
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// A text or title argument, if the document declares one.    ///
     /// Both spellings because the document uses `title` for windows and `text` for label-like
     /// controls, and a stripped-target constructor takes whichever its control publishes first.
     pub fn text(&self) -> Option<String> {
@@ -491,6 +517,43 @@ mod tests {
             !scalars.iter().any(|(name, _)| name == "items"),
             "an array is structure, not a property value"
         );
+    }
+
+    /// B26.09: an array **of objects** is a record list, and it is reported rather than dropped.
+    ///
+    /// The gap this closes is the *silence*: `scalar_properties` correctly refuses to treat an array
+    /// as a scalar, but nothing else looked at the key, so a document's `"items": [{"id": "a", …}]`
+    /// produced a control with no items and no diagnostic.
+    #[test]
+    fn an_array_of_objects_is_a_record_list_property() {
+        let json = r#"{"chip":{"items":[{"id":"a","label":"A"}],"layout":{"type":"vbox"}}}"#;
+        let project = JsonProject::parse(json).expect("valid");
+        let root = project.root().expect("a root");
+        let recorded = root.record_properties();
+        assert_eq!(recorded.len(), 1, "the one array-of-objects key is reported: {recorded:?}");
+        assert_eq!(recorded[0].0, "items");
+        assert!(recorded[0].1.is_array());
+        // It is still *not* a scalar property: the two lists stay disjoint so a scalar consumer
+        // cannot receive structure it would have to re-classify.
+        assert!(!root.scalar_properties().iter().any(|(name, _)| name == "items"));
+    }
+
+    /// An array of **scalars** is not a record list, and is deliberately left where it was.
+    ///
+    /// `items` on a combo box is `["One", "Two"]`: a value shape this crate does not model as records,
+    /// so treating it as one would invent fields for it.
+    #[test]
+    fn an_array_of_scalars_is_not_a_record_list_property() {
+        let json = r#"{"combobox":{"items":["One","Two"],"layout":{"type":"vbox"}}}"#;
+        let project = JsonProject::parse(json).expect("valid");
+        let root = project.root().expect("a root");
+        assert!(root.record_properties().is_empty(), "a string list is not a record list");
+        assert!(!root.scalar_properties().iter().any(|(name, _)| name == "items"));
+        // An empty array is a record list: it has no elements and therefore no element to contradict
+        // the shape.
+        let empty = r#"{"chip":{"items":[],"layout":{"type":"vbox"}}}"#;
+        let project = JsonProject::parse(empty).expect("valid");
+        assert_eq!(project.root().expect("a root").record_properties().len(), 1);
     }
 
     #[test]

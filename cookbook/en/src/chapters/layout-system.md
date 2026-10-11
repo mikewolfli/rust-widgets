@@ -514,9 +514,47 @@ let layout = create_layout_from_kind(&kind);
 | `"hbox"` | `"HBox"`, `"horizontal"` | `spacing`, `margin` |
 | `"vbox"` | `"VBox"`, `"vertical"` | `spacing`, `margin` |
 | `"grid"` | `"Grid"` | `columns`, `spacing`, `margin` |
-| `"stack"` | `"Stack"` | `spacing` |
-| `"splitter"` | `"Splitter"` | `orientation` (`"horizontal"`/`"vertical"`), `margin` |
+| `"uniform_grid"` | `"uniformGrid"`, `"uniform-grid"` | `rows`, `columns`, `spacing`, `margin` |
+| `"stack"` | `"Stack"` | `spacing` (parsed, then dropped) |
+| `"splitter"` | `"Splitter"` | `orientation`, `margin` (parsed, then dropped) |
 | `"form"` | `"Form"` | `spacing`, `margin` |
+| `"flow"` | `"Flow"` | `spacing`, `padding`, `orientation` |
+| `"wrap"` | `"Wrap"` | `spacing` (default 8), `padding` (default 8), `orientation` |
+| `"flex"` | `"Flex"` | `gap` |
+
+`orientation` accepts `"horizontal"`/`"h"`/`"H"` and `"vertical"`/`"v"`/`"V"`/`"column"`; an
+unrecognised token, and an omitted field, both mean horizontal. All three kinds that take an axis
+(`splitter`, `flow`, `wrap`) read the **same** token list, so a document cannot be accepted by the
+validator and then laid out along a different axis than the one it named.
+
+**Checking a document before loading it.** The schema the parser reads is public, so a designer can
+report on a document it has not run:
+
+```rust
+use rust_widgets::compat::HashMap;
+use rust_widgets::json::{layout_schema_for_type, supported_layout_types, validate_layout_object};
+
+let mut obj = HashMap::new();
+obj.insert(String::from("type"), String::from("grid"));
+obj.insert(String::from("columns"), String::from("3"));
+for issue in validate_layout_object(&obj, &[]) {
+    // `describe()` reads on its own — "unknown layout type `gridd`; supported: hbox, vbox, ...".
+    println!("{}", issue.describe());
+}
+
+// What a panel may offer: every type token, and each kind's declared parameters.
+for token in supported_layout_types() {
+    let schema = layout_schema_for_type(token).expect("every listed token has a schema");
+    for param in schema.params {
+        // `param.key`, `param.kind`, `param.required`, and `param.honoured`.
+    }
+}
+```
+
+Two details that keep the report honest: a parameter the constructor cannot honour
+(`stack.spacing`, `splitter.margin`) is reported as **dropped** rather than presented as working,
+and `validate_child_attrs` reports a placement key the enclosing kind ignores (`col` under an
+`hbox`) instead of letting an editable field stand for a value that never reaches the layout.
 
 **Child layout attributes** can specify stretch, grid position, and spans:
 

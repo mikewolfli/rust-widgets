@@ -1121,44 +1121,58 @@ mod tests {
         assert_eq!(rgba[right_idx + 2], 255); // B
     }
 
-    /// The blur's cost must not grow with the radius the caller asks for.
+    /// The blur's cost must not grow with the radius — that is the whole point of the sliding
+    /// window, and it is a *timing* claim, so the measurement has to be built to survive a busy
+    /// machine.
     ///
-    /// This is the *reason* for the sliding window, so it is asserted rather than asserted-about
-    /// (principle #1). The naive implementation this replaced summed `2r + 1` pixels per output pixel
-    /// per pass, so a 40 px blur cost twenty times a 2 px one; the window costs the same for both,
-    /// because each pixel enters the sum once and leaves once.
+    /// Two things make it fragile if written naively, and both have been observed: a single sample
+    /// of a fast blur is short enough that scheduler jitter is a large fraction of it, and
+    /// measuring *all* of one radius before starting the other lets a burst of load inflate only
+    /// the second. So the two radii are **interleaved** (load that arrives hits a sample of each)
+    /// and each result is the **minimum** of several samples (the sample least disturbed by load).
     ///
-    /// # Why the bound is generous
+    /// The threshold is a *shape* boundary, not a benchmark. Measured on this 400×400 surface in the
+    /// debug profile this suite runs:
     ///
-    /// A ratio measured on a shared machine is noisy, and a test that fails on a scheduling hiccup is
-    /// worse than no test. So this asserts the **asymptotic** property with a wide margin: the linear
-    /// implementation would be ~20x here, and anything under 4x is unambiguously the constant-cost
-    /// shape. The measurement is best-of-three so a single preemption cannot decide it.
+    ///   * sliding window (correct):      40 px costs ~2.9x a 2 px
+    ///   * recomputed window (the bug):   40 px costs ~16.4x a 2 px
+    ///
+    /// `6.0` sits ~2x above the correct shape and ~2.7x below the bug, so the verdict does not
+    /// depend on how fast the machine is. 4.0 was too close to 2.9: a single unlucky sample was
+    /// enough to read a working blur as broken.
     #[test]
     fn the_blur_cost_does_not_grow_with_the_radius() {
+        use core::time::Duration;
         use std::time::Instant;
 
         let (w, h) = (400usize, 400usize);
-        let budget = |radius: usize| {
-            let mut best = core::time::Duration::MAX;
-            for _ in 0..3 {
-                let mut buf: Vec<u8> =
-                    (0..w * h * 4).map(|i| ((i as f32 * 0.37).sin().abs() * 255.0) as u8).collect();
-                let start = Instant::now();
-                box_blur_region(&mut buf, w, h, 0, 0, w, h, radius);
-                best = best.min(start.elapsed());
-            }
-            best
+        // One buffer, reused. The blur's cost depends on the region and the radius, never on the
+        // pixel values, so re-blurring the same bytes measures the same work — and it keeps the
+        // fill (which `sin`s 640k values) out of the neighbour of the timed region, where it used
+        // to be the larger term.
+        let mut buf: Vec<u8> =
+            (0..w * h * 4).map(|i| ((i as f32 * 0.37).sin().abs() * 255.0) as u8).collect();
+
+        let mut blur = |radius: usize| {
+            let start = Instant::now();
+            box_blur_region(&mut buf, w, h, 0, 0, w, h, radius);
+            start.elapsed()
         };
 
-        let small = budget(2);
-        let large = budget(40);
-        // A blur of 40 is 20x the kernel of a blur of 2. Anything near that is the old shape.
+        const SAMPLES: usize = 5;
+        let mut small = Duration::MAX;
+        let mut large = Duration::MAX;
+        for _ in 0..SAMPLES {
+            small = small.min(blur(2));
+            large = large.min(blur(40));
+        }
+
         let ratio = large.as_secs_f64() / small.as_secs_f64().max(1e-9);
         assert!(
-            ratio < 4.0,
-            "a 40 px blur took {ratio:.1}x a 2 px one ({large:?} vs {small:?}) — the cost is still \
-             growing with the radius, so the window is not sliding"
+            ratio < 6.0,
+            "a 40 px blur took {ratio:.1}x a 2 px one ({large:?} vs {small:?}, minimum of \
+             {SAMPLES} samples) — the cost is still growing with the radius, so the window is not \
+             sliding"
         );
     }
 

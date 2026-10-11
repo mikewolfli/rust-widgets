@@ -1280,6 +1280,73 @@ fn a_hyphenated_command_reaches_the_same_command_as_its_published_spelling() {
     );
 }
 
+/// B26.03: a composite payload whose parts are published properties must take its **arity and
+/// element kind from that control**, not from a table-wide guess.
+///
+/// # What this caught
+///
+/// The table described `set_range` as `(Float, Float)` for every control. Seven of its eleven
+/// publishers take `i32` (`slider`, `dial`, `scroll_bar`, `spin_box`, `progress_bar`,
+/// `progress_dialog`, `number_picker`) and two take `u32` (`arc`, `meter`), so the schema told a
+/// designer to wire a float to a control that refuses one. `set_viewport` was described as four
+/// floats while both controls that publish it take `(i64, i64)`, and `set_steps` as a float list
+/// while `scroll_bar`'s payload is its `single_step`/`page_step` pair.
+///
+/// The shapes here are asserted against the controls' own setters (`slider::set_range(i32, i32)`,
+/// `arc::set_range(u32, u32)`, `gantt_widget::set_viewport(i64, i64)`), so a change to either side
+/// fails rather than drifting.
+#[test]
+fn a_composite_payload_takes_its_shape_from_the_control() {
+    use crate::widget::capability::command_schema::command_schema;
+    use crate::widget::capability::{CommandSignature, PropertyValueKind};
+
+    let factory = WidgetFactory::new_with_defaults();
+    let shape = |control: &str, command: &str| {
+        let capability = factory.capability(control).expect("the control is registered");
+        let schema =
+            command_schema(command, capability.properties).expect("the command is described");
+        match schema.signature {
+            CommandSignature::Composite { arity, element, .. } => (arity, element),
+            other => panic!("`{command}` on {control} is not composite: {other:?}"),
+        }
+    };
+
+    // The `i32` setters: the pair is `Int`.
+    for control in
+        ["slider", "dial", "scroll_bar", "progress_bar", "progress_dialog", "number_picker"]
+    {
+        assert_eq!(
+            shape(control, "set_range"),
+            (Some(2), Some(PropertyValueKind::Int)),
+            "`{control}::set_range` takes two `i32`"
+        );
+    }
+    // The `u32` setters, which a table-wide `Float` could never express.
+    for control in ["arc", "meter"] {
+        assert_eq!(
+            shape(control, "set_range"),
+            (Some(2), Some(PropertyValueKind::UInt)),
+            "`{control}::set_range` takes two `u32`"
+        );
+    }
+    // The float pair.
+    assert_eq!(shape("range_slider", "set_range"), (Some(2), Some(PropertyValueKind::Float)));
+    // Two values, not the four the table claimed.
+    for control in ["gantt_widget", "timeline_widget"] {
+        assert_eq!(
+            shape(control, "set_viewport"),
+            (Some(2), Some(PropertyValueKind::Int)),
+            "`{control}::set_viewport` takes two `i64`"
+        );
+    }
+    assert_eq!(shape("scroll_bar", "set_steps"), (Some(2), Some(PropertyValueKind::Int)));
+    assert_eq!(shape("code_editor", "set_cursor"), (Some(2), Some(PropertyValueKind::UInt)));
+
+    // A payload with no property counterpart keeps the table's answer, so the derivation refines
+    // the table rather than replacing it.
+    assert_eq!(shape("heatmap", "set_cell"), (Some(3), None));
+}
+
 /// B26.03: every published command must have a derivable typed schema.
 ///
 /// # Why this test is the load-bearing half of B26.03
@@ -1302,8 +1369,7 @@ fn every_published_command_has_a_typed_schema() {
 
     let factory = WidgetFactory::new_with_defaults();
     let mut total = 0usize;
-    let mut undescribed: alloc::vec::Vec<(&'static str, &'static str)> =
-        alloc::vec::Vec::new();
+    let mut undescribed: alloc::vec::Vec<(&'static str, &'static str)> = alloc::vec::Vec::new();
 
     for capability in factory.capabilities() {
         for command in capability.commands {
@@ -1438,12 +1504,12 @@ fn every_declared_range_constraint_is_enforced_on_write() {
                 // A value one step outside the range must be refused by the factory's schema-aware
                 // write, which runs the same validator the JSON loader and generator pre-check use.
                 let outside = maximum + 1.0;
-                let value = if schema.value_kind == crate::widget::capability::PropertyValueKind::Int
-                {
-                    CapabilityValue::Int(outside as i64)
-                } else {
-                    CapabilityValue::Float(outside)
-                };
+                let value =
+                    if schema.value_kind == crate::widget::capability::PropertyValueKind::Int {
+                        CapabilityValue::Int(outside as i64)
+                    } else {
+                        CapabilityValue::Float(outside)
+                    };
                 let result = factory.write_property(widget.as_mut(), schema.name, value);
                 assert!(
                     matches!(result, Err(CapabilityAccessError::ConstraintViolation { .. })),
@@ -1456,8 +1522,5 @@ fn every_declared_range_constraint_is_enforced_on_write() {
         }
     }
 
-    assert!(
-        checked > 0,
-        "no capability declares a range constraint, so this test proves nothing"
-    );
+    assert!(checked > 0, "no capability declares a range constraint, so this test proves nothing");
 }

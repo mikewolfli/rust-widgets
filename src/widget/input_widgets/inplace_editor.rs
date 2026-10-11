@@ -628,10 +628,9 @@ impl EventHandler for InplaceEditor {
             // drives `insert_char` — the same entry point the printable key arm uses. The editor only
             // accepts text while it is in edit mode, so a `TextInput` in display mode is ignored
             // exactly as the key path ignores keys outside edit mode.
-            Event::TextInput { text } | Event::ImeCommit { text }
-                if self.is_editing => {
-                    self.insert_committed_text(text);
-                }
+            Event::TextInput { text } | Event::ImeCommit { text } if self.is_editing => {
+                self.insert_committed_text(text);
+            }
             _ => {
                 self.base.handle_event(event);
             }

@@ -1386,8 +1386,7 @@ mod tests {
     #[test]
     fn a_partly_applied_batch_is_reported_as_partial() {
         // One refused write and one accepted write: the batch is partial.
-        let mut report =
-            ApplyReport { properties_written: 1, ..ApplyReport::default() };
+        let mut report = ApplyReport { properties_written: 1, ..ApplyReport::default() };
         report.errors.push(ViewError::PropertyRefused {
             id: 1,
             name: String::from("text"),

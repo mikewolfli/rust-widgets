@@ -761,26 +761,84 @@ The capability system allows querying what features a widget supports:
 ```rust
 pub struct WidgetCapability {
     pub kind: WidgetKind,
-    pub properties: HashMap<String, PropertySchema>,
-    pub features: Vec<String>,
+    pub properties: &'static [PropertySchema],
+    pub events: &'static [EventSchema],
+    pub commands: &'static [&'static str],
 }
 
 pub enum PropertyValueKind {
-    Integer, Float, String, Boolean, Color, Font, Enum(Vec<String>),
+    Bool, Int, UInt, Float,
+    // A number whose integer/decimal form another property decides (a spin box in
+    // integer mode reports `Int`, in decimal mode `Float`).
+    Number,
+    String, Enum, Color, Rect,
+    // An ordered, id-keyed list of records. The record shape is declared on
+    // `PropertySchema::record_schema`, not in this variant.
+    Records,
 }
 
 pub struct PropertySchema {
-    pub name: String,
-    pub kind: PropertyValueKind,
+    pub name: &'static str,
+    pub value_kind: PropertyValueKind,
+    pub readable: bool,
     pub writable: bool,
-    pub default_value: CapabilityValue,
+    /// The accepted spellings of an `Enum` property.
+    pub accepted_tokens: &'static [&'static str],
+    /// Runtime-enforced bounds (`Constraint::Range`, `Required`, `Precision`).
+    pub constraints: &'static [Constraint],
+    /// The record shape of a `Records` property.
+    pub record_schema: Option<&'static RecordSchema>,
 }
 
 pub enum CapabilityValue {
-    Integer(i64), Float(f64), String(String),
-    Boolean(bool), Color(Color), Font(Font),
+    Null, Bool(bool), Int(i64), UInt(u64), Float(f64),
+    String(String), Color(Color), Rect(Rect),
+    Tuple(Vec<CapabilityValue>),
+    Records(RecordList),
 }
 ```
+
+### Collection properties — a list of records
+
+A control that holds *rows* rather than a scalar publishes a `Records` property. `Chip` is the
+first: `chip.items` is its item list, and each item is a record with an `id`, a `label` and an
+optional `selected`. The list is a real value, not a JSON string — a document writes an array of
+objects, and a malformed list is refused with the offending record and field named:
+
+```json
+{ "chip": { "id": "tags", "items": [
+    { "id": "bug", "label": "Bug", "selected": true },
+    { "id": "urgent", "label": "Urgent" }
+] } }
+```
+
+```rust
+use rust_widgets::widget::capability::{widget_property_get, CapabilityValue};
+
+// Read it back as records, and look an item up by its identity rather than its position.
+let chip = /* a live Chip */;
+if let Ok(CapabilityValue::Records(list)) = widget_property_get(&chip, "items") {
+    let ids = list.id_of(0);                       // the stable id of the first item
+    let label = list.get_by_id("urgent").map(|item| item.text("label"));
+    let _ = (ids, label);
+}
+```
+
+Three things are worth knowing because they are decisions rather than accidents:
+
+* **Identity is a field, not a position.** `RecordSchema::id_field` names the field that carries
+  an item's identity, so a reorder keeps a selection, a scroll anchor or a pending edit alive.
+  `RecordList::move_item` (a row move) and `RecordList::move_field` (a column move) both preserve
+  every id, and `ids_unique` is what the validator enforces.
+* **A refused update changes nothing.** The whole list is checked before any item is replaced, so
+  an edit that is withdrawn or superseded is safe to abandon — there is no partial application to
+  roll back.
+* **The library holds no business state.** A `RecordList` is a value the caller owns; the control
+  copies what it needs. `items` is a *property*, and the same-named command form takes no payload —
+  a value-carrying operation travels through the property.
+
+`DesignerManifest` exports a record list as an array of objects too, so the document form, the
+manifest form and the property value are one representation rather than three.
 
 ### WidgetFactory
 

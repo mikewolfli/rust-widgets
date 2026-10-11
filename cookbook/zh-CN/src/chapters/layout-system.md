@@ -514,9 +514,44 @@ let layout = create_layout_from_kind(&kind);
 | `"hbox"` | `"HBox"`, `"horizontal"` | `spacing`, `margin` |
 | `"vbox"` | `"VBox"`, `"vertical"` | `spacing`, `margin` |
 | `"grid"` | `"Grid"` | `columns`, `spacing`, `margin` |
-| `"stack"` | `"Stack"` | `spacing` |
-| `"splitter"` | `"Splitter"` | `orientation` (`"horizontal"`/`"vertical"`), `margin` |
+| `"uniform_grid"` | `"uniformGrid"`, `"uniform-grid"` | `rows`, `columns`, `spacing`, `margin` |
+| `"stack"` | `"Stack"` | `spacing`（解析后丢弃） |
+| `"splitter"` | `"Splitter"` | `orientation`, `margin`（解析后丢弃） |
 | `"form"` | `"Form"` | `spacing`, `margin` |
+| `"flow"` | `"Flow"` | `spacing`, `padding`, `orientation` |
+| `"wrap"` | `"Wrap"` | `spacing`（默认 8）, `padding`（默认 8）, `orientation` |
+| `"flex"` | `"Flex"` | `gap` |
+
+`orientation` 接受 `"horizontal"`/`"h"`/`"H"` 与 `"vertical"`/`"v"`/`"V"`/`"column"`；无法识别的
+token 与省略该字段同义，都表示水平方向。三种取轴布局（`splitter`、`flow`、`wrap`）读取**同一份**
+token 列表，因此不会出现"校验器接受、实际却按另一条轴摆放"的文档。
+
+**加载前先检查文档。** 解析器读取的同一份 schema 是公开的，设计器可以在**尚未运行**时给出报告：
+
+```rust
+use rust_widgets::compat::HashMap;
+use rust_widgets::json::{layout_schema_for_type, supported_layout_types, validate_layout_object};
+
+let mut obj = HashMap::new();
+obj.insert(String::from("type"), String::from("grid"));
+obj.insert(String::from("columns"), String::from("3"));
+for issue in validate_layout_object(&obj, &[]) {
+    // `describe()` 自带上下文——"unknown layout type `gridd`; supported: hbox, vbox, ..."。
+    println!("{}", issue.describe());
+}
+
+// 面板可以呈现的内容：全部类型 token，以及每种布局声明的参数。
+for token in supported_layout_types() {
+    let schema = layout_schema_for_type(token).expect("every listed token has a schema");
+    for param in schema.params {
+        // `param.key`、`param.kind`、`param.required`、`param.honoured`。
+    }
+}
+```
+
+两处让报告保持诚实的细节：构造函数用不上的参数（`stack.spacing`、`splitter.margin`）报告为
+**已丢弃**，而不是显示为生效；`validate_child_attrs` 会报告外层布局忽略的放置键（`hbox` 下的
+`col`），而不是让一个可编辑字段代表永远不会到达布局的值。
 
 **子布局属性**可以指定拉伸、网格位置和跨列/跨行：
 

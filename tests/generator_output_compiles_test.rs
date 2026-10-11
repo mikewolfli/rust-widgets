@@ -242,3 +242,75 @@ fn default_template_output_compiles_for_tablet_and_mobile() {
         assert!(ok, "the generated {profile} program must compile.\nreport: {summary}\n{output}");
     }
 }
+
+/// A document with a **record list** property compiles, and the probe reads the items back
+/// (BLUE26 B26.09).
+///
+/// # Why this is a case of its own
+///
+/// A record list is the one property value the generator builds as a *nested expression*
+/// (`RecordList::from_items(&EMPTY_RECORD_SCHEMA, vec![RecordValue::new().with(..), ..])`) rather
+/// than a single `CapabilityValue` variant. Every part of that — the `&'static` schema reference, the
+/// `vec!` of records, the per-field `.with(name, value)` chain — is something only a real compile can
+/// check, and the failure mode is exactly the one this gate exists for: text that looks right and a
+/// program that does not build.
+///
+/// The probe also **reads the property back** rather than only compiling: a generated program that
+/// builds the right value but hands it to nothing would still compile.
+const RECORD_PROJECT: &str = r#"{
+  "window": {
+    "id": "root",
+    "title": "Records",
+    "width": 480,
+    "height": 240,
+    "layout": {
+      "type": "vbox",
+      "children": [
+        { "chip": { "id": "chips", "items": [
+            { "id": "a", "label": "Alpha", "selected": true },
+            { "id": "b", "label": "Beta" }
+        ] } }
+      ]
+    }
+  }
+}"#;
+
+#[test]
+#[ignore = "compiles a real crate; run by tools/check_generator_output_compiles.sh"]
+fn a_record_list_document_compiles_and_reads_back() {
+    let generated = generate(&GenerationRequest {
+        json: String::from(RECORD_PROJECT),
+        target: TargetProfile::Default,
+        width: 480,
+        height: 240,
+        function_name: String::from("build_records"),
+    })
+    .expect("the document must parse");
+    assert!(
+        generated.report.unsupported.is_empty(),
+        "the record list must be emitted cleanly: {:?}",
+        generated.report
+    );
+
+    // The probe does more than compile: it asserts, through the **public** API, that the contract the
+    // emitted value targets really carries a record list. A generated program whose value type-checks
+    // but is handed to a property that cannot hold it would compile and be useless.
+    let source = format!(
+        "{}\n\n{}",
+        generated.source,
+        r#"
+/// Reads the `items` property of the control the emitted value targets, and reports its length.
+pub fn items_the_emitted_value_targets() -> usize {
+    use rust_widgets::core::Rect;
+    use rust_widgets::widget::{widget_property_get, CapabilityValue, Chip};
+    let chip = Chip::new(Rect::new(0, 0, 200, 36));
+    match widget_property_get(&chip, "items") {
+        Ok(CapabilityValue::Records(list)) => list.len(),
+        _ => usize::MAX,
+    }
+}
+"#
+    );
+    let (output, ok) = check_compiles(&source, "desktop");
+    assert!(ok, "the generated record-list program must compile.\n{output}");
+}

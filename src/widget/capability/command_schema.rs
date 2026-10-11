@@ -40,11 +40,11 @@
 
 use crate::compat::{String, Vec};
 
+/// Short aliases for the kinds the composite table names, so each row stays on one line.
+use super::types::PropertyValueKind::{Bool, Float, String as KindString, UInt};
 /// A short alias for the payload-free signature, so the verb table below reads as one line per
 /// verb rather than wrapping `CommandSignature::PayloadFree` 114 times.
 use CommandSignature::PayloadFree;
-/// Short aliases for the kinds the composite table names, so each row stays on one line.
-use super::types::PropertyValueKind::{Bool, Float, String as KindString, UInt};
 
 /// What invoking a command does, for a designer that must decide whether to warn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -230,7 +230,6 @@ static VERB_CLASSES: &[VerbClass] = &[
     verb("step_up", PayloadFree, CommandEffect::MutatesControl),
     verb("dismiss_selected", PayloadFree, CommandEffect::MutatesControl),
     verb("zoom", PayloadFree, CommandEffect::MutatesControl),
-
     // ── Activation / action verbs ──
     verb("accept", PayloadFree, CommandEffect::MutatesControl),
     verb("click", PayloadFree, CommandEffect::MutatesControl),
@@ -247,7 +246,6 @@ static VERB_CLASSES: &[VerbClass] = &[
     verb("show_today", PayloadFree, CommandEffect::MutatesControl),
     verb("show_with_action", PayloadFree, CommandEffect::MutatesControl),
     verb("apply_preset", PayloadFree, CommandEffect::MutatesControl),
-
     // ── Visibility / open-close ──
     verb("hide", PayloadFree, CommandEffect::MutatesControl),
     verb("show", PayloadFree, CommandEffect::MutatesControl),
@@ -258,19 +256,16 @@ static VERB_CLASSES: &[VerbClass] = &[
     verb("open_popup", PayloadFree, CommandEffect::MutatesControl),
     verb("hide_popup", PayloadFree, CommandEffect::MutatesControl),
     verb("show_popup", PayloadFree, CommandEffect::MutatesControl),
-
     // ── Media transport ──
     verb("play", PayloadFree, CommandEffect::MutatesControl),
     verb("pause", PayloadFree, CommandEffect::MutatesControl),
     verb("stop", PayloadFree, CommandEffect::MutatesControl),
     verb("seek_to", PayloadFree, CommandEffect::MutatesControl),
-
     // ── Text editing ──
     verb("backspace", PayloadFree, CommandEffect::MutatesControl),
     verb("delete_char", PayloadFree, CommandEffect::MutatesControl),
     verb("insert_char", PayloadFree, CommandEffect::MutatesControl),
     verb("paste", PayloadFree, CommandEffect::MutatesControl),
-
     // ── Stack / list structure: these change content the user perceives ──
     verb("push", PayloadFree, CommandEffect::MutatesCollection),
     verb("pop", PayloadFree, CommandEffect::MutatesCollection),
@@ -310,13 +305,11 @@ static VERB_CLASSES: &[VerbClass] = &[
     verb("mark_all_read", PayloadFree, CommandEffect::MutatesCollection),
     verb("fetch_visible_rows", PayloadFree, CommandEffect::MutatesControl),
     verb("fetch_visible_window", PayloadFree, CommandEffect::MutatesControl),
-
     // ── Canvas drawing primitives ──
     verb("draw_line", PayloadFree, CommandEffect::MutatesControl),
     verb("draw_rect", PayloadFree, CommandEffect::MutatesControl),
     verb("fill_rect", PayloadFree, CommandEffect::MutatesControl),
     verb("fill_circle", PayloadFree, CommandEffect::MutatesControl),
-
     // ── Navigation / loading: reach past the control ──
     verb("go_back", PayloadFree, CommandEffect::SideEffecting),
     verb("go_forward", PayloadFree, CommandEffect::SideEffecting),
@@ -325,11 +318,7 @@ static VERB_CLASSES: &[VerbClass] = &[
 ];
 
 /// Shorthand constructor for a [`VerbClass`] entry, so the table above reads as one line per verb.
-const fn verb(
-    name: &'static str,
-    signature: CommandSignature,
-    effect: CommandEffect,
-) -> VerbClass {
+const fn verb(name: &'static str, signature: CommandSignature, effect: CommandEffect) -> VerbClass {
     VerbClass { name, signature, effect }
 }
 
@@ -340,7 +329,17 @@ const fn verb(
 struct CompositeClass {
     name: &'static str,
     parameter: &'static str,
+    /// Candidate groups of properties the payload writes, in preference order.
+    ///
+    /// When a control declares **all** the names in one group, that group *is* the payload: its
+    /// length is the arity and its members' declared kind is the element kind. This is what keeps
+    /// the table from stating a type the control disagrees with — `set_range` really is
+    /// `(Int, Int)` on a `slider` and `(UInt, UInt)` on an `arc`, and a single table-wide `Float`
+    /// was wrong for every one of them.
+    parts: &'static [&'static [&'static str]],
+    /// The arity when no group resolves, or `None` for a variable-length list.
     arity: Option<usize>,
+    /// The element kind when no group resolves.
     element: Option<super::types::PropertyValueKind>,
     effect: CommandEffect,
 }
@@ -364,11 +363,34 @@ struct CompositeClass {
 /// classified.
 static COMPOSITE_CLASSES: &[CompositeClass] = &[
     // Pairs: lower/upper, x/y, begin/end.
-    composite("set_range", "lower", Some(2), Some(Float), CommandEffect::MutatesControl),
+    //
+    // `set_range`'s parts are listed in preference order because the published pair differs by
+    // control: `slider`/`dial`/`scroll_bar`/`spin_box`/`progress_bar`/`progress_dialog`/
+    // `number_picker` publish `minimum`/`maximum`, `range_slider` publishes `lower`/`upper` (plus
+    // `min_value`/`max_value`), and the kinds are not uniform — `arc` and `meter` publish `UInt`
+    // because their setter takes `u32`. Deriving from the control is the only way the schema can be
+    // true for all of them; the table's own `Float` was wrong for every control but `range_slider`.
+    composite_of_properties(
+        "set_range",
+        "lower",
+        &[&["minimum", "maximum"], &["lower", "upper"], &["min_value", "max_value"]],
+        Some(2),
+        Some(Float),
+        CommandEffect::MutatesControl,
+    ),
     composite("set_date_range", "range", Some(2), Some(KindString), CommandEffect::MutatesControl),
     composite("set_center", "center", Some(2), Some(Float), CommandEffect::MutatesControl),
     composite("set_cell", "cell", Some(3), None, CommandEffect::MutatesControl),
-    composite("set_cursor", "cursor", Some(2), Some(UInt), CommandEffect::MutatesControl),
+    // `code_editor` publishes the two ends of the cursor, so the payload's arity and kind are its
+    // own declaration rather than this table's guess.
+    composite_of_properties(
+        "set_cursor",
+        "cursor",
+        &[&["cursor_line", "cursor_column"]],
+        Some(2),
+        Some(UInt),
+        CommandEffect::MutatesControl,
+    ),
     // Records: a fixed set of named parts.
     composite("set_actions", "actions", Some(2), None, CommandEffect::MutatesCollection),
     composite("set_axes", "axes", Some(2), None, CommandEffect::MutatesCollection),
@@ -390,8 +412,25 @@ static COMPOSITE_CLASSES: &[CompositeClass] = &[
     composite("set_texts", "texts", Some(2), Some(KindString), CommandEffect::MutatesControl),
     composite("set_segments", "segments", None, None, CommandEffect::MutatesCollection),
     composite("set_selected_path", "path", None, None, CommandEffect::MutatesControl),
-    composite("set_viewport", "viewport", Some(4), Some(Float), CommandEffect::MutatesControl),
-    composite("set_steps", "steps", None, Some(Float), CommandEffect::MutatesControl),
+    // `gantt_widget` and `timeline_widget` both publish the two ends of the viewport and both
+    // setters take `(i64, i64)`; the table's four-part `Float` payload described neither.
+    composite_of_properties(
+        "set_viewport",
+        "viewport",
+        &[&["viewport_start", "viewport_end"]],
+        Some(2),
+        None,
+        CommandEffect::MutatesControl,
+    ),
+    // `scroll_bar` publishes both steps, so its payload is that pair rather than a list.
+    composite_of_properties(
+        "set_steps",
+        "steps",
+        &[&["single_step", "page_step"]],
+        Some(2),
+        None,
+        CommandEffect::MutatesControl,
+    ),
     composite("set_options", "options", None, None, CommandEffect::MutatesCollection),
     composite("set_items", "items", None, None, CommandEffect::MutatesCollection),
     composite("set_value", "value", Some(1), None, CommandEffect::MutatesControl),
@@ -402,6 +441,9 @@ static COMPOSITE_CLASSES: &[CompositeClass] = &[
 ];
 
 /// Shorthand constructor for a [`CompositeClass`] entry.
+///
+/// `parts` is empty for a payload with no property counterpart (a list of records, a coordinate
+/// triple), whose arity and kind are therefore the table's answer.
 const fn composite(
     name: &'static str,
     parameter: &'static str,
@@ -409,7 +451,61 @@ const fn composite(
     element: Option<super::types::PropertyValueKind>,
     effect: CommandEffect,
 ) -> CompositeClass {
-    CompositeClass { name, parameter, arity, element, effect }
+    CompositeClass { name, parameter, parts: &[], arity, element, effect }
+}
+
+/// Shorthand for a composite whose payload writes properties, so its arity and kind come from the
+/// control rather than from this table.
+///
+/// `fallback_arity`/`fallback_element` answer for a control that declares none of the candidate
+/// groups — an honest guess at the shape the payload always has, never at a type the control
+/// disagrees with.
+const fn composite_of_properties(
+    name: &'static str,
+    parameter: &'static str,
+    parts: &'static [&'static [&'static str]],
+    fallback_arity: Option<usize>,
+    fallback_element: Option<super::types::PropertyValueKind>,
+    effect: CommandEffect,
+) -> CompositeClass {
+    CompositeClass {
+        name,
+        parameter,
+        parts,
+        arity: fallback_arity,
+        element: fallback_element,
+        effect,
+    }
+}
+
+/// The payload shape of a composite on **this** control.
+///
+/// A group resolves when the control declares every name in it; the first resolving group wins, and
+/// its members must agree on a kind (a group whose members disagree reports no element kind, which
+/// is honest — the payload is not homogeneous). Returns `None` when no group resolves, so the
+/// caller falls back to the table's own answer.
+fn resolved_payload(
+    class: &CompositeClass,
+    properties: &[super::types::PropertySchema],
+) -> Option<(usize, Option<super::types::PropertyValueKind>)> {
+    for group in class.parts {
+        let mut kind: Option<super::types::PropertyValueKind> = None;
+        let mut resolved = true;
+        for name in *group {
+            let Some(schema) = properties.iter().find(|schema| schema.name == *name) else {
+                resolved = false;
+                break;
+            };
+            match kind {
+                Some(seen) if seen != schema.value_kind => kind = None,
+                _ => kind = Some(schema.value_kind),
+            }
+        }
+        if resolved {
+            return Some((group.len(), kind));
+        }
+    }
+    None
 }
 
 /// The schema for one command of one control, or `None` when the command is unrecognised.
@@ -444,24 +540,30 @@ pub fn command_schema(
         // Not a property route. Either it is a known composite setter, or the name points at a
         // property this control does not have — in which case `None`, the same answer the
         // dispatcher gives (`UnknownCommand`).
-        return COMPOSITE_CLASSES
-            .iter()
-            .find(|class| class.name == name)
-            .map(|class| CommandSchema {
+        return COMPOSITE_CLASSES.iter().find(|class| class.name == name).map(|class| {
+            // The payload's shape is the control's own answer whenever it declares the
+            // properties the payload writes; only a payload with no property counterpart falls
+            // back to this table's arity and element kind.
+            let (arity, element) = match resolved_payload(class, properties) {
+                Some((arity, element)) => (Some(arity), element),
+                None => (class.arity, class.element),
+            };
+            CommandSchema {
                 signature: CommandSignature::Composite {
                     parameter: class.parameter,
-                    arity: class.arity,
-                    element: class.element,
+                    arity,
+                    element,
                 },
                 effect: class.effect,
-            });
+            }
+        });
     }
 
     // The verb table: the one thing the convention cannot derive.
-    VERB_CLASSES.iter().find(|class| class.name == name).map(|class| CommandSchema {
-        signature: class.signature,
-        effect: class.effect,
-    })
+    VERB_CLASSES
+        .iter()
+        .find(|class| class.name == name)
+        .map(|class| CommandSchema { signature: class.signature, effect: class.effect })
 }
 
 /// Whether `name` is a command this build knows how to describe.
@@ -586,9 +688,11 @@ mod tests {
     /// Every effect must round-trip through its token.
     #[test]
     fn effects_round_trip() {
-        for effect in
-            [CommandEffect::MutatesControl, CommandEffect::MutatesCollection, CommandEffect::SideEffecting]
-        {
+        for effect in [
+            CommandEffect::MutatesControl,
+            CommandEffect::MutatesCollection,
+            CommandEffect::SideEffecting,
+        ] {
             assert_eq!(CommandEffect::from_token(effect.token()), Some(effect));
         }
         assert_eq!(CommandEffect::from_token("no_such_effect"), None);
@@ -626,7 +730,8 @@ mod tests {
             true,
             true,
         )];
-        let one = describe_command("set_text", &command_schema("set_text", PROPS).expect("set_text"));
+        let one =
+            describe_command("set_text", &command_schema("set_text", PROPS).expect("set_text"));
         assert!(one.contains("set_text(text: string)"), "{one}");
         let none = describe_command("toggle", &command_schema("toggle", &[]).expect("toggle"));
         assert!(none.contains("toggle()"), "{none}");

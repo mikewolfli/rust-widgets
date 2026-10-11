@@ -86,6 +86,9 @@ const RW_VALUE_RECT = 7;
 // A composite payload (a tuple/list of values); `num` carries the component count
 // and the string holds `kind:value;…`.
 const RW_VALUE_TUPLE = 8;
+// A record list; `num` carries the record count and the string holds
+// `name=kind:value;…` per record with `|` between records.
+const RW_VALUE_RECORDS = 9;
 
 /**
  * Read an int64 out-parameter, which ffi-napi may expose as a Buffer.
@@ -954,7 +957,8 @@ class RustWidgets {
       kind === RW_VALUE_STRING ||
       kind === RW_VALUE_COLOR ||
       kind === RW_VALUE_RECT ||
-      kind === RW_VALUE_TUPLE
+      kind === RW_VALUE_TUPLE ||
+      kind === RW_VALUE_RECORDS
     ) {
       // All four carry their payload in the string slot. Freeing on every one of
       // them is the point: `rw_get_widget_property` allocates for each, so a branch

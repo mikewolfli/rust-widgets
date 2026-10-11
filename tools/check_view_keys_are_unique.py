@@ -74,6 +74,10 @@ INTENTIONAL_DUPLICATE_TESTS = {
         "asserts a grandchild key does not collide with its parent's sibling",
     "duplicate_sibling_keys_are_reported_rather_than_silently_mismatched":
         "asserts `DiffReport::duplicate_keys` names the collision, so it must build one",
+    "a_duplicated_key_is_not_resolvable_in_the_index":
+        "asserts `TreeIndex` refuses to map an ambiguous key, so it must build a collision",
+    "duplicated_sibling_fixture":
+        "builds the deliberate collision that test needs, named so the gate can excuse it precisely",
 }
 
 # `Node::new("button")` … optionally chained `.key("ok")`.

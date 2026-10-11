@@ -43,6 +43,7 @@ __all__ = [
     "RW_VALUE_COLOR",
     "RW_VALUE_RECT",
     "RW_VALUE_TUPLE",
+    "RW_VALUE_RECORDS",
 ]
 
 # ---------------------------------------------------------------------------
@@ -128,6 +129,9 @@ RW_VALUE_RECT = 7
 # A composite payload (a tuple/list of values); `num` carries the component count
 # and the string holds `kind:value;…`.
 RW_VALUE_TUPLE = 8
+# A record list; `num` carries the record count and the string holds
+# `name=kind:value;…` per record with `|` between records.
+RW_VALUE_RECORDS = 9
 
 
 # ---------------------------------------------------------------------------
@@ -1342,12 +1346,19 @@ class RustWidgets:
             return int(num.value)
         if kind.value == RW_VALUE_FLOAT:
             return _f64_from_bits(num.value & 0xFFFFFFFFFFFFFFFF)
-        if kind.value in (RW_VALUE_STRING, RW_VALUE_COLOR, RW_VALUE_RECT, RW_VALUE_TUPLE):
-            # All four carry their payload in the string slot. Freeing it on every
+        if kind.value in (
+            RW_VALUE_STRING,
+            RW_VALUE_COLOR,
+            RW_VALUE_RECT,
+            RW_VALUE_TUPLE,
+            RW_VALUE_RECORDS,
+        ):
+            # All five carry their payload in the string slot. Freeing it on every
             # one of them is the point: `rw_get_widget_property` allocates for each,
             # so a branch that returned without freeing leaked one buffer per call.
-            # A tuple's string is the `kind:value;…` wire form, returned verbatim so
-            # a caller can decode it with the component kinds.
+            # A tuple's string is the `kind:value;…` wire form and a record list's is
+            # `name=kind:value;…` per record, both returned verbatim so a caller can
+            # decode them with the component kinds and the field names.
             return self._decode_and_free(self.lib, text.value)
         # An unknown kind is a newer ABI than this binding knows about. Free the
         # payload if there is one, so an unrecognised kind cannot leak either.

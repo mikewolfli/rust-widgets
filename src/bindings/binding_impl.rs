@@ -1484,7 +1484,53 @@ fn encode_capability_value(
             let c_text = CString::new(text).unwrap_or_default();
             (RW_VALUE_TUPLE, items.len() as i64, Some(c_text.into_raw()))
         }
+        // A record list travels as `name=kind:value;…` per record with `|` between records, so a C
+        // caller can see each field's name and each value's own kind. `num` is the record count, which
+        // is what a caller needs to size its array before reading the text.
+        CapabilityValue::Records(list) => {
+            if !want_text {
+                return (RW_VALUE_RECORDS, list.len() as i64, None);
+            }
+            let c_text = CString::new(encode_record_list(&list)).unwrap_or_default();
+            (RW_VALUE_RECORDS, list.len() as i64, Some(c_text.into_raw()))
+        }
     }
+}
+
+/// Writes a record list as `name=kind:value;…` per record, with records separated by `|`.
+///
+/// The field name is escaped with the same separator-aware escaper the values use, so a name
+/// containing a separator cannot be mistaken for one.
+#[cfg(not(stripped_widgets))]
+fn encode_record_list(list: &crate::widget::capability::RecordList) -> String {
+    use core::fmt::Write as _;
+    let mut out = alloc::string::String::new();
+    for (record_index, record) in list.items().iter().enumerate() {
+        if record_index > 0 {
+            out.push('|');
+        }
+        for (field_index, (name, value)) in record.fields().iter().enumerate() {
+            if field_index > 0 {
+                out.push(';');
+            }
+            let _ = write!(out, "{}=", escape_wire_separators(name));
+            encode_tuple_component(value, &mut out);
+        }
+    }
+    out
+}
+
+/// Escapes every separator a record wire string uses, so a name cannot be read as structure.
+#[cfg(not(stripped_widgets))]
+fn escape_wire_separators(text: &str) -> String {
+    let mut out = String::new();
+    for ch in text.chars() {
+        if matches!(ch, '\\' | ';' | ':' | '|' | '=') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 /// Appends one tuple component to `out` as `kind:value`, the wire form
@@ -1511,16 +1557,20 @@ fn encode_tuple_component(value: &crate::widget::capability::CapabilityValue, ou
         }
         CapabilityValue::String(text) => {
             // The separator characters are escaped so a component containing `;` or `:` round-trips.
-            let _ = write!(
-                out,
-                "5:{}",
-                text.replace('\\', "\\\\").replace(';', "\\;").replace(':', "\\:")
-            );
+            // `|` and `=` are escaped too, because a record list uses them as structure and a string
+            // field carrying one would otherwise be read as a record or a field boundary. Escaping a
+            // character that needs no escaping is harmless: the decoder strips a backslash before any
+            // character, so the value reads back unchanged.
+            let _ = write!(out, "5:{}", escape_wire_separators(text));
         }
-        // A nested colour/rect/tuple is not produced by any event payload today; encoding it as its
-        // announcement-free debug form would be a silent lossy path, so it is written as an empty
-        // string component and the decoder refuses it. This is stated rather than silently emitted.
-        CapabilityValue::Color(_) | CapabilityValue::Rect(_) | CapabilityValue::Tuple(_) => {
+        // A nested colour/rect/tuple/record-list is not produced by any event payload today; encoding
+        // it as its announcement-free debug form would be a silent lossy path, so it is written as an
+        // empty-string component and the decoder refuses it. This is stated rather than silently
+        // emitted.
+        CapabilityValue::Color(_)
+        | CapabilityValue::Rect(_)
+        | CapabilityValue::Tuple(_)
+        | CapabilityValue::Records(_) => {
             let _ = write!(out, "9:");
         }
     }
@@ -1570,8 +1620,111 @@ fn decode_capability_value(
             }
             Some(CapabilityValue::Tuple(components))
         }
+        RW_VALUE_RECORDS => {
+            let text = unsafe { read_c_string(str_value) };
+            let records = decode_record_list(&text)?;
+            // Same reasoning as the tuple arm: the advertised record count must agree with what the
+            // text actually held, so a truncated list is refused instead of looking complete.
+            if records.len() as i64 != num {
+                return None;
+            }
+            // The decoded list carries no schema: this boundary cannot name a `&'static` one, and
+            // inventing one here would be policy the property never declared. The property the value
+            // is written to supplies the schema — that is where the record shape, the identity field
+            // and the uniqueness rule are checked.
+            Some(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                &crate::widget::capability::EMPTY_RECORD_SCHEMA,
+                records,
+            )))
+        }
         _ => None,
     }
+}
+
+/// Parses the `name=kind:value;…` per record, `|`-separated, wire form written by
+/// [`encode_record_list`].
+///
+/// Returns `None` when any record, field or value is malformed — including a nested value, which the
+/// encoder marks `9:` because the wire form cannot carry one.
+#[cfg(not(stripped_widgets))]
+fn decode_record_list(
+    text: &str,
+) -> Option<crate::compat::Vec<crate::widget::capability::RecordValue>> {
+    use crate::widget::capability::RecordValue;
+    // An empty string is an empty list, which is what the encoder writes for one (`num` is then 0).
+    if text.is_empty() {
+        return Some(crate::compat::Vec::new());
+    }
+    let mut out = crate::compat::Vec::new();
+    for record in split_unescaped_on(text, b'|') {
+        let mut value = RecordValue::new();
+        for field in split_unescaped_on(record, b';') {
+            let (name, component) = split_unescaped_once(field, '=')?;
+            let (kind, raw) = split_unescaped_once(component, ':')?;
+            let decoded = match kind {
+                "0" => crate::widget::capability::CapabilityValue::Null,
+                "1" => crate::widget::capability::CapabilityValue::Bool(raw != "0"),
+                "2" => crate::widget::capability::CapabilityValue::Int(raw.parse().ok()?),
+                "3" => crate::widget::capability::CapabilityValue::UInt(raw.parse().ok()?),
+                "4" => crate::widget::capability::CapabilityValue::Float(raw.parse().ok()?),
+                "5" => crate::widget::capability::CapabilityValue::String(
+                    unescape_tuple_component(raw)?,
+                ),
+                // A nested value cannot be carried, so a `9:` marker is refused rather than decoded
+                // into something the caller did not send.
+                _ => return None,
+            };
+            value = value.with(unescape_tuple_component(name)?, decoded);
+        }
+        out.push(value);
+    }
+    Some(out)
+}
+
+/// Splits `text` at the first `separator` not preceded by a backslash.
+///
+/// The `|`/`;`/`=` separators a record wire string uses are all single characters, and a backslash
+/// escapes the next character whatever it is — so one scanner serves all three and the escaping rule
+/// stays the one [`unescape_tuple_component`] already implements.
+#[cfg(not(stripped_widgets))]
+fn split_unescaped_once(text: &str, separator: char) -> Option<(&str, &str)> {
+    let mut escaped = false;
+    for (index, ch) in text.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == separator {
+            return Some((&text[..index], &text[index + ch.len_utf8()..]));
+        }
+    }
+    None
+}
+
+/// Splits `text` on every unescaped `separator`, keeping the escapes in the returned pieces.
+#[cfg(not(stripped_widgets))]
+fn split_unescaped_on(text: &str, separator: u8) -> crate::compat::Vec<&str> {
+    let mut parts = crate::compat::Vec::new();
+    let mut start = 0usize;
+    let bytes = text.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' => index += 2,
+            byte if byte == separator => {
+                parts.push(&text[start..index]);
+                start = index + 1;
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    parts.push(&text[start..]);
+    parts
 }
 
 /// Parses the `kind:value;kind:value` wire form written by [`encode_tuple_component`], or `None`
@@ -1603,23 +1756,7 @@ fn decode_tuple_components(
 /// Splits a tuple wire string on **unescaped** `;`, leaving `\;` inside a component intact.
 #[cfg(not(stripped_widgets))]
 fn split_unescaped(text: &str) -> crate::compat::Vec<&str> {
-    let mut parts = crate::compat::Vec::new();
-    let mut start = 0usize;
-    let bytes = text.as_bytes();
-    let mut index = 0usize;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'\\' => index += 2,
-            b';' => {
-                parts.push(&text[start..index]);
-                start = index + 1;
-                index += 1;
-            }
-            _ => index += 1,
-        }
-    }
-    parts.push(&text[start..]);
-    parts
+    split_unescaped_on(text, b';')
 }
 
 /// Undoes the escaping [`encode_tuple_component`] applies to a string component.
@@ -1681,6 +1818,14 @@ const RW_VALUE_RECT: c_int = 7;
 /// A composite payload (a tuple/list of values). Appended after `RW_VALUE_RECT`; `num` carries the
 /// component count and the string holds `kind:value;…`.
 const RW_VALUE_TUPLE: c_int = 8;
+/// A record list (BLUE26 B26.09). Appended after `RW_VALUE_TUPLE` so the earlier discriminants keep
+/// the values any existing binding already uses; a C caller that knows only 0..=8 is unaffected.
+///
+/// `num` carries the record count and the string holds `name=kind:value;…` per record, with records
+/// separated by `|`. The field names travel because a decoder at this boundary has no schema: the
+/// property the value is written to is what supplies identity and uniqueness policy, and the record
+/// shape is checked against it there.
+const RW_VALUE_RECORDS: c_int = 9;
 #[no_mangle]
 /// Appends `text` (null gives an empty string) as a new last item.
 ///
@@ -3367,6 +3512,23 @@ mod tests {
                 CapabilityValue::Bool(true),
                 CapabilityValue::Float(2.5),
             ]),
+            // A record list (BLUE26 B26.09): the field *names* travel as well as the values, and a
+            // name or a value containing a record separator must not be read as structure. The
+            // separator set a record string uses is wider than a tuple's (`|` and `=` too), so this
+            // case is what pins the escaping rather than assuming the tuple case covers it.
+            CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                &crate::widget::capability::EMPTY_RECORD_SCHEMA,
+                vec![
+                    crate::widget::capability::RecordValue::new()
+                        .with("id", CapabilityValue::String("a|b=c;d".to_string()))
+                        .with("label", CapabilityValue::String("Alpha".to_string()))
+                        .with("selected", CapabilityValue::Bool(true)),
+                    crate::widget::capability::RecordValue::new()
+                        .with("id", CapabilityValue::String("b".to_string()))
+                        .with("label", CapabilityValue::String("Beta".to_string()))
+                        .with("weight", CapabilityValue::Float(2.5)),
+                ],
+            )),
         ];
 
         for original in cases {

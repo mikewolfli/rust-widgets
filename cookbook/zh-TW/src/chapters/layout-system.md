@@ -517,9 +517,44 @@ let layout = create_layout_from_kind(&kind);
 | `"hbox"` | `"HBox"`、`"horizontal"` | `spacing`、`margin` |
 | `"vbox"` | `"VBox"`、`"vertical"` | `spacing`、`margin` |
 | `"grid"` | `"Grid"` | `columns`、`spacing`、`margin` |
-| `"stack"` | `"Stack"` | `spacing` |
-| `"splitter"` | `"Splitter"` | `orientation`（`"horizontal"`／`"vertical"`）、`margin` |
+| `"uniform_grid"` | `"uniformGrid"`、`"uniform-grid"` | `rows`、`columns`、`spacing`、`margin` |
+| `"stack"` | `"Stack"` | `spacing`（解析後捨棄） |
+| `"splitter"` | `"Splitter"` | `orientation`、`margin`（解析後捨棄） |
 | `"form"` | `"Form"` | `spacing`、`margin` |
+| `"flow"` | `"Flow"` | `spacing`、`padding`、`orientation` |
+| `"wrap"` | `"Wrap"` | `spacing`（預設 8）、`padding`（預設 8）、`orientation` |
+| `"flex"` | `"Flex"` | `gap` |
+
+`orientation` 接受 `"horizontal"`／`"h"`／`"H"` 與 `"vertical"`／`"v"`／`"V"`／`"column"`；無法辨識的
+token 與省略該欄位同義，皆表示水平方向。三種取軸版面配置（`splitter`、`flow`、`wrap`）讀取**同一份**
+token 清單，因此不會出現「驗證器接受、實際卻依另一條軸配置」的文件。
+
+**載入前先檢查文件。** 解析器所讀取的同一份 schema 是公開的，設計器可以在**尚未執行**時提出報告：
+
+```rust
+use rust_widgets::compat::HashMap;
+use rust_widgets::json::{layout_schema_for_type, supported_layout_types, validate_layout_object};
+
+let mut obj = HashMap::new();
+obj.insert(String::from("type"), String::from("grid"));
+obj.insert(String::from("columns"), String::from("3"));
+for issue in validate_layout_object(&obj, &[]) {
+    // `describe()` 自帶上下文——"unknown layout type `gridd`; supported: hbox, vbox, ..."。
+    println!("{}", issue.describe());
+}
+
+// 面板可以呈現的內容：全部型別 token，以及每種版面配置宣告的參數。
+for token in supported_layout_types() {
+    let schema = layout_schema_for_type(token).expect("every listed token has a schema");
+    for param in schema.params {
+        // `param.key`、`param.kind`、`param.required`、`param.honoured`。
+    }
+}
+```
+
+兩處讓報告保持誠實的細節：建構子用不上的參數（`stack.spacing`、`splitter.margin`）會回報為
+**已捨棄**，而不是顯示為生效；`validate_child_attrs` 會回報外層版面配置忽略的放置鍵（`hbox` 下的
+`col`），而不是讓一個可編輯欄位代表永遠不會到達版面配置的值。
 
 **子版面配置屬性**可指定伸縮、網格位置與跨距：
 

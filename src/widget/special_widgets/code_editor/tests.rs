@@ -829,7 +829,8 @@ fn a_no_op_change_does_not_advance_the_revision() {
     assert_eq!(editor.revision(), before, "an identical set_text is not an edit");
 
     // A guarded replace with empty text over an empty range is not a change either.
-    let revision = editor.replace_range(before, TextPosition::new(0, 0), TextPosition::new(0, 0), "")
+    let revision = editor
+        .replace_range(before, TextPosition::new(0, 0), TextPosition::new(0, 0), "")
         .expect("a same-revision no-op is accepted");
     assert_eq!(revision, before, "an empty replace is not an edit");
 }
@@ -874,7 +875,8 @@ fn a_replace_on_a_read_only_editor_is_refused() {
     editor.set_text("hello");
     editor.set_read_only(true);
     let revision = editor.revision();
-    let result = editor.replace_range(revision, TextPosition::new(0, 0), TextPosition::new(0, 1), "H");
+    let result =
+        editor.replace_range(revision, TextPosition::new(0, 0), TextPosition::new(0, 1), "H");
     assert_eq!(result, Err(EditRejection::ReadOnly));
     assert_eq!(editor.text(), "hello");
 }

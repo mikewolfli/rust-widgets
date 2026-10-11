@@ -172,11 +172,14 @@ pub fn parse_layout_kind(value: &Value) -> Result<DeclarativeLayoutKind, String>
         }
         "stack" | "Stack" => Ok(DeclarativeLayoutKind::Stack { spacing }),
         "splitter" | "Splitter" => {
-            let orientation = match obj.get("orientation").and_then(|v| v.as_str()) {
-                Some("vertical" | "v" | "V") => Orientation::Vertical,
-                _ => Orientation::Horizontal,
-            };
-            Ok(DeclarativeLayoutKind::Splitter { orientation, margin })
+            // The same axis reader the `flow`/`wrap` arms use, so every token the schema accepts
+            // ([`AXIS_TOKENS`]) parses to the orientation it names. This arm used to carry its own
+            // narrower match (`"vertical" | "v" | "V"`), which read the schema's `"column"` as
+            // Horizontal — a document that validated cleanly and laid out along the other axis.
+            Ok(DeclarativeLayoutKind::Splitter {
+                orientation: parse_axis(obj.get("orientation")),
+                margin,
+            })
         }
         "form" | "Form" => Ok(DeclarativeLayoutKind::Form { spacing, margin }),
         "flow" | "Flow" => {
@@ -237,15 +240,36 @@ fn json_i32(value: Option<&Value>, default: i32) -> i32 {
     })
 }
 
-/// Parse a flow/wrap axis from the JSON `orientation` field.
+/// Every `orientation` token this crate understands, and the axis it names.
 ///
-/// Horizontal is the default because that is what both layouts default to, so an
-/// omitted field and an explicit `"horizontal"` produce the same layout.
+/// This is the **single** list. [`orientation_of`] reads it to parse, and the schema validator
+/// ([`crate::json::layout_schema::is_axis_token`]) reads it to accept, so a token cannot be
+/// accepted by one and understood differently — or not at all — by the other. Before this list
+/// existed the splitter arm inlined `"vertical" | "v" | "V"`, so `"column"` passed the schema's
+/// `Axis` check and came back Horizontal.
+pub(crate) const AXIS_TOKENS: &[(&str, Orientation)] = &[
+    ("horizontal", Orientation::Horizontal),
+    ("h", Orientation::Horizontal),
+    ("H", Orientation::Horizontal),
+    ("vertical", Orientation::Vertical),
+    ("v", Orientation::Vertical),
+    ("V", Orientation::Vertical),
+    ("column", Orientation::Vertical),
+];
+
+/// The axis an `orientation` token names, or `None` when it names none.
+fn orientation_of(token: &str) -> Option<Orientation> {
+    AXIS_TOKENS.iter().find(|(name, _)| *name == token).map(|(_, axis)| *axis)
+}
+
+/// Parse an `orientation` axis from a JSON field.
+///
+/// Horizontal is the default, and deliberately so: an omitted field, an unrecognised token and an
+/// explicit `"horizontal"` all produce the same layout, which is what every axis-taking kind
+/// (`splitter`, `flow`, `wrap`) documents. A caller that must distinguish "absent" from
+/// "horizontal" has to look at the field itself — the parser does not invent a third answer.
 fn parse_axis(value: Option<&Value>) -> Orientation {
-    match value.and_then(|v| v.as_str()) {
-        Some("vertical" | "v" | "V" | "column") => Orientation::Vertical,
-        _ => Orientation::Horizontal,
-    }
+    value.and_then(Value::as_str).and_then(orientation_of).unwrap_or(Orientation::Horizontal)
 }
 
 /// Build a concrete `Layout` trait object from a `DeclarativeLayoutKind`.
@@ -601,6 +625,52 @@ mod tests {
             kind,
             DeclarativeLayoutKind::Splitter { orientation: Orientation::Vertical, margin: 0 }
         );
+    }
+
+    /// Every token the schema accepts must parse to the axis it names, for every kind that takes
+    /// one.
+    ///
+    /// The splitter arm used to inline its own narrower match, so `"column"` passed the schema's
+    /// `Axis` check and came back Horizontal. This test is what makes that class of drift
+    /// impossible to reintroduce silently: it reads the same list the schema reads.
+    #[test]
+    fn every_axis_token_parses_to_the_orientation_it_names() {
+        for (token, expected) in AXIS_TOKENS {
+            for ty in ["splitter", "flow", "wrap"] {
+                let json: Value = serde_json::from_str(&format!(
+                    r#"{{"type": "{ty}", "orientation": "{token}"}}"#
+                ))
+                .unwrap();
+                let got = match parse_layout_kind(&json).unwrap() {
+                    DeclarativeLayoutKind::Splitter { orientation, .. }
+                    | DeclarativeLayoutKind::Flow { orientation, .. }
+                    | DeclarativeLayoutKind::Wrap { orientation, .. } => orientation,
+                    other => panic!("`{ty}` parsed as {other:?}, which takes no orientation"),
+                };
+                assert_eq!(got, *expected, "`{ty}` with orientation `{token}`");
+            }
+        }
+    }
+
+    /// The schema and the parser must accept the same axis tokens — in both directions.
+    ///
+    /// A token the schema accepts and the parser ignores is a document that validates and then
+    /// lays out along the default axis; a token the parser understands but the schema rejects is a
+    /// document the crate can load and the designer refuses to write.
+    #[test]
+    fn the_schema_accepts_exactly_the_tokens_the_parser_understands() {
+        for (token, _) in AXIS_TOKENS {
+            assert!(
+                crate::json::layout_schema::is_axis_token(token),
+                "the parser understands `{token}` but the schema rejects it"
+            );
+        }
+        for rejected in ["columns", "vert", "Horizontal", "", "row"] {
+            assert!(
+                !crate::json::layout_schema::is_axis_token(rejected),
+                "the schema accepts `{rejected:?}`, which the parser reads as Horizontal"
+            );
+        }
     }
 
     #[test]

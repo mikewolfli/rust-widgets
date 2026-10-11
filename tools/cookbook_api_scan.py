@@ -114,9 +114,26 @@ def main():
     # ordinary way of naming a variant is a gate nobody reads — the same failure mode as one
     # that never fires.
     enum_bodies = {}
+    # # Why the declaration must start its own line
+    #
+    # The pattern used to be `\b(?:pub\s+)?enum\s+(?P<name>\w+)[^{]*\{`, which matched **prose**: a doc
+    # comment reading "…on the schema enum rather than separate fields…" captured the name `rather`,
+    # and its `[^{]*` then ran on across every real declaration until the next brace. Every enum in
+    # that span was therefore never captured at all — including `Constraint`, whose `Range` variant
+    # this scan then reported as nonexistent.
+    #
+    # That made the scan wrong in **both** directions, which is the dangerous half: a gate that
+    # cannot see an enum body cannot validate a variant claim, so real drift of the form
+    # `Slider::max` → `Slider::maximum` would be reported as a finding while
+    # `Constraint::Rang` would not be reported at all. Anchoring to the start of a line (a doc
+    # comment begins with `///` or `//`, never with the keyword) and refusing to cross either a `;`
+    # or another `enum` keeps the capture to actual declarations.
     for match in re.finditer(
-        r"\b(?:pub(?:\([^)]*\))?\s+)?enum\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)[^{]*\{",
+        r"^[ \t]*(?:#\[[^\]]*\]\s*)*"
+        r"(?:pub(?:\([^)]*\))?\s+)?enum\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
+        r"(?:(?!\benum\b)[^{;])*\{",
         corpus,
+        re.MULTILINE,
     ):
         # Walk from the opening brace to the one that closes it. The scan **starts at the brace
         # itself** (`match.end() - 1`) and counts it, so the first `}` that brings the count back

@@ -288,6 +288,26 @@ mod tests {
         assert!(matches!(compatibility(Some(Kind::String), prop(Kind::Number)), Rejected(_)));
     }
 
+    /// A record-list property is not a wire target, and the refusal says so.
+    ///
+    /// No event payload carries a record list — `EventPayloadShape` has no such shape — so a wire into
+    /// `chip.items` cannot exist, and the designer must grey the target out rather than offer a
+    /// binding that would never deliver. The pair is unlisted rather than listed-as-rejected because
+    /// the table is a list of *defined* conversions; what matters is that the fallback answers
+    /// `Rejected` **with a reason** rather than silently offering the wire.
+    #[test]
+    fn a_record_list_property_is_not_a_wire_target() {
+        for source in [None, Some(Kind::String), Some(Kind::UInt), Some(Kind::Bool)] {
+            match compatibility(source, prop(Kind::Records)) {
+                Rejected(reason) => assert!(
+                    !reason.is_empty(),
+                    "{source:?} → Records must be refused with a reason a designer can show"
+                ),
+                other => panic!("{source:?} → Records must be refused, got {other:?}"),
+            }
+        }
+    }
+
     #[test]
     fn a_number_can_be_displayed_as_text() {
         for kind in [Kind::Int, Kind::UInt, Kind::Float, Kind::Number] {

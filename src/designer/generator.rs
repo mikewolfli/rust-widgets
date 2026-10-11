@@ -108,10 +108,7 @@ impl TargetProfile {
     ///
     /// [`TargetSpec`]: crate::widget::capability::TargetSpec
     pub fn target_spec(self) -> crate::widget::capability::TargetSpec {
-        crate::widget::capability::TargetSpec {
-            profile: self.feature_hint(),
-            triple: "unknown",
-        }
+        crate::widget::capability::TargetSpec { profile: self.feature_hint(), triple: "unknown" }
     }
 }
 
@@ -463,7 +460,11 @@ fn host_profile_matches(target: TargetProfile) -> bool {
 ///
 /// [`TargetProbe`]: crate::widget::capability::TargetProbe
 #[cfg(full_widgets)]
-pub fn target_probe(factory: &WidgetFactory, name: &str, target: TargetProfile) -> crate::widget::capability::TargetProbe {
+pub fn target_probe(
+    factory: &WidgetFactory,
+    name: &str,
+    target: TargetProfile,
+) -> crate::widget::capability::TargetProbe {
     use crate::widget::capability::CurrentBuildVerdict;
     let verdict = if factory.create(name, crate::core::Rect::new(0, 0, 1, 1), "").is_some() {
         CurrentBuildVerdict::Usable
@@ -707,12 +708,13 @@ fn emit_node(
         if let Some(schema) = declared_property_schema(factory, &node.widget, &name) {
             // The JSON value is read through the loader's own conversion, so the pre-check judges
             // the value the loader would have written rather than a second reading of it.
-            let declared_value =
-                crate::json::to_capability_value(&value, Some(schema.value_kind));
+            let declared_value = crate::json::to_capability_value(&value, Some(schema.value_kind));
             if let Some(declared_value) = declared_value {
-                if let Err(violation) =
-                    crate::widget::capability::validate_property_value(&name, &schema, &declared_value)
-                {
+                if let Err(violation) = crate::widget::capability::validate_property_value(
+                    &name,
+                    &schema,
+                    &declared_value,
+                ) {
                     report.unsupported.push(GenerationGap {
                         path: path.to_vec(),
                         widget: node.widget.clone(),
@@ -726,6 +728,89 @@ fn emit_node(
             }
         }
         line.push_str(&format!(".prop({}, {})", quote(&name), capability_value_expr(&value)));
+        report.properties_emitted += 1;
+    }
+
+    // Record-list properties, which `scalar_properties` cannot carry (BLUE26 B26.09).
+    //
+    // # Why this is a second loop rather than one over every property
+    //
+    // A record list is emitted only when the **control declares the property as `Records`**. A
+    // document may hold an array of objects for a key no control declares that way (a JSON blob a
+    // host reads itself), and emitting it as a record write would be an emitted write the router
+    // refuses — the same defect the loader-owned-key rule above exists to prevent. So the declared
+    // schema decides, and a shape the control cannot take is *reported* rather than dropped.
+    for (name, value) in node.record_properties() {
+        let Some(schema) = declared_property_schema(factory, &node.widget, &name) else {
+            report.resolved_at_generation.push(format!(
+                "`{name}` on {} is not a property of the control, so its value is not emitted",
+                node_label(path, &node.widget)
+            ));
+            continue;
+        };
+        if schema.value_kind != crate::widget::capability::PropertyValueKind::Records {
+            report.resolved_at_generation.push(format!(
+                "`{name}` on {} is declared `{}`, not a record list, so its array value is not \
+                 emitted",
+                node_label(path, &node.widget),
+                crate::widget::capability::value_kind_token(schema.value_kind)
+            ));
+            continue;
+        }
+        let Some(expr) = record_list_expr(&value) else {
+            report.unsupported.push(GenerationGap {
+                path: path.to_vec(),
+                widget: node.widget.clone(),
+                reason: format!(
+                    "`{name}` on {} is not emitted: the array does not hold objects with scalar \
+                     fields, so it is not a record list",
+                    node_label(path, &node.widget)
+                ),
+            });
+            continue;
+        };
+        // The same pre-check the scalar loop runs, through the same function, so a record list the
+        // control would refuse is reported at generation time rather than emitted into a program whose
+        // own `ApplyReport` would then be full of refusals for a document the loader rejects too.
+        let declared_value = crate::json::to_capability_value(&value, Some(schema.value_kind))
+            .and_then(|decoded| match decoded {
+                crate::widget::capability::CapabilityValue::Records(list) => {
+                    Some(list.with_schema(
+                        schema.record_schema.expect("a `Records` schema declares its record shape"),
+                    ))
+                }
+                _ => None,
+            });
+        match declared_value {
+            Some(list) => {
+                let value = crate::widget::capability::CapabilityValue::Records(list);
+                if let Err(violation) =
+                    crate::widget::capability::validate_property_value(&name, &schema, &value)
+                {
+                    report.unsupported.push(GenerationGap {
+                        path: path.to_vec(),
+                        widget: node.widget.clone(),
+                        reason: format!(
+                            "`{name}` on {} is not emitted: {violation}",
+                            node_label(path, &node.widget)
+                        ),
+                    });
+                    continue;
+                }
+            }
+            None => {
+                report.unsupported.push(GenerationGap {
+                    path: path.to_vec(),
+                    widget: node.widget.clone(),
+                    reason: format!(
+                        "`{name}` on {} is not emitted: the value is not a record list",
+                        node_label(path, &node.widget)
+                    ),
+                });
+                continue;
+            }
+        }
+        line.push_str(&format!(".prop({}, {expr})", quote(&name)));
         report.properties_emitted += 1;
     }
 
@@ -1493,6 +1578,73 @@ fn capability_value_expr(value: &Value) -> String {
     String::from("CapabilityValue::Null")
 }
 
+/// The Rust expression for a JSON array of objects as a record list, or `None` for any other shape.
+///
+/// # Why every path is written out in full
+///
+/// The generated program is a **separate crate** that depends on this one, so `crate::…` in its source
+/// means *that* crate, not this one — the first version of this function emitted `crate::widget::…`
+/// and the compile gate produced `could not find widget in the crate root` four times. Spelling the
+/// path from `rust_widgets::` makes the expression depend on nothing the generated template happens to
+/// import.
+///
+/// # Why the emitted list carries no schema
+///
+/// The property the value is written to supplies the schema — that is where its record shape, its
+/// identity field and its uniqueness rule are declared and checked — so the generated program does not
+/// need to name one, and *cannot* name an arbitrary control's schema generically. Emitting
+/// [`EMPTY_RECORD_SCHEMA`](crate::widget::capability::EMPTY_RECORD_SCHEMA) is what makes one emitter
+/// serve every control that declares a record list, and it is the same value the JSON loader and the C
+/// ABI produce for the same input.
+///
+/// Field values are restricted to scalars: a nested array or object is refused rather than stringified,
+/// because a record field is one value of a declared kind and a nested structure is not one of them —
+/// and `record_properties` only selects arrays whose elements are objects, so the top-level shape is
+/// already known to be right.
+fn record_list_expr(value: &Value) -> Option<String> {
+    let Value::Array(items) = value else {
+        return None;
+    };
+    let mut out = String::from(
+        "CapabilityValue::Records(rust_widgets::widget::capability::RecordList::from_items(\
+         &rust_widgets::widget::capability::EMPTY_RECORD_SCHEMA, vec![",
+    );
+    for (index, item) in items.iter().enumerate() {
+        let Value::Object(fields) = item else {
+            return None;
+        };
+        if index > 0 {
+            out.push_str(", ");
+        }
+        out.push_str("rust_widgets::widget::capability::RecordValue::new()");
+        for (name, field) in fields {
+            out.push_str(&format!(".with({}, {})", quote(name), record_field_expr(field)?));
+        }
+    }
+    out.push_str("]))");
+    Some(out)
+}
+
+/// The Rust expression for one record field's value, or `None` when it is not a scalar.
+///
+/// A JSON `null` becomes [`CapabilityValue::Null`] rather than being omitted: a document that wrote
+/// the key has said something about it, and the property's schema check is what decides whether an
+/// empty value is acceptable for that field.
+fn record_field_expr(value: &Value) -> Option<String> {
+    if value.is_null() {
+        return Some(String::from("CapabilityValue::Null"));
+    }
+    if value.as_bool().is_some()
+        || value.as_i64().is_some()
+        || value.as_u64().is_some()
+        || value.as_f64().is_some()
+        || value.as_str().is_some()
+    {
+        return Some(capability_value_expr(value));
+    }
+    None
+}
+
 /// The loader-owned keys the generated `create_for` reads as a constructor's text argument.
 ///
 /// See the property loop in [`emit_node`]: these must be emitted even though they are
@@ -1860,6 +2012,100 @@ mod tests {
         ));
     }
 
+    /// B26.05: the geometry the **generator** solves for a document must be the geometry the
+    /// **runtime** solves for it — one project, one size, two paths.
+    ///
+    /// # Why this is the acceptance test the plan asks for
+    ///
+    /// "用同一工程输入比对 JSON 运行和静态生成几何" is the criterion that separates "the generator
+    /// uses a layout engine" from "the generator uses *the* layout engine". The two paths here are
+    /// genuinely different code: mode 1 goes through the declarative registry
+    /// (`store_layout` / `add_widget_to_layout` / `preview_layout`, which is what the JSON loader
+    /// drives), while mode 2 solves locally in `plan_geometry`. They must agree on the child→rect
+    /// pairing and on every coordinate.
+    ///
+    /// All children are left at their default `stretch`, so the comparison isolates the solver and
+    /// the pairing rather than the attribute reader (`an_out_of_range_stretch_clamps_rather_than_wrapping`
+    /// covers the reader on the generation side, and the loader's own tests cover it on the run
+    /// side).
+    #[test]
+    fn the_generated_geometry_matches_the_runtime_geometry_for_one_document() {
+        const DOCUMENT: &str = r#"{
+          "window": {
+            "id": "root",
+            "width": 320,
+            "height": 240,
+            "layout": {
+              "type": "vbox",
+              "spacing": 6,
+              "margin": 4,
+              "children": [
+                { "label": { "id": "a", "text": "A" } },
+                { "label": { "id": "b", "text": "B" } },
+                { "button": { "id": "c", "text": "C", "height": 40 } }
+              ]
+            }
+          }
+        }"#;
+
+        let request = GenerationRequest {
+            json: String::from(DOCUMENT),
+            target: TargetProfile::Stripped,
+            width: 320,
+            height: 240,
+            function_name: String::from("build_geometry"),
+        };
+        let project = JsonProject::parse(&request.json).expect("the document parses");
+        let (kind, children) =
+            project.layout_declaration().expect("the document declares a layout");
+
+        // Mode 2 — what the generated program will contain.
+        let mut report = GenerationReport::default();
+        let planned = plan_geometry(&request, &project, &mut report);
+
+        // Mode 1 — the same document through the loader's own registry path, solved against the
+        // same root rect.
+        const PARENT: crate::core::ObjectId = 0x5EED_0001;
+        crate::json::store_layout(PARENT, crate::json::create_layout_from_kind(&kind));
+        for (index, child) in children.iter().enumerate() {
+            // Every declared child path must resolve, or the two sides are not describing the same
+            // document and the comparison below would be vacuous.
+            project.node(child).expect("every declared child resolves");
+            // The runtime reads the child's placement attributes from the document; with no
+            // `stretch` key that is the documented default of 1.
+            let attrs = crate::json::ChildLayoutAttrs::from_value(&serde_json::json!({}));
+            assert!(
+                crate::json::add_widget_to_layout(index as u64 + 1, attrs.stretch, PARENT),
+                "child {index} must reach the layout"
+            );
+        }
+        let ui = crate::json::preview_layout(
+            PARENT,
+            crate::core::Rect::new(0, 0, request.width, request.height),
+        );
+        crate::json::forget_layout(PARENT);
+
+        assert_eq!(ui.len(), children.len(), "one rect per child: {ui:?}");
+        assert_eq!(planned.rects.len(), children.len() + 1, "the root plus every child");
+        for (index, child) in children.iter().enumerate() {
+            let node = project.node(child).expect("the child resolves");
+            let planned_rect = planned
+                .rects
+                .iter()
+                .find(|(path, _)| path == child)
+                .unwrap_or_else(|| panic!("no planned rect for {child:?}"))
+                .1;
+            let ui_rect = ui[index].1;
+            assert_eq!(
+                planned_rect,
+                (ui_rect.x, ui_rect.y, ui_rect.width, ui_rect.height),
+                "`{}` ({}): the generated geometry must be the runtime geometry",
+                node.widget,
+                node.key
+            );
+        }
+    }
+
     /// B26.06: a probe must name its target and never claim `BuiltVerified` from a collapsed
     /// `TargetProfile`, whose triple is genuinely unknown.
     #[test]
@@ -1903,7 +2149,8 @@ mod tests {
             height: 240,
             function_name: String::from("build_refused"),
         };
-        let generated = generate(&request).expect("the document still generates, with the gap listed");
+        let generated =
+            generate(&request).expect("the document still generates, with the gap listed");
 
         assert!(!generated.report.is_clean(), "a refused property is not a clean run");
         let gap = generated
@@ -1912,7 +2159,11 @@ mod tests {
             .iter()
             .find(|gap| gap.reason.contains("`value`"))
             .unwrap_or_else(|| panic!("no gap names the refused property: {:?}", generated.report));
-        assert!(gap.reason.contains("1.5"), "the reason must name the offending value: {}", gap.reason);
+        assert!(
+            gap.reason.contains("1.5"),
+            "the reason must name the offending value: {}",
+            gap.reason
+        );
         assert!(
             !generated.source.contains("Float(1.5)"),
             "the doomed write must not be emitted:\n{}",
@@ -1940,6 +2191,114 @@ mod tests {
             ok.source
         );
         assert!(ok.report.unsupported.is_empty(), "{:?}", ok.report);
+    }
+
+    /// B26.09: a record list declared by the control travels into the generated program, and one the
+    /// schema refuses is reported instead of emitted.
+    ///
+    /// The generated expression is checked structurally rather than by running the program: it must
+    /// build the *records*, carrying each field name and value, and hand them to the property the
+    /// control declares. A stringified list would satisfy "something was emitted" while producing a
+    /// control nothing like the document, so the presence of the field names is what is asserted.
+    #[test]
+    fn a_record_list_property_is_emitted_with_its_fields() {
+        const WITH_ITEMS: &str = r#"{
+          "window": { "id": "root", "layout": { "type": "vbox", "children": [
+            { "chip": { "id": "c", "items": [
+                { "id": "a", "label": "Alpha", "selected": true },
+                { "id": "b", "label": "Beta" }
+            ] } }
+          ] } }
+        }"#;
+        let generated = generate(&GenerationRequest {
+            json: String::from(WITH_ITEMS),
+            target: TargetProfile::Default,
+            width: 320,
+            height: 240,
+            function_name: String::from("build_records"),
+        })
+        .expect("the document generates");
+
+        assert!(
+            generated.source.contains(".prop(\"items\""),
+            "the item list must be emitted:\n{}",
+            generated.source
+        );
+        for needle in [
+            "CapabilityValue::Records",
+            "RecordList::from_items",
+            "RecordValue::new()",
+            ".with(\"id\", CapabilityValue::String(String::from(\"a\")))",
+            ".with(\"label\", CapabilityValue::String(String::from(\"Beta\")))",
+            ".with(\"selected\", CapabilityValue::Bool(true))",
+        ] {
+            assert!(
+                generated.source.contains(needle),
+                "the emitted record list must contain `{needle}`:\n{}",
+                generated.source
+            );
+        }
+        // It carries no schema of its own: the property supplies one, which is what lets one emitter
+        // serve every control that declares a record list.
+        assert!(
+            generated.source.contains("EMPTY_RECORD_SCHEMA"),
+            "the emitted list must be schema-free:\n{}",
+            generated.source
+        );
+        assert!(generated.report.unsupported.is_empty(), "{:?}", generated.report);
+
+        // A list the control's own schema refuses is reported, not emitted.
+        const REFUSED: &str = r#"{
+          "window": { "id": "root", "layout": { "type": "vbox", "children": [
+            { "chip": { "id": "c", "items": [ { "id": "a" } ] } }
+          ] } }
+        }"#;
+        let refused = generate(&GenerationRequest {
+            json: String::from(REFUSED),
+            target: TargetProfile::Default,
+            width: 320,
+            height: 240,
+            function_name: String::from("build_records_refused"),
+        })
+        .expect("the document still generates, with the gap listed");
+        assert!(!refused.report.is_clean(), "a refused record list is not a clean run");
+        let gap = refused
+            .report
+            .unsupported
+            .iter()
+            .find(|gap| gap.reason.contains("`items`"))
+            .unwrap_or_else(|| panic!("no gap names the refused property: {:?}", refused.report));
+        assert!(
+            gap.reason.contains("label"),
+            "the reason must name the missing field: {}",
+            gap.reason
+        );
+        assert!(
+            !refused.source.contains(".prop(\"items\""),
+            "the doomed write must not be emitted:\n{}",
+            refused.source
+        );
+
+        // An array of objects under a key the control does not declare as a record list is not emitted
+        // as one — it is reported, because the write would be refused by the router.
+        const NOT_A_RECORD_PROPERTY: &str = r#"{
+          "window": { "id": "root", "layout": { "type": "vbox", "children": [
+            { "chip": { "id": "c", "blobs": [ { "id": "a" } ] } }
+          ] } }
+        }"#;
+        let other = generate(&GenerationRequest {
+            json: String::from(NOT_A_RECORD_PROPERTY),
+            target: TargetProfile::Default,
+            width: 320,
+            height: 240,
+            function_name: String::from("build_records_other"),
+        })
+        .expect("the document generates");
+        assert!(
+            !other.source.contains(".prop(\"blobs\""),
+            "an undeclared record list must not be emitted:\n{}",
+            other.source
+        );
     }
 
     #[test]

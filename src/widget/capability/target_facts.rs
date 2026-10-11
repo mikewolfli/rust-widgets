@@ -71,7 +71,7 @@ impl TargetSpec {
     }
 }
 
-/// The triple the build script recorded, or `"unknown"`.
+/// The triple `build.rs` recorded, or `"unknown"`.
 ///
 /// # Why not `std::env::consts::ARCH`/`OS`
 ///
@@ -79,24 +79,62 @@ impl TargetSpec {
 /// `aarch64` + `darwin` is `aarch64-apple-darwin`, but the ABI component (`eabihf`, `msvc`,
 /// `musl`, `gnueabihf`) is exactly the part a capability question turns on, and it is
 /// unrecoverable from `ARCH`/`OS`. The build script has the real triple in `TARGET`, so the
-/// real triple is what travels — as a value it embeds with `cargo:rustc-env`, which is why
-/// this reads one `env!` rather than testing a table of recognised triples.
+/// real triple is what travels.
 ///
-/// # Why there is no list of triples here
+/// # Why the arms are listed, and how the list cannot drift
 ///
-/// An earlier revision tested `cfg!(target_triple = "…")` against a closed list, which meant
-/// every triple had to be declared twice — once in the build script's `rustc-check-cfg` and
-/// once here — and a triple missing from the list reported `"unknown"` for a target the crate
-/// really builds for (`aarch64-unknown-linux-ohos`, one of this crate's own CI targets, was
-/// spelled `aarch64-linux-ohos` and therefore matched nothing). A value carries no such list:
-/// whatever triple the compiler emitted into is what the spec reports, for every target,
-/// without a second declaration to keep in step.
-///
-/// The fallback exists for the case where the build script did not run with `TARGET` set
-/// (an unusual, hand-driven invocation). `"unknown"` is honest: the spec then says the
-/// triple was not captured rather than naming the host as if it were the target.
+/// A `cfg` value cannot be read back as data: the only way to recover it at compile time is to
+/// test the arms below. That makes the list a second declaration of the build script's own, which
+/// is why `build.rs` emits `target_triple_captured` — it knows whether `TARGET` is one of the
+/// triples it declared, so
+/// `the_captured_triple_agrees_with_the_reader` asserts the two answers agree on every build. An
+/// earlier revision let them disagree: it declared `aarch64-linux-ohos` (not a triple this crate
+/// emits — the OpenHarmony spelling is `aarch64-unknown-linux-ohos`) and so reported `"unknown"`
+/// for a target CI actually builds. The lists are kept in step by that test, not by care.
 const fn current_triple() -> &'static str {
-    env!("RW_TARGET_TRIPLE")
+    // Each `cfg!` is false unless the build script emitted exactly that value; the compiler folds
+    // the whole chain to the one true arm, so this stays a `const fn` with no runtime lookup and
+    // keeps the OS string out of every other module.
+    if cfg!(target_triple = "aarch64-apple-darwin") {
+        return "aarch64-apple-darwin";
+    }
+    if cfg!(target_triple = "x86_64-apple-darwin") {
+        return "x86_64-apple-darwin";
+    }
+    if cfg!(target_triple = "x86_64-unknown-linux-gnu") {
+        return "x86_64-unknown-linux-gnu";
+    }
+    if cfg!(target_triple = "aarch64-unknown-linux-gnu") {
+        return "aarch64-unknown-linux-gnu";
+    }
+    if cfg!(target_triple = "x86_64-pc-windows-msvc") {
+        return "x86_64-pc-windows-msvc";
+    }
+    if cfg!(target_triple = "aarch64-apple-ios") {
+        return "aarch64-apple-ios";
+    }
+    if cfg!(target_triple = "aarch64-apple-ios-sim") {
+        return "aarch64-apple-ios-sim";
+    }
+    if cfg!(target_triple = "aarch64-unknown-linux-ohos") {
+        return "aarch64-unknown-linux-ohos";
+    }
+    if cfg!(target_triple = "armv7-unknown-linux-ohos") {
+        return "armv7-unknown-linux-ohos";
+    }
+    if cfg!(target_triple = "x86_64-unknown-linux-ohos") {
+        return "x86_64-unknown-linux-ohos";
+    }
+    if cfg!(target_triple = "aarch64-linux-android") {
+        return "aarch64-linux-android";
+    }
+    if cfg!(target_triple = "x86_64-linux-android") {
+        return "x86_64-linux-android";
+    }
+    if cfg!(target_triple = "wasm32-unknown-unknown") {
+        return "wasm32-unknown-unknown";
+    }
+    "unknown"
 }
 
 /// How well a capability claim has been checked for a target.
@@ -323,10 +361,26 @@ mod tests {
         assert_ne!(spec.profile, "unknown", "a device profile must name itself");
         assert_ne!(spec.triple, "unknown", "build.rs must have captured the TARGET triple");
         // The triple is a real triple, not a placeholder: it has the arch-vendor-os shape.
-        assert!(
-            spec.triple.split('-').count() >= 3,
-            "`{}` is not a target triple",
-            spec.triple
+        assert!(spec.triple.split('-').count() >= 3, "`{}` is not a target triple", spec.triple);
+    }
+
+    /// The build script's triple list and this module's reading arms must agree.
+    ///
+    /// `build.rs` declares which triples it captured (`target_triple_captured`) and this module
+    /// answers the same question by matching a cfg value, so the two are two declarations of one
+    /// fact. They disagreed once — the script declared `aarch64-linux-ohos` while the real
+    /// OpenHarmony spelling is `aarch64-unknown-linux-ohos`, so a HarmonyOS build reported
+    /// `"unknown"` for a target the crate does build. This test is what keeps them in step: the
+    /// flag is true exactly when `current_triple()` can name the triple, so a triple present on one
+    /// side and missing from the other fails here rather than degrading quietly.
+    #[test]
+    fn the_captured_triple_agrees_with_the_reader() {
+        assert_eq!(
+            cfg!(target_triple_captured),
+            current_triple() != "unknown",
+            "build.rs captured `{}` but the reader answered `{}`; the two triple lists disagree",
+            if cfg!(target_triple_captured) { "a declared triple" } else { "an undeclared triple" },
+            current_triple()
         );
     }
 
@@ -334,9 +388,11 @@ mod tests {
     /// one build reads back the same level in another.
     #[test]
     fn verification_levels_round_trip() {
-        for level in
-            [VerificationLevel::BuiltVerified, VerificationLevel::Describable, VerificationLevel::Unknown]
-        {
+        for level in [
+            VerificationLevel::BuiltVerified,
+            VerificationLevel::Describable,
+            VerificationLevel::Unknown,
+        ] {
             assert_eq!(
                 VerificationLevel::from_token(level.token()),
                 Some(level),
@@ -405,8 +461,11 @@ mod tests {
     /// An unbuildable capability must be `Unsupported` with a reason, and never usable.
     #[test]
     fn an_unbuildable_capability_is_unsupported() {
-        let probe =
-            probe_capability("video_codec", TargetSpec::current(), CurrentBuildVerdict::Unbuildable);
+        let probe = probe_capability(
+            "video_codec",
+            TargetSpec::current(),
+            CurrentBuildVerdict::Unbuildable,
+        );
         assert!(probe.availability.is_unsupported());
         assert!(!probe.availability.is_usable());
         assert!(probe.describe().contains("unsupported"));
@@ -415,8 +474,11 @@ mod tests {
     /// An unknown name must be `Unverified`, not `Unsupported` — nobody checked.
     #[test]
     fn an_unknown_name_is_unverified_not_unsupported() {
-        let probe =
-            probe_capability("no_such_control", TargetSpec::current(), CurrentBuildVerdict::Unknown);
+        let probe = probe_capability(
+            "no_such_control",
+            TargetSpec::current(),
+            CurrentBuildVerdict::Unknown,
+        );
         assert!(!probe.availability.is_unsupported());
         assert!(!probe.availability.is_usable());
         assert!(probe.describe().contains("unverified"));

@@ -84,6 +84,21 @@ pub enum CapabilityValue {
     /// [`EventPayloadShape`](crate::widget::capability::EventPayloadShape) is what tells a consumer
     /// which arrangement to expect.
     Tuple(crate::compat::Vec<CapabilityValue>),
+    /// An ordered, id-keyed list of records — the value of a collection property (BLUE26 B26.09).
+    ///
+    /// # Why a variant of its own rather than a `Tuple` of records
+    ///
+    /// A `Tuple` is positional and carries no schema: nothing in it says which field is the identity,
+    /// which fields are required, or what a field's kind is. A designer handing a control a list of
+    /// rows needs all three, and — because the list is *ordered* while an item's identity is not its
+    /// position — it needs the identity question answered, not implied. The list therefore carries
+    /// its own [`RecordList`](crate::widget::capability::records::RecordList), which carries the
+    /// schema it is judged by.
+    ///
+    /// The alternative was to carry the list as its JSON spelling in [`Self::String`]. That is
+    /// refused: a stringified list is accepted by any setter, so a typo in a field name would produce
+    /// a control nothing like the document asked for, with no error anywhere.
+    Records(crate::widget::capability::records::RecordList),
 }
 
 impl CapabilityValue {
@@ -184,6 +199,10 @@ impl CapabilityValue {
             // parts and inventing a separator and a reading order, which is a presentation choice the
             // control that owns the value should make (see `RangeSlider::accessible_value`).
             Self::Tuple(_) => alloc::string::String::new(),
+            // A record list is not an announcement of one thing: a chip group announces "3 selected
+            // of 7" through its own label, and a list of rows has no spoken form that a single
+            // string could carry honestly.
+            Self::Records(_) => alloc::string::String::new(),
             Self::Null => alloc::string::String::new(),
         }
     }
@@ -385,13 +404,33 @@ pub enum ConstraintViolation {
         /// The property the value was for.
         property: String,
     },
+    /// A record list did not conform to the schema its property declares (BLUE26 B26.09).
+    RecordList {
+        /// The property the value was for.
+        property: String,
+        /// What was wrong with the list — which record, which field, and why.
+        cause: crate::widget::capability::records::RecordViolation,
+    },
 }
 
 impl ConstraintViolation {
     /// The property this violation is about, so a caller can point at it.
     pub fn property(&self) -> &str {
         match self {
-            Self::OutOfRange { property, .. } | Self::Empty { property } => property,
+            Self::OutOfRange { property, .. }
+            | Self::Empty { property }
+            | Self::RecordList { property, .. } => property,
+        }
+    }
+
+    /// The record this violation is about, when it is about one.
+    ///
+    /// `None` for a scalar violation. A designer uses this to select the offending row rather than
+    /// the whole property.
+    pub fn record_index(&self) -> Option<usize> {
+        match self {
+            Self::RecordList { cause, .. } => cause.index(),
+            _ => None,
         }
     }
 }
@@ -406,6 +445,9 @@ impl core::fmt::Display for ConstraintViolation {
             ),
             Self::Empty { property } => {
                 write!(f, "property `{property}` rejected an empty value: it is required")
+            }
+            Self::RecordList { property, cause } => {
+                write!(f, "property `{property}` rejected a record list: {cause}")
             }
         }
     }
@@ -432,7 +474,27 @@ pub fn validate_property_value(
     schema: &PropertySchema,
     value: &CapabilityValue,
 ) -> Result<(), ConstraintViolation> {
-    validate_constraints(property, schema.constraints, value)
+    validate_constraints(property, schema.constraints, value)?;
+    // The record-shape rule needs the schema, not the constraint slice, so it lives here rather than
+    // in `validate_constraints` — which is the entry point a caller with only a `&[Constraint]` can
+    // reach. Every path that validates a value against a *declared property* comes through this
+    // function (see the note on it above), so the check is not avoidable by using another entry
+    // point.
+    if let Some(record_schema) = schema.record_schema {
+        if let CapabilityValue::Records(list) = value {
+            // Judged against the schema the **property** declares, never the one the value brought
+            // with it: judging it by its own would let a caller satisfy a rule with a schema the
+            // control never published. A list from JSON or the ABI carries no schema at all, so this
+            // is also the only place its records can be checked.
+            return list.validate_against(record_schema).map_err(|cause| {
+                ConstraintViolation::RecordList { property: property.into(), cause }
+            });
+        }
+    }
+    // A non-`Records` value written to a `Records` property is the property contract's own
+    // `TypeMismatch`, reported by the write itself — the same division of labour the range check has,
+    // so the two kinds of complaint do not overlap.
+    Ok(())
 }
 
 /// Validates `value` against a constraint slice, returning the first violation.
@@ -490,6 +552,9 @@ fn is_empty_value(value: &CapabilityValue) -> bool {
         CapabilityValue::Null => true,
         CapabilityValue::String(text) => text.is_empty(),
         CapabilityValue::Tuple(items) => items.is_empty(),
+        // An empty record list is "no items", which is what `Required` refuses — the same reading
+        // `Tuple` gets, because they are the same statement about a collection.
+        CapabilityValue::Records(list) => list.is_empty(),
         _ => false,
     }
 }
@@ -539,6 +604,21 @@ pub enum PropertyValueKind {
     Color,
     /// A rectangle in logical pixels, carried as [`CapabilityValue::Rect`].
     Rect,
+    /// An ordered, id-keyed list of records, carried as [`CapabilityValue::Records`] (BLUE26 B26.09).
+    ///
+    /// # Why the field list lives on the schema rather than in this variant
+    ///
+    /// This enum is `Copy` and is compared by value in a dozen places; a payload would make every one
+    /// of those decisions again. The fields are declared beside the property instead, on
+    /// [`PropertySchema::record_schema`] — the same arrangement [`Self::Enum`] uses for its accepted
+    /// tokens, and for the same reason: the list of legal shapes belongs to the property that
+    /// declares it, and the kind only has to say "read the schema for the shape".
+    ///
+    /// A property of this kind is checked against its schema by
+    /// [`validate_property_value`] — every record, the required fields, the identity and the
+    /// uniqueness rule — so a malformed list is refused with the offending record and field named
+    /// rather than applied.
+    Records,
 }
 
 /// Metadata for one readable/writable property.
@@ -605,6 +685,21 @@ pub struct PropertySchema {
     ///
     /// [`WidgetFactory::write_property`]: crate::widget::capability::WidgetFactory::write_property
     pub constraints: &'static [Constraint],
+    /// The record schema for a [`PropertyValueKind::Records`] property, `None` for every other kind
+    /// (BLUE26 B26.09).
+    ///
+    /// # Why this is a field rather than more `PropertyValueKind` variants
+    ///
+    /// `PropertyValueKind` is `Copy` and appears in match arms across the crate; a payload would make
+    /// every one of those decisions again, and would make two schemas for the same shape compare
+    /// unequal by pointer. The field list is a property of the *property*, exactly as
+    /// [`Self::accepted_tokens`] is for an enum, and it is filled by
+    /// [`PropertySchema::records`] so the constructors a control's table already uses are untouched.
+    ///
+    /// A `Records` property with no schema here is refused rather than treated as an open list: a
+    /// list whose shape nothing declared cannot be checked, and accepting it would be the
+    /// "unvalidated value under a declared name" this field exists to prevent.
+    pub record_schema: Option<&'static crate::widget::capability::records::RecordSchema>,
 }
 
 impl PropertySchema {
@@ -619,7 +714,15 @@ impl PropertySchema {
         readable: bool,
         writable: bool,
     ) -> Self {
-        Self { name, value_kind, readable, writable, accepted_tokens: &[], constraints: &[] }
+        Self {
+            name,
+            value_kind,
+            readable,
+            writable,
+            accepted_tokens: &[],
+            constraints: &[],
+            record_schema: None,
+        }
     }
 
     /// A [`PropertyValueKind::Enum`] entry that publishes its legal spellings.
@@ -642,7 +745,40 @@ impl PropertySchema {
             writable,
             accepted_tokens,
             constraints: &[],
+            record_schema: None,
         }
+    }
+
+    /// A [`PropertyValueKind::Records`] entry that publishes the shape of one record (BLUE26 B26.09).
+    ///
+    /// # Why a constructor rather than a builder
+    ///
+    /// A `Records` property is *meaningless* without its schema — the validator and every reader of
+    /// the value need the field list — so there is no valid intermediate state to build from. Making
+    /// the schema a constructor argument means a `Records` entry cannot be written without one,
+    /// which is the one thing a builder could not guarantee.
+    pub const fn records(
+        name: &'static str,
+        readable: bool,
+        writable: bool,
+        schema: &'static crate::widget::capability::records::RecordSchema,
+    ) -> Self {
+        Self {
+            name,
+            value_kind: PropertyValueKind::Records,
+            readable,
+            writable,
+            accepted_tokens: &[],
+            constraints: &[],
+            record_schema: Some(schema),
+        }
+    }
+
+    /// The record schema for a [`PropertyValueKind::Records`] property.
+    pub const fn record_schema(
+        &self,
+    ) -> Option<&'static crate::widget::capability::records::RecordSchema> {
+        self.record_schema
     }
 
     /// Attaches runtime-enforced constraints to this schema entry. Chainable and `const`.
@@ -966,7 +1102,9 @@ mod constraint_tests {
     #[test]
     fn an_unconstrained_property_accepts_anything() {
         let schema = PropertySchema::new("text", PropertyValueKind::String, true, true);
-        assert!(validate_property_value("text", &schema, &CapabilityValue::String("".into())).is_ok());
+        assert!(
+            validate_property_value("text", &schema, &CapabilityValue::String("".into())).is_ok()
+        );
         assert!(validate_property_value("text", &schema, &CapabilityValue::Int(999)).is_ok());
         assert!(schema.constraints().is_empty(), "no constraint is the honest default");
     }
@@ -974,11 +1112,14 @@ mod constraint_tests {
     /// A `Required` constraint refuses an empty string and an empty list, but not a zero.
     #[test]
     fn required_refuses_emptiness_but_not_zero() {
-        let schema =
-            PropertySchema::new("text", PropertyValueKind::String, true, true)
-                .constrained(&[Constraint::Required]);
-        assert!(validate_property_value("text", &schema, &CapabilityValue::String("".into())).is_err());
-        assert!(validate_property_value("text", &schema, &CapabilityValue::String("x".into())).is_ok());
+        let schema = PropertySchema::new("text", PropertyValueKind::String, true, true)
+            .constrained(&[Constraint::Required]);
+        assert!(
+            validate_property_value("text", &schema, &CapabilityValue::String("".into())).is_err()
+        );
+        assert!(
+            validate_property_value("text", &schema, &CapabilityValue::String("x".into())).is_ok()
+        );
         // A zero is a value, not an absence.
         let numeric = PropertySchema::new("count", PropertyValueKind::Int, true, true)
             .constrained(&[Constraint::Required]);

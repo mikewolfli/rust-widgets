@@ -34,6 +34,7 @@ typedef enum {
     RW_VALUE_COLOR = 6,
     RW_VALUE_RECT = 7,
     RW_VALUE_TUPLE = 8,
+    RW_VALUE_RECORDS = 9,
 } rw_value_kind;
 
 #ifdef __cplusplus

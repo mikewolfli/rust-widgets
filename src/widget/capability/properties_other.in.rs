@@ -220,6 +220,16 @@ macro_rules! impl_properties_other {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const CHIP_PROPERTIES: &[PropertySchema] = &[
+            // The item list is a *property*, not only a command (BLUE26 B26.09). It was reachable
+            // only as `set_items`, whose signature takes the items as an argument the property API
+            // could not carry — so a JSON document's `"items": [...]` had nowhere to go and was
+            // dropped, and a designer had no way to see or edit the chips at all.
+            PropertySchema::records(
+                "items",
+                true,
+                true,
+                &crate::widget::special_widgets::chip::CHIP_ITEM_SCHEMA,
+            ),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("multi_select", PropertyValueKind::Bool, true, true),
             PropertySchema::new("focused_index", PropertyValueKind::UInt, true, false),

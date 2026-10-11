@@ -367,9 +367,9 @@ impl WidgetProperties for FileDialog {
             "modal" => Ok(CapabilityValue::Bool(self.is_modal())),
             "mode" => Ok(CapabilityValue::String(file_dialog_mode_token(self.mode()).into())),
             "directory" => Ok(CapabilityValue::String(self.directory().to_string())),
-            "selected_file" => Ok(CapabilityValue::String(
-                self.selected_file().unwrap_or_default().to_string(),
-            )),
+            "selected_file" => {
+                Ok(CapabilityValue::String(self.selected_file().unwrap_or_default().to_string()))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -390,8 +390,8 @@ impl WidgetProperties for FileDialog {
             // to land — the schema/contract disagreement `capability::properties_tests` catches.
             "mode" => {
                 let token = expect_string(value)?;
-                let mode = file_dialog_mode_from_token(&token)
-                    .ok_or(CapabilityAccessError::OutOfRange)?;
+                let mode =
+                    file_dialog_mode_from_token(&token).ok_or(CapabilityAccessError::OutOfRange)?;
                 self.set_mode(mode);
                 Ok(())
             }
@@ -408,7 +408,14 @@ impl WidgetProperties for FileDialog {
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["title", "modal", "mode", "directory", "selected_file", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "title",
+            "modal",
+            "mode",
+            "directory",
+            "selected_file",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     fn property_tokens(&self, name: &str) -> &'static [&'static str] {

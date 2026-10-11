@@ -756,26 +756,79 @@ impl FrameWidget {
 ```rust
 pub struct WidgetCapability {
     pub kind: WidgetKind,
-    pub properties: HashMap<String, PropertySchema>,
-    pub features: Vec<String>,
+    pub properties: &'static [PropertySchema],
+    pub events: &'static [EventSchema],
+    pub commands: &'static [&'static str],
 }
 
 pub enum PropertyValueKind {
-    Integer, Float, String, Boolean, Color, Font, Enum(Vec<String>),
+    Bool, Int, UInt, Float,
+    // 整数/小数由另一个属性决定（spin box 整数模式报 `Int`，小数模式报 `Float`）。
+    Number,
+    String, Enum, Color, Rect,
+    // 有序且以 id 为键的记录列表；记录形状声明在 `PropertySchema::record_schema`，
+    // 而不在这个变体里。
+    Records,
 }
 
 pub struct PropertySchema {
-    pub name: String,
-    pub kind: PropertyValueKind,
+    pub name: &'static str,
+    pub value_kind: PropertyValueKind,
+    pub readable: bool,
     pub writable: bool,
-    pub default_value: CapabilityValue,
+    /// `Enum` 属性可接受的拼写。
+    pub accepted_tokens: &'static [&'static str],
+    /// 运行时强制的约束（`Constraint::Range`、`Required`、`Precision`）。
+    pub constraints: &'static [Constraint],
+    /// `Records` 属性的记录形状。
+    pub record_schema: Option<&'static RecordSchema>,
 }
 
 pub enum CapabilityValue {
-    Integer(i64), Float(f64), String(String),
-    Boolean(bool), Color(Color), Font(Font),
+    Null, Bool(bool), Int(i64), UInt(u64), Float(f64),
+    String(String), Color(Color), Rect(Rect),
+    Tuple(Vec<CapabilityValue>),
+    Records(RecordList),
 }
 ```
+
+### 集合属性——记录列表
+
+持有**行**而不是标量的控件会发布 `Records` 属性。`Chip` 是第一个：`chip.items` 就是它的条目列表，
+每个条目是一条记录，含 `id`、`label` 和可选的 `selected`。这个列表是真正的值，不是 JSON 字符串
+——文档写数组对象，非法列表会被拒绝并指出是哪一条记录、哪个字段：
+
+```json
+{ "chip": { "id": "tags", "items": [
+    { "id": "bug", "label": "Bug", "selected": true },
+    { "id": "urgent", "label": "Urgent" }
+] } }
+```
+
+```rust
+use rust_widgets::widget::capability::{widget_property_get, CapabilityValue};
+
+// 以记录形式读回，并按**身份**而不是位置查找条目。
+let chip = /* 一个存活的 Chip */;
+if let Ok(CapabilityValue::Records(list)) = widget_property_get(&chip, "items") {
+    let ids = list.id_of(0);                       // 第一条的稳定 id
+    let label = list.get_by_id("urgent").map(|item| item.text("label"));
+    let _ = (ids, label);
+}
+```
+
+有三件事是**决定**而不是巧合，值得知道：
+
+* **身份是字段，不是位置。** `RecordSchema::id_field` 指明承载条目身份的字段，因此重排不会丢
+  失选择、滚动锚点或未提交的编辑。`RecordList::move_item`（行移动）与 `RecordList::move_field`
+  （列移动）都保持每个 id 不变，`ids_unique` 就是校验器强制的那条规则。
+* **被拒绝的更新不改变任何东西。** 整份列表在替换任何条目之前就被检查完，因此被撤回或被覆盖的
+  编辑可以直接放弃——没有"应用了一半"需要回滚。
+* **控件库不持有业务状态。** `RecordList` 是调用方拥有的值，控件只取它需要的部分。`items` 是
+  *属性*，同名的命令形式不带载荷——带值的操作走属性这条路径。
+
+`DesignerManifest` 也把记录列表导出为数组对象，因此文档形式、manifest 形式与属性值是同一份表示，
+而不是三份。
 
 ### WidgetFactory
 

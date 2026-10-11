@@ -148,6 +148,11 @@ pub(crate) fn to_capability_value(
         // A rectangle is written as "x,y,w,h", or as a 4-element array, which is the
         // natural shape in JSON and avoids asking authors to build a string.
         Some(PropertyValueKind::Rect) => rect_from_json(value).map(CapabilityValue::Rect),
+        // A record list is written as a JSON array of objects — the shape a document naturally uses
+        // for rows and the shape the manifest exports (BLUE26 B26.09). Field names and values are read
+        // **structurally**, not as a stringified blob: a typo in a field name then stays visible to
+        // the property's own schema check instead of becoming a value the setter accepts.
+        Some(PropertyValueKind::Records) => records_from_json(value).map(CapabilityValue::Records),
         None => match value {
             Value::Null => Some(CapabilityValue::Null),
             Value::Bool(b) => Some(CapabilityValue::Bool(*b)),
@@ -213,6 +218,67 @@ fn rect_from_json(value: &Value) -> Option<crate::core::Rect> {
     Some(crate::core::Rect::new(x, y, width, height))
 }
 
+/// Converts a JSON value into a record list for a `Records`-declared property (BLUE26 B26.09).
+///
+/// # What it accepts, and what it refuses
+///
+/// An array of objects, each object becoming one record whose fields are the object's own keys in the
+/// document's order. That is the only accepted shape:
+///
+/// * a non-array is refused, rather than read as a one-record list — a document that forgot the array
+///   is a document whose intent the library should not guess;
+/// * a non-object element is refused, because a record's fields have to be named;
+/// * a nested array or object as a *field* value is refused, because a record field is one value of a
+///   declared kind and a nested structure is not one of them (a nested record list would also mean
+///   the property's schema check could not see inside it);
+/// * a JSON `null` field is kept as [`CapabilityValue::Null`], which is a value the schema check can
+///   judge — unlike a *missing* field, which the same check reports when the field is required.
+///
+/// # Why the shape is not checked here
+///
+/// Which fields are required, which kind each one holds, and whether ids must be unique are the
+/// declaring control's business, and its schema is the single place those answers live. This function
+/// only turns the document's structure into the value's structure; `validate_property_value` judges it.
+///
+/// The returned list carries [`EMPTY_RECORD_SCHEMA`](crate::widget::capability::EMPTY_RECORD_SCHEMA):
+/// at this point no `&'static` schema is known, and inventing one would be policy the property never
+/// declared. The caller that *does* know the schema adopts the list — see
+/// [`RecordList::with_schema`](crate::widget::capability::RecordList::with_schema).
+fn records_from_json(value: &Value) -> Option<crate::widget::capability::RecordList> {
+    use crate::widget::capability::{CapabilityValue, RecordList, RecordValue};
+    let Value::Array(items) = value else {
+        return None;
+    };
+    let mut records = crate::compat::Vec::new();
+    for item in items {
+        let Value::Object(fields) = item else {
+            return None;
+        };
+        let mut record = RecordValue::new();
+        for (name, field) in fields {
+            let field_value = match field {
+                Value::Null => CapabilityValue::Null,
+                Value::Bool(flag) => CapabilityValue::Bool(*flag),
+                Value::Number(number) => {
+                    match (number.as_u64(), number.as_i64(), number.as_f64()) {
+                        (Some(unsigned), _, _) => CapabilityValue::UInt(unsigned),
+                        (None, Some(signed), _) => CapabilityValue::Int(signed),
+                        (None, None, Some(float)) => CapabilityValue::Float(float),
+                        _ => return None,
+                    }
+                }
+                Value::String(text) => CapabilityValue::String(text.clone()),
+                // A colour or a rectangle inside a record would be a second grammar to keep in step;
+                // no control declares one today, so it is refused rather than guessed at.
+                Value::Array(_) | Value::Object(_) => return None,
+            };
+            record = record.with(name.clone(), field_value);
+        }
+        records.push(record);
+    }
+    Some(RecordList::from_items(&crate::widget::capability::EMPTY_RECORD_SCHEMA, records))
+}
+
 /// Look up the full declared schema for a property from the factory registry.
 ///
 /// Returns `None` when the schema does not describe the property, which is the honest answer for a
@@ -225,11 +291,30 @@ fn declared_schema(
     let factory = crate::json::schema_factory();
     let capability = factory.capability_for_kind_instance(widget)?;
     let wanted = normalize(name);
-    capability
-        .properties
-        .iter()
-        .find(|schema| normalize(schema.name) == wanted)
-        .copied()
+    capability.properties.iter().find(|schema| normalize(schema.name) == wanted).copied()
+}
+
+/// Whether `widget` declares `name` as a record-list property (BLUE26 B26.09).
+///
+/// # Why the loader asks this before honouring "loader-owned"
+///
+/// A loader-owned key is skipped by the name-driven pass because a construction arm or the layout
+/// machinery consumes it. `items` is one of those keys — `combobox` and `listbox` read it as an array
+/// of *strings* — so a control whose item list is a record list had no route at all: its value was
+/// skipped by the pass and ignored by the construction arm (`as_str()` on an object is `None`), which
+/// is the silent drop this release exists to remove.
+///
+/// The exception is deliberately as narrow as it can be: it fires only for a name the control's own
+/// capability declares as [`PropertyValueKind::Records`]. Widening it to "any published property"
+/// would make the name-driven pass apply keys the arms already consumed (`text`, `tooltip`, `id`) a
+/// second time. `children` — an array of objects, like a record list — is not published by any
+/// control as this kind, so it keeps its old route.
+pub(crate) fn declares_record_list(widget: &dyn crate::widget::Widget, name: &str) -> bool {
+    let Some(published) = resolve_property_name(widget, name) else {
+        return false;
+    };
+    declared_schema(widget, published)
+        .is_some_and(|schema| schema.value_kind == PropertyValueKind::Records)
 }
 
 /// Apply one JSON `key: value` pair to a widget through its property contract.
@@ -260,12 +345,16 @@ pub(crate) fn apply_widget_property(
     };
 
     if let Some(schema) = declared {
-        if let Err(violation) =
-            crate::widget::capability::validate_property_value(published, &schema, &capability_value)
-        {
+        if let Err(violation) = crate::widget::capability::validate_property_value(
+            published,
+            &schema,
+            &capability_value,
+        ) {
             // Named, not silent: the reason carries the property and the bound it broke, so a
             // document author can see *why* the value was dropped rather than wondering.
-            log::warn!("JSON layout: property {published:?} rejected the value {value}: {violation}");
+            log::warn!(
+                "JSON layout: property {published:?} rejected the value {value}: {violation}"
+            );
             return ApplyOutcome::Rejected;
         }
     }
@@ -291,6 +380,111 @@ mod tests {
         assert_eq!(normalize("font_size"), "fontsize");
         assert_eq!(normalize("font size"), "fontsize");
         assert_eq!(normalize("fontsize"), "fontsize");
+    }
+
+    /// B26.09: a JSON array of objects becomes a typed record list, not a stringified blob.
+    ///
+    /// The field names and the values are read structurally, so the value a caller receives can be
+    /// inspected field by field — which is the difference between a typed collection and a string that
+    /// happens to hold JSON.
+    #[test]
+    fn to_capability_value_reads_a_record_list_structurally() {
+        let json = serde_json::json!([
+            {"id": "a", "label": "Alpha", "selected": true},
+            {"id": "b", "label": "Beta"}
+        ]);
+        let Some(CapabilityValue::Records(list)) =
+            to_capability_value(&json, Some(PropertyValueKind::Records))
+        else {
+            panic!("an array of objects must read as a record list");
+        };
+        assert_eq!(list.len(), 2);
+        assert_eq!(list.get(0).expect("first").text("id"), "a");
+        assert_eq!(list.get(0).expect("first").text("label"), "Alpha");
+        assert!(matches!(
+            list.get(0).expect("first").get("selected"),
+            Some(CapabilityValue::Bool(true))
+        ));
+        // An absent optional field is absent, not invented.
+        assert!(list.get(1).expect("second").get("selected").is_none());
+        // The list carries no schema: it is the *property* that supplies one.
+        assert!(list.schema().fields.is_empty());
+    }
+
+    /// Every shape that is not an array of objects is refused rather than guessed at.
+    #[test]
+    fn to_capability_value_refuses_a_shape_that_is_not_a_record_list() {
+        let kind = Some(PropertyValueKind::Records);
+        // Not an array at all.
+        assert_eq!(to_capability_value(&serde_json::json!({"id": "a"}), kind), None);
+        assert_eq!(to_capability_value(&serde_json::json!("[]"), kind), None);
+        assert_eq!(to_capability_value(&serde_json::json!(3), kind), None);
+        // An array whose elements are not objects.
+        assert_eq!(to_capability_value(&serde_json::json!(["a", "b"]), kind), None);
+        // A nested structure as a field value: a record field is one value of a declared kind.
+        assert_eq!(to_capability_value(&serde_json::json!([{"id": {"nested": 1}}]), kind), None);
+        assert_eq!(to_capability_value(&serde_json::json!([{"id": [1, 2]}]), kind), None);
+        // An empty array **is** an empty list, which is a legitimate value.
+        let Some(CapabilityValue::Records(empty)) =
+            to_capability_value(&serde_json::json!([]), kind)
+        else {
+            panic!("an empty array is an empty record list");
+        };
+        assert!(empty.is_empty());
+        // And with no declared kind, a list stays refused: without a schema nothing can judge it.
+        assert_eq!(to_capability_value(&serde_json::json!([{"id": "a"}]), None), None);
+    }
+
+    /// The loader refuses a record list the control's own schema rejects, and leaves the control alone.
+    #[test]
+    fn a_record_list_the_schema_refuses_is_rejected_not_applied() {
+        use crate::widget::capability::{RecordList, RecordValue, EMPTY_RECORD_SCHEMA};
+        let mut chip = crate::widget::special_widgets::chip::Chip::new(Rect::new(0, 0, 200, 36));
+        // A well-formed document reaches the control.
+        assert_eq!(
+            apply_widget_property(
+                &mut chip,
+                "items",
+                &serde_json::json!([{"id": "a", "label": "Alpha"}])
+            ),
+            ApplyOutcome::Applied
+        );
+        assert_eq!(chip.items().len(), 1);
+        assert_eq!(chip.items()[0].id, "a");
+
+        // A malformed one is rejected *and* changes nothing — the list is checked in full before any
+        // item is replaced, so there is no partial application to undo.
+        let mut order = RecordList::new(&EMPTY_RECORD_SCHEMA);
+        order.push(
+            RecordValue::new()
+                .with("id", CapabilityValue::String(String::from("x")))
+                .with("label", CapabilityValue::String(String::from("X"))),
+        );
+        assert_eq!(
+            order.validate_against(&crate::widget::special_widgets::chip::CHIP_ITEM_SCHEMA),
+            Ok(())
+        );
+        // `label` is required, so a record without it is refused.
+        assert_eq!(
+            apply_widget_property(&mut chip, "items", &serde_json::json!([{"id": "b"}])),
+            ApplyOutcome::Rejected
+        );
+        assert_eq!(chip.items().len(), 1, "a refused list must not replace the live items");
+        assert_eq!(chip.items()[0].id, "a");
+    }
+
+    /// `declares_record_list` is the narrow exception that lets a loader-owned key reach the property
+    /// pass — and it answers only for a control that declares a `Records` property.
+    #[test]
+    fn only_a_record_list_property_claims_a_loader_owned_key() {
+        let chip = crate::widget::special_widgets::chip::Chip::new(Rect::new(0, 0, 200, 36));
+        assert!(declares_record_list(&chip, "items"));
+        // A control that reads `items` as an array of *strings* keeps the loader-owned route.
+        let combo = crate::widget::ComboBox::new(Rect::new(0, 0, 200, 36));
+        assert!(!declares_record_list(&combo, "items"));
+        // And a structure key no control publishes as this kind is unaffected.
+        assert!(!declares_record_list(&chip, "children"));
+        assert!(!declares_record_list(&chip, "not_a_property"));
     }
 
     #[test]
@@ -413,8 +607,7 @@ mod tests {
 
         let factory = WidgetFactory::new_with_defaults();
         // `1.5` is outside the declared `[0.0, 1.0]` bound.
-        let Some(mut circle) =
-            factory.create("progress_circle", Rect::new(0, 0, 64, 64), "")
+        let Some(mut circle) = factory.create("progress_circle", Rect::new(0, 0, 64, 64), "")
         else {
             // A profile without the control has no schema either, so there is nothing to check;
             // the test would prove nothing, and `full_widgets` covers this module's profiles.
