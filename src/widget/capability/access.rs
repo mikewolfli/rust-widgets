@@ -296,6 +296,7 @@ pub fn default_widget_property_default_value(
             "text" => CapabilityValue::String(String::new()),
             "pressed" => CapabilityValue::Bool(false),
             "default" => CapabilityValue::Bool(false),
+            "icon_source" => CapabilityValue::Null,
             "enabled" => CapabilityValue::Bool(true),
             "tooltip" => CapabilityValue::String(String::new()),
             _ => return None,
@@ -471,6 +472,7 @@ pub fn default_widget_property_default_value(
         WidgetKind::Action => match property_name {
             "text" => CapabilityValue::String(String::new()),
             "icon_text" => CapabilityValue::String(String::new()),
+            "icon_source" => CapabilityValue::Null,
             "shortcut" => CapabilityValue::String(String::new()),
             "checkable" => CapabilityValue::Bool(false),
             "checked" => CapabilityValue::Bool(false),
@@ -1502,6 +1504,7 @@ pub fn default_widget_property_default_value(
         WidgetKind::ToolButton => match property_name {
             "text" => CapabilityValue::String(String::new()),
             "checked" => CapabilityValue::Bool(false),
+            "icon_source" => CapabilityValue::Null,
             "menu_open" => CapabilityValue::Bool(false),
             "action_count" => CapabilityValue::UInt(0),
             "row_height" => CapabilityValue::UInt(24),

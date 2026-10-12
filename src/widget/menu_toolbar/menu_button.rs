@@ -19,7 +19,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::menu_toolbar::popup_reveal::{PopupReveal, RevealDirection};
 use crate::widget::metrics::effective_font;
-use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Default width of the dropdown menu panel.
@@ -96,7 +96,9 @@ pub struct MenuButton {
     base: BaseWidget,
     text: String,
     menu_items: Vec<MenuItem>,
+    item_icon_sources: Vec<(u64, IconSource)>,
     icon: Option<String>,
+    icon_source: Option<IconSource>,
     /// Whether the dropdown menu is currently visible.
     menu_open: bool,
     /// The menu's open/close reveal; see `menu::Menu` for why it is separate from `menu_open`.
@@ -112,7 +114,9 @@ impl MenuButton {
             base: BaseWidget::new(WidgetKind::MenuButton, geometry, "MenuButton"),
             text: text.to_string(),
             menu_items: Vec::new(),
+            item_icon_sources: Vec::new(),
             icon: None,
+            icon_source: None,
             menu_open: false,
             reveal: PopupReveal::new(false),
             item_triggered: Signal1::new(),
@@ -138,19 +142,62 @@ impl MenuButton {
     /// Sets the button icon.
     pub fn set_icon(&mut self, icon: &str) {
         self.icon = Some(icon.to_string());
+        self.icon_source = None;
         self.base.request_redraw();
+    }
+
+    /// Sets a built-in or static-geometry icon, replacing the legacy text icon.
+    ///
+    /// `icon()` returns `None` while this typed source is active.
+    pub fn set_icon_source(&mut self, source: Option<IconSource>) {
+        self.icon = None;
+        self.icon_source = source;
+        self.base.request_redraw();
+    }
+
+    /// Returns the typed icon source, if one is active.
+    pub fn icon_source(&self) -> Option<IconSource> {
+        self.icon_source
     }
 
     /// Clears the icon.
     pub fn clear_icon(&mut self) {
         self.icon = None;
+        self.icon_source = None;
         self.base.request_redraw();
     }
 
     /// Adds a menu item to the dropdown.
     pub fn add_item(&mut self, item: MenuItem) {
+        self.item_icon_sources.retain(|(id, _)| *id != item.id);
         self.menu_items.push(item);
         self.base.request_redraw();
+    }
+
+    /// Assigns a typed icon source to the uniquely identified top-level menu item.
+    ///
+    /// The legacy [`MenuItem::icon`] remains text. When a typed source is active it occupies that
+    /// item's icon slot instead; setting `None` restores the legacy text icon. Duplicate IDs are
+    /// refused because they cannot identify one item unambiguously.
+    pub fn set_item_icon_source(
+        &mut self,
+        id: u64,
+        source: Option<IconSource>,
+    ) -> Result<(), crate::widget::IconItemError> {
+        let matches = self.menu_items.iter().filter(|item| item.id == id).count();
+        if matches == 0 {
+            return Err(crate::widget::IconItemError::ItemNotFound { id });
+        }
+        if matches > 1 {
+            return Err(crate::widget::IconItemError::AmbiguousItemId { id });
+        }
+
+        self.item_icon_sources.retain(|(stored_id, _)| *stored_id != id);
+        if let Some(source) = source {
+            self.item_icon_sources.push((id, source));
+        }
+        self.base.request_redraw();
+        Ok(())
     }
 
     /// Removes a menu item by its ID.
@@ -159,6 +206,7 @@ impl MenuButton {
         self.menu_items.retain(|item| item.id != id);
         let removed = self.menu_items.len() < len_before;
         if removed {
+            self.item_icon_sources.retain(|(item_id, _)| *item_id != id);
             self.base.request_redraw();
         }
         removed
@@ -167,6 +215,7 @@ impl MenuButton {
     /// Removes all menu items.
     pub fn clear_items(&mut self) {
         self.menu_items.clear();
+        self.item_icon_sources.clear();
         self.base.request_redraw();
     }
 
@@ -182,6 +231,7 @@ impl MenuButton {
 
     /// Returns a mutable reference to the menu items.
     pub fn items_mut(&mut self) -> &mut Vec<MenuItem> {
+        self.item_icon_sources.clear();
         &mut self.menu_items
     }
 
@@ -392,7 +442,18 @@ impl Draw for MenuButton {
 
         // ── Draw icon if present ──
         let mut text_offset_x = geom.x + PADDING;
-        if let Some(ref icon_str) = self.icon {
+        if let Some(source) = self.icon_source {
+            let side = geom.height.saturating_sub((PADDING * 2) as u32).clamp(1, 16);
+            let line = context.text_line(geom, font);
+            let icon_rect = Rect::new(text_offset_x, line.y, side, side);
+            let icon_color = if is_enabled { ink } else { disabled_ink };
+            if let Err(error) =
+                crate::widget::paint_icon(context, source.into(), icon_rect, icon_color)
+            {
+                log::warn!("menu button icon could not be painted: {error:?}");
+            }
+            text_offset_x += 22;
+        } else if let Some(ref icon_str) = self.icon {
             let icon_font = Font::simple("sans-serif", 14.0);
             // The icon is a glyph too, so its origin is a top edge: taking the button's raw
             // midpoint as the origin drew it half a line low. The line box supplies the
@@ -484,7 +545,22 @@ impl Draw for MenuButton {
                 let mut item_x = item_rect.x + PADDING;
 
                 // Item icon
-                if let Some(ref item_icon) = item.icon {
+                let item_source =
+                    self.item_icon_sources.iter().find(|(id, _)| *id == item.id).map(|(_, s)| *s);
+                if let Some(source) = item_source {
+                    let icon_line = context.text_line(item_rect, item_font);
+                    let side = icon_line.height.clamp(1, 16);
+                    let icon_box = Rect::new(item_x, icon_line.y, side, side.min(item_rect.height));
+                    if let Err(error) =
+                        crate::widget::paint_icon(context, source.into(), icon_box, item_text_color)
+                    {
+                        log::warn!(
+                            "menu item {id} icon could not be painted: {error:?}",
+                            id = item.id
+                        );
+                    }
+                    item_x += 20;
+                } else if let Some(ref item_icon) = item.icon {
                     let icon_font = Font::simple("sans-serif", 13.0);
                     // The icon and the label occupy the same row, so both take their origin
                     // from the line box centred in it: the row midpoint is the glyph top
@@ -719,8 +795,52 @@ mod tests {
         mb.set_icon("🔍");
         assert_eq!(mb.icon(), Some("🔍"));
 
+        let source = IconSource::builtin(IconName::Info);
+        mb.set_icon_source(Some(source));
+        assert_eq!(mb.icon_source(), Some(source));
+        assert!(mb.icon().is_none(), "typed geometry is not exposed as legacy text");
+        let svg = crate::widget::svg::render_to_svg(&mut mb);
+        assert!(svg.contains("<path"), "the typed icon reaches the SVG backend");
+
+        mb.set_icon("★");
+        assert_eq!(mb.icon_source(), None, "legacy text replaces typed geometry");
+        assert_eq!(mb.icon(), Some("★"));
         mb.clear_icon();
         assert!(mb.icon().is_none());
+        assert_eq!(mb.icon_source(), None);
+    }
+
+    #[test]
+    fn menu_button_item_sources_use_unique_ids_and_follow_mutation_lifecycle() {
+        static RING: crate::widget::IconData = crate::widget::IconData {
+            name: "menu-button-ring",
+            grid: 24,
+            paths: &["M2-2H22V-22H2Z M7-7V-17H17V-7Z"],
+        };
+
+        let mut button = MenuButton::new("Menu", Rect::new(0, 0, 140, 32));
+        button.add_item(MenuItem::new(7, "Open").with_icon("legacy"));
+        assert_eq!(
+            button.set_item_icon_source(8, Some(IconSource::static_geometry(&RING))),
+            Err(crate::widget::IconItemError::ItemNotFound { id: 8 })
+        );
+        button
+            .set_item_icon_source(7, Some(IconSource::static_geometry(&RING)))
+            .expect("unique existing id accepts a typed source");
+        assert_eq!(button.items()[0].icon.as_deref(), Some("legacy"));
+        button.open_menu();
+        let svg = crate::widget::svg::render_to_svg(&mut button);
+        assert!(svg.contains("fill-rule=\"nonzero\""), "item geometry reaches the menu painter");
+
+        button.add_item(MenuItem::new(7, "Duplicate"));
+        assert_eq!(
+            button.set_item_icon_source(7, Some(IconSource::static_geometry(&RING))),
+            Err(crate::widget::IconItemError::AmbiguousItemId { id: 7 })
+        );
+        assert!(button.item_icon_sources.is_empty(), "new duplicate invalidates stale mapping");
+
+        button.items_mut().clear();
+        assert!(button.item_icon_sources.is_empty(), "mutable access clears source associations");
     }
 
     #[test]

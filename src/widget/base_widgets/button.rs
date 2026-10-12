@@ -20,7 +20,7 @@ use crate::widget::metrics::{
 };
 #[cfg(feature = "image")]
 use crate::widget::Image;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Stroke width of the emphasis ring on a **default** button, in pixels.
@@ -62,6 +62,7 @@ pub struct Button {
     text: String,
     #[cfg(feature = "image")]
     icon: Option<Image>,
+    icon_source: Option<IconSource>,
     default_button: bool,
     /// The last value `pressed_signal`/`released_signal` were emitted for.
     ///
@@ -126,6 +127,7 @@ impl Button {
             text,
             #[cfg(feature = "image")]
             icon: None,
+            icon_source: None,
             default_button: false,
             signaled_pressed: false,
             // A freshly constructed button is at rest, so its progress is at the rest end of the
@@ -228,6 +230,9 @@ impl Button {
     /// question in both configurations — which is why `implicit_size` and the draw path can both
     /// read it without each carrying a `#[cfg]`.
     fn has_icon(&self) -> bool {
+        if self.icon_source.is_some() {
+            return true;
+        }
         #[cfg(feature = "image")]
         {
             self.icon.is_some()
@@ -466,6 +471,7 @@ impl Button {
     /// Sets the icon displayed on the button.
     #[cfg(feature = "image")]
     pub fn set_icon(&mut self, icon: Image) {
+        self.icon_source = None;
         self.icon = Some(icon);
         self.base.request_redraw();
     }
@@ -473,6 +479,24 @@ impl Button {
     #[cfg(feature = "image")]
     pub fn icon(&self) -> Option<&Image> {
         self.icon.as_ref()
+    }
+
+    /// Sets a built-in or static-geometry icon, replacing any legacy image.
+    ///
+    /// The legacy [`Self::icon`] getter returns `None` while a typed source is active; use
+    /// [`Self::icon_source`] to inspect the current source.
+    pub fn set_icon_source(&mut self, source: Option<IconSource>) {
+        self.icon_source = source;
+        #[cfg(feature = "image")]
+        {
+            self.icon = None;
+        }
+        self.base.request_redraw();
+    }
+
+    /// Returns the typed icon source, if one was most recently assigned.
+    pub fn icon_source(&self) -> Option<IconSource> {
+        self.icon_source
     }
     /// Sets whether this button is the default button.
     pub fn set_default(&mut self, default: bool) {
@@ -592,6 +616,15 @@ impl WidgetProperties for Button {
             "text" => Ok(CapabilityValue::String(self.text().to_string())),
             "pressed" => Ok(CapabilityValue::Bool(self.is_pressed())),
             "default" => Ok(CapabilityValue::Bool(self.is_default())),
+            "icon_source" => match self.icon_source() {
+                None => Ok(CapabilityValue::Null),
+                Some(IconSource::Builtin(name)) => Ok(CapabilityValue::IconSpec(
+                    crate::widget::icon_source::IconSpec::Builtin(name),
+                )),
+                Some(IconSource::StaticGeometry(_)) => {
+                    Err(CapabilityAccessError::IconSourceNotPersistable)
+                }
+            },
             _ => base_property_get(self, name),
         }
     }
@@ -610,6 +643,19 @@ impl WidgetProperties for Button {
                 self.set_default(expect_bool(value)?);
                 Ok(())
             }
+            "icon_source" => {
+                match value {
+                    CapabilityValue::Null => self.set_icon_source(None),
+                    CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(
+                        name,
+                    )) => self.set_icon_source(Some(IconSource::Builtin(name))),
+                    CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Resource {
+                        ..
+                    }) => return Err(CapabilityAccessError::ResourceResolutionRequired),
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                }
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -618,7 +664,7 @@ impl WidgetProperties for Button {
         // Mirrors `BUTTON_PROPERTIES` for the properties this control owns; the
         // shared four are appended from `BASE_PROPERTY_NAMES` so they are not
         // retyped per control.
-        property_names_of!["text", "pressed", "default", BASE_PROPERTY_NAMES]
+        property_names_of!["text", "pressed", "default", "icon_source", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `button` publishes.
@@ -892,19 +938,36 @@ impl Draw for Button {
         // derivation `implicit_size` reserves room with — rather than from a second, hand-written
         // offset. §B.9's point is exactly this: a wider icon pushes the label along instead of
         // overlapping it.
+        let icon_color = style.text_color.unwrap_or_else(|| {
+            let fill = style.background_color.unwrap_or(Color::WHITE);
+            if state == ButtonState::Disabled {
+                fill.contrast_color().with_alpha(150)
+            } else {
+                fill.contrast_color()
+            }
+        });
+        if let (Some(source), Some(box_)) = (self.icon_source, self.icon_rect()) {
+            if let Err(error) = crate::widget::paint_icon(context, source.into(), box_, icon_color)
+            {
+                log::warn!("button icon could not be painted: {error:?}");
+            }
+        }
+
         #[cfg(feature = "image")]
-        if let (Some(icon), Some(box_)) = (self.icon.as_ref(), self.icon_rect()) {
-            // The icon is scaled to the slot the metric derivation reserved for it, so the room
-            // `implicit_size` added and the pixels drawn are the same square. An icon whose own
-            // bitmap is a different size is scaled rather than drawn at its native extent —
-            // otherwise the button's reserved advance and its ink would disagree.
-            context.draw_image(
-                box_.x,
-                box_.y,
-                box_.width,
-                box_.height,
-                icon.rgba8_data().unwrap_or(&[]),
-            );
+        if self.icon_source.is_none() {
+            if let (Some(icon), Some(box_)) = (self.icon.as_ref(), self.icon_rect()) {
+                // The icon is scaled to the slot the metric derivation reserved for it, so the room
+                // `implicit_size` added and the pixels drawn are the same square. An icon whose own
+                // bitmap is a different size is scaled rather than drawn at its native extent —
+                // otherwise the button's reserved advance and its ink would disagree.
+                context.draw_image(
+                    box_.x,
+                    box_.y,
+                    box_.width,
+                    box_.height,
+                    icon.rgba8_data().unwrap_or(&[]),
+                );
+            }
         }
 
         // ── Text ──
@@ -1058,6 +1121,32 @@ mod tests {
 
         button.set("default", CapabilityValue::Bool(true)).expect("default is writable");
         assert_eq!(button.get("default"), Ok(CapabilityValue::Bool(true)));
+
+        let icon = crate::widget::icon_source::IconSpec::Builtin(crate::widget::IconName::Info);
+        button
+            .set("icon_source", CapabilityValue::IconSpec(icon.clone()))
+            .expect("built-in icon descriptors are applicable without a resolver");
+        assert_eq!(button.get("icon_source"), Ok(CapabilityValue::IconSpec(icon)));
+        button.set("icon_source", CapabilityValue::Null).expect("null clears the icon");
+        assert_eq!(button.get("icon_source"), Ok(CapabilityValue::Null));
+        assert_eq!(
+            button.set(
+                "icon_source",
+                CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Resource {
+                    id: "project/icons/save".into(),
+                    color_mode: crate::widget::icon_source::IconColorMode::Monochrome,
+                }),
+            ),
+            Err(CapabilityAccessError::ResourceResolutionRequired)
+        );
+        static DATA: crate::widget::display_widgets::icon::IconData =
+            crate::widget::display_widgets::icon::IconData {
+                name: "runtime",
+                grid: 24,
+                paths: &[],
+            };
+        button.set_icon_source(Some(IconSource::static_geometry(&DATA)));
+        assert_eq!(button.get("icon_source"), Err(CapabilityAccessError::IconSourceNotPersistable));
     }
 
     /// The shared properties must work through `Button` too, not only through the
@@ -1290,15 +1379,38 @@ mod tests {
         assert!(b.text().is_empty());
     }
 
+    #[test]
+    fn typed_icon_source_owns_layout_and_clears_cleanly() {
+        let mut button = make_button();
+        assert!(button.icon_rect().is_none());
+        let source = IconSource::builtin(crate::widget::IconName::Info);
+        button.set_icon_source(Some(source));
+        assert_eq!(button.icon_source(), Some(source));
+        assert!(button.icon_rect().is_some());
+        assert!(
+            button.implicit_size().width
+                > Button::new("Click".into(), rect()).implicit_size().width,
+            "typed geometry reserves the same content slot as a legacy image"
+        );
+        #[cfg(feature = "image")]
+        assert!(button.icon().is_none(), "typed content is not exposed as a legacy image");
+
+        button.set_icon_source(None);
+        assert_eq!(button.icon_source(), None);
+        assert!(button.icon_rect().is_none(), "clearing releases the icon layout slot");
+    }
+
     #[cfg(all(feature = "image", not(alloc_frugal)))]
     #[test]
     fn set_icon_and_default_icon() {
         let mut b = make_button();
         assert!(b.icon().is_none());
 
+        b.set_icon_source(Some(IconSource::builtin(crate::widget::IconName::Info)));
         let img = make_image();
         b.set_icon(img);
         assert!(b.icon().is_some());
+        assert_eq!(b.icon_source(), None, "legacy image setter replaces typed content");
     }
 
     // ── 6. Default property ────────────────────────────────────────────

@@ -583,6 +583,104 @@ impl SoftwareSurface {
             }
         }
     }
+    /// Fills all packed contours as one non-zero winding shape.
+    pub fn fill_path_non_zero(&mut self, path: &crate::render::CompoundPath, color: Color) {
+        self.fill_path_non_zero_borrowed(path.points(), path.contours(), color, 0, 0)
+            .expect("CompoundPath owns validated contour ranges");
+    }
+
+    /// Fills borrowed contours after applying a translation, without building an owning path.
+    pub(crate) fn fill_path_non_zero_borrowed(
+        &mut self,
+        points: &[Point],
+        contours: &[(usize, usize)],
+        color: Color,
+        offset_x: i32,
+        offset_y: i32,
+    ) -> Result<(), crate::render::CompoundPathError> {
+        crate::render::CompoundPath::validate_ranges(points.len(), contours)?;
+        let size = self.buffer.size();
+        let clip = self.current_clip();
+        let intersections = &mut self.nonzero_intersections;
+        if intersections.capacity() < points.len() {
+            intersections.reserve(points.len());
+        }
+        let frame = self.buffer.back_mut();
+        let min_y = contours
+            .iter()
+            .flat_map(|&(start, end)| &points[start..end])
+            .map(|point| point.y + offset_y)
+            .min()
+            .unwrap_or(0)
+            .max(0);
+        let max_y = contours
+            .iter()
+            .flat_map(|&(start, end)| &points[start..end])
+            .map(|point| point.y + offset_y)
+            .max()
+            .unwrap_or(0)
+            .min(size.height as i32 - 1);
+
+        for y in min_y..=max_y {
+            intersections.clear();
+            for &(start, end) in contours {
+                for index in start..end {
+                    let first = points[index];
+                    let second = points[if index + 1 == end { start } else { index + 1 }];
+                    let first_y = first.y + offset_y;
+                    let second_y = second.y + offset_y;
+                    let winding = if first_y <= y && second_y > y {
+                        1
+                    } else if second_y <= y && first_y > y {
+                        -1
+                    } else {
+                        continue;
+                    };
+                    let first_x = first.x + offset_x;
+                    let second_x = second.x + offset_x;
+                    let t = (y - first_y) as f32 / (second_y - first_y) as f32;
+                    let x = first_x as f32 + (second_x - first_x) as f32 * t;
+                    intersections.push((x, winding));
+                }
+            }
+            intersections.sort_by(|left, right| {
+                left.0.partial_cmp(&right.0).unwrap_or(core::cmp::Ordering::Equal)
+            });
+
+            let mut index = 0;
+            let mut winding = 0;
+            let mut previous_x: Option<f32> = None;
+            while index < intersections.len() {
+                let x = intersections[index].0;
+                if winding != 0 {
+                    if let Some(previous) = previous_x {
+                        let x_start = previous.ceil() as i32;
+                        let x_end = x.floor() as i32;
+                        for pixel_x in x_start.max(0)..=x_end.min(size.width as i32 - 1) {
+                            set_pixel_clipped!(
+                                self.blend_mode,
+                                clip,
+                                frame,
+                                size.width,
+                                pixel_x as u32,
+                                y as u32,
+                                color
+                            );
+                        }
+                    }
+                }
+
+                let mut delta = 0;
+                while index < intersections.len() && intersections[index].0 == x {
+                    delta += intersections[index].1;
+                    index += 1;
+                }
+                winding += delta;
+                previous_x = Some(x);
+            }
+        }
+        Ok(())
+    }
     /// Fills a polygon using a scanline algorithm.
     fn fill_polygon(&mut self, points: &[Point], color: Color) {
         let size = self.buffer.size();
@@ -596,8 +694,9 @@ impl SoftwareSurface {
         let min_y = points.iter().map(|p| p.y).min().unwrap_or(0).max(0);
         let max_y = points.iter().map(|p| p.y).max().unwrap_or(0).min(size.height as i32 - 1);
 
+        let mut intersections: Vec<f32> = Vec::with_capacity(n);
         for y in min_y..=max_y {
-            let mut intersections: Vec<f32> = Vec::new();
+            intersections.clear();
             let mut j = n - 1;
             for i in 0..n {
                 let p1 = points[i];

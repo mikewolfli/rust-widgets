@@ -89,6 +89,7 @@ const RW_VALUE_TUPLE = 8;
 // A record list; `num` carries the record count and the string holds
 // `name=kind:value;…` per record with `|` between records.
 const RW_VALUE_RECORDS = 9;
+const RW_VALUE_ICON_SPEC = 10;
 
 /**
  * Read an int64 out-parameter, which ffi-napi may expose as a Buffer.
@@ -136,7 +137,54 @@ function encodePropertyValue(value) {
   if (typeof value === 'string') {
     return [RW_VALUE_STRING, 0n, value];
   }
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    let wire;
+    if (
+      value.kind === 'builtin' &&
+      Object.keys(value).length === 2 &&
+      typeof value.name === 'string' &&
+      value.name.length > 0
+    ) {
+      wire = `builtin|${value.name}`;
+    } else if (
+      value.kind === 'resource' &&
+      Object.keys(value).length === 3 &&
+      typeof value.id === 'string' &&
+      value.id.trim().length > 0 &&
+      (value.color_mode === 'monochrome' || value.color_mode === 'original')
+    ) {
+      const escapedId = value.id.replace(/%/g, '%25').replace(/\|/g, '%7C');
+      wire = `resource|${value.color_mode}|${escapedId}`;
+    } else {
+      throw new TypeError('invalid icon descriptor fields or kind');
+    }
+    return [RW_VALUE_ICON_SPEC, 0n, wire];
+  }
   throw new TypeError(`unsupported property value type: ${typeof value}`);
+}
+
+function decodeIconSpec(wire) {
+  const separator = wire.indexOf('|');
+  if (separator < 0) return null;
+  const kind = wire.slice(0, separator);
+  const value = wire.slice(separator + 1);
+  if (kind === 'builtin' && value.length > 0) {
+    return {kind: 'builtin', name: value};
+  }
+  if (kind !== 'resource') return null;
+  const modeSeparator = value.indexOf('|');
+  if (modeSeparator < 0) return null;
+  const color_mode = value.slice(0, modeSeparator);
+  const escapedId = value.slice(modeSeparator + 1);
+  if (
+    (color_mode !== 'monochrome' && color_mode !== 'original') ||
+    escapedId.length === 0
+  ) {
+    return null;
+  }
+  const id = escapedId.replace(/%7C/g, '|').replace(/%25/g, '%');
+  if (id.trim().length === 0) return null;
+  return {kind: 'resource', id, color_mode};
 }
 
 /**
@@ -927,8 +975,8 @@ class RustWidgets {
    * Read a property by name.
    *
    * Returns a JS boolean / number / string matching the property's declared
-   * type, `null` for a null value, and `undefined` when the widget or property
-   * is unknown.
+   * type, an IconSpec object for icon sources, `null` for a null value, and
+   * `undefined` when the widget or property is unknown.
    */
   getWidgetProperty(widgetId, name) {
     const kindOut = allocOut(int);
@@ -958,9 +1006,10 @@ class RustWidgets {
       kind === RW_VALUE_COLOR ||
       kind === RW_VALUE_RECT ||
       kind === RW_VALUE_TUPLE ||
-      kind === RW_VALUE_RECORDS
+      kind === RW_VALUE_RECORDS ||
+      kind === RW_VALUE_ICON_SPEC
     ) {
-      // All four carry their payload in the string slot. Freeing on every one of
+      // Structured string-slot variants carry their payload here. Freeing on each
       // them is the point: `rw_get_widget_property` allocates for each, so a branch
       // that returned without freeing leaked one buffer per call. A tuple's string
       // is the `kind:value;…` wire form, returned verbatim so a caller can decode
@@ -969,7 +1018,7 @@ class RustWidgets {
       if (!ptr || ptr.isNull()) return "";
       const text = ptr.readCString();
       this._lib.rw_free_string(ptr);
-      return text;
+      return kind === RW_VALUE_ICON_SPEC ? decodeIconSpec(text) : text;
     }
     // An unknown kind is a newer ABI than this binding knows about. Free the payload
     // if there is one, so an unrecognised kind cannot leak either.
@@ -983,9 +1032,10 @@ class RustWidgets {
   /**
    * Write a property by name.
    *
-   * `value` may be `null`, a boolean, a number or a string; the matching
-   * `rw_value_kind` is chosen from its JS type. Returns false when the widget
-   * or property is unknown, the property is read-only, or the type differs.
+   * `value` may be `null`, a boolean, a number, a string or an IconSpec object;
+   * the matching `rw_value_kind` is chosen from its JS type. Returns false
+   * when the widget or property is unknown, the property is read-only, or the
+   * type differs.
    */
   setWidgetProperty(widgetId, name, value) {
     const [kind, num, text] = encodePropertyValue(value);
@@ -1538,4 +1588,5 @@ module.exports = {
   RW_VALUE_UINT,
   RW_VALUE_FLOAT,
   RW_VALUE_STRING,
+  RW_VALUE_ICON_SPEC,
 };

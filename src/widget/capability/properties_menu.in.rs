@@ -18,6 +18,7 @@ macro_rules! impl_properties_menu {
             PropertySchema::new("shortcut", PropertyValueKind::String, true, true),
             PropertySchema::new("checkable", PropertyValueKind::Bool, true, true),
             PropertySchema::new("checked", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("icon_source", PropertyValueKind::IconSpec, true, true),
             PropertySchema::new("separator", PropertyValueKind::Bool, true, false),
             PropertySchema::new("command_id", PropertyValueKind::String, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
@@ -91,6 +92,7 @@ macro_rules! impl_properties_menu {
         pub(crate) const TOOL_BUTTON_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("text", PropertyValueKind::String, true, true),
             PropertySchema::new("checked", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("icon_source", PropertyValueKind::IconSpec, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

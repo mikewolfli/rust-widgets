@@ -1430,6 +1430,20 @@ fn apply_declared_styles(widget: &mut dyn Widget, obj: &serde_json::Map<String, 
 /// the widget, so a typo (`"colour"` for `"color"`) is visible instead of loading
 /// a silently default-styled control.
 fn apply_properties(widget: &mut dyn Widget, obj: &serde_json::Map<String, Value>) {
+    let published =
+        crate::widget::capability::properties_trait::widget_property_names(widget).unwrap_or(&[]);
+    let conflicting_icon_declarations = obj.contains_key("icon_source")
+        && obj.contains_key("icon_text")
+        && published.contains(&"icon_source")
+        && published.contains(&"icon_text");
+    if conflicting_icon_declarations {
+        log::warn!(
+            "JSON layout: both legacy \"icon_text\" and typed \"icon_source\" were declared for \
+             {}; neither icon value was applied",
+            kind_label(widget)
+        );
+    }
+
     // ── Geometry ────────────────────────────────────────────
     // Applied first because the property layer also publishes `geometry`, and a
     // control's own setter is the authority; the shorthand below fills in the
@@ -1468,6 +1482,9 @@ fn apply_properties(widget: &mut dyn Widget, obj: &serde_json::Map<String, Value
     // Iterate the JSON keys rather than a fixed list: that is what lets a control
     // whose properties this module has never seen be configured from JSON.
     for (key, value) in obj {
+        if conflicting_icon_declarations && matches!(key.as_str(), "icon_text" | "icon_source") {
+            continue;
+        }
         if is_loader_owned_key(key) && !crate::json::properties::declares_record_list(widget, key) {
             continue;
         }
@@ -1486,8 +1503,8 @@ fn apply_properties(widget: &mut dyn Widget, obj: &serde_json::Map<String, Value
             }
             ApplyOutcome::Rejected => {
                 log::warn!(
-                    "JSON layout: property {key:?} of this {} rejected the value {value} (wrong \
-                     JSON type, or the property is read-only)",
+                    "JSON layout: property {key:?} of this {} rejected the value {value}; \
+                     inspect the property's conversion, validation, or write diagnostics",
                     kind_label(widget)
                 );
             }
@@ -2052,6 +2069,23 @@ pub fn load_layout_from_str(json_str: &str) -> Result<BoundJsonLayout, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conflicting_legacy_and_typed_action_icons_are_rejected_together() {
+        let mut action = crate::widget::menu_toolbar::action::Action::new(
+            "Save",
+            crate::core::Rect::new(0, 0, 100, 30),
+        );
+        let declaration = serde_json::json!({
+            "icon_text": "★",
+            "icon_source": {"kind": "builtin", "name": "save"}
+        });
+
+        apply_properties(&mut action, declaration.as_object().expect("object declaration"));
+
+        assert_eq!(action.icon_text(), "", "the legacy value must not win by key order");
+        assert_eq!(action.icon_source(), None, "the typed value must not win by key order");
+    }
 
     #[test]
     fn load_valid_minimal_window() {

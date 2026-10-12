@@ -10,10 +10,11 @@
 //!
 //! | # | Assertion | The defect it catches |
 //! |---|---|---|
-//! | C1 | every token draws at least one outline | a token whose data never reached the draw (the census would be blank for it) |
+//! | C1 | every token draws at least one subpath | a token whose data never reached the draw (the census would be blank for it) |
 //! | C2 | no two tokens draw byte-identical pictures | the `Close == Cross` class: two names, one picture |
 //! | C3 | the committed `tools/icon_census.txt` matches a fresh run | a data change nobody regenerated the census for |
 //! | C4 | every token has a row, and every row names a token | a token that escapes the census, or a stale row for one that is gone |
+//! | C5 | the `info` counter remains transparent | a compound outline whose inner contour is painted as a separate solid polygon |
 //!
 //! # Why C2 is a *rendering* comparison and not a data one
 //!
@@ -32,7 +33,9 @@
 
 use std::collections::BTreeMap;
 
-use rust_widgets::core::Rect;
+use rust_widgets::core::{Color, Rect, Size};
+use rust_widgets::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
+use rust_widgets::widget::draw::Draw;
 use rust_widgets::widget::svg::render_to_svg;
 use rust_widgets::widget::{Icon, IconName};
 
@@ -56,16 +59,11 @@ fn census() -> Vec<Row> {
             let mut icon = Icon::new(Rect::new(0, 0, 24, 24));
             icon.set_icon_enum(token);
             let svg = render_to_svg(&mut icon);
-            // The backdrop `<rect>` is not the icon, so it does not count as ink.
-            let ink = svg.matches("<path").count()
-                + svg.matches("<line").count()
-                + svg.matches("<circle").count()
-                + svg.matches("<rect").count();
-            let contours = svg.matches("<path").count();
+            let contours = svg.matches("M ").count();
             Row {
                 token: token.as_str(),
                 contours,
-                ink: ink.saturating_sub(1),
+                ink: contours,
                 digest: sha256_hex(svg.as_bytes()),
                 svg,
             }
@@ -73,13 +71,13 @@ fn census() -> Vec<Row> {
         .collect()
 }
 
-/// C1 — a tokened icon that draws no outline is an icon the user cannot see.
+/// C1 — a tokened icon that draws no subpath is an icon the user cannot see.
 #[test]
 fn c1_every_icon_draws_an_outline() {
     for row in census() {
         assert!(
             row.contours > 0,
-            "{} drew no outline path (the data did not reach the draw):\n{}",
+            "{} drew no outline subpath (the data did not reach the draw):\n{}",
             row.token,
             row.svg
         );
@@ -131,6 +129,24 @@ fn c4_the_census_covers_every_token_once() {
     let before = tokens.len();
     tokens.dedup();
     assert_eq!(before, tokens.len(), "`IconName::ALL` repeats a token");
+}
+
+/// C5 — a representative compound icon must keep its counter as empty space.
+#[test]
+fn c5_info_counter_is_transparent() {
+    let bounds = Rect::new(0, 0, 24, 24);
+    let mut icon = Icon::new(bounds);
+    icon.set_icon_enum(IconName::Info);
+    let mut backend = SoftwarePaintBackend::new(Size::new(24, 24), 1.0);
+    backend.begin_frame(Color::TRANSPARENT);
+    {
+        let mut context = RenderContext::new(&mut backend);
+        icon.draw(&mut context);
+    }
+    backend.end_frame();
+    let pixels = backend.frame_rgba();
+    let alpha = pixels[(12 * 24 + 7) * 4 + 3];
+    assert_eq!(alpha, 0, "the interior of the info counter must remain unpainted");
 }
 
 /// The census body, exactly as `examples/icon_census.rs` prints it, minus the header comment.

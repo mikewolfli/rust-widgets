@@ -43,6 +43,16 @@ impl PaintBackend for SurfacePaintBackend<'_> {
         // reproducing the match here would be a second copy of the same routing.
         route_command_to_surface(self.0, command);
     }
+    fn fill_path_non_zero(
+        &mut self,
+        points: &[Point],
+        contours: &[(usize, usize)],
+        color: Color,
+        offset_x: i32,
+        offset_y: i32,
+    ) -> Result<(), crate::render::CompoundPathError> {
+        self.0.fill_path_non_zero_borrowed(points, contours, color, offset_x, offset_y)
+    }
     fn size(&self) -> Size {
         self.0.size()
     }

@@ -20,7 +20,7 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::role_font;
 use crate::widget::nav_widgets::app_bar::AppBar;
 use crate::widget::nav_widgets::bottom_navigation_bar::NavItem;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconItemError, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// AdaptiveScaffold — a cross-platform adaptive scaffold combining AppBar +
@@ -50,6 +50,7 @@ pub struct AdaptiveScaffold {
     show_bottom_nav: bool,
     /// Navigation items for the bottom bar.
     nav_items: Vec<NavItem>,
+    nav_item_icon_sources: Vec<Option<IconSource>>,
     /// Currently selected bottom nav index.
     selected_nav_index: usize,
     /// Emitted when the bottom navigation selection changes.
@@ -75,6 +76,7 @@ impl AdaptiveScaffold {
             body_widget: None,
             show_bottom_nav: false,
             nav_items: Vec::new(),
+            nav_item_icon_sources: Vec::new(),
             selected_nav_index: 0,
             nav_selected: Signal1::new(),
         }
@@ -141,12 +143,29 @@ impl AdaptiveScaffold {
     /// Adds a bottom navigation item with the given icon and label.
     pub fn add_nav_item(&mut self, icon: &str, label: &str) {
         self.nav_items.push(NavItem { icon: icon.to_string(), label: label.to_string() });
+        self.nav_item_icon_sources.push(None);
         self.base.request_redraw();
+    }
+
+    /// Assigns a typed icon source to an existing navigation item index.
+    pub fn set_nav_item_icon_source(
+        &mut self,
+        index: usize,
+        source: Option<IconSource>,
+    ) -> Result<(), IconItemError> {
+        let len = self.nav_items.len();
+        let Some(slot) = self.nav_item_icon_sources.get_mut(index) else {
+            return Err(IconItemError::IndexOutOfBounds { index, len });
+        };
+        *slot = source;
+        self.base.request_redraw();
+        Ok(())
     }
 
     /// Removes all bottom navigation items.
     pub fn clear_nav_items(&mut self) {
         self.nav_items.clear();
+        self.nav_item_icon_sources.clear();
         self.selected_nav_index = 0;
         self.base.request_redraw();
     }
@@ -367,7 +386,12 @@ impl AdaptiveScaffold {
                 if is_selected { bar_ink } else { bar_ink.blend(&bar_background, 0.45) };
             let label_color = icon_color;
 
-            let icon_metrics = context.measure_text(&item.icon, &icon_font);
+            let typed_source = self.nav_item_icon_sources.get(i).copied().flatten();
+            let mut icon_metrics = context
+                .measure_text(if typed_source.is_some() { "M" } else { &item.icon }, &icon_font);
+            if typed_source.is_some() {
+                icon_metrics.width = icon_metrics.height.max(1);
+            }
             let label_metrics = context.measure_text(&item.label, &label_font);
 
             let total_content_height = icon_metrics.height + label_metrics.height + 4;
@@ -386,7 +410,13 @@ impl AdaptiveScaffold {
                 icon_metrics.width.max(1),
                 icon_metrics.height.max(1),
             );
-            if !crate::widget::draw_icon_named(context, icon_box, icon_color, &item.icon) {
+            if let Some(source) = typed_source {
+                if let Err(error) =
+                    crate::widget::paint_icon(context, source.into(), icon_box, icon_color)
+                {
+                    log::warn!("adaptive navigation item {i} icon failed: {error:?}");
+                }
+            } else if !crate::widget::draw_icon_named(context, icon_box, icon_color, &item.icon) {
                 context.draw_text(
                     Point::new(icon_box.x, icon_box.y),
                     &item.icon,
@@ -555,6 +585,30 @@ mod tests {
 
         scaffold.add_nav_item("✉", "Messages");
         assert_eq!(scaffold.nav_item_count(), 2);
+    }
+
+    #[test]
+    fn adaptive_nav_item_typed_source_is_index_checked_and_rendered() {
+        static RING: crate::widget::IconData = crate::widget::IconData {
+            name: "adaptive-nav-ring",
+            grid: 24,
+            paths: &["M2-2H22V-22H2Z M7-7V-17H17V-7Z"],
+        };
+
+        let mut scaffold = make_scaffold();
+        scaffold.set_show_bottom_nav(true);
+        assert_eq!(
+            scaffold.set_nav_item_icon_source(5, Some(IconSource::static_geometry(&RING))),
+            Err(IconItemError::IndexOutOfBounds { index: 5, len: 3 })
+        );
+        scaffold
+            .set_nav_item_icon_source(1, Some(IconSource::static_geometry(&RING)))
+            .expect("existing item accepts a typed source");
+        let svg = crate::widget::svg::render_to_svg(&mut scaffold);
+        assert!(svg.contains("fill-rule=\"nonzero\""), "typed geometry must reach SVG");
+
+        scaffold.clear_nav_items();
+        assert!(scaffold.nav_item_icon_sources.is_empty());
     }
 
     #[test]

@@ -23,11 +23,10 @@
 //! therefore make the capability layer's shape depend on the profile, and the alternative — a
 //! second, `cfg`-gated description of the same data — is the duplication rule #54 forbids.
 //!
-//! The value set here is small and closed: strings, integers, booleans and `null`. Writing the
-//! escaping and the key order by hand is a few dozen lines, and it buys two things a derive does
-//! not: the output is **stable** (field order is the order in this file, not the order a macro
-//! happened to emit) and it is **readable in a diff**, which matters because these files are
-//! checked in by designers.
+//! The value set here is closed: scalars, arrays of records, and the tagged IconSpec object. Writing
+//! the escaping and key order by hand keeps the output **stable** (field order is the order in this
+//! file, not the order a macro happened to emit) and **readable in a diff**, which matters because
+//! these files are checked in by designers.
 //!
 //! # Stability is a contract, not an accident
 //!
@@ -112,7 +111,8 @@ mod keys {
 /// History:
 /// * `1` — control, aliases, properties, events, commands.
 /// * `2` — adds `protocol`, `library`, `profile` and `triple` (BLUE26 B26.01).
-pub const MANIFEST_PROTOCOL_VERSION: u32 = 2;
+/// * `3` — adds structured IconSpec property defaults (BLUE27 U5).
+pub const MANIFEST_PROTOCOL_VERSION: u32 = 3;
 
 /// The oldest protocol version this reader still accepts.
 ///
@@ -138,6 +138,7 @@ pub fn value_kind_token(kind: PropertyValueKind) -> &'static str {
         PropertyValueKind::Enum => "enum",
         PropertyValueKind::Color => "color",
         PropertyValueKind::Rect => "rect",
+        PropertyValueKind::IconSpec => "icon-spec",
         PropertyValueKind::Records => "records",
     }
 }
@@ -157,6 +158,7 @@ pub fn value_kind_from_token(token: &str) -> Option<PropertyValueKind> {
         "enum" => Some(PropertyValueKind::Enum),
         "color" => Some(PropertyValueKind::Color),
         "rect" => Some(PropertyValueKind::Rect),
+        "icon-spec" => Some(PropertyValueKind::IconSpec),
         "records" => Some(PropertyValueKind::Records),
         _ => None,
     }
@@ -404,6 +406,26 @@ fn push_json_value(out: &mut String, value: &CapabilityValue) {
             // representation rather than two that must be kept in step.
             out.push_str(&format!("\"{},{},{},{}\"", rect.x, rect.y, rect.width, rect.height));
         }
+        CapabilityValue::IconSpec(spec) => match spec {
+            crate::widget::icon_source::IconSpec::Builtin(name) => {
+                out.push_str("{\"kind\":\"builtin\",\"name\":");
+                push_json_string(out, name.as_str());
+                out.push('}');
+            }
+            crate::widget::icon_source::IconSpec::Resource { id, color_mode } => {
+                out.push_str("{\"kind\":\"resource\",\"id\":");
+                push_json_string(out, id);
+                out.push_str(",\"color_mode\":");
+                push_json_string(
+                    out,
+                    match color_mode {
+                        crate::widget::icon_source::IconColorMode::Monochrome => "monochrome",
+                        crate::widget::icon_source::IconColorMode::Original => "original",
+                    },
+                );
+                out.push('}');
+            }
+        },
         CapabilityValue::Tuple(items) => {
             // A composite payload exports as a JSON **array** of its components, each written by its
             // own kind. That is the natural JSON shape for an ordered group and keeps the round trip
@@ -1379,6 +1401,9 @@ fn read_value(reader: &mut JsonReader<'_>) -> Result<CapabilityValue, ManifestPa
     if reader.peek(b'"') {
         return Ok(CapabilityValue::String(reader.read_string()?));
     }
+    if reader.peek(b'{') {
+        return read_icon_spec(reader).map(CapabilityValue::IconSpec);
+    }
     // A record list (B26.09). Tested before the number arm for the same reason the booleans are:
     // `[` is not a digit, so the number arm would report a malformed number for a valid list.
     if reader.peek(b'[') {
@@ -1399,6 +1424,69 @@ fn read_value(reader: &mut JsonReader<'_>) -> Result<CapabilityValue, ManifestPa
         return Ok(CapabilityValue::Int(number as i64));
     }
     Ok(CapabilityValue::UInt(number as u64))
+}
+
+fn read_icon_spec(
+    reader: &mut JsonReader<'_>,
+) -> Result<crate::widget::icon_source::IconSpec, ManifestParseError> {
+    use crate::widget::icon_source::{IconColorMode, IconSpec};
+
+    reader.expect(b'{', "expected `{` to start an icon source")?;
+    let mut kind = None;
+    let mut name = None;
+    let mut id = None;
+    let mut color_mode = None;
+    loop {
+        let key = reader.read_key()?;
+        let slot = match key.as_str() {
+            "kind" => &mut kind,
+            "name" => &mut name,
+            "id" => &mut id,
+            "color_mode" => &mut color_mode,
+            _ => {
+                return reader.fail(&format!("unexpected icon source field `{key}`"));
+            }
+        };
+        if slot.is_some() {
+            return reader.fail(&format!("duplicate icon source field `{key}`"));
+        }
+        *slot = Some(reader.read_string()?);
+        if reader.peek(b',') {
+            reader.expect(b',', "expected `,` in icon source")?;
+            continue;
+        }
+        reader.expect(b'}', "expected `}` or `,` in icon source")?;
+        break;
+    }
+    match kind.as_deref() {
+        Some("builtin") if id.is_none() && color_mode.is_none() => {
+            let token = name.ok_or_else(|| ManifestParseError {
+                detail: "a built-in icon source has no name".into(),
+            })?;
+            let icon = crate::widget::display_widgets::icon::IconName::from_name(&token)
+                .ok_or_else(|| ManifestParseError {
+                    detail: format!("unknown built-in icon `{token}`"),
+                })?;
+            Ok(IconSpec::Builtin(icon))
+        }
+        Some("resource") if name.is_none() => {
+            let resource_id = id.ok_or_else(|| ManifestParseError {
+                detail: "a resource icon source has no id".into(),
+            })?;
+            if resource_id.trim().is_empty() {
+                return reader.fail("a resource icon source has an empty id");
+            }
+            let mode = match color_mode.as_deref() {
+                Some("monochrome") => IconColorMode::Monochrome,
+                Some("original") => IconColorMode::Original,
+                _ => return reader.fail("a resource icon source has an invalid color_mode"),
+            };
+            Ok(IconSpec::Resource { id: resource_id, color_mode: mode })
+        }
+        Some("builtin" | "resource") => reader.fail("icon source fields conflict with its kind"),
+        Some(other) => reader.fail(&format!("unknown icon source kind `{other}`")),
+        None => reader.fail("icon source has no kind"),
+    }
 }
 
 /// Reads a JSON array of objects as a record list (B26.09).
@@ -1895,7 +1983,7 @@ mod tests {
     /// `Color`/`Rect` is the check that the writer did not invent a second representation.
     #[test]
     fn every_value_variant_round_trips() {
-        let cases: [(CapabilityValue, CapabilityValue); 12] = [
+        let cases: [(CapabilityValue, CapabilityValue); 14] = [
             (CapabilityValue::Null, CapabilityValue::Null),
             (CapabilityValue::Bool(true), CapabilityValue::Bool(true)),
             (CapabilityValue::Bool(false), CapabilityValue::Bool(false)),
@@ -1923,6 +2011,24 @@ mod tests {
                 CapabilityValue::Color(Color::rgba(1, 2, 3, 4)),
                 CapabilityValue::String(String::from("#01020304")),
             ),
+            (
+                CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(
+                    crate::widget::display_widgets::icon::IconName::Info,
+                )),
+                CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(
+                    crate::widget::display_widgets::icon::IconName::Info,
+                )),
+            ),
+            (
+                CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Resource {
+                    id: String::from("project/icons/a\"b\\c"),
+                    color_mode: crate::widget::icon_source::IconColorMode::Monochrome,
+                }),
+                CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Resource {
+                    id: String::from("project/icons/a\"b\\c"),
+                    color_mode: crate::widget::icon_source::IconColorMode::Monochrome,
+                }),
+            ),
         ];
         for (written, expected) in cases {
             let mut manifest = sample();
@@ -1933,6 +2039,38 @@ mod tests {
             assert_eq!(
                 reloaded.properties[0].default_value, expected,
                 "{written:?} did not survive the round trip"
+            );
+        }
+    }
+
+    #[test]
+    fn icon_spec_manifest_rejects_unknown_conflicting_and_duplicate_fields() {
+        let mut manifest = sample();
+        manifest.properties[0].default_value =
+            CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(
+                crate::widget::display_widgets::icon::IconName::Info,
+            ));
+        let valid = manifest_to_json(&manifest);
+        for (from, to) in [
+            (
+                r#"{"kind":"builtin","name":"info"}"#,
+                r#"{"kind":"builtin","name":"info","extra":"x"}"#,
+            ),
+            (
+                r#"{"kind":"builtin","name":"info"}"#,
+                r#"{"kind":"builtin","name":"info","id":"icons/info"}"#,
+            ),
+            (
+                r#"{"kind":"builtin","name":"info"}"#,
+                r#"{"kind":"builtin","name":"info","name":"save"}"#,
+            ),
+            (r#"{"kind":"builtin","name":"info"}"#, r#"{"kind":"builtin","name":"unknown-token"}"#),
+        ] {
+            let malformed = valid.replace(from, to);
+            assert_ne!(malformed, valid, "fixture must replace the icon descriptor");
+            assert!(
+                DesignerManifest::from_json(&malformed).is_err(),
+                "manifest accepted malformed icon descriptor: {to}"
             );
         }
     }

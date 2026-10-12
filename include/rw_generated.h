@@ -20,9 +20,9 @@ typedef uint64_t ObjectId;
  *
  * A binding MUST accept every value here and MUST free `out_str` with
  * `rw_free_string` whenever it is non-null, including for the non-string
- * kinds. `RW_VALUE_COLOR` and `RW_VALUE_RECT` carry their payload in
- * `out_str` (as `#RRGGBBAA` and `x,y,w,h`), not in `out_num`; treating them
- * as unknown leaks that buffer.
+ * kinds. `RW_VALUE_COLOR`, `RW_VALUE_RECT` and `RW_VALUE_ICON_SPEC` carry
+ * their payload in `out_str`; treating them as unknown leaks that buffer.
+ * Icon specs use `builtin|name` or `resource|color_mode|escaped_id`.
  */
 typedef enum {
     RW_VALUE_NULL = 0,
@@ -35,6 +35,7 @@ typedef enum {
     RW_VALUE_RECT = 7,
     RW_VALUE_TUPLE = 8,
     RW_VALUE_RECORDS = 9,
+    RW_VALUE_ICON_SPEC = 10,
 } rw_value_kind;
 
 #ifdef __cplusplus

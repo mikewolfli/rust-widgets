@@ -21,7 +21,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::menu_toolbar::popup_reveal::{PopupReveal, RevealDirection};
 use crate::widget::metrics::effective_font;
-use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Default height of the dropdown list when expanded.
@@ -90,6 +90,7 @@ pub struct DropdownMenu {
     base: BaseWidget,
     selected_value: Option<String>,
     items: Vec<DropdownItem>,
+    item_icon_sources: Vec<Option<IconSource>>,
     expanded: bool,
     /// The list's open/close reveal, so the list grows out of the field rather than appearing.
     ///
@@ -121,6 +122,7 @@ impl DropdownMenu {
             base: BaseWidget::new(WidgetKind::DropdownMenu, geometry, "DropdownMenu"),
             selected_value: None,
             items: Vec::new(),
+            item_icon_sources: Vec::new(),
             expanded: false,
             reveal: PopupReveal::new(false),
             scroll_offset: 0,
@@ -187,15 +189,53 @@ impl DropdownMenu {
 
     /// Adds an item to the dropdown.
     pub fn add_item(&mut self, item: DropdownItem) {
+        self.sync_item_icon_sources();
         self.items.push(item);
+        self.item_icon_sources.push(None);
         self.base.request_redraw();
+    }
+
+    /// Assigns a typed icon source to an item by its current index.
+    ///
+    /// A typed source takes precedence while set, without discarding the item's legacy text icon.
+    /// Passing `None` restores that text icon.
+    pub fn set_item_icon_source_at(
+        &mut self,
+        index: usize,
+        source: Option<IconSource>,
+    ) -> Result<(), crate::widget::IconItemError> {
+        let len = self.items.len();
+        if index >= len {
+            return Err(crate::widget::IconItemError::IndexOutOfBounds { index, len });
+        }
+        self.sync_item_icon_sources();
+        if let Some(slot) = self.item_icon_sources.get_mut(index) {
+            *slot = source;
+        }
+        self.base.request_redraw();
+        Ok(())
+    }
+
+    fn sync_item_icon_sources(&mut self) {
+        self.item_icon_sources.resize(self.items.len(), None);
+        self.item_icon_sources.truncate(self.items.len());
     }
 
     /// Removes an item by value. Returns true if an item was removed.
     pub fn remove_item(&mut self, value: &str) -> bool {
+        self.sync_item_icon_sources();
         let len_before = self.items.len();
-        self.items.retain(|item| item.value != value);
-        let removed = self.items.len() < len_before;
+        let mut retained_items = Vec::with_capacity(len_before);
+        let mut retained_sources = Vec::with_capacity(len_before);
+        for (item, source) in self.items.drain(..).zip(self.item_icon_sources.drain(..)) {
+            if item.value != value {
+                retained_items.push(item);
+                retained_sources.push(source);
+            }
+        }
+        let removed = retained_items.len() < len_before;
+        self.items = retained_items;
+        self.item_icon_sources = retained_sources;
         if removed {
             // Clear selection if the removed item was selected
             if self.selected_value.as_deref() == Some(value) {
@@ -211,8 +251,13 @@ impl DropdownMenu {
         &self.items
     }
 
-    /// Returns a mutable reference to all items.
+    /// Returns mutable access to the items, clearing typed icon assignments first.
+    ///
+    /// Since callers can reorder or replace items through this vector, their index associations
+    /// cannot be preserved safely across mutable access.
     pub fn items_mut(&mut self) -> &mut Vec<DropdownItem> {
+        self.item_icon_sources.clear();
+        self.item_icon_sources.resize(self.items.len(), None);
         &mut self.items
     }
 
@@ -582,7 +627,20 @@ impl Draw for DropdownMenu {
                 let mut item_x = ir.x + PADDING;
 
                 // Item icon
-                if let Some(ref item_icon) = item.icon {
+                if let Some(source) = self.item_icon_sources.get(i).copied().flatten() {
+                    let icon_line = context.text_line(ir, item_font);
+                    let side = icon_line.height.clamp(1, 16);
+                    let icon_rect = Rect::new(item_x, icon_line.y, side, side);
+                    if let Err(error) = crate::widget::paint_icon(
+                        context,
+                        source.into(),
+                        icon_rect,
+                        item_text_color,
+                    ) {
+                        log::warn!("dropdown menu item {i} icon failed: {error:?}");
+                    }
+                    item_x += 20;
+                } else if let Some(ref item_icon) = item.icon {
                     let icon_font = Font::simple("sans-serif", 13.0);
                     // The icon and the label share the row, so both take their origin from the
                     // line box centred in it rather than from the row's raw midpoint — that
@@ -757,6 +815,43 @@ mod tests {
 
         assert!(!dm.remove_item("nonexistent"));
         assert_eq!(dm.item_count(), 2);
+    }
+
+    #[test]
+    fn dropdown_menu_typed_icons_follow_items_and_validate_indices() {
+        let mut dm = DropdownMenu::new(Rect::new(0, 0, 200, 30));
+        dm.add_item(DropdownItem::new("first", "First"));
+        dm.add_item(DropdownItem::new("second", "Second").with_icon("legacy"));
+        let source = IconSource::Builtin(IconName::Check);
+
+        assert_eq!(
+            dm.set_item_icon_source_at(2, Some(source)),
+            Err(crate::widget::IconItemError::IndexOutOfBounds { index: 2, len: 2 })
+        );
+        dm.set_item_icon_source_at(1, Some(source)).unwrap();
+        assert_eq!(dm.items()[1].icon.as_deref(), Some("legacy"));
+        assert!(dm.remove_item("first"));
+        assert_eq!(dm.item_icon_sources, [Some(source)]);
+
+        dm.expand();
+        dm.reveal.jump_to(true);
+        let with_typed_source = render_to_svg(&mut dm);
+        dm.set_item_icon_source_at(0, None).unwrap();
+        let with_legacy_text = render_to_svg(&mut dm);
+        let mut plain = DropdownMenu::new(Rect::new(0, 0, 200, 30));
+        plain.add_item(DropdownItem::new("second", "Second"));
+        plain.expand();
+        plain.reveal.jump_to(true);
+        let without_icon = render_to_svg(&mut plain);
+        assert_eq!(
+            with_typed_source.matches("<path").count(),
+            without_icon.matches("<path").count() + 1,
+            "the typed source adds one geometry path to the item"
+        );
+        assert!(with_legacy_text.matches("<path").count() > without_icon.matches("<path").count());
+
+        dm.items_mut().reverse();
+        assert_eq!(dm.item_icon_sources, [None]);
     }
 
     #[test]

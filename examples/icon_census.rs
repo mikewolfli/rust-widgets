@@ -12,8 +12,8 @@
 //! | Field | Meaning |
 //! |---|---|
 //! | `token` | the canonical name |
-//! | `contours` | closed outlines the flattened icon produced |
-//! | `ink` | drawn elements in the SVG (the picture is not blank) |
+//! | `contours` | closed subpaths the flattened icon produced |
+//! | `ink` | filled subpaths submitted as one shape (the picture is not blank) |
 //! | `sha256` | digest of the rendering, so two tokens cannot draw one picture unnoticed |
 //!
 //! `tests/icon_census_test.rs` asserts the same facts, and `tools/icon_census.txt` is the committed
@@ -43,15 +43,9 @@ fn main() {
         let mut icon = Icon::new(Rect::new(0, 0, 24, 24));
         icon.set_icon_enum(token);
         let svg = render_to_svg(&mut icon);
-        // Count the drawing elements, so "the picture is not blank" is a number a reader can see.
-        let ink = svg.matches("<path").count()
-            + svg.matches("<line").count()
-            + svg.matches("<circle").count()
-            + svg.matches("<rect").count();
-        // The backdrop `<rect>` is not the icon; subtract it so a blank icon reports zero ink
-        // rather than one. `render_to_svg` always fills the frame.
-        let ink = ink.saturating_sub(1);
-        let contours = svg.matches("<path").count();
+        // Each `M` starts one closed contour in the emitted compound path.
+        let contours = svg.matches("M ").count();
+        let ink = contours;
         println!(
             "{}\tcontours={}\tink={}\tsha256={}",
             token.as_str(),

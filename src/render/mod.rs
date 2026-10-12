@@ -79,7 +79,9 @@ pub mod grapheme;
 // ─── Re-exports ──────────────────────────────────────────────────────────────
 
 // Core
-pub use core::{BlendMode, RenderCommand, ShapedText, TextCluster, TextMetrics};
+pub use core::{
+    BlendMode, CompoundPath, CompoundPathError, RenderCommand, ShapedText, TextCluster, TextMetrics,
+};
 
 // SVG
 pub use svg::SvgPaintBackend;

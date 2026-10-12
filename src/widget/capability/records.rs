@@ -530,6 +530,7 @@ fn value_matches_kind(value: &CapabilityValue, kind: PropertyValueKind) -> bool 
         }
         PropertyValueKind::Color => matches!(value, CapabilityValue::Color(_)),
         PropertyValueKind::Rect => matches!(value, CapabilityValue::Rect(_)),
+        PropertyValueKind::IconSpec => matches!(value, CapabilityValue::IconSpec(_)),
         // A field whose declared kind is itself a record list: no control declares one, and
         // accepting any `Records` value here would let an unvalidated nested list through under the
         // name of a field. Refused rather than guessed.

@@ -15,7 +15,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Floating Action Button widget.
@@ -27,6 +27,7 @@ pub struct FAB {
     base: BaseWidget,
     /// The icon text character displayed in the center (e.g. "+", "✕", "↓").
     icon_text: String,
+    icon_source: Option<IconSource>,
     /// The fill color of the circular button.
     accent_color: Color,
     /// Whether this is a mini FAB (smaller size).
@@ -52,6 +53,7 @@ impl FAB {
         Self {
             base: BaseWidget::new(WidgetKind::FAB, geometry, "FAB"),
             icon_text: String::from("+"),
+            icon_source: None,
             accent_color: Self::DEFAULT_ACCENT_COLOR,
             mini: false,
         }
@@ -62,12 +64,29 @@ impl FAB {
     /// Common values: `"+"`, `"✕"`, `"↓"`, `"↑"`, `"✓"`, `"✎"`.
     pub fn set_icon_text(&mut self, text: &str) {
         self.icon_text = text.to_string();
+        self.icon_source = None;
         self.base.request_redraw();
     }
 
     /// Returns the current icon text.
     pub fn icon_text(&self) -> &str {
-        &self.icon_text
+        if self.icon_source.is_some() {
+            ""
+        } else {
+            &self.icon_text
+        }
+    }
+
+    /// Sets a built-in or static-geometry icon, replacing the legacy icon text.
+    pub fn set_icon_source(&mut self, source: Option<IconSource>) {
+        self.icon_text.clear();
+        self.icon_source = source;
+        self.base.request_redraw();
+    }
+
+    /// Returns the typed icon source, if one is active.
+    pub fn icon_source(&self) -> Option<IconSource> {
+        self.icon_source
     }
 
     /// Sets the accent (fill) color of the circular button.
@@ -244,7 +263,16 @@ impl Draw for FAB {
         // already-centred y pushed the icon half a line below the circle's middle. The label
         // is fitted to the circle's inner square so a long one is truncated rather than
         // painted out of the button.
-        if !self.icon_text.is_empty() {
+        if let Some(source) = self.icon_source {
+            let half_side = (radius as f32 / core::f32::consts::SQRT_2) as i32;
+            let side = (half_side * 2).max(0) as u32;
+            let icon_rect = Rect::new(cx - half_side, cy - half_side, side, side);
+            if let Err(error) =
+                crate::widget::paint_icon(context, source.into(), icon_rect, icon_color)
+            {
+                log::warn!("floating action button icon could not be painted: {error:?}");
+            }
+        } else if !self.icon_text.is_empty() {
             // Use a default monospace-like font at a size proportional to button
             let font_size = if self.mini {
                 (radius as f32 * 0.7).max(12.0)
@@ -391,6 +419,21 @@ mod tests {
 
         fab.set_icon_text("↓");
         assert_eq!(fab.icon_text(), "↓");
+    }
+
+    #[test]
+    fn fab_typed_source_replaces_text_and_reaches_renderer() {
+        let mut fab = make_fab();
+        let source = IconSource::builtin(crate::widget::IconName::Plus);
+        fab.set_icon_source(Some(source));
+        assert_eq!(fab.icon_source(), Some(source));
+        assert!(fab.icon_text().is_empty());
+        let svg = render_to_svg(&mut fab);
+        assert!(svg.contains("<path"), "typed geometry must be painted in the FAB");
+
+        fab.set_icon_text("+");
+        assert_eq!(fab.icon_source(), None);
+        assert_eq!(fab.icon_text(), "+");
     }
 
     #[test]

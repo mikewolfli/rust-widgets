@@ -16,7 +16,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_f32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconItemError, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// A single item in the navigation drawer, consisting of an icon and a label.
@@ -40,6 +40,7 @@ pub struct NavigationDrawer {
     open: bool,
     /// List of drawer items to display.
     items: Vec<DrawerItem>,
+    item_icon_sources: Vec<Option<IconSource>>,
     /// Index of the currently selected item.
     selected_index: usize,
     /// Panel width in pixels.
@@ -72,6 +73,7 @@ impl NavigationDrawer {
             base: BaseWidget::new(WidgetKind::NavigationDrawer, geometry, "NavigationDrawer"),
             open: false,
             items: Vec::new(),
+            item_icon_sources: Vec::new(),
             selected_index: 0,
             panel_width: 280,
             // At rest at the closed end: a freshly built drawer is closed, so it must not animate
@@ -145,7 +147,23 @@ impl NavigationDrawer {
     /// `icon` is a text/emoji character displayed to the left of the label.
     pub fn add_item(&mut self, icon: &str, label: &str) {
         self.items.push(DrawerItem { icon: icon.to_string(), label: label.to_string() });
+        self.item_icon_sources.push(None);
         self.base.request_redraw();
+    }
+
+    /// Assigns a typed icon source to an existing drawer item index.
+    pub fn set_item_icon_source(
+        &mut self,
+        index: usize,
+        source: Option<IconSource>,
+    ) -> Result<(), IconItemError> {
+        let len = self.items.len();
+        let Some(slot) = self.item_icon_sources.get_mut(index) else {
+            return Err(IconItemError::IndexOutOfBounds { index, len });
+        };
+        *slot = source;
+        self.base.request_redraw();
+        Ok(())
     }
 
     /// Sets the selected item index. Emits `item_selected` if changed.
@@ -426,13 +444,23 @@ impl Draw for NavigationDrawer {
             // Draw icon
             let icon_x = rect.x + 16;
             let icon_color = if i == self.selected_index { accent } else { ink };
-            context.draw_text(
-                Point::new(icon_x, text_center_y),
-                &item.icon,
-                &icon_font,
-                icon_color,
-                HorizontalAlignment::Left,
-            );
+            if let Some(source) = self.item_icon_sources.get(i).copied().flatten() {
+                let side = item_metrics.height.clamp(1, 20);
+                let icon_rect = Rect::new(icon_x, text_center_y, side, side);
+                if let Err(error) =
+                    crate::widget::paint_icon(context, source.into(), icon_rect, icon_color)
+                {
+                    log::warn!("navigation drawer item {i} icon failed: {error:?}");
+                }
+            } else {
+                context.draw_text(
+                    Point::new(icon_x, text_center_y),
+                    &item.icon,
+                    &icon_font,
+                    icon_color,
+                    HorizontalAlignment::Left,
+                );
+            }
 
             // Draw label
             let icon_width: u32 = 24;
@@ -595,6 +623,29 @@ mod tests {
 
         drawer.add_item("📧", "Mail");
         assert_eq!(drawer.items().len(), 2);
+    }
+
+    #[test]
+    fn drawer_item_typed_source_is_index_checked_and_rendered() {
+        static RING: crate::widget::IconData = crate::widget::IconData {
+            name: "drawer-ring",
+            grid: 24,
+            paths: &["M2-2H22V-22H2Z M7-7V-17H17V-7Z"],
+        };
+
+        let mut drawer = NavigationDrawer::new(Rect::new(0, 0, 400, 600));
+        drawer.add_item("legacy", "Files");
+        assert_eq!(
+            drawer.set_item_icon_source(2, Some(IconSource::static_geometry(&RING))),
+            Err(IconItemError::IndexOutOfBounds { index: 2, len: 1 })
+        );
+        drawer
+            .set_item_icon_source(0, Some(IconSource::static_geometry(&RING)))
+            .expect("existing item accepts typed source");
+        drawer.open();
+        drawer.slide.jump_to(1.0);
+        let svg = crate::widget::svg::render_to_svg(&mut drawer);
+        assert!(svg.contains("fill-rule=\"nonzero\""));
     }
 
     #[test]

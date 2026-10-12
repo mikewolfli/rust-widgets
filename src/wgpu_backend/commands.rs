@@ -332,6 +332,20 @@ pub enum WgpuDrawCommand {
         /// the path's bounding box first.
         clip: Option<PixelRect>,
     },
+    /// Fill packed contours together using the non-zero winding rule.
+    ///
+    /// Contours are half-open ranges in `points`; opposite winding directions form holes. Invalid
+    /// ranges are rejected by `rasterize_draw_commands_rgba8`.
+    FillPathNonZero {
+        /// Vertices in physical pixels.
+        points: Vec<(i32, i32)>,
+        /// Half-open vertex ranges, one per closed contour.
+        contours: Vec<(usize, usize)>,
+        /// Fill colour.
+        color: Rgba8,
+        /// Optional clip that tightens the framebuffer and path bounds.
+        clip: Option<PixelRect>,
+    },
     /// Fill a rectangle with a vertical multi-stop gradient.
     ///
     /// That direction is worth stating because it is easy to guess wrong:

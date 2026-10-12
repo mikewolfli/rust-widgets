@@ -15,6 +15,7 @@ macro_rules! impl_properties_base {
             PropertySchema::new("text", PropertyValueKind::String, true, true),
             PropertySchema::new("pressed", PropertyValueKind::Bool, true, true),
             PropertySchema::new("default", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("icon_source", PropertyValueKind::IconSpec, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),

@@ -142,9 +142,9 @@ def render_header(
     lines.append(" *")
     lines.append(" * A binding MUST accept every value here and MUST free `out_str` with")
     lines.append(" * `rw_free_string` whenever it is non-null, including for the non-string")
-    lines.append(" * kinds. `RW_VALUE_COLOR` and `RW_VALUE_RECT` carry their payload in")
-    lines.append(" * `out_str` (as `#RRGGBBAA` and `x,y,w,h`), not in `out_num`; treating them")
-    lines.append(" * as unknown leaks that buffer.")
+    lines.append(" * kinds. `RW_VALUE_COLOR`, `RW_VALUE_RECT` and `RW_VALUE_ICON_SPEC` carry")
+    lines.append(" * their payload in `out_str`; treating them as unknown leaks that buffer.")
+    lines.append(" * Icon specs use `builtin|name` or `resource|color_mode|escaped_id`.")
     lines.append(" */")
     lines.append("typedef enum {")
     for name, value in value_kinds:

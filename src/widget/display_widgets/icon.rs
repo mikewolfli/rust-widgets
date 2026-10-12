@@ -23,6 +23,8 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 #[cfg(widgets_unstripped)]
 use crate::widget::capability::WidgetProperties;
 #[cfg(widgets_unstripped)]
+use crate::widget::icon_source::IconSource;
+#[cfg(widgets_unstripped)]
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 #[cfg(widgets_unstripped)]
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -69,10 +71,105 @@ pub fn draw_icon_at(ctx: &mut RenderContext, rect: Rect, color: Color, name: Ico
     }
     #[cfg(feature = "icons")]
     if let Some(data) = name.data_opt() {
-        draw_outline_in(ctx, rect, color, &data);
+        if let Err(error) = draw_outline_in(ctx, rect, color, &data) {
+            log::error!("icon '{}' could not be painted: {error:?}", data.name);
+        }
         return;
     }
     draw_fallback_in(ctx, rect, color, name.as_str());
+}
+
+/// The resolved, borrowed view of an icon source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IconRef<'a> {
+    /// One of the crate's built-in names.
+    Builtin(IconName),
+    /// Validated or caller-supplied static path geometry.
+    StaticGeometry(&'a IconData),
+}
+
+impl<'a> From<&'a IconData> for IconRef<'a> {
+    fn from(data: &'a IconData) -> Self {
+        Self::StaticGeometry(data)
+    }
+}
+
+impl From<IconName> for IconRef<'_> {
+    fn from(name: IconName) -> Self {
+        Self::Builtin(name)
+    }
+}
+
+impl From<crate::widget::icon_source::IconSource> for IconRef<'_> {
+    fn from(source: crate::widget::icon_source::IconSource) -> Self {
+        match source {
+            crate::widget::icon_source::IconSource::Builtin(name) => Self::Builtin(name),
+            crate::widget::icon_source::IconSource::StaticGeometry(data) => {
+                Self::StaticGeometry(data)
+            }
+        }
+    }
+}
+
+/// Result of attempting to paint an icon into a slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IconPaintOutcome {
+    /// The source was drawn into a non-empty slot.
+    Drawn,
+    /// The slot had no area, so painting was skipped.
+    SkippedEmptySlot,
+}
+
+/// Why a typed icon could not be painted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IconPaintError {
+    /// Static path geometry is unavailable in this stripped build profile.
+    UnsupportedSourceForProfile,
+    /// The path data was malformed or exceeded a geometry budget.
+    InvalidGeometry(crate::render::path::FlattenError),
+    /// The data parsed but contained no drawable contours.
+    EmptyGeometry,
+    /// The render command rejected the prepared compound path.
+    Backend(crate::render::CompoundPathError),
+}
+
+/// Paints a typed icon source into the supplied slot.
+///
+/// Geometry uses the same non-zero outline path as [`Icon`] and the legacy free drawing
+/// functions. Built-in names retain the generated fallback when bundled outlines are disabled.
+pub fn paint_icon(
+    ctx: &mut RenderContext,
+    source: IconRef<'_>,
+    slot: Rect,
+    color: Color,
+) -> Result<IconPaintOutcome, IconPaintError> {
+    if slot.width == 0 || slot.height == 0 {
+        return Ok(IconPaintOutcome::SkippedEmptySlot);
+    }
+
+    match source {
+        IconRef::Builtin(name) => {
+            #[cfg(feature = "icons")]
+            if let Some(data) = name.data_opt() {
+                draw_outline_in(ctx, slot, color, &data)?;
+                return Ok(IconPaintOutcome::Drawn);
+            }
+            draw_fallback_in(ctx, slot, color, name.as_str());
+            Ok(IconPaintOutcome::Drawn)
+        }
+        IconRef::StaticGeometry(data) => {
+            #[cfg(any(feature = "icons", widgets_unstripped))]
+            {
+                draw_outline_in(ctx, slot, color, data)?;
+                Ok(IconPaintOutcome::Drawn)
+            }
+            #[cfg(not(any(feature = "icons", widgets_unstripped)))]
+            {
+                let _ = (ctx, data, color);
+                Err(IconPaintError::UnsupportedSourceForProfile)
+            }
+        }
+    }
 }
 
 /// Draws the icon named `name` into `rect`, in `color`, reporting whether an icon was drawn.
@@ -111,12 +208,16 @@ pub fn draw_icon_named(ctx: &mut RenderContext, rect: Rect, color: Color, name: 
         #[cfg(feature = "icons")]
         if let Some(known) = IconName::from_name(name) {
             if let Some(data) = known.data_opt() {
-                draw_outline_in(ctx, rect, color, &data);
+                if let Err(error) = draw_outline_in(ctx, rect, color, &data) {
+                    log::error!("icon '{}' could not be painted: {error:?}", data.name);
+                }
                 return true;
             }
         }
         if let Some(data) = crate::widget::display_widgets::icon_data_set::lookup_registered(name) {
-            draw_outline_in(ctx, rect, color, &data);
+            if let Err(error) = draw_outline_in(ctx, rect, color, &data) {
+                log::error!("registered icon '{}' could not be painted: {error:?}", data.name);
+            }
             return true;
         }
     }
@@ -167,37 +268,44 @@ pub fn draw_icon_centered(
 /// is on, and `Icon::draw_outline_data` uses it for a host-registered outline even with the feature
 /// off (registering one must not require the bundled table).
 #[cfg(any(feature = "icons", widgets_unstripped))]
-fn draw_outline_in(ctx: &mut RenderContext, rect: Rect, color: Color, data: &IconData) {
-    use crate::render::path::{
-        flatten_paths, IconPlacement, MAX_OUTLINE_CONTOURS, MAX_OUTLINE_POINTS,
-    };
+fn draw_outline_in(
+    ctx: &mut RenderContext,
+    rect: Rect,
+    color: Color,
+    data: &IconData,
+) -> Result<(), IconPaintError> {
+    #[cfg(all(not(alloc_frugal), any(feature = "icons", widgets_unstripped)))]
+    use crate::render::path::flatten::flatten_static_paths;
+    #[cfg(alloc_frugal)]
+    use crate::render::path::flatten_paths;
+    use crate::render::path::{IconPlacement, MAX_OUTLINE_CONTOURS, MAX_OUTLINE_POINTS};
 
     let placement = IconPlacement::new(rect.x, rect.y, rect.width as f32, data.grid);
     let mut points = [Point::new(0, 0); MAX_OUTLINE_POINTS];
     let mut contours = [(0usize, 0usize); MAX_OUTLINE_CONTOURS];
-    let Ok(count) = flatten_paths(data.paths, placement, &mut points, &mut contours) else {
-        return;
-    };
-    for &(start, end) in &contours[..count] {
-        let Some(contour) = points.get(start..end) else {
-            continue;
-        };
-        // `filled` is true, so this is a fill and the stroke width is unused. Passing `0` keeps the
-        // emitted `DrawPath` honest about that: the SVG backend reflects the argument into
-        // `stroke-width`, and a filled icon carrying `stroke-width="1"` was attribute noise that
-        // said a stroke existed when none is painted.
-        ctx.draw_path(contour, true, color, true, 0);
+    #[cfg(alloc_frugal)]
+    let count = flatten_paths(data.paths, placement, &mut points, &mut contours);
+    #[cfg(not(alloc_frugal))]
+    let count = flatten_static_paths(data.paths, placement, &mut points, &mut contours);
+    let count = count.map_err(IconPaintError::InvalidGeometry)?;
+    if count == 0 {
+        return Err(IconPaintError::EmptyGeometry);
     }
+    let point_count = contours[..count].iter().map(|&(_, end)| end).max().unwrap_or(0);
+    ctx.fill_path_non_zero(&points[..point_count], &contours[..count], color)
+        .map_err(IconPaintError::Backend)
 }
 
 /// Draws `token`'s generated fallback geometry into `rect`; unknown tokens draw nothing here
 /// (the caller falls back to the placeholder).
-fn draw_fallback_in(ctx: &mut RenderContext, rect: Rect, color: Color, token: &str) {
+fn draw_fallback_in(ctx: &mut RenderContext, rect: Rect, color: Color, token: &str) -> bool {
     use crate::widget::icon_fallback_data::ICON_FALLBACK;
 
     let Some(fallback) = ICON_FALLBACK.iter().find(|entry| entry.name == token) else {
-        return;
+        return false;
     };
+    let mut points = crate::compat::Vec::new();
+    let mut contours = crate::compat::Vec::new();
     let grid = f32::from(fallback.grid);
     let scale = rect.width as f32 / grid;
     let origin_x = rect.x as f32;
@@ -206,18 +314,19 @@ fn draw_fallback_in(ctx: &mut RenderContext, rect: Rect, color: Color, token: &s
         if contour.len() < 3 {
             continue;
         }
-        let points: crate::compat::Vec<Point> = contour
-            .iter()
-            .map(|&(gx, gy)| {
-                Point::new(
-                    (origin_x + gx as f32 * scale).round() as i32,
-                    (origin_y + (gy as f32 + grid) * scale).round() as i32,
-                )
-            })
-            .collect();
-        // Filled, so the stroke width is unused; see `draw_outline_in` for why it is `0`.
-        ctx.draw_path(&points, true, color, true, 0);
+        let start = points.len();
+        points.extend(contour.iter().map(|&(gx, gy)| {
+            Point::new(
+                (origin_x + gx as f32 * scale).round() as i32,
+                (origin_y + (gy as f32 + grid) * scale).round() as i32,
+            )
+        }));
+        contours.push((start, points.len()));
     }
+    if let Err(error) = ctx.fill_path_non_zero(&points, &contours, color) {
+        log::error!("fallback icon '{}' could not be submitted: {error:?}", fallback.name);
+    }
+    true
 }
 
 /// One icon's outline, as SVG path data on a square design grid.
@@ -286,6 +395,7 @@ pub struct IconData {
 pub struct Icon {
     base: BaseWidget,
     icon_name: String,
+    icon_source: Option<IconSource>,
     size: f32,
     /// An explicit colour, if one was set. `None` means "follow the theme".
     color: Option<Color>,
@@ -302,6 +412,7 @@ impl Icon {
         Self {
             base: BaseWidget::new(WidgetKind::Icon, geometry, "Icon"),
             icon_name: "check".to_string(),
+            icon_source: None,
             size: 24.0,
             color: None,
         }
@@ -316,16 +427,21 @@ impl Icon {
     /// name requests a redraw.
     pub fn set_icon(&mut self, name: &str) {
         self.icon_name = name.to_string();
+        self.icon_source = None;
         self.base.request_redraw();
     }
 
-    /// Returns the current icon name string.
+    /// Returns the current legacy name, or the canonical token for a typed built-in source.
     ///
-    /// This is whatever was last passed to [`Icon::set_icon`] (or the default
-    /// `"check"`), not a canonicalised token: an unrecognised name is returned
-    /// as-is even though it draws as the placeholder.
+    /// For the legacy string setter, this is whatever was last passed (or the default `"check"`),
+    /// not a canonicalised token: an unrecognised name is returned as-is even though it draws as
+    /// the placeholder. Typed built-in sources return their canonical token.
     pub fn icon(&self) -> &str {
-        &self.icon_name
+        match self.icon_source {
+            Some(IconSource::Builtin(name)) => name.as_str(),
+            Some(IconSource::StaticGeometry(_)) => "",
+            None => &self.icon_name,
+        }
     }
 
     /// Sets the icon using an `IconName` enum variant.
@@ -334,6 +450,28 @@ impl Icon {
     /// the name always resolves to a real icon.
     pub fn set_icon_enum(&mut self, icon: IconName) {
         self.set_icon(icon.as_str());
+    }
+
+    /// Sets the icon from a built-in token or static geometry.
+    ///
+    /// This replaces any previous legacy name. `icon()` continues to return the canonical token
+    /// for `Builtin`; it returns an empty string for custom geometry, which has no token name.
+    pub fn set_icon_source(&mut self, source: IconSource) {
+        self.icon_name.clear();
+        self.icon_source = Some(source);
+        self.base.request_redraw();
+    }
+
+    /// Returns the typed icon source, if one was most recently assigned.
+    pub fn icon_source(&self) -> Option<IconSource> {
+        self.icon_source
+    }
+
+    /// Clears both the typed source and legacy icon name.
+    pub fn clear_icon_source(&mut self) {
+        self.icon_source = None;
+        self.icon_name.clear();
+        self.base.request_redraw();
     }
 
     /// Sets the icon size in logical pixels.
@@ -432,6 +570,14 @@ impl Icon {
     /// is generated from the **same** `tools/material_symbols/<token>.svg` files as `ICON_DATA`, so
     /// the two paths cannot describe different shapes for one token.
     fn draw_icon(&self, ctx: &mut RenderContext) {
+        if let Some(source) = self.icon_source {
+            if let Err(error) =
+                paint_icon(ctx, source.into(), self.icon_rect(), self.resolve_color())
+            {
+                log::error!("typed icon could not be painted: {error:?}");
+            }
+            return;
+        }
         #[cfg(feature = "icons")]
         {
             if let Some(name) = IconName::from_name(&self.icon_name) {
@@ -459,32 +605,24 @@ impl Icon {
     /// ([`IconFallback`](crate::widget::icon_fallback_data::IconFallback)).
     ///
     /// The token's geometry is looked up in [`ICON_FALLBACK`](crate::widget::icon_fallback_data::ICON_FALLBACK);
-    /// a name that is not a token draws the question mark. Each contour is filled as a polygon, and
-    /// the grid-to-device mapping is the same one [`Self::draw_outline`] uses, so the fallback and
-    /// the data path place an icon identically.
+    /// all contours are filled together, so oppositely-wound counters remain empty. A name that is
+    /// not a token draws the question mark.
     fn draw_fallback(&self, ctx: &mut RenderContext) {
         let rect = self.icon_rect();
         if rect.width == 0 || rect.height == 0 {
             return;
         }
         let token = self.icon_name.as_str();
-        // A name that is not a token has no fallback geometry, so the placeholder is the honest
-        // answer — the same decision the shared helper leaves to its caller.
-        if !crate::widget::icon_fallback_data::ICON_FALLBACK.iter().any(|entry| entry.name == token)
-        {
+        if !draw_fallback_in(ctx, rect, self.resolve_color(), token) {
             self.draw_unknown(ctx);
-            return;
         }
-        draw_fallback_in(ctx, rect, self.resolve_color(), token);
     }
 
     /// Draws an icon from outline data — the one path both a bundled and a host icon take.
     ///
-    /// Each contour is filled as a polygon by the non-zero winding rule, so a counter (the hole in
-    /// an outlined shape) fills as empty because its ring runs the opposite way — the same rule the
-    /// glyph rasteriser uses. Data that does not fit the fixed scratch, or that does not parse, is
-    /// **refused**: nothing is drawn for it rather than a truncated shape (a partial icon is a
-    /// wrong icon).
+    /// All contours are submitted as one non-zero winding fill, so opposite-wound counters remain
+    /// empty. Data that does not fit the fixed scratch, or that does not parse, is refused rather
+    /// than truncated; the failure is reported through the crate logger.
     ///
     /// # Why this is not gated on `icons`
     ///
@@ -498,7 +636,9 @@ impl Icon {
         }
         // One geometry path, shared with the free `draw_icon_at` a control uses to paint an icon
         // inline, so an `Icon` widget and a control-drawn icon cannot render differently.
-        draw_outline_in(ctx, rect, self.resolve_color(), data);
+        if let Err(error) = draw_outline_in(ctx, rect, self.resolve_color(), data) {
+            log::error!("icon '{}' could not be painted: {error:?}", data.name);
+        }
     }
 
     /// Draws an icon from the crate's **bundled** outline table.
@@ -811,6 +951,49 @@ mod tests {
         let svg = crate::widget::svg::render_to_svg(&mut icon);
         assert!(svg.starts_with("<svg"));
         assert!(svg.ends_with("</svg>"));
+    }
+
+    #[test]
+    fn static_compound_icon_preserves_holes_and_replaces_legacy_state() {
+        use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
+        use crate::widget::draw::Draw;
+
+        static RING: IconData =
+            IconData { name: "ring", grid: 24, paths: &["M2-2H22V-22H2Z M7-7V-17H17V-7Z"] };
+        let bounds = Rect::new(0, 0, 24, 24);
+        let mut icon = Icon::new(bounds);
+        let source = IconSource::static_geometry(&RING);
+        icon.set_icon_source(source);
+        assert_eq!(icon.icon_source(), Some(source));
+        assert!(icon.icon().is_empty(), "static geometry has no legacy token name");
+
+        let mut backend = SoftwarePaintBackend::new(bounds.size(), 1.0);
+        backend.begin_frame(Color::TRANSPARENT);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            icon.draw(&mut context);
+        }
+        backend.end_frame();
+        let pixels = backend.frame_rgba();
+        let alpha_at = |x: usize, y: usize| pixels[(y * 24 + x) * 4 + 3];
+        assert_eq!(alpha_at(12, 12), 0, "opposite-wound inner contours must remain transparent");
+        assert_eq!(alpha_at(3, 12), 255, "the surrounding contour must be filled");
+
+        icon.set_icon("check");
+        assert_eq!(icon.icon_source(), None, "a legacy setter replaces the typed source");
+        assert_eq!(icon.icon(), "check");
+        icon.set_icon_source(source);
+        icon.clear_icon_source();
+        assert_eq!(icon.icon_source(), None);
+        assert!(icon.icon().is_empty(), "clearing removes rather than revives a prior source");
+
+        let builtin = IconSource::builtin(IconName::Info);
+        icon.set_icon_source(builtin);
+        assert_eq!(icon.icon_source(), Some(builtin));
+        assert_eq!(icon.icon(), "info", "typed built-ins expose their canonical legacy token");
+        icon.set_icon("warning");
+        assert_eq!(icon.icon_source(), None, "the legacy setter also replaces a typed built-in");
+        assert_eq!(icon.icon(), "warning");
     }
 
     #[test]

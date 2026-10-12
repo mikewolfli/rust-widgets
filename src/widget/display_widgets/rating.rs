@@ -705,18 +705,13 @@ mod tests {
             .expect("the clip must carry a width");
         assert_eq!(clip_width, 12, "half of a 24 px cell: {svg}");
 
-        // The `Star` outline is a two-contour shape, so each painted star is two `<path>`
-        // elements of one colour. Three painted stars (two whole and the clipped half) at the
-        // filled colour, five outlines at the empty colour; every star keeps its outline.
-        const CONTOURS_PER_STAR: usize = 2;
+        // The `Star` outline is a two-contour compound shape, so each painted star is one `<path>`
+        // containing both contours. Three painted stars (two whole and the clipped half) use the
+        // filled colour, and five use the empty colour; every star keeps its outline.
         let filled = svg.matches("rgba(255,193,7,1.00)").count();
         let empty = svg.matches("rgba(63,63,63,1.00)").count();
-        assert!(
-            filled.is_multiple_of(CONTOURS_PER_STAR),
-            "filled marks must come in whole stars: {svg}"
-        );
-        assert_eq!(filled / CONTOURS_PER_STAR, 3, "two whole stars and one clipped half: {svg}");
-        assert_eq!(empty / CONTOURS_PER_STAR, 5, "every star keeps its outline: {svg}");
+        assert_eq!(filled, 3, "two whole stars and one clipped half: {svg}");
+        assert_eq!(empty, 5, "every star keeps its outline: {svg}");
     }
 
     /// `star_size` is reachable from the contract, so the setter is no longer unreachable.

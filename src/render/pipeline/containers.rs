@@ -25,6 +25,7 @@ impl SoftwareSurface {
             buffer: BackBuffer::new(size, dpi_scale),
             aa_samples_per_axis: config.aa_samples_per_axis,
             clip_stack: Vec::new(),
+            nonzero_intersections: Vec::new(),
             blend_mode: BlendMode::Normal,
         }
     }

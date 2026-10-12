@@ -22,7 +22,7 @@ use crate::widget::display_widgets::switch::Switch;
 use crate::widget::metrics::role_font;
 use crate::widget::metrics::SwitchGeometry;
 use crate::widget::numeric::ordered_clamp;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconItemError, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// `UISwitch.onTintColor`: the track colour of an on iOS switch.
@@ -1306,6 +1306,7 @@ impl RailItem {
 pub struct MaterialNavigationRail {
     base: BaseWidget,
     items: Vec<RailItem>,
+    item_icon_sources: Vec<Option<IconSource>>,
     selected_index: usize,
     /// Emitted with the newly selected index whenever the selection changes.
     /// One-based ordering is not implied; indices are positions in
@@ -1318,13 +1319,35 @@ impl MaterialNavigationRail {
     pub fn new(geometry: crate::core::Rect) -> Self {
         let base =
             BaseWidget::new(WidgetKind::MaterialNavigationRail, geometry, "MaterialNavigationRail");
-        Self { base, items: Vec::new(), selected_index: 0, selected_changed: Signal1::new() }
+        Self {
+            base,
+            items: Vec::new(),
+            item_icon_sources: Vec::new(),
+            selected_index: 0,
+            selected_changed: Signal1::new(),
+        }
     }
 
     /// Adds an item with the given icon and label.
     pub fn add_item(&mut self, icon: &str, label: &str) {
         self.items.push(RailItem::new(icon, label));
+        self.item_icon_sources.push(None);
         self.base.request_redraw();
+    }
+
+    /// Assigns a typed icon source to an existing rail item index.
+    pub fn set_item_icon_source(
+        &mut self,
+        index: usize,
+        source: Option<IconSource>,
+    ) -> Result<(), IconItemError> {
+        let len = self.items.len();
+        let Some(slot) = self.item_icon_sources.get_mut(index) else {
+            return Err(IconItemError::IndexOutOfBounds { index, len });
+        };
+        *slot = source;
+        self.base.request_redraw();
+        Ok(())
     }
 
     /// Sets the selected index. Clamped to valid range.
@@ -1358,6 +1381,7 @@ impl MaterialNavigationRail {
     /// Removes all items.
     pub fn clear_items(&mut self) {
         self.items.clear();
+        self.item_icon_sources.clear();
         self.selected_index = 0;
         self.base.request_redraw();
     }
@@ -1543,16 +1567,31 @@ impl Draw for MaterialNavigationRail {
 
             // ── Icon (rendered as text placeholder) ──
             let icon_color = if is_selected { primary } else { secondary };
-            let icon_metrics = context.measure_text(&item.icon, &icon_font);
+            let typed_source = self.item_icon_sources.get(i).copied().flatten();
+            let mut icon_metrics = context
+                .measure_text(if typed_source.is_some() { "M" } else { &item.icon }, &icon_font);
+            if typed_source.is_some() {
+                icon_metrics.width = icon_metrics.height.max(1);
+            }
             let icon_x = rect.x + (rail_width as i32 - icon_metrics.width as i32) / 2;
             let icon_y = item_y + 20 + icon_metrics.height as i32 / 2;
-            context.draw_text(
-                Point::new(icon_x, icon_y),
-                &item.icon,
-                &icon_font,
-                icon_color,
-                HorizontalAlignment::Left,
-            );
+            if let Some(source) = typed_source {
+                let side = icon_metrics.height.clamp(1, 24);
+                let icon_rect = Rect::new(icon_x, item_y + 12, side, side);
+                if let Err(error) =
+                    crate::widget::paint_icon(context, source.into(), icon_rect, icon_color)
+                {
+                    log::warn!("navigation rail item {i} icon failed: {error:?}");
+                }
+            } else {
+                context.draw_text(
+                    Point::new(icon_x, icon_y),
+                    &item.icon,
+                    &icon_font,
+                    icon_color,
+                    HorizontalAlignment::Left,
+                );
+            }
 
             // ── Label ──
             let label_color = if is_selected { primary } else { secondary };
@@ -2091,5 +2130,29 @@ mod tests {
         rail.add_item("\u{2b50}", "Stars");
         let svg = render_to_svg(&mut rail);
         assert!(svg.starts_with("<svg"));
+    }
+
+    #[test]
+    fn material_navigation_rail_typed_item_source_is_checked_and_rendered() {
+        static RING: crate::widget::IconData = crate::widget::IconData {
+            name: "rail-ring",
+            grid: 24,
+            paths: &["M2-2H22V-22H2Z M7-7V-17H17V-7Z"],
+        };
+
+        let mut rail = MaterialNavigationRail::new(Rect::new(0, 0, 80, 400));
+        rail.add_item("legacy", "Home");
+        assert_eq!(
+            rail.set_item_icon_source(1, Some(IconSource::static_geometry(&RING))),
+            Err(IconItemError::IndexOutOfBounds { index: 1, len: 1 })
+        );
+        rail.set_item_icon_source(0, Some(IconSource::static_geometry(&RING)))
+            .expect("existing rail item accepts typed source");
+        assert!(render_to_svg(&mut rail).contains("fill-rule=\"nonzero\""));
+        rail.clear_items();
+        assert_eq!(
+            rail.set_item_icon_source(0, None),
+            Err(IconItemError::IndexOutOfBounds { index: 0, len: 0 })
+        );
     }
 }

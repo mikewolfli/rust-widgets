@@ -19,7 +19,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::role_font;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconItemError, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// A single item in the bottom navigation bar.
@@ -43,6 +43,7 @@ pub struct NavItem {
 pub struct BottomNavigationBar {
     base: BaseWidget,
     items: Vec<NavItem>,
+    item_icon_sources: Vec<Option<IconSource>>,
     selected_index: usize,
     /// How far the selection pill has travelled, `0.0` just after leaving its tab and `1.0`
     /// arrived.
@@ -72,6 +73,7 @@ impl BottomNavigationBar {
         Self {
             base: BaseWidget::new(WidgetKind::BottomNavigationBar, geometry, "BottomNavigationBar"),
             items: Vec::new(),
+            item_icon_sources: Vec::new(),
             selected_index: 0,
             slide: PropertyDriver::at(1.0, MotionSlot::Normal),
             slide_from: 0,
@@ -87,7 +89,26 @@ impl BottomNavigationBar {
     /// * `label` — Text label displayed below the icon.
     pub fn add_item(&mut self, icon: &str, label: &str) {
         self.items.push(NavItem { icon: icon.to_string(), label: label.to_string() });
+        self.item_icon_sources.push(None);
         self.base.request_redraw();
+    }
+
+    /// Assigns a typed icon source to an existing item index.
+    ///
+    /// The index is stable for the item's lifetime: this widget only appends items and clears
+    /// the entire collection, so an invalid index is reported rather than silently stored.
+    pub fn set_item_icon_source(
+        &mut self,
+        index: usize,
+        source: Option<IconSource>,
+    ) -> Result<(), IconItemError> {
+        let len = self.items.len();
+        let Some(slot) = self.item_icon_sources.get_mut(index) else {
+            return Err(IconItemError::IndexOutOfBounds { index, len });
+        };
+        *slot = source;
+        self.base.request_redraw();
+        Ok(())
     }
 
     /// Sets the currently selected tab index.
@@ -140,6 +161,7 @@ impl BottomNavigationBar {
     /// The selected index is reset to 0.
     pub fn clear_items(&mut self) {
         self.items.clear();
+        self.item_icon_sources.clear();
         self.selected_index = 0;
         self.base.request_redraw();
     }
@@ -328,7 +350,12 @@ impl Draw for BottomNavigationBar {
             };
 
             // Measure icon and label to center them in the tab
-            let icon_metrics = context.measure_text(&item.icon, &icon_font);
+            let typed_source = self.item_icon_sources.get(i).copied().flatten();
+            let mut icon_metrics = context
+                .measure_text(if typed_source.is_some() { "M" } else { &item.icon }, &icon_font);
+            if typed_source.is_some() {
+                icon_metrics.width = icon_metrics.height.max(1);
+            }
             let label_metrics = context.measure_text(&item.label, &label_font);
 
             // Vertical layout: icon centered vertically with label below
@@ -386,7 +413,13 @@ impl Draw for BottomNavigationBar {
                 icon_metrics.width.max(1),
                 icon_metrics.height.max(1),
             );
-            if !crate::widget::draw_icon_named(context, icon_box, icon_color, &item.icon) {
+            if let Some(source) = typed_source {
+                if let Err(error) =
+                    crate::widget::paint_icon(context, source.into(), icon_box, icon_color)
+                {
+                    log::warn!("bottom navigation item {i} icon could not be painted: {error:?}");
+                }
+            } else if !crate::widget::draw_icon_named(context, icon_box, icon_color, &item.icon) {
                 context.draw_text(
                     Point::new(icon_box.x, icon_box.y),
                     &item.icon,
@@ -491,6 +524,28 @@ mod tests {
         assert_eq!(bar.item_count(), 2);
         assert_eq!(bar.items[1].icon, "✉");
         assert_eq!(bar.items[1].label, "Messages");
+    }
+
+    #[test]
+    fn bottom_nav_item_typed_source_is_index_checked_and_rendered() {
+        static RING: crate::widget::IconData = crate::widget::IconData {
+            name: "nav-ring",
+            grid: 24,
+            paths: &["M2-2H22V-22H2Z M7-7V-17H17V-7Z"],
+        };
+
+        let mut bar = make_bar();
+        assert_eq!(
+            bar.set_item_icon_source(9, Some(IconSource::static_geometry(&RING))),
+            Err(IconItemError::IndexOutOfBounds { index: 9, len: 4 })
+        );
+        bar.set_item_icon_source(1, Some(IconSource::static_geometry(&RING)))
+            .expect("existing item accepts a typed source");
+        let svg = render_to_svg(&mut bar);
+        assert!(svg.contains("fill-rule=\"nonzero\""), "typed geometry must reach SVG");
+
+        bar.clear_items();
+        assert!(bar.item_icon_sources.is_empty(), "clearing items clears their sources");
     }
 
     #[test]
@@ -661,18 +716,19 @@ mod tests {
         let mut token_bar = BottomNavigationBar::new(Rect::new(0, 0, 375, 56));
         token_bar.add_item("star", "Favorites");
         let token_svg = render_to_svg(&mut token_bar);
-        // The icon is a filled outline (`stroke-width="0"`, no `data-text` tag), which the text
+        // The icon is a filled outline (`stroke="none"`, no `data-text` tag), which the text
         // path never emits. The *label* below it is still text, so the assertion is about the icon
         // shape rather than about the whole document having no text run.
         assert!(
-            token_svg.contains("stroke-width=\"0\""),
+            token_svg.contains("stroke=\"none\""),
             "a token icon name must draw outline geometry: {token_svg}"
         );
-        let outline_paths = token_svg.matches("stroke-width=\"0\"").count();
-        assert!(
-            outline_paths >= 2,
-            "the star is a two-contour outline, so both contours must be drawn: {outline_paths}"
+        let outline_paths = token_svg.matches("stroke=\"none\"").count();
+        assert_eq!(
+            outline_paths, 1,
+            "the star's two contours must be submitted as one compound path"
         );
+        assert!(token_svg.contains("fill-rule=\"nonzero\""));
 
         // The legacy symbol resolves to no icon, so the text path still runs — the behaviour a
         // pre-existing host depends on.

@@ -44,6 +44,7 @@ __all__ = [
     "RW_VALUE_RECT",
     "RW_VALUE_TUPLE",
     "RW_VALUE_RECORDS",
+    "RW_VALUE_ICON_SPEC",
 ]
 
 # ---------------------------------------------------------------------------
@@ -132,6 +133,7 @@ RW_VALUE_TUPLE = 8
 # A record list; `num` carries the record count and the string holds
 # `name=kind:value;…` per record with `|` between records.
 RW_VALUE_RECORDS = 9
+RW_VALUE_ICON_SPEC = 10
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +171,46 @@ def _encode_property_value(value):
         return None, RW_VALUE_FLOAT, bits, None
     if isinstance(value, str):
         return None, RW_VALUE_STRING, 0, value.encode("utf-8")
+    if isinstance(value, dict):
+        kind = value.get("kind")
+        if kind == "builtin" and set(value) == {"kind", "name"}:
+            name = value["name"]
+            if not isinstance(name, str) or not name:
+                raise ValueError("a built-in icon descriptor requires a non-empty name")
+            wire = f"builtin|{name}"
+        elif kind == "resource" and set(value) == {"kind", "id", "color_mode"}:
+            resource_id = value["id"]
+            color_mode = value["color_mode"]
+            if not isinstance(resource_id, str) or not resource_id.strip():
+                raise ValueError("a resource icon descriptor requires a non-empty id")
+            if color_mode not in ("monochrome", "original"):
+                raise ValueError("color_mode must be 'monochrome' or 'original'")
+            escaped_id = resource_id.replace("%", "%25").replace("|", "%7C")
+            wire = f"resource|{color_mode}|{escaped_id}"
+        else:
+            raise ValueError("invalid icon descriptor fields or kind")
+        return None, RW_VALUE_ICON_SPEC, 0, wire.encode("utf-8")
     raise TypeError(f"unsupported property value type: {type(value).__name__}")
+
+
+def _decode_icon_spec(wire: str):
+    """Decode the lossless icon descriptor wire spelling returned by the ABI."""
+    kind, separator, value = wire.partition("|")
+    if not separator:
+        return None
+    if kind == "builtin" and value:
+        return {"kind": "builtin", "name": value}
+    if kind == "resource":
+        color_mode, separator, escaped_id = value.partition("|")
+        if separator and color_mode in ("monochrome", "original") and escaped_id:
+            resource_id = escaped_id.replace("%7C", "|").replace("%25", "%")
+            if resource_id.strip():
+                return {
+                    "kind": "resource",
+                    "id": resource_id,
+                    "color_mode": color_mode,
+                }
+    return None
 
 _LIB_NAMES: dict[str, list[str]] = {
     "linux": ["librust_widgets.so"],
@@ -1317,7 +1358,8 @@ class RustWidgets:
         """Read a property by name; ``None`` when the widget or name is unknown.
 
         Returns a Python ``bool`` / ``int`` / ``float`` / ``str`` matching the
-        property's declared type, or ``None`` for a null value.
+        property's declared type, an IconSpec dictionary for icon sources, or
+        ``None`` for a null value.
         """
         kind = ctypes.c_int(0)
         num = ctypes.c_int64(0)
@@ -1352,14 +1394,16 @@ class RustWidgets:
             RW_VALUE_RECT,
             RW_VALUE_TUPLE,
             RW_VALUE_RECORDS,
+            RW_VALUE_ICON_SPEC,
         ):
-            # All five carry their payload in the string slot. Freeing it on every
+            # Structured string-slot variants carry payloads here. Freeing each
             # one of them is the point: `rw_get_widget_property` allocates for each,
             # so a branch that returned without freeing leaked one buffer per call.
             # A tuple's string is the `kind:value;…` wire form and a record list's is
             # `name=kind:value;…` per record, both returned verbatim so a caller can
             # decode them with the component kinds and the field names.
-            return self._decode_and_free(self.lib, text.value)
+            decoded = self._decode_and_free(self.lib, text.value)
+            return _decode_icon_spec(decoded) if kind.value == RW_VALUE_ICON_SPEC else decoded
         # An unknown kind is a newer ABI than this binding knows about. Free the
         # payload if there is one, so an unrecognised kind cannot leak either.
         self._decode_and_free(self.lib, text.value)
@@ -1368,8 +1412,9 @@ class RustWidgets:
     def set_widget_property(self, widget_id: int, name: str, value) -> bool:
         """Write a property by name.
 
-        ``value`` may be ``None``, ``bool``, ``int``, ``float`` or ``str``; the
-        matching ``rw_value_kind`` is chosen from its Python type. Returns
+        ``value`` may be ``None``, ``bool``, ``int``, ``float``, ``str`` or an
+        IconSpec dictionary. The matching ``rw_value_kind`` is chosen from its
+        Python type. Returns
         ``False`` when the widget or property is unknown, the property is
         read-only, or the type does not match.
         """

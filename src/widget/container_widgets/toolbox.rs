@@ -14,7 +14,9 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 #[cfg(feature = "image")]
 use crate::widget::Image;
-use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use crate::widget::{
+    BaseWidget, Draw, IconItemError, IconSource, SimpleRegistry, Widget, WidgetKind,
+};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -68,6 +70,7 @@ pub struct ToolBox {
 /// Tool box item.
 pub struct ToolBoxItem {
     text: String,
+    icon_source: Option<IconSource>,
     #[cfg(feature = "image")]
     icon: Option<Image>,
     tooltip: String,
@@ -79,6 +82,7 @@ impl ToolBoxItem {
     pub fn new(text: String) -> Self {
         Self {
             text,
+            icon_source: None,
             #[cfg(feature = "image")]
             icon: None,
             tooltip: String::new(),
@@ -94,6 +98,18 @@ impl ToolBoxItem {
     pub fn set_text(&mut self, text: String) {
         self.text = text;
     }
+    /// Returns the typed icon source, if one is assigned.
+    pub fn icon_source(&self) -> Option<IconSource> {
+        self.icon_source
+    }
+    /// Replaces the typed icon source and clears the legacy image slot when present.
+    pub fn set_icon_source(&mut self, source: Option<IconSource>) {
+        self.icon_source = source;
+        #[cfg(feature = "image")]
+        if source.is_some() {
+            self.icon = None;
+        }
+    }
     #[cfg(feature = "image")]
     /// Returns icon.
     pub fn icon(&self) -> Option<&Image> {
@@ -103,6 +119,7 @@ impl ToolBoxItem {
     /// Sets icon.
     pub fn set_icon(&mut self, icon: Option<Image>) {
         self.icon = icon;
+        self.icon_source = None;
     }
     /// Returns tooltip.
     pub fn tooltip(&self) -> &str {
@@ -220,6 +237,20 @@ impl ToolBox {
     /// Returns mutable item at index.
     pub fn item_mut(&mut self, index: usize) -> Option<&mut ToolBoxItem> {
         self.items.get_mut(index)
+    }
+    /// Assigns a typed icon source to an existing item index.
+    pub fn set_item_icon_source(
+        &mut self,
+        index: usize,
+        source: Option<IconSource>,
+    ) -> Result<(), IconItemError> {
+        let len = self.items.len();
+        let Some(item) = self.items.get_mut(index) else {
+            return Err(IconItemError::IndexOutOfBounds { index, len });
+        };
+        item.set_icon_source(source);
+        self.base.request_redraw();
+        Ok(())
     }
     /// Returns orientation.
     pub fn orientation(&self) -> Orientation {
@@ -728,18 +759,18 @@ impl Draw for ToolBox {
                     border_color,
                 );
                 let padding = 5i32;
-                #[cfg(feature = "image")]
                 let icon_size = 16u32;
                 #[cfg(feature = "image")]
-                let text_x = if item.icon.is_some() {
+                let has_legacy_image = item.icon.is_some();
+                #[cfg(not(feature = "image"))]
+                let has_legacy_image = false;
+                let has_icon = item.icon_source.is_some() || has_legacy_image;
+                let text_x = if has_icon {
                     item_rect.x + icon_size as i32 + padding + 4
                 } else {
                     item_rect.x + padding
                 };
-                #[cfg(not(feature = "image"))]
-                let text_x = item_rect.x + padding;
-                #[cfg(feature = "image")]
-                if item.icon.is_some() {
+                if has_icon {
                     let icon_x = item_rect.x + padding;
                     let icon_y = item_rect.y + (item_rect.height as i32 - icon_size as i32) / 2;
                     let icon_rect = Rect::new(icon_x, icon_y, icon_size, icon_size);
@@ -756,22 +787,32 @@ impl Draw for ToolBox {
                     let surface = style.background_color.unwrap_or(Color::rgb(240, 240, 240));
                     let icon_bg_color = Self::icon_tile_color(tile_ink, surface, is_current);
                     context.fill_rounded_rect(icon_rect, 3, icon_bg_color);
-                    // Draw a simple shape inside: a small circle (representative)
-                    let inner_r = 3;
-                    let cx = icon_x + icon_size as i32 / 2;
-                    let cy = icon_y + icon_size as i32 / 2;
-                    context.fill_rounded_rect(
-                        Rect::new(
-                            cx - inner_r as i32,
-                            cy - inner_r as i32,
-                            inner_r * 2,
-                            inner_r * 2,
-                        ),
-                        inner_r,
-                        // The glyph is drawn *on* the tinted icon square, so it reads
-                        // `text_color` like every other piece of ink in the item.
-                        style.text_color.unwrap_or(Color::rgb(255, 255, 255)),
-                    );
+                    if let Some(source) = item.icon_source {
+                        let glyph_rect = Rect::new(icon_x + 2, icon_y + 2, 12, 12);
+                        if let Err(error) = crate::widget::paint_icon(
+                            context,
+                            source.into(),
+                            glyph_rect,
+                            style.text_color.unwrap_or(Color::rgb(255, 255, 255)),
+                        ) {
+                            log::warn!("toolbox item {i} icon failed: {error:?}");
+                        }
+                    } else {
+                        // Draw a simple shape inside: a small circle (representative)
+                        let inner_r = 3;
+                        let cx = icon_x + icon_size as i32 / 2;
+                        let cy = icon_y + icon_size as i32 / 2;
+                        context.fill_rounded_rect(
+                            Rect::new(
+                                cx - inner_r as i32,
+                                cy - inner_r as i32,
+                                inner_r * 2,
+                                inner_r * 2,
+                            ),
+                            inner_r,
+                            style.text_color.unwrap_or(Color::rgb(255, 255, 255)),
+                        );
+                    }
                 }
                 // Draw item text
                 //
@@ -861,6 +902,31 @@ mod tests {
         let mut tb = ToolBox::new(Rect::new(0, 0, 200, 160));
         tb.add_item("NoWidget".to_string(), None);
         assert!(tb.children().is_empty(), "no children when no widget is given");
+    }
+
+    #[test]
+    fn toolbox_typed_item_icon_is_checked_rendered_and_cleared_with_items() {
+        static RING: crate::widget::IconData = crate::widget::IconData {
+            name: "toolbox-ring",
+            grid: 24,
+            paths: &["M2-2H22V-22H2Z M7-7V-17H17V-7Z"],
+        };
+
+        let mut toolbox = ToolBox::new(Rect::new(0, 0, 200, 160));
+        toolbox.add_item("Page".to_string(), None);
+        assert_eq!(
+            toolbox.set_item_icon_source(1, Some(IconSource::static_geometry(&RING))),
+            Err(IconItemError::IndexOutOfBounds { index: 1, len: 1 })
+        );
+        toolbox
+            .set_item_icon_source(0, Some(IconSource::static_geometry(&RING)))
+            .expect("existing toolbox item accepts typed source");
+        assert!(render_to_svg(&mut toolbox).contains("fill-rule=\"nonzero\""));
+        toolbox.clear();
+        assert_eq!(
+            toolbox.set_item_icon_source(0, None),
+            Err(IconItemError::IndexOutOfBounds { index: 0, len: 0 })
+        );
     }
 
     // ── 3. Setting/getting current index ──────────────────────────────────

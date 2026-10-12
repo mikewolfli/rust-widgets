@@ -60,6 +60,26 @@ pub trait PaintBackend {
             data: data.to_vec(),
         });
     }
+    /// Fills borrowed contours using the non-zero winding rule.
+    ///
+    /// Immediate backends can consume the slices directly. The default preserves
+    /// the owning-command contract required by deferred and recording backends.
+    fn fill_path_non_zero(
+        &mut self,
+        points: &[crate::core::Point],
+        contours: &[(usize, usize)],
+        color: Color,
+        offset_x: i32,
+        offset_y: i32,
+    ) -> Result<(), crate::render::CompoundPathError> {
+        let translated = points
+            .iter()
+            .map(|point| crate::core::Point::new(point.x + offset_x, point.y + offset_y))
+            .collect();
+        let path = crate::render::CompoundPath::new(translated, contours.to_vec())?;
+        self.execute_command(&RenderCommand::FillPathNonZero { path, color });
+        Ok(())
+    }
     /// Returns the size of the target surface in logical (DPI-independent)
     /// units.
     fn size(&self) -> Size;
@@ -182,6 +202,16 @@ impl PaintBackend for SoftwarePaintBackend {
         note_image_bytes_drawn_without_copy(data.len());
         self.surface.draw_image(x, y, width, height, data);
     }
+    fn fill_path_non_zero(
+        &mut self,
+        points: &[crate::core::Point],
+        contours: &[(usize, usize)],
+        color: Color,
+        offset_x: i32,
+        offset_y: i32,
+    ) -> Result<(), crate::render::CompoundPathError> {
+        self.surface.fill_path_non_zero_borrowed(points, contours, color, offset_x, offset_y)
+    }
     fn size(&self) -> Size {
         self.surface.size()
     }
@@ -302,6 +332,9 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
         }
         RenderCommand::DrawPath { points, closed, color, filled, width } => {
             surface.draw_path(points, *closed, *color, *filled, *width);
+        }
+        RenderCommand::FillPathNonZero { path, color } => {
+            surface.fill_path_non_zero(path, *color);
         }
         RenderCommand::BoxShadow { rect, color, offset_x, offset_y, blur_radius, spread } => {
             // Render shadow rect with offset and optional spread. Every term is `i32` and the

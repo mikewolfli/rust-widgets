@@ -16,7 +16,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Represents a user action (command, toggle, etc.) used in menus and toolbars.
 ///
@@ -31,6 +31,8 @@ pub struct Action {
     text: String,
     /// Display icon text.
     icon_text: String,
+    /// Typed icon geometry, mutually exclusive with the legacy text stand-in.
+    icon_source: Option<IconSource>,
     /// Display shortcut string.
     shortcut: String,
     /// Whether this action is a visual separator.
@@ -73,6 +75,7 @@ impl Action {
             cmd: CmdAction::new("", &text),
             text,
             icon_text: String::new(),
+            icon_source: None,
             shortcut: String::new(),
             separator: false,
             triggered: Signal1::new(),
@@ -104,6 +107,10 @@ impl Action {
     /// This is text, not image data.
     pub fn icon_text(&self) -> &str {
         &self.icon_text
+    }
+    /// Returns the typed icon source, if one is active.
+    pub fn icon_source(&self) -> Option<IconSource> {
+        self.icon_source
     }
     /// Returns the shortcut display string (for example `"Ctrl+S"`).
     ///
@@ -218,6 +225,17 @@ impl Action {
     /// Replaces the icon stand-in text, emits `changed`, and requests a redraw.
     pub fn set_icon_text(&mut self, text: impl Into<String>) {
         self.icon_text = text.into();
+        self.icon_source = None;
+        self.changed.emit();
+        self.base.request_redraw();
+    }
+    /// Sets a built-in or static-geometry icon, replacing the legacy icon text.
+    ///
+    /// `icon_text()` returns an empty string while a typed source is active. Setting icon text
+    /// again switches back to the legacy text presentation.
+    pub fn set_icon_source(&mut self, source: Option<IconSource>) {
+        self.icon_text.clear();
+        self.icon_source = source;
         self.changed.emit();
         self.base.request_redraw();
     }
@@ -309,6 +327,15 @@ impl WidgetProperties for Action {
             "shortcut" => Ok(CapabilityValue::String(self.shortcut().to_string())),
             "checkable" => Ok(CapabilityValue::Bool(self.is_checkable())),
             "checked" => Ok(CapabilityValue::Bool(self.is_checked())),
+            "icon_source" => match self.icon_source() {
+                None => Ok(CapabilityValue::Null),
+                Some(IconSource::Builtin(name)) => Ok(CapabilityValue::IconSpec(
+                    crate::widget::icon_source::IconSpec::Builtin(name),
+                )),
+                Some(IconSource::StaticGeometry(_)) => {
+                    Err(CapabilityAccessError::IconSourceNotPersistable)
+                }
+            },
             "separator" => Ok(CapabilityValue::Bool(self.is_separator())),
             "command_id" => match self.command_id() {
                 Some(id) => Ok(CapabilityValue::String(id.to_string())),
@@ -340,6 +367,19 @@ impl WidgetProperties for Action {
                 self.set_checked(expect_bool(value)?);
                 Ok(())
             }
+            "icon_source" => {
+                match value {
+                    CapabilityValue::Null => self.set_icon_source(None),
+                    CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(
+                        name,
+                    )) => self.set_icon_source(Some(IconSource::Builtin(name))),
+                    CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Resource {
+                        ..
+                    }) => return Err(CapabilityAccessError::ResourceResolutionRequired),
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                }
+                Ok(())
+            }
             "command_id" => {
                 match value {
                     CapabilityValue::Null => self.clear_command_id(),
@@ -359,6 +399,7 @@ impl WidgetProperties for Action {
             "shortcut",
             "checkable",
             "checked",
+            "icon_source",
             "separator",
             "command_id",
             BASE_PROPERTY_NAMES
@@ -431,7 +472,11 @@ impl Draw for Action {
         }
         // A bare, unhovered action is still owned by its host menu/toolbar: painting
         // its own surface here would fight the host's row background.
-        if !self.base.is_hovered() && self.text.is_empty() && self.icon_text.is_empty() {
+        if !self.base.is_hovered()
+            && self.text.is_empty()
+            && self.icon_text.is_empty()
+            && self.icon_source.is_none()
+        {
             return;
         }
 
@@ -480,7 +525,18 @@ impl Draw for Action {
         let line = context.text_line(rect, &font);
         let baseline = line.y;
         let mut x = rect.x + 8;
-        if !self.icon_text.is_empty() {
+        if let Some(source) = self.icon_source {
+            let line_height = context.measure_text("M", &font).height;
+            let side = line_height.min(rect.height).max(1);
+            let icon_rect = Rect::new(x, line.y, side, side);
+            let icon_ink = self.base.disabled_ink_on(ink, highlight);
+            if let Err(error) =
+                crate::widget::paint_icon(context, source.into(), icon_rect, icon_ink)
+            {
+                log::warn!("action icon could not be painted: {error:?}");
+            }
+            x += 20;
+        } else if !self.icon_text.is_empty() {
             context.draw_text(
                 Point::new(x, baseline),
                 &self.icon_text,
@@ -577,6 +633,15 @@ mod tests {
         assert!(a.icon_text().is_empty());
         a.set_icon_text("🔍");
         assert_eq!(a.icon_text(), "🔍");
+        let source = crate::widget::IconSource::builtin(crate::widget::IconName::Info);
+        a.set_icon_source(Some(source));
+        assert_eq!(a.icon_source(), Some(source));
+        assert!(a.icon_text().is_empty(), "typed geometry does not masquerade as text");
+        let svg = crate::widget::svg::render_to_svg(&mut a);
+        assert!(svg.contains("<path"), "the typed source must reach the renderer");
+        a.set_icon_text("★");
+        assert_eq!(a.icon_source(), None, "legacy text setter restores text presentation");
+        assert_eq!(a.icon_text(), "★");
     }
 
     // ── 4. Setting/getting tooltip ──

@@ -180,86 +180,129 @@ pub fn flatten_paths(
 
     for d in paths {
         let subpaths: Vec<Subpath> = parse(d)?;
-        for subpath in &subpaths {
-            if subpath.segments.is_empty() {
-                // A lone `M` names a point but bounds no area. It contributes nothing to a fill, and
-                // has no vertices to record — skipping it is exact, not a truncation.
-                continue;
-            }
-            if contour_count == contours.len() {
-                return Err(FlattenError::TooManyContours);
-            }
-            let start_index = cursor;
-            let start = placement.map(subpath.start.x, subpath.start.y);
-            if !push_point(points, &mut cursor, start) {
-                return Err(FlattenError::TooManyPoints);
-            }
-            // The pen is the subpath's own start for the first segment, and each segment's end
-            // afterwards — the same convention [`super::parser`] documents.
-            let mut pen = start;
-
-            for segment in &subpath.segments {
-                match *segment {
-                    Segment::Line(to) => {
-                        let end = placement.map(to.x, to.y);
-                        if !push_point(points, &mut cursor, end) {
-                            return Err(FlattenError::TooManyPoints);
-                        }
-                        pen = end;
-                    }
-                    Segment::Quad { ctrl, to } => {
-                        let end = placement.map(to.x, to.y);
-                        if !flatten_quad(
-                            points,
-                            &mut cursor,
-                            pen,
-                            placement.map(ctrl.x, ctrl.y),
-                            end,
-                        ) {
-                            return Err(FlattenError::TooManyPoints);
-                        }
-                        pen = end;
-                    }
-                    Segment::Cubic { ctrl1, ctrl2, to } => {
-                        let end = placement.map(to.x, to.y);
-                        if !flatten_cubic(
-                            points,
-                            &mut cursor,
-                            pen,
-                            placement.map(ctrl1.x, ctrl1.y),
-                            placement.map(ctrl2.x, ctrl2.y),
-                            end,
-                        ) {
-                            return Err(FlattenError::TooManyPoints);
-                        }
-                        pen = end;
-                    }
-                }
-            }
-
-            // A `Z` closes the contour implicitly on the fill side, so the closing edge is not
-            // pushed — the end/start pair is what the caller's fill already joins. The contour is
-            // recorded for an open subpath too, because SVG fills one by implicitly closing it.
-            //
-            // A contour that ends back on its own start has nothing to close, so the repeated last
-            // vertex is dropped here rather than passed on: a scanline fill sees the same polygon,
-            // and a caller that *emits* the contour (the fallback generator, `icon_census.txt`)
-            // records the outline once instead of once plus a duplicate. Only an exact repeat is
-            // dropped, because `M0 0L10 0L0 0` is a real (if degenerate) outline.
-            if cursor > start_index && points[cursor - 1] == points[start_index] {
-                cursor -= 1;
-            }
-            if cursor - start_index < 3 {
-                // Fewer than three vertices bound no area; drop the contour rather than hand the
-                // fill a degenerate one. The points stay in the buffer, which is harmless.
-                continue;
-            }
-            contours[contour_count] = (start_index, cursor);
-            contour_count += 1;
-        }
+        flatten_subpaths(&subpaths, placement, points, contours, &mut cursor, &mut contour_count)?;
     }
 
     Ok(contour_count)
+}
+
+#[cfg(all(not(alloc_frugal), any(feature = "icons", widgets_unstripped)))]
+struct CachedPath {
+    address: usize,
+    length: usize,
+    subpaths: crate::compat::Arc<[Subpath]>,
+}
+
+#[cfg(all(not(alloc_frugal), any(feature = "icons", widgets_unstripped)))]
+fn parse_static_cached(
+    path: &'static str,
+) -> Result<crate::compat::Arc<[Subpath]>, super::parser::PathError> {
+    use crate::compat::{lock, Mutex, OnceLock, Vec};
+
+    const CACHE_CAPACITY: usize = 128;
+    static CACHE: OnceLock<Mutex<Vec<CachedPath>>> = OnceLock::new();
+    let address = path.as_ptr() as usize;
+    if let Some(subpaths) = lock(CACHE.get_or_init(|| Mutex::new(Vec::new())))
+        .iter()
+        .find(|entry| entry.address == address && entry.length == path.len())
+        .map(|entry| entry.subpaths.clone())
+    {
+        return Ok(subpaths);
+    }
+
+    let parsed: crate::compat::Arc<[Subpath]> = parse(path)?.into();
+    let mut cache = lock(CACHE.get_or_init(|| Mutex::new(Vec::new())));
+    if let Some(entry) =
+        cache.iter().find(|entry| entry.address == address && entry.length == path.len())
+    {
+        return Ok(entry.subpaths.clone());
+    }
+    if cache.len() == CACHE_CAPACITY {
+        cache.remove(0);
+    }
+    cache.push(CachedPath { address, length: path.len(), subpaths: parsed.clone() });
+    Ok(parsed)
+}
+
+#[cfg(all(not(alloc_frugal), any(feature = "icons", widgets_unstripped)))]
+pub(crate) fn flatten_static_paths(
+    paths: &'static [&'static str],
+    placement: IconPlacement,
+    points: &mut [Point],
+    contours: &mut [(usize, usize)],
+) -> Result<usize, FlattenError> {
+    let mut contour_count = 0usize;
+    let mut cursor = 0usize;
+    for path in paths {
+        let subpaths = parse_static_cached(path).map_err(FlattenError::Parse)?;
+        flatten_subpaths(&subpaths, placement, points, contours, &mut cursor, &mut contour_count)?;
+    }
+    Ok(contour_count)
+}
+
+fn flatten_subpaths(
+    subpaths: &[Subpath],
+    placement: IconPlacement,
+    points: &mut [Point],
+    contours: &mut [(usize, usize)],
+    cursor: &mut usize,
+    contour_count: &mut usize,
+) -> Result<(), FlattenError> {
+    for subpath in subpaths {
+        if subpath.segments.is_empty() {
+            continue;
+        }
+        if *contour_count == contours.len() {
+            return Err(FlattenError::TooManyContours);
+        }
+        let start_index = *cursor;
+        let start = placement.map(subpath.start.x, subpath.start.y);
+        if !push_point(points, cursor, start) {
+            return Err(FlattenError::TooManyPoints);
+        }
+        let mut pen = start;
+        for segment in &subpath.segments {
+            match *segment {
+                Segment::Line(to) => {
+                    let end = placement.map(to.x, to.y);
+                    if !push_point(points, cursor, end) {
+                        return Err(FlattenError::TooManyPoints);
+                    }
+                    pen = end;
+                }
+                Segment::Quad { ctrl, to } => {
+                    let end = placement.map(to.x, to.y);
+                    if !flatten_quad(points, cursor, pen, placement.map(ctrl.x, ctrl.y), end) {
+                        return Err(FlattenError::TooManyPoints);
+                    }
+                    pen = end;
+                }
+                Segment::Cubic { ctrl1, ctrl2, to } => {
+                    let end = placement.map(to.x, to.y);
+                    if !flatten_cubic(
+                        points,
+                        cursor,
+                        pen,
+                        placement.map(ctrl1.x, ctrl1.y),
+                        placement.map(ctrl2.x, ctrl2.y),
+                        end,
+                    ) {
+                        return Err(FlattenError::TooManyPoints);
+                    }
+                    pen = end;
+                }
+            }
+        }
+        if *cursor > start_index && points[*cursor - 1] == points[start_index] {
+            *cursor -= 1;
+        }
+        if *cursor - start_index < 3 {
+            continue;
+        }
+        contours[*contour_count] = (start_index, *cursor);
+        *contour_count += 1;
+    }
+    Ok(())
 }
 
 /// Pushes one device point, reporting `false` when the slice is full.

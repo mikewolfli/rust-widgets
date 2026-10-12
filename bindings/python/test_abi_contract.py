@@ -28,7 +28,7 @@ import ctypes
 import sys
 
 from rust_widgets import RustWidgets
-from rust_widgets import RW_VALUE_STRING
+from rust_widgets import RW_VALUE_ICON_SPEC, RW_VALUE_STRING
 
 
 def _check_owned_string_round_trip(rw: RustWidgets) -> None:
@@ -69,12 +69,30 @@ def _check_property_string_kinds(rw: RustWidgets) -> None:
 
     # The kind constants must be declared so a caller can interpret `out_kind`.
     assert RW_VALUE_STRING == 5, "RW_VALUE_STRING must stay 5 (append-only ABI)"
-    for kind in ("RW_VALUE_COLOR", "RW_VALUE_RECT", "RW_VALUE_TUPLE", "RW_VALUE_RECORDS"):
+    for kind in (
+        "RW_VALUE_COLOR",
+        "RW_VALUE_RECT",
+        "RW_VALUE_TUPLE",
+        "RW_VALUE_RECORDS",
+        "RW_VALUE_ICON_SPEC",
+    ):
         assert hasattr(sys.modules["rust_widgets"], kind), (
             f"{kind} must be declared: a reader without it returns 'no property' "
             "for every colour/rectangle/tuple and leaks the buffer it did not free"
         )
-    print("  string/colour/rect/tuple/records value kinds: ok")
+    assert RW_VALUE_ICON_SPEC == 10, "icon descriptors are appended to the ABI kinds"
+
+    button = rw.create_button(window, "icon", 0, 0, 80, 24)
+    assert button, "create_button must return a live id"
+    source = {"kind": "builtin", "name": "info"}
+    assert rw.set_widget_property(button, "icon_source", source)
+    assert rw.get_widget_property(button, "icon_source") == source
+    assert not rw.set_widget_property(
+        button,
+        "icon_source",
+        {"kind": "resource", "id": "project/icons/missing", "color_mode": "monochrome"},
+    ), "unresolved resources must be rejected by the property API"
+    print("  string/colour/rect/tuple/records/icon-spec value kinds: ok")
 
 
 def _check_empty_drag_payload(rw: RustWidgets) -> None:

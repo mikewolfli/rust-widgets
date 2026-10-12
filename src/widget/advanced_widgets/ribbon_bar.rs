@@ -32,7 +32,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::effective_font;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 // ── Layout constants ──────────────────────────────────────────────────────────
@@ -91,6 +91,7 @@ impl RibbonGroup {
 pub struct RibbonItem {
     text: String,
     icon_text: String,
+    icon_source: Option<IconSource>,
     tooltip: String,
     enabled: bool,
     checkable: bool,
@@ -104,6 +105,7 @@ impl RibbonItem {
         let text = text.into();
         Self {
             icon_text: text.clone(),
+            icon_source: None,
             text: text.clone(),
             tooltip: String::new(),
             enabled: true,
@@ -131,6 +133,17 @@ impl RibbonItem {
     /// Sets the icon text.
     pub fn set_icon_text(&mut self, icon: impl Into<String>) {
         self.icon_text = icon.into();
+        self.icon_source = None;
+    }
+
+    /// Returns the typed icon source, if one is assigned.
+    pub fn icon_source(&self) -> Option<IconSource> {
+        self.icon_source
+    }
+
+    /// Replaces the typed icon source without changing the item's text label.
+    pub fn set_icon_source(&mut self, source: Option<IconSource>) {
+        self.icon_source = source;
     }
 
     /// Returns the tooltip.
@@ -898,15 +911,36 @@ impl RibbonBar {
                         // Large: icon text centered, label below
                         let icon_center =
                             Point::new(ir.x + ir.width as i32 / 2, ir.y + LARGE_ICON_SIZE / 2);
-                        // Draw a simulated icon area (first character of icon_text)
-                        let icon_char = item.icon_text().chars().next().unwrap_or('?');
-                        context.draw_text(
-                            icon_center,
-                            &icon_char.to_string(),
-                            effective_font(self.style()),
-                            palette.accent,
-                            HorizontalAlignment::Left,
-                        );
+                        if let Some(source) = item.icon_source() {
+                            let icon_rect = Rect::new(
+                                icon_center.x - LARGE_ICON_SIZE / 2,
+                                ir.y + 2,
+                                LARGE_ICON_SIZE as u32,
+                                LARGE_ICON_SIZE as u32,
+                            );
+                            if let Err(error) = crate::widget::paint_icon(
+                                context,
+                                source.into(),
+                                icon_rect,
+                                palette.accent,
+                            ) {
+                                log::warn!(
+                                    "ribbon item ({},{},{}) icon failed: {error:?}",
+                                    self.current_tab_index,
+                                    gi,
+                                    ii
+                                );
+                            }
+                        } else {
+                            let icon_char = item.icon_text().chars().next().unwrap_or('?');
+                            context.draw_text(
+                                icon_center,
+                                &icon_char.to_string(),
+                                effective_font(self.style()),
+                                palette.accent,
+                                HorizontalAlignment::Left,
+                            );
+                        }
                         // Label below
                         let label_y = ir.y + LARGE_ICON_SIZE + 2;
                         context.draw_text(
@@ -918,19 +952,37 @@ impl RibbonBar {
                         );
                     } else {
                         // Small: icon and text side by side
-                        let icon_char = item.icon_text().chars().next().unwrap_or('?');
                         // The icon and the label share one line box centred in the item, so
                         // the two rule the same row. Halving `ir.height` put the glyph box's
                         // top edge on the item's middle line instead of centring the box.
                         let item_font = effective_font(self.style());
                         let item_line = context.text_line(*ir, item_font);
-                        context.draw_text(
-                            Point::new(ir.x + 2, item_line.y),
-                            &icon_char.to_string(),
-                            item_font,
-                            palette.accent,
-                            HorizontalAlignment::Left,
-                        );
+                        if let Some(source) = item.icon_source() {
+                            let side = item_line.height.clamp(1, SMALL_ICON_SIZE as u32);
+                            let icon_rect = Rect::new(ir.x + 2, item_line.y, side, side);
+                            if let Err(error) = crate::widget::paint_icon(
+                                context,
+                                source.into(),
+                                icon_rect,
+                                palette.accent,
+                            ) {
+                                log::warn!(
+                                    "ribbon item ({},{},{}) icon failed: {error:?}",
+                                    self.current_tab_index,
+                                    gi,
+                                    ii
+                                );
+                            }
+                        } else {
+                            let icon_char = item.icon_text().chars().next().unwrap_or('?');
+                            context.draw_text(
+                                Point::new(ir.x + 2, item_line.y),
+                                &icon_char.to_string(),
+                                item_font,
+                                palette.accent,
+                                HorizontalAlignment::Left,
+                            );
+                        }
                         context.draw_text(
                             Point::new(ir.x + SMALL_ICON_SIZE + 4, item_line.y),
                             item.text(),
@@ -1190,6 +1242,29 @@ impl Draw for RibbonBar {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ribbon_item_typed_icon_renders_and_legacy_text_replaces_it() {
+        static RING: crate::widget::IconData = crate::widget::IconData {
+            name: "ribbon-ring",
+            grid: 24,
+            paths: &["M2-2H22V-22H2Z M7-7V-17H17V-7Z"],
+        };
+
+        let mut ribbon = RibbonBar::new(Rect::new(0, 0, 480, 160));
+        let tab = ribbon.add_tab("Home");
+        let group = ribbon.add_group(tab, "Clipboard");
+        let item = ribbon.add_item(tab, group, "Paste");
+        let item_ref = ribbon.item_mut(tab, group, item).expect("added ribbon item");
+        item_ref.set_icon_source(Some(IconSource::static_geometry(&RING)));
+        assert_eq!(item_ref.icon_source(), Some(IconSource::static_geometry(&RING)));
+        item_ref.set_icon_text("📋");
+        assert_eq!(item_ref.icon_source(), None);
+        item_ref.set_icon_source(Some(IconSource::static_geometry(&RING)));
+
+        let svg = crate::widget::svg::render_to_svg(&mut ribbon);
+        assert!(svg.contains("fill-rule=\"nonzero\""));
+    }
 
     #[test]
     fn ribbon_item_state_accessors_handle_valid_and_oob_indices() {

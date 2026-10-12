@@ -640,13 +640,15 @@ mod tests {
     }
 
     #[test]
-    fn test_is_active_after_events() {
+    fn test_focus_events_report_a_live_ime_connection_only_when_available() {
         let bridge = LinuxImeBridge::new();
         assert!(!bridge.is_active());
         bridge.focus_in(1);
-        assert!(bridge.is_active());
+        assert_eq!(*lock(&bridge.focused_widget), Some(1));
+        assert_eq!(bridge.is_active(), bridge.is_ibus_available());
         bridge.focus_out(1);
         assert!(!bridge.is_active());
+        assert!(lock(&bridge.focused_widget).is_none());
     }
 
     #[test]

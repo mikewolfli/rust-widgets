@@ -15,7 +15,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::container_widgets::tabwidget::{TabPosition, TabShape};
 use crate::widget::metrics::role_font;
-use crate::widget::{BaseWidget, Draw, Image, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconItemError, IconSource, Image, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 const TAB_HEIGHT: i32 = 24;
@@ -35,6 +35,8 @@ const TAB_FONT_SIZE: f32 = 14.0;
 /// would sit against the border.
 const TAB_TEXT_INSET: u32 = 6;
 const TAB_TEXT_PADDING: u32 = TAB_TEXT_INSET * 2;
+const TAB_ICON_SIZE: u32 = 16;
+const TAB_ICON_GAP: u32 = 4;
 
 /// The advance the renderer will give a label before the first `draw` has measured it.
 ///
@@ -52,6 +54,7 @@ fn estimate_text_width(text: &str, font: &Font) -> u32 {
 pub struct TabBarTab {
     title: String,
     icon: Option<Image>,
+    icon_source: Option<IconSource>,
     tooltip: String,
     enabled: bool,
 }
@@ -59,7 +62,7 @@ pub struct TabBarTab {
 impl TabBarTab {
     /// Creates a new tab with the given title.
     pub fn new(title: String) -> Self {
-        Self { title, icon: None, tooltip: String::new(), enabled: true }
+        Self { title, icon: None, icon_source: None, tooltip: String::new(), enabled: true }
     }
 
     /// Returns the tab title.
@@ -80,6 +83,20 @@ impl TabBarTab {
     /// Sets the tab icon.
     pub fn set_icon(&mut self, icon: Option<Image>) {
         self.icon = icon;
+        self.icon_source = None;
+    }
+
+    /// Returns the typed icon source, if one is assigned.
+    pub fn icon_source(&self) -> Option<IconSource> {
+        self.icon_source
+    }
+
+    /// Replaces the typed icon source and clears the legacy image slot.
+    pub fn set_icon_source(&mut self, source: Option<IconSource>) {
+        self.icon_source = source;
+        if source.is_some() {
+            self.icon = None;
+        }
     }
 
     /// Returns the tab tooltip.
@@ -185,6 +202,21 @@ impl TabBar {
             self.current_index = Some(idx);
         }
         idx
+    }
+
+    /// Assigns a typed icon source to an existing tab.
+    pub fn set_tab_icon_source(
+        &mut self,
+        index: usize,
+        source: Option<IconSource>,
+    ) -> Result<(), IconItemError> {
+        let len = self.tabs.len();
+        let Some(tab) = self.tabs.get_mut(index) else {
+            return Err(IconItemError::IndexOutOfBounds { index, len });
+        };
+        tab.set_icon_source(source);
+        self.base.request_redraw();
+        Ok(())
     }
 
     /// Inserts a tab at the given index.
@@ -639,7 +671,9 @@ impl TabBar {
         let text = self.tabs[index].title.as_str();
         let measured = self.measured_title_widths.get(index).copied();
         let text_width = measured.unwrap_or_else(|| estimate_text_width(text, &self.label_font()));
-        let mut w = text_width + TAB_TEXT_PADDING; // horizontal padding
+        let icon_width =
+            if self.tabs[index].icon_source.is_some() { TAB_ICON_SIZE + TAB_ICON_GAP } else { 0 };
+        let mut w = text_width + TAB_TEXT_PADDING + icon_width;
         if self.closable {
             w += (CLOSE_SIZE + CLOSE_PADDING) as u32;
         }
@@ -790,12 +824,29 @@ impl TabBar {
         // half the difference between the tab and the line box. Passing the tab's midline
         // (which is what `tab_rect.height / 2` is) put the glyph box's *top* at the centre,
         // so a 14 px label in a 24 px tab spanned 12..26 and crossed the tab's bottom edge.
-        let text_x = tab_rect.x + TAB_TEXT_INSET as i32;
+        let has_icon_source = tab.icon_source.is_some();
+        let text_x = tab_rect.x
+            + TAB_TEXT_INSET as i32
+            + if has_icon_source { (TAB_ICON_SIZE + TAB_ICON_GAP) as i32 } else { 0 };
         // The **effective font** — the resolved theme/caller font — replacing the fixed Arial face,
         // so the tab title honours the theme body font and the user's text scale (D09-STYLE-01).
         let font = self.label_font();
         let title_height = context.measure_text("M", &font).height;
         let text_y = tab_rect.y + (tab_rect.height as i32 - title_height as i32) / 2;
+        if let Some(source) = tab.icon_source {
+            let side = tab_rect.height.clamp(1, TAB_ICON_SIZE);
+            let icon_rect = Rect::new(
+                tab_rect.x + TAB_TEXT_INSET as i32,
+                tab_rect.y + (tab_rect.height as i32 - side as i32) / 2,
+                side,
+                side,
+            );
+            if let Err(error) =
+                crate::widget::paint_icon(context, source.into(), icon_rect, text_color)
+            {
+                log::warn!("tab bar tab {index} icon failed: {error:?}");
+            }
+        }
         context.draw_text(
             Point::new(text_x, text_y),
             &tab.title,
@@ -1106,6 +1157,31 @@ mod tests {
         assert_eq!(tb.count(), 1);
         assert_eq!(tb.current_index(), Some(0));
         assert_eq!(tb.tab_text(0), Some("Tab 1"));
+    }
+
+    #[test]
+    fn tabbar_typed_icon_stays_attached_to_tab_through_reordering() {
+        static RING: crate::widget::IconData = crate::widget::IconData {
+            name: "tab-ring",
+            grid: 24,
+            paths: &["M2-2H22V-22H2Z M7-7V-17H17V-7Z"],
+        };
+
+        let mut tabs = TabBar::new(Rect::new(0, 0, 400, 32));
+        tabs.add_tab("Settings".into());
+        tabs.set_tab_icon_source(0, Some(IconSource::static_geometry(&RING)))
+            .expect("existing tab accepts typed source");
+        tabs.insert_tab(0, "Home".into());
+        assert_eq!(
+            tabs.set_tab_icon_source(2, None),
+            Err(IconItemError::IndexOutOfBounds { index: 2, len: 2 })
+        );
+        assert!(crate::widget::svg::render_to_svg(&mut tabs).contains("fill-rule=\"nonzero\""));
+        tabs.remove_tab(1);
+        assert_eq!(
+            tabs.set_tab_icon_source(1, None),
+            Err(IconItemError::IndexOutOfBounds { index: 1, len: 1 })
+        );
     }
 
     #[test]

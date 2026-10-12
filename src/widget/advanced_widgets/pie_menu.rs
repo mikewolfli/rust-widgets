@@ -19,7 +19,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconItemError, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// A single item in a `PieMenu`.
@@ -120,6 +120,7 @@ impl PieMenuItem {
 pub struct PieMenu {
     base: BaseWidget,
     items: Vec<PieMenuItem>,
+    item_icon_sources: Vec<Option<IconSource>>,
     radius: f32,
     inner_radius: f32,
     hovered_index: Option<usize>,
@@ -182,6 +183,7 @@ impl PieMenu {
         Self {
             base: BaseWidget::new(WidgetKind::PieMenu, geometry, "PieMenu"),
             items: Vec::new(),
+            item_icon_sources: Vec::new(),
             radius,
             inner_radius,
             hovered_index: None,
@@ -244,8 +246,24 @@ impl PieMenu {
         let mut item = PieMenuItem::new(text);
         item.set_icon_text(icon);
         self.items.push(item);
+        self.item_icon_sources.push(None);
         self.recalculate_angles();
         idx
+    }
+
+    /// Assigns a typed icon source to an existing item index.
+    pub fn set_item_icon_source(
+        &mut self,
+        index: usize,
+        source: Option<IconSource>,
+    ) -> Result<(), IconItemError> {
+        let len = self.items.len();
+        let Some(slot) = self.item_icon_sources.get_mut(index) else {
+            return Err(IconItemError::IndexOutOfBounds { index, len });
+        };
+        *slot = source;
+        self.base.request_redraw();
+        Ok(())
     }
 
     /// Inserts an item at `index`, or appends when `index` is past the end.
@@ -256,6 +274,7 @@ impl PieMenu {
     pub fn insert_item(&mut self, index: usize, text: impl Into<String>) {
         let idx = index.min(self.items.len());
         self.items.insert(idx, PieMenuItem::new(text));
+        self.item_icon_sources.insert(idx, None);
         self.recalculate_angles();
     }
 
@@ -267,6 +286,7 @@ impl PieMenu {
     pub fn remove_item(&mut self, index: usize) {
         if index < self.items.len() {
             self.items.remove(index);
+            self.item_icon_sources.remove(index);
             self.recalculate_angles();
         }
     }
@@ -277,6 +297,7 @@ impl PieMenu {
     /// item.
     pub fn clear(&mut self) {
         self.items.clear();
+        self.item_icon_sources.clear();
         self.hovered_index = None;
     }
 
@@ -949,9 +970,6 @@ impl Draw for PieMenu {
             let lx = cx + label_r * mid_angle.cos();
             let ly = cy + label_r * mid_angle.sin();
 
-            let label_text =
-                if item.icon_text().is_empty() { item.text() } else { item.icon_text() };
-
             // A highlighted label takes the contrast colour of the accent it sits on, so it is not
             // a fixed white that may vanish on a light accent.
             let text_color = if self.hovered_index == Some(i) {
@@ -959,13 +977,25 @@ impl Draw for PieMenu {
             } else {
                 self.text_color
             };
-            context.draw_text(
-                Point::from_f32(lx, ly),
-                label_text,
-                font,
-                text_color,
-                HorizontalAlignment::Left,
-            );
+            if let Some(source) = self.item_icon_sources.get(i).copied().flatten() {
+                let icon_rect =
+                    Rect::new((lx - 12.0).round() as i32, (ly - 12.0).round() as i32, 24, 24);
+                if let Err(error) =
+                    crate::widget::paint_icon(context, source.into(), icon_rect, text_color)
+                {
+                    log::warn!("pie menu item {i} icon failed: {error:?}");
+                }
+            } else {
+                let label_text =
+                    if item.icon_text().is_empty() { item.text() } else { item.icon_text() };
+                context.draw_text(
+                    Point::from_f32(lx, ly),
+                    label_text,
+                    font,
+                    text_color,
+                    HorizontalAlignment::Left,
+                );
+            }
         }
 
         // Draw a small center dot
@@ -1040,6 +1070,33 @@ mod tests {
         assert_eq!(items[1].text(), "Copy");
         assert_eq!(items[2].text(), "Paste");
         assert_eq!(items[2].icon_text(), "📋");
+    }
+
+    #[test]
+    fn pie_menu_typed_item_icon_tracks_collection_edits() {
+        static RING: crate::widget::IconData = crate::widget::IconData {
+            name: "pie-ring",
+            grid: 24,
+            paths: &["M2-2H22V-22H2Z M7-7V-17H17V-7Z"],
+        };
+
+        let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
+        menu.add_item("First");
+        menu.add_item("Second");
+        menu.set_item_icon_source(1, Some(IconSource::static_geometry(&RING)))
+            .expect("existing item accepts typed source");
+        menu.insert_item(0, "Inserted");
+        assert_eq!(
+            menu.set_item_icon_source(3, None),
+            Err(IconItemError::IndexOutOfBounds { index: 3, len: 3 })
+        );
+        assert!(render_to_svg(&mut menu).starts_with("<svg"));
+        menu.remove_item(0);
+        menu.clear();
+        assert_eq!(
+            menu.set_item_icon_source(0, None),
+            Err(IconItemError::IndexOutOfBounds { index: 0, len: 0 })
+        );
     }
 
     /// 3. Inserting items at specific index

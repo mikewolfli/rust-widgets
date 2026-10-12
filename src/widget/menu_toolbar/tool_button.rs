@@ -12,7 +12,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font, estimate_line_height, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::path::{Path, PathBuf};
 
@@ -83,6 +83,7 @@ pub struct ToolButton {
     base: BaseWidget,
     text: String,
     icon: Option<PathBuf>,
+    icon_source: Option<IconSource>,
     /// RGBA8 pixels for [`Self::icon`], decoded once per path.
     ///
     /// `None` is cached too, so an icon path that cannot be read is not re-read every frame. The
@@ -126,6 +127,7 @@ impl ToolButton {
             base: BaseWidget::new(WidgetKind::ToolButton, geometry, "ToolButton"),
             text,
             icon: None,
+            icon_source: None,
             #[cfg(all(feature = "image", not(alloc_frugal)))]
             icon_pixels: None,
             #[cfg(all(feature = "image", not(alloc_frugal)))]
@@ -149,7 +151,10 @@ impl ToolButton {
         &self.text
     }
 
-    /// Returns the icon's file path, or `None` when no icon has been set.
+    /// Returns the legacy icon file path, or `None` when no path is active.
+    ///
+    /// This returns `None` while a typed icon source is active; use
+    /// [`Self::icon_source`] to inspect that source.
     ///
     /// The path is returned as given; nothing verifies that the file exists or
     /// that it decodes as an image. The decode happens lazily on the first paint,
@@ -199,10 +204,11 @@ impl ToolButton {
     /// pay for the decode, and because a decode at set time would have to run inside the event
     /// handler that called it.
     pub fn set_icon(&mut self, icon: Option<PathBuf>) {
-        if self.icon == icon {
+        if self.icon == icon && self.icon_source.is_none() {
             return;
         }
         self.icon = icon;
+        self.icon_source = None;
         // Both halves of the cache drop together. Leaving the key would make the next paint believe
         // the pixels belonged to the new path -- a worse failure than having no cache at all.
         #[cfg(all(feature = "image", not(alloc_frugal)))]
@@ -211,6 +217,26 @@ impl ToolButton {
             self.icon_pixels_key = None;
         }
         self.base.request_redraw();
+    }
+
+    /// Sets a built-in or static-geometry icon, replacing any legacy file path.
+    pub fn set_icon_source(&mut self, source: Option<IconSource>) {
+        if self.icon_source == source && self.icon.is_none() {
+            return;
+        }
+        self.icon_source = source;
+        self.icon = None;
+        #[cfg(all(feature = "image", not(alloc_frugal)))]
+        {
+            self.icon_pixels = None;
+            self.icon_pixels_key = None;
+        }
+        self.base.request_redraw();
+    }
+
+    /// Returns the typed icon source, if one was most recently assigned.
+    pub fn icon_source(&self) -> Option<IconSource> {
+        self.icon_source
     }
 
     /// The RGBA8 pixels for the current icon path, shared process-wide.
@@ -283,7 +309,7 @@ impl ToolButton {
     /// "Icon-only with no icon" would be a blank rectangle, which is a state a user cannot act on.
     /// Falling back to the label is what `ToolButtonStyle`'s own doc promises.
     fn wants_icon(&self) -> bool {
-        if self.icon.is_none() {
+        if self.icon.is_none() && self.icon_source.is_none() {
             return false;
         }
         !matches!(self.button_style, ToolButtonStyle::TextOnly)
@@ -514,6 +540,15 @@ impl WidgetProperties for ToolButton {
         match name {
             "text" => Ok(CapabilityValue::String(self.text().to_string())),
             "checked" => Ok(CapabilityValue::Bool(self.is_checked())),
+            "icon_source" => match self.icon_source() {
+                None => Ok(CapabilityValue::Null),
+                Some(IconSource::Builtin(name)) => Ok(CapabilityValue::IconSpec(
+                    crate::widget::icon_source::IconSpec::Builtin(name),
+                )),
+                Some(IconSource::StaticGeometry(_)) => {
+                    Err(CapabilityAccessError::IconSourceNotPersistable)
+                }
+            },
             _ => base_property_get(self, name),
         }
     }
@@ -528,12 +563,25 @@ impl WidgetProperties for ToolButton {
                 self.set_checked(expect_bool(value)?);
                 Ok(())
             }
+            "icon_source" => {
+                match value {
+                    CapabilityValue::Null => self.set_icon_source(None),
+                    CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(
+                        name,
+                    )) => self.set_icon_source(Some(IconSource::Builtin(name))),
+                    CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Resource {
+                        ..
+                    }) => return Err(CapabilityAccessError::ResourceResolutionRequired),
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                }
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["text", "checked", BASE_PROPERTY_NAMES]
+        property_names_of!["text", "checked", "icon_source", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `tool_button` publishes.
@@ -683,10 +731,17 @@ impl Draw for ToolButton {
         // the same derivation `ToolButtonStyle` documents -- so the room the style reserves and the
         // pixels drawn cannot disagree. Pixels are painted only when the path actually decoded:
         // a missing file leaves the slot empty instead of shifting the label onto the icon.
+        if let (Some(source), Some(box_)) = (self.icon_source, self.icon_rect()) {
+            if let Err(error) = crate::widget::paint_icon(context, source.into(), box_, fg) {
+                log::warn!("tool button icon could not be painted: {error:?}");
+            }
+        }
         #[cfg(all(feature = "image", not(alloc_frugal)))]
-        if let (Some(pixels), Some(box_)) = (self.resolved_icon(), self.icon_rect()) {
-            if !pixels.is_empty() {
-                context.draw_image(box_.x, box_.y, box_.width, box_.height, &pixels);
+        if self.icon_source.is_none() {
+            if let (Some(pixels), Some(box_)) = (self.resolved_icon(), self.icon_rect()) {
+                if !pixels.is_empty() {
+                    context.draw_image(box_.x, box_.y, box_.width, box_.height, &pixels);
+                }
             }
         }
 
@@ -744,7 +799,8 @@ mod tests {
     use crate::render::svg::SvgPaintBackend;
     use crate::render::PaintBackend;
     use crate::render::RenderContext;
-    use crate::widget::{Draw, Widget, WidgetKind};
+    use crate::widget::capability::{CapabilityAccessError, CapabilityValue, WidgetProperties};
+    use crate::widget::{Draw, IconName, IconSource, Widget, WidgetKind};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -785,6 +841,45 @@ mod tests {
         assert_eq!(btn.icon(), Some(PathBuf::from("icons/open.png").as_path()));
         btn.set_icon(None);
         assert!(btn.icon().is_none());
+    }
+
+    #[test]
+    fn tool_button_typed_source_replaces_path_and_reserves_the_icon_slot() {
+        let mut button = ToolButton::new("Open", rect());
+        assert!(button.icon_rect().is_none());
+        let source = IconSource::builtin(IconName::Info);
+        button.set_icon_source(Some(source));
+        assert_eq!(button.icon_source(), Some(source));
+        assert!(button.icon().is_none(), "typed source is not exposed as a legacy path");
+        assert!(button.icon_rect().is_some());
+
+        button.set_icon(Some(PathBuf::from("icons/open.png")));
+        assert_eq!(button.icon_source(), None, "legacy setter replaces typed content");
+        assert!(button.icon_rect().is_some());
+        button.set_icon(None);
+        assert!(button.icon_rect().is_none());
+    }
+
+    #[test]
+    fn icon_source_property_round_trips_only_persistable_sources() {
+        let mut button = ToolButton::new("Open", rect());
+        let spec = crate::widget::icon_source::IconSpec::Builtin(IconName::Info);
+        button
+            .set("icon_source", CapabilityValue::IconSpec(spec.clone()))
+            .expect("a built-in descriptor is directly resolvable");
+        assert_eq!(button.get("icon_source"), Ok(CapabilityValue::IconSpec(spec)));
+        button.set("icon_source", CapabilityValue::Null).expect("null clears the source");
+        assert_eq!(button.get("icon_source"), Ok(CapabilityValue::Null));
+        assert_eq!(
+            button.set(
+                "icon_source",
+                CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Resource {
+                    id: "project/icons/open".into(),
+                    color_mode: crate::widget::icon_source::IconColorMode::Original,
+                }),
+            ),
+            Err(CapabilityAccessError::ResourceResolutionRequired)
+        );
     }
 
     // ── 4. Enabled/disabled state ──

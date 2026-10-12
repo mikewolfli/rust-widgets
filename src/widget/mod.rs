@@ -69,6 +69,8 @@ pub mod draw;
 /// called from the widget's own `impl Widget` block, wherever that block lives.
 #[macro_use]
 pub mod draw_bridge;
+/// Resolved icon content that can be assigned without a resource service.
+pub mod icon_source;
 pub mod kind;
 
 /// The pump between deriving an accessible meaning and posting it to the platform bridge.
@@ -349,12 +351,15 @@ pub use display_widgets::font_preview::FontPreview;
 #[cfg(widgets_unstripped)]
 #[cfg(widgets_unstripped)]
 pub use display_widgets::icon::{
-    draw_icon_at, draw_icon_centered, draw_icon_named, Icon, IconData, IconName,
+    draw_icon_at, draw_icon_centered, draw_icon_named, paint_icon, Icon, IconData, IconName,
+    IconPaintError, IconPaintOutcome, IconRef,
 };
 #[cfg(not(widgets_unstripped))]
 pub use display_widgets::icon::{
-    draw_icon_at, draw_icon_centered, draw_icon_named, IconData, IconName,
+    draw_icon_at, draw_icon_centered, draw_icon_named, paint_icon, IconData, IconName,
+    IconPaintError, IconPaintOutcome, IconRef,
 };
+pub use icon_source::{IconColorMode, IconItemError, IconSource, IconSpec};
 
 // Host-registered icons. Re-exported at `widget::` because that is where the icon surface lives,
 // and because reaching into `widget::icon_registry::register_icon` exposes a module the caller has

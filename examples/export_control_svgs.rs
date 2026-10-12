@@ -97,6 +97,9 @@ const MAX_SETTLE_TICKS: usize = 64;
 /// * `describe` — the `<!-- control: … -->` marker's state word, so a reader of one file can tell
 ///   which state it shows without comparing it against its siblings.
 const EXTRA_APPEARANCES: &[(&str, &str, &str)] = &[
+    // The default icon is a single-contour token. Keep a counter-bearing icon as a visual baseline
+    // so compound filling remains reviewable in both appearances.
+    ("icon", "_info", "info"),
     // BLUE23 §4.1: the tick is the only part of a group box a user toggles, and `create_group_box`
     // leaves `checkable` false — so without this the checked appearance is absent from the set.
     ("group_box", "_checked", "checked"),
@@ -157,6 +160,16 @@ fn apply_extra_state(
     widget: &mut dyn rust_widgets::widget::Widget,
 ) -> bool {
     match (control, suffix) {
+        ("icon", "_info") => {
+            use rust_widgets::widget::{Icon, IconName};
+            match rust_widgets::widget::capability::coercion::widget_as_mut::<Icon>(widget) {
+                Some(icon) => {
+                    icon.set_icon_enum(IconName::Info);
+                    true
+                }
+                None => false,
+            }
+        }
         ("group_box", "_checked") => {
             use rust_widgets::widget::container_widgets::groupbox::GroupBox;
             match rust_widgets::widget::capability::coercion::widget_as_mut::<GroupBox>(widget) {

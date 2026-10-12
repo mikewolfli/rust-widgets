@@ -105,6 +105,8 @@ pub struct SoftwareSurface {
     pub(crate) aa_samples_per_axis: u8,
     /// Active clip rectangle stack. An empty stack means no clipping.
     pub(crate) clip_stack: Vec<(i32, i32, u32, u32)>,
+    /// Scratch space reused by compound-path scan conversion.
+    pub(crate) nonzero_intersections: Vec<(f32, i32)>,
     /// The blend mode the next pixel write composites through.
     ///
     /// Set by [`SoftwareSurface::set_blend_mode`] (driven by
@@ -878,6 +880,18 @@ impl<'a> RenderContext<'a> {
             width,
         });
     }
+    /// Fills packed contours together using the non-zero winding rule.
+    ///
+    /// Unlike [`RenderContext::draw_path`], this treats the contours as one shape, preserving
+    /// counters (holes) in compound icon outlines.
+    pub fn fill_path_non_zero(
+        &mut self,
+        points: &[Point],
+        contours: &[(usize, usize)],
+        color: Color,
+    ) -> Result<(), crate::render::CompoundPathError> {
+        self.backend.fill_path_non_zero(points, contours, color, self.offset_x, self.offset_y)
+    }
     /// Draws `text` with its origin (baseline start, per `alignment`) at
     /// `origin`, using `font` and `color`.
     ///
@@ -1553,6 +1567,39 @@ mod tests {
         let rgba = backend2.frame_rgba();
         assert_eq!(rgba[0], 0); // R
         assert_eq!(rgba[2], 255); // B
+    }
+
+    #[test]
+    fn borrowed_non_zero_fill_applies_offset_and_preserves_holes() {
+        let points = [
+            Point::new(1, 1),
+            Point::new(11, 1),
+            Point::new(11, 11),
+            Point::new(1, 11),
+            Point::new(4, 4),
+            Point::new(4, 8),
+            Point::new(8, 8),
+            Point::new(8, 4),
+        ];
+        let contours = [(0, 4), (4, 8)];
+        let mut backend = SoftwarePaintBackend::new(Size::new(16, 16), 1.0);
+        backend.begin_frame(Color::TRANSPARENT);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            context.push_offset(2, 2);
+            context
+                .fill_path_non_zero(&points, &contours, Color::rgb(255, 0, 0))
+                .expect("valid borrowed contours should fill");
+        }
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        let pixel = |x: usize, y: usize| {
+            let index = (y * 16 + x) * 4;
+            &rgba[index..index + 4]
+        };
+        assert_eq!(pixel(3, 3), &[255, 0, 0, 255]);
+        assert_eq!(pixel(7, 7), &[0, 0, 0, 0]);
     }
 
     #[test]

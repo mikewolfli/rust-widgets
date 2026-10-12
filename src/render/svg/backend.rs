@@ -1187,6 +1187,28 @@ impl PaintBackend for SvgPaintBackend {
                     r##"<path d="{d}" fill="{fill}" stroke="{stroke}" stroke-width="{width}" />"##
                 ));
             }
+            RenderCommand::FillPathNonZero { path, color } => {
+                let mut d = String::new();
+                for &(start, end) in path.contours() {
+                    let Some(contour) = path.points().get(start..end) else {
+                        continue;
+                    };
+                    let Some(first) = contour.first() else {
+                        continue;
+                    };
+                    d.push_str(&format!("M {} {}", first.x, first.y));
+                    for point in &contour[1..] {
+                        d.push_str(&format!(" L {} {}", point.x, point.y));
+                    }
+                    d.push_str(" Z ");
+                }
+                if !d.is_empty() {
+                    self.push_element(format!(
+                        r##"<path d="{d}" fill="{}" fill-rule="nonzero" stroke="none" />"##,
+                        color_to_rgba(color)
+                    ));
+                }
+            }
             RenderCommand::BoxShadow { rect, color, offset_x, offset_y, blur_radius, spread } => {
                 // The geometry and the colour both mirror the software backend exactly, so the two
                 // backends draw one shadow: the rect is offset and spread by the same amounts, and
@@ -1920,6 +1942,7 @@ mod tests {
                 RenderCommand::DrawGradient { .. } => "DrawGradient",
                 RenderCommand::DrawArc { .. } => "DrawArc",
                 RenderCommand::DrawPath { .. } => "DrawPath",
+                RenderCommand::FillPathNonZero { .. } => "FillPathNonZero",
                 RenderCommand::BoxShadow { .. } => "BoxShadow",
                 RenderCommand::Blur { .. } => "Blur",
                 RenderCommand::ClipPath { .. } => "ClipPath",
@@ -2025,6 +2048,23 @@ mod tests {
                 filled: true,
                 width: 2,
             },
+            RenderCommand::FillPathNonZero {
+                path: crate::render::CompoundPath::new(
+                    vec![
+                        Point::new(10, 10),
+                        Point::new(90, 10),
+                        Point::new(90, 90),
+                        Point::new(10, 90),
+                        Point::new(30, 30),
+                        Point::new(30, 70),
+                        Point::new(70, 70),
+                        Point::new(70, 30),
+                    ],
+                    vec![(0, 4), (4, 8)],
+                )
+                .expect("fixture contours are valid"),
+                color: Color::BLUE,
+            },
             RenderCommand::BoxShadow {
                 rect,
                 color: Color::rgba(0, 0, 0, 128),
@@ -2073,6 +2113,17 @@ mod tests {
                 document.matches("</g>").count(),
                 "{name} left an unbalanced `<g>` group in the document"
             );
+            if name == "FillPathNonZero" {
+                assert!(
+                    document.contains("fill-rule=\"nonzero\""),
+                    "compound contours must preserve the non-zero fill rule:\n{document}"
+                );
+                assert_eq!(
+                    document.matches("<path").count(),
+                    1,
+                    "a compound path must be emitted as one SVG fill operation:\n{document}"
+                );
+            }
             if svg.elements.len() > before {
                 continue;
             }
@@ -2120,6 +2171,7 @@ mod tests {
             "DrawGradient",
             "DrawArc",
             "DrawPath",
+            "FillPathNonZero",
             "BoxShadow",
             "Blur",
             "ClipPath",

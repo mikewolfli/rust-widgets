@@ -814,6 +814,70 @@ fn emit_node(
         report.properties_emitted += 1;
     }
 
+    // Object-valued `icon_source` properties are emitted only when their declared schema says
+    // IconSpec. Built-ins are directly constructible; resource IDs require an apply context and
+    // must not be mistaken for filesystem paths by generated Rust.
+    for (name, value) in node.icon_spec_properties() {
+        let Some(schema) = declared_property_schema(factory, &node.widget, &name) else {
+            report.resolved_at_generation.push(format!(
+                "`{name}` on {} is not a property of the control, so its object value is not emitted",
+                node_label(path, &node.widget)
+            ));
+            continue;
+        };
+        if schema.value_kind != crate::widget::capability::PropertyValueKind::IconSpec {
+            report.unsupported.push(GenerationGap {
+                path: path.to_vec(),
+                widget: node.widget.clone(),
+                reason: format!(
+                    "`{name}` on {} is declared `{}`, not an icon descriptor",
+                    node_label(path, &node.widget),
+                    crate::widget::capability::value_kind_token(schema.value_kind)
+                ),
+            });
+            continue;
+        }
+        let Some(crate::widget::capability::CapabilityValue::IconSpec(
+            crate::widget::icon_source::IconSpec::Builtin(icon),
+        )) = crate::json::to_capability_value(&value, Some(schema.value_kind))
+        else {
+            report.unsupported.push(GenerationGap {
+                path: path.to_vec(),
+                widget: node.widget.clone(),
+                reason: format!(
+                    "`{name}` on {} is not emitted: resource icons need an explicit apply context, \
+                     and malformed icon descriptors are refused",
+                    node_label(path, &node.widget)
+                ),
+            });
+            continue;
+        };
+        if let Err(violation) = crate::widget::capability::validate_property_value(
+            &name,
+            &schema,
+            &crate::widget::capability::CapabilityValue::IconSpec(
+                crate::widget::icon_source::IconSpec::Builtin(icon),
+            ),
+        ) {
+            report.unsupported.push(GenerationGap {
+                path: path.to_vec(),
+                widget: node.widget.clone(),
+                reason: format!(
+                    "`{name}` on {} is not emitted: {violation}",
+                    node_label(path, &node.widget)
+                ),
+            });
+            continue;
+        }
+        line.push_str(&format!(
+            ".prop({}, CapabilityValue::IconSpec(rust_widgets::widget::icon_source::IconSpec::Builtin(\
+             rust_widgets::widget::IconName::from_name({}).expect(\"validated icon token\"))))",
+            quote(&name),
+            quote(icon.as_str())
+        ));
+        report.properties_emitted += 1;
+    }
+
     out.push_str(&line);
 
     // Children, then the wires. A wire references the node it leaves from and by name, so it is
@@ -2298,6 +2362,46 @@ mod tests {
             !other.source.contains(".prop(\"blobs\""),
             "an undeclared record list must not be emitted:\n{}",
             other.source
+        );
+    }
+
+    #[test]
+    fn builtin_icon_descriptors_are_emitted_but_resources_are_reported() {
+        let builtin = generate(&GenerationRequest {
+            json: String::from(
+                r#"{"window":{"id":"root","layout":{"type":"vbox","children":[{"button":{"id":"b","icon_source":{"kind":"builtin","name":"info"}}}]}}}"#,
+            ),
+            target: TargetProfile::Default,
+            width: 320,
+            height: 240,
+            function_name: String::from("build_builtin_icon"),
+        })
+        .expect("the built-in icon descriptor generates");
+        assert!(builtin.source.contains(".prop(\"icon_source\""));
+        assert!(builtin.source.contains("IconName::from_name(\"info\")"));
+        assert!(builtin.report.unsupported.is_empty(), "{:?}", builtin.report);
+
+        let resource = generate(&GenerationRequest {
+            json: String::from(
+                r#"{"window":{"id":"root","layout":{"type":"vbox","children":[{"button":{"id":"b","icon_source":{"kind":"resource","id":"project/icons/save","color_mode":"monochrome"}}}]}}}"#,
+            ),
+            target: TargetProfile::Default,
+            width: 320,
+            height: 240,
+            function_name: String::from("build_resource_icon"),
+        })
+        .expect("the document generates with an explicit resource-context gap");
+        assert!(
+            !resource.source.contains(".prop(\"icon_source\""),
+            "a resource must not be emitted without a resolver:\n{}",
+            resource.source
+        );
+        assert!(
+            resource.report.unsupported.iter().any(|gap| {
+                gap.reason.contains("resource icons need an explicit apply context")
+            }),
+            "the unsupported report must name the missing resolver: {:?}",
+            resource.report
         );
     }
 

@@ -93,6 +93,14 @@ impl ProjectNode {
             .collect()
     }
 
+    /// Object-valued properties that may declare a persisted icon source (BLUE27 U5).
+    ///
+    /// The generator still checks the target control's published kind before accepting these;
+    /// object shape alone never turns arbitrary JSON into an icon descriptor.
+    pub fn icon_spec_properties(&self) -> Vec<(String, Value)> {
+        self.properties.iter().filter(|(_, value)| value.is_object()).cloned().collect()
+    }
+
     /// A text or title argument, if the document declares one.    ///
     /// Both spellings because the document uses `title` for windows and `text` for label-like
     /// controls, and a stripped-target constructor takes whichever its control publishes first.

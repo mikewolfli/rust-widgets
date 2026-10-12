@@ -6,6 +6,65 @@ use crate::compat::{String, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::style::Gradient;
 
+/// A packed set of closed contours used by a non-zero winding fill.
+///
+/// Contour ranges are half-open indexes into `points`. The constructor checks
+/// every range so render backends can consume the shape without revalidating it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompoundPath {
+    points: Vec<Point>,
+    contours: Vec<(usize, usize)>,
+}
+
+/// Why a compound path could not be constructed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompoundPathError {
+    /// No contours were supplied.
+    NoContours,
+    /// A contour is empty, too short to enclose an area, overlaps its predecessor, or is out of
+    /// range. The contained value is its zero-based index.
+    InvalidContour(usize),
+}
+
+impl CompoundPath {
+    /// Creates a compound path after validating its packed contour ranges.
+    pub fn new(
+        points: Vec<Point>,
+        contours: Vec<(usize, usize)>,
+    ) -> Result<Self, CompoundPathError> {
+        Self::validate_ranges(points.len(), &contours)?;
+        Ok(Self { points, contours })
+    }
+
+    /// Checks contour ranges without taking ownership of the geometry.
+    pub(crate) fn validate_ranges(
+        points_len: usize,
+        contours: &[(usize, usize)],
+    ) -> Result<(), CompoundPathError> {
+        if contours.is_empty() {
+            return Err(CompoundPathError::NoContours);
+        }
+        let mut previous_end = 0;
+        for (index, &(start, end)) in contours.iter().enumerate() {
+            if start < previous_end || start >= end || end > points_len || end - start < 3 {
+                return Err(CompoundPathError::InvalidContour(index));
+            }
+            previous_end = end;
+        }
+        Ok(())
+    }
+
+    /// Returns the packed device-space vertices.
+    pub fn points(&self) -> &[Point] {
+        &self.points
+    }
+
+    /// Returns the half-open vertex range of each contour.
+    pub fn contours(&self) -> &[(usize, usize)] {
+        &self.contours
+    }
+}
+
 /// Compositing blend mode for rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlendMode {
@@ -304,6 +363,16 @@ pub enum RenderCommand {
         filled: bool,
         /// Stroke width in pixels; ignored when `filled` is true.
         width: u32,
+    },
+    /// Fill multiple closed contours together using the non-zero winding rule.
+    ///
+    /// Unlike [`RenderCommand::DrawPath`], all contours participate in one fill, so
+    /// oppositely-wound contours form holes instead of being painted over by later commands.
+    FillPathNonZero {
+        /// Validated packed contours in logical pixels.
+        path: CompoundPath,
+        /// Fill colour.
+        color: Color,
     },
     /// Draw a drop shadow behind a rectangle (BLUE11 R5.3).
     BoxShadow {

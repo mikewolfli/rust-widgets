@@ -280,11 +280,41 @@ pub fn rasterize_draw_commands_rgba8(
                 draw_path_cpu_rgba8(
                     &mut pixels,
                     width,
+                    CpuPathDraw {
+                        points,
+                        closed: *closed,
+                        color: *color,
+                        filled: *filled,
+                        path_width: *path_width,
+                        clip_rect,
+                        blend,
+                    },
+                );
+            }
+            WgpuDrawCommand::FillPathNonZero { points, contours, color, clip } => {
+                if contours.is_empty() {
+                    return Err("FillPathNonZero requires at least one contour".to_string());
+                }
+                let mut previous_end = 0;
+                for (index, &(start, end)) in contours.iter().enumerate() {
+                    if start < previous_end || start >= end || end > points.len() || end - start < 3
+                    {
+                        return Err(format!(
+                            "FillPathNonZero contour {index} has invalid range {start}..{end} for {} points",
+                            points.len()
+                        ));
+                    }
+                    previous_end = end;
+                }
+                let path_bounds = bbox_for_path(points, 0);
+                let clip_rect =
+                    effective_clip(framebuffer, path_bounds, combine(clip, current_clip));
+                draw_path_non_zero_cpu_rgba8(
+                    &mut pixels,
+                    width,
                     points,
-                    *closed,
+                    contours,
                     *color,
-                    *filled,
-                    *path_width,
                     clip_rect,
                     blend,
                 );
@@ -427,11 +457,8 @@ fn combine(own: &Option<PixelRect>, enclosing: Option<PixelRect>) -> Option<Pixe
     }
 }
 fn clear_cpu_rgba8(pixels: &mut [u8], color: Rgba8) {
-    for chunk in pixels.chunks_exact_mut(4) {
-        chunk[0] = color.r;
-        chunk[1] = color.g;
-        chunk[2] = color.b;
-        chunk[3] = color.a;
+    for pixel in pixels.as_chunks_mut::<4>().0 {
+        *pixel = [color.r, color.g, color.b, color.a];
     }
 }
 fn fill_rect_cpu_rgba8(pixels: &mut [u8], width: u32, rect: PixelRect, color: Rgba8) {
@@ -946,17 +973,18 @@ fn draw_arc_cpu_rgba8(
         }
     }
 }
-fn draw_path_cpu_rgba8(
-    pixels: &mut [u8],
-    fb_width: u32,
-    points: &[(i32, i32)],
+struct CpuPathDraw<'a> {
+    points: &'a [(i32, i32)],
     closed: bool,
     color: Rgba8,
     filled: bool,
     path_width: u32,
     clip_rect: Option<PixelRect>,
     blend: BlendMode,
-) {
+}
+
+fn draw_path_cpu_rgba8(pixels: &mut [u8], fb_width: u32, path: CpuPathDraw<'_>) {
+    let CpuPathDraw { points, closed, color, filled, path_width, clip_rect, blend } = path;
     let clip_rect = match clip_rect {
         Some(value) => value,
         None => return,
@@ -1006,6 +1034,86 @@ fn draw_path_cpu_rgba8(
         }
     }
 }
+
+fn draw_path_non_zero_cpu_rgba8(
+    pixels: &mut [u8],
+    fb_width: u32,
+    points: &[(i32, i32)],
+    contours: &[(usize, usize)],
+    color: Rgba8,
+    clip_rect: Option<PixelRect>,
+    blend: BlendMode,
+) {
+    let Some(clip_rect) = clip_rect else {
+        return;
+    };
+    let min_y = clip_rect.y.max(
+        contours
+            .iter()
+            .flat_map(|&(start, end)| &points[start..end])
+            .map(|&(_, y)| y)
+            .min()
+            .unwrap_or(0),
+    );
+    let max_y = clip_rect.bottom().min(
+        contours
+            .iter()
+            .flat_map(|&(start, end)| &points[start..end])
+            .map(|&(_, y)| y)
+            .max()
+            .unwrap_or(-1)
+            .saturating_add(1),
+    );
+    let mut intersections: Vec<(f64, i32)> =
+        Vec::with_capacity(contours.iter().map(|&(start, end)| end - start).sum());
+    let mut sink = PixelSink { pixels, width: fb_width, mode: blend };
+
+    for y in min_y..max_y {
+        intersections.clear();
+        for &(start, end) in contours {
+            for index in start..end {
+                let (x1, y1) = points[index];
+                let (x2, y2) = points[if index + 1 == end { start } else { index + 1 }];
+                let winding = if y1 <= y && y2 > y {
+                    1
+                } else if y2 <= y && y1 > y {
+                    -1
+                } else {
+                    continue;
+                };
+                let t = (y - y1) as f64 / (y2 - y1) as f64;
+                intersections.push((x1 as f64 + t * (x2 - x1) as f64, winding));
+            }
+        }
+        intersections.sort_by(|left, right| {
+            left.0.partial_cmp(&right.0).unwrap_or(core::cmp::Ordering::Equal)
+        });
+
+        let mut winding = 0;
+        let mut previous_x: Option<f64> = None;
+        let mut index = 0;
+        while index < intersections.len() {
+            let x = intersections[index].0;
+            if winding != 0 {
+                if let Some(previous) = previous_x {
+                    let x_start = (previous.ceil() as i32).max(clip_rect.x);
+                    let x_end = (x.floor() as i32).min(clip_rect.right().saturating_sub(1));
+                    for pixel_x in x_start..=x_end {
+                        sink.set(pixel_x as u32, y as u32, color);
+                    }
+                }
+            }
+            let mut delta = 0;
+            while index < intersections.len() && intersections[index].0 == x {
+                delta += intersections[index].1;
+                index += 1;
+            }
+            winding += delta;
+            previous_x = Some(x);
+        }
+    }
+}
+
 fn draw_gradient_cpu_rgba8(
     pixels: &mut [u8],
     fb_width: u32,
@@ -1665,6 +1773,42 @@ mod tests {
         PixelRect { x, y, width, height }
     }
 
+    #[test]
+    fn non_zero_path_fill_preserves_oppositely_wound_holes() {
+        let points = vec![(1, 1), (15, 1), (15, 15), (1, 15), (5, 5), (5, 11), (11, 11), (11, 5)];
+        let pixels = rasterize_draw_commands_rgba8(
+            16,
+            16,
+            &[WgpuDrawCommand::FillPathNonZero {
+                points,
+                contours: vec![(0, 4), (4, 8)],
+                color: RED,
+                clip: None,
+            }],
+        )
+        .expect("valid compound path rasterizes");
+
+        assert_eq!(pixel(&pixels, 16, 3, 3), [255, 0, 0, 255]);
+        assert_eq!(pixel(&pixels, 16, 8, 8), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn non_zero_path_fill_rejects_invalid_contours() {
+        let error = rasterize_draw_commands_rgba8(
+            16,
+            16,
+            &[WgpuDrawCommand::FillPathNonZero {
+                points: vec![(1, 1), (15, 1), (15, 15)],
+                contours: vec![(0, 4)],
+                color: RED,
+                clip: None,
+            }],
+        )
+        .expect_err("out-of-bounds contour must not be silently accepted");
+
+        assert!(error.contains("invalid range"));
+    }
+
     /// A `PushClip` must actually restrict the commands that follow it.
     ///
     /// This is the regression guard for the capability being advertised as a no-op:
@@ -2136,6 +2280,15 @@ mod tests {
                     color: grey,
                     filled: true,
                     width: 0,
+                    clip: None,
+                },
+            ),
+            (
+                "FillPathNonZero",
+                WgpuDrawCommand::FillPathNonZero {
+                    points: vec![(0, 0), (15, 0), (0, 15)],
+                    contours: vec![(0, 3)],
+                    color: grey,
                     clip: None,
                 },
             ),

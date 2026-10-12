@@ -744,6 +744,78 @@ mod tests {
         );
     }
 
+    #[test]
+    fn node_diff_applies_icon_specs_and_reports_unresolved_resources() {
+        let (mut layout, root) = fixture_root();
+        let create = real_creator();
+        let inserted = apply(
+            &mut layout,
+            &[Patch::Insert {
+                parent: root,
+                index: 0,
+                node: Node::new("button").key("icon-button"),
+            }],
+            &create,
+        );
+        assert!(inserted.is_clean(), "button mount failed: {:?}", inserted.errors);
+        let id = layout.child_by_key(Some(root), "icon-button").expect("button is indexed");
+
+        let old = Node::new("button").key("icon-button");
+        let builtin = Node::new("button").key("icon-button").prop(
+            "icon_source",
+            CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(
+                crate::widget::IconName::Info,
+            )),
+        );
+        let patches = super::super::diff::diff(&old, &builtin, &|_, _| Some(id));
+        assert_eq!(patches.patches.len(), 1, "the IconSpec change must produce one property patch");
+        let applied = apply(&mut layout, &patches.patches, &create);
+        assert!(applied.is_clean(), "built-in IconSpec apply failed: {:?}", applied.errors);
+        assert_eq!(
+            read(id, "icon_source"),
+            Some(CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(
+                crate::widget::IconName::Info
+            )))
+        );
+
+        let resource = Node::new("button").key("icon-button").prop(
+            "icon_source",
+            CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Resource {
+                id: String::from("project/icons/missing"),
+                color_mode: crate::widget::icon_source::IconColorMode::Monochrome,
+            }),
+        );
+        let resource_patches = super::super::diff::diff(&builtin, &resource, &|_, _| Some(id));
+        let refused = apply(&mut layout, &resource_patches.patches, &create);
+        assert!(
+            refused.errors.iter().any(|error| matches!(
+                error,
+                super::ViewError::PropertyRefused { name, reason, .. }
+                    if name == "icon_source" && reason.contains("ResourceResolutionRequired")
+            )),
+            "the view report must preserve the resolver error: {:?}",
+            refused.errors
+        );
+        assert_eq!(
+            read(id, "icon_source"),
+            Some(CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(
+                crate::widget::IconName::Info
+            ))),
+            "refused resource writes must leave the last valid source intact"
+        );
+
+        let cleared = Node::new("button").key("icon-button");
+        let clear_patches = super::super::diff::diff(&builtin, &cleared, &|_, _| Some(id));
+        assert_eq!(
+            clear_patches.patches.len(),
+            1,
+            "removing the declaration must generate a reset patch"
+        );
+        let reset = apply(&mut layout, &clear_patches.patches, &create);
+        assert!(reset.is_clean(), "IconSpec reset failed: {:?}", reset.errors);
+        assert_eq!(read(id, "icon_source"), Some(CapabilityValue::Null));
+    }
+
     /// A dropped property must reach the value the schema declares, not be refused.
     ///
     /// # Why this test exists

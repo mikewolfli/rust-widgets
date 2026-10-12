@@ -63,6 +63,8 @@ pub enum CapabilityValue {
     /// genuinely rectangles of their own — a plot area, a clipping region, a source
     /// image crop.
     Rect(crate::core::Rect),
+    /// A structured icon descriptor suitable for persistence and declarative views.
+    IconSpec(crate::widget::icon_source::IconSpec),
     /// An ordered group of values — the payload of an event whose shape the schema declares as a
     /// tuple (`(T, T)`, `(T, T, T)`, `(T, T, T, T)`), list (`Vec<T>`), or a mixed record.
     ///
@@ -194,7 +196,7 @@ impl CapabilityValue {
             // named by their label. Rendering them as empty is deliberate, and it is spelled out
             // per variant rather than hidden behind a wildcard so a variant added later has to make
             // the same decision consciously.
-            Self::Color(_) | Self::Rect(_) => alloc::string::String::new(),
+            Self::Color(_) | Self::Rect(_) | Self::IconSpec(_) => alloc::string::String::new(),
             // A tuple is not a single announcement either. Announcing it would require joining the
             // parts and inventing a separator and a reading order, which is a presentation choice the
             // control that owns the value should make (see `RangeSlider::accessible_value`).
@@ -260,6 +262,11 @@ pub enum CapabilityAccessError {
     /// The widget exists but does not publish a property by that name. This is
     /// the honest "no" for an unsupported property — never a silent success.
     UnknownProperty,
+    /// The property carries a persisted resource descriptor, but this write path has no resource
+    /// resolver. Resolve it through an explicit project apply context before presenting it.
+    ResourceResolutionRequired,
+    /// The current icon is runtime-only geometry and cannot be represented by a persisted descriptor.
+    IconSourceNotPersistable,
     /// The property was found but is not writable. A read of the same name
     /// still succeeds.
     ReadOnlyProperty,
@@ -604,6 +611,8 @@ pub enum PropertyValueKind {
     Color,
     /// A rectangle in logical pixels, carried as [`CapabilityValue::Rect`].
     Rect,
+    /// A structured icon source, carried as [`CapabilityValue::IconSpec`].
+    IconSpec,
     /// An ordered, id-keyed list of records, carried as [`CapabilityValue::Records`] (BLUE26 B26.09).
     ///
     /// # Why the field list lives on the schema rather than in this variant

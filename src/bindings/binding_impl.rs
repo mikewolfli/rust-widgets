@@ -1466,6 +1466,13 @@ fn encode_capability_value(
             let c_text = CString::new(text).unwrap_or_default();
             (RW_VALUE_RECT, 0, Some(c_text.into_raw()))
         }
+        CapabilityValue::IconSpec(spec) => {
+            if !want_text {
+                return (RW_VALUE_ICON_SPEC, 0, None);
+            }
+            let c_text = CString::new(encode_icon_spec(&spec)).unwrap_or_default();
+            (RW_VALUE_ICON_SPEC, 0, Some(c_text.into_raw()))
+        }
         // A tuple travels as a compact `kind:value;kind:value` string with its own kind, so a C
         // caller can tell a tuple from free text and can recover each component with its type.
         // The components keep their own kinds because the whole point of the variant is that a
@@ -1569,10 +1576,81 @@ fn encode_tuple_component(value: &crate::widget::capability::CapabilityValue, ou
         // emitted.
         CapabilityValue::Color(_)
         | CapabilityValue::Rect(_)
+        | CapabilityValue::IconSpec(_)
         | CapabilityValue::Tuple(_)
         | CapabilityValue::Records(_) => {
             let _ = write!(out, "9:");
         }
+    }
+}
+
+#[cfg(not(stripped_widgets))]
+fn encode_icon_spec(spec: &crate::widget::icon_source::IconSpec) -> String {
+    use crate::widget::icon_source::{IconColorMode, IconSpec};
+    match spec {
+        IconSpec::Builtin(name) => alloc::format!("builtin|{}", name.as_str()),
+        IconSpec::Resource { id, color_mode } => {
+            let mode = match color_mode {
+                IconColorMode::Monochrome => "monochrome",
+                IconColorMode::Original => "original",
+            };
+            alloc::format!("resource|{mode}|{}", escape_icon_resource_id(id))
+        }
+    }
+}
+
+#[cfg(not(stripped_widgets))]
+fn escape_icon_resource_id(id: &str) -> String {
+    let mut out = String::new();
+    for ch in id.chars() {
+        match ch {
+            '%' => out.push_str("%25"),
+            '|' => out.push_str("%7C"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+#[cfg(not(stripped_widgets))]
+fn decode_icon_spec(text: &str) -> Option<crate::widget::icon_source::IconSpec> {
+    use crate::widget::icon_source::{IconColorMode, IconSpec};
+    let (kind, rest) = text.split_once('|')?;
+    match kind {
+        "builtin" => {
+            crate::widget::display_widgets::icon::IconName::from_name(rest).map(IconSpec::Builtin)
+        }
+        "resource" => {
+            let (mode, encoded_id) = rest.split_once('|')?;
+            if encoded_id.is_empty() {
+                return None;
+            }
+            let color_mode = match mode {
+                "monochrome" => IconColorMode::Monochrome,
+                "original" => IconColorMode::Original,
+                _ => return None,
+            };
+            let mut id = String::new();
+            let mut chars = encoded_id.chars();
+            while let Some(ch) = chars.next() {
+                if ch != '%' {
+                    id.push(ch);
+                    continue;
+                }
+                let high = chars.next()?;
+                let low = chars.next()?;
+                match (high, low) {
+                    ('2', '5') => id.push('%'),
+                    ('7', 'C') => id.push('|'),
+                    _ => return None,
+                }
+            }
+            if id.trim().is_empty() {
+                return None;
+            }
+            Some(IconSpec::Resource { id, color_mode })
+        }
+        _ => None,
     }
 }
 
@@ -1609,6 +1687,9 @@ fn decode_capability_value(
         )),
         RW_VALUE_RECT => {
             Some(CapabilityValue::Rect(parse_rect_string(&unsafe { read_c_string(str_value) })?))
+        }
+        RW_VALUE_ICON_SPEC => {
+            Some(CapabilityValue::IconSpec(decode_icon_spec(&unsafe { read_c_string(str_value) })?))
         }
         RW_VALUE_TUPLE => {
             let text = unsafe { read_c_string(str_value) };
@@ -1826,6 +1907,9 @@ const RW_VALUE_TUPLE: c_int = 8;
 /// property the value is written to is what supplies identity and uniqueness policy, and the record
 /// shape is checked against it there.
 const RW_VALUE_RECORDS: c_int = 9;
+/// A persistable icon descriptor. `str` carries the canonical `builtin|name` or
+/// `resource|color-mode|escaped-id` spelling.
+const RW_VALUE_ICON_SPEC: c_int = 10;
 #[no_mangle]
 /// Appends `text` (null gives an empty string) as a new last item.
 ///
@@ -3504,6 +3588,10 @@ mod tests {
             CapabilityValue::String("hello".to_string()),
             CapabilityValue::Color(crate::core::Color::rgba(0x0A, 0x1B, 0x2C, 0x7D)),
             CapabilityValue::Rect(crate::core::Rect::new(1, 2, 300, 400)),
+            CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Resource {
+                id: "project/icons/百分|25%".to_string(),
+                color_mode: crate::widget::icon_source::IconColorMode::Original,
+            }),
             // A tuple's components keep their own kinds and a string component escapes the
             // `;`/`:` separators, so both must survive the encode/decode round-trip.
             CapabilityValue::Tuple(vec![

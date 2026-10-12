@@ -153,6 +153,9 @@ pub(crate) fn to_capability_value(
         // **structurally**, not as a stringified blob: a typo in a field name then stays visible to
         // the property's own schema check instead of becoming a value the setter accepts.
         Some(PropertyValueKind::Records) => records_from_json(value).map(CapabilityValue::Records),
+        Some(PropertyValueKind::IconSpec) => icon_spec_from_json(value)
+            .map(CapabilityValue::IconSpec)
+            .or_else(|| value.is_null().then_some(CapabilityValue::Null)),
         None => match value {
             Value::Null => Some(CapabilityValue::Null),
             Value::Bool(b) => Some(CapabilityValue::Bool(*b)),
@@ -171,6 +174,32 @@ pub(crate) fn to_capability_value(
             Value::String(s) => Some(CapabilityValue::String(s.clone())),
             Value::Array(_) | Value::Object(_) => None,
         },
+    }
+}
+
+fn icon_spec_from_json(value: &Value) -> Option<crate::widget::icon_source::IconSpec> {
+    use crate::widget::icon_source::{IconColorMode, IconSpec};
+
+    let object = value.as_object()?;
+    let kind = object.get("kind")?.as_str()?;
+    match kind {
+        "builtin" if object.len() == 2 => {
+            let name = object.get("name")?.as_str()?;
+            crate::widget::display_widgets::icon::IconName::from_name(name).map(IconSpec::Builtin)
+        }
+        "resource" if object.len() == 3 => {
+            let id = object.get("id")?.as_str()?;
+            if id.trim().is_empty() {
+                return None;
+            }
+            let color_mode = match object.get("color_mode")?.as_str()? {
+                "monochrome" => IconColorMode::Monochrome,
+                "original" => IconColorMode::Original,
+                _ => return None,
+            };
+            Some(IconSpec::Resource { id: id.to_string(), color_mode })
+        }
+        _ => None,
     }
 }
 
@@ -341,6 +370,10 @@ pub(crate) fn apply_widget_property(
     let Some(capability_value) =
         to_capability_value(value, declared.as_ref().map(|schema| schema.value_kind))
     else {
+        log::warn!(
+            "JSON layout: property {published:?} rejected value {value}: it could not be \
+             converted to the declared capability value kind"
+        );
         return ApplyOutcome::Rejected;
     };
 
@@ -364,7 +397,10 @@ pub(crate) fn apply_widget_property(
         // A control that publishes the name but refuses this particular value is
         // a real rejection, not "not a property": reporting `NotAProperty` here
         // would make the loader fall through and silently ignore the value.
-        Err(_) => ApplyOutcome::Rejected,
+        Err(error) => {
+            log::warn!("JSON layout: property {published:?} rejected the value {value}: {error:?}");
+            ApplyOutcome::Rejected
+        }
     }
 }
 
@@ -433,6 +469,84 @@ mod tests {
         assert!(empty.is_empty());
         // And with no declared kind, a list stays refused: without a schema nothing can judge it.
         assert_eq!(to_capability_value(&serde_json::json!([{"id": "a"}]), None), None);
+    }
+
+    #[test]
+    fn icon_spec_json_is_structured_and_strict() {
+        let kind = Some(PropertyValueKind::IconSpec);
+        let built_in = serde_json::json!({"kind": "builtin", "name": "info"});
+        assert_eq!(
+            to_capability_value(&built_in, kind),
+            Some(CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(
+                crate::widget::display_widgets::icon::IconName::Info
+            )))
+        );
+        let resource = serde_json::json!({
+            "kind": "resource",
+            "id": "project/icons/open",
+            "color_mode": "monochrome"
+        });
+        assert_eq!(
+            to_capability_value(&resource, kind),
+            Some(CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Resource {
+                id: "project/icons/open".into(),
+                color_mode: crate::widget::icon_source::IconColorMode::Monochrome,
+            }))
+        );
+
+        for invalid in [
+            serde_json::json!({"kind": "builtin", "name": "not-a-built-in"}),
+            serde_json::json!({"kind": "builtin", "name": "info", "id": "conflict"}),
+            serde_json::json!({"kind": "resource", "id": " ", "color_mode": "original"}),
+            serde_json::json!({"kind": "resource", "id": "icons/open", "color_mode": "tint"}),
+            serde_json::json!({"kind": "resource", "id": "icons/open", "color_mode": "original", "name": "conflict"}),
+        ] {
+            assert_eq!(to_capability_value(&invalid, kind), None, "accepted {invalid}");
+        }
+        assert_eq!(to_capability_value(&Value::Null, kind), Some(CapabilityValue::Null));
+    }
+
+    #[test]
+    fn icon_spec_property_apply_preserves_builtin_and_rejects_unresolved_resources() {
+        let mut button = Button::new("Save".into(), Rect::new(0, 0, 100, 30));
+        assert_eq!(
+            apply_widget_property(
+                &mut button,
+                "icon_source",
+                &serde_json::json!({"kind": "builtin", "name": "save"})
+            ),
+            ApplyOutcome::Applied
+        );
+        assert_eq!(
+            button.icon_source(),
+            Some(crate::widget::IconSource::Builtin(
+                crate::widget::display_widgets::icon::IconName::Save
+            ))
+        );
+        assert_eq!(
+            apply_widget_property(
+                &mut button,
+                "icon_source",
+                &serde_json::json!({
+                    "kind": "resource",
+                    "id": "project/icons/save",
+                    "color_mode": "monochrome"
+                })
+            ),
+            ApplyOutcome::Rejected
+        );
+        assert_eq!(
+            button.icon_source(),
+            Some(crate::widget::IconSource::Builtin(
+                crate::widget::display_widgets::icon::IconName::Save
+            )),
+            "a rejected resource must not replace the last valid source"
+        );
+        assert_eq!(
+            apply_widget_property(&mut button, "icon_source", &Value::Null),
+            ApplyOutcome::Applied
+        );
+        assert_eq!(button.icon_source(), None);
     }
 
     /// The loader refuses a record list the control's own schema rejects, and leaves the control alone.

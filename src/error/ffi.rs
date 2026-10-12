@@ -109,6 +109,14 @@ pub fn record_capability_error(error: crate::widget::capability::types::Capabili
             super::ErrorId::INVALID_ARGUMENT,
             "the widget does not publish a property by that name",
         ),
+        CapabilityAccessError::ResourceResolutionRequired => (
+            super::ErrorId::WIDGET_INVALID_STATE,
+            "the icon resource requires an explicit resource resolver",
+        ),
+        CapabilityAccessError::IconSourceNotPersistable => (
+            super::ErrorId::WIDGET_INVALID_STATE,
+            "the runtime icon source cannot be represented by a persisted icon descriptor",
+        ),
         CapabilityAccessError::ReadOnlyProperty => {
             (super::ErrorId::WIDGET_INVALID_STATE, "the property is read-only")
         }
