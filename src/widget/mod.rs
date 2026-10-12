@@ -348,16 +348,18 @@ pub use display_widgets::empty_state::EmptyState;
 pub use display_widgets::floating_label::FloatingLabel;
 #[cfg(widgets_unstripped)]
 pub use display_widgets::font_preview::FontPreview;
+#[cfg(feature = "image")]
+pub use display_widgets::icon::draw_icon_image;
 #[cfg(widgets_unstripped)]
 #[cfg(widgets_unstripped)]
 pub use display_widgets::icon::{
-    draw_icon_at, draw_icon_centered, draw_icon_named, paint_icon, Icon, IconData, IconName,
-    IconPaintError, IconPaintOutcome, IconRef,
+    draw_icon_at, draw_icon_centered, draw_icon_named, icon_token_is_drawable, paint_icon, Icon,
+    IconData, IconName, IconPaintError, IconPaintOutcome, IconRef,
 };
 #[cfg(not(widgets_unstripped))]
 pub use display_widgets::icon::{
-    draw_icon_at, draw_icon_centered, draw_icon_named, paint_icon, IconData, IconName,
-    IconPaintError, IconPaintOutcome, IconRef,
+    draw_icon_at, draw_icon_centered, draw_icon_named, icon_token_is_drawable, paint_icon,
+    IconData, IconName, IconPaintError, IconPaintOutcome, IconRef,
 };
 #[cfg(all(feature = "image", not(alloc_frugal)))]
 pub use icon_source::SharedIconPixels;
@@ -376,7 +378,8 @@ pub use display_widgets::switch::Switch;
 #[cfg(widgets_unstripped)]
 pub use icon_registry::{
     clear_registered_icons, is_registered_icon, register_icon, register_icon_on_grid,
-    registered_icon, registered_icon_count, RegisteredIcon, MAX_REGISTERED_ICONS,
+    registered_icon, registered_icon_count, try_register_icon, try_register_icon_on_grid,
+    IconRegistrationError, RegisteredIcon, MAX_REGISTERED_ICONS,
 };
 // Re-export nav widgets
 #[cfg(full_widgets)]

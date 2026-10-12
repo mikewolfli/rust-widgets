@@ -250,8 +250,14 @@ impl TabView {
                 // form was a second copy of the advance arithmetic and one that counts *clusters*
                 // at a fixed 8 px: a CJK caption measured half its drawn width, so a Chinese tab
                 // label overflowed the strip its own width had reserved.
-                (estimate_text_width(&tab.title, font, 1.0) as i32 + TAB_TEXT_PADDING)
-                    .clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH)
+                (estimate_text_width(&tab.title, font, 1.0) as i32
+                    + TAB_TEXT_PADDING
+                    + if tab.icon.as_deref().is_some_and(crate::widget::icon_token_is_drawable) {
+                        (TAB_VIEW_ICON_SIDE + TAB_VIEW_ICON_GAP * 2) as i32
+                    } else {
+                        0
+                    })
+                .clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH)
             })
             .collect()
     }
@@ -396,6 +402,10 @@ pub(crate) const TAB_MIN_WIDTH: i32 = 40;
 pub(crate) const TAB_MAX_WIDTH: i32 = 200;
 /// Gap between adjacent tabs.
 pub(crate) const TAB_SPACING: i32 = 2;
+/// Square side of the leading icon slot a tab reserves when its icon resolves to a glyph.
+const TAB_VIEW_ICON_SIDE: u32 = 14;
+/// Gap between that icon slot and the caption.
+const TAB_VIEW_ICON_GAP: u32 = 3;
 
 impl Widget for TabView {
     fn base(&self) -> &BaseWidget {
@@ -553,13 +563,35 @@ impl Draw for TabView {
 
             // Draw tab title (with icon prefix if available)
             let tab = &self.tabs[i];
-            let display_text = if let Some(ref icon_name) = tab.icon {
-                format!("{} {}", icon_name, tab.title)
-            } else {
-                tab.title.clone()
-            };
-
             let text_color = if is_selected { selected_text } else { inactive_text };
+
+            // ── Icon ──
+            //
+            // The icon string is resolved as an **icon** first, through the same `draw_icon_named`
+            // the navigation bars use, and the caption then carries only the title. The previous
+            // form interpolated the raw string into the caption, so a tab declaring
+            // `icon: Some("settings")` painted the literal word `settings` before its title instead
+            // of the glyph. A string that names no icon keeps that old text-prefix behaviour, which
+            // is what lets a host still passing an emoji or symbol keep the result it had.
+            let line = context.text_line(tab_rect, font);
+            let mut label = tab_rect;
+            let mut display_text = tab.title.clone();
+            if let Some(icon_name) = tab.icon.as_deref() {
+                let side = TAB_VIEW_ICON_SIDE.min(line.height.max(1));
+                let icon_rect = Rect {
+                    x: tab_rect.x + TAB_VIEW_ICON_GAP as i32,
+                    y: line.y + (line.height.saturating_sub(side) / 2) as i32,
+                    width: side,
+                    height: side,
+                };
+                if crate::widget::draw_icon_named(context, icon_rect, text_color, icon_name) {
+                    let allowance = TAB_VIEW_ICON_SIDE + TAB_VIEW_ICON_GAP * 2;
+                    label.x += allowance as i32;
+                    label.width = label.width.saturating_sub(allowance);
+                } else {
+                    display_text = format!("{} {}", icon_name, tab.title);
+                }
+            }
 
             // The caption is centred on **both** axes through the shared line box. The previous
             // form computed `rect.y + (tab_bar_height - metrics.height) / 2` by hand and passed
@@ -569,7 +601,7 @@ impl Draw for TabView {
             // sit half a line off; `draw_text_fitted` with `Center` then bounds it to the tab, so
             // a long title is elided rather than running over its neighbour.
             context.draw_text_fitted(
-                context.text_line(tab_rect, font),
+                context.text_line(label, font),
                 &display_text,
                 font,
                 text_color,
@@ -1027,6 +1059,58 @@ mod tests {
         let svg = render_to_svg(&mut tv);
         assert!(svg.starts_with("<svg"));
         assert!(svg.ends_with("</svg>"));
+    }
+
+    // ── Tab icons ──────────────────────────────────────────────────────────
+
+    /// A known token draws real geometry, and the caption no longer names it.
+    #[test]
+    fn a_known_tab_icon_is_drawn_as_geometry_not_as_text() {
+        let mut plain = make_tab_view();
+        plain.add_tab("One", None, None::<&str>);
+        let without = render_to_svg(&mut plain);
+
+        let mut with_icon = make_tab_view();
+        with_icon.add_tab("One", None, Some("info"));
+        let with = render_to_svg(&mut with_icon);
+
+        // The glyph adds its own outline; the word `info` must not be painted as a caption anymore.
+        assert_eq!(
+            with.matches("<path").count(),
+            without.matches("<path").count() + 1,
+            "a known tab icon must be drawn exactly once, as geometry"
+        );
+    }
+
+    /// An unknown string keeps the old text-prefix behaviour, so a host migrating gradually is not
+    /// punished for a symbol or emoji this crate does not ship.
+    #[test]
+    fn an_unknown_tab_icon_string_still_prefixes_the_caption() {
+        let mut tv = make_tab_view();
+        tv.add_tab("One", None, Some("\u{2605}")); // ★
+        let svg = render_to_svg(&mut tv);
+
+        // ★ resolves to no icon in this crate, so the caption carries it through the text pipeline.
+        assert!(
+            svg.contains("<path") || svg.contains("<text"),
+            "the fallback must still paint the caption: {svg}"
+        );
+    }
+
+    /// The width a tab reserves and the glyph it paints come from one resolution rule.
+    #[test]
+    fn a_tab_with_a_drawable_icon_reserves_room_for_it() {
+        let mut tv = make_tab_view();
+        tv.add_tab("One", None, Some("info"));
+        let with_icon = tv.tab_widths();
+        let mut plain = make_tab_view();
+        plain.add_tab("One", None, None::<&str>);
+        let without = plain.tab_widths();
+
+        assert!(
+            with_icon[0] > without[0],
+            "a tab whose icon resolves to a glyph must reserve the icon's room: {with_icon:?} vs {without:?}"
+        );
     }
 
     #[test]

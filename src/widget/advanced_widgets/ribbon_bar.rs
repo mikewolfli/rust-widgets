@@ -142,7 +142,15 @@ impl RibbonItem {
     }
 
     /// Replaces the typed icon source without changing the item's text label.
+    /// Replaces the typed icon source.
+    ///
+    /// The legacy `icon_text` is cleared with it, because the crate's typed setters share **one**
+    /// active state and the most recent explicit set wins (blue27 §19.6). Leaving the text in place
+    /// would make `set_icon_source(None)` resurrect the text that a later `set_icon_source(Some(..))`
+    /// had already replaced -- and every other control that keeps a legacy text icon (`Action`, `Fab`)
+    /// clears it here.
     pub fn set_icon_source(&mut self, source: Option<IconSource>) {
+        self.icon_text.clear();
         self.icon_source = source;
     }
 
@@ -1264,6 +1272,31 @@ mod tests {
 
         let svg = crate::widget::svg::render_to_svg(&mut ribbon);
         assert!(svg.contains("fill-rule=\"nonzero\""));
+    }
+
+    /// An explicit clear is Empty, not "show whatever came before": the typed setter and the text
+    /// setter share one active state, so clearing typed content must not resurrect the text that a
+    /// previous typed set had already replaced (blue27 §19.6).
+    #[test]
+    fn clearing_a_ribbon_item_icon_does_not_resurrect_its_legacy_text() {
+        static RING: crate::widget::IconData = crate::widget::IconData {
+            name: "ribbon-ring-clear",
+            grid: 24,
+            paths: &["M2-2H22V-22H2Z M7-7V-17H17V-7Z"],
+        };
+
+        let mut ribbon = RibbonBar::new(Rect::new(0, 0, 480, 160));
+        let tab = ribbon.add_tab("Home");
+        let group = ribbon.add_group(tab, "Clipboard");
+        let item = ribbon.add_item(tab, group, "Paste");
+        let item_ref = ribbon.item_mut(tab, group, item).expect("added ribbon item");
+        assert_eq!(item_ref.icon_text(), "Paste", "the item is seeded with its own text");
+
+        item_ref.set_icon_source(Some(IconSource::static_geometry(&RING)));
+        assert_eq!(item_ref.icon_text(), "", "the typed set replaces the legacy text icon");
+        item_ref.set_icon_source(None);
+        assert_eq!(item_ref.icon_source(), None);
+        assert_eq!(item_ref.icon_text(), "", "an explicit clear is Empty, not the old text");
     }
 
     #[test]

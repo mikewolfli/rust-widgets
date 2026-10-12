@@ -36,6 +36,7 @@
 //! data as a bundled one, so it goes through the identical draw path. What the registry adds is
 //! *reach* — a host's own icons — for the cost of one small table.
 
+use crate::widget::display_widgets::icon::{IconPaintError, IconRef};
 use crate::widget::display_widgets::icon_data_set::{lookup_registered, register_icon_data};
 
 /// How many host icons may be registered at once.
@@ -78,7 +79,7 @@ pub const MAX_REGISTERED_ICONS: usize = 16;
 /// assert!(register_icon("disclosure", &TRIANGLE));
 /// ```
 pub fn register_icon(name: &'static str, paths: &'static [&'static str]) -> bool {
-    register_icon_on_grid(name, paths, 960)
+    try_register_icon(name, paths).is_ok()
 }
 
 /// [`register_icon`], for a source on a grid other than the built-in 960 units.
@@ -90,15 +91,98 @@ pub fn register_icon_on_grid(
     paths: &'static [&'static str],
     grid: u16,
 ) -> bool {
-    if name.is_empty() || paths.is_empty() || grid == 0 {
-        return false;
+    try_register_icon_on_grid(name, paths, grid).is_ok()
+}
+
+/// Why a host icon registration was refused.
+///
+/// # Why this exists alongside the `bool` return
+///
+/// `bool` cannot say *which* of half a dozen reasons applied, and a host that registered a
+/// broken icon needs the reason: "the registry is full" and "your path data does not parse" call
+/// for completely different responses, and the old `false` conflated them with "your name was
+/// empty". The `bool` wrappers are unchanged and delegate here, so both spellings answer from one
+/// implementation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IconRegistrationError {
+    /// The token was empty, so nothing could name the registration.
+    EmptyName,
+    /// No path data was supplied, so there would be nothing to draw.
+    NoPaths,
+    /// The design grid is zero, so no device scale can be derived from it.
+    ZeroGrid,
+    /// A path entry was blank. An empty `d` draws nothing, which is indistinguishable on screen
+    /// from a missing icon, so it is refused rather than stored.
+    BlankPath,
+    /// The registry is full and this name is not already registered.
+    ///
+    /// A **re-registration** of an existing name is never refused by capacity: it replaces in
+    /// place, which is why the name is reported here.
+    RegistryFull {
+        /// How many icons the registry holds at once.
+        capacity: usize,
+    },
+    /// The geometry could not be drawn. The reason comes from the crate's own source validator, so
+    /// a registration is refused exactly when a draw would fail.
+    Undrawable(IconPaintError),
+}
+
+/// [`register_icon`], reporting **why** a registration was refused.
+///
+/// # Declared behaviour change
+///
+/// The geometry is now validated before it is stored, so a registration whose path data cannot be
+/// drawn is refused instead of being stored and then silently drawing nothing every frame. This
+/// tightens what [`register_icon`] accepts — a host that registered unparseable data used to get
+/// `true` and a blank icon, and now gets `false` and a reason. The doc comment on
+/// [`register_icon`] always claimed a `false` means "not drawable"; this is what makes that true.
+/// A name that is already registered is still replaced, so capacity is not a limit for updates.
+pub fn try_register_icon(
+    name: &'static str,
+    paths: &'static [&'static str],
+) -> Result<(), IconRegistrationError> {
+    try_register_icon_on_grid(name, paths, 960)
+}
+
+/// [`register_icon_on_grid`], reporting **why** a registration was refused.
+///
+/// See [`try_register_icon`] for the declared behaviour change.
+pub fn try_register_icon_on_grid(
+    name: &'static str,
+    paths: &'static [&'static str],
+    grid: u16,
+) -> Result<(), IconRegistrationError> {
+    use IconRegistrationError as Refused;
+
+    if name.is_empty() {
+        return Err(Refused::EmptyName);
     }
-    // Every path must have something in it: an empty `d` draws nothing, which is
-    // indistinguishable on screen from a missing icon, so it is refused rather than stored.
+    if paths.is_empty() {
+        return Err(Refused::NoPaths);
+    }
+    if grid == 0 {
+        return Err(Refused::ZeroGrid);
+    }
     if paths.iter().any(|d| d.trim().is_empty()) {
-        return false;
+        return Err(Refused::BlankPath);
     }
-    register_icon_data(name, paths, grid)
+    // Validate before storing, through the same validator the paint path uses, so "accepted" and
+    // "will draw" cannot diverge.
+    let data = crate::widget::IconData { name, grid, paths };
+    crate::widget::display_widgets::icon::validate_icon(IconRef::StaticGeometry(&data))
+        .map_err(Refused::Undrawable)?;
+    // Capacity only refuses a **new** name; a re-registration replaces in place, so it is checked
+    // after the replacement case is excluded rather than before.
+    if !is_registered_icon(name) && registered_icon_count() >= MAX_REGISTERED_ICONS {
+        return Err(Refused::RegistryFull { capacity: MAX_REGISTERED_ICONS });
+    }
+    if register_icon_data(name, paths, grid) {
+        Ok(())
+    } else {
+        // Unreachable while the capacity check above and the storage check agree; reported as a
+        // capacity refusal rather than `unreachable!()` because this is a public entry point.
+        Err(Refused::RegistryFull { capacity: MAX_REGISTERED_ICONS })
+    }
 }
 
 /// Forget every registered icon. The built-in set is unaffected.
@@ -185,6 +269,52 @@ mod tests {
         assert!(
             !register_icon("overflow", &["M0 0L1 0L1 1Z"]),
             "a full registry must refuse, not evict"
+        );
+
+        // ── The `try_` pair says **which** reason applied ──
+        //
+        // The legacy `bool` conflated "the registry is full" with "your name was empty" and "your
+        // path data does not parse", and a host cannot react to those the same way. The names below
+        // are new, so the capacity assertions above stay meaningful.
+        assert!(
+            try_register_icon("mine", &["M0 0L1 0L1 1Z"]).is_ok(),
+            "re-registering an *existing* name replaces in place, so a full registry still accepts it"
+        );
+        assert_eq!(
+            try_register_icon("overflow-new", &["M0 0L1 0L1 1Z"]),
+            Err(IconRegistrationError::RegistryFull { capacity: MAX_REGISTERED_ICONS })
+        );
+        assert_eq!(
+            try_register_icon("", &["M0 0L1 0L1 1Z"]),
+            Err(IconRegistrationError::EmptyName)
+        );
+        assert_eq!(try_register_icon("x", &[]), Err(IconRegistrationError::NoPaths));
+        assert_eq!(
+            try_register_icon_on_grid("x", &["M0 0L1 0L1 1Z"], 0),
+            Err(IconRegistrationError::ZeroGrid)
+        );
+        assert_eq!(try_register_icon("x", &["   "]), Err(IconRegistrationError::BlankPath));
+
+        // Geometry that cannot be drawn is refused **with the validator's own reason**, instead of
+        // being stored and then silently drawing nothing every frame.
+        assert!(matches!(
+            try_register_icon("broken", &["M0 0L oops"]),
+            Err(IconRegistrationError::Undrawable(
+                crate::widget::display_widgets::icon::IconPaintError::InvalidGeometry(_)
+            ))
+        ));
+        // `M0 0` is a legitimate `d` that declares no contour, which is a different refusal from
+        // `BlankPath` ("nothing was typed") -- the distinction `bool` could not make.
+        assert!(matches!(
+            try_register_icon("no-contour", &["M0 0"]),
+            Err(IconRegistrationError::Undrawable(
+                crate::widget::display_widgets::icon::IconPaintError::EmptyGeometry
+            ))
+        ));
+        assert_eq!(
+            registered_icon_count(),
+            MAX_REGISTERED_ICONS,
+            "a refused registration must not occupy a slot"
         );
 
         assert_eq!(clear_registered_icons(), MAX_REGISTERED_ICONS);

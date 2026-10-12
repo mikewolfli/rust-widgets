@@ -81,8 +81,11 @@ impl TabBarTab {
     }
 
     /// Sets the tab icon.
+    ///
+    /// A non-RGBA8 image is normalised once here, so the draw path can borrow its bytes instead of
+    /// transcoding every frame — and so an image this crate cannot draw is not left in the slot.
     pub fn set_icon(&mut self, icon: Option<Image>) {
-        self.icon = icon;
+        self.icon = icon.map(crate::widget::icon_source::normalize_rgba8_image);
         self.icon_source = None;
     }
 
@@ -92,11 +95,17 @@ impl TabBarTab {
     }
 
     /// Replaces the typed icon source and clears the legacy image slot.
+    ///
+    /// An explicit `None` clears **both** forms: leaving the image behind would make the tab keep
+    /// drawing an icon the caller just cleared.
     pub fn set_icon_source(&mut self, source: Option<IconSource>) {
         self.icon_source = source;
-        if source.is_some() {
-            self.icon = None;
-        }
+        self.icon = None;
+    }
+
+    /// Whether this tab reserves a leading icon slot.
+    pub fn has_icon(&self) -> bool {
+        self.icon_source.is_some() || self.icon.is_some()
     }
 
     /// Returns the tab tooltip.
@@ -217,6 +226,21 @@ impl TabBar {
         tab.set_icon_source(source);
         self.base.request_redraw();
         Ok(())
+    }
+
+    /// Returns the tab at `index`.
+    ///
+    /// The same accessor pair [`TabWidget`](crate::widget::TabWidget) offers, so the crate's two tab
+    /// strips are read and written the same way. Without it a tab's legacy `Image` icon had **no**
+    /// reachable path at all: the field existed, `TabBarTab::set_icon` existed, and no `TabBar` API
+    /// could ever call it.
+    pub fn tab(&self, index: usize) -> Option<&TabBarTab> {
+        self.tabs.get(index)
+    }
+
+    /// Returns the tab at `index`, mutably.
+    pub fn tab_mut(&mut self, index: usize) -> Option<&mut TabBarTab> {
+        self.tabs.get_mut(index)
     }
 
     /// Inserts a tab at the given index.
@@ -671,8 +695,7 @@ impl TabBar {
         let text = self.tabs[index].title.as_str();
         let measured = self.measured_title_widths.get(index).copied();
         let text_width = measured.unwrap_or_else(|| estimate_text_width(text, &self.label_font()));
-        let icon_width =
-            if self.tabs[index].icon_source.is_some() { TAB_ICON_SIZE + TAB_ICON_GAP } else { 0 };
+        let icon_width = if self.tabs[index].has_icon() { TAB_ICON_SIZE + TAB_ICON_GAP } else { 0 };
         let mut w = text_width + TAB_TEXT_PADDING + icon_width;
         if self.closable {
             w += (CLOSE_SIZE + CLOSE_PADDING) as u32;
@@ -824,27 +847,40 @@ impl TabBar {
         // half the difference between the tab and the line box. Passing the tab's midline
         // (which is what `tab_rect.height / 2` is) put the glyph box's *top* at the centre,
         // so a 14 px label in a 24 px tab spanned 12..26 and crossed the tab's bottom edge.
-        let has_icon_source = tab.icon_source.is_some();
+        let has_icon = tab.has_icon();
         let text_x = tab_rect.x
             + TAB_TEXT_INSET as i32
-            + if has_icon_source { (TAB_ICON_SIZE + TAB_ICON_GAP) as i32 } else { 0 };
+            + if has_icon { (TAB_ICON_SIZE + TAB_ICON_GAP) as i32 } else { 0 };
         // The **effective font** — the resolved theme/caller font — replacing the fixed Arial face,
         // so the tab title honours the theme body font and the user's text scale (D09-STYLE-01).
         let font = self.label_font();
         let title_height = context.measure_text("M", &font).height;
         let text_y = tab_rect.y + (tab_rect.height as i32 - title_height as i32) / 2;
-        if let Some(source) = tab.icon_source {
+        // The tab's icon, from whichever form is active. The legacy `Image` used to reserve the slot
+        // above and then never be drawn -- the tab was wider for an icon that did not exist. Both
+        // forms now paint through the shared seams.
+        let icon_rect = has_icon.then(|| {
             let side = tab_rect.height.clamp(1, TAB_ICON_SIZE);
-            let icon_rect = Rect::new(
+            Rect::new(
                 tab_rect.x + TAB_TEXT_INSET as i32,
                 tab_rect.y + (tab_rect.height as i32 - side as i32) / 2,
                 side,
                 side,
-            );
+            )
+        });
+        if let (Some(source), Some(icon_rect)) = (tab.icon_source, icon_rect) {
             if let Err(error) =
                 crate::widget::paint_icon(context, source.into(), icon_rect, text_color)
             {
                 log::warn!("tab bar tab {index} icon failed: {error:?}");
+            }
+        }
+        #[cfg(feature = "image")]
+        if tab.icon_source.is_none() {
+            if let (Some(image), Some(icon_rect)) = (tab.icon.as_ref(), icon_rect) {
+                if !crate::widget::draw_icon_image(context, image, icon_rect) {
+                    log::warn!("tab bar tab {index} icon image could not be drawn");
+                }
             }
         }
         context.draw_text(
@@ -1182,6 +1218,32 @@ mod tests {
             tabs.set_tab_icon_source(1, None),
             Err(IconItemError::IndexOutOfBounds { index: 1, len: 1 })
         );
+    }
+
+    /// A tab's legacy `Image` reserved the icon slot in the width measurement and was then never
+    /// drawn, so the tab was wider for an icon that did not exist. It is now reachable through
+    /// `tab_mut` and painted through the shared seam.
+    #[cfg(feature = "image")]
+    #[test]
+    fn tabbar_legacy_tab_image_is_drawn_and_cleared() {
+        let mut tabs = TabBar::new(Rect::new(0, 0, 400, 32));
+        tabs.add_tab("Settings".into());
+        let render = |tabs: &mut TabBar| crate::widget::svg::render_to_svg(tabs);
+        let plain = render(&mut tabs);
+        assert!(!plain.contains("<image"), "a tab with no icon draws no image");
+
+        tabs.tab_mut(0).expect("the tab exists").set_icon(Some(Image::from_rgba(
+            vec![200; 4 * 4 * 4],
+            4,
+            4,
+        )));
+        assert!(tabs.tab(0).expect("the tab exists").has_icon());
+        assert!(render(&mut tabs).contains("<image"), "the image must reach the backend");
+
+        // An explicit typed clear clears the legacy image too.
+        tabs.set_tab_icon_source(0, None).expect("the tab exists");
+        assert!(!tabs.tab(0).expect("the tab exists").has_icon());
+        assert!(!render(&mut tabs).contains("<image"), "clear must release the image slot");
     }
 
     #[test]

@@ -1216,6 +1216,7 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::FAB => match property_name {
             "icon" => CapabilityValue::String("+".to_string()),
+            "icon_source" => CapabilityValue::Null,
             _ => return None,
         },
         WidgetKind::BottomSheet => match property_name {
@@ -1396,6 +1397,7 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::MenuButton => match property_name {
             "text" => CapabilityValue::String("Menu".to_string()),
+            "icon_source" => CapabilityValue::Null,
             "item_count" => CapabilityValue::UInt(0),
             "expanded" => CapabilityValue::Bool(false),
             _ => return None,

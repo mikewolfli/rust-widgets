@@ -94,6 +94,13 @@ struct Entry {
 /// owner is a control, not a `DecodedImage`. Sharing one map would mean one key naming two types.
 struct PixelEntry {
     pixels: Arc<Vec<u8>>,
+    /// The decoded extent of `pixels`.
+    ///
+    /// Carried beside the bytes, not derived from them: the cache is the only place that still
+    /// knows the extent once a control has taken the pixels, and a caller needing a sized shared
+    /// handle would otherwise have to decode again just to re-learn what this entry already held.
+    width: u32,
+    height: u32,
     bytes: usize,
     used_at: u64,
 }
@@ -191,13 +198,13 @@ impl DecodeCache {
         Some(Arc::clone(&entry.image))
     }
 
-    /// The pixel vector for `key`, marking it most-recently-used.
-    fn get_pixels(&mut self, key: u64) -> Option<Arc<Vec<u8>>> {
+    /// The pixel vector for `key` and its decoded extent, marking it most-recently-used.
+    fn get_pixels(&mut self, key: u64) -> Option<(Arc<Vec<u8>>, u32, u32)> {
         self.tick += 1;
         let tick = self.tick;
         let entry = self.pixels.get_mut(&key)?;
         entry.used_at = tick;
-        Some(Arc::clone(&entry.pixels))
+        Some((Arc::clone(&entry.pixels), entry.width, entry.height))
     }
 
     /// The file bytes for `path_key`, if the entry is still current per `stamp`, marking it
@@ -268,7 +275,14 @@ impl DecodeCache {
     }
 
     /// Stores a pixel vector under `key`, with the same rules as [`Self::insert`].
-    fn insert_pixels(&mut self, key: u64, pixels: Arc<Vec<u8>>, bytes: usize) {
+    fn insert_pixels(
+        &mut self,
+        key: u64,
+        pixels: Arc<Vec<u8>>,
+        width: u32,
+        height: u32,
+        bytes: usize,
+    ) {
         if bytes > self.budget_bytes {
             return;
         }
@@ -278,7 +292,7 @@ impl DecodeCache {
         self.evict_until_fits(bytes);
         self.tick += 1;
         let used_at = self.tick;
-        self.pixels.insert(key, PixelEntry { pixels, bytes, used_at });
+        self.pixels.insert(key, PixelEntry { pixels, width, height, bytes, used_at });
         self.used_bytes += bytes;
     }
 
@@ -731,6 +745,20 @@ pub fn decode_file_to_rgba8_cached(
 /// the second and every later request for one file costs a `stat` and an `Arc` bump.
 #[cfg(all(feature = "image", not(alloc_frugal)))]
 pub fn file_rgba8_or_none(path: impl AsRef<std::path::Path>) -> Option<Arc<Vec<u8>>> {
+    file_rgba8_sized_or_none(path).map(|(pixels, _, _)| pixels)
+}
+
+/// The RGBA8 pixels of a file **and their decoded extent**, or `None` if it cannot be read or
+/// decoded.
+///
+/// The sized form of [`file_rgba8_or_none`]: a control that has to build a *sized* shared handle
+/// (for example [`crate::widget::SharedIconPixels`]) would otherwise have to decode again just to
+/// re-learn the width and height this cache already carried, or drop them and stretch the image to
+/// whatever slot it was given.
+#[cfg(all(feature = "image", not(alloc_frugal)))]
+pub fn file_rgba8_sized_or_none(
+    path: impl AsRef<std::path::Path>,
+) -> Option<(Arc<Vec<u8>>, u32, u32)> {
     let path = path.as_ref();
     let bytes = match cached_from_path(path) {
         Ok(bytes) => bytes,
@@ -739,7 +767,7 @@ pub fn file_rgba8_or_none(path: impl AsRef<std::path::Path>) -> Option<Arc<Vec<u
             return None;
         }
     };
-    pixels_rgba8_or_none(&bytes)
+    pixels_rgba8_sized_or_none(&bytes)
 }
 
 /// The RGBA8 pixels of `data`, or `None` if it does not decode.
@@ -747,6 +775,15 @@ pub fn file_rgba8_or_none(path: impl AsRef<std::path::Path>) -> Option<Arc<Vec<u
 /// See [`file_rgba8_or_none`] for why the pixel vector gets its own cache entry.
 #[cfg(all(feature = "image", not(alloc_frugal)))]
 pub fn pixels_rgba8_or_none(data: &[u8]) -> Option<Arc<Vec<u8>>> {
+    pixels_rgba8_sized_or_none(data).map(|(pixels, _, _)| pixels)
+}
+
+/// The RGBA8 pixels of `data` **and their decoded extent**, or `None` if it does not decode.
+///
+/// See [`pixels_rgba8_or_none`] for the cache identity rules; this is the same lookup with the
+/// extent the entry was stored with.
+#[cfg(all(feature = "image", not(alloc_frugal)))]
+pub fn pixels_rgba8_sized_or_none(data: &[u8]) -> Option<(Arc<Vec<u8>>, u32, u32)> {
     REQUESTS.fetch_add(1, Ordering::Relaxed);
     let key = content_key(data, PIXELS_TAG_RGBA8);
     if let Some(pixels) = with_cache(|cache| cache.get_pixels(key)) {
@@ -755,22 +792,26 @@ pub fn pixels_rgba8_or_none(data: &[u8]) -> Option<Arc<Vec<u8>>> {
     }
     MISSES.fetch_add(1, Ordering::Relaxed);
     match crate::image::decoder::decode_to_rgba8(data) {
-        Ok(decoded) => match decoded.data {
-            crate::image::format::ImageData::Rgba8(pixels) => {
-                let bytes = pixels.len();
-                let shared = Arc::new(pixels);
-                let (used, evictions) = with_cache(|cache| {
-                    cache.insert_pixels(key, Arc::clone(&shared), bytes);
-                    (cache.used_bytes, cache.evictions)
-                });
-                STORED_BYTES.store(used, Ordering::Relaxed);
-                EVICTIONS.store(evictions, Ordering::Relaxed);
-                Some(shared)
+        Ok(decoded) => {
+            let (width, height) = (decoded.width, decoded.height);
+            match decoded.data {
+                crate::image::format::ImageData::Rgba8(pixels) => {
+                    let bytes = pixels.len();
+                    let shared = Arc::new(pixels);
+                    let (used, evictions) = with_cache(|cache| {
+                        cache.insert_pixels(key, Arc::clone(&shared), width, height, bytes);
+                        (cache.used_bytes, cache.evictions)
+                    });
+                    STORED_BYTES.store(used, Ordering::Relaxed);
+                    EVICTIONS.store(evictions, Ordering::Relaxed);
+                    Some((shared, width, height))
+                }
+                // `decode_to_rgba8` guarantees the `Rgba8` variant, so this arm is unreachable; it
+                // is written out rather than `unreachable!()`ed because this is called from a draw
+                // path.
+                _ => None,
             }
-            // `decode_to_rgba8` guarantees the `Rgba8` variant, so this arm is unreachable; it is
-            // written out rather than `unreachable!()`ed because this is called from a draw path.
-            _ => None,
-        },
+        }
         Err(reason) => {
             log::warn!("image bytes could not be decoded ({reason}); nothing is drawn for them");
             None

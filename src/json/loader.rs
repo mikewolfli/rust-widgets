@@ -2883,6 +2883,48 @@ mod tests {
         assert!(list.is_empty(), "a record list the schema refuses must not be applied");
     }
 
+    /// A chip item's `icon_source` is a **structured** row field: the object is read through the
+    /// row's declared kind, not refused as a compound value, and it reaches the live control.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn load_chip_item_icon_source_reaches_the_live_control() {
+        use crate::widget::capability::{widget_property_get, CapabilityValue};
+
+        let json = r#"{"window": {"id": "w", "title": "Chips", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"chip": {"id": "chips", "items": [{"id": "a", "label": "Alpha", "icon_source": {"kind": "builtin", "name": "info"}}]}}]}}}"#;
+        let layout = JsonLoader::load(json).expect("the document must load");
+        let chip = layout.id("chips").expect("the document names the chip");
+
+        let items = crate::widget::runtime::with_widget(chip, |widget| {
+            widget_property_get(widget, "items")
+        })
+        .expect("the chip is mounted")
+        .expect("`items` is readable");
+        let CapabilityValue::Records(list) = items else {
+            panic!("`items` must read as a record list, got {items:?}");
+        };
+        assert_eq!(list.len(), 1, "the row must be applied, not dropped as a compound value");
+        assert!(matches!(
+            list.get_by_id("a").expect("present").get("icon_source"),
+            Some(CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(
+                crate::widget::IconName::Info
+            )))
+        ));
+
+        // A resource row needs the host's resolver, so a plain load must refuse it by name rather
+        // than apply a chip whose icon silently disappeared.
+        let resource = r#"{"window": {"id": "w2", "title": "Chips", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"chip": {"id": "chips2", "items": [{"id": "a", "label": "Alpha", "icon_source": {"kind": "resource", "id": "project/icons/a"}}]}}]}}}"#;
+        let layout = JsonLoader::load(resource).expect("the document still loads");
+        let chip = layout.id("chips2").expect("the document names the chip");
+        let CapabilityValue::Records(list) = crate::widget::runtime::with_widget(chip, |widget| {
+            widget_property_get(widget, "items")
+        })
+        .expect("the chip is mounted")
+        .expect("`items` is readable") else {
+            panic!("`items` must read as a record list");
+        };
+        assert!(list.is_empty(), "a resource row without a resolver must not be applied");
+    }
+
     #[test]
     fn load_listbox_with_selection_mode() {
         let json = r#"{"window": {"id": "w", "title": "List", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"listbox": {"id": "lb", "items": ["A", "B", "C"], "selection_mode": "multi"}}]}}}"#;

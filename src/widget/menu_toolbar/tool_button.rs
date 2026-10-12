@@ -87,9 +87,12 @@ pub struct ToolButton {
     /// RGBA8 pixels for [`Self::icon`], decoded once per path.
     ///
     /// `None` is cached too, so an icon path that cannot be read is not re-read every frame. The
-    /// pixels are square RGBA8 (width * height * 4 bytes), which is what `draw_image` takes.
+    /// handle is the decode cache's own allocation (see
+    /// [`SharedIconPixels::from_cached_file`]), so the pixels are shared process-wide rather than
+    /// copied per button, and the decoded extent is kept rather than dropped — the draw needs it to
+    /// fit the image instead of stretching it to the slot.
     #[cfg(all(feature = "image", not(alloc_frugal)))]
-    icon_pixels: Option<alloc::sync::Arc<Vec<u8>>>,
+    icon_pixels: Option<crate::widget::icon_source::SharedIconPixels>,
     /// The path [`Self::icon_pixels`] was produced for, so changing the path invalidates the pixels
     /// without the caller having to clear them.
     #[cfg(all(feature = "image", not(alloc_frugal)))]
@@ -297,15 +300,13 @@ impl ToolButton {
     /// # Two layers, as in `avatar`
     ///
     /// `icon_pixels_key` is the per-instance string compare that keeps the per-frame path cheap, and
-    /// [`crate::image::cache`] is what makes **twelve buttons on one icon** decode it once.
+    /// [`crate::image::cache`] is what makes **twelve buttons on one icon** decode it once. The
+    /// handle is the cache's allocation, so the pixels are not copied into this button either.
     #[cfg(all(feature = "image", not(alloc_frugal)))]
-    fn resolved_icon(&mut self) -> Option<alloc::sync::Arc<Vec<u8>>> {
+    fn resolved_icon(&mut self) -> Option<crate::widget::icon_source::SharedIconPixels> {
         let path = self.icon.as_ref()?;
         if self.icon_pixels_key.as_ref() != Some(path) {
-            // The decoded extent is dropped: the icon is scaled to the slot the style derivation
-            // reserved, so a non-square source would otherwise change the button's layout. Only the
-            // pixels are kept -- and they are the cache's allocation, not this button's.
-            self.icon_pixels = crate::image::cache::file_rgba8_or_none(path);
+            self.icon_pixels = crate::widget::SharedIconPixels::from_cached_file(path);
             // Set whether or not it loaded, so a missing icon is not re-read every frame.
             self.icon_pixels_key = Some(path.clone());
         }
@@ -805,14 +806,28 @@ impl Draw for ToolButton {
         if self.icon_source.is_none() && self.shared_icon_pixels.is_some() {
             if let (Some(pixels), Some(box_)) = (self.shared_icon_pixels.as_ref(), self.icon_rect())
             {
-                context.draw_image(box_.x, box_.y, box_.width, box_.height, pixels.pixels());
+                let fitted = pixels.fit_into(box_);
+                context.draw_image(
+                    fitted.x,
+                    fitted.y,
+                    fitted.width,
+                    fitted.height,
+                    pixels.pixels(),
+                );
             }
         }
         #[cfg(all(feature = "image", not(alloc_frugal)))]
         if self.icon_source.is_none() && self.shared_icon_pixels.is_none() {
             if let (Some(pixels), Some(box_)) = (self.resolved_icon(), self.icon_rect()) {
-                if !pixels.is_empty() {
-                    context.draw_image(box_.x, box_.y, box_.width, box_.height, &pixels);
+                if !pixels.pixels().is_empty() {
+                    let fitted = pixels.fit_into(box_);
+                    context.draw_image(
+                        fitted.x,
+                        fitted.y,
+                        fitted.width,
+                        fitted.height,
+                        pixels.pixels(),
+                    );
                 }
             }
         }
@@ -960,6 +975,35 @@ mod tests {
         button.set_shared_icon_pixels(None);
         assert!(button.icon().is_none());
         assert!(button.icon_rect().is_none());
+    }
+
+    /// A non-square icon keeps its aspect ratio instead of being stretched into the slot.
+    ///
+    /// The legacy path used to drop the decoded extent, so a wide image was drawn at the slot's
+    /// aspect ratio — a distorted icon. The handle now carries the extent, and the draw fits it.
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
+    #[test]
+    fn a_non_square_icon_is_fitted_not_stretched() {
+        let wide = crate::widget::SharedIconPixels::from_rgba8(vec![64; 8 * 4 * 4], 8, 4)
+            .expect("valid RGBA8 data");
+        let mut button = ToolButton::new("Open", rect());
+        button.set_button_style(ToolButtonStyle::IconOnly);
+        button.set_shared_icon_pixels(Some(wide));
+        let slot = button.icon_rect().expect("shared pixels reserve the slot");
+
+        let svg = crate::widget::svg::render_widget_to_svg(&mut button, rect());
+        let image_tag = svg.split("<image ").nth(1).expect("the icon is painted as an image");
+        let attribute = |name: &str| {
+            let rest = image_tag.split(&format!("{name}=\"")).nth(1).expect("attribute is emitted");
+            rest.split('"')
+                .next()
+                .expect("the attribute is closed")
+                .parse::<u32>()
+                .expect("a number")
+        };
+        let (width, height) = (attribute("width"), attribute("height"));
+        assert_eq!((width, height), (2 * height, height), "8x4 must stay 2:1 inside the slot");
+        assert!(width <= slot.width && height <= slot.height, "the fit must stay inside the slot");
     }
 
     #[test]

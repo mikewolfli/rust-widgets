@@ -165,6 +165,17 @@ impl WidgetProperties for FAB {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "icon" => Ok(CapabilityValue::String(self.icon_text().to_string())),
+            "icon_source" => match self.icon_source() {
+                None => Ok(CapabilityValue::Null),
+                Some(IconSource::Builtin(name)) => Ok(CapabilityValue::IconSpec(
+                    crate::widget::icon_source::IconSpec::Builtin(name),
+                )),
+                // A borrowed static-geometry source has no document representation, so reading it
+                // back as one would be a lie; the caller is told instead.
+                Some(IconSource::StaticGeometry(_)) => {
+                    Err(CapabilityAccessError::IconSourceNotPersistable)
+                }
+            },
             _ => base_property_get(self, name),
         }
     }
@@ -175,12 +186,35 @@ impl WidgetProperties for FAB {
                 self.set_icon_text(&expect_string(value)?);
                 Ok(())
             }
+            "icon_source" => {
+                match value {
+                    CapabilityValue::Null => self.set_icon_source(None),
+                    CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(
+                        name,
+                    )) => self.set_icon_source(Some(IconSource::Builtin(name))),
+                    // A resource ID needs a host resolver; turning it into a path here would be
+                    // guessing at the host's resource policy.
+                    CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Resource {
+                        ..
+                    }) => return Err(CapabilityAccessError::ResourceResolutionRequired),
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                }
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
+    fn set_resolved_icon_source(
+        &mut self,
+        source: Option<IconSource>,
+    ) -> Result<(), CapabilityAccessError> {
+        self.set_icon_source(source);
+        Ok(())
+    }
+
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["icon", BASE_PROPERTY_NAMES]
+        property_names_of!["icon", "icon_source", BASE_PROPERTY_NAMES]
     }
 }
 
@@ -395,6 +429,46 @@ mod tests {
 
     fn make_fab() -> FAB {
         FAB::new(Rect::new(0, 0, 56, 56))
+    }
+
+    /// `FAB`'s own `icon_source` contract, alongside its legacy `icon` text property.
+    #[test]
+    fn fab_icon_source_property_round_trips_and_refuses_the_unresolvable() {
+        use crate::widget::capability::types::CapabilityValue as V;
+        use crate::widget::icon_source::{IconColorMode, IconSpec};
+
+        let mut fab = make_fab();
+        assert_eq!(fab.get("icon_source"), Ok(V::Null));
+        assert_eq!(fab.get("icon"), Ok(V::String("+".to_string())));
+
+        let icon = IconSpec::Builtin(crate::widget::IconName::Edit);
+        fab.set("icon_source", V::IconSpec(icon.clone()))
+            .expect("built-in descriptors apply without a resolver");
+        assert_eq!(fab.get("icon_source"), Ok(V::IconSpec(icon)));
+        // The typed setter owns the one active state, so the legacy text no longer reports.
+        assert_eq!(fab.get("icon"), Ok(V::String(String::new())));
+
+        assert_eq!(
+            fab.set(
+                "icon_source",
+                V::IconSpec(IconSpec::Resource {
+                    id: "project/icons/plus".into(),
+                    color_mode: IconColorMode::Original,
+                }),
+            ),
+            Err(CapabilityAccessError::ResourceResolutionRequired)
+        );
+
+        // The legacy text property still works, and it replaces the typed source in turn.
+        fab.set("icon", V::String("✕".to_string())).expect("the legacy text property is writable");
+        assert_eq!(fab.icon_source(), None);
+        assert_eq!(fab.get("icon"), Ok(V::String("✕".to_string())));
+
+        assert_eq!(
+            fab.set_resolved_icon_source(Some(IconSource::Builtin(crate::widget::IconName::Plus))),
+            Ok(())
+        );
+        assert_eq!(fab.icon_source(), Some(IconSource::Builtin(crate::widget::IconName::Plus)));
     }
 
     #[test]

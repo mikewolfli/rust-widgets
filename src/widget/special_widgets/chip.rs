@@ -12,7 +12,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// One chip item.
@@ -60,6 +60,15 @@ pub const CHIP_ITEM_SCHEMA: crate::widget::capability::RecordSchema =
                 "selected",
                 crate::widget::capability::PropertyValueKind::Bool,
             ),
+            // A chip's leading icon, as the same structured descriptor a `Button` publishes. The
+            // field is optional because a chip with no icon is the normal case, and the value is
+            // `IconSpec` (not decomposed into `kind`/`name` fields) so the one-of-ness of
+            // built-in-versus-resource is checked by the value's own parser rather than left to an
+            // unenforceable "declare both, use one" convention.
+            crate::widget::capability::RecordField::optional(
+                "icon_source",
+                crate::widget::capability::PropertyValueKind::IconSpec,
+            ),
         ],
         id_field: "id",
         ids_unique: true,
@@ -71,11 +80,24 @@ pub const CHIP_ITEM_SCHEMA: crate::widget::capability::RecordSchema =
 /// `selected: false` is written out rather than omitted, so a read of `Chip::items` and a read of the
 /// `items` property agree on the field set: a consumer that builds a table from the property does not
 /// have to treat a differing arity as a different shape.
-fn chip_item_record(item: &ChipItem) -> crate::widget::capability::RecordValue {
-    crate::widget::capability::RecordValue::new()
+fn chip_item_record(
+    item: &ChipItem,
+    icon_source: Option<IconSource>,
+) -> crate::widget::capability::RecordValue {
+    let mut record = crate::widget::capability::RecordValue::new()
         .with("id", CapabilityValue::String(item.id.clone()))
         .with("label", CapabilityValue::String(item.label.clone()))
-        .with("selected", CapabilityValue::Bool(item.selected))
+        .with("selected", CapabilityValue::Bool(item.selected));
+    // Only a persistable source is written. A borrowed static geometry has no document
+    // representation, so the field is left out rather than serialised as something it is not --
+    // the same rule the control-level `icon_source` property follows.
+    if let Some(IconSource::Builtin(name)) = icon_source {
+        record = record.with(
+            "icon_source",
+            CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(name)),
+        );
+    }
+    record
 }
 
 /// The item a record describes, or the reason it cannot be read as one.
@@ -85,18 +107,34 @@ fn chip_item_record(item: &ChipItem) -> crate::widget::capability::RecordValue {
 /// produce a control the document did not ask for.
 fn chip_item_from_record(
     record: &crate::widget::capability::RecordValue,
-) -> Result<ChipItem, CapabilityAccessError> {
+) -> Result<(ChipItem, Option<IconSource>), CapabilityAccessError> {
     let text = |name: &str| match record.get(name) {
         Some(CapabilityValue::String(value)) => Ok(value.clone()),
         _ => Err(CapabilityAccessError::TypeMismatch),
+    };
+    let icon_source = match record.get("icon_source") {
+        None | Some(CapabilityValue::Null) => None,
+        Some(CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(name))) => {
+            Some(IconSource::Builtin(*name))
+        }
+        // A resource descriptor needs the host's resolver, which a property write does not have.
+        Some(CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Resource {
+            ..
+        })) => return Err(CapabilityAccessError::ResourceResolutionRequired),
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
     };
     let selected = match record.get("selected") {
         None | Some(CapabilityValue::Null) => false,
         Some(CapabilityValue::Bool(flag)) => *flag,
         Some(_) => return Err(CapabilityAccessError::TypeMismatch),
     };
-    Ok(ChipItem { id: text("id")?, label: text("label")?, selected })
+    Ok((ChipItem { id: text("id")?, label: text("label")?, selected }, icon_source))
 }
+
+/// Square side of a chip item's leading icon slot, in logical pixels.
+const CHIP_ICON_SIDE: u32 = 14;
+/// Gap between that slot and the chip's label.
+const CHIP_ICON_GAP: u32 = 4;
 
 /// Horizontal chip list with single or multi select mode.
 pub struct Chip {
@@ -106,6 +144,13 @@ pub struct Chip {
     focused_index: Option<usize>,
     chip_padding: i32,
     chip_spacing: i32,
+    /// Per-item typed icon content, keyed by the item's **stable id**.
+    ///
+    /// `ChipItem`'s fields are public, so a caller may construct and mutate items without this
+    /// control observing it; the override is therefore keyed by identity rather than by position,
+    /// and [`Chip`] prunes it whenever the item list changes so an id can never name an item that
+    /// no longer exists (blue27 §19.6).
+    item_icon_sources: Vec<(String, IconSource)>,
     /// Emitted when chip selection changes. Payload is chip id.
     pub chip_toggled: Signal1<String>,
 }
@@ -120,6 +165,7 @@ impl Chip {
             focused_index: None,
             chip_padding: dimensions::CHIP_PADDING_H as i32,
             chip_spacing: 6,
+            item_icon_sources: Vec::new(),
             chip_toggled: Signal1::new(),
         }
     }
@@ -131,6 +177,11 @@ impl Chip {
     /// re-resolved on one.
     pub fn set_items(&mut self, items: Vec<ChipItem>) {
         self.items = items;
+        // An override may only name an item that still exists. Dropping the ones whose id is gone
+        // is what stops a later item that happens to reuse an id from inheriting the removed one's
+        // icon (blue27 §19.6: an explicit removal must not resurrect old presentation).
+        let live: Vec<String> = self.items.iter().map(|item| item.id.clone()).collect();
+        self.item_icon_sources.retain(|(id, _)| live.contains(id));
         self.focused_index = if self.items.is_empty() { None } else { Some(0) };
         if !self.multi_select {
             // Keep only first selected chip in single-select mode.
@@ -152,6 +203,59 @@ impl Chip {
     /// Returns all chip items.
     pub fn items(&self) -> &[ChipItem] {
         &self.items
+    }
+
+    /// Assigns typed icon content to the chip item owning `id`.
+    ///
+    /// The item's stable id is the identity this collection already has, so no second selection
+    /// model is introduced. A missing or duplicated id is reported instead of silently targeting
+    /// the wrong chip, and `None` clears the icon rather than revealing an older one.
+    pub fn set_item_icon_source(
+        &mut self,
+        id: &str,
+        source: Option<IconSource>,
+    ) -> Result<(), crate::widget::IconItemError> {
+        let mut matches = 0usize;
+        for item in &self.items {
+            if item.id == id {
+                matches += 1;
+            }
+        }
+        match matches {
+            0 => return Err(crate::widget::IconItemError::UnknownItemId { id: String::from(id) }),
+            1 => {}
+            _ => {
+                return Err(crate::widget::IconItemError::DuplicateItemId { id: String::from(id) })
+            }
+        }
+        self.item_icon_sources.retain(|(existing, _)| existing != id);
+        if let Some(source) = source {
+            self.item_icon_sources.push((String::from(id), source));
+        }
+        // An icon is part of the chip's box, so the row has to be measured again, not just redrawn.
+        self.base.request_layout();
+        self.base.request_redraw();
+        Ok(())
+    }
+
+    /// Returns the typed icon source assigned to the item owning `id`.
+    pub fn item_icon_source(&self, id: &str) -> Option<IconSource> {
+        self.item_icon_sources
+            .iter()
+            .find(|(existing, _)| existing == id)
+            .map(|(_, source)| *source)
+    }
+
+    /// Returns the typed icon source for `item`, if one is assigned.
+    fn icon_source_of(&self, item: &ChipItem) -> Option<IconSource> {
+        self.item_icon_source(&item.id)
+    }
+
+    /// Replaces the whole id-keyed override map, dropping any entry the new list does not name.
+    fn adopt_icon_sources(&mut self, sources: Vec<(String, IconSource)>) {
+        self.item_icon_sources = sources;
+        let live: Vec<String> = self.items.iter().map(|item| item.id.clone()).collect();
+        self.item_icon_sources.retain(|(id, _)| live.contains(id));
     }
 
     /// Enables/disables multi-select mode.
@@ -253,7 +357,11 @@ impl Chip {
     fn chip_width(&self, item: &ChipItem, padding: i32) -> i32 {
         // The **effective font** — the resolved theme/caller font — so the chip box and the label are
         // measured with the same font the row paints with (D09-STYLE-01 / D09-STYLE-02).
-        estimate_text_width(&item.label, effective_font(self.style()), 1.0) as i32 + padding * 2
+        let icon =
+            if self.icon_source_of(item).is_some() { CHIP_ICON_SIDE + CHIP_ICON_GAP } else { 0 };
+        estimate_text_width(&item.label, effective_font(self.style()), 1.0) as i32
+            + padding * 2
+            + icon as i32
     }
 
     /// The band the chip row occupies: full width, `CHIP_HEIGHT` tall, centred in the
@@ -402,7 +510,10 @@ impl WidgetProperties for Chip {
             "items" => {
                 Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
                     &CHIP_ITEM_SCHEMA,
-                    self.items().iter().map(chip_item_record).collect(),
+                    self.items()
+                        .iter()
+                        .map(|item| chip_item_record(item, self.icon_source_of(item)))
+                        .collect(),
                 )))
             }
             "item_count" => Ok(CapabilityValue::UInt(self.items().len() as u64)),
@@ -437,12 +548,20 @@ impl WidgetProperties for Chip {
                     }
                 })?;
                 let mut items = Vec::with_capacity(list.len());
+                let mut icon_sources = Vec::new();
                 for record in list.items() {
-                    items.push(chip_item_from_record(record)?);
+                    let (item, source) = chip_item_from_record(record)?;
+                    if let Some(source) = source {
+                        icon_sources.push((item.id.clone(), source));
+                    }
+                    items.push(item);
                 }
                 // `set_items` is the control's own normalisation (single-select collapses to one
                 // selection), so the property write goes through it rather than restating the rule.
                 self.set_items(items);
+                // The document is the authority on what each row carries: a record that omits
+                // `icon_source` means "this chip has no icon", not "keep whatever was there".
+                self.adopt_icon_sources(icon_sources);
                 Ok(())
             }
             "multi_select" => {
@@ -616,6 +735,28 @@ impl Draw for Chip {
             }
             context.fill_rect(chip_rect, bg);
             context.draw_rect(chip_rect, border);
+            // ── Icon ──
+            //
+            // A chip with typed content reserves a leading square, and the label band starts after
+            // it. `chip_width` charges exactly `CHIP_ICON_SIDE + CHIP_ICON_GAP`, so the room the
+            // box was measured with and the room the glyph occupies cannot disagree.
+            let mut label_box = chip_rect;
+            if let Some(source) = self.icon_source_of(item) {
+                let side = CHIP_ICON_SIDE.min(chip_rect.height.saturating_sub(4)).max(1);
+                let icon_rect = Rect::new(
+                    chip_rect.x + CHIP_ICON_GAP as i32,
+                    chip_rect.y + (chip_rect.height.saturating_sub(side) / 2) as i32,
+                    side,
+                    side,
+                );
+                if let Err(error) =
+                    crate::widget::paint_icon(context, source.into(), icon_rect, label_ink)
+                {
+                    log::warn!("chip item '{}' icon failed: {error:?}", item.id);
+                }
+                label_box.x += (CHIP_ICON_SIDE + CHIP_ICON_GAP) as i32;
+                label_box.width = label_box.width.saturating_sub(CHIP_ICON_SIDE + CHIP_ICON_GAP);
+            }
             // The chip's label is centred through the shared primitive: `chip_rect.y +
             // chip_rect.height / 2` is the glyph box's *top* edge on the chip's middle line,
             // which drew the label half a line low. The label itself is host-supplied, and the
@@ -623,7 +764,7 @@ impl Draw for Chip {
             // the ink is fitted into that same clamped box: a long label now elides inside its
             // chip instead of running past the box the chip was drawn as.
             context.draw_text_line(
-                chip_rect,
+                label_box,
                 &item.label,
                 effective_font(&style),
                 label_ink,
@@ -1117,6 +1258,84 @@ mod tests {
         assert_eq!(chip.items().len(), 1);
     }
 
+    // ── Item icons: identity-keyed, drawn, and carried by the record ──
+
+    /// A chip item's typed icon is addressed by the item's **stable id**, and a missing or
+    /// duplicated id is reported rather than silently targeting the wrong chip.
+    #[test]
+    fn a_chip_item_icon_is_addressed_by_id_and_drawn() {
+        let mut chip = Chip::new(Rect::new(0, 0, 300, 36));
+        chip.set_items(vec![ChipItem::new("bug", "Bug"), ChipItem::new("fix", "Fix")]);
+        let render = |chip: &mut Chip| crate::widget::svg::render_to_svg(chip);
+        let without = render(&mut chip);
+
+        assert_eq!(
+            chip.set_item_icon_source(
+                "nope",
+                Some(IconSource::Builtin(crate::widget::IconName::Info))
+            ),
+            Err(crate::widget::IconItemError::UnknownItemId { id: String::from("nope") })
+        );
+        chip.set_item_icon_source("bug", Some(IconSource::Builtin(crate::widget::IconName::Info)))
+            .expect("the chip exists");
+
+        let with = render(&mut chip);
+        assert_eq!(
+            with.matches("<path").count(),
+            without.matches("<path").count() + 1,
+            "a chip item icon must reach the drawing backend exactly once"
+        );
+        // The icon is part of the chip's box, so the row is measured again -- an icon that reserved
+        // no room would overlap its own label.
+        assert!(
+            chip.chip_rect(0).expect("the chip exists").width
+                > chip.chip_rect(1).expect("the chip exists").width,
+            "the icon must widen the chip that carries it"
+        );
+
+        chip.set_item_icon_source("bug", None).expect("the chip exists");
+        assert!(chip.item_icon_source("bug").is_none());
+        assert_eq!(render(&mut chip).matches("<path").count(), without.matches("<path").count());
+    }
+
+    /// `items` carries the icon, so a document round-trips it without a side channel.
+    #[test]
+    fn the_items_record_carries_the_item_icon_and_replaces_it() {
+        use crate::widget::capability::{CapabilityValue, RecordList, RecordValue};
+
+        let run = |chip: &mut Chip| {
+            chip.set_items(vec![ChipItem::new("bug", "Bug")]);
+            chip.set_item_icon_source(
+                "bug",
+                Some(IconSource::Builtin(crate::widget::IconName::Info)),
+            )
+            .expect("the chip exists");
+            match chip.get("items").expect("readable") {
+                CapabilityValue::Records(list) => list,
+                other => panic!("expected records, got {other:?}"),
+            }
+        };
+        let chip = &mut Chip::new(Rect::new(0, 0, 300, 36));
+        let list = run(chip);
+        assert!(matches!(
+            list.items()[0].get("icon_source"),
+            Some(CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(
+                crate::widget::IconName::Info
+            )))
+        ));
+
+        // A document that omits the field means "no icon here", so applying a plain list clears the
+        // override rather than leaving the old one in place.
+        let plain = RecordList::from_items(
+            &crate::widget::capability::EMPTY_RECORD_SCHEMA,
+            vec![RecordValue::new()
+                .with("id", CapabilityValue::String(String::from("bug")))
+                .with("label", CapabilityValue::String(String::from("Bug")))],
+        );
+        chip.set("items", CapabilityValue::Records(plain)).expect("a plain row is valid");
+        assert!(chip.item_icon_source("bug").is_none(), "an omitted field clears the override");
+    }
+
     /// `items` is part of the published contract, and the capability's own table declares it as a
     /// record list — so a designer that reads the schema learns the field shape rather than guessing.
     #[test]
@@ -1134,7 +1353,7 @@ mod tests {
         assert!(schema.readable && schema.writable);
         let record_schema = schema.record_schema.expect("a `Records` schema names its shape");
         assert_eq!(record_schema.id_field, "id");
-        assert_eq!(record_schema.names(), vec!["id", "label", "selected"]);
+        assert_eq!(record_schema.names(), vec!["id", "label", "selected", "icon_source"]);
         assert!(record_schema.ids_unique && record_schema.ids_required);
         // The control itself carries the same schema, so the two cannot drift.
         assert_eq!(record_schema, &CHIP_ITEM_SCHEMA);

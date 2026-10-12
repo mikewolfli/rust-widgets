@@ -80,6 +80,7 @@ macro_rules! impl_properties_menu {
         #[cfg(not(alloc_frugal))]
         pub(crate) const MENU_BUTTON_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("icon_source", PropertyValueKind::IconSpec, true, true),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("expanded", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),

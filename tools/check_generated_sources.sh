@@ -121,7 +121,7 @@ GEN_LOG="$(mktemp)"
 DIAG1="$(mktemp)"
 DIAG3="$(mktemp)"
 DIAG4="$(mktemp)"
-trap 'rm -rf "$SCRATCH" "$INJECT_DIR"; rm -f "$GEN_LOG" "$DIAG1" "$DIAG3" "$DIAG4" "$GEN_BACKUP"' EXIT
+trap 'rm -rf "$SCRATCH" "${INJECT_DIR:-}"; rm -f "$GEN_LOG" "$DIAG1" "$DIAG3" "$DIAG4" "${GEN_BACKUP:-}"' EXIT
 cp -R "$PROJECT_DIR/." "$SCRATCH/"
 rm -rf "$SCRATCH/src/generated"
 

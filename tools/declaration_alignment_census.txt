@@ -11,7 +11,7 @@
 # failed  = declarations that disagree with the implementation
 
 controls   188
-skipped    197
+skipped    192
 failed     0
 
 ## skipped entries (each with its reason)
@@ -85,14 +85,9 @@ failed     0
 - grid::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - freeform_shape::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - message_box::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- file_dialog::directory: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- file_dialog::selected_file: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - file_dialog::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - font_dialog::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - input_dialog::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- progress_dialog::value: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- progress_dialog::minimum: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
-- progress_dialog::maximum: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - progress_dialog::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - popup_window::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - dialog::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered

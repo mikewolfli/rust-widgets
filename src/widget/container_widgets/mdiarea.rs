@@ -11,6 +11,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::effective_font;
+use crate::widget::IconSource;
 #[cfg(feature = "image")]
 use crate::widget::Image;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
@@ -39,6 +40,11 @@ pub struct MdiSubWindow {
     title: String,
     #[cfg(feature = "image")]
     icon: Option<Image>,
+    /// Typed icon content for this sub-window.
+    ///
+    /// Shares one active state with the legacy [`MdiSubWindow::icon`] image: whichever was assigned
+    /// most recently wins, so a getter never reports content the title bar is not drawing.
+    icon_source: Option<IconSource>,
     minimized: bool,
     maximized: bool,
     closable: bool,
@@ -104,6 +110,7 @@ impl MdiSubWindow {
             title: String::new(),
             #[cfg(feature = "image")]
             icon: None,
+            icon_source: None,
             minimized: false,
             maximized: false,
             closable: true,
@@ -139,8 +146,49 @@ impl MdiSubWindow {
     }
     #[cfg(feature = "image")]
     /// Sets icon.
+    ///
+    /// Replaces any typed [`MdiSubWindow::icon_source`] previously assigned. A non-RGBA8 image is
+    /// normalised once here so the title-bar draw can borrow its bytes every frame.
     pub fn set_icon(&mut self, icon: Option<Image>) {
-        self.icon = icon;
+        self.icon = icon.map(crate::widget::icon_source::normalize_rgba8_image);
+        self.icon_source = None;
+    }
+
+    /// Assigns typed, already-resolved icon content to this sub-window.
+    ///
+    /// `None` clears the typed source and the legacy image together, so an explicit clear cannot be
+    /// followed by the previous icon reappearing.
+    pub fn set_icon_source(&mut self, source: Option<IconSource>) {
+        self.icon_source = source;
+        #[cfg(feature = "image")]
+        {
+            self.icon = None;
+        }
+    }
+
+    /// Returns the typed icon source, if one is active.
+    pub fn icon_source(&self) -> Option<IconSource> {
+        self.icon_source
+    }
+
+    /// Clears the sub-window's icon, whatever form it was stored in.
+    pub fn clear_icon_source(&mut self) {
+        self.set_icon_source(None);
+    }
+
+    /// Whether the title bar of this sub-window reserves a leading icon slot.
+    pub fn has_icon(&self) -> bool {
+        if self.icon_source.is_some() {
+            return true;
+        }
+        #[cfg(feature = "image")]
+        {
+            self.icon.is_some()
+        }
+        #[cfg(not(feature = "image"))]
+        {
+            false
+        }
     }
     /// Returns whether sub-window is minimized.
     pub fn is_minimized(&self) -> bool {
@@ -281,6 +329,35 @@ impl MdiArea {
     /// Returns mutable sub-window at index.
     pub fn sub_window_mut(&mut self, index: usize) -> Option<&mut MdiSubWindow> {
         self.subwindows.get_mut(index)
+    }
+
+    /// Assigns typed icon content to the sub-window owning `widget`.
+    ///
+    /// A sub-window is identified by the child `ObjectId` it hosts, which is the stable identity this
+    /// collection already has, so no second selection model is introduced. A missing or duplicated
+    /// child is reported instead of silently targeting the wrong window.
+    pub fn set_item_icon_source(
+        &mut self,
+        widget: ObjectId,
+        source: Option<IconSource>,
+    ) -> Result<(), crate::widget::IconItemError> {
+        let mut found: Option<usize> = None;
+        for (index, subwindow) in self.subwindows.iter().enumerate() {
+            if subwindow.widget == widget {
+                if found.is_some() {
+                    return Err(crate::widget::IconItemError::AmbiguousItemId { id: widget });
+                }
+                found = Some(index);
+            }
+        }
+        match found {
+            Some(index) => {
+                self.subwindows[index].set_icon_source(source);
+                self.base.request_redraw();
+                Ok(())
+            }
+            None => Err(crate::widget::IconItemError::ItemNotFound { id: widget }),
+        }
     }
     /// Returns view mode.
     pub fn view_mode(&self) -> ViewMode {
@@ -675,6 +752,13 @@ const CLOSE_SIZE_SUM: u32 = 22;
 /// Height of a sub-window's title bar, in logical pixels.
 const TITLE_BAR_HEIGHT: i32 = 24;
 
+/// Square side of the leading icon slot a sub-window's title bar reserves, in logical pixels.
+const SUBWINDOW_ICON_SIDE: u32 = 12;
+/// Gap between that icon slot and the title text.
+const SUBWINDOW_ICON_GAP: u32 = 4;
+/// Inset of the title bar's content from the frame's leading edge.
+const TITLE_BAR_INSET: i32 = 5;
+
 /// The tab strip's height in `ViewMode::TabbedView`, in logical pixels.
 ///
 /// Two pixels taller than a sub-window's own title bar: a tab carries the title *and* sits above
@@ -706,6 +790,39 @@ struct SubwindowPlacement {
     /// False in `TabbedView`, where the tab strip names the sub-window: drawing both would name
     /// the same window twice, one above the other.
     title_bar: bool,
+}
+
+/// Paints a sub-window's icon into `icon_rect`, in `color`.
+///
+/// One function for both presentations of a sub-window — the sub-window view's title bar and the
+/// tabbed view's tab — so the two cannot disagree about which active form is drawn.
+fn draw_subwindow_icon(
+    context: &mut RenderContext,
+    subwindow: &MdiSubWindow,
+    icon_rect: Rect,
+    color: Color,
+) {
+    if let Some(source) = subwindow.icon_source {
+        if let Err(error) = crate::widget::paint_icon(context, source.into(), icon_rect, color) {
+            log::warn!("sub-window icon could not be painted: {error:?}");
+        }
+    }
+    #[cfg(feature = "image")]
+    if subwindow.icon_source.is_none() {
+        if let Some(image) = subwindow.icon.as_ref() {
+            // `set_icon` normalises to RGBA8, so the whole image is borrowed here.
+            if let crate::image::ImageData::Rgba8(pixels) = &image.inner.data {
+                // The shared fit rule, as `SharedIconPixels::fit_into` uses, so every image this
+                // crate draws into an icon slot is fitted the same way.
+                let fitted = crate::widget::icon_source::fit_image_into(
+                    image.width(),
+                    image.height(),
+                    icon_rect,
+                );
+                context.draw_image(fitted.x, fitted.y, fitted.width, fitted.height, pixels);
+            }
+        }
+    }
 }
 
 impl Draw for MdiArea {
@@ -869,12 +986,32 @@ impl Draw for MdiArea {
                 let title_font = effective_font(&style);
                 let title_line = context.text_line(title_bar_rect, title_font);
                 let text_color = if is_active { primary.contrast_color() } else { ink };
+                // ── Icon ──
+                //
+                // A sub-window with an icon reserves a leading square inside the title bar, and the
+                // title band starts after it. The title bar is a fixed height and the text is
+                // left-aligned, so the slot is the only thing that moves.
+                let mut title_x = frame_rect.x + TITLE_BAR_INSET;
+                let mut title_width =
+                    title_bar_rect.width.saturating_sub(TITLE_BAR_INSET as u32 + CLOSE_SIZE_SUM);
+                if subwindow.has_icon() {
+                    let side = SUBWINDOW_ICON_SIDE.min(title_line.height.max(1));
+                    let icon_rect = Rect {
+                        x: frame_rect.x + TITLE_BAR_INSET,
+                        y: title_line.y + (title_line.height.saturating_sub(side) / 2) as i32,
+                        width: side,
+                        height: side,
+                    };
+                    draw_subwindow_icon(context, subwindow, icon_rect, text_color);
+                    title_x += (SUBWINDOW_ICON_SIDE + SUBWINDOW_ICON_GAP) as i32;
+                    title_width =
+                        title_width.saturating_sub(SUBWINDOW_ICON_SIDE + SUBWINDOW_ICON_GAP);
+                }
                 context.draw_text_fitted(
                     Rect {
-                        x: frame_rect.x + 5,
+                        x: title_x,
                         y: title_line.y,
-                        // Bounded so a long document title cannot run under the close button.
-                        width: title_bar_rect.width.saturating_sub(5 + CLOSE_SIZE_SUM),
+                        width: title_width,
                         height: title_line.height,
                     },
                     &subwindow.title,
@@ -961,17 +1098,33 @@ impl MdiArea {
             context.draw_rect(tab, *border);
             let text_color = if is_active { primary.contrast_color() } else { *ink };
             // The label's band is the tab minus its own padding, so a long title is ellipsised by
-            // `draw_text_fitted` rather than running into the next tab.
+            // `draw_text_fitted` rather than running into the next tab. A tab for a window with an
+            // icon gives up a leading square first, so the icon and the title share the tab the same
+            // way they share the title bar in the sub-window view.
             let inset = TAB_TEXT_INSET.min(tab.width as i32 / 2);
-            let label = Rect::new(
+            let mut label = Rect::new(
                 tab.x + inset,
                 tab.y,
                 tab.width.saturating_sub(inset as u32 * 2),
                 tab.height,
             );
+            let subwindow = &self.subwindows[index];
+            if subwindow.has_icon() {
+                let line = context.text_line(label, font);
+                let side = SUBWINDOW_ICON_SIDE.min(line.height.max(1));
+                let icon_rect = Rect {
+                    x: label.x,
+                    y: line.y + (line.height.saturating_sub(side) / 2) as i32,
+                    width: side,
+                    height: side,
+                };
+                draw_subwindow_icon(context, subwindow, icon_rect, text_color);
+                label.x += (SUBWINDOW_ICON_SIDE + SUBWINDOW_ICON_GAP) as i32;
+                label.width = label.width.saturating_sub(SUBWINDOW_ICON_SIDE + SUBWINDOW_ICON_GAP);
+            }
             context.draw_text_fitted(
                 context.text_line(label, font),
-                &self.subwindows[index].title,
+                &subwindow.title,
                 font,
                 text_color,
                 HorizontalAlignment::Center,
@@ -986,6 +1139,7 @@ mod tests {
     use crate::core::{Point, Rect};
     use crate::event::Event;
     use crate::widget::svg::render_to_svg;
+    use crate::widget::IconName;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::Arc;
 
@@ -1341,6 +1495,111 @@ mod tests {
         let svg = render_to_svg(&mut area);
         assert!(svg.starts_with("<svg"));
         assert!(svg.len() > 50);
+    }
+
+    // ── 9b. Sub-window icons and their draw ──────────────────────────────
+
+    /// Builds one titled sub-window in sub-window view, ready to be drawn.
+    fn titled_area() -> MdiArea {
+        let mut area = MdiArea::new(Rect::new(0, 0, 240, 160));
+        area.add_sub_window(widget_id_1(), Rect::new(10, 10, 120, 90));
+        area.sub_window_mut(0).expect("exists").set_title("Doc".to_string());
+        area
+    }
+
+    #[test]
+    fn mdiarea_set_item_icon_source_reports_a_missing_child() {
+        let mut area = titled_area();
+        assert_eq!(
+            area.set_item_icon_source(widget_id_2(), Some(IconSource::Builtin(IconName::Info))),
+            Err(crate::widget::IconItemError::ItemNotFound { id: widget_id_2() })
+        );
+        assert!(area
+            .set_item_icon_source(widget_id_1(), Some(IconSource::Builtin(IconName::Info)))
+            .is_ok());
+        assert_eq!(
+            area.sub_window(0).unwrap().icon_source(),
+            Some(IconSource::Builtin(IconName::Info))
+        );
+    }
+
+    #[test]
+    fn mdiarea_sub_window_icon_adds_geometry_to_the_title_bar() {
+        let without = render_to_svg(&mut titled_area());
+
+        let mut with_icon = titled_area();
+        with_icon
+            .set_item_icon_source(widget_id_1(), Some(IconSource::Builtin(IconName::Info)))
+            .expect("the child exists");
+        let with = render_to_svg(&mut with_icon);
+
+        // One compound geometry becomes exactly one extra `<path>`; the left-aligned title is
+        // unchanged, so nothing else moves.
+        assert_eq!(
+            with.matches("<path").count(),
+            without.matches("<path").count() + 1,
+            "a typed sub-window icon must reach the drawing backend exactly once"
+        );
+    }
+
+    #[cfg(feature = "image")]
+    #[test]
+    fn mdiarea_legacy_image_icon_reaches_the_drawing_backend() {
+        let mut area = titled_area();
+        let without = render_to_svg(&mut area);
+        assert!(!without.contains("<image"), "an iconless sub-window draws no image");
+
+        area.sub_window_mut(0).expect("exists").set_icon(Some(Image::from_rgba(
+            vec![128; 4 * 4 * 4],
+            4,
+            4,
+        )));
+        let with = render_to_svg(&mut area);
+        assert!(with.contains("<image"), "a legacy sub-window image must reach the backend");
+    }
+
+    #[cfg(feature = "image")]
+    #[test]
+    fn mdiarea_typed_and_legacy_icon_share_one_active_state() {
+        let mut area = titled_area();
+        area.sub_window_mut(0).expect("exists").set_icon(Some(Image::from_rgba(vec![3; 4], 1, 1)));
+        assert!(area.sub_window(0).unwrap().has_icon());
+
+        area.set_item_icon_source(widget_id_1(), Some(IconSource::Builtin(IconName::Save)))
+            .expect("the child exists");
+        assert!(area.sub_window(0).unwrap().icon().is_none());
+        assert_eq!(
+            area.sub_window(0).unwrap().icon_source(),
+            Some(IconSource::Builtin(IconName::Save))
+        );
+
+        area.sub_window_mut(0).unwrap().clear_icon_source();
+        assert!(!area.sub_window(0).unwrap().has_icon());
+        assert!(area.sub_window(0).unwrap().icon().is_none());
+    }
+
+    #[test]
+    fn mdiarea_tabbed_view_draws_the_sub_window_icon_too() {
+        // Both presentations of one sub-window must show its icon: the tabbed view has no title
+        // bar, so an icon wired only into the title bar would simply vanish there.
+        let build = |icon: bool| {
+            let mut area = MdiArea::new(Rect::new(0, 0, 240, 160));
+            area.add_sub_window(widget_id_1(), Rect::new(10, 10, 120, 90));
+            area.sub_window_mut(0).expect("exists").set_title("Doc".to_string());
+            area.set_view_mode(ViewMode::TabbedView);
+            if icon {
+                area.set_item_icon_source(widget_id_1(), Some(IconSource::Builtin(IconName::Info)))
+                    .expect("the child exists");
+            }
+            area
+        };
+        let without = render_to_svg(&mut build(false));
+        let with = render_to_svg(&mut build(true));
+        assert_eq!(
+            with.matches("<path").count(),
+            without.matches("<path").count() + 1,
+            "the tabbed view must paint the sub-window icon exactly once"
+        );
     }
 
     // ── 10. Signal accessors ─────────────────────────────────────────────

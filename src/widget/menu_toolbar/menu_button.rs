@@ -363,6 +363,17 @@ impl WidgetProperties for MenuButton {
             "text" => Ok(CapabilityValue::String(self.text().to_string())),
             "item_count" => Ok(CapabilityValue::UInt(self.item_count() as u64)),
             "expanded" => Ok(CapabilityValue::Bool(self.is_menu_open())),
+            "icon_source" => match self.icon_source() {
+                None => Ok(CapabilityValue::Null),
+                Some(IconSource::Builtin(name)) => Ok(CapabilityValue::IconSpec(
+                    crate::widget::icon_source::IconSpec::Builtin(name),
+                )),
+                // A borrowed static-geometry source has no document representation, so reading it
+                // back as one would be a lie; the caller is told instead.
+                Some(IconSource::StaticGeometry(_)) => {
+                    Err(CapabilityAccessError::IconSourceNotPersistable)
+                }
+            },
             _ => base_property_get(self, name),
         }
     }
@@ -381,14 +392,37 @@ impl WidgetProperties for MenuButton {
                 }
                 Ok(())
             }
+            "icon_source" => {
+                match value {
+                    CapabilityValue::Null => self.set_icon_source(None),
+                    CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(
+                        name,
+                    )) => self.set_icon_source(Some(IconSource::Builtin(name))),
+                    // A resource ID needs a host resolver; turning it into a path here would be
+                    // guessing at the host's resource policy.
+                    CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Resource {
+                        ..
+                    }) => return Err(CapabilityAccessError::ResourceResolutionRequired),
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                }
+                Ok(())
+            }
             // Derived from the menu item list, which owns it.
             "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
 
+    fn set_resolved_icon_source(
+        &mut self,
+        source: Option<IconSource>,
+    ) -> Result<(), CapabilityAccessError> {
+        self.set_icon_source(source);
+        Ok(())
+    }
+
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["text", "item_count", "expanded", BASE_PROPERTY_NAMES]
+        property_names_of!["text", "icon_source", "item_count", "expanded", BASE_PROPERTY_NAMES]
     }
 }
 
@@ -685,6 +719,52 @@ mod tests {
     use super::*;
     use crate::widget::svg::render_to_svg;
     use std::sync::{Arc, Mutex};
+
+    /// `menu_button`'s own `icon_source` contract: a built-in descriptor round-trips, a resource
+    /// needs a host resolver, and a borrowed static geometry is not persistable.
+    #[test]
+    fn menu_button_icon_source_property_round_trips_and_refuses_the_unresolvable() {
+        use crate::widget::capability::types::CapabilityValue as V;
+        use crate::widget::icon_source::{IconColorMode, IconSpec};
+
+        let mut mb = MenuButton::new("File", Rect::new(0, 0, 100, 30));
+        assert_eq!(mb.get("icon_source"), Ok(V::Null));
+
+        let icon = IconSpec::Builtin(crate::widget::IconName::Info);
+        mb.set("icon_source", V::IconSpec(icon.clone()))
+            .expect("built-in descriptors apply without a resolver");
+        assert_eq!(mb.get("icon_source"), Ok(V::IconSpec(icon)));
+        assert_eq!(mb.icon_source(), Some(IconSource::Builtin(crate::widget::IconName::Info)));
+
+        assert_eq!(
+            mb.set(
+                "icon_source",
+                V::IconSpec(IconSpec::Resource {
+                    id: "project/icons/save".into(),
+                    color_mode: IconColorMode::Monochrome,
+                }),
+            ),
+            Err(CapabilityAccessError::ResourceResolutionRequired)
+        );
+
+        mb.set("icon_source", V::Null).expect("null clears the icon");
+        assert_eq!(mb.icon_source(), None, "an explicit clear is Empty, not the old icon");
+
+        // The resolver entry point reaches the same active state, which is what lets a document
+        // with a resource descriptor land here once the host has resolved it.
+        mb.set_resolved_icon_source(Some(IconSource::Builtin(crate::widget::IconName::Save)))
+            .expect("a resolved source applies");
+        assert_eq!(mb.icon_source(), Some(IconSource::Builtin(crate::widget::IconName::Save)));
+
+        static DATA: crate::widget::display_widgets::icon::IconData =
+            crate::widget::display_widgets::icon::IconData {
+                name: "runtime",
+                grid: 24,
+                paths: &[],
+            };
+        mb.set_icon_source(Some(IconSource::static_geometry(&DATA)));
+        assert_eq!(mb.get("icon_source"), Err(CapabilityAccessError::IconSourceNotPersistable));
+    }
 
     #[test]
     fn menu_button_default_creation() {

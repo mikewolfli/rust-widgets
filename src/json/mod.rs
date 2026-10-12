@@ -144,7 +144,7 @@ pub use properties::is_widget_property;
 /// Re-exported rather than duplicated: the loader's write and the generator's pre-check must agree
 /// about what a document's value *is* before they can agree about whether it is acceptable.
 #[cfg(feature = "designer")]
-pub(crate) use properties::to_capability_value;
+pub(crate) use properties::{to_capability_value, to_capability_value_with_record_schema};
 
 /// The capability registry used to resolve a JSON widget name to a constructor
 /// and to look up a property's declared value kind.

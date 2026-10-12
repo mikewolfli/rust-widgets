@@ -2211,7 +2211,7 @@ mod tests {
                 "DrawImage",
                 WgpuDrawCommand::DrawImage {
                     rect: rect(0, 0, 16, 16),
-                    rgba8: vec![128, 128, 128, 255].repeat(16 * 16),
+                    rgba8: [128, 128, 128, 255].repeat(16 * 16),
                     image_width: 16,
                     image_height: 16,
                     clip: None,

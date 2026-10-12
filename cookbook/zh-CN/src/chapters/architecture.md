@@ -873,7 +873,7 @@ pub trait ControlBackend {
 
 ## 图标数据路径（`icons`，默认开启）
 
-`Icon` 通过 `IconName` 命名 68 个图标。`icons` 特性 —— **默认开启** —— 每个都按**真实轮廓**绘制，
+`Icon` 通过 `IconName` 命名 69 个图标。`icons` 特性 —— **默认开启** —— 每个都按**真实轮廓**绘制，
 轮廓来自固定在某个上游修订的路径数据。不开该特性时 `Icon` 回退到**生成的几何**，它由**同一批**轮廓
 展平而来 —— 所以两条路径不可能对同一个图标给出不同形状。
 
@@ -881,21 +881,19 @@ token 集在 `tools/icon_tokens.txt` 中**只声明一次**，`tools/gen_icon_na
 类型，所以新增一个图标是两行编辑加一次生成器运行，而不再需要改枚举、两个 match 分支和三个数组。
 宿主若需要本仓没有的图标，用 `register_icon` 注册自己的，它走下面完全相同的代码。
 
-从一个名字到像素经过三个阶段，而中间那个**刻意不是**任何东西的第二份实现：
+从一个名字到像素经过四个阶段，每个阶段只有一份实现：
 
 ```mermaid
 graph LR
-    ENUM["IconName<br/>（68 个变体）"]
+    ENUM["IconName<br/>（69 个变体）"]
     DATA["IconData<br/>name, grid, paths"]
     PARSE["render::path::parser<br/>SVG d -> Segment"]
     FLAT["render::path::flatten<br/>Segment -> 折线"]
-    RAST["render::text::raster<br/>已有的展平器"]
-    FILL["RenderContext::draw_path"]
+    FILL["RenderContext::fill_path_non_zero"]
 
     ENUM -->|data| DATA
     DATA --> PARSE
     PARSE --> FLAT
-    FLAT -.->|复用| RAST
     FLAT --> FILL
 ```
 
@@ -904,17 +902,22 @@ graph LR
 | 数据 | `widget::icon_data` | 生成表：每个 token 一条 `IconData` |
 | 解析 | `render::path::parser` | 读完整 SVG 命令集，产出曲线段 |
 | 展平 | `render::path::flatten` | 设计单位映射到设备像素，产出多边形 |
-| 填充 | `RenderContext::draw_path` | 与其他矢量绘制同一条路径填充 |
+| 填充 | `RenderContext::fill_path_non_zero` | 与其他矢量绘制同一条路径填充 |
 
 三条性质是承重的，且每条都由**机械手段**保证，而不是写在文档里：
 
 1. **声明了名字就一定有几何。** `IconName::data()` 返回 `IconData` 而非 `Option`，所以「新增变体
    但没补条目」是**编译错误**。旧写法（draw 时按字符串匹配、匹配不上就画占位符）已删除。
 2. **两个名字绝不会画同一张图。** `Close` 与 `Cross` 曾共用同一个方法，于是两个不同的名字产出完全
-   相同的图形。生成器**拒绝**产出逐字节相同的轮廓，且普查测试渲染每个 token 并要求 31 张图两两不同。
-3. **只有一条曲线展平规则。** 图标轮廓与字形是同一种形状，所以复用 `render::text::raster` 的
-   deviation-adaptive 细分，而不是新写一份。`render::path::parser` 在**解析期**把弧转成三次贝塞尔
-   （SVG F.6.5），正是为了让展平器只见它已经认识的曲线。
+   相同的图形。生成器**拒绝**产出逐字节相同的轮廓，且普查测试渲染每个 token 并要求全部 69 张图两两不同。
+3. **只有一条填充规则，并且只有一种展平容差。** 两者真正共享的是**填充**：
+   `RenderContext::fill_path_non_zero` 按与字形光栅器相同的方式累积绕数，这才让反白孔（`info` 的孔、
+   `settings` 的环）保持为空，而不是被后画的轮廓盖住。展平**并不**共享，本文档此前声称共享是错的：
+   字形光栅器遍历 `ttf_parser` 的轮廓段，而 `render::path::flatten` 遍历解析后的 SVG 子路径，
+   两者是同一套自适应细分（同一 `0.2` 偏差容差）的两份实现。它们产出相同的 `(points, contours)`
+   打包形状，也就是后端消费的契约，因此后端无法分辨某个多边形列表来自哪一份。
+   `render::path::parser` 在**解析期**把弧转成三次贝塞尔（SVG F.6.5），正是为了让展平器只见
+   它已经认识的曲线。
 
 该特性**默认开启，但不在任何 device profile 里**。`default` 回答「普通 `cargo build` 给我什么」，
 诚实的答案包含真实轮廓；而 profile 回答「这是哪类机器」，`mini` / `embedded` 是按尺寸的，调用方

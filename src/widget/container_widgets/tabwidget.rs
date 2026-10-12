@@ -30,6 +30,7 @@ use crate::widget::capability::WidgetProperties;
 #[cfg(full_widgets)]
 use crate::widget::composite::CompositeBuilder;
 use crate::widget::metrics::{effective_font, estimate_text_width};
+use crate::widget::IconSource;
 #[cfg(feature = "image")]
 use crate::widget::Image;
 #[cfg(full_widgets)]
@@ -80,6 +81,12 @@ pub struct Tab {
     title: String,
     #[cfg(feature = "image")]
     icon: Option<Image>,
+    /// Typed icon content for this tab.
+    ///
+    /// The legacy [`Tab::icon`] image and this source are one active state, not two: whichever was
+    /// assigned most recently wins, and the other is cleared. That keeps `Tab::icon_source` from
+    /// reporting content the tab is not actually drawing.
+    icon_source: Option<IconSource>,
     tooltip: String,
     enabled: bool,
     widget: Option<ObjectId>,
@@ -139,6 +146,7 @@ impl Tab {
             title,
             #[cfg(feature = "image")]
             icon: None,
+            icon_source: None,
             tooltip: String::new(),
             enabled: true,
             widget: None,
@@ -159,8 +167,50 @@ impl Tab {
     }
     #[cfg(feature = "image")]
     /// Sets icon.
+    ///
+    /// Replaces any typed [`Tab::icon_source`] previously assigned, mirroring the active-state
+    /// rule the typed setter uses. A non-RGBA8 image is normalised once here so the draw path can
+    /// borrow its bytes instead of transcoding every frame.
     pub fn set_icon(&mut self, icon: Option<Image>) {
-        self.icon = icon;
+        self.icon = icon.map(crate::widget::icon_source::normalize_rgba8_image);
+        self.icon_source = None;
+    }
+
+    /// Assigns typed, already-resolved icon content to this tab.
+    ///
+    /// Passing `None` clears the typed source **and** the legacy [`Tab::icon`] image, so a caller
+    /// that explicitly clears a tab icon never sees the previously set one reappear.
+    pub fn set_icon_source(&mut self, source: Option<IconSource>) {
+        self.icon_source = source;
+        #[cfg(feature = "image")]
+        {
+            self.icon = None;
+        }
+    }
+
+    /// Returns the typed icon source, if one is active.
+    pub fn icon_source(&self) -> Option<IconSource> {
+        self.icon_source
+    }
+
+    /// Clears the tab's icon, whatever form it was stored in.
+    pub fn clear_icon_source(&mut self) {
+        self.set_icon_source(None);
+    }
+
+    /// Whether this tab reserves a leading icon slot.
+    pub fn has_icon(&self) -> bool {
+        if self.icon_source.is_some() {
+            return true;
+        }
+        #[cfg(feature = "image")]
+        {
+            self.icon.is_some()
+        }
+        #[cfg(not(feature = "image"))]
+        {
+            false
+        }
     }
     /// Returns tooltip.
     pub fn tooltip(&self) -> &str {
@@ -187,6 +237,7 @@ impl Tab {
         self.widget = widget;
     }
 }
+
 impl TabWidget {
     /// Creates a tab widget.
     pub fn new(geometry: Rect) -> Self {
@@ -290,6 +341,29 @@ impl TabWidget {
     /// Returns mutable tab at index.
     pub fn tab_mut(&mut self, index: usize) -> Option<&mut Tab> {
         self.tabs.get_mut(index)
+    }
+    /// Assigns typed icon content to the tab at `index`.
+    ///
+    /// # Why an index and not a stable item id
+    ///
+    /// A `TabWidget` item has no identity beyond its position, and inventing one here would be a
+    /// second selection model the control does not otherwise have. The caller therefore states the
+    /// position it means, and an out-of-range index is reported rather than silently dropped.
+    pub fn set_item_icon_source(
+        &mut self,
+        index: usize,
+        source: Option<IconSource>,
+    ) -> Result<(), crate::widget::IconItemError> {
+        match self.tabs.get_mut(index) {
+            Some(tab) => {
+                tab.set_icon_source(source);
+                self.base.request_redraw();
+                Ok(())
+            }
+            None => {
+                Err(crate::widget::IconItemError::IndexOutOfBounds { index, len: self.tabs.len() })
+            }
+        }
     }
     /// Returns the text of the tab at the given index.
     pub fn tab_text(&self, index: usize) -> Option<&str> {
@@ -507,8 +581,9 @@ impl TabWidget {
                 // what the renderer draws with. The hand-rolled form also mis-measured any
                 // non-Latin caption, since it charged a fixed 8 px per cluster.
                 (estimate_text_width(&tab.title, effective_font(self.style()), 1.0) as i32
-                    + TAB_TEXT_PADDING)
-                    .clamp(MIN_TAB_WIDTH, MAX_TAB_WIDTH)
+                    + TAB_TEXT_PADDING
+                    + if tab.has_icon() { (TAB_ICON_SIDE + TAB_ICON_GAP) as i32 } else { 0 })
+                .clamp(MIN_TAB_WIDTH, MAX_TAB_WIDTH)
             })
             .collect();
         let total: i32 = measured.iter().sum::<i32>() + TAB_SPACING * (count as i32 - 1);
@@ -789,6 +864,14 @@ const MAX_TAB_WIDTH: i32 = 200;
 
 /// Padding added to a measured title before it is clamped.
 const TAB_TEXT_PADDING: i32 = 24;
+
+/// Square side of the leading icon slot a tab reserves, in logical pixels.
+///
+/// One number for both the width measurement and the paint path, so the room the strip allocates
+/// and the room the icon occupies cannot disagree.
+const TAB_ICON_SIDE: u32 = 12;
+/// Gap between a tab's icon slot and its title.
+const TAB_ICON_GAP: u32 = 4;
 
 /// Side of a tab's close button, in logical pixels.
 const CLOSE_SIZE: i32 = 12;
@@ -1147,16 +1230,61 @@ impl Draw for TabWidget {
                 let text_color = if !is_enabled { disabled_text } else { text_color };
                 let font = effective_font(&style);
                 let tab_line = context.text_line(tab_rect, font);
-                let title_band = Rect {
-                    x: tab_rect.x,
-                    y: tab_line.y,
-                    width: tab_rect.width.saturating_sub(if self.closable {
-                        (CLOSE_SIZE + CLOSE_LABEL_GAP + CLOSE_TITLE_CLEARANCE) as u32
-                    } else {
-                        0
-                    }),
-                    height: tab_line.height,
-                };
+                // ── Icon ──
+                //
+                // A tab carrying an icon reserves a leading square, and the caption band starts
+                // after it instead of underneath it. The room charged here is exactly
+                // `TAB_ICON_SIDE + TAB_ICON_GAP`, the same allowance `tab_width_hints` added, so
+                // what the strip measured and what is painted cannot disagree.
+                let mut title_x = tab_rect.x;
+                let mut title_width = tab_rect.width.saturating_sub(if self.closable {
+                    (CLOSE_SIZE + CLOSE_LABEL_GAP + CLOSE_TITLE_CLEARANCE) as u32
+                } else {
+                    0
+                });
+                if tab.has_icon() {
+                    let side = TAB_ICON_SIDE.min(tab_line.height.max(1));
+                    let icon_rect = Rect {
+                        x: tab_rect.x + TAB_ICON_GAP as i32,
+                        y: tab_line.y + (tab_line.height.saturating_sub(side) / 2) as i32,
+                        width: side,
+                        height: side,
+                    };
+                    if let Some(source) = tab.icon_source {
+                        if let Err(error) =
+                            crate::widget::paint_icon(context, source.into(), icon_rect, text_color)
+                        {
+                            log::warn!("tab icon could not be painted: {error:?}");
+                        }
+                    }
+                    #[cfg(feature = "image")]
+                    if tab.icon_source.is_none() {
+                        if let Some(image) = tab.icon.as_ref() {
+                            // `set_icon` normalises to RGBA8, so this borrow is the whole image and
+                            // no per-frame transcode can be needed.
+                            if let crate::image::ImageData::Rgba8(pixels) = &image.inner.data {
+                                // The shared fit rule, so a non-square image is fitted rather than
+                                // stretched into the square slot.
+                                let fitted = crate::widget::icon_source::fit_image_into(
+                                    image.width(),
+                                    image.height(),
+                                    icon_rect,
+                                );
+                                context.draw_image(
+                                    fitted.x,
+                                    fitted.y,
+                                    fitted.width,
+                                    fitted.height,
+                                    pixels,
+                                );
+                            }
+                        }
+                    }
+                    title_x += (TAB_ICON_SIDE + TAB_ICON_GAP) as i32;
+                    title_width = title_width.saturating_sub(TAB_ICON_SIDE + TAB_ICON_GAP);
+                }
+                let title_band =
+                    Rect { x: title_x, y: tab_line.y, width: title_width, height: tab_line.height };
                 context.draw_text_fitted(
                     title_band,
                     &tab.title,
@@ -1208,6 +1336,7 @@ mod tests {
     use super::*;
     use crate::core::{Point, Rect, Size};
     use crate::widget::svg::{render_to_svg, render_widget_to_svg};
+    use crate::widget::IconName;
     use std::sync::{Arc, Mutex};
 
     /// Helper to create unique test ObjectIds.
@@ -2052,6 +2181,85 @@ mod tests {
         let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
         tw.add_tab("Tab".to_string(), None);
         assert!(tw.tab(0).unwrap().icon().is_none());
+    }
+
+    // ── 18b. Typed tab icons and their draw ────────────────────────────────────
+
+    #[test]
+    fn tabwidget_set_item_icon_source_reports_out_of_bounds() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("Tab".to_string(), None);
+
+        assert_eq!(
+            tw.set_item_icon_source(3, Some(IconSource::Builtin(IconName::Info))),
+            Err(crate::widget::IconItemError::IndexOutOfBounds { index: 3, len: 1 })
+        );
+        assert!(tw.set_item_icon_source(0, Some(IconSource::Builtin(IconName::Info))).is_ok());
+        assert_eq!(tw.tab(0).unwrap().icon_source(), Some(IconSource::Builtin(IconName::Info)));
+    }
+
+    #[cfg(feature = "image")]
+    #[test]
+    fn tabwidget_typed_and_legacy_icon_share_one_active_state() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("Tab".to_string(), None);
+
+        tw.tab_mut(0).unwrap().set_icon(Some(Image::from_rgba(vec![9; 4], 1, 1)));
+        assert!(tw.tab(0).unwrap().has_icon());
+        assert!(tw.tab(0).unwrap().icon().is_some());
+        assert!(tw.tab(0).unwrap().icon_source().is_none());
+
+        // The typed setter is the more recent assignment, so the legacy image must not survive it.
+        tw.set_item_icon_source(0, Some(IconSource::Builtin(IconName::Save))).unwrap();
+        assert!(tw.tab(0).unwrap().icon().is_none());
+        assert_eq!(tw.tab(0).unwrap().icon_source(), Some(IconSource::Builtin(IconName::Save)));
+
+        // ... and the legacy setter replaces the typed source in turn.
+        tw.tab_mut(0).unwrap().set_icon(Some(Image::from_rgba(vec![0; 4], 1, 1)));
+        assert!(tw.tab(0).unwrap().icon_source().is_none());
+
+        // An explicit clear removes both forms, so nothing can reappear afterwards.
+        tw.tab_mut(0).unwrap().clear_icon_source();
+        assert!(!tw.tab(0).unwrap().has_icon());
+        assert!(tw.tab(0).unwrap().icon().is_none());
+    }
+
+    /// The count of `<path` elements, for the "the icon is actually drawn" assertion.
+    fn path_count(svg: &str) -> usize {
+        svg.matches("<path").count()
+    }
+
+    #[test]
+    fn tabwidget_typed_icon_adds_geometry_to_the_drawn_tab() {
+        let mut plain = TabWidget::new(Rect::new(0, 0, 300, 200));
+        plain.add_tab("Tab".to_string(), None);
+        let without = render_widget_to_svg(&mut plain, Rect::new(0, 0, 300, 200));
+
+        let mut with_icon = TabWidget::new(Rect::new(0, 0, 300, 200));
+        with_icon.add_tab("Tab".to_string(), None);
+        with_icon.set_item_icon_source(0, Some(IconSource::Builtin(IconName::Info))).unwrap();
+        let with = render_widget_to_svg(&mut with_icon, Rect::new(0, 0, 300, 200));
+
+        // The compound geometry is one path, and the caption is identical in both (the band stays
+        // the same width), so the drawn difference is exactly the icon.
+        assert_eq!(
+            path_count(&with),
+            path_count(&without) + 1,
+            "a typed tab icon must reach the drawing backend exactly once"
+        );
+    }
+
+    #[cfg(feature = "image")]
+    #[test]
+    fn tabwidget_legacy_image_icon_reaches_the_drawing_backend() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("Tab".to_string(), None);
+        let without = render_widget_to_svg(&mut tw, Rect::new(0, 0, 300, 200));
+        assert!(!without.contains("<image"), "an iconless tab draws no image");
+
+        tw.tab_mut(0).unwrap().set_icon(Some(Image::from_rgba(vec![200; 4 * 4 * 4], 4, 4)));
+        let with = render_widget_to_svg(&mut tw, Rect::new(0, 0, 300, 200));
+        assert!(with.contains("<image"), "a legacy tab image must reach the backend");
     }
 
     // ── 19. Movable tabs (drag to reorder) ─────────────────────────────────────

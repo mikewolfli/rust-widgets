@@ -321,7 +321,21 @@ impl Draw for EmptyState {
         // The icon is the palest ink on the surface; disabled fades it further.
         let icon_color =
             if is_enabled { ink.blend(&surface, 0.35) } else { ink.blend(&surface, 0.75) };
-        draw_centered(context, icon_y, &self.icon, &icon_font, icon_color);
+        // A name this crate ships as an icon is drawn as **geometry** in the box the stack already
+        // reserved for it; anything else -- the default mailbox emoji, or a symbol a host still
+        // passes -- keeps the text path it always had, so an emoji is not silently swallowed. The
+        // reserved `icon_height` is unchanged either way, so the rest of the stack cannot shift.
+        let icon_side = icon_height.max(1);
+        let drawn_as_glyph = crate::widget::icon_token_is_drawable(&self.icon)
+            && crate::widget::draw_icon_named(
+                context,
+                Rect::new(center_x - icon_side / 2, icon_y, icon_side as u32, icon_side as u32),
+                icon_color,
+                &self.icon,
+            );
+        if !drawn_as_glyph {
+            draw_centered(context, icon_y, &self.icon, &icon_font, icon_color);
+        }
 
         // ── Title ──
         // One gap below the icon's *box*, which is `icon_y + icon_height` — the same sum the
@@ -645,6 +659,30 @@ mod tests {
         assert!(svg.contains("width=\"300\""));
         assert!(svg.contains("height=\"200\""));
         assert!(svg.ends_with("</svg>"));
+    }
+
+    // ── Icon resolution ──────────────────────────────────────────────────────
+
+    /// A name this crate ships as an icon is drawn as geometry; the emoji default is not.
+    #[test]
+    fn a_known_empty_state_icon_is_drawn_as_geometry() {
+        let build = |icon: &str| {
+            let mut es = EmptyState::new(Rect::new(0, 0, 300, 200));
+            es.set_icon(icon);
+            es.set_title("No items");
+            es
+        };
+        let emoji = crate::widget::svg::render_to_svg(&mut build("📦"));
+        let token = crate::widget::svg::render_to_svg(&mut build("info"));
+
+        assert!(
+            crate::widget::icon_token_is_drawable("info"),
+            "the fixture must use a token this crate ships"
+        );
+        assert!(!crate::widget::icon_token_is_drawable("📦"));
+        // The default emoji keeps the text path it always had, so the two are not the same
+        // rendering; the token adds real outline geometry.
+        assert_ne!(emoji, token, "a known token must render differently from an emoji");
     }
 
     #[test]

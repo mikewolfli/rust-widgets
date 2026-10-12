@@ -113,6 +113,20 @@ pub(crate) fn to_capability_value(
     value: &Value,
     declared: Option<PropertyValueKind>,
 ) -> Option<CapabilityValue> {
+    to_capability_value_with_record_schema(value, declared, None)
+}
+
+/// [`to_capability_value`], with the row schema a `Records` property declared.
+///
+/// A record row may carry a **structured** field — today only an icon descriptor — and reading one
+/// needs the row's declared shape, so the caller that looked the property's schema up passes it
+/// here. Callers that have no schema (and every caller before the schema was known) get the plain
+/// conversion, which refuses compound row values rather than guessing at them.
+pub(crate) fn to_capability_value_with_record_schema(
+    value: &Value,
+    declared: Option<PropertyValueKind>,
+    record_schema: Option<&crate::widget::capability::RecordSchema>,
+) -> Option<CapabilityValue> {
     match declared {
         Some(PropertyValueKind::Bool) => value.as_bool().map(CapabilityValue::Bool),
         Some(PropertyValueKind::Int) => value.as_i64().map(CapabilityValue::Int),
@@ -152,7 +166,9 @@ pub(crate) fn to_capability_value(
         // for rows and the shape the manifest exports (BLUE26 B26.09). Field names and values are read
         // **structurally**, not as a stringified blob: a typo in a field name then stays visible to
         // the property's own schema check instead of becoming a value the setter accepts.
-        Some(PropertyValueKind::Records) => records_from_json(value).map(CapabilityValue::Records),
+        Some(PropertyValueKind::Records) => {
+            records_from_json(value, record_schema).map(CapabilityValue::Records)
+        }
         Some(PropertyValueKind::IconSpec) => icon_spec_from_json(value)
             .map(CapabilityValue::IconSpec)
             .or_else(|| value.is_null().then_some(CapabilityValue::Null)),
@@ -273,7 +289,10 @@ fn rect_from_json(value: &Value) -> Option<crate::core::Rect> {
 /// at this point no `&'static` schema is known, and inventing one would be policy the property never
 /// declared. The caller that *does* know the schema adopts the list — see
 /// [`RecordList::with_schema`](crate::widget::capability::RecordList::with_schema).
-fn records_from_json(value: &Value) -> Option<crate::widget::capability::RecordList> {
+fn records_from_json(
+    value: &Value,
+    schema: Option<&crate::widget::capability::RecordSchema>,
+) -> Option<crate::widget::capability::RecordList> {
     use crate::widget::capability::{CapabilityValue, RecordList, RecordValue};
     let Value::Array(items) = value else {
         return None;
@@ -297,8 +316,16 @@ fn records_from_json(value: &Value) -> Option<crate::widget::capability::RecordL
                     }
                 }
                 Value::String(text) => CapabilityValue::String(text.clone()),
-                // A colour or a rectangle inside a record would be a second grammar to keep in step;
-                // no control declares one today, so it is refused rather than guessed at.
+                // A nested object is read **only** where the row's declared schema says the field is
+                // a structured icon descriptor — the one compound kind a row declares today. The
+                // kind decides, not the JSON shape, so a typo cannot smuggle an object into a field
+                // that promises text (and a field the schema does not declare is still refused here
+                // and named by the row validator one layer up).
+                Value::Array(_) | Value::Object(_) if declares_icon_spec_field(schema, name) => {
+                    CapabilityValue::IconSpec(icon_spec_from_json(field)?)
+                }
+                // Any other compound value inside a record would be a second grammar to keep in
+                // step; it is refused rather than guessed at.
                 Value::Array(_) | Value::Object(_) => return None,
             };
             record = record.with(name.clone(), field_value);
@@ -306,6 +333,19 @@ fn records_from_json(value: &Value) -> Option<crate::widget::capability::RecordL
         records.push(record);
     }
     Some(RecordList::from_items(&crate::widget::capability::EMPTY_RECORD_SCHEMA, records))
+}
+
+/// Whether the row schema declares `name` as a structured icon descriptor.
+fn declares_icon_spec_field(
+    schema: Option<&crate::widget::capability::RecordSchema>,
+    name: &str,
+) -> bool {
+    let Some(schema) = schema else {
+        return false;
+    };
+    schema.fields.iter().any(|field| {
+        field.name == name && field.kind == crate::widget::capability::PropertyValueKind::IconSpec
+    })
 }
 
 /// Look up the full declared schema for a property from the factory registry.
@@ -379,9 +419,11 @@ pub(crate) fn apply_widget_property_with_icon_resolver(
     };
 
     let declared = declared_schema(widget, published);
-    let Some(capability_value) =
-        to_capability_value(value, declared.as_ref().map(|schema| schema.value_kind))
-    else {
+    let Some(capability_value) = to_capability_value_with_record_schema(
+        value,
+        declared.as_ref().map(|schema| schema.value_kind),
+        declared.as_ref().and_then(|schema| schema.record_schema()),
+    ) else {
         log::warn!(
             "JSON layout: property {published:?} rejected value {value}: it could not be \
              converted to the declared capability value kind"

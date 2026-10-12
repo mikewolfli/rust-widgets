@@ -874,7 +874,7 @@ pub trait ControlBackend {
 
 ## 圖示資料路徑（`icons`，預設開啟）
 
-`Icon` 透過 `IconName` 命名 68 個圖示。`icons` 特性 —— **預設開啟** —— 每個都按**真實輪廓**繪製，
+`Icon` 透過 `IconName` 命名 69 個圖示。`icons` 特性 —— **預設開啟** —— 每個都按**真實輪廓**繪製，
 輪廓來自固定在某個上游修訂的路徑資料。不開啟該特性時 `Icon` 回退到**生成的幾何**，它由**同一批**輪廓
 展平而來 —— 所以兩條路徑不可能對同一個圖示給出不同形狀。
 
@@ -886,17 +886,15 @@ token 集在 `tools/icon_tokens.txt` 中**只宣告一次**，`tools/gen_icon_na
 
 ```mermaid
 graph LR
-    ENUM["IconName<br/>（68 個變體）"]
+    ENUM["IconName<br/>（69 個變體）"]
     DATA["IconData<br/>name, grid, paths"]
     PARSE["render::path::parser<br/>SVG d -> Segment"]
     FLAT["render::path::flatten<br/>Segment -> 折線"]
-    RAST["render::text::raster<br/>既有的展平器"]
-    FILL["RenderContext::draw_path"]
+    FILL["RenderContext::fill_path_non_zero"]
 
     ENUM -->|data| DATA
     DATA --> PARSE
     PARSE --> FLAT
-    FLAT -.->|重複使用| RAST
     FLAT --> FILL
 ```
 
@@ -905,17 +903,22 @@ graph LR
 | 資料 | `widget::icon_data` | 生成表：每個 token 一筆 `IconData` |
 | 解析 | `render::path::parser` | 讀取完整 SVG 命令集，產出曲線段 |
 | 展平 | `render::path::flatten` | 設計單位對應到裝置像素，產出多邊形 |
-| 填色 | `RenderContext::draw_path` | 與其他向量繪製共用同一條路徑填色 |
+| 填色 | `RenderContext::fill_path_non_zero` | 與其他向量繪製共用同一條路徑填色 |
 
 三條性質是承重的，且每條都由**機械手段**保證，而不是寫在文件裡：
 
 1. **宣告了名字就一定有幾何。** `IconName::data()` 回傳 `IconData` 而非 `Option`，所以「新增變體
    但沒補條目」是**編譯錯誤**。舊寫法（draw 時按字串比對、比對不到就畫佔位符）已移除。
 2. **兩個名字絕不會畫同一張圖。** `Close` 與 `Cross` 曾共用同一個方法，於是兩個不同的名字產出一模
-   一样的圖形。生成器**拒絕**產出逐位元組相同的輪廓，且普查測試渲染每個 token 並要求 31 張圖兩兩不同。
-3. **只有一條曲線展平規則。** 圖示輪廓與字形是同一種形狀，所以重複使用 `render::text::raster` 的
-   deviation-adaptive 細分，而不是新寫一份。`render::path::parser` 在**解析期**把弧轉成三次貝茲
-   （SVG F.6.5），正是為了讓展平器只見它已經認識的曲線。
+   一样的圖形。生成器**拒絕**產出逐位元組相同的輪廓，且普查測試渲染每個 token 並要求全部 69 張圖兩兩不同。
+3. **只有一條填色規則，並且只有一種展平容差。** 兩者真正共用的是**填色**：
+   `RenderContext::fill_path_non_zero` 以與字形光柵器相同的方式累積繞數，這才讓反白孔（`info` 的孔、
+   `settings` 的環）保持為空，而不是被後畫的輪廓蓋住。展平**並未**共用，本文檔先前聲稱共用是錯的：
+   字形光柵器走 `ttf_parser` 的輪廓段，而 `render::path::flatten` 走解析後的 SVG 子路徑，
+   兩者是同一套自適應細分（同一 `0.2` 偏差容差）的兩份實作。它們產出相同的 `(points, contours)`
+   打包形狀，也就是後端消費的契約，因此後端無法分辨某個多邊形列表來自哪一份。
+   `render::path::parser` 在**解析期**把弧轉成三次貝茲（SVG F.6.5），正是為了讓展平器只見
+   它已經認識的曲線。
 
 此特性**預設開啟，但不在任何 device profile 裡**。`default` 回答「普通 `cargo build` 給我什麼」，
 誠實的答案包含真實輪廓；而 profile 回答「這是哪類機器」，`mini` / `embedded` 是按尺寸的，呼叫方

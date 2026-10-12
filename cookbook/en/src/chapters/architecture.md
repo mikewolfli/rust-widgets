@@ -900,7 +900,7 @@ between.
 
 ## The Icon Data Path (`icons`, on by default)
 
-`Icon` names 68 icons through `IconName`. The `icons` feature — **on by default** — draws each one
+`Icon` names 69 icons through `IconName`. The `icons` feature — **on by default** — draws each one
 from the **real outline**, read from path data vendored at a pinned upstream revision. Without the
 feature `Icon` falls back to generated geometry, derived by flattening *the same* outlines — so the
 two paths cannot describe different shapes for one icon.
@@ -910,22 +910,19 @@ The token set is declared once in `tools/icon_tokens.txt`; `tools/gen_icon_names
 spread across the enum, two match arms and three arrays. A host that needs an icon the crate does
 not ship registers its own with `register_icon`, which draws through exactly the code below.
 
-The path from a name to pixels has three stages, and the middle one is deliberately not a second
-implementation of anything:
+The path from a name to pixels has four stages, each with one implementation:
 
 ```mermaid
 graph LR
-    ENUM["IconName<br/>(68 variants)"]
+    ENUM["IconName<br/>(69 variants)"]
     DATA["IconData<br/>name, grid, paths"]
     PARSE["render::path::parser<br/>SVG d -> Segment"]
     FLAT["render::path::flatten<br/>Segment -> polyline"]
-    RAST["render::text::raster<br/>the existing flattener"]
-    FILL["RenderContext::draw_path"]
+    FILL["RenderContext::fill_path_non_zero"]
 
     ENUM -->|data| DATA
     DATA --> PARSE
     PARSE --> FLAT
-    FLAT -.->|reuses| RAST
     FLAT --> FILL
 ```
 
@@ -934,7 +931,7 @@ graph LR
 | Data | `widget::icon_data` | the generated table: one `IconData` per token |
 | Parse | `render::path::parser` | reads the full SVG command set into curve segments |
 | Flatten | `render::path::flatten` | maps design units to device pixels and emits polygons |
-| Fill | `RenderContext::draw_path` | the same path fill every other vector draw uses |
+| Fill | `RenderContext::fill_path_non_zero` | the same path fill every other vector draw uses |
 
 Three properties are load-bearing, and each is enforced mechanically rather than documented:
 
@@ -943,9 +940,15 @@ Three properties are load-bearing, and each is enforced mechanically rather than
    string at draw time, falling through to a placeholder — is gone.
 2. **Two names never draw one picture.** `Close` and `Cross` shared a method once, so two distinct
    names produced identical output. The generator refuses to emit byte-identical outlines, and a
-   census test renders every token and requires all 31 pictures to differ.
-3. **There is one curve-flattening rule.** An icon outline is the same kind of shape as a glyph, so
-   it reuses `render::text::raster`'s deviation-adaptive subdivider rather than growing a second one.
+   census test renders every token and requires every one of the 69 pictures to differ.
+3. **One fill rule, and only one curve-flattening tolerance.** The part the two share is the *fill*:
+   `RenderContext::fill_path_non_zero` accumulates winding the way the glyph rasteriser does, which is
+   what keeps a counter — the hole in `info`, the ring in `settings` — empty instead of being painted
+   by a later contour. Flattening is **not** shared, and this document used to claim it was: the
+   glyph rasteriser walks `ttf_parser` outline segments while `render::path::flatten` walks parsed
+   SVG subpaths, so they are two implementations of the same adaptive subdivision at the same
+   `0.2` deviation tolerance. They emit the same packed `(points, contours)` shape, which is the
+   contract a backend consumes, so backend code cannot tell which one produced a polygon list.
    `render::path::parser` converts arcs to cubics at parse time (SVG F.6.5) precisely so that the
    flattener only ever sees curves it already knows.
 

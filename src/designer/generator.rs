@@ -757,7 +757,9 @@ fn emit_node(
             ));
             continue;
         }
-        let Some(expr) = record_list_expr(&value) else {
+        let row_schema =
+            schema.record_schema.expect("a `Records` schema declares its record shape");
+        let Some(expr) = record_list_expr(&value, row_schema) else {
             report.unsupported.push(GenerationGap {
                 path: path.to_vec(),
                 widget: node.widget.clone(),
@@ -772,15 +774,17 @@ fn emit_node(
         // The same pre-check the scalar loop runs, through the same function, so a record list the
         // control would refuse is reported at generation time rather than emitted into a program whose
         // own `ApplyReport` would then be full of refusals for a document the loader rejects too.
-        let declared_value = crate::json::to_capability_value(&value, Some(schema.value_kind))
-            .and_then(|decoded| match decoded {
-                crate::widget::capability::CapabilityValue::Records(list) => {
-                    Some(list.with_schema(
-                        schema.record_schema.expect("a `Records` schema declares its record shape"),
-                    ))
-                }
-                _ => None,
-            });
+        let declared_value = crate::json::to_capability_value_with_record_schema(
+            &value,
+            Some(schema.value_kind),
+            Some(row_schema),
+        )
+        .and_then(|decoded| match decoded {
+            crate::widget::capability::CapabilityValue::Records(list) => Some(list.with_schema(
+                schema.record_schema.expect("a `Records` schema declares its record shape"),
+            )),
+            _ => None,
+        });
         match declared_value {
             Some(list) => {
                 let value = crate::widget::capability::CapabilityValue::Records(list);
@@ -1665,7 +1669,10 @@ fn capability_value_expr(value: &Value) -> String {
 /// because a record field is one value of a declared kind and a nested structure is not one of them —
 /// and `record_properties` only selects arrays whose elements are objects, so the top-level shape is
 /// already known to be right.
-fn record_list_expr(value: &Value) -> Option<String> {
+fn record_list_expr(
+    value: &Value,
+    schema: &crate::widget::capability::RecordSchema,
+) -> Option<String> {
     let Value::Array(items) = value else {
         return None;
     };
@@ -1682,7 +1689,11 @@ fn record_list_expr(value: &Value) -> Option<String> {
         }
         out.push_str("rust_widgets::widget::capability::RecordValue::new()");
         for (name, field) in fields {
-            out.push_str(&format!(".with({}, {})", quote(name), record_field_expr(field)?));
+            out.push_str(&format!(
+                ".with({}, {})",
+                quote(name),
+                record_field_expr(field, name, schema)?
+            ));
         }
     }
     out.push_str("]))");
@@ -1694,7 +1705,11 @@ fn record_list_expr(value: &Value) -> Option<String> {
 /// A JSON `null` becomes [`CapabilityValue::Null`] rather than being omitted: a document that wrote
 /// the key has said something about it, and the property's schema check is what decides whether an
 /// empty value is acceptable for that field.
-fn record_field_expr(value: &Value) -> Option<String> {
+fn record_field_expr(
+    value: &Value,
+    name: &str,
+    schema: &crate::widget::capability::RecordSchema,
+) -> Option<String> {
     if value.is_null() {
         return Some(String::from("CapabilityValue::Null"));
     }
@@ -1706,7 +1721,32 @@ fn record_field_expr(value: &Value) -> Option<String> {
     {
         return Some(capability_value_expr(value));
     }
-    None
+    // A compound row value is emittable only where the row's own schema declares a structured kind
+    // for that field -- today exactly the icon descriptor. The declared kind decides, so an object
+    // in a field that promises text is still refused rather than turned into a value the control
+    // would then reject at apply time.
+    let declared = schema.fields.iter().find(|field| field.name == name)?;
+    match declared.kind {
+        crate::widget::capability::PropertyValueKind::IconSpec => {
+            match crate::json::to_capability_value(
+                value,
+                Some(crate::widget::capability::PropertyValueKind::IconSpec),
+            )? {
+                crate::widget::capability::CapabilityValue::IconSpec(
+                    crate::widget::icon_source::IconSpec::Builtin(icon),
+                ) => Some(format!(
+                    "CapabilityValue::IconSpec(rust_widgets::widget::icon_source::IconSpec::Builtin(\
+                     rust_widgets::widget::IconName::from_name({}).expect(\"validated icon token\")))",
+                    quote(icon.as_str())
+                )),
+                // A resource descriptor needs the host's resolver, so it is not emitted; `None`
+                // makes the caller report a generation gap rather than write a program that cannot
+                // honour it.
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 /// The loader-owned keys the generated `create_for` reads as a constructor's text argument.

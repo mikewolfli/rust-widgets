@@ -20,6 +20,11 @@ use crate::widget::metrics::{dimensions, role_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+/// Square side of a segment's leading icon slot.
+const SEGMENT_ICON_SIDE: u32 = 14;
+/// Gap between that slot and the caption.
+const SEGMENT_ICON_GAP: u32 = 4;
+
 /// A single segment in a segmented button group.
 #[derive(Debug, Clone)]
 pub struct Segment {
@@ -536,16 +541,56 @@ impl Draw for SegmentedButton {
                 ink
             };
 
-            let metrics = context.measure_text(&segment.text, &font);
-            let text_x = seg_rect.x + (seg_width as i32 - metrics.width as i32) / 2;
+            // ── Icon ──
+            //
+            // `Segment::icon` was stored, documented as "displayed as a simple geometric shape",
+            // and never drawn -- dead state. It now resolves through the same `icon_token_is_drawable`
+            // the navigation bars and tab strips use: a name that names an icon is drawn as geometry
+            // in a leading slot, and a string that names none keeps the crate's text convention so a
+            // symbol a caller still passes is shown rather than silently dropped.
+            let icon_side = SEGMENT_ICON_SIDE.min(track_rect.height.saturating_sub(8)).max(1);
+            let mut icon_width = 0u32;
+            let mut icon_gap = 0u32;
+            let mut label = segment.text.clone();
+            if let Some(name) = segment.icon.as_deref() {
+                if crate::widget::icon_token_is_drawable(name) {
+                    icon_width = icon_side;
+                    icon_gap = SEGMENT_ICON_GAP;
+                } else if !name.is_empty() {
+                    label = format!("{name} {}", segment.text);
+                }
+            }
+
+            let metrics = context.measure_text(&label, &font);
+            // The icon, its gap and the caption are centred as one group, so adding an icon does not
+            // shift the caption off the segment's middle.
+            let group_width = icon_width as i32 + icon_gap as i32 + metrics.width as i32;
+            let start_x = seg_rect.x + (seg_width as i32 - group_width) / 2;
             // The origin is the glyph box's top edge, so centring on the segment is half the
             // *line box*; the old `+ ascent` began the box half a line below the middle.
             let text_y = seg_rect.y + (track_rect.height as i32 - metrics.height as i32) / 2;
 
-            if !segment.text.is_empty() {
+            if icon_width > 0 {
+                if let Some(name) = segment.icon.as_deref() {
+                    let icon_rect = Rect::new(
+                        start_x.max(seg_rect.x),
+                        seg_rect.y + (track_rect.height as i32 - icon_width as i32) / 2,
+                        icon_width,
+                        icon_width,
+                    );
+                    if !crate::widget::draw_icon_named(context, icon_rect, text_color, name) {
+                        log::warn!("segment icon '{name}' names no icon and was not drawn");
+                    }
+                }
+            }
+
+            if !label.is_empty() {
                 context.draw_text(
-                    Point::new(text_x.max(seg_rect.x), text_y.max(seg_rect.y)),
-                    &segment.text,
+                    Point::new(
+                        (start_x + icon_width as i32 + icon_gap as i32).max(seg_rect.x),
+                        text_y.max(seg_rect.y),
+                    ),
+                    &label,
                     &font,
                     text_color,
                     HorizontalAlignment::Left,
@@ -740,6 +785,42 @@ mod tests {
         let svg = crate::widget::svg::render_to_svg(&mut btn);
         assert!(svg.starts_with("<svg"));
         assert!(svg.ends_with("</svg>"));
+    }
+
+    // ── Segment icons ──────────────────────────────────────────────────────
+
+    /// A segment icon used to be stored and never drawn -- dead state the doc still described as
+    /// "displayed as a simple geometric shape".
+    #[test]
+    fn a_segment_icon_is_actually_drawn() {
+        let mut plain = SegmentedButton::new(Rect::new(0, 0, 300, 36));
+        plain.add_segment(Segment::new("Left"));
+        let without = crate::widget::svg::render_to_svg(&mut plain);
+
+        let mut with_icon = SegmentedButton::new(Rect::new(0, 0, 300, 36));
+        with_icon.add_segment(Segment::new("Left").with_icon("info"));
+        let with = crate::widget::svg::render_to_svg(&mut with_icon);
+
+        assert_eq!(
+            with.matches("<path").count(),
+            without.matches("<path").count() + 1,
+            "a segment icon must add exactly one drawn glyph"
+        );
+    }
+
+    /// A string that names no icon keeps the crate's text convention instead of vanishing.
+    #[test]
+    fn an_unknown_segment_icon_string_is_shown_as_text() {
+        let mut btn = SegmentedButton::new(Rect::new(0, 0, 300, 36));
+        btn.add_segment(Segment::new("Left").with_icon("\u{2605}"));
+        // The star resolves to no icon here, so it must still be visible in the caption rather than
+        // silently dropped -- silently dropping it is what the old code did to every icon.
+        let svg = crate::widget::svg::render_to_svg(&mut btn);
+        assert!(svg.contains("<path") || svg.contains("<text"), "the segment must still paint");
+        let mut plain = SegmentedButton::new(Rect::new(0, 0, 300, 36));
+        plain.add_segment(Segment::new("Left"));
+        let without = crate::widget::svg::render_to_svg(&mut plain);
+        assert_ne!(svg, without, "an unknown icon string must change the drawn caption");
     }
 
     #[test]

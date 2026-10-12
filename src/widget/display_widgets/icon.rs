@@ -56,8 +56,12 @@ pub use icon_names::IconName;
 /// # The two sources, resolved in the same order the widget uses
 ///
 /// With the `icons` feature on, `name.data_opt()` gives the bundled Material Symbols outline,
-/// flattened through the shared [`flatten_paths`](crate::render::path::flatten_paths) the
-/// rasteriser and the SVG backend already agree on. Without the feature (or for a name that
+/// flattened through [`flatten_paths`](crate::render::path::flatten_paths) and filled by
+/// [`RenderContext::fill_path_non_zero`](crate::render::RenderContext::fill_path_non_zero) — the
+/// same non-zero winding rule the glyph rasteriser applies, which is the part the two share. (The
+/// glyph rasteriser has its **own** outline flattener; the two produce the same packed
+/// `(points, contours)` shape but are separate implementations, and this comment says so rather
+/// than claiming a reuse that does not exist.) Without the feature (or for a name that
 /// is not a token), the generated fallback geometry draws instead. Both paths are the ones
 /// [`Icon::draw_icon`] takes, so an inline icon and an [`Icon`] widget cannot render
 /// differently.
@@ -125,12 +129,204 @@ pub enum IconPaintOutcome {
 pub enum IconPaintError {
     /// Static path geometry is unavailable in this stripped build profile.
     UnsupportedSourceForProfile,
+    /// The design grid is zero, so no device scale can be derived from it.
+    ///
+    /// A host-built [`IconData`] can carry `grid: 0`; the flattener treats that as a zero scale
+    /// rather than panicking, which would silently flatten the whole outline onto one point. It is
+    /// named here so a validation report says *why* instead of "empty".
+    ZeroGrid,
     /// The path data was malformed or exceeded a geometry budget.
     InvalidGeometry(crate::render::path::FlattenError),
     /// The data parsed but contained no drawable contours.
     EmptyGeometry,
     /// The render command rejected the prepared compound path.
     Backend(crate::render::CompoundPathError),
+}
+
+/// The design facts about a source that can be checked **before** any slot size is known.
+///
+/// The first of §19.3's two validation stages; see [`validate_icon`] for exactly which questions it
+/// answers and which it deliberately leaves to [`paint_icon`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IconSourceMetadata {
+    /// The source's design grid.
+    pub grid: u16,
+    /// How many closed contours the source declares.
+    pub contour_count: usize,
+}
+
+/// The device box a source occupies inside a slot, and the design extent it came from.
+///
+/// What a caller asks *before* drawing, so the room it reserves and the glyph that lands in it come
+/// from one rule instead of two. [`Icon::icon_rect`], `ToolButton::icon_rect` and `Chip::chip_width`
+/// each derive their own box today; a caller that has to know where content will actually land asks
+/// here rather than restating the fit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IconMetrics {
+    /// The box the content occupies inside the slot it was measured for.
+    pub bounds: Rect,
+    /// The source's own extent in design units — its grid, which is square for geometry.
+    pub source_extent: u32,
+}
+
+impl IconMetrics {
+    /// Whether the slot had no area, i.e. nothing would be painted.
+    ///
+    /// A separate question from "did painting fail": [`paint_icon`] answers an empty slot with
+    /// [`IconPaintOutcome::SkippedEmptySlot`], deliberately not an error, and a layout asks this for
+    /// the same reason. Neither uses a failure to mean "no room".
+    pub fn is_empty(&self) -> bool {
+        self.bounds.width == 0 || self.bounds.height == 0
+    }
+}
+
+/// The square a glyph is drawn in inside `slot` — the crate's one geometry fit rule.
+///
+/// `contain`, square, centred: the side is the slot's smaller dimension, so a slot that is not square
+/// cannot stretch the glyph on one axis. The previous form scaled by `slot.width` on **both** axes,
+/// so a 40x12 slot drew a 40x40 icon — 28 px taller than the box the caller reserved, clipped by
+/// whatever the backend happened to clip. Every slot the crate's controls pass is already square
+/// (`Icon::icon_rect`, `ToolButton::icon_rect`, `TAB_ICON_SIDE`, `CHIP_ICON_SIDE`, …), so this is
+/// behaviour preserving for them and correct for the case they did not cover.
+fn glyph_box(slot: Rect) -> Rect {
+    let side = slot.width.min(slot.height);
+    Rect::new(
+        slot.x + ((slot.width - side) / 2) as i32,
+        slot.y + ((slot.height - side) / 2) as i32,
+        side,
+        side,
+    )
+}
+
+/// The geometry a source resolves to, before any device size is applied.
+enum SourceGeometry {
+    /// SVG `d` on a design grid, drawn through the shared flattener.
+    ///
+    /// By value: [`IconData`] is `Copy` and its `paths` are `&'static`, so this carries the whole
+    /// geometry without borrowing the table it came from.
+    #[cfg(any(feature = "icons", widgets_unstripped))]
+    Outline(IconData),
+    /// The generated polygon table: already flattened, so its contour count is the table's.
+    ///
+    /// Borrowed, not copied: the table is `&'static`, and its grid travels with it so the extent a
+    /// caller measures and the grid a draw scales by come from the same entry.
+    Fallback(&'static crate::widget::icon_fallback_data::IconFallback),
+}
+
+/// Which geometry a source resolves to, or why it resolves to none.
+fn source_geometry(source: IconRef<'_>) -> Result<SourceGeometry, IconPaintError> {
+    match source {
+        IconRef::Builtin(name) => {
+            #[cfg(feature = "icons")]
+            if let Some(data) = name.data_opt() {
+                return Ok(SourceGeometry::Outline(data));
+            }
+            match crate::widget::icon_fallback_data::ICON_FALLBACK
+                .iter()
+                .find(|entry| entry.name == name.as_str())
+            {
+                // A token the generated table does not know has no geometry at all, which is a
+                // failure rather than a zero-sized success: reporting it keeps "drew nothing" from
+                // being indistinguishable from "drew an empty icon".
+                None => Err(IconPaintError::EmptyGeometry),
+                Some(entry) => Ok(SourceGeometry::Fallback(entry)),
+            }
+        }
+        IconRef::StaticGeometry(data) => {
+            #[cfg(any(feature = "icons", widgets_unstripped))]
+            {
+                Ok(SourceGeometry::Outline(*data))
+            }
+            #[cfg(not(any(feature = "icons", widgets_unstripped)))]
+            {
+                let _ = data;
+                Err(IconPaintError::UnsupportedSourceForProfile)
+            }
+        }
+    }
+}
+
+/// Measures where a source's content lands inside `slot`.
+///
+/// The measurement half of [`paint_icon`]: both call [`glyph_box`], so a reserved box and a painted
+/// glyph cannot disagree. An empty slot measures empty rather than failing — see
+/// [`IconMetrics::is_empty`].
+///
+/// A source with no drawable geometry is an error (`EmptyGeometry`, or
+/// `UnsupportedSourceForProfile` on a build without an outline path), not a zero-sized box, so a
+/// caller cannot mistake "this source is broken" for "there is no room".
+pub fn measure_icon(source: IconRef<'_>, slot: Rect) -> Result<IconMetrics, IconPaintError> {
+    let extent = match source_geometry(source)? {
+        #[cfg(any(feature = "icons", widgets_unstripped))]
+        SourceGeometry::Outline(data) => u32::from(data.grid),
+        SourceGeometry::Fallback(entry) => u32::from(entry.grid),
+    };
+    Ok(IconMetrics { bounds: glyph_box(slot), source_extent: extent })
+}
+
+/// Validates a source's **size-independent** geometry, reporting what a draw would submit.
+///
+/// Stage one of §19.3's two, and deliberately only stage one. It answers the questions that are
+/// properties of the *source*:
+///
+/// * the design grid is usable (non-zero);
+/// * every `d` parses — which is also what rejects non-finite coordinates and features the parser
+///   does not express;
+/// * the geometry declares at least one contour, and no more than
+///   [`MAX_OUTLINE_CONTOURS`](crate::render::path::MAX_OUTLINE_CONTOURS).
+///
+/// # What it deliberately does not answer, and why
+///
+/// The **point** budget is not a source property. The flattener subdivides curves to a fixed
+/// device-space tolerance, so the vertex count depends on the box the icon is drawn in: a source
+/// that fits the budget at 24 px can exceed it at 400 px, and a source whose whole outline is
+/// smaller than one pixel at 24 px produces no contour at all while being perfectly valid data.
+/// Judging either here would report a size as a property of the source. Both are therefore reported
+/// by [`paint_icon`] for the size actually asked for, through
+/// [`IconPaintError::InvalidGeometry`] and [`IconPaintError::EmptyGeometry`].
+///
+/// Contour count *is* a source property (one per `d` subpath) and is not rounded by device
+/// placement, so it is checked here.
+pub fn validate_icon(source: IconRef<'_>) -> Result<IconSourceMetadata, IconPaintError> {
+    match source_geometry(source)? {
+        #[cfg(any(feature = "icons", widgets_unstripped))]
+        SourceGeometry::Outline(data) => {
+            use crate::render::path::{parse, MAX_OUTLINE_CONTOURS};
+            if data.grid == 0 {
+                return Err(IconPaintError::ZeroGrid);
+            }
+            let mut contour_count = 0usize;
+            for d in data.paths {
+                let subpaths = parse(d).map_err(|error| {
+                    IconPaintError::InvalidGeometry(crate::render::path::FlattenError::Parse(error))
+                })?;
+                for subpath in &subpaths {
+                    if subpath.segments.is_empty() {
+                        continue;
+                    }
+                    contour_count += 1;
+                    if contour_count > MAX_OUTLINE_CONTOURS {
+                        return Err(IconPaintError::InvalidGeometry(
+                            crate::render::path::FlattenError::TooManyContours,
+                        ));
+                    }
+                }
+            }
+            if contour_count == 0 {
+                return Err(IconPaintError::EmptyGeometry);
+            }
+            Ok(IconSourceMetadata { grid: data.grid, contour_count })
+        }
+        SourceGeometry::Fallback(entry) => {
+            if entry.grid == 0 {
+                return Err(IconPaintError::ZeroGrid);
+            }
+            if entry.contours.is_empty() {
+                return Err(IconPaintError::EmptyGeometry);
+            }
+            Ok(IconSourceMetadata { grid: entry.grid, contour_count: entry.contours.len() })
+        }
+    }
 }
 
 /// Paints a typed icon source into the supplied slot.
@@ -154,8 +350,16 @@ pub fn paint_icon(
                 draw_outline_in(ctx, slot, color, &data)?;
                 return Ok(IconPaintOutcome::Drawn);
             }
-            draw_fallback_in(ctx, slot, color, name.as_str());
-            Ok(IconPaintOutcome::Drawn)
+            // The generated table is what a build without the bundled outlines draws. Its `false`
+            // means the token is in neither table -- there is no geometry at all -- which is an
+            // `EmptyGeometry` failure, not a draw. Ignoring the return would make "nothing was
+            // drawn" indistinguishable from "an icon was drawn", which is what §19.4 forbids an
+            // outcome from doing.
+            if draw_fallback_in(ctx, slot, color, name.as_str()) {
+                Ok(IconPaintOutcome::Drawn)
+            } else {
+                Err(IconPaintError::EmptyGeometry)
+            }
         }
         IconRef::StaticGeometry(data) => {
             #[cfg(any(feature = "icons", widgets_unstripped))]
@@ -199,6 +403,80 @@ pub fn draw_icon_named(ctx: &mut RenderContext, rect: Rect, color: Color, name: 
     if rect.width == 0 || rect.height == 0 {
         return false;
     }
+    match resolve_named_icon(name) {
+        #[cfg(any(feature = "icons", widgets_unstripped))]
+        Some(NamedIcon::Outline(data)) => {
+            if let Err(error) = draw_outline_in(ctx, rect, color, &data) {
+                log::error!("icon '{}' could not be painted: {error:?}", data.name);
+            }
+            true
+        }
+        Some(NamedIcon::Fallback) => {
+            draw_fallback_in(ctx, rect, color, name);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Whether a name would resolve to drawable icon geometry.
+///
+/// The measurement half of [`draw_icon_named`]: a layout that has to reserve room for an icon asks
+/// this, and the paint asks the drawing function, and both read the same resolution so a reserved
+/// slot and a painted glyph cannot disagree about whether a name is an icon.
+pub fn icon_token_is_drawable(name: &str) -> bool {
+    resolve_named_icon(name).is_some()
+}
+
+/// Draws a legacy widget icon [`Image`](crate::image::Image) into `slot`, reporting whether
+/// anything was painted.
+///
+/// # The one seam for widgets that still hold an `Image`
+///
+/// A control that kept its old `Option<Image>` icon next to a typed [`IconSource`] used to repeat
+/// this in its own `draw`. Several of them reserved the slot and then painted something else
+/// entirely -- a placeholder dot -- or nothing at all, because the repeated attempt was never
+/// finished. One function states the fit rule (`fit_image_into`) and the "the bytes are borrowed,
+/// never transcoded per frame" rule once.
+///
+/// Returns `false` for a non-RGBA8 or empty image rather than painting a stand-in: that is the
+/// honest answer for "this image cannot be drawn", and the caller decides what it means.
+/// Normalising at assignment time (the crate's `normalize_rgba8_image`) is what keeps a realistic
+/// setter from producing such an image in the first place.
+#[cfg(feature = "image")]
+pub fn draw_icon_image(
+    context: &mut RenderContext,
+    image: &crate::image::Image,
+    slot: Rect,
+) -> bool {
+    let crate::image::ImageData::Rgba8(pixels) = &image.inner.data else {
+        return false;
+    };
+    if pixels.is_empty() {
+        return false;
+    }
+    let fitted = crate::widget::icon_source::fit_image_into(image.width(), image.height(), slot);
+    context.draw_image(fitted.x, fitted.y, fitted.width, fitted.height, pixels);
+    true
+}
+
+/// What a host-supplied icon name resolved to.
+enum NamedIcon {
+    /// A bundled or host-registered outline, drawn through `draw_outline_in`.
+    ///
+    /// Gated exactly like that function: a build with no outline path cannot resolve a name to one,
+    /// so the variant is not merely unused there — it is unrepresentable.
+    #[cfg(any(feature = "icons", widgets_unstripped))]
+    Outline(IconData),
+    /// Generated fallback geometry for a token with no outline.
+    Fallback,
+}
+
+/// Resolves a host-supplied icon name, in the order both entry points document.
+///
+/// Factored out of [`draw_icon_named`] so the "is this name an icon" question and the "draw this
+/// name as an icon" question cannot drift apart.
+fn resolve_named_icon(name: &str) -> Option<NamedIcon> {
     // The bundled outline and the host registration both draw through `draw_outline_in`, which
     // exists only where an outline can be drawn at all. Gating this block the same way keeps a
     // build without an outline path compiling: there the token/registration lookups are skipped
@@ -208,27 +486,20 @@ pub fn draw_icon_named(ctx: &mut RenderContext, rect: Rect, color: Color, name: 
         #[cfg(feature = "icons")]
         if let Some(known) = IconName::from_name(name) {
             if let Some(data) = known.data_opt() {
-                if let Err(error) = draw_outline_in(ctx, rect, color, &data) {
-                    log::error!("icon '{}' could not be painted: {error:?}", data.name);
-                }
-                return true;
+                return Some(NamedIcon::Outline(data));
             }
         }
         if let Some(data) = crate::widget::display_widgets::icon_data_set::lookup_registered(name) {
-            if let Err(error) = draw_outline_in(ctx, rect, color, &data) {
-                log::error!("registered icon '{}' could not be painted: {error:?}", data.name);
-            }
-            return true;
+            return Some(NamedIcon::Outline(data));
         }
     }
     // The generated fallback geometry is the answer on a build with no outline path, and the
-    // last resort everywhere else. A name it does not know was never an icon, which is what `false`
+    // last resort everywhere else. A name it does not know was never an icon, which is what `None`
     // reports to the caller.
     if crate::widget::icon_fallback_data::ICON_FALLBACK.iter().any(|entry| entry.name == name) {
-        draw_fallback_in(ctx, rect, color, name);
-        return true;
+        return Some(NamedIcon::Fallback);
     }
-    false
+    None
 }
 
 /// Draws `name` as a **square** icon centred within `box_rect`, `side` device pixels across.
@@ -280,6 +551,12 @@ fn draw_outline_in(
     use crate::render::path::flatten_paths;
     use crate::render::path::{IconPlacement, MAX_OUTLINE_CONTOURS, MAX_OUTLINE_POINTS};
 
+    // The shared fit rule: a square glyph centred in the slot, so the box `measure_icon` reports and
+    // the box this draws in are the same box.
+    let rect = glyph_box(rect);
+    if rect.width == 0 || rect.height == 0 {
+        return Err(IconPaintError::EmptyGeometry);
+    }
     let placement = IconPlacement::new(rect.x, rect.y, rect.width as f32, data.grid);
     let mut points = [Point::new(0, 0); MAX_OUTLINE_POINTS];
     let mut contours = [(0usize, 0usize); MAX_OUTLINE_CONTOURS];
@@ -304,6 +581,11 @@ fn draw_fallback_in(ctx: &mut RenderContext, rect: Rect, color: Color, token: &s
     let Some(fallback) = ICON_FALLBACK.iter().find(|entry| entry.name == token) else {
         return false;
     };
+    // The same square fit the outline path uses, so the two sources cannot land in different boxes.
+    let rect = glyph_box(rect);
+    if rect.width == 0 || rect.height == 0 {
+        return false;
+    }
     let mut points = crate::compat::Vec::new();
     let mut contours = crate::compat::Vec::new();
     let grid = f32::from(fallback.grid);
@@ -1156,6 +1438,160 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── Measure / validate: one box rule, two honest stages ───────────────────
+
+    /// A slot that is not square must not stretch the glyph, and the box `measure_icon` reports
+    /// must be the box a draw lands in — otherwise a caller reserving room from the measurement
+    /// would reserve the wrong room.
+    #[test]
+    fn measure_icon_is_square_contain_and_matches_where_the_glyph_is_drawn() {
+        use crate::core::Size;
+        use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
+
+        let wide = Rect::new(10, 20, 40, 12);
+        let metrics =
+            measure_icon(IconRef::Builtin(IconName::Info), wide).expect("a bundled token measures");
+        assert_eq!(
+            (metrics.bounds.width, metrics.bounds.height),
+            (12, 12),
+            "the square side is the slot's smaller dimension"
+        );
+        assert_eq!((metrics.bounds.x, metrics.bounds.y), (24, 20), "centred in the slot");
+        assert!(!metrics.is_empty());
+
+        // Where the glyph actually lands: the rasterised ink must stay inside the measured box.
+        // Reading the pixels rather than the geometry is what makes this a check of the draw and not
+        // a restatement of the measurement.
+        let mut backend = SoftwarePaintBackend::new(Size::new(64, 40), 1.0);
+        backend.begin_frame(Color::TRANSPARENT);
+        {
+            let mut ctx = RenderContext::new(&mut backend);
+            paint_icon(&mut ctx, IconRef::Builtin(IconName::Info), wide, Color::BLACK)
+                .expect("the bundled outline paints");
+        }
+        backend.end_frame();
+        let mut ink = 0usize;
+        let (left, top) = (metrics.bounds.x, metrics.bounds.y);
+        let (right, bottom) =
+            (left + metrics.bounds.width as i32, top + metrics.bounds.height as i32);
+        for y in 0..40i32 {
+            for x in 0..64i32 {
+                let alpha = PaintBackend::frame_rgba(&backend)[((y * 64 + x) * 4 + 3) as usize];
+                if alpha == 0 {
+                    continue;
+                }
+                ink += 1;
+                assert!(
+                    (left..right).contains(&x) && (top..bottom).contains(&y),
+                    "ink at ({x}, {y}) escapes the measured box {left}..{right} x {top}..{bottom}"
+                );
+            }
+        }
+        assert!(ink > 0, "the glyph must actually paint inside its box");
+
+        // A square slot measures back to itself, which is what every existing caller passes and why
+        // this rule is behaviour preserving for them.
+        let square = Rect::new(4, 5, 16, 16);
+        assert_eq!(
+            measure_icon(IconRef::Builtin(IconName::Save), square).expect("measures").bounds,
+            square
+        );
+        assert_eq!(metrics.source_extent, u32::from(IconName::Info.data().grid));
+    }
+
+    #[test]
+    fn measure_icon_reports_an_empty_slot_as_empty_rather_than_failing() {
+        let metrics = measure_icon(IconRef::Builtin(IconName::Info), Rect::new(0, 0, 0, 8))
+            .expect("an empty slot is not an error");
+        assert!(metrics.is_empty());
+    }
+
+    /// Stage one answers the source questions, including the contour budget, which is not rounded by
+    /// device placement.
+    #[test]
+    fn validate_icon_reports_the_source_budget_and_refuses_the_undrawable() {
+        let metadata =
+            validate_icon(IconRef::Builtin(IconName::Info)).expect("a bundled token validates");
+        assert_eq!(metadata.grid, IconName::Info.data().grid);
+        assert!(metadata.contour_count >= 1);
+
+        static HOLE: IconData = IconData {
+            name: "validate-hole",
+            grid: 24,
+            paths: &["M2-2H22V-22H2Z M7-7V-17H17V-7Z"],
+        };
+        let two = validate_icon(IconRef::StaticGeometry(&HOLE)).expect("two subpaths validate");
+        assert_eq!(two.contour_count, 2, "one contour per `d` subpath");
+        assert_eq!(two.grid, 24);
+
+        // Zero grid, unparseable data, and no geometry at all are three distinct refusals.
+        static ZERO_GRID: IconData = IconData { name: "zero", grid: 0, paths: &["M0 0L1 0Z"] };
+        assert_eq!(
+            validate_icon(IconRef::StaticGeometry(&ZERO_GRID)),
+            Err(IconPaintError::ZeroGrid)
+        );
+
+        static BROKEN: IconData = IconData { name: "broken", grid: 24, paths: &["M0 0L oops"] };
+        assert!(matches!(
+            validate_icon(IconRef::StaticGeometry(&BROKEN)),
+            Err(IconPaintError::InvalidGeometry(crate::render::path::FlattenError::Parse(_)))
+        ));
+
+        // An empty `d` parses and declares no contour, so it is `EmptyGeometry` rather than a
+        // passing zero-contour success.
+        static NO_CONTOURS: IconData = IconData { name: "none", grid: 24, paths: &[""] };
+        assert_eq!(
+            validate_icon(IconRef::StaticGeometry(&NO_CONTOURS)),
+            Err(IconPaintError::EmptyGeometry)
+        );
+    }
+
+    /// A source that is valid but finer than one device pixel at a small size really does draw
+    /// nothing — and that is **stage two**'s answer, reported at paint time for the size asked for,
+    /// not a stage-one refusal of the source. Both halves are asserted so neither can quietly take
+    /// over the other's job.
+    #[test]
+    fn a_source_too_fine_for_the_slot_is_refused_at_paint_time_not_at_validation() {
+        use crate::core::Size;
+        use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
+
+        static TINY: IconData = IconData { name: "tiny", grid: 960, paths: &["M0 0L10 0L10 -10Z"] };
+        assert!(
+            validate_icon(IconRef::StaticGeometry(&TINY)).is_ok(),
+            "the source itself is valid"
+        );
+
+        let mut backend = SoftwarePaintBackend::new(Size::new(24, 24), 1.0);
+        backend.begin_frame(Color::TRANSPARENT);
+        let mut ctx = RenderContext::new(&mut backend);
+        assert_eq!(
+            paint_icon(
+                &mut ctx,
+                IconRef::StaticGeometry(&TINY),
+                Rect::new(0, 0, 24, 24),
+                Color::BLACK
+            ),
+            Err(IconPaintError::EmptyGeometry),
+            "at 24 px the whole outline is sub-pixel, which paint reports for that size"
+        );
+    }
+
+    /// An icon the geometry table does not know must not report a successful draw.
+    #[test]
+    fn painting_a_token_with_no_geometry_is_a_failure_not_a_silent_success() {
+        use crate::core::Size;
+        use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
+
+        // Every `IconName` variant is covered by the generated table (asserted elsewhere), so this
+        // exercises the *token* path through a name that is not one: `draw_icon_named` returns
+        // `false` for it, and `paint_icon`'s fallback arm must not claim `Drawn`.
+        let mut backend = SoftwarePaintBackend::new(Size::new(24, 24), 1.0);
+        backend.begin_frame(Color::TRANSPARENT);
+        let mut ctx = RenderContext::new(&mut backend);
+        assert!(!draw_icon_named(&mut ctx, Rect::new(0, 0, 24, 24), Color::BLACK, "not-an-icon"));
+        assert!(!icon_token_is_drawable("not-an-icon"));
     }
 
     // ── Host-registered icons (`register_icon`) ───────────────────────────────

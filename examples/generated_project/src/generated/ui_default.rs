@@ -10,6 +10,7 @@
 //   - the root `window` is sized 640x480 through its own geometry (a window publishes neither `width` nor `height`, and `geometry` is read-only through the property contract)
 //   - `height` on <root> (a `window`) is applied through the loader-owned route, not a property write
 //   - `width` on <root> (a `window`) is applied through the loader-owned route, not a property write
+//   - `layout` on <root> (a `window`) is not a property of the control, so its object value is not emitted
 
 use rust_widgets::view::Node;
 use rust_widgets::widget::capability::CapabilityValue;

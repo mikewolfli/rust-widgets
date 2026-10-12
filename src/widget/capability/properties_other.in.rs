@@ -592,6 +592,7 @@ macro_rules! impl_properties_other {
         #[cfg(not(alloc_frugal))]
         pub(crate) const FAB_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("icon", PropertyValueKind::String, true, true),
+            PropertySchema::new("icon_source", PropertyValueKind::IconSpec, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

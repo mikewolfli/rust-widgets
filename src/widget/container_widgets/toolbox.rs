@@ -102,11 +102,14 @@ impl ToolBoxItem {
     pub fn icon_source(&self) -> Option<IconSource> {
         self.icon_source
     }
-    /// Replaces the typed icon source and clears the legacy image slot when present.
+    /// Replaces the typed icon source and clears the legacy image slot.
+    ///
+    /// An explicit `None` clears **both** forms: leaving the image behind would keep the item's icon
+    /// slot reserved and painted for an icon the caller just cleared.
     pub fn set_icon_source(&mut self, source: Option<IconSource>) {
         self.icon_source = source;
         #[cfg(feature = "image")]
-        if source.is_some() {
+        {
             self.icon = None;
         }
     }
@@ -117,9 +120,27 @@ impl ToolBoxItem {
     }
     #[cfg(feature = "image")]
     /// Sets icon.
+    ///
+    /// A non-RGBA8 image is normalised once here, so the tile can borrow its bytes instead of
+    /// transcoding every frame.
     pub fn set_icon(&mut self, icon: Option<Image>) {
-        self.icon = icon;
+        self.icon = icon.map(crate::widget::icon_source::normalize_rgba8_image);
         self.icon_source = None;
+    }
+
+    /// Whether this item reserves an icon tile.
+    pub fn has_icon(&self) -> bool {
+        if self.icon_source.is_some() {
+            return true;
+        }
+        #[cfg(feature = "image")]
+        {
+            self.icon.is_some()
+        }
+        #[cfg(not(feature = "image"))]
+        {
+            false
+        }
     }
     /// Returns tooltip.
     pub fn tooltip(&self) -> &str {
@@ -756,11 +777,7 @@ impl Draw for ToolBox {
                 );
                 let padding = 5i32;
                 let icon_size = 16u32;
-                #[cfg(feature = "image")]
-                let has_legacy_image = item.icon.is_some();
-                #[cfg(not(feature = "image"))]
-                let has_legacy_image = false;
-                let has_icon = item.icon_source.is_some() || has_legacy_image;
+                let has_icon = item.has_icon();
                 let text_x = if has_icon {
                     item_rect.x + icon_size as i32 + padding + 4
                 } else {
@@ -783,8 +800,8 @@ impl Draw for ToolBox {
                     let surface = style.background_color.unwrap_or(Color::rgb(240, 240, 240));
                     let icon_bg_color = Self::icon_tile_color(tile_ink, surface, is_current);
                     context.fill_rounded_rect(icon_rect, 3, icon_bg_color);
+                    let glyph_rect = Rect::new(icon_x + 2, icon_y + 2, 12, 12);
                     if let Some(source) = item.icon_source {
-                        let glyph_rect = Rect::new(icon_x + 2, icon_y + 2, 12, 12);
                         if let Err(error) = crate::widget::paint_icon(
                             context,
                             source.into(),
@@ -793,21 +810,17 @@ impl Draw for ToolBox {
                         ) {
                             log::warn!("toolbox item {i} icon failed: {error:?}");
                         }
-                    } else {
-                        // Draw a simple shape inside: a small circle (representative)
-                        let inner_r = 3;
-                        let cx = icon_x + icon_size as i32 / 2;
-                        let cy = icon_y + icon_size as i32 / 2;
-                        context.fill_rounded_rect(
-                            Rect::new(
-                                cx - inner_r as i32,
-                                cy - inner_r as i32,
-                                inner_r * 2,
-                                inner_r * 2,
-                            ),
-                            inner_r,
-                            style.text_color.unwrap_or(Color::rgb(255, 255, 255)),
-                        );
+                    }
+                    // The legacy `Image` slot reserved this tile and then painted a stand-in dot
+                    // instead of the image the caller set. It now draws the image itself, through
+                    // the same seam every other legacy image slot in the crate uses.
+                    #[cfg(feature = "image")]
+                    if item.icon_source.is_none() {
+                        if let Some(image) = item.icon.as_ref() {
+                            if !crate::widget::draw_icon_image(context, image, glyph_rect) {
+                                log::warn!("toolbox item {i} icon image could not be drawn");
+                            }
+                        }
                     }
                 }
                 // Draw item text
@@ -922,6 +935,34 @@ mod tests {
         assert_eq!(
             toolbox.set_item_icon_source(0, None),
             Err(IconItemError::IndexOutOfBounds { index: 0, len: 0 })
+        );
+    }
+
+    /// A legacy item `Image` used to reserve the tile and then paint a stand-in dot instead of the
+    /// image the caller set -- the API promised an icon and drew a decoration.
+    #[cfg(feature = "image")]
+    #[test]
+    fn toolbox_legacy_item_image_is_drawn_and_cleared() {
+        let mut toolbox = ToolBox::new(Rect::new(0, 0, 200, 160));
+        toolbox.add_item("Page".to_string(), None);
+        let plain = render_to_svg(&mut toolbox);
+        assert!(!plain.contains("<image"), "an item with no icon draws no image");
+
+        toolbox.item_mut(0).expect("the item exists").set_icon(Some(Image::from_rgba(
+            vec![200; 4 * 4 * 4],
+            4,
+            4,
+        )));
+        assert!(toolbox.item(0).expect("the item exists").has_icon());
+        assert!(render_to_svg(&mut toolbox).contains("<image"), "the image must reach the backend");
+
+        // An explicit typed clear clears the legacy image too, so the tile cannot keep painting an
+        // icon the caller just cleared.
+        toolbox.set_item_icon_source(0, None).expect("the item exists");
+        assert!(!toolbox.item(0).expect("the item exists").has_icon());
+        assert!(
+            !render_to_svg(&mut toolbox).contains("<image"),
+            "clear must release the image slot"
         );
     }
 

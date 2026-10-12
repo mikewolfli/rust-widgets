@@ -268,7 +268,8 @@ const RECORD_PROJECT: &str = r#"{
       "type": "vbox",
       "children": [
         { "chip": { "id": "chips", "items": [
-            { "id": "a", "label": "Alpha", "selected": true },
+            { "id": "a", "label": "Alpha", "selected": true,
+              "icon_source": { "kind": "builtin", "name": "info" } },
             { "id": "b", "label": "Beta" }
         ] } }
       ]
@@ -308,6 +309,25 @@ pub fn items_the_emitted_value_targets() -> usize {
     match widget_property_get(&chip, "items") {
         Ok(CapabilityValue::Records(list)) => list.len(),
         _ => usize::MAX,
+    }
+}
+
+/// The **structured** row field the emitted value carries: a chip row's icon descriptor.
+///
+/// A record whose field is a compound value is the shape this probe exists for -- text that looks
+/// right and a program that does not build (or a value that silently loses its object).
+pub fn the_emitted_row_icon_survives() -> bool {
+    use rust_widgets::core::Rect;
+    use rust_widgets::widget::{widget_property_get, CapabilityValue, Chip, IconName};
+    let chip = Chip::new(Rect::new(0, 0, 200, 36));
+    let Ok(CapabilityValue::Records(list)) = widget_property_get(&chip, "items") else {
+        return false;
+    };
+    match list.get_by_id("a").and_then(|row| row.get("icon_source")) {
+        Some(CapabilityValue::IconSpec(rust_widgets::widget::icon_source::IconSpec::Builtin(
+            IconName::Info,
+        ))) => true,
+        _ => false,
     }
 }
 "#
