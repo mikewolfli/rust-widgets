@@ -63,6 +63,8 @@ pub struct Button {
     #[cfg(feature = "image")]
     icon: Option<Image>,
     icon_source: Option<IconSource>,
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
+    shared_icon_pixels: Option<crate::widget::icon_source::SharedIconPixels>,
     default_button: bool,
     /// The last value `pressed_signal`/`released_signal` were emitted for.
     ///
@@ -128,6 +130,8 @@ impl Button {
             #[cfg(feature = "image")]
             icon: None,
             icon_source: None,
+            #[cfg(all(feature = "image", not(alloc_frugal)))]
+            shared_icon_pixels: None,
             default_button: false,
             signaled_pressed: false,
             // A freshly constructed button is at rest, so its progress is at the rest end of the
@@ -235,7 +239,16 @@ impl Button {
         }
         #[cfg(feature = "image")]
         {
-            self.icon.is_some()
+            self.icon.is_some() || {
+                #[cfg(not(alloc_frugal))]
+                {
+                    self.shared_icon_pixels.is_some()
+                }
+                #[cfg(alloc_frugal)]
+                {
+                    false
+                }
+            }
         }
         #[cfg(not(feature = "image"))]
         {
@@ -472,6 +485,10 @@ impl Button {
     #[cfg(feature = "image")]
     pub fn set_icon(&mut self, icon: Image) {
         self.icon_source = None;
+        #[cfg(not(alloc_frugal))]
+        {
+            self.shared_icon_pixels = None;
+        }
         self.icon = Some(icon);
         self.base.request_redraw();
     }
@@ -479,6 +496,28 @@ impl Button {
     #[cfg(feature = "image")]
     pub fn icon(&self) -> Option<&Image> {
         self.icon.as_ref()
+    }
+
+    /// Sets immutable RGBA8 icon pixels shared with other controls.
+    ///
+    /// The handle clone is constant-time; use
+    /// [`crate::widget::icon_source::SharedIconPixels::from_image`] to move a decoded RGBA8 image
+    /// into shared storage without copying its pixel vector.
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
+    pub fn set_shared_icon_pixels(
+        &mut self,
+        pixels: Option<crate::widget::icon_source::SharedIconPixels>,
+    ) {
+        self.shared_icon_pixels = pixels;
+        self.icon = None;
+        self.icon_source = None;
+        self.base.request_redraw();
+    }
+
+    /// Returns the shared pixel handle, if one is active.
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
+    pub fn shared_icon_pixels(&self) -> Option<&crate::widget::icon_source::SharedIconPixels> {
+        self.shared_icon_pixels.as_ref()
     }
 
     /// Sets a built-in or static-geometry icon, replacing any legacy image.
@@ -490,6 +529,10 @@ impl Button {
         #[cfg(feature = "image")]
         {
             self.icon = None;
+        }
+        #[cfg(all(feature = "image", not(alloc_frugal)))]
+        {
+            self.shared_icon_pixels = None;
         }
         self.base.request_redraw();
     }
@@ -658,6 +701,14 @@ impl WidgetProperties for Button {
             }
             _ => base_property_set(self, name, value),
         }
+    }
+
+    fn set_resolved_icon_source(
+        &mut self,
+        source: Option<IconSource>,
+    ) -> Result<(), CapabilityAccessError> {
+        self.set_icon_source(source);
+        Ok(())
     }
 
     fn property_names(&self) -> &'static [&'static str] {
@@ -955,6 +1006,24 @@ impl Draw for Button {
 
         #[cfg(feature = "image")]
         if self.icon_source.is_none() {
+            #[cfg(not(alloc_frugal))]
+            if let (Some(pixels), Some(box_)) = (self.shared_icon_pixels.as_ref(), self.icon_rect())
+            {
+                context.draw_image(box_.x, box_.y, box_.width, box_.height, pixels.pixels());
+            } else if let (Some(icon), Some(box_)) = (self.icon.as_ref(), self.icon_rect()) {
+                // The icon is scaled to the slot the metric derivation reserved for it, so the room
+                // `implicit_size` added and the pixels drawn are the same square. An icon whose own
+                // bitmap is a different size is scaled rather than drawn at its native extent —
+                // otherwise the button's reserved advance and its ink would disagree.
+                context.draw_image(
+                    box_.x,
+                    box_.y,
+                    box_.width,
+                    box_.height,
+                    icon.rgba8_data().unwrap_or(&[]),
+                );
+            }
+            #[cfg(alloc_frugal)]
             if let (Some(icon), Some(box_)) = (self.icon.as_ref(), self.icon_rect()) {
                 // The icon is scaled to the slot the metric derivation reserved for it, so the room
                 // `implicit_size` added and the pixels drawn are the same square. An icon whose own
@@ -1398,6 +1467,64 @@ mod tests {
         button.set_icon_source(None);
         assert_eq!(button.icon_source(), None);
         assert!(button.icon_rect().is_none(), "clearing releases the icon layout slot");
+    }
+
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
+    #[test]
+    fn shared_icon_pixels_replace_other_sources_and_keep_the_shared_allocation() {
+        let handle = crate::widget::SharedIconPixels::from_rgba8(vec![255; 4 * 4 * 4], 4, 4)
+            .expect("valid RGBA8 data");
+        let clone = handle.clone();
+        assert!(handle.shares_allocation_with(&clone));
+
+        let mut button = make_button();
+        button.set_shared_icon_pixels(Some(handle.clone()));
+        assert!(button.icon().is_none());
+        assert!(button.shared_icon_pixels().unwrap().shares_allocation_with(&handle));
+        assert!(button.icon_rect().is_some());
+        let svg = crate::widget::svg::render_widget_to_svg(&mut button, rect());
+        assert!(svg.contains("<image "), "shared in-memory pixels must reach the paint backend");
+        let icon_box = button.icon_rect();
+        button.set_enabled_state(false);
+        assert_eq!(button.icon_rect(), icon_box, "disabled state must not shift the icon slot");
+
+        button.set_icon_source(Some(IconSource::builtin(crate::widget::IconName::Info)));
+        assert!(button.shared_icon_pixels().is_none());
+        assert!(button.icon_rect().is_some());
+        button.set_shared_icon_pixels(None);
+        assert!(button.icon_source().is_none());
+        assert!(button.icon_rect().is_none());
+
+        button.set_shared_icon_pixels(Some(handle));
+        button.set_icon(make_image());
+        assert!(button.shared_icon_pixels().is_none());
+        assert!(button.icon().is_some(), "the legacy image setter becomes the active source");
+    }
+
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
+    #[test]
+    fn shared_pixels_scale_to_many_consumers_and_release_with_the_last_control() {
+        let allocation = Arc::new(vec![128; 4]);
+        let weak = Arc::downgrade(&allocation);
+        let handle =
+            crate::widget::SharedIconPixels::from_shared_rgba8(Arc::clone(&allocation), 1, 1)
+                .expect("valid one-pixel RGBA image");
+        let mut consumers = Vec::with_capacity(100);
+        for _ in 0..100 {
+            let mut button = make_button();
+            button.set_shared_icon_pixels(Some(handle.clone()));
+            assert!(button
+                .shared_icon_pixels()
+                .expect("shared source")
+                .shares_allocation_with(&handle));
+            consumers.push(button);
+        }
+
+        drop(allocation);
+        drop(handle);
+        assert!(weak.upgrade().is_some(), "live controls must retain the shared allocation");
+        drop(consumers);
+        assert!(weak.upgrade().is_none(), "dropping the final control must release the pixels");
     }
 
     #[cfg(all(feature = "image", not(alloc_frugal)))]

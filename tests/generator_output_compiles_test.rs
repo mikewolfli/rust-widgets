@@ -40,7 +40,7 @@
 use rust_widgets::designer::{generate, GenerationRequest, TargetProfile};
 
 /// A project that exercises both templates: a container, a text control, a value control, a
-/// disabled control, a nested container, and **declared wires**.
+/// disabled control, a nested container, a typed built-in icon, and **declared wires**.
 ///
 /// # Why the wires must be in this fixture
 ///
@@ -66,6 +66,7 @@ const PROJECT: &str = r#"{
             "id": "go",
             "text": "Go",
             "enabled": false,
+            "icon_source": { "kind": "builtin", "name": "info" },
             "events": { "clicked": "on_save" },
             "on_change": "on_save_marker"
           }

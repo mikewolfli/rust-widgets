@@ -357,10 +357,22 @@ pub(crate) fn declares_record_list(widget: &dyn crate::widget::Widget, name: &st
 /// the capability write path uses (`widget::capability::validate_property_value`): a document may
 /// not load a value a generated program's `.prop(..)` could not write, or the two front ends would
 /// describe different controls from one input (BLUE26 B26.02).
+#[cfg(test)]
 pub(crate) fn apply_widget_property(
     widget: &mut dyn crate::widget::Widget,
     key: &str,
     value: &Value,
+) -> ApplyOutcome {
+    apply_widget_property_with_icon_resolver(widget, key, value, None)
+}
+
+/// Apply a property like [`apply_widget_property`], resolving resource icon specs through
+/// the caller's explicit resource context when one is supplied.
+pub(crate) fn apply_widget_property_with_icon_resolver(
+    widget: &mut dyn crate::widget::Widget,
+    key: &str,
+    value: &Value,
+    resolver: Option<&dyn crate::widget::icon_source::IconResourceResolver>,
 ) -> ApplyOutcome {
     let Some(published) = resolve_property_name(widget, key) else {
         return ApplyOutcome::NotAProperty;
@@ -392,13 +404,30 @@ pub(crate) fn apply_widget_property(
         }
     }
 
-    match widget_property_set(widget, published, capability_value) {
+    let result = match (&capability_value, resolver) {
+        (
+            CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Resource {
+                id,
+                color_mode,
+            }),
+            Some(resolver),
+        ) => resolver.resolve_icon(id, *color_mode).and_then(|source| {
+            crate::widget::capability::properties_trait::widget_set_resolved_icon_source(
+                widget,
+                Some(source),
+            )
+            .map_err(|error| format!("{error:?}"))
+        }),
+        _ => widget_property_set(widget, published, capability_value)
+            .map_err(|error| format!("{error:?}")),
+    };
+    match result {
         Ok(()) => ApplyOutcome::Applied,
         // A control that publishes the name but refuses this particular value is
         // a real rejection, not "not a property": reporting `NotAProperty` here
         // would make the loader fall through and silently ignore the value.
         Err(error) => {
-            log::warn!("JSON layout: property {published:?} rejected the value {value}: {error:?}");
+            log::warn!("JSON layout: property {published:?} rejected the value {value}: {error}");
             ApplyOutcome::Rejected
         }
     }

@@ -359,6 +359,8 @@ pub use display_widgets::icon::{
     draw_icon_at, draw_icon_centered, draw_icon_named, paint_icon, IconData, IconName,
     IconPaintError, IconPaintOutcome, IconRef,
 };
+#[cfg(all(feature = "image", not(alloc_frugal)))]
+pub use icon_source::SharedIconPixels;
 pub use icon_source::{IconColorMode, IconItemError, IconSource, IconSpec};
 
 // Host-registered icons. Re-exported at `widget::` because that is where the icon surface lives,

@@ -291,6 +291,27 @@ impl ViewEngine {
         ctx: &Context,
         create: &dyn Fn(&Node) -> Option<ObjectId>,
     ) -> ApplyReport {
+        self.mount_with_optional_icon_resolver(view, ctx, create, None)
+    }
+
+    /// [`Self::mount_with`] with an explicit resource resolver for declared icon specs.
+    pub fn mount_with_icon_resolver(
+        &mut self,
+        view: &dyn View,
+        ctx: &Context,
+        create: &dyn Fn(&Node) -> Option<ObjectId>,
+        resolver: &dyn crate::widget::icon_source::IconResourceResolver,
+    ) -> ApplyReport {
+        self.mount_with_optional_icon_resolver(view, ctx, create, Some(resolver))
+    }
+
+    fn mount_with_optional_icon_resolver(
+        &mut self,
+        view: &dyn View,
+        ctx: &Context,
+        create: &dyn Fn(&Node) -> Option<ObjectId>,
+        resolver: Option<&dyn crate::widget::icon_source::IconResourceResolver>,
+    ) -> ApplyReport {
         let root = self.build_in_force(view, ctx);
         let mut report = ApplyReport::default();
 
@@ -340,8 +361,8 @@ impl ViewEngine {
         // The root's own name seeds the ancestor chain, so a failure in a *direct* child still
         // reports where it sits ("window > no_such_widget#bad") rather than an empty chain.
         let root_chain = [root.widget.clone()];
-        self.mount_children_named(&root, root_id, &[], &root_chain, create, &mut report);
-        self.write_declared_properties(&root, root_id, &mut report);
+        self.mount_children_named(&root, root_id, &[], &root_chain, create, &mut report, resolver);
+        self.write_declared_properties(&root, root_id, &mut report, resolver);
         // Lifecycle: the whole tree now exists, so each node's `on_mount` runs -- children
         // before their parent's, which is the order a callback that touches its subtree needs.
         self.run_mount_hooks(&root, root_id, &[]);
@@ -418,8 +439,29 @@ impl ViewEngine {
         ctx: &Context,
         create: &dyn Fn(&Node) -> Option<ObjectId>,
     ) -> DiffReport {
+        self.update_with_optional_icon_resolver(view, ctx, create, None)
+    }
+
+    /// [`Self::update_with`] with an explicit resource resolver for inserted and changed icons.
+    pub fn update_with_icon_resolver(
+        &mut self,
+        view: &dyn View,
+        ctx: &Context,
+        create: &dyn Fn(&Node) -> Option<ObjectId>,
+        resolver: &dyn crate::widget::icon_source::IconResourceResolver,
+    ) -> DiffReport {
+        self.update_with_optional_icon_resolver(view, ctx, create, Some(resolver))
+    }
+
+    fn update_with_optional_icon_resolver(
+        &mut self,
+        view: &dyn View,
+        ctx: &Context,
+        create: &dyn Fn(&Node) -> Option<ObjectId>,
+        resolver: Option<&dyn crate::widget::icon_source::IconResourceResolver>,
+    ) -> DiffReport {
         let Some(previous) = self.current.take() else {
-            self.mount_with(view, ctx, create);
+            self.mount_with_optional_icon_resolver(view, ctx, create, resolver);
             return DiffReport::default();
         };
         let next = self.build_in_force(view, ctx);
@@ -454,12 +496,13 @@ impl ViewEngine {
             overlay_cell.set(Some(id));
             Some(id)
         };
-        let applied = super::apply::apply_with_reserved_and_overlay(
+        let applied = super::apply::apply_with_reserved_overlay_and_icon_resolver(
             &mut self.layout,
             &report.patches,
             create,
             &mut reserved,
             Some(host),
+            resolver,
         );
         // The layer becomes part of the tree the layout knows about, registered with no parent:
         // it is a host the engine owns, not a child of the root (the same shape
@@ -849,6 +892,7 @@ impl ViewEngine {
         ancestor_names: &[String],
         create: &dyn Fn(&Node) -> Option<ObjectId>,
         report: &mut ApplyReport,
+        resolver: Option<&dyn crate::widget::icon_source::IconResourceResolver>,
     ) {
         for (index, child) in node.children.iter().enumerate() {
             let mut child_path = path.to_vec();
@@ -878,8 +922,16 @@ impl ViewEngine {
             report.widgets_created += 1;
             let mut child_names = ancestor_names.to_vec();
             child_names.push(child.widget.clone());
-            self.mount_children_named(child, child_id, &child_path, &child_names, create, report);
-            self.write_declared_properties(child, child_id, report);
+            self.mount_children_named(
+                child,
+                child_id,
+                &child_path,
+                &child_names,
+                create,
+                report,
+                resolver,
+            );
+            self.write_declared_properties(child, child_id, report, resolver);
         }
     }
 
@@ -900,13 +952,20 @@ impl ViewEngine {
     /// place every write goes through: a `mount`, an `apply` and an `insert_subtree` all reach the
     /// property contract here or through the same predicate, so a second spelling of the rule would
     /// be a second chance to drift.
-    fn write_declared_properties(&mut self, node: &Node, id: ObjectId, report: &mut ApplyReport) {
+    fn write_declared_properties(
+        &mut self,
+        node: &Node,
+        id: ObjectId,
+        report: &mut ApplyReport,
+        resolver: Option<&dyn crate::widget::icon_source::IconResourceResolver>,
+    ) {
         for (name, value) in &node.props {
             if super::is_generated_wire_prop(name) {
                 // Read by the generated `create_for`, never a control property.
                 continue;
             }
-            match super::apply::write_property(id, name, value.clone()) {
+            match super::apply::write_property_with_icon_resolver(id, name, value.clone(), resolver)
+            {
                 Ok(()) => report.properties_written += 1,
                 Err(reason) => report.errors.push(super::ViewError::PropertyRefused {
                     id,
@@ -1088,6 +1147,38 @@ mod tests {
         }
     }
 
+    struct ResourceIconView(&'static str);
+
+    impl View for ResourceIconView {
+        fn build(&self) -> Node {
+            Node::new("window").key("root").child(Node::new("button").key("resource").prop(
+                "icon_source",
+                CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Resource {
+                    id: self.0.to_string(),
+                    color_mode: crate::widget::icon_source::IconColorMode::Monochrome,
+                }),
+            ))
+        }
+    }
+
+    struct ResourceIconResolver(Cell<Option<crate::widget::icon_source::IconColorMode>>);
+
+    impl crate::widget::icon_source::IconResourceResolver for ResourceIconResolver {
+        fn resolve_icon(
+            &self,
+            resource_id: &str,
+            color_mode: crate::widget::icon_source::IconColorMode,
+        ) -> Result<crate::widget::icon_source::IconSource, String> {
+            self.0.set(Some(color_mode));
+            let name = match resource_id {
+                "project/icons/search" => crate::widget::IconName::Search,
+                "project/icons/info" => crate::widget::IconName::Info,
+                other => return Err(format!("unknown icon resource {other:?}")),
+            };
+            Ok(crate::widget::icon_source::IconSource::Builtin(name))
+        }
+    }
+
     /// Allocates ids from a counter, standing in for real construction.
     struct Ids(Cell<ObjectId>);
 
@@ -1103,6 +1194,92 @@ mod tests {
                 Some(id)
             }
         }
+    }
+
+    #[test]
+    fn engine_mount_and_update_propagate_the_explicit_icon_resolver() {
+        let factory = crate::widget::WidgetFactory::new_with_defaults();
+        let create = move |node: &Node| {
+            factory
+                .create(&node.widget, crate::core::Rect::new(0, 0, 80, 24), node.key_str()?)
+                .and_then(crate::widget::runtime::register)
+        };
+        let mut engine = ViewEngine::new();
+        let resolver = ResourceIconResolver(Cell::new(None));
+        let mounted = engine.mount_with_icon_resolver(
+            &ResourceIconView("project/icons/search"),
+            &Context::new(),
+            &create,
+            &resolver,
+        );
+        assert!(mounted.is_clean(), "mount should resolve nested resource icons: {mounted:?}");
+        assert_eq!(
+            resolver.0.get(),
+            Some(crate::widget::icon_source::IconColorMode::Monochrome),
+            "the declared color mode must reach the host resolver"
+        );
+        let button = engine.id_at(&[0]).expect("button path is indexed");
+        let source = crate::widget::runtime::with_widget(button, |widget| {
+            crate::widget::capability::properties_trait::widget_property_get(widget, "icon_source")
+        })
+        .expect("button remains mounted")
+        .expect("resolved icon is readable");
+        assert_eq!(
+            source,
+            CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(
+                crate::widget::IconName::Search
+            ))
+        );
+
+        engine.update_with_icon_resolver(
+            &ResourceIconView("project/icons/info"),
+            &Context::new(),
+            &create,
+            &resolver,
+        );
+        let source = crate::widget::runtime::with_widget(button, |widget| {
+            crate::widget::capability::properties_trait::widget_property_get(widget, "icon_source")
+        })
+        .expect("the keyed button keeps its identity")
+        .expect("updated icon is readable");
+        assert_eq!(
+            source,
+            CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(
+                crate::widget::IconName::Info
+            )),
+            "update must resolve the changed resource without replacing the control"
+        );
+        assert_eq!(engine.id_at(&[0]), Some(button), "the update keeps the mounted control");
+
+        let failed = engine.update_with_icon_resolver(
+            &ResourceIconView("project/icons/missing"),
+            &Context::new(),
+            &create,
+            &resolver,
+        );
+        assert_eq!(
+            failed.written_properties(),
+            vec!["icon_source"],
+            "the failed resource was part of the update"
+        );
+        assert_eq!(
+            resolver.0.get(),
+            Some(crate::widget::icon_source::IconColorMode::Monochrome),
+            "the host resolver must be called for each updated resource"
+        );
+        let source = crate::widget::runtime::with_widget(button, |widget| {
+            crate::widget::capability::properties_trait::widget_property_get(widget, "icon_source")
+        })
+        .expect("the keyed button remains mounted")
+        .expect("the last valid icon remains readable");
+        assert_eq!(
+            source,
+            CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(
+                crate::widget::IconName::Info
+            )),
+            "a failed resource update must preserve the last valid icon"
+        );
+        assert_eq!(engine.id_at(&[0]), Some(button), "a failed update keeps control identity");
     }
 
     #[test]

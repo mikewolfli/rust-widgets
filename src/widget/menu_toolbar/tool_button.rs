@@ -94,6 +94,8 @@ pub struct ToolButton {
     /// without the caller having to clear them.
     #[cfg(all(feature = "image", not(alloc_frugal)))]
     icon_pixels_key: Option<PathBuf>,
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
+    shared_icon_pixels: Option<crate::widget::icon_source::SharedIconPixels>,
     checkable: bool,
     checked: bool,
     popup_mode: ToolButtonPopupMode,
@@ -132,6 +134,8 @@ impl ToolButton {
             icon_pixels: None,
             #[cfg(all(feature = "image", not(alloc_frugal)))]
             icon_pixels_key: None,
+            #[cfg(all(feature = "image", not(alloc_frugal)))]
+            shared_icon_pixels: None,
             checkable: false,
             checked: false,
             popup_mode: ToolButtonPopupMode::DelayedPopup,
@@ -204,7 +208,16 @@ impl ToolButton {
     /// pay for the decode, and because a decode at set time would have to run inside the event
     /// handler that called it.
     pub fn set_icon(&mut self, icon: Option<PathBuf>) {
-        if self.icon == icon && self.icon_source.is_none() {
+        if self.icon == icon && self.icon_source.is_none() && {
+            #[cfg(all(feature = "image", not(alloc_frugal)))]
+            {
+                self.shared_icon_pixels.is_none()
+            }
+            #[cfg(not(all(feature = "image", not(alloc_frugal))))]
+            {
+                true
+            }
+        } {
             return;
         }
         self.icon = icon;
@@ -215,13 +228,23 @@ impl ToolButton {
         {
             self.icon_pixels = None;
             self.icon_pixels_key = None;
+            self.shared_icon_pixels = None;
         }
         self.base.request_redraw();
     }
 
     /// Sets a built-in or static-geometry icon, replacing any legacy file path.
     pub fn set_icon_source(&mut self, source: Option<IconSource>) {
-        if self.icon_source == source && self.icon.is_none() {
+        if self.icon_source == source && self.icon.is_none() && {
+            #[cfg(all(feature = "image", not(alloc_frugal)))]
+            {
+                self.shared_icon_pixels.is_none()
+            }
+            #[cfg(not(all(feature = "image", not(alloc_frugal))))]
+            {
+                true
+            }
+        } {
             return;
         }
         self.icon_source = source;
@@ -230,8 +253,33 @@ impl ToolButton {
         {
             self.icon_pixels = None;
             self.icon_pixels_key = None;
+            self.shared_icon_pixels = None;
         }
         self.base.request_redraw();
+    }
+
+    /// Sets immutable RGBA8 icon pixels shared with other controls.
+    ///
+    /// The handle clone is constant-time; use
+    /// [`crate::widget::icon_source::SharedIconPixels::from_image`] to move a decoded RGBA8 image
+    /// into shared storage without copying its pixel vector.
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
+    pub fn set_shared_icon_pixels(
+        &mut self,
+        pixels: Option<crate::widget::icon_source::SharedIconPixels>,
+    ) {
+        self.shared_icon_pixels = pixels;
+        self.icon = None;
+        self.icon_source = None;
+        self.icon_pixels = None;
+        self.icon_pixels_key = None;
+        self.base.request_redraw();
+    }
+
+    /// Returns the shared pixel handle, if one is active.
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
+    pub fn shared_icon_pixels(&self) -> Option<&crate::widget::icon_source::SharedIconPixels> {
+        self.shared_icon_pixels.as_ref()
     }
 
     /// Returns the typed icon source, if one was most recently assigned.
@@ -309,7 +357,16 @@ impl ToolButton {
     /// "Icon-only with no icon" would be a blank rectangle, which is a state a user cannot act on.
     /// Falling back to the label is what `ToolButtonStyle`'s own doc promises.
     fn wants_icon(&self) -> bool {
-        if self.icon.is_none() && self.icon_source.is_none() {
+        if self.icon.is_none() && self.icon_source.is_none() && {
+            #[cfg(all(feature = "image", not(alloc_frugal)))]
+            {
+                self.shared_icon_pixels.is_none()
+            }
+            #[cfg(not(all(feature = "image", not(alloc_frugal))))]
+            {
+                true
+            }
+        } {
             return false;
         }
         !matches!(self.button_style, ToolButtonStyle::TextOnly)
@@ -580,6 +637,14 @@ impl WidgetProperties for ToolButton {
         }
     }
 
+    fn set_resolved_icon_source(
+        &mut self,
+        source: Option<IconSource>,
+    ) -> Result<(), CapabilityAccessError> {
+        self.set_icon_source(source);
+        Ok(())
+    }
+
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["text", "checked", "icon_source", BASE_PROPERTY_NAMES]
     }
@@ -737,7 +802,14 @@ impl Draw for ToolButton {
             }
         }
         #[cfg(all(feature = "image", not(alloc_frugal)))]
-        if self.icon_source.is_none() {
+        if self.icon_source.is_none() && self.shared_icon_pixels.is_some() {
+            if let (Some(pixels), Some(box_)) = (self.shared_icon_pixels.as_ref(), self.icon_rect())
+            {
+                context.draw_image(box_.x, box_.y, box_.width, box_.height, pixels.pixels());
+            }
+        }
+        #[cfg(all(feature = "image", not(alloc_frugal)))]
+        if self.icon_source.is_none() && self.shared_icon_pixels.is_none() {
             if let (Some(pixels), Some(box_)) = (self.resolved_icon(), self.icon_rect()) {
                 if !pixels.is_empty() {
                     context.draw_image(box_.x, box_.y, box_.width, box_.height, &pixels);
@@ -857,6 +929,36 @@ mod tests {
         assert_eq!(button.icon_source(), None, "legacy setter replaces typed content");
         assert!(button.icon_rect().is_some());
         button.set_icon(None);
+        assert!(button.icon_rect().is_none());
+    }
+
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
+    #[test]
+    fn shared_icon_pixels_are_reused_and_legacy_setter_clears_them() {
+        let shared = crate::widget::SharedIconPixels::from_rgba8(vec![64; 4 * 4 * 4], 4, 4)
+            .expect("valid RGBA8 data");
+        let mut button = ToolButton::new("Open", rect());
+        button.set_shared_icon_pixels(Some(shared.clone()));
+        let active = button.shared_icon_pixels().expect("shared source is active");
+        assert!(active.shares_allocation_with(&shared));
+        assert!(button.icon_rect().is_some());
+        assert!(button.icon().is_none());
+        let svg = crate::widget::svg::render_widget_to_svg(&mut button, rect());
+        assert!(svg.contains("<image "), "shared in-memory pixels must reach the paint backend");
+
+        button.set_icon_source(None);
+        assert!(button.shared_icon_pixels().is_none(), "explicit clear must clear shared pixels");
+        button.set_shared_icon_pixels(Some(shared.clone()));
+        button.set_icon_source(Some(IconSource::builtin(IconName::Info)));
+        assert!(button.shared_icon_pixels().is_none());
+        button.set_shared_icon_pixels(Some(shared.clone()));
+        button.set_icon(Some(PathBuf::from("icons/open.png")));
+        assert!(button.shared_icon_pixels().is_none());
+        assert_eq!(button.icon(), Some(PathBuf::from("icons/open.png").as_path()));
+        assert!(button.icon_rect().is_some());
+
+        button.set_shared_icon_pixels(None);
+        assert!(button.icon().is_none());
         assert!(button.icon_rect().is_none());
     }
 

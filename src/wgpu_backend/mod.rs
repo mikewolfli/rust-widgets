@@ -13,11 +13,13 @@
 //! so it added work without accelerating anything — see `src/render/backend/scene.rs`). The
 //! renderer is kept compiled for the planned on-GPU scene rasterisation described there, not as a
 //! live code path; the rasteriser and its tests remain the reference for the command set.
+mod bridge;
 mod commands;
 mod raster;
 mod renderer;
 pub mod shaders;
 mod types;
+pub use bridge::bridge_non_zero_fill_commands;
 pub use commands::WgpuDrawCommand;
 pub use renderer::WgpuRenderer;
 pub use types::{PixelRect, Rgba8};

@@ -119,7 +119,10 @@ mod identity;
 mod node;
 mod reactive;
 
-pub use apply::{apply, ApplyReport, ViewError};
+pub use apply::{
+    apply, apply_with_icon_resolver, apply_with_reserved_overlay_and_icon_resolver, ApplyReport,
+    ViewError,
+};
 pub use breakpoint::{is_current, with_breakpoint, Breakpoint};
 pub use diff::{diff, DiffReport, Patch};
 pub use engine::{Context, View, ViewEngine};

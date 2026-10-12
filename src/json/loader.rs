@@ -64,6 +64,25 @@ impl JsonLoader {
     /// Returns an error if JSON parsing fails, an unknown widget type is
     /// encountered, or the widget tree exceeds `MAX_DEPTH`.
     pub fn load(json_str: &str) -> Result<BoundJsonLayout, String> {
+        Self::load_with_optional_icon_resolver(json_str, None)
+    }
+
+    /// Load a JSON layout while resolving resource-backed `icon_source` properties explicitly.
+    ///
+    /// The resolver owns resource identity and policy; it is never treated as a file path by this
+    /// loader. [`Self::load`] remains resolver-free and reports unresolved resources through the
+    /// normal property-rejection diagnostic path.
+    pub fn load_with_icon_resolver(
+        json_str: &str,
+        resolver: &dyn crate::widget::icon_source::IconResourceResolver,
+    ) -> Result<BoundJsonLayout, String> {
+        Self::load_with_optional_icon_resolver(json_str, Some(resolver))
+    }
+
+    fn load_with_optional_icon_resolver(
+        json_str: &str,
+        resolver: Option<&dyn crate::widget::icon_source::IconResourceResolver>,
+    ) -> Result<BoundJsonLayout, String> {
         let value: Value = serde_json::from_str(json_str).map_err(|e| {
             format!("layout JSON ({} bytes) could not be parsed: {e}", json_str.len())
         })?;
@@ -86,7 +105,15 @@ impl JsonLoader {
                 return Err("JSON root object is empty — expected a widget type key".to_string())
             }
         };
-        Self::instantiate_node(widget_type, widget_value, None, &mut registry, &mut binding, 0)?;
+        Self::instantiate_node(
+            widget_type,
+            widget_value,
+            None,
+            &mut registry,
+            &mut binding,
+            0,
+            resolver,
+        )?;
 
         // Run layout diagnostics after all widgets are created.
         LayoutInspector::run_once_logged(&registry);
@@ -436,6 +463,7 @@ impl JsonLoader {
         registry: &mut crate::index::WidgetRegistry,
         binding: &mut BoundJsonLayout,
         depth: u32,
+        resolver: Option<&dyn crate::widget::icon_source::IconResourceResolver>,
     ) -> Result<ObjectId, String> {
         if depth > MAX_DEPTH {
             return Err(format!(
@@ -496,6 +524,7 @@ impl JsonLoader {
                                 registry,
                                 binding,
                                 depth + 1,
+                                resolver,
                             )?;
 
                             if child_id != 0 {
@@ -546,7 +575,7 @@ impl JsonLoader {
         // duplicate was invisible — and exactly why a later edit that made it non-idempotent
         // (accumulating a constraint, say) would break silently, with the second call hidden
         // behind the first.
-        apply_properties(&mut *widget, obj);
+        apply_properties_with_icon_resolver(&mut *widget, obj, resolver);
 
         // Set parent
         widget.set_parent(parent_id);
@@ -666,6 +695,7 @@ impl JsonLoader {
                             registry,
                             binding,
                             depth + 1,
+                            resolver,
                         )?;
                     }
                 }
@@ -705,6 +735,7 @@ impl JsonLoader {
                                     registry,
                                     binding,
                                     depth + 1,
+                                    resolver,
                                 )?;
 
                                 if child_id != 0 {
@@ -1429,7 +1460,16 @@ fn apply_declared_styles(widget: &mut dyn Widget, obj: &serde_json::Map<String, 
 /// A key that neither layer recognises is reported as a warning naming the key and
 /// the widget, so a typo (`"colour"` for `"color"`) is visible instead of loading
 /// a silently default-styled control.
+#[cfg(test)]
 fn apply_properties(widget: &mut dyn Widget, obj: &serde_json::Map<String, Value>) {
+    apply_properties_with_icon_resolver(widget, obj, None);
+}
+
+fn apply_properties_with_icon_resolver(
+    widget: &mut dyn Widget,
+    obj: &serde_json::Map<String, Value>,
+    resolver: Option<&dyn crate::widget::icon_source::IconResourceResolver>,
+) {
     let published =
         crate::widget::capability::properties_trait::widget_property_names(widget).unwrap_or(&[]);
     let conflicting_icon_declarations = obj.contains_key("icon_source")
@@ -1488,7 +1528,9 @@ fn apply_properties(widget: &mut dyn Widget, obj: &serde_json::Map<String, Value
         if is_loader_owned_key(key) && !crate::json::properties::declares_record_list(widget, key) {
             continue;
         }
-        match crate::json::properties::apply_widget_property(widget, key, value) {
+        match crate::json::properties::apply_widget_property_with_icon_resolver(
+            widget, key, value, resolver,
+        ) {
             ApplyOutcome::Applied => {}
             // The control does not publish this name. It may still be a
             // construction-time key the caller's own arm consumed (`items`, …),
@@ -2104,6 +2146,83 @@ mod tests {
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
         let layout = result.unwrap();
         assert!(layout.id("btn").is_some());
+    }
+
+    struct TestIconResolver {
+        fail: bool,
+        calls: std::cell::Cell<usize>,
+    }
+
+    impl crate::widget::icon_source::IconResourceResolver for TestIconResolver {
+        fn resolve_icon(
+            &self,
+            _resource_id: &str,
+            _color_mode: crate::widget::icon_source::IconColorMode,
+        ) -> Result<crate::widget::icon_source::IconSource, String> {
+            self.calls.set(self.calls.get() + 1);
+            if self.fail {
+                return Err("resource is unavailable".to_string());
+            }
+            Ok(crate::widget::icon_source::IconSource::Builtin(crate::widget::IconName::Search))
+        }
+    }
+
+    #[test]
+    fn json_loader_resolves_resources_only_with_explicit_context() {
+        let json = r#"{"window":{"id":"resource-window","children":[{"button":{"id":"resource-button","icon_source":{"kind":"resource","id":"project/icons/search","color_mode":"monochrome"}}}]}}"#;
+        let resolver = TestIconResolver { fail: false, calls: std::cell::Cell::new(0) };
+        let layout = JsonLoader::load_with_icon_resolver(json, &resolver)
+            .expect("a valid layout remains loadable");
+        assert_eq!(resolver.calls.get(), 1, "nested declarations use the supplied resolver");
+        assert!(layout.id("resource-button").is_some(), "the layout keeps its declared node");
+
+        let mut button =
+            crate::widget::Button::new("Search".into(), crate::core::Rect::new(0, 0, 80, 24));
+        apply_properties_with_icon_resolver(
+            &mut button,
+            serde_json::json!({
+                "icon_source": {
+                    "kind": "resource",
+                    "id": "project/icons/search",
+                    "color_mode": "monochrome"
+                }
+            })
+            .as_object()
+            .expect("test declaration is an object"),
+            Some(&resolver),
+        );
+        assert_eq!(
+            button.icon_source(),
+            Some(crate::widget::icon_source::IconSource::Builtin(crate::widget::IconName::Search)),
+            "the loader property path assigns the resolver's validated drawable content"
+        );
+
+        let failing_resolver = TestIconResolver { fail: true, calls: std::cell::Cell::new(0) };
+        let mut unavailable_button =
+            crate::widget::Button::new("Unavailable".into(), crate::core::Rect::new(0, 0, 80, 24));
+        apply_properties_with_icon_resolver(
+            &mut unavailable_button,
+            serde_json::json!({
+                "icon_source": {
+                    "kind": "resource",
+                    "id": "project/icons/unavailable",
+                    "color_mode": "original"
+                }
+            })
+            .as_object()
+            .expect("test declaration is an object"),
+            Some(&failing_resolver),
+        );
+        assert_eq!(
+            unavailable_button.icon_source(),
+            None,
+            "failed resolution must not install a success-shaped fallback"
+        );
+
+        let failed_layout = JsonLoader::load_with_icon_resolver(json, &failing_resolver)
+            .expect("a rejected property does not abort the rest of the JSON layout");
+        assert_eq!(failing_resolver.calls.get(), 2);
+        assert!(failed_layout.id("resource-button").is_some(), "property refusal preserves layout");
     }
 
     /// A `fontdialog`'s declared `value` must reach the dialog.

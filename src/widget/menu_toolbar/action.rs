@@ -392,6 +392,14 @@ impl WidgetProperties for Action {
         }
     }
 
+    fn set_resolved_icon_source(
+        &mut self,
+        source: Option<IconSource>,
+    ) -> Result<(), CapabilityAccessError> {
+        self.set_icon_source(source);
+        Ok(())
+    }
+
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
             "text",

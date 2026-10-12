@@ -178,6 +178,17 @@ pub trait WidgetProperties {
     /// Writes a property by its stable lower-case name.
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError>;
 
+    /// Applies already-resolved icon content through a control's `icon_source` property.
+    ///
+    /// The default refuses controls without a typed icon slot. Resource IDs are resolved by the
+    /// host before this method is called; ordinary property writes remain resolver-free.
+    fn set_resolved_icon_source(
+        &mut self,
+        _source: Option<crate::widget::icon_source::IconSource>,
+    ) -> Result<(), CapabilityAccessError> {
+        Err(CapabilityAccessError::UnknownProperty)
+    }
+
     /// Names this control exposes, **including** the ones it inherits.
     ///
     /// The single source for schema generation, documentation and tests, so a
@@ -435,6 +446,17 @@ pub fn widget_property_set(
 ) -> Result<(), CapabilityAccessError> {
     match widget.properties_dyn_mut() {
         Some(props) => props.set(name, value),
+        None => Err(CapabilityAccessError::UnsupportedOnWidget),
+    }
+}
+
+/// Assigns already-resolved icon content without converting runtime data into a persistent value.
+pub fn widget_set_resolved_icon_source(
+    widget: &mut dyn Widget,
+    source: Option<crate::widget::icon_source::IconSource>,
+) -> Result<(), CapabilityAccessError> {
+    match widget.properties_dyn_mut() {
+        Some(props) => props.set_resolved_icon_source(source),
         None => Err(CapabilityAccessError::UnsupportedOnWidget),
     }
 }

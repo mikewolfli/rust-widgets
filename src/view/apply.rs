@@ -15,8 +15,11 @@
 //! carried out.
 
 use crate::core::ObjectId;
-use crate::widget::capability::properties_trait::widget_property_set;
+use crate::widget::capability::properties_trait::{
+    widget_property_set, widget_set_resolved_icon_source,
+};
 use crate::widget::capability::CapabilityValue;
+use crate::widget::icon_source::{IconResourceResolver, IconSpec};
 
 use super::diff::Patch;
 use super::node::Node;
@@ -49,11 +52,41 @@ use super::node::Node;
 /// The substitution is skipped for the base properties every control owns, whose `Null`
 /// handling is the contract's own business.`Null` is still written when the schema declares
 /// no default, so a control that *does* understand `Null` keeps receiving it.
+#[cfg(test)]
 pub(crate) fn write_property(
     id: ObjectId,
     name: &str,
     value: CapabilityValue,
 ) -> Result<(), String> {
+    write_property_with_icon_resolver(id, name, value, None)
+}
+
+pub(crate) fn write_property_with_icon_resolver(
+    id: ObjectId,
+    name: &str,
+    value: CapabilityValue,
+    resolver: Option<&dyn IconResourceResolver>,
+) -> Result<(), String> {
+    if let (
+        "icon_source",
+        CapabilityValue::IconSpec(IconSpec::Resource { id: resource_id, color_mode }),
+        Some(resolver),
+    ) = (name, &value, resolver)
+    {
+        let source = resolver
+            .resolve_icon(resource_id, *color_mode)
+            .map_err(|error| format!("resource {resource_id:?} could not be resolved: {error}"))?;
+        let written = match crate::widget::runtime::with_widget_mut(id, |widget| {
+            widget_set_resolved_icon_source(widget, Some(source)).map_err(|e| format!("{e:?}"))
+        }) {
+            Some(result) => result,
+            None => Err("the control is not registered with the runtime".to_string()),
+        };
+        if written.is_ok() {
+            crate::widget::runtime::request_repaint(id);
+        }
+        return written;
+    }
     let value = if matches!(value, CapabilityValue::Null) {
         resolve_null_reset(id, name).unwrap_or(value)
     } else {
@@ -390,6 +423,12 @@ pub fn apply(
 /// before this, `Node::portal`'s contract held only on the first build.
 pub type OverlayHost<'a> = &'a dyn Fn() -> Option<ObjectId>;
 
+#[derive(Clone, Copy)]
+struct ApplyServices<'a> {
+    overlay: Option<OverlayHost<'a>>,
+    icon_resolver: Option<&'a dyn IconResourceResolver>,
+}
+
 /// [`apply_with_reservations`] with a portal-host resolver.
 pub fn apply_with_reserved_and_overlay(
     layout: &mut crate::json::BoundJsonLayout,
@@ -398,9 +437,44 @@ pub fn apply_with_reserved_and_overlay(
     reserved: &mut crate::compat::HashMap<String, ObjectId>,
     overlay: Option<OverlayHost<'_>>,
 ) -> ApplyReport {
+    apply_with_reserved_overlay_and_icon_resolver(layout, patches, create, reserved, overlay, None)
+}
+
+/// Applies a patch batch while resolving `IconSpec::Resource` properties through `resolver`.
+///
+/// Resolution happens before the target widget is mutably borrowed. A resolver failure is
+/// reported as a refused property and does not replace the widget's existing icon. Inserted
+/// subtrees use the same resolver path as `SetProperty`; callers without a resolver retain the
+/// ordinary `ResourceResolutionRequired` refusal.
+pub fn apply_with_icon_resolver(
+    layout: &mut crate::json::BoundJsonLayout,
+    patches: &[Patch],
+    create: &dyn Fn(&Node) -> Option<ObjectId>,
+    resolver: &dyn IconResourceResolver,
+) -> ApplyReport {
+    apply_with_reserved_overlay_and_icon_resolver(
+        layout,
+        patches,
+        create,
+        &mut crate::compat::HashMap::new(),
+        None,
+        Some(resolver),
+    )
+}
+
+/// Full apply entry point for callers that also reserve insert IDs or create portal nodes.
+pub fn apply_with_reserved_overlay_and_icon_resolver(
+    layout: &mut crate::json::BoundJsonLayout,
+    patches: &[Patch],
+    create: &dyn Fn(&Node) -> Option<ObjectId>,
+    reserved: &mut crate::compat::HashMap<String, ObjectId>,
+    overlay: Option<OverlayHost<'_>>,
+    resolver: Option<&dyn IconResourceResolver>,
+) -> ApplyReport {
     let mut report = ApplyReport::default();
+    let services = ApplyServices { overlay, icon_resolver: resolver };
     for patch in patches {
-        apply_one(layout, patch, create, reserved, &mut report, overlay);
+        apply_one(layout, patch, create, reserved, &mut report, services);
     }
     report
 }
@@ -427,7 +501,7 @@ fn apply_one(
     create: &dyn Fn(&Node) -> Option<ObjectId>,
     reserved: &mut crate::compat::HashMap<String, ObjectId>,
     report: &mut ApplyReport,
-    overlay: Option<OverlayHost<'_>>,
+    services: ApplyServices<'_>,
 ) {
     match patch {
         Patch::SetProperty { id, name, value } => {
@@ -435,7 +509,12 @@ fn apply_one(
                 report.errors.push(ViewError::UnknownWidget { id: *id });
                 return;
             }
-            match write_property(*id, name, value.clone()) {
+            match write_property_with_icon_resolver(
+                *id,
+                name,
+                value.clone(),
+                services.icon_resolver,
+            ) {
                 Ok(()) => report.properties_written += 1,
                 Err(reason) => report.errors.push(ViewError::PropertyRefused {
                     id: *id,
@@ -450,7 +529,7 @@ fn apply_one(
                 return;
             }
             let created =
-                insert_subtree(layout, *parent, *index, node, create, reserved, report, overlay);
+                insert_subtree(layout, *parent, *index, node, create, reserved, report, services);
             report.widgets_created += created;
         }
         Patch::Remove { id } => {
@@ -483,7 +562,7 @@ fn apply_one(
             }
             report.widgets_removed += remove_subtree(layout, *id);
             let created =
-                insert_subtree(layout, *parent, *index, node, create, reserved, report, overlay);
+                insert_subtree(layout, *parent, *index, node, create, reserved, report, services);
             report.widgets_created += created;
         }
     }
@@ -518,7 +597,7 @@ fn insert_subtree(
     create: &dyn Fn(&Node) -> Option<ObjectId>,
     reserved: &mut crate::compat::HashMap<String, ObjectId>,
     report: &mut ApplyReport,
-    overlay: Option<OverlayHost<'_>>,
+    services: ApplyServices<'_>,
 ) -> usize {
     // ── Transparent nodes ──
     //
@@ -544,8 +623,16 @@ fn insert_subtree(
     if node.widget.eq_ignore_ascii_case("spacer") {
         let mut count = 0usize;
         for (i, child) in node.children.iter().enumerate() {
-            count +=
-                insert_subtree(layout, parent, index + i, child, create, reserved, report, overlay);
+            count += insert_subtree(
+                layout,
+                parent,
+                index + i,
+                child,
+                create,
+                reserved,
+                report,
+                services,
+            );
         }
         return count;
     }
@@ -585,7 +672,7 @@ fn insert_subtree(
     let key = node.key.clone().unwrap_or_default();
     let host = match node.host {
         super::Host::Declared => Some(parent),
-        super::Host::Overlay => overlay.and_then(|resolve| resolve()).or(Some(parent)),
+        super::Host::Overlay => services.overlay.and_then(|resolve| resolve()).or(Some(parent)),
     };
     layout.register_node(id, node.widget.clone(), key, host);
     if let Some(host) = host {
@@ -594,7 +681,7 @@ fn insert_subtree(
 
     let mut count = 1usize;
     for (i, child) in node.children.iter().enumerate() {
-        count += insert_subtree(layout, id, i, child, create, reserved, report, overlay);
+        count += insert_subtree(layout, id, i, child, create, reserved, report, services);
     }
     // The subtree's declared properties go through the same property contract as a patch,
     // so a control that refuses one reports it here rather than at the next diff.
@@ -606,7 +693,7 @@ fn insert_subtree(
         if super::is_generated_wire_prop(name) {
             continue;
         }
-        match write_property(id, name, value.clone()) {
+        match write_property_with_icon_resolver(id, name, value.clone(), services.icon_resolver) {
             Ok(()) => report.properties_written += 1,
             Err(reason) => {
                 report.errors.push(ViewError::PropertyRefused { id, name: name.clone(), reason })
@@ -814,6 +901,120 @@ mod tests {
         let reset = apply(&mut layout, &clear_patches.patches, &create);
         assert!(reset.is_clean(), "IconSpec reset failed: {:?}", reset.errors);
         assert_eq!(read(id, "icon_source"), Some(CapabilityValue::Null));
+    }
+
+    struct TestIconResolver {
+        fail: bool,
+        calls: std::cell::RefCell<Vec<(String, crate::widget::icon_source::IconColorMode)>>,
+    }
+
+    impl crate::widget::icon_source::IconResourceResolver for TestIconResolver {
+        fn resolve_icon(
+            &self,
+            resource_id: &str,
+            color_mode: crate::widget::icon_source::IconColorMode,
+        ) -> Result<crate::widget::icon_source::IconSource, String> {
+            self.calls.borrow_mut().push((resource_id.to_string(), color_mode));
+            if self.fail {
+                return Err("resource is unavailable".to_string());
+            }
+            Ok(crate::widget::icon_source::IconSource::Builtin(crate::widget::IconName::Search))
+        }
+    }
+
+    #[test]
+    fn view_resource_icons_resolve_for_updates_and_inserted_subtrees() {
+        use crate::widget::icon_source::{IconColorMode, IconSpec};
+
+        let (mut layout, root) = fixture_root();
+        let create = real_creator();
+        let inserted = apply(
+            &mut layout,
+            &[Patch::Insert {
+                parent: root,
+                index: 0,
+                node: Node::new("button").key("icon-button"),
+            }],
+            &create,
+        );
+        assert!(inserted.is_clean(), "button mount failed: {:?}", inserted.errors);
+        let id = layout.child_by_key(Some(root), "icon-button").expect("button is indexed");
+        let old = Node::new("button").key("icon-button");
+        let resource = Node::new("button").key("icon-button").prop(
+            "icon_source",
+            CapabilityValue::IconSpec(IconSpec::Resource {
+                id: "project/icons/search".to_string(),
+                color_mode: IconColorMode::Monochrome,
+            }),
+        );
+        let patches = super::super::diff::diff(&old, &resource, &|_, _| Some(id));
+        let resolver = TestIconResolver { fail: false, calls: std::cell::RefCell::new(Vec::new()) };
+        let applied =
+            super::apply_with_icon_resolver(&mut layout, &patches.patches, &create, &resolver);
+        assert!(applied.is_clean(), "resource update failed: {:?}", applied.errors);
+        assert_eq!(
+            read(id, "icon_source"),
+            Some(CapabilityValue::IconSpec(IconSpec::Builtin(crate::widget::IconName::Search))),
+            "the resolver's validated drawable source must reach the widget"
+        );
+        assert_eq!(
+            resolver.calls.borrow().as_slice(),
+            &[("project/icons/search".to_string(), IconColorMode::Monochrome)]
+        );
+
+        let failed_resolver =
+            TestIconResolver { fail: true, calls: std::cell::RefCell::new(Vec::new()) };
+        let failed = super::write_property_with_icon_resolver(
+            id,
+            "icon_source",
+            CapabilityValue::IconSpec(IconSpec::Resource {
+                id: "project/icons/unavailable".to_string(),
+                color_mode: IconColorMode::Original,
+            }),
+            Some(&failed_resolver),
+        );
+        assert!(
+            failed.as_ref().is_err_and(|error| error.contains("resource is unavailable")),
+            "resolution failures must be surfaced: {failed:?}"
+        );
+        assert_eq!(
+            read(id, "icon_source"),
+            Some(CapabilityValue::IconSpec(IconSpec::Builtin(crate::widget::IconName::Search))),
+            "a failed resolution must not replace the previously valid icon"
+        );
+    }
+
+    #[test]
+    fn view_resource_icons_resolve_in_inserted_subtrees() {
+        use crate::widget::icon_source::{IconColorMode, IconSpec};
+
+        let (mut layout, root) = fixture_root();
+        let create = real_creator();
+        let resolver = TestIconResolver { fail: false, calls: std::cell::RefCell::new(Vec::new()) };
+        let report = super::apply_with_icon_resolver(
+            &mut layout,
+            &[Patch::Insert {
+                parent: root,
+                index: 0,
+                node: Node::new("button").key("resource-button").prop(
+                    "icon_source",
+                    CapabilityValue::IconSpec(IconSpec::Resource {
+                        id: "project/icons/inserted".to_string(),
+                        color_mode: IconColorMode::Original,
+                    }),
+                ),
+            }],
+            &create,
+            &resolver,
+        );
+        assert!(report.is_clean(), "inserted resource property failed: {:?}", report.errors);
+        let id =
+            layout.child_by_key(Some(root), "resource-button").expect("inserted button is indexed");
+        assert_eq!(
+            read(id, "icon_source"),
+            Some(CapabilityValue::IconSpec(IconSpec::Builtin(crate::widget::IconName::Search)))
+        );
+        assert_eq!(resolver.calls.borrow().len(), 1, "insert uses the resolver exactly once");
     }
 
     /// A dropped property must reach the value the schema declares, not be refused.
