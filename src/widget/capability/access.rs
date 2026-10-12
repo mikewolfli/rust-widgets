@@ -1386,6 +1386,11 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::DropdownMenu => match property_name {
+            // An empty list of the declared schema, not `Null`: a dropped binding resets through the
+            // default, and `Null` is a value the property's own schema check refuses (B26.09).
+            "items" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::menu_toolbar::dropdown_menu::DROPDOWN_ITEM_SCHEMA,
+            )),
             "item_count" => CapabilityValue::UInt(0),
             "selected_index" => CapabilityValue::UInt(0),
             "expanded" => CapabilityValue::Bool(false),
@@ -1401,6 +1406,11 @@ pub fn default_widget_property_default_value(
         WidgetKind::MenuButton => match property_name {
             "text" => CapabilityValue::String("Menu".to_string()),
             "icon_source" => CapabilityValue::Null,
+            // An empty list of the declared schema, not `Null`: a dropped binding resets through the
+            // default, and `Null` is a value the property's schema check refuses (B26.09).
+            "items" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::menu_toolbar::menu_button::MENU_BUTTON_ITEM_SCHEMA,
+            )),
             "item_count" => CapabilityValue::UInt(0),
             "expanded" => CapabilityValue::Bool(false),
             _ => return None,

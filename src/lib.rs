@@ -2180,6 +2180,24 @@ pub fn menu_add_item(
 ) -> crate::core::ObjectId {
     control_backend::get_control_backend().menu_add_item(parent_menu, text, shortcut)
 }
+/// Whether the running platform can put an icon on a **native** menu item.
+///
+/// Ask this before building an icon for a native menu: `false` means the OS surface has no place for
+/// one, so the caller keeps its text instead of dropping an icon it already resolved. That
+/// distinction — *this surface cannot present an icon* versus *the icon failed to load* — is what
+/// makes the two reportable apart (blue27 §19.11, §19.13 I15).
+///
+/// The self-drawn menus (`Menu`, `MenuBar`, `MenuButton`, `DropdownMenu`) do not need this: they are
+/// widgets and take a typed source through their own `icon_source` property. This answers only for
+/// the native menu bar the platform owns.
+///
+/// `false` on every desktop backend today; see
+/// [`Platform::supports_menu_item_icons`](crate::platform::Platform::supports_menu_item_icons) for
+/// what each platform would have to verify before answering `true`.
+#[cfg(not(alloc_frugal))]
+pub fn native_menu_item_icons_supported() -> bool {
+    control_backend::get_control_backend().supports_menu_item_icons()
+}
 /// Renders a shortcut the way the current operating system writes it.
 ///
 /// macOS returns `⌘⇧Z`-style glyphs; Windows and Linux return

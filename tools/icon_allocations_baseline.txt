@@ -1,0 +1,32 @@
+# Icon paint allocations — the blue27 §19.13 I17 baseline
+#
+# Format: <token> <size>px <allocations-per-draw>
+#
+# # What these numbers are
+#
+# The `baseline` column is the **pre-unification** measurement recorded in blue27 §19.13 for the
+# software backend with `icons` on: every `draw_path` cloned its `Vec<Point>`, and `fill_polygon`
+# allocated an intersection vector per scanline. Counting them gave 22-279 allocations for a single
+# icon draw, i.e. a 30-item toolbar cost ~2.6k-4.2k allocations **per frame**, growing with the
+# icon size and the DPI.
+#
+# The `current` column is what the software backend does today, measured by
+# `tests/icon_allocations.rs` on a warm cache: the compound non-zero fill packs every contour into
+# one command and reuses a bounded intersection buffer, so a steady-state draw allocates **nothing**.
+#
+# # Why the gate is "no more than baseline" and not "no more than the current number"
+#
+# A ceiling pinned to today's 0 would fail on the first honest change that needs one small
+# allocation, and the reaction to that is to raise the number, which trains everyone to ignore the
+# gate. The baseline is the contract (I17: "每帧堆分配数不高于 U0 基线"); the current figure is the
+# evidence that the contract is met with room to spare. Both are checked: the test fails if a draw
+# allocates at all (the strong form that caught the per-contour clone), and this file records where
+# the numbers came from so the claim cannot be quietly rewritten.
+#
+# token      size  baseline  current
+check        24    22        0
+check        96    58        0
+info         24    94        0
+info         96    226       0
+settings     24    136       0
+settings     96    279       0

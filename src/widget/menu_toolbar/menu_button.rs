@@ -29,6 +29,74 @@ const ITEM_HEIGHT: i32 = 28;
 /// Padding inside the button and menu.
 const PADDING: i32 = 8;
 
+/// The record form of a `MenuButton`'s `items` property: one row per **top-level** item.
+///
+/// # Why the write side is refused
+///
+/// `MenuItem` is a public-field struct whose `submenu` holds a nested `Vec<MenuItem>`, and a record row
+/// cannot carry a subtree. A writable `items` property would have to invent the children or drop them,
+/// and a write that loses a cascading submenu is the silent-loss shape §19.6 forbids. The rows
+/// therefore publish what a document can hold faithfully (id, text, enabled, checked, typed icon) and
+/// a write is refused with the standard read-only error; `add_item` / `set_item_icon_source` /
+/// `clear_items` remain the write paths.
+pub const MENU_BUTTON_ITEM_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "id",
+                crate::widget::capability::PropertyValueKind::UInt,
+            ),
+            crate::widget::capability::RecordField::required(
+                "text",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "enabled",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "checked",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "icon_source",
+                crate::widget::capability::PropertyValueKind::IconSpec,
+            ),
+        ],
+        id_field: "id",
+        ids_unique: true,
+        ids_required: true,
+    };
+
+/// One row of [`MENU_BUTTON_ITEM_SCHEMA`]; refuses a source with no document form.
+fn menu_item_record(
+    item: &MenuItem,
+    icon_source: Option<IconSource>,
+) -> Result<crate::widget::capability::RecordValue, CapabilityAccessError> {
+    let mut record = crate::widget::capability::RecordValue::new()
+        .with("id", CapabilityValue::UInt(item.id))
+        .with("text", CapabilityValue::String(item.text.clone()))
+        .with("enabled", CapabilityValue::Bool(item.enabled))
+        .with("checked", CapabilityValue::Bool(item.checked));
+    match icon_source {
+        // No typed override: the field is omitted, which is how a document says "no typed icon"
+        // (the item's legacy `icon` text icon is a different channel and stays where it is).
+        None => {}
+        Some(IconSource::Builtin(name)) => {
+            record = record.with(
+                "icon_source",
+                CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(name)),
+            );
+        }
+        // A borrowed static geometry has no document form, so the read refuses rather than reporting
+        // the row as icon-less — the rule the control-level `icon_source` owners already follow.
+        Some(IconSource::StaticGeometry(_)) => {
+            return Err(CapabilityAccessError::IconSourceNotPersistable)
+        }
+    }
+    Ok(record)
+}
+
 /// A single item inside a MenuButton dropdown.
 ///
 /// Each item has a unique ID, display text, optional icon, and flags for
@@ -200,6 +268,11 @@ impl MenuButton {
         Ok(())
     }
 
+    /// The typed icon source assigned to the item with `id`, if any.
+    pub fn item_icon_source(&self, id: u64) -> Option<IconSource> {
+        self.item_icon_sources.iter().find(|(stored_id, _)| *stored_id == id).map(|(_, s)| *s)
+    }
+
     /// Removes a menu item by its ID.
     pub fn remove_item(&mut self, id: u64) -> bool {
         let len_before = self.menu_items.len();
@@ -361,6 +434,15 @@ impl WidgetProperties for MenuButton {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            "items" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &MENU_BUTTON_ITEM_SCHEMA,
+                    self.menu_items
+                        .iter()
+                        .map(|item| menu_item_record(item, self.item_icon_source(item.id)))
+                        .collect::<Result<Vec<_>, CapabilityAccessError>>()?,
+                )))
+            }
             "item_count" => Ok(CapabilityValue::UInt(self.item_count() as u64)),
             "expanded" => Ok(CapabilityValue::Bool(self.is_menu_open())),
             "icon_source" => match self.icon_source() {
@@ -409,6 +491,10 @@ impl WidgetProperties for MenuButton {
             }
             // Derived from the menu item list, which owns it.
             "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            // A row cannot express `MenuItem::submenu`, so a write would silently discard a cascading
+            // menu. Refused with the standard read-only error; `add_item` / `set_item_icon_source`
+            // are the write paths. See `MENU_BUTTON_ITEM_SCHEMA`.
+            "items" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
@@ -422,7 +508,14 @@ impl WidgetProperties for MenuButton {
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["text", "icon_source", "item_count", "expanded", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "text",
+            "icon_source",
+            "items",
+            "item_count",
+            "expanded",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 

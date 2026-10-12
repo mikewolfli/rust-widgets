@@ -672,6 +672,37 @@ impl Menu {
     fn trailing_column_x(&self, row: Rect) -> i32 {
         row.x + row.width as i32 - dimensions::MENU_ROW_TRAILING_WIDTH as i32
     }
+
+    /// The box the submenu arrow may occupy: what is left of the row after the label.
+    ///
+    /// Derived from the **label's own right edge** rather than from the row's trailing column, so a
+    /// longer label shortens the arrow's room instead of the two being placed from opposite ends of
+    /// the row and colliding in the middle. Extracted from the draw loop so the layout this test
+    /// asserts and the layout that draws are one derivation (`principle #23`), and so a row wide
+    /// enough for a shortcut *and* an arrow can be checked as a set of disjoint columns.
+    fn submenu_arrow_box(&self, row: Rect, label: Rect) -> Rect {
+        let left = label.x + label.width as i32;
+        Rect::new(left, row.y, (row.x + row.width as i32 - left).max(0) as u32, row.height)
+    }
+
+    /// Whether `item`'s row shows its shortcut in the trailing column.
+    ///
+    /// # Why this predicate exists
+    ///
+    /// The trailing column is **shared** by the shortcut and the submenu arrow: one 28 px reserve
+    /// rather than two, because a row was documented to show at most one of them at a time
+    /// (`dimensions::MENU_ROW_TRAILING_WIDTH`). Nothing enforced that, and the draw path placed the
+    /// shortcut right-aligned and the arrow centred in the *same* box — so an entry given both drew
+    /// them on top of each other. A row is not an unusual thing to configure that way: a submenu entry
+    /// with a shortcut is legal to construct.
+    ///
+    /// The arrow wins, and the reason is asymmetric: the arrow is the affordance that says "this
+    /// reveals a subtree", and hiding it makes the subtree unreachable by pointer, whereas the
+    /// constant's own documentation records that a shortcut on such a row is not useful. Stating the
+    /// precedence here means the layout, the draw and the test read one rule instead of three.
+    fn row_shows_shortcut(&self, item: &MenuEntry) -> bool {
+        !item.shortcut().is_empty() && !item.has_submenu()
+    }
     fn _item_rect(&self, index: usize, base_y: f32) -> Rect {
         let rect = self.geometry();
         let mut y = base_y;
@@ -1176,9 +1207,10 @@ impl Draw for Menu {
                 fg,
                 HorizontalAlignment::Left,
             );
-            if !item.shortcut().is_empty() {
+            if self.row_shows_shortcut(item) {
                 // One line box for the shortcut and the arrow: they occupy one trailing column,
-                // so they cannot disagree about where that column's midline is.
+                // so they cannot disagree about where that column's midline is — and only one of
+                // them is ever drawn in it (`row_shows_shortcut`).
                 let trailing = Rect::new(
                     self.trailing_column_x(row),
                     row.y,
@@ -1194,17 +1226,12 @@ impl Draw for Menu {
                 );
             }
             if item.has_submenu() {
-                // Derived from the label box's own right edge, so a longer label shortens the
-                // room the arrow has instead of the two being placed from opposite ends of the
-                // row and colliding in the middle. The mark is the `ChevronRight` **icon outline**,
-                // not the `▶` text glyph (U+25B6 is covered by no bundled face, so it drew as an
-                // 8x8 bitmap block).
-                let arrow_box = Rect::new(
-                    label.x + label.width as i32,
-                    row.y,
-                    (row.x + row.width as i32 - (label.x + label.width as i32)).max(0) as u32,
-                    row.height,
-                );
+                // Derived from the label box's own right edge (see `submenu_arrow_box`), so a longer
+                // label shortens the room the arrow has instead of the two being placed from opposite
+                // ends of the row and colliding in the middle. The mark is the `ChevronRight` **icon
+                // outline**, not the `▶` text glyph (U+25B6 is covered by no bundled face, so it drew
+                // as an 8x8 bitmap block).
+                let arrow_box = self.submenu_arrow_box(row, label);
                 let side = arrow_box.width.min(arrow_box.height).min(16);
                 crate::widget::draw_icon_centered(
                     context,
@@ -1354,6 +1381,122 @@ mod tests {
             row.x + row.width as i32 - dimensions::MENU_ROW_TRAILING_WIDTH as i32,
             "the label yields to the shortcut/arrow column"
         );
+    }
+
+    /// blue27 §19.13 case I12: the columns a menu row actually draws are disjoint.
+    ///
+    /// One row can carry a **check mark** (the indicator column), a label, a **shortcut** and a
+    /// **submenu arrow** — three of the four are icon slots, so they are exactly the boxes the unified
+    /// contract must keep apart, and the failure mode is silent: two boxes can overlap while every
+    /// individual assertion about them still passes. The check is therefore pairwise on the drawn set.
+    ///
+    /// The trailing column is shared, so "at most one of shortcut/arrow" is part of the contract rather
+    /// than an accident: this test found the two being drawn in the *same* box before
+    /// [`Menu::row_shows_shortcut`] stated the precedence.
+    #[test]
+    fn a_rows_drawn_columns_are_disjoint_even_when_the_row_is_narrow() {
+        let menu = Menu::new("File", Rect::new(0, 0, 120, 120));
+        // Narrow enough that label + shortcut + arrow genuinely compete for the same pixels.
+        let row = Rect::new(0, 22, 120, Menu::item_height() as u32);
+
+        let with_shortcut = MenuEntry::with_shortcut(MenuEntry::new("Toggle"), "Ctrl+T");
+        let with_arrow = {
+            let mut entry = MenuEntry::new("More");
+            entry.set_has_submenu(true);
+            entry
+        };
+        let with_both = {
+            let mut entry = MenuEntry::with_shortcut(MenuEntry::new("Both"), "Ctrl+B");
+            entry.set_has_submenu(true);
+            entry
+        };
+
+        // A row shows its shortcut only when it has no submenu, so the drawn set is at most three
+        // boxes and never the two trailing affordances at once.
+        assert!(menu.row_shows_shortcut(&with_shortcut));
+        assert!(!menu.row_shows_shortcut(&with_arrow));
+        assert!(
+            !menu.row_shows_shortcut(&with_both),
+            "the arrow takes the shared trailing column; a shortcut there would overlap it"
+        );
+
+        let indicator = menu.indicator_box(row);
+        let label = menu.label_box(row, indicator);
+        let arrow = menu.submenu_arrow_box(row, label);
+        let shortcut = Rect::new(
+            menu.trailing_column_x(row),
+            row.y,
+            dimensions::MENU_ROW_TRAILING_WIDTH,
+            row.height,
+        );
+
+        for (name, entry) in
+            [("shortcut-only", &with_shortcut), ("submenu", &with_arrow), ("both", &with_both)]
+        {
+            let mut drawn: Vec<(&str, Rect)> = vec![("indicator", indicator), ("label", label)];
+            if menu.row_shows_shortcut(entry) {
+                drawn.push(("shortcut", shortcut));
+            }
+            if entry.has_submenu() {
+                drawn.push(("arrow", arrow));
+            }
+            for (i, (box_name, box_)) in drawn.iter().enumerate() {
+                assert!(
+                    box_.width > 0,
+                    "{name}: {box_name} collapsed to zero width, so nothing was asserted about it"
+                );
+                for (other_name, other) in &drawn[i + 1..] {
+                    let disjoint =
+                        box_.x + box_.width as i32 <= other.x || other.x + other.width as i32 <= box_.x;
+                    assert!(
+                        disjoint,
+                        "{name}: {box_name} {box_:?} overlaps {other_name} {other:?}; the drawn \
+                         columns must partition the row, not be derived independently"
+                    );
+                }
+            }
+        }
+
+        // ...and they are in reading order, so "disjoint" cannot be satisfied by a permutation, and
+        // every drawn box stays inside the row.
+        assert!(indicator.x < label.x && label.x < shortcut.x);
+        assert!(shortcut.x <= arrow.x, "the arrow follows the shortcut column");
+        for (name, box_) in [("label", label), ("shortcut", shortcut), ("arrow", arrow)] {
+            assert!(
+                box_.x >= row.x && box_.x + box_.width as i32 <= row.x + row.width as i32,
+                "{name} {box_:?} escapes the row {row:?}"
+            );
+        }
+    }
+
+    /// The check mark and the submenu arrow reach the screen as **geometry**, not as characters.
+    ///
+    /// §19.11 requires an indicator not to add a duplicate node a screen reader would announce, and
+    /// the crate reached this by drawing `IconName::Check` / `IconName::ChevronRight` outlines instead
+    /// of the `✓` / `▶` characters no bundled face covers. Asserted on the document because that is
+    /// what a reader consumes: the mark must be an icon fill, and neither character may appear.
+    #[test]
+    fn the_check_and_arrow_are_geometry_not_text() {
+        let mut menu = Menu::new("Edit", Rect::new(0, 0, 200, 120));
+        let mut entry = MenuEntry::new("Toggle");
+        entry.set_checkable(true);
+        entry.set_checked(true);
+        entry.set_has_submenu(true);
+        entry.set_shortcut("Ctrl+T");
+        menu.add_item(entry);
+
+        let svg = render_to_svg(&mut menu);
+        assert!(
+            svg.contains(r#"fill-rule="nonzero""#),
+            "the tick and the arrow must arrive as icon geometry"
+        );
+        for character in ['\u{2713}', '\u{25B6}'] {
+            assert!(
+                !svg.contains(character),
+                "the indicator must not be the {character:?} character: it is covered by no bundled \
+                 face and would read as a second node"
+            );
+        }
     }
 
     /// A wider indicator narrows the label rather than overlapping it (the §B.9 property).

@@ -1533,6 +1533,38 @@ impl WindowHandle {
         MenuItemHandle::from_raw(crate::menu_add_item(menu.raw_id(), text, shortcut))
     }
 
+    /// Add a menu item that would carry an icon, keeping the text when the platform cannot show one.
+    ///
+    /// # Why this exists instead of an `icon` parameter on `new_menu_item`
+    ///
+    /// [`Platform::menu_add_item`](crate::platform::Platform::menu_add_item) has no icon parameter, so
+    /// an icon handed to a native menu bar can only be (a) presented, (b) reported unsupported, or
+    /// (c) silently dropped. (c) is the one blue27 §19.11 forbids, because the item then looks exactly
+    /// like one whose icon failed to resolve — §19.13 case I15 requires those two to be
+    /// distinguishable. So this method asks
+    /// [`native_menu_item_icons_supported`](crate::native_menu_item_icons_supported) and, when the
+    /// answer is `false`, creates the item with its **text** and names the unsupported presentation in
+    /// the log. The item is always created: losing a menu entry because of a decoration would be far
+    /// worse than losing the decoration.
+    ///
+    /// A caller that wants to avoid the whole path asks the query itself and never builds the icon.
+    pub fn new_menu_item_with_icon(
+        &self,
+        menu: &MenuHandle,
+        text: &str,
+        shortcut: Option<&str>,
+        icon: Option<crate::widget::IconSource>,
+    ) -> MenuItemHandle {
+        if icon.is_some() && !crate::native_menu_item_icons_supported() {
+            log::warn!(
+                "native menu item {text:?} was given an icon, but this platform's menu bar has no \
+                 icon surface; the item was created with its text only (this is an unsupported \
+                 presentation, not a load failure)"
+            );
+        }
+        self.new_menu_item(menu, text, shortcut)
+    }
+
     /// Create a tool bar strip for this window.
     pub fn new_tool_bar(&self, x: i32, y: i32, w: u32, h: u32) -> ToolBarHandle {
         ToolBarHandle::from_raw(crate::create_tool_bar(self.id, x, y, w, h))

@@ -213,6 +213,9 @@ impl ControlBackend for NativeControlBackend {
     fn menu_add_item(&self, parent_menu: ObjectId, text: &str, shortcut: Option<&str>) -> ObjectId {
         get_platform().menu_add_item(parent_menu, text, shortcut)
     }
+    fn supports_menu_item_icons(&self) -> bool {
+        get_platform().supports_menu_item_icons()
+    }
     fn create_tool_bar(
         &self,
         parent: ObjectId,

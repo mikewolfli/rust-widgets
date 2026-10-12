@@ -1289,6 +1289,31 @@ pub trait Platform: Send + Sync {
         let _ = (parent_menu, text, shortcut);
         0
     }
+    /// Whether this platform can present an **icon** on a native menu item.
+    ///
+    /// # Why this is askable rather than implicit
+    ///
+    /// [`Platform::menu_add_item`] takes text and a shortcut and nothing else, so a caller holding an
+    /// [`IconSource`](crate::widget::IconSource) has no way to pass it. Without this query the icon is
+    /// simply *absent*, which is indistinguishable from "the icon resolved and painted nothing" —
+    /// the conflation blue27 §19.13 case I15 exists to catch and §19.11 names as its rule: a native
+    /// surface that cannot show a glyph must report **unsupported presentation**, and the caller keeps
+    /// its text, rather than the framework pretending everything succeeded.
+    ///
+    /// # Why the default is `false` and no platform overrides it yet
+    ///
+    /// §19.11 forbids declaring support before the update/delete, DPI and thread behaviour of the OS
+    /// image handle has been verified. No desktop backend in this crate has that path yet (macOS
+    /// would need an `NSImage` built at the item's scale and released with the menu; Win32 a
+    /// `HBITMAP`/`HICON` with an owner-draw item; GTK a `GtkImage`), so claiming `true` anywhere
+    /// would be a claim with nothing behind it. Answering `false` is the accurate statement, and a
+    /// caller that reads it can skip building the icon entirely.
+    ///
+    /// Window and installer icons are **not** this path: they keep the file-path contract of
+    /// [`Platform::set_window_icon`] (§13), because an OS application icon is not an arbitrary glyph.
+    fn supports_menu_item_icons(&self) -> bool {
+        false
+    }
     /// Returns the accelerator display text bound to a menu item.
     ///
     /// `None` when the id is not a menu item or it has no accelerator. Useful to

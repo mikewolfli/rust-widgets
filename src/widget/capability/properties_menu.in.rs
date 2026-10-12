@@ -67,6 +67,15 @@ macro_rules! impl_properties_menu {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const DROPDOWN_MENU_PROPERTIES: &[PropertySchema] = &[
+            // The rows are published so a document can read each item's typed icon; the write side is
+            // refused because a row cannot express `DropdownItem::children` (see
+            // `DROPDOWN_ITEM_SCHEMA`).
+            PropertySchema::records(
+                "items",
+                true,
+                false,
+                &crate::widget::menu_toolbar::dropdown_menu::DROPDOWN_ITEM_SCHEMA,
+            ),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
             PropertySchema::new("expanded", PropertyValueKind::Bool, true, true),
@@ -81,6 +90,14 @@ macro_rules! impl_properties_menu {
         pub(crate) const MENU_BUTTON_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("text", PropertyValueKind::String, true, true),
             PropertySchema::new("icon_source", PropertyValueKind::IconSpec, true, true),
+            // The rows are a **view** of the menu items, keyed by `MenuItem::id`; the write side is
+            // refused because a row cannot express `MenuItem::submenu` (see `MENU_BUTTON_ITEM_SCHEMA`).
+            PropertySchema::records(
+                "items",
+                true,
+                false,
+                &crate::widget::menu_toolbar::menu_button::MENU_BUTTON_ITEM_SCHEMA,
+            ),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("expanded", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),

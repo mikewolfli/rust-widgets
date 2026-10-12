@@ -289,6 +289,139 @@ impl IconSpec {
     }
 }
 
+/// Tracks one icon-resource binding's asynchronous lifecycle, so a late or failed result cannot
+/// replace newer content.
+///
+/// # Why this type exists at all, given that the crate has no async loader
+///
+/// §19.7 puts the asynchronous lifecycle in the **host/loading adapter**, not in the widget: a
+/// validated [`IconSource`] is committed to the control synchronously, and the widget API needs no
+/// `Pending` state. What the widget layer cannot do on the host's behalf is the bookkeeping that
+/// makes late results safe, and that bookkeeping has four rules which are easy to get subtly wrong
+/// and are exactly what §19.13 cases I10 and I11 ask about:
+///
+/// | Situation | Required behaviour |
+/// |---|---|
+/// | a newer request started, then an older one finishes | the older result is **not** applied |
+/// | an update fails while content is live | the last-valid content stays, and the failure is reported |
+/// | the caller clears the icon | the content is really removed, and any in-flight request is invalidated |
+/// | a result arrives for a revision older than the one on screen | it is **not** applied |
+///
+/// A host may of course implement this itself; this type is the crate's *executable statement* of the
+/// rules, so a host that uses it inherits the tested behaviour rather than re-deriving it. It holds no
+/// lock, no I/O and no task — it is a version tag and three fields, which is why it costs nothing in a
+/// widget that does not use resources.
+///
+/// # Ownership: how "do not touch a destroyed consumer" is achieved
+///
+/// The binding is owned by whatever owns the widget (a view-model, a loader entry, the host's own
+/// map), and [`Self::complete`] takes `&mut self`. A result that arrives after that owner is gone
+/// therefore has no binding to call: the host's late callback holds whatever weak handle it was given
+/// and finds nothing to upgrade. The type deliberately does not offer a detached "apply this
+/// somewhere" entry point, because that is precisely the API that makes touching a destroyed consumer
+/// possible.
+#[derive(Debug, Default)]
+pub struct IconResourceBinding {
+    /// The id handed to the newest [`Self::begin`], and the revision it was for.
+    in_flight: Option<(u64, u64)>,
+    /// Monotonic request counter; never reused, so a stale id can never equal a current one.
+    next_request: u64,
+    /// The **last valid** content and the revision it belongs to.
+    ready: Option<(u64, IconSource)>,
+}
+
+/// What a completed load turned into.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IconLoadOutcome {
+    /// The result is the current one and is now in effect.
+    Applied(IconSource),
+    /// The load failed. `kept` is the last-valid content still in effect (`None` when there was none,
+    /// which is the first-load failure §19.7 requires to be reported as a real failure).
+    Failed {
+        /// The content still in effect after the failure.
+        kept: Option<IconSource>,
+        /// The host's diagnostic for why the load failed.
+        diagnostic: crate::compat::String,
+    },
+    /// The result was not applied: a newer request had started, the binding had been cleared, or the
+    /// loaded revision is older than the content already on screen.
+    Stale,
+}
+
+impl IconResourceBinding {
+    /// A binding with no content.
+    pub const fn new() -> Self {
+        Self { in_flight: None, next_request: 0, ready: None }
+    }
+
+    /// Starts a load for `revision` and returns the request id to present with its result.
+    ///
+    /// Calling this again **invalidates** the previous request, which is what makes "B started, A
+    /// finished last" resolve in B's favour (I10).
+    pub fn begin(&mut self, revision: u64) -> u64 {
+        self.next_request += 1;
+        self.in_flight = Some((self.next_request, revision));
+        self.next_request
+    }
+
+    /// Presents the result of a load started by [`Self::begin`].
+    pub fn complete(
+        &mut self,
+        request_id: u64,
+        revision: u64,
+        result: Result<IconSource, crate::compat::String>,
+    ) -> IconLoadOutcome {
+        // Only the newest request may change anything. A result for a superseded request id, or one
+        // that arrives after `clear`, is dropped here rather than applied and then corrected.
+        if self.in_flight != Some((request_id, revision)) {
+            return IconLoadOutcome::Stale;
+        }
+        self.in_flight = None;
+        match result {
+            Ok(source) => {
+                // A *successful* result for an older revision must not replace newer content either:
+                // the resource moved backwards, and the newer render is the one the user saw.
+                if let Some((ready_revision, _)) = self.ready {
+                    if revision < ready_revision {
+                        return IconLoadOutcome::Stale;
+                    }
+                }
+                self.ready = Some((revision, source));
+                IconLoadOutcome::Applied(source)
+            }
+            Err(diagnostic) => {
+                // Last-valid stays: a failed update must not blank an icon that is working (I11).
+                let kept = self.ready.as_ref().map(|(_, source)| *source);
+                IconLoadOutcome::Failed { kept, diagnostic }
+            }
+        }
+    }
+
+    /// The content currently in effect, if any.
+    pub fn current(&self) -> Option<IconSource> {
+        self.ready.as_ref().map(|(_, source)| *source)
+    }
+
+    /// The revision the current content belongs to.
+    pub fn revision(&self) -> Option<u64> {
+        self.ready.as_ref().map(|(revision, _)| *revision)
+    }
+
+    /// Whether a load is in flight.
+    pub fn is_loading(&self) -> bool {
+        self.in_flight.is_some()
+    }
+
+    /// Removes the content and invalidates any in-flight request.
+    ///
+    /// This is the "user explicitly clears the icon" rule: the binding goes back to empty and a
+    /// result that was already on its way can no longer bring the old icon back.
+    pub fn clear(&mut self) {
+        self.in_flight = None;
+        self.ready = None;
+    }
+}
+
 #[cfg(all(test, feature = "image", not(alloc_frugal)))]
 mod shared_pixels_tests {
     use super::SharedIconPixels;
@@ -360,5 +493,120 @@ mod shared_pixels_tests {
 
         // A degenerate slot is returned untouched rather than divided by zero.
         assert_eq!(square.fit_into(Rect::new(0, 0, 0, 0)), Rect::new(0, 0, 0, 0));
+    }
+}
+
+#[cfg(test)]
+mod binding_tests {
+    use super::{IconLoadOutcome, IconResourceBinding, IconSource};
+    use crate::widget::IconName;
+
+    fn source(name: IconName) -> IconSource {
+        IconSource::Builtin(name)
+    }
+
+    /// blue27 §19.13 case I10: with two requests in flight and the **older** one finishing last, only
+    /// the current request may be applied.
+    ///
+    /// This is the ordering a real loader produces all the time — a slow first read overtaken by a
+    /// fast second one — and applying A there would leave the control showing a resource the binding
+    /// no longer names, with no further event to correct it.
+    #[test]
+    fn a_superseded_result_is_not_applied_when_it_finishes_last() {
+        let mut binding = IconResourceBinding::new();
+
+        let request_a = binding.begin(1);
+        let request_b = binding.begin(2);
+        assert!(binding.is_loading());
+
+        // B finishes first and wins; A arrives afterwards and must change nothing.
+        assert_eq!(
+            binding.complete(request_b, 2, Ok(source(IconName::Save))),
+            IconLoadOutcome::Applied(source(IconName::Save))
+        );
+        assert_eq!(
+            binding.complete(request_a, 1, Ok(source(IconName::Search))),
+            IconLoadOutcome::Stale,
+            "a superseded request must be dropped, not applied and then corrected"
+        );
+        assert_eq!(binding.current(), Some(source(IconName::Save)));
+        assert_eq!(binding.revision(), Some(2));
+        assert!(!binding.is_loading(), "the completed request is no longer in flight");
+    }
+
+    /// A successful result for an **older** revision than the one on screen must not roll it back.
+    #[test]
+    fn an_older_revision_does_not_replace_newer_content() {
+        let mut binding = IconResourceBinding::new();
+        let first = binding.begin(7);
+        assert_eq!(
+            binding.complete(first, 7, Ok(source(IconName::Save))),
+            IconLoadOutcome::Applied(source(IconName::Save))
+        );
+
+        let stale = binding.begin(6);
+        assert_eq!(
+            binding.complete(stale, 6, Ok(source(IconName::Search))),
+            IconLoadOutcome::Stale,
+            "the resource went backwards; the newer render is what the user already saw"
+        );
+        assert_eq!(binding.revision(), Some(7));
+    }
+
+    /// blue27 §19.13 case I11: a failed update keeps the last-valid content and reports the failure;
+    /// an explicit clear afterwards really removes it, and an in-flight result cannot revive it.
+    #[test]
+    fn a_failed_update_keeps_the_last_valid_content_until_an_explicit_clear() {
+        let mut binding = IconResourceBinding::new();
+
+        // First load fails: there is no last-valid to keep, and the failure is reported as such
+        // rather than as an empty success.
+        let first = binding.begin(1);
+        assert_eq!(
+            binding.complete(first, 1, Err(crate::compat::String::from("missing file"))),
+            IconLoadOutcome::Failed {
+                kept: None,
+                diagnostic: crate::compat::String::from("missing file"),
+            }
+        );
+        assert_eq!(binding.current(), None);
+
+        // A good load lands, then an update fails: the working icon stays.
+        let good = binding.begin(2);
+        assert_eq!(
+            binding.complete(good, 2, Ok(source(IconName::Save))),
+            IconLoadOutcome::Applied(source(IconName::Save))
+        );
+        let failed_update = binding.begin(3);
+        assert_eq!(
+            binding.complete(failed_update, 3, Err(crate::compat::String::from("io error"))),
+            IconLoadOutcome::Failed {
+                kept: Some(source(IconName::Save)),
+                diagnostic: crate::compat::String::from("io error"),
+            }
+        );
+        assert_eq!(binding.current(), Some(source(IconName::Save)), "last-valid must survive");
+
+        // The user clears it: the content goes, and the result still in flight cannot bring it back.
+        let in_flight = binding.begin(4);
+        binding.clear();
+        assert_eq!(binding.current(), None, "an explicit clear must really remove the icon");
+        assert!(!binding.is_loading(), "clearing invalidates the in-flight request");
+        assert_eq!(
+            binding.complete(in_flight, 4, Ok(source(IconName::Search))),
+            IconLoadOutcome::Stale,
+            "a result that was already on its way must not undo the clear"
+        );
+        assert_eq!(binding.current(), None);
+    }
+
+    /// A default-constructed binding is empty, so a control that never saw a resource is not
+    /// distinguishable from one whose resource was cleared — which is the point.
+    #[test]
+    fn a_fresh_binding_holds_nothing() {
+        let binding = IconResourceBinding::new();
+        assert_eq!(binding.current(), None);
+        assert_eq!(binding.revision(), None);
+        assert!(!binding.is_loading());
     }
 }

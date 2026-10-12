@@ -640,3 +640,79 @@ render 并保留旧公共函数的兼容 re-export，避免 render 反向依赖 
 
 **推荐最终形态：一个轻量的图标内容模型、一套共享绘制接缝、适用层的资源描述与解析，
 以及各控件薄适配。不是一个全局万能注册表，也不是复制多套图标控件。**
+
+### 19.14 执行状态与后续步骤（跟进用；实施记录见 `docs/log/log-20261012-1.md`）
+
+本节不改变上面的设计裁决，只记录**执行进度**与**剩余步骤的顺序**，便于后续接手时不必重读全部日志。
+每完成一格就把证据补进日志并在本表更新；判定"完成"一律按上面 §19.13 的 Definition of Done，
+不因局部测试通过而提前计数。
+
+#### 19.14.1 阶段状态（保守口径：只按完整闭环计数）
+
+| 阶段 | 状态 | 已交付的关键证据 | 还缺 |
+|---|---|---|---|
+| U0 | 🟡 部分 | `tools/check_icon_entry_contract.sh`（A1/A2/A3/A4）；**I17 已闭环**：`tests/icon_allocations.rs` 实测稳态 **0 分配/绘制** + `tools/icon_allocations_baseline.txt` 记录 U0 基线（22–279/次）并做双重门；§19.5 各类别可达性核验 | 全公开结构/cfg 的逐项清点（现为断言式清单，不是导出产物） |
+| U1 | 🟢 闭环 | `CompoundPath` + 软件/SVG/WGPU 非零填充；`IconSource`/`IconRef`/`measure_icon`/`validate_icon`/`paint_icon`；census（实测 ink + runs）+ C5/C6 环绕保真；stepper 快照重生成 | — |
+| U2 | 🟡 部分 | `SharedIconPixels`（Arc 共享、move 语义、缓存同一分配）；Button/ToolButton 接入；`fit_image_into` 统一 fit | 峰值内存预算；跨控件矩阵的更广尺寸/禁用组合 |
+| U3 | 🟡 部分 | Action/MenuButton/DropdownMenu/PieMenu/RibbonBar 的 typed 槽；I01 跨入口同源等价；**I12 已闭环**：菜单行列的按对不重叠（并修掉实测缺陷——shortcut 与 arrow 曾画在同一个 28 px 列里，现由 `Menu::row_shows_shortcut` 明确优先级）+ check/arrow 是几何而非字符 | RTL 的**布局镜像无实现**（见 §19.14.4，全 crate 无镜像设施；`direction` 只约束按键语义） |
+| U4 | 🟡 部分 | 导航集合/TabBar/ToolBox/BottomNavigationBar/MdiArea 的 item setter 与绘制；条目身份键的写法已对齐 §19.6 | 条目身份模型提升（`MenuItem.id` 之外仍为 index/私有字段者，见 §19.14.3 的豁免清单） |
+| U5 | 🟡 部分 | IconSpec/IconCapability/JSON/manifest/ABI/binding；显式 resolver 贯通 loader/view/engine；记录通道：`chip`/`dropdown_menu`/`menu_button`（只读行 + 具名 read-only 拒绝）；**I10/I11 已闭环**：`IconResourceBinding`（陈旧结果丢弃、last-valid 保留、显式清除后不可复活） | **I13**（旧/新冲突字段与全入口 round-trip 矩阵）；Node 运行时验证（本机缺 `ffi-napi`） |
+| U6 | 🔴 未开始 | — | 自定义 geometry/image 的静态生成、按目标转换与引用裁剪 |
+| U7 | 🟢 闭环 | `Platform::supports_menu_item_icons` → `ControlBackend` → `crate::native_menu_item_icons_supported()` → `WindowHandle::new_menu_item_with_icon`（不支持时保留文本并报告 unsupported presentation）；`tests/native_icon_capability_test.rs`（I15）；窗口图标保持 §13 路径契约 | — |
+
+**DoD 进度：第 1/2/3/4/7/8 条已闭合；第 5/6/9 条未闭合。**
+
+#### 19.14.2 剩余步骤（按建议执行顺序）
+
+1. ~~**I12 菜单槽位与 RTL 矩阵**（U3，DoD 4）~~ **已完成**（槽位按对不重叠 + check/arrow 为几何）。
+   - 遗留：RTL 的布局镜像不在本方案内 —— 全 crate 没有布局镜像设施，`Menu::direction` 的文档
+     自身把范围限定为**按键语义**；把菜单单独做成 RTL 镜像会与 renderer 之外的第二个方向来源
+     冲突（§19.4「不能 renderer 和 widget 重复镜像」）。结论记录在 §19.14.4，不假装已支持。
+2. **I13 冲突矩阵与全入口 round-trip**（U5，DoD 6）
+   - 属性层冲突已核清只有 `Action` 一行（同时发布 `icon_text` 与 `icon_source`），已有测试。
+   - 缺口在**条目层**：对每个 record 通道（`chip`/`dropdown_menu`/`menu_button`）做
+     JSON 文档 → 落盘 → 读回 → 再落盘的 round-trip，断言图标与身份都不漂移；
+     运行期专有源必须**拒绝**而不是丢失（三条通道已同形）。
+   - Node 运行时验证需先装 `ffi-napi`；未装则明确记为未验证，不用语法检查冒充。
+3. **U6 静态生成 / 目标转换 / 引用裁剪**（DoD 6）
+   - 现状：Builtin `IconSpec` 已能生成并在 `mini`/`embedded` 真实编译；Resource 描述在生成时被
+     报告为 unsupported（不生成假 setter）。
+   - 要做：自定义 geometry/image 的发射；按目标能力**在生成前**阻断不支持来源（I14）；
+     生成产物可运行验证；引用裁剪（未使用的图标数据不进入产物）。
+4. **U4 条目身份模型**（DoD 5，可选但最终需要）
+   - 先做**文档化**：§19.14.3 的豁免清单写进 rustage 迁移说明；只有当某个集合确实需要
+     稳定身份时才提升模型，且作为独立的破坏性版本变更。
+5. **收尾**（原则 #56）
+   - 全部改完后跑一次**全量**：`cargo test --no-default-features --features desktop,icons --tests`
+     + `bash tools/run_all_gates.sh`，然后据实更新 §19.14.1 与 DoD 计数。
+
+#### 19.14.3 条目级 record 通道的豁免清单（不是遗漏，是具名决定）
+
+§19.6 允许"只有 index 的集合不得为此私自重写选择模型"。以下集合有 `set_item_icon_source`
+但没有 record 行，理由由 `tools/check_icon_entry_contract.sh` 的 A3 断言保证不会被悄悄扩大：
+
+| 集合 | 身份 | 不作 record 行的理由 |
+|---|---|---|
+| `MdiArea` | 子窗口 `ObjectId` | `ObjectId` 是运行期句柄，不是文档值 |
+| `TabWidget` | 位置 | 集合本身只有位置身份 |
+| `ToolBox` | 无 | item 字段私有且无 id，造一行等于发明身份 |
+| `PieMenu` | 无 | 同上 |
+| `BottomNavigationBar` / `NavigationDrawer` / Cupertino rail | 各自模型 | 未发布 item id |
+| `TabView` | 位置 | `TabPage` 字段公开，§19.6 明确推迟到不兼容版本 |
+
+已具备 record 通道的三个集合：`Chip`（host 文本 id）、`DropdownMenu`（`DropdownItem::value`）、
+`MenuButton`（`MenuItem.id`）——三者的行都**只读**，因为一行无法承载 `children`/`submenu`；
+写入用控件自身 API，避免"写入即丢子树"的静默损失。
+
+#### 19.14.4 本方案**不**承诺的一项：RTL 布局镜像（具名排除，非遗漏）
+
+I12 的"方向正确"容易读成"菜单要支持 RTL 镜像"。实测三件事，因此判定它不属于本方案：
+
+1. 全 crate 搜索 `is_rtl` / `layout_direction` / `mirror_rect` **零命中**：没有布局镜像设施。
+2. `Menu::direction` 的文档把范围写清楚了——"the whole content of the direction field as it applies
+   here"指的是**水平方向键**在 RTL 下取反（`begin_step_to_left_step`），不是绘制镜像。
+3. §19.4 的规则要求方向只解析一次：若菜单自己镜像而其它控件不镜像，就出现第二个方向事实来源。
+
+要做 RTL 镜像应当是**整个布局层**的一次变更（镜像 `Rect` 派生、影响全部控件与快照），
+并在那个变更里带上 RTL 视觉基线；它不属于图标统一契约。**当前状态：RTL 菜单渲染与 LTR 相同**，
+这是已知且已具名的边界，不是本方案漏掉的一步。

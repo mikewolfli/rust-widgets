@@ -298,6 +298,15 @@ pub trait ControlBackend: Send + Sync {
     ) -> ObjectId {
         0
     }
+    /// Whether the native menu bar behind this backend can present an icon on an item.
+    ///
+    /// Mirrors [`Platform::supports_menu_item_icons`](crate::platform::Platform::supports_menu_item_icons),
+    /// the same way [`ControlBackend::menu_add_item`] mirrors `Platform::menu_add_item`: the control
+    /// layer is what callers hold, and the answer is the platform's. `false` by default, because a
+    /// backend that has not said otherwise has no icon surface to promise.
+    fn supports_menu_item_icons(&self) -> bool {
+        false
+    }
     /// Create tool bar host control.
     fn create_tool_bar(
         &self,

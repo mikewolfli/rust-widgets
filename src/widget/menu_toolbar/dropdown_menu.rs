@@ -33,6 +33,70 @@ const PADDING: i32 = 8;
 /// Maximum number of items visible before scrolling.
 const MAX_VISIBLE_ITEMS: usize = 8;
 
+/// The record form of the `items` property: one row per **top-level** dropdown item.
+///
+/// # Why this is read-only, and why the rows stop at the top level
+///
+/// `DropdownItem` is a public-field struct with a nested `children` vector, and a record row cannot
+/// carry a subtree. A *writable* `items` property would therefore have to invent children or silently
+/// drop them — and a write that loses a submenu is precisely the silent-loss shape §19.6 forbids. The
+/// rows publish what a document can hold faithfully (identity, label, enabled, typed icon) and a write
+/// is refused with a reason instead of a lossy success; behaviour changes through the control's own
+/// API (`add_item` / `set_item_icon_source` / `items_mut`), which is what "public-field collections
+/// are a version boundary" prescribes.
+pub const DROPDOWN_ITEM_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "value",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::required(
+                "label",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "enabled",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "icon_source",
+                crate::widget::capability::PropertyValueKind::IconSpec,
+            ),
+        ],
+        id_field: "value",
+        ids_unique: true,
+        ids_required: true,
+    };
+
+/// One row of [`DROPDOWN_ITEM_SCHEMA`]; refuses a source with no document form.
+fn dropdown_item_record(
+    item: &DropdownItem,
+    icon_source: Option<IconSource>,
+) -> Result<crate::widget::capability::RecordValue, CapabilityAccessError> {
+    let mut record = crate::widget::capability::RecordValue::new()
+        .with("value", CapabilityValue::String(item.value.clone()))
+        .with("label", CapabilityValue::String(item.label.clone()))
+        .with("enabled", CapabilityValue::Bool(item.enabled));
+    match icon_source {
+        // "No `icon_source` field" is how a document says "this row has no typed icon", and a row
+        // that never had one is the normal case.
+        None => {}
+        Some(IconSource::Builtin(name)) => {
+            record = record.with(
+                "icon_source",
+                CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(name)),
+            );
+        }
+        // A borrowed static geometry cannot be written as a document value, and omitting it would be
+        // indistinguishable from "no icon" — the same rule the six control-level owners follow.
+        Some(IconSource::StaticGeometry(_)) => {
+            return Err(CapabilityAccessError::IconSourceNotPersistable)
+        }
+    }
+    Ok(record)
+}
+
 /// A single item in a DropdownMenu.
 ///
 /// Each item has a value (string identifier), a display label, an optional
@@ -90,7 +154,8 @@ pub struct DropdownMenu {
     base: BaseWidget,
     selected_value: Option<String>,
     items: Vec<DropdownItem>,
-    item_icon_sources: Vec<Option<IconSource>>,
+    /// Typed icon overrides, keyed by [`DropdownItem::value`] — the identity the item type declares.
+    item_icon_sources: Vec<(crate::compat::String, IconSource)>,
     expanded: bool,
     /// The list's open/close reveal, so the list grows out of the field rather than appearing.
     ///
@@ -189,54 +254,65 @@ impl DropdownMenu {
 
     /// Adds an item to the dropdown.
     pub fn add_item(&mut self, item: DropdownItem) {
-        self.sync_item_icon_sources();
+        // A re-added `value` must not inherit the previous item's icon: the override is keyed by
+        // identity, so a stale entry would silently attach the old glyph to a new row.
+        self.item_icon_sources.retain(|(value, _)| *value != item.value);
         self.items.push(item);
-        self.item_icon_sources.push(None);
         self.base.request_redraw();
     }
 
-    /// Assigns a typed icon source to an item by its current index.
+    /// Assigns a typed icon source to an item by its **value**.
     ///
     /// A typed source takes precedence while set, without discarding the item's legacy text icon.
     /// Passing `None` restores that text icon.
-    pub fn set_item_icon_source_at(
+    ///
+    /// # Why the item's value and not its index
+    ///
+    /// `DropdownItem::value` is documented as a *unique* identifier, so it is the identity the
+    /// collection really has, and §19.6 requires the typed channel to be keyed on real identity
+    /// rather than a position: an index association silently reattaches to whatever row later moves
+    /// into that slot. The index-keyed form this replaced was justified by a claim that the
+    /// collection had only positional identity, which its own item type disproves.
+    pub fn set_item_icon_source(
         &mut self,
-        index: usize,
+        value: &str,
         source: Option<IconSource>,
     ) -> Result<(), crate::widget::IconItemError> {
-        let len = self.items.len();
-        if index >= len {
-            return Err(crate::widget::IconItemError::IndexOutOfBounds { index, len });
+        match self.items.iter().filter(|item| item.value == value).count() {
+            0 => {
+                return Err(crate::widget::IconItemError::UnknownItemId {
+                    id: crate::compat::String::from(value),
+                })
+            }
+            1 => {}
+            // Two rows sharing a value cannot be addressed apart, and picking the first would be a
+            // silent coin flip (the same reasoning `IconItemError::AmbiguousItemId` records).
+            _ => {
+                return Err(crate::widget::IconItemError::DuplicateItemId {
+                    id: crate::compat::String::from(value),
+                })
+            }
         }
-        self.sync_item_icon_sources();
-        if let Some(slot) = self.item_icon_sources.get_mut(index) {
-            *slot = source;
+        self.item_icon_sources.retain(|(existing, _)| existing != value);
+        if let Some(source) = source {
+            self.item_icon_sources.push((crate::compat::String::from(value), source));
         }
         self.base.request_redraw();
         Ok(())
     }
 
-    fn sync_item_icon_sources(&mut self) {
-        self.item_icon_sources.resize(self.items.len(), None);
-        self.item_icon_sources.truncate(self.items.len());
+    /// The typed icon source assigned to `value`, if any.
+    pub fn item_icon_source(&self, value: &str) -> Option<IconSource> {
+        self.item_icon_sources.iter().find(|(id, _)| id == value).map(|(_, source)| *source)
     }
 
     /// Removes an item by value. Returns true if an item was removed.
     pub fn remove_item(&mut self, value: &str) -> bool {
-        self.sync_item_icon_sources();
         let len_before = self.items.len();
-        let mut retained_items = Vec::with_capacity(len_before);
-        let mut retained_sources = Vec::with_capacity(len_before);
-        for (item, source) in self.items.drain(..).zip(self.item_icon_sources.drain(..)) {
-            if item.value != value {
-                retained_items.push(item);
-                retained_sources.push(source);
-            }
-        }
-        let removed = retained_items.len() < len_before;
-        self.items = retained_items;
-        self.item_icon_sources = retained_sources;
+        self.items.retain(|item| item.value != value);
+        let removed = self.items.len() < len_before;
         if removed {
+            self.item_icon_sources.retain(|(id, _)| id != value);
             // Clear selection if the removed item was selected
             if self.selected_value.as_deref() == Some(value) {
                 self.selected_value = None;
@@ -253,11 +329,11 @@ impl DropdownMenu {
 
     /// Returns mutable access to the items, clearing typed icon assignments first.
     ///
-    /// Since callers can reorder or replace items through this vector, their index associations
-    /// cannot be preserved safely across mutable access.
+    /// A caller can replace an item's `value` through this vector, which would leave an override
+    /// pointing at identity the control can no longer verify as the same row; clearing is the honest
+    /// answer rather than keeping an association the caller may have broken.
     pub fn items_mut(&mut self) -> &mut Vec<DropdownItem> {
         self.item_icon_sources.clear();
-        self.item_icon_sources.resize(self.items.len(), None);
         &mut self.items
     }
 
@@ -418,6 +494,15 @@ impl Widget for DropdownMenu {
 impl WidgetProperties for DropdownMenu {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            "items" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &DROPDOWN_ITEM_SCHEMA,
+                    self.items
+                        .iter()
+                        .map(|item| dropdown_item_record(item, self.item_icon_source(&item.value)))
+                        .collect::<Result<Vec<_>, CapabilityAccessError>>()?,
+                )))
+            }
             "item_count" => Ok(CapabilityValue::UInt(self.item_count() as u64)),
             "selected_index" => match self.selected_index() {
                 Some(index) => Ok(CapabilityValue::UInt(index as u64)),
@@ -444,6 +529,11 @@ impl WidgetProperties for DropdownMenu {
             }
             // Derived from the item list, which owns it.
             "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            // The rows are published so a document can **read** every item's typed icon, but a row
+            // cannot express `DropdownItem::children`, so accepting a write would silently discard
+            // subtrees. Refusing with the standard read-only error is the non-destructive answer;
+            // `set_item_icon_source` and `add_item` are the write paths. See `DROPDOWN_ITEM_SCHEMA`.
+            "items" => Err(CapabilityAccessError::ReadOnlyProperty),
             "alignment" => {
                 self.set_alignment(expect_horizontal_alignment(value)?);
                 Ok(())
@@ -454,6 +544,7 @@ impl WidgetProperties for DropdownMenu {
 
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
+            "items",
             "item_count",
             "selected_index",
             "expanded",
@@ -627,7 +718,7 @@ impl Draw for DropdownMenu {
                 let mut item_x = ir.x + PADDING;
 
                 // Item icon
-                if let Some(source) = self.item_icon_sources.get(i).copied().flatten() {
+                if let Some(source) = self.item_icon_source(&item.value) {
                     let icon_line = context.text_line(ir, item_font);
                     let side = icon_line.height.clamp(1, 16);
                     let icon_rect = Rect::new(item_x, icon_line.y, side, side);
@@ -818,25 +909,28 @@ mod tests {
     }
 
     #[test]
-    fn dropdown_menu_typed_icons_follow_items_and_validate_indices() {
+    fn dropdown_menu_typed_icons_follow_items_and_validate_identity() {
         let mut dm = DropdownMenu::new(Rect::new(0, 0, 200, 30));
         dm.add_item(DropdownItem::new("first", "First"));
         dm.add_item(DropdownItem::new("second", "Second").with_icon("legacy"));
         let source = IconSource::Builtin(IconName::Check);
 
         assert_eq!(
-            dm.set_item_icon_source_at(2, Some(source)),
-            Err(crate::widget::IconItemError::IndexOutOfBounds { index: 2, len: 2 })
+            dm.set_item_icon_source("missing", Some(source)),
+            Err(crate::widget::IconItemError::UnknownItemId {
+                id: crate::compat::String::from("missing")
+            })
         );
-        dm.set_item_icon_source_at(1, Some(source)).unwrap();
+        dm.set_item_icon_source("second", Some(source)).unwrap();
         assert_eq!(dm.items()[1].icon.as_deref(), Some("legacy"));
         assert!(dm.remove_item("first"));
-        assert_eq!(dm.item_icon_sources, [Some(source)]);
+        // The override follows the item's identity through the removal of another row.
+        assert_eq!(dm.item_icon_source("second"), Some(source));
 
         dm.expand();
         dm.reveal.jump_to(true);
         let with_typed_source = render_to_svg(&mut dm);
-        dm.set_item_icon_source_at(0, None).unwrap();
+        dm.set_item_icon_source("second", None).unwrap();
         let with_legacy_text = render_to_svg(&mut dm);
         let mut plain = DropdownMenu::new(Rect::new(0, 0, 200, 30));
         plain.add_item(DropdownItem::new("second", "Second"));
@@ -851,7 +945,58 @@ mod tests {
         assert!(with_legacy_text.matches("<path").count() > without_icon.matches("<path").count());
 
         dm.items_mut().reverse();
-        assert_eq!(dm.item_icon_sources, [None]);
+        assert_eq!(dm.item_icon_source("second"), None);
+    }
+
+    /// The rows publish each item's typed icon, and a source with no document form refuses the read.
+    ///
+    /// blue27 §19.10 asks for a structured `icon_source` on the entries that carry an icon, and
+    /// §19.13 case I13 requires a runtime-only source to be either faithful or refused. The write side
+    /// is read-only *on purpose* — see `DROPDOWN_ITEM_SCHEMA` — so both halves are asserted here.
+    #[test]
+    fn dropdown_menu_publishes_item_icons_as_rows_and_refuses_the_write() {
+        use crate::widget::capability::{CapabilityValue, RecordList};
+        use crate::widget::display_widgets::icon::IconData;
+
+        static SOLID: IconData =
+            IconData { name: "dd-solid", grid: 24, paths: &["M4-4H20V-20H4Z"] };
+
+        let mut dm = DropdownMenu::new(Rect::new(0, 0, 200, 30));
+        dm.add_item(DropdownItem::new("open", "Open").with_icon("legacy"));
+        dm.add_item(DropdownItem::new("close", "Close"));
+        dm.set_item_icon_source("open", Some(IconSource::Builtin(IconName::Save))).unwrap();
+
+        let CapabilityValue::Records(list) = dm.get("items").expect("the rows read back") else {
+            panic!("`items` must read as a record list");
+        };
+        assert_eq!(list.len(), 2);
+        assert!(matches!(
+            list.get_by_id("open").expect("present").get("icon_source"),
+            Some(CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(
+                IconName::Save
+            )))
+        ));
+        assert!(
+            list.get_by_id("close").expect("present").get("icon_source").is_none(),
+            "a row with no typed icon omits the field rather than inventing one"
+        );
+
+        // The row list is a *view*: writing it would have to drop `children`, so it is refused.
+        let empty: RecordList = RecordList::new(&super::DROPDOWN_ITEM_SCHEMA);
+        assert_eq!(
+            dm.set("items", CapabilityValue::Records(empty)),
+            Err(crate::widget::capability::CapabilityAccessError::ReadOnlyProperty)
+        );
+        // ...and a refused write leaves the items exactly as they were.
+        assert_eq!(dm.item_count(), 2);
+        assert_eq!(dm.item_icon_source("open"), Some(IconSource::Builtin(IconName::Save)));
+
+        // A borrowed source has no document form, so the read refuses instead of reporting "no icon".
+        dm.set_item_icon_source("close", Some(IconSource::static_geometry(&SOLID))).unwrap();
+        assert_eq!(
+            dm.get("items"),
+            Err(crate::widget::capability::CapabilityAccessError::IconSourceNotPersistable)
+        );
     }
 
     #[test]
