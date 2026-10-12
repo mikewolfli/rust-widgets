@@ -28,14 +28,29 @@ use objc2::runtime::AnyObject;
 use objc2::sel;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent, NSEventMask,
-    NSGraphicsContext, NSView, NSWindow, NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEventMask, NSView,
+    NSWindow, NSWindowStyleMask,
 };
+// Named only by the input handlers and the blit, both of which are `widgets_unstripped` code.
+#[cfg(widgets_unstripped)]
+use objc2_app_kit::{NSEvent, NSGraphicsContext};
+// The blit is the only CGContext consumer, and it is `widgets_unstripped` code.
+#[cfg(widgets_unstripped)]
 use objc2_core_graphics::CGContext;
 use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSNotification, NSRect, NSSize, NSString};
 
+// `Vec` is not in the `core` prelude and this file is compiled on profiles that have no `std`
+// prelude either; the crate's own shim is the one place that decides where it comes from.
+use crate::compat::Vec;
+// The tree-routing half of this file — the routes below and the mouse/key handlers that call them —
+// is gated on `widgets_unstripped`, so these three are gated with it: `mini`/`embedded` compile the
+// file but have no `widget::runtime` to route into, and an unused import is a build failure for a
+// downstream `-D warnings` consumer.
+#[cfg(widgets_unstripped)]
 use crate::core::{ObjectId, Point};
+#[cfg(widgets_unstripped)]
 use crate::event::Event;
+#[cfg(widgets_unstripped)]
 use crate::platform::types::MousePhase;
 
 use std::collections::HashMap;
@@ -228,6 +243,11 @@ pub(crate) struct CanvasIvars {
     widget_id: std::cell::Cell<u64>,
     /// `true` when this canvas is a window's content view, so `drawRect:` paints
     /// the window **and its descendants** rather than one mounted box.
+    ///
+    /// Written by the constructor on every profile — that is what decides the field's value — and
+    /// read only by the painter, which a stripped profile does not compile. The attribute states
+    /// that, rather than hiding a field that is genuinely used.
+    #[cfg_attr(not(widgets_unstripped), allow(dead_code))]
     is_window: std::cell::Cell<bool>,
 }
 
@@ -276,41 +296,49 @@ define_class!(
             true
         }
 
+        #[cfg(widgets_unstripped)]
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
             self.forward_mouse(event, MousePhase::Press);
         }
 
+        #[cfg(widgets_unstripped)]
         #[unsafe(method(mouseUp:))]
         fn mouse_up(&self, event: &NSEvent) {
             self.forward_mouse(event, MousePhase::Release);
         }
 
+        #[cfg(widgets_unstripped)]
         #[unsafe(method(mouseDragged:))]
         fn mouse_dragged(&self, event: &NSEvent) {
             self.forward_mouse(event, MousePhase::Drag);
         }
 
+        #[cfg(widgets_unstripped)]
         #[unsafe(method(rightMouseDown:))]
         fn right_mouse_down(&self, event: &NSEvent) {
             self.forward_mouse(event, MousePhase::SecondaryPress);
         }
 
+        #[cfg(widgets_unstripped)]
         #[unsafe(method(rightMouseUp:))]
         fn right_mouse_up(&self, event: &NSEvent) {
             self.forward_mouse(event, MousePhase::SecondaryRelease);
         }
 
+        #[cfg(widgets_unstripped)]
         #[unsafe(method(scrollWheel:))]
         fn scroll_wheel(&self, event: &NSEvent) {
             self.forward_wheel(event);
         }
 
+        #[cfg(widgets_unstripped)]
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
             self.forward_key(event, false);
         }
 
+        #[cfg(widgets_unstripped)]
         #[unsafe(method(keyUp:))]
         fn key_up(&self, event: &NSEvent) {
             self.forward_key(event, true);
@@ -367,65 +395,68 @@ impl RustWidgetsObjc2CanvasView {
             return;
         }
         // The size comes from `bounds`, not the dirty rect (see `draw_rect`).
-        let bounds = self.bounds();
-        let width = bounds.size.width.round().max(1.0) as u32;
-        let height = bounds.size.height.round().max(1.0) as u32;
-        let clear = crate::core::Color::WHITE;
-        let size = crate::core::Size::new(width, height);
-
+        //
+        // Everything below produces and blits a frame, and only `widget::runtime` can produce one,
+        // so it is one `widgets_unstripped` block rather than an attribute per binding: on a
+        // stripped profile the `#[cfg(not(..))]` arm below has already reported why there is
+        // nothing to draw, and none of these bindings exist to be unused.
         #[cfg(widgets_unstripped)]
-        let frame = if self.ivars().is_window.get() {
-            // The window canvas stores the **host** id `create_window` returned (the
-            // `BackendState` counter starts at 1), while `render_frame_tree` looks the
-            // widget up by its **widget-registry** id (allocated from a far higher
-            // base). Translate at this boundary so the frame targets the correct
-            // widget instead of missing it and painting nothing.
-            let Some(widget) = crate::widget::runtime::widget_id_for_host_window(widget_id) else {
+        {
+            let bounds = self.bounds();
+            let width = bounds.size.width.round().max(1.0) as u32;
+            let height = bounds.size.height.round().max(1.0) as u32;
+            let clear = crate::core::Color::WHITE;
+            let size = crate::core::Size::new(width, height);
+
+            let frame = if self.ivars().is_window.get() {
+                // The window canvas stores the **host** id `create_window` returned (the
+                // `BackendState` counter starts at 1), while `render_frame_tree` looks the
+                // widget up by its **widget-registry** id (allocated from a far higher
+                // base). Translate at this boundary so the frame targets the correct
+                // widget instead of missing it and painting nothing.
+                let Some(widget) = crate::widget::runtime::widget_id_for_host_window(widget_id)
+                else {
+                    log::error!(
+                        "[macos-objc2] canvas: drawRect: host id={widget_id} has no owning                          widget; nothing to paint"
+                    );
+                    return;
+                };
+                // A window's content view paints the window's own chrome and every child
+                // that implements `Draw`; a plain `render_frame_cached` would show the
+                // window over an empty client area.
+                crate::widget::runtime::render_frame_tree(widget, size, clear)
+            } else {
+                // A mounted surface is one self-drawn widget in its own box, which is
+                // what the cocoa backend's `draw_rect` blits.
+                crate::widget::runtime::render_frame_cached(widget_id, size, clear)
+            };
+            let Some(frame) = frame else {
+                // Not mounted (dropped while the view survived) or it refused to paint.
                 log::error!(
-                    "[macos-objc2] canvas: drawRect: host id={widget_id} has no owning widget; \
-                     nothing to paint"
+                    "[macos-objc2] canvas: drawRect: widget id={widget_id} produced no frame                      (unmounted, or it does not implement Draw)"
                 );
                 return;
             };
-            // A window's content view paints the window's own chrome and every child
-            // that implements `Draw`; a plain `render_frame_cached` would show the
-            // window over an empty client area.
-            crate::widget::runtime::render_frame_tree(widget, size, clear)
-        } else {
-            // A mounted surface is one self-drawn widget in its own box, which is
-            // what the cocoa backend's `draw_rect` blits.
-            crate::widget::runtime::render_frame_cached(widget_id, size, clear)
-        };
-        #[cfg(widgets_unstripped)]
-        let Some(frame) = frame
-        else {
-            // Not mounted (dropped while the view survived) or it refused to paint.
-            log::error!(
-                "[macos-objc2] canvas: drawRect: widget id={widget_id} produced no frame \
-                 (unmounted, or it does not implement Draw)"
-            );
-            return;
-        };
+
+            let Some(context) = NSGraphicsContext::currentContext() else {
+                log::error!(
+                    "[macos-objc2] canvas: drawRect: +[NSGraphicsContext currentContext] was nil"
+                );
+                return;
+            };
+            let cg_context = context.CGContext();
+            if !blit_rgba(&cg_context, width, height, &frame) {
+                log::error!("[macos-objc2] canvas: drawRect: blit failed for {width}x{height}");
+            }
+        }
         #[cfg(not(widgets_unstripped))]
         {
-            // A stripped profile has no `widget::runtime`, so there is no frame to
-            // pull. Log the reason rather than shipping a silent blank view.
+            // A stripped profile has no `widget::runtime`, so there is no frame to pull. Log the
+            // reason rather than shipping a silent blank view.
             log::error!(
                 "[macos-objc2] canvas: drawRect: widget id={widget_id} cannot render in a \
                  profile without an unstripped widget set"
             );
-            return;
-        }
-
-        let Some(context) = NSGraphicsContext::currentContext() else {
-            log::error!(
-                "[macos-objc2] canvas: drawRect: +[NSGraphicsContext currentContext] was nil"
-            );
-            return;
-        };
-        let cg_context = context.CGContext();
-        if !blit_rgba(&cg_context, width, height, &frame) {
-            log::error!("[macos-objc2] canvas: drawRect: blit failed for {width}x{height}");
         }
     }
 
@@ -644,6 +675,7 @@ fn printable_characters(event: &NSEvent) -> Option<crate::compat::String> {
 ///
 /// Returns `false` when a CoreGraphics object cannot be created or the frame is
 /// too small for the requested size.
+#[cfg(widgets_unstripped)]
 fn blit_rgba(context: &CGContext, width: u32, height: u32, frame: &[u8]) -> bool {
     use objc2_core_graphics::{
         CGBitmapContextCreate, CGBitmapContextCreateImage, CGBitmapContextGetBytesPerRow,
@@ -854,7 +886,9 @@ pub(crate) fn mount_surface_native(
     content_view.addSubview(&canvas);
     canvas.setNeedsDisplay(true);
     // The view is being revealed, which is the platform repainting a surface the
-    // library just mounted; announce it like every other platform redraw.
+    // library just mounted; announce it like every other platform redraw. `notify_native_redraw`
+    // is a full-widget-set item (it drives the repaint queue), so a stripped profile skips it.
+    #[cfg(widgets_unstripped)]
     crate::notify_native_redraw(id, None);
 
     SURFACE_VIEWS

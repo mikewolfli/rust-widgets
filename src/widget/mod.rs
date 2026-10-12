@@ -351,19 +351,22 @@ pub use display_widgets::font_preview::FontPreview;
 #[cfg(feature = "image")]
 pub use display_widgets::icon::draw_icon_image;
 #[cfg(widgets_unstripped)]
-#[cfg(widgets_unstripped)]
 pub use display_widgets::icon::{
-    draw_icon_at, draw_icon_centered, draw_icon_named, icon_token_is_drawable, paint_icon, Icon,
-    IconData, IconName, IconPaintError, IconPaintOutcome, IconRef,
+    draw_icon_at, draw_icon_centered, draw_icon_named, icon_token_is_drawable, measure_icon,
+    paint_icon, validate_icon, Icon, IconData, IconMetrics, IconName, IconPaintError,
+    IconPaintOutcome, IconRef, IconSourceMetadata,
 };
 #[cfg(not(widgets_unstripped))]
 pub use display_widgets::icon::{
-    draw_icon_at, draw_icon_centered, draw_icon_named, icon_token_is_drawable, paint_icon,
-    IconData, IconName, IconPaintError, IconPaintOutcome, IconRef,
+    draw_icon_at, draw_icon_centered, draw_icon_named, icon_token_is_drawable, measure_icon,
+    paint_icon, validate_icon, IconData, IconMetrics, IconName, IconPaintError, IconPaintOutcome,
+    IconRef, IconSourceMetadata,
 };
 #[cfg(all(feature = "image", not(alloc_frugal)))]
 pub use icon_source::SharedIconPixels;
-pub use icon_source::{IconColorMode, IconItemError, IconSource, IconSpec};
+pub use icon_source::{
+    fit_image_into, IconColorMode, IconItemError, IconResourceResolver, IconSource, IconSpec,
+};
 
 // Host-registered icons. Re-exported at `widget::` because that is where the icon surface lives,
 // and because reaching into `widget::icon_registry::register_icon` exposes a module the caller has

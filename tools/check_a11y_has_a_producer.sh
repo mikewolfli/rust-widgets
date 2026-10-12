@@ -44,8 +44,10 @@
 #
 # Reverse injection
 # -----------------
-# Removing the `submit_mounted` call from `runtime::register` must make this gate
-# report the missing producer. See the round's report for the exact output.
+# Removing the `submit_mounted` call from `runtime::register` must make step [3] report
+# the missing mount-path producer, and removing the `submit_node_state` call from
+# `a11y_submit::submit_mounted` must make step [2] report the missing producer. Both were
+# exercised when this rule was widened (2026-10-12); see that round's log.
 #
 # Usage: tools/check_a11y_has_a_producer.sh
 # Exit 0 = the bridge has a production producer.
@@ -57,28 +59,98 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-echo "[1/3] the bridge trait is still the one being produced"
+echo "[1/3] the bridge trait still declares the methods this gate measures"
 if ! grep -qE 'fn set_accessibility_name' src/platform/accessibility/types.rs; then
     echo "  FAIL  AccessibilityBridge no longer declares \`set_accessibility_name\`"
     echo "        The producer below is measured against this method's exact name."
     exit 1
 fi
+if ! grep -qE 'fn submit_node_state' src/platform/accessibility/types.rs; then
+    echo "  FAIL  AccessibilityBridge no longer declares \`submit_node_state\`"
+    echo "        That method is the push boundary the producer below reaches."
+    exit 1
+fi
 echo "  PASS  AccessibilityBridge::set_accessibility_name exists"
+echo "  PASS  AccessibilityBridge::submit_node_state exists"
 
-echo "[2/3] a production producer calls it, outside the platform layer and outside tests"
-# Every call site of the method, excluding:
+echo "[1b/3] \`submit_node_state\`'s default still reaches the name method"
+# Accepting `submit_node_state` as a producer is only sound while its **default** body forwards the
+# label to `set_accessibility_name`: that forwarding is what makes the one call carry a meaning to a
+# bridge written against the older, one-field contract. Without this check the rule below would be a
+# loophole -- a caller could satisfy it while a backend that overrides nothing received no name.
+#
+# The check is on the trait's own default body, not on any backend's override, because an override
+# that stores the whole state does not need to call the name method at all.
+if ! awk '
+    /fn submit_node_state/ { insubmit = 1 }
+    insubmit && /set_accessibility_name\(/ { found = 1 }
+    insubmit && /^[[:space:]]*}/ { insubmit = 0 }
+    END { exit found ? 0 : 1 }
+' src/platform/accessibility/types.rs; then
+    echo "  FAIL  \`submit_node_state\`'s default body no longer forwards to \`set_accessibility_name\`"
+    echo "        The producer rule below accepts either method, so this forwarding is what"
+    echo "        keeps that acceptance honest for a bridge with no override."
+    exit 1
+fi
+echo "  PASS  the default forwards the label, so either method is a real producer"
+
+echo "[2/3] a production producer pushes to it, outside the platform layer and outside tests"
+# Every call site of either push method, excluding:
 #   * the trait declaration and the platform backends, which are the *consumer* side;
 #   * `mod tests` bodies, because a test proves the function works rather than that
 #     production asks it to (the exact confusion that hid this gap);
 #   * the wiring module itself, which owns the focus callback and is not the pump.
-productions="$(grep -rn 'set_accessibility_name(' src/ --include=*.rs \
-    | grep -v 'src/platform/' \
-    | grep -v 'a11y_wiring.rs' \
-    | grep -vE 'fn set_accessibility_name' \
-    | sed -e 's://.*::' || true)"
+#
+# # Why both names
+#
+# D09-A11Y-02 widened the boundary: the one-field `set_accessibility_name` was joined by
+# `submit_node_state`, which carries the whole derived `A11yState`, and that is what
+# `a11y_submit::submit_mounted` calls. Measuring only the old name made this gate report "no
+# producer" while production was in fact pushing the *richer* state -- a stale rule rather than a
+# regression, and the kind of false finding the rule's own header warns about. `set_accessibility_name`
+# stays in the pattern because a bridge may still be driven through it directly.
+#
+# # The `mod tests` scan
+#
+# The scan below removes `mod tests` bodies, which the header always claimed and the previous
+# `grep` pipeline did not actually do (it relied on the `fn` filter dropping the fakes). A test that
+# *calls* the bridge is not a production producer.
+productions="$(
+    find src -name '*.rs' ! -path 'src/platform/*' ! -name 'a11y_wiring.rs' -print0 \
+    | xargs -0 awk '
+        # The `mod tests` state must be reset per file. `awk` keeps its variables across every file
+        # `xargs` hands it in one invocation, so without this the scan stops reporting as soon as one
+        # file leaves the counter inside what it believes is a test module -- which is exactly what
+        # the first run of this rule did, reporting "no producer" while the producer was there.
+        FNR == 1 { intests = 0; depth = 0 }
+        /fn (set_accessibility_name|submit_node_state)\(/ { next }
+        intests {
+            opens = gsub(/\{/, "{")
+            closes = gsub(/\}/, "}")
+            depth += opens - closes
+            if (depth <= 0) { intests = 0 }
+            next
+        }
+        /mod tests[[:space:]]*\{/ {
+            opens = gsub(/\{/, "{")
+            closes = gsub(/\}/, "}")
+            intests = 1
+            depth = opens - closes
+            next
+        }
+        {
+            line = $0
+            sub(/\/\/.*$/, "", line)
+            if (line ~ /set_accessibility_name\(/ || line ~ /submit_node_state\(/) {
+                print FILENAME ":" FNR ":" line
+            }
+        }
+    '
+)"
 
 if [ -z "$productions" ] || [ "$(printf '%s' "$productions" | tr -d '[:space:]' | wc -c)" -eq 0 ]; then
-    echo "  FAIL  no production call site of \`set_accessibility_name\` outside the platform layer"
+    echo "  FAIL  no production call site of \`set_accessibility_name\` or \`submit_node_state\`"
+    echo "        outside the platform layer"
     echo "        Stage ② of accessibility is missing again: the derivation and the OS"
     echo "        bridge both exist, and nothing carries a meaning between them (BLUE24 §6)."
     exit 1

@@ -8,6 +8,13 @@
 //! [`super`], so the engine's concrete renderers are qualified through
 //! [`super::charts`] here.
 
+// The module-level gate, so tooling that scans file text recognises this as a test module.
+// The parent declares `mod tests;` under `#[cfg(test)]`, which the compiler sees but a text scan
+// of this file does not — and a scan that cannot tell a test module from production code reports
+// its `Mutex` as widget state (`tools/check_locking.sh`). Same line as
+// `special_widgets/toast/tests.rs`, which records the reasoning in full.
+#![cfg(test)]
+
 use crate::core::{Color, Rect};
 use crate::widget::chart_widgets::charts::{BarChart, LineChart};
 use crate::widget::chart_widgets::svg::{MemoryChartContext, SvgChartContext};

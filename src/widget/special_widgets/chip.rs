@@ -83,21 +83,31 @@ pub const CHIP_ITEM_SCHEMA: crate::widget::capability::RecordSchema =
 fn chip_item_record(
     item: &ChipItem,
     icon_source: Option<IconSource>,
-) -> crate::widget::capability::RecordValue {
+) -> Result<crate::widget::capability::RecordValue, CapabilityAccessError> {
     let mut record = crate::widget::capability::RecordValue::new()
         .with("id", CapabilityValue::String(item.id.clone()))
         .with("label", CapabilityValue::String(item.label.clone()))
         .with("selected", CapabilityValue::Bool(item.selected));
-    // Only a persistable source is written. A borrowed static geometry has no document
-    // representation, so the field is left out rather than serialised as something it is not --
-    // the same rule the control-level `icon_source` property follows.
-    if let Some(IconSource::Builtin(name)) = icon_source {
-        record = record.with(
-            "icon_source",
-            CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(name)),
-        );
+    match icon_source {
+        // A chip with no icon is the normal case, and "no `icon_source` field" is how a document
+        // says so; the `set` half reads the missing field the same way.
+        None => {}
+        Some(IconSource::Builtin(name)) => {
+            record = record.with(
+                "icon_source",
+                CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(name)),
+            );
+        }
+        // A borrowed static geometry has no document representation, so this read **refuses** it
+        // rather than leaving the field out. Leaving it out would be indistinguishable from "this
+        // chip has no icon", so a designer round-trip would silently drop the item's icon and the
+        // next `set` would erase it — the loss this crate's property layer refuses to make. The
+        // control-level `icon_source` property returns the same error for the same reason.
+        Some(IconSource::StaticGeometry(_)) => {
+            return Err(CapabilityAccessError::IconSourceNotPersistable)
+        }
     }
-    record
+    Ok(record)
 }
 
 /// The item a record describes, or the reason it cannot be read as one.
@@ -513,7 +523,7 @@ impl WidgetProperties for Chip {
                     self.items()
                         .iter()
                         .map(|item| chip_item_record(item, self.icon_source_of(item)))
-                        .collect(),
+                        .collect::<Result<Vec<_>, CapabilityAccessError>>()?,
                 )))
             }
             "item_count" => Ok(CapabilityValue::UInt(self.items().len() as u64)),
@@ -1138,6 +1148,49 @@ mod tests {
         let ids: Vec<&str> = chip.items().iter().map(|item| item.id.as_str()).collect();
         assert_eq!(ids, vec!["feature", "urgent", "bug"]);
         assert_eq!(chip.selected_ids(), vec!["bug"]);
+    }
+
+    /// A runtime-only item icon is **refused** by the read, not quietly left out.
+    ///
+    /// §19.13 case I13 lets a non-serialisable source be either faithful or refused, but requires the
+    /// result to be clear — and a record that simply *omits* `icon_source` cannot be told apart from
+    /// one whose chip has no icon. A designer round-trip would therefore drop the icon and the
+    /// following write would erase it. The control-level `icon_source` property refuses the same
+    /// value with the same error, which is the rule asserted here.
+    #[test]
+    fn a_runtime_only_item_icon_is_refused_by_the_read_rather_than_dropped() {
+        use crate::widget::display_widgets::icon::IconData;
+        use crate::widget::icon_source::IconSource;
+        use crate::widget::IconName;
+
+        static SOLID: IconData =
+            IconData { name: "chip-solid", grid: 24, paths: &["M4-4H20V-20H4Z"] };
+
+        let mut chip = Chip::new(Rect::new(0, 0, 300, 36));
+        chip.set_items(sample_items());
+        chip.set_item_icon_source("bug", Some(IconSource::Builtin(IconName::Info)))
+            .expect("the chip exists");
+
+        // A persistable item icon still reads back, so the refusal below is about the source and not
+        // about the channel being inert.
+        let CapabilityValue::Records(list) = chip.get("items").expect("a built-in reads back")
+        else {
+            panic!("`items` must read as a record list");
+        };
+        assert!(matches!(
+            list.get_by_id("bug").expect("present").get("icon_source"),
+            Some(CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(
+                IconName::Info
+            )))
+        ));
+
+        chip.set_item_icon_source("bug", Some(IconSource::static_geometry(&SOLID)))
+            .expect("the chip exists");
+        assert_eq!(
+            chip.get("items"),
+            Err(CapabilityAccessError::IconSourceNotPersistable),
+            "a source with no document form must refuse the read rather than lose the icon"
+        );
     }
 
     /// A malformed list is refused **and the live items are untouched** — the whole list is checked

@@ -1,5 +1,4 @@
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(target_arch = "wasm32"))]
 use criterion::{criterion_group, criterion_main, Criterion};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -121,20 +120,16 @@ fn bench_dispatch_pointer_event(c: &mut Criterion) {
 // measure a path that is not there. Grouping them separately keeps the pixel-level
 // benchmarks running in every profile, including `mini`.
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(target_arch = "wasm32"))]
 criterion_group!(pixel_benches, bench_fill_pixels, bench_blend_pixel);
 
 #[cfg(not(feature = "mini"))]
-#[cfg(not(target_arch = "wasm32"))]
 #[cfg(not(target_arch = "wasm32"))]
 criterion_group!(runtime_benches, bench_render_frame, bench_dispatch_pointer_event);
 
 #[cfg(not(feature = "mini"))]
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(target_arch = "wasm32"))]
 criterion_main!(pixel_benches, runtime_benches);
 #[cfg(feature = "mini")]
-#[cfg(not(target_arch = "wasm32"))]
 #[cfg(not(target_arch = "wasm32"))]
 criterion_main!(pixel_benches);
 

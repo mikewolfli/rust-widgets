@@ -1,6 +1,13 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
+// The module-level gate, so tooling that scans file text recognises this as a test module.
+// The parent declares `mod tests;` under `#[cfg(test)]`, which the compiler sees but a text scan
+// of this file does not — and a scan that cannot tell a test module from production code reports
+// its `Mutex` as widget state (`tools/check_locking.sh`). Same line as
+// `special_widgets/toast/tests.rs`, which records the reasoning in full.
+#![cfg(test)]
+
 use super::*;
 use crate::core::Rect;
 use crate::widget::view_widgets::virtual_list::VirtualList;

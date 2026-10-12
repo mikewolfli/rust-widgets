@@ -109,6 +109,11 @@ pub(crate) fn resolve_property_name(
 ///
 /// Without a schema the JSON type selects the variant directly; that fallback is
 /// what lets the loader work before a control's schema is registered.
+///
+/// Gated on its callers — the generator's scalar pre-check, which only exists with the designer,
+/// and this module's own tests. It is not dead code, but a build with neither compiled it and said
+/// so, so the condition is stated where the function is defined rather than where it is used.
+#[cfg(any(test, feature = "designer"))]
 pub(crate) fn to_capability_value(
     value: &Value,
     declared: Option<PropertyValueKind>,

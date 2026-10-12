@@ -776,8 +776,15 @@ mod tests {
     ///
     /// This mirrors the guard convention used elsewhere (`layout/inspector.rs`, `style/stylesheet.rs`,
     /// `image/cache.rs`): a lazily-initialised `Mutex<()>` whose guard is held for the test's duration.
+    /// The **canonical** guard for the event task queue.
+    ///
+    /// `pub(crate)` rather than private because this is the one lock over the queue singleton: the
+    /// rule `tools/check_test_guard_uniqueness.sh` enforces is "exactly one function *declares* the
+    /// lock, and it is the named, shared one", and a second lock over one resource excludes nothing.
+    /// Keeping it reachable is what lets another test module driving `channel()` delegate here
+    /// instead of declaring a rival lock.
     #[cfg(not(alloc_frugal))]
-    fn task_queue_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    pub(crate) fn task_queue_test_guard() -> std::sync::MutexGuard<'static, ()> {
         static GUARD: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
         GUARD
             .get_or_init(|| std::sync::Mutex::new(()))

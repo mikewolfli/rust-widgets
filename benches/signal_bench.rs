@@ -45,7 +45,6 @@
 //! re-entrancy — both of which are now pinned by tests in `signal::core_signal`.
 
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(target_arch = "wasm32"))]
 use criterion::{criterion_group, criterion_main, Criterion};
 #[cfg(not(target_arch = "wasm32"))]
 use rust_widgets::signal::{ConnectionHandle, Priority, Signal};
@@ -203,7 +202,6 @@ fn bench_signal_emit_large_payload(c: &mut Criterion) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(target_arch = "wasm32"))]
 criterion_group!(
     benches,
     bench_signal_emit_small,
@@ -216,7 +214,6 @@ criterion_group!(
     bench_signal_disconnect,
     bench_signal_emit_large_payload,
 );
-#[cfg(not(target_arch = "wasm32"))]
 #[cfg(not(target_arch = "wasm32"))]
 criterion_main!(benches);
 

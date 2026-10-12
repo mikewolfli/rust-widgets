@@ -185,9 +185,16 @@ impl IconMetrics {
 /// `contain`, square, centred: the side is the slot's smaller dimension, so a slot that is not square
 /// cannot stretch the glyph on one axis. The previous form scaled by `slot.width` on **both** axes,
 /// so a 40x12 slot drew a 40x40 icon — 28 px taller than the box the caller reserved, clipped by
-/// whatever the backend happened to clip. Every slot the crate's controls pass is already square
-/// (`Icon::icon_rect`, `ToolButton::icon_rect`, `TAB_ICON_SIDE`, `CHIP_ICON_SIDE`, …), so this is
-/// behaviour preserving for them and correct for the case they did not cover.
+/// whatever the backend happened to clip.
+///
+/// **One control does pass a slot that is not square**, and this rule changes its pixels: `Stepper`
+/// insets its `−`/`+` marks by `min(w, h) / 4` inside a 48x44 button, so each mark slot is 26x22.
+/// Its glyphs therefore shrink from 26 px to 22 px and move to the centre of that slot — which is
+/// the rule working, not a regression: a 26 px glyph does not fit a 22 px slot, and §19.4 requires a
+/// paint to stay inside the slot the caller reserved. `snapshots/svg/stepper.svg` records the new
+/// output, and `tools/check_svg_snapshots.sh` is what caught the change. The other slots the crate's
+/// controls pass are square (`Icon::icon_rect`, `ToolButton::icon_rect`, `TAB_ICON_SIDE`,
+/// `CHIP_ICON_SIDE`, …), so for them the rule is behaviour preserving.
 fn glyph_box(slot: Rect) -> Rect {
     let side = slot.width.min(slot.height);
     Rect::new(
@@ -489,6 +496,11 @@ fn resolve_named_icon(name: &str) -> Option<NamedIcon> {
                 return Some(NamedIcon::Outline(data));
             }
         }
+        // The runtime registry lives in the unstripped widget set — it is a lock and a table, which
+        // a sized profile drops — while the bundled outlines come with `icons` alone. The two are
+        // separate conditions, so a build with `icons` on a sized profile reaches the outlines and
+        // no registry, which is what this gate says.
+        #[cfg(widgets_unstripped)]
         if let Some(data) = crate::widget::display_widgets::icon_data_set::lookup_registered(name) {
             return Some(NamedIcon::Outline(data));
         }
@@ -987,6 +999,17 @@ impl WidgetProperties for Icon {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "icon_name" => Ok(CapabilityValue::String(self.icon().to_string())),
+            "icon_source" => match self.icon_source() {
+                None => Ok(CapabilityValue::Null),
+                Some(IconSource::Builtin(name)) => Ok(CapabilityValue::IconSpec(
+                    crate::widget::icon_source::IconSpec::Builtin(name),
+                )),
+                // A borrowed static-geometry source has no document representation, so reading it
+                // back as one would be a lie; the caller is told instead.
+                Some(IconSource::StaticGeometry(_)) => {
+                    Err(CapabilityAccessError::IconSourceNotPersistable)
+                }
+            },
             "size" => Ok(CapabilityValue::Float(f64::from(self.size()))),
             // Reports the *resolved* colour, which is what a reader wants: the
             // colour a draw would use, whether that came from a setter or the
@@ -1000,6 +1023,23 @@ impl WidgetProperties for Icon {
         match name {
             "icon_name" => {
                 self.set_icon(&expect_string(value)?);
+                Ok(())
+            }
+            "icon_source" => {
+                match value {
+                    // `Icon` keeps one active icon state, so clearing the typed source clears the
+                    // legacy name with it — the setter pair documents that rule.
+                    CapabilityValue::Null => self.clear_icon_source(),
+                    CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(
+                        name,
+                    )) => self.set_icon_source(IconSource::Builtin(name)),
+                    // A resource ID needs a host resolver; turning it into a path here would be
+                    // guessing at the host's resource policy.
+                    CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Resource {
+                        ..
+                    }) => return Err(CapabilityAccessError::ResourceResolutionRequired),
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                }
                 Ok(())
             }
             "size" => {
@@ -1017,7 +1057,19 @@ impl WidgetProperties for Icon {
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["icon_name", "size", "color", BASE_PROPERTY_NAMES]
+        property_names_of!["icon_name", "icon_source", "size", "color", BASE_PROPERTY_NAMES]
+    }
+
+    /// Applies resolver-produced content through the same `icon_source` property the host reads.
+    fn set_resolved_icon_source(
+        &mut self,
+        source: Option<IconSource>,
+    ) -> Result<(), CapabilityAccessError> {
+        match source {
+            Some(source) => self.set_icon_source(source),
+            None => self.clear_icon_source(),
+        }
+        Ok(())
     }
 
     /// Runs one of the commands `icon` publishes.
@@ -1276,6 +1328,51 @@ mod tests {
         icon.set_icon("warning");
         assert_eq!(icon.icon_source(), None, "the legacy setter also replaces a typed built-in");
         assert_eq!(icon.icon(), "warning");
+    }
+
+    #[test]
+    fn the_icon_source_property_round_trips_and_refuses_a_runtime_only_source() {
+        use crate::widget::icon_source::{IconColorMode, IconSpec};
+
+        static RING: IconData =
+            IconData { name: "ring", grid: 24, paths: &["M2-2H22V-22H2Z M7-7V-17H17V-7Z"] };
+
+        let mut icon = Icon::new(Rect::new(0, 0, 24, 24));
+        assert_eq!(icon.get("icon_source"), Ok(CapabilityValue::Null), "a fresh icon has none");
+        assert!(icon.property_names().contains(&"icon_source"), "the name must be published");
+
+        // The persisted value is what a document carries, so it must survive the write *and* the
+        // read, and the control's own getter must agree with it.
+        icon.set("icon_source", CapabilityValue::IconSpec(IconSpec::Builtin(IconName::Info)))
+            .expect("a built-in token is persistable");
+        assert_eq!(icon.icon_source(), Some(IconSource::Builtin(IconName::Info)));
+        assert_eq!(
+            icon.get("icon_source"),
+            Ok(CapabilityValue::IconSpec(IconSpec::Builtin(IconName::Info)))
+        );
+        assert_eq!(icon.icon(), "info", "one active state: the legacy name reports the token");
+
+        // A resource descriptor needs the host's resolver, which a property write does not have.
+        assert_eq!(
+            icon.set(
+                "icon_source",
+                CapabilityValue::IconSpec(IconSpec::Resource {
+                    id: "project/icons/a".into(),
+                    color_mode: IconColorMode::Monochrome,
+                })
+            ),
+            Err(CapabilityAccessError::ResourceResolutionRequired)
+        );
+
+        // A runtime-only source has no document form, so reading it back refuses rather than
+        // reporting `Null`, which a caller cannot tell apart from "this icon has no source".
+        icon.set_icon_source(IconSource::static_geometry(&RING));
+        assert_eq!(icon.get("icon_source"), Err(CapabilityAccessError::IconSourceNotPersistable));
+
+        // `Null` clears both channels, so they cannot disagree after a reset.
+        icon.set("icon_source", CapabilityValue::Null).expect("null clears the source");
+        assert_eq!(icon.icon_source(), None);
+        assert!(icon.icon().is_empty(), "clearing the typed source clears the legacy name too");
     }
 
     #[test]

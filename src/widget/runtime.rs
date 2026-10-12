@@ -2986,7 +2986,11 @@ fn note_frame_cache_copy() {
 }
 
 /// Resets and returns the full-frame copy counter. (D09-RENDER-04)
-#[cfg(test)]
+///
+/// Gated on its callers and not just on `test`: they live in the `full_widgets` test module, so a
+/// stripped-but-testing build (a sized profile with `icons` on, say) compiled this and reported it
+/// as dead code.
+#[cfg(all(test, full_widgets))]
 pub(crate) fn take_frame_cache_copies() -> usize {
     FRAME_CACHE_COPIES.with(|cell| cell.replace(0))
 }

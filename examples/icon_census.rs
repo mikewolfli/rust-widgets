@@ -13,11 +13,27 @@
 //! |---|---|
 //! | `token` | the canonical name |
 //! | `contours` | closed subpaths the flattened icon produced |
-//! | `ink` | filled subpaths submitted as one shape (the picture is not blank) |
+//! | `ink` | painted pixels in the 24 px software rendering (the picture is not blank) |
+//! | `runs` | opaque segments the middle scanline crosses (a ring crosses it twice or more) |
 //! | `sha256` | digest of the rendering, so two tokens cannot draw one picture unnoticed |
 //!
 //! `tests/icon_census_test.rs` asserts the same facts, and `tools/icon_census.txt` is the committed
 //! output — so a change in what an icon draws shows up as a diff in a reviewable file.
+//!
+//! # Why `ink` is a pixel count and not a contour count
+//!
+//! `ink` used to be `ink = contours` — a copy of the field beside it, which cannot fail and
+//! measures nothing. Worse, it encoded the wrong model: it counted every contour as its own ink, so
+//! a counter (the inner ring of `info`) read as ink rather than as an erased hole. BLUE27 §19.3.1
+//! names that as one of the two records that could not see the defect, and the fix is to measure
+//! the picture instead of restating the data: `ink` is now the number of pixels the software
+//! backend actually painted.
+//!
+//! `runs` is the second half of the same evidence, and it is the one a reader can check by eye.
+//! Drawing a ring as a solid disk is invisible in a pixel *total* — the total only grows — but it
+//! collapses the middle scanline from `runs=3` (`info`) to `runs=1`, so the committed census shows
+//! it. `runs=0` means the middle scanline misses the shape entirely (`user`, `fullscreen`), which
+//! is a property of the scanline and not a missing icon; `ink` covers that case.
 //!
 //! # Why the census is a digest and not a shape description
 //!
@@ -32,28 +48,66 @@
 //! demand, and the assertion belongs in a test the suite runs. This file is the producer for the
 //! committed census; the test is the judge.
 
-#![cfg(all(feature = "icons", not(feature = "mini")))]
+// The consumer of this file is `tests/icon_census_test.rs`, which states the same gate for the same
+// reason: the probe renders the `Icon` widget, so it needs the unstripped widget set, not merely
+// "a profile that is not `mini`".
+#![cfg(all(feature = "icons", widgets_unstripped))]
 
-use rust_widgets::core::Rect;
+use rust_widgets::core::{Color, Rect, Size};
+use rust_widgets::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
+use rust_widgets::widget::draw::Draw;
 use rust_widgets::widget::svg::render_to_svg;
 use rust_widgets::widget::{Icon, IconName};
 
+/// The frame the census rasterises into, in pixels.
+const SIDE: u32 = 24;
+
 fn main() {
     for token in IconName::ALL {
-        let mut icon = Icon::new(Rect::new(0, 0, 24, 24));
+        let mut icon = Icon::new(Rect::new(0, 0, SIDE, SIDE));
         icon.set_icon_enum(token);
         let svg = render_to_svg(&mut icon);
         // Each `M` starts one closed contour in the emitted compound path.
         let contours = svg.matches("M ").count();
-        let ink = contours;
+        let (ink, runs) = measure_ink(&mut icon);
         println!(
-            "{}\tcontours={}\tink={}\tsha256={}",
+            "{}\tcontours={}\tink={}\truns={}\tsha256={}",
             token.as_str(),
             contours,
             ink,
+            runs,
             sha256_hex(svg.as_bytes())
         );
     }
+}
+
+/// Draws `icon` into a fresh software frame and measures the ink it laid down.
+///
+/// Returns `(painted pixels, opaque segments on the middle scanline)`. The second number is what
+/// separates a ring from a disk; `tests/icon_census_test.rs` computes the same two numbers (it
+/// cannot import from an example) and asserts the committed census still agrees with them.
+fn measure_ink(icon: &mut Icon) -> (usize, usize) {
+    let mut backend = SoftwarePaintBackend::new(Size::new(SIDE, SIDE), 1.0);
+    backend.begin_frame(Color::TRANSPARENT);
+    {
+        let mut context = RenderContext::new(&mut backend);
+        icon.draw(&mut context);
+    }
+    backend.end_frame();
+    let pixels = backend.frame_rgba();
+    let painted = |x: u32, y: u32| pixels[((y * SIDE + x) * 4 + 3) as usize] > 0;
+
+    let ink = (0..SIDE * SIDE).filter(|&i| pixels[(i * 4 + 3) as usize] > 0).count();
+    let mut runs = 0;
+    let mut inside = false;
+    for x in 0..SIDE {
+        let painted = painted(x, SIDE / 2);
+        if painted && !inside {
+            runs += 1;
+        }
+        inside = painted;
+    }
+    (ink, runs)
 }
 
 /// A SHA-256 of `data`, hex-encoded.

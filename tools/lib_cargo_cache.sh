@@ -88,24 +88,45 @@ RW_GATE_NO_CACHE="${RW_GATE_NO_CACHE:-0}"
 # (a stripped checkout may have no `benches/`), because a cache key that errors is worse than a
 # cache key that is merely conservative.
 _rw_source_digest() {
+  # Hash the entire build surface: every source file, embedded asset
+  # (`include_bytes!`/`include_str!` .ttf/.json/.svg payloads), manifest, build
+  # script, cargo config, declared `tools/` target, test fixture and committed
+  # snapshot. Anything that can change a `cargo check`/`test`/`clippy` verdict
+  # must invalidate the key. The earlier version hashed only `.rs`/`.toml` under
+  # src/examples/tests/benches plus a few root manifests, so a change to
+  # `build.rs`, `.cargo/config.toml`, a `tools/` target, an embedded `.ttf`, a
+  # `language/*.json`, a theme file or a snapshot replayed a stale verdict.
+  #
+  # `target` (which holds this very cache), `.git` and `.venv` are pruned so the
+  # digest does not chase build output or a developer's local venv. `find | sort`
+  # makes the digest independent of directory iteration order.
+  #
+  # `.xwin-cache` is pruned for the same reason, and it is not a hypothetical: the
+  # directory had come back (an `xwin` run whose working directory was this
+  # repository — nothing in the tree reads it), and `.gitignore` already documented
+  # it as "downloaded .msi/.cab/.vsix blobs, **not source**". It is a 1 GB download
+  # cache, and the digest is computed *before* the cache lookup, so every step of
+  # every gate that sources this file paid for it. The SDK that actually reaches the
+  # compiler is the *splat*, an external path (`XWIN_SPLAT` / `~/xwin-splat`) whose
+  # location is already part of the key through the exported environment, so nothing
+  # about a verdict is lost by skipping this cache. Keep this list in step with the
+  # "not source" entries in `.gitignore`; a new cache directory left out of it is a
+  # per-step cost, not a correctness bug.
+  local list
+  list="$(find . \( -name target -o -name .git -o -name .venv -o -name .xwin-cache \) -prune \
+    -o -type f -print 2>/dev/null | LC_ALL=C sort)"
   {
-    # Hash the entire build surface: every source file, embedded asset
-    # (`include_bytes!`/`include_str!` .ttf/.json/.svg payloads), manifest, build
-    # script, cargo config, declared `tools/` target, test fixture and committed
-    # snapshot. Anything that can change a `cargo check`/`test`/`clippy` verdict
-    # must invalidate the key. The earlier version hashed only `.rs`/`.toml` under
-    # src/examples/tests/benches plus a few root manifests, so a change to
-    # `build.rs`, `.cargo/config.toml`, a `tools/` target, an embedded `.ttf`, a
-    # `language/*.json`, a theme file or a snapshot replayed a stale verdict.
-    #
-    # `target` (which holds this very cache), `.git` and `.venv` are pruned so the
-    # digest does not chase build output or a developer's local venv. `find | sort`
-    # makes the digest independent of directory iteration order.
-    find . \( -name target -o -name .git -o -name .venv \) -prune -o -type f -print \
-      2>/dev/null | LC_ALL=C sort
-  } | while IFS= read -r file; do
-    [ -f "$file" ] && printf '%s\0' "$file" && cat "$file"
-  done | _rw_digest_stream
+    # The names are part of the digest, so a rename invalidates the key even when no
+    # byte of content changed.
+    printf '%s\n' "$list"
+    # ...and the contents arrive through **one** `xargs` batch rather than one `cat`
+    # per file. That per-file `cat` was the whole cost of this function: a fork+exec
+    # per file measured ~2 ms on macOS, i.e. ~4 s for this tree's ~1900 files, paid by
+    # every `rw_cargo_cached` call whether it then hit or missed the cache. The
+    # filename split is by newline, which the previous `find -print` form assumed too;
+    # `sort -z` (which would make it exact) is not on every host this repo builds on.
+    printf '%s\n' "$list" | tr '\n' '\0' | xargs -0 cat 2>/dev/null
+  } | _rw_digest_stream
 }
 
 # A content digest, with the algorithm chosen by what the host actually has.

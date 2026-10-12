@@ -784,6 +784,11 @@ macro_rules! impl_properties_other {
         #[cfg(not(alloc_frugal))]
         pub(crate) const ICON_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("icon_name", PropertyValueKind::String, true, true),
+            // The typed source, published for the same reason the button-like controls publish it:
+            // a document can name a source the legacy string cannot express, and a host can read
+            // one back. A borrowed static geometry is refused on read rather than serialised as
+            // something it is not — the rule the five other `icon_source` owners follow.
+            PropertySchema::new("icon_source", PropertyValueKind::IconSpec, true, true),
             PropertySchema::new("size", PropertyValueKind::Float, true, true),
             PropertySchema::new("color", PropertyValueKind::String, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),

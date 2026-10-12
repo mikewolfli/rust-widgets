@@ -10,6 +10,13 @@
 //! the target line and the reverse walked from the top, so the two could disagree
 //! after a fold — and both were linear in the document.
 
+// The module-level gate, so tooling that scans file text recognises this as a test module.
+// The parent declares `mod tests;` under `#[cfg(test)]`, which the compiler sees but a text scan
+// of this file does not — and a scan that cannot tell a test module from production code reports
+// its `Mutex` as widget state (`tools/check_locking.sh`). Same line as
+// `special_widgets/toast/tests.rs`, which records the reasoning in full.
+#![cfg(test)]
+
 use super::editor::CodeEditor;
 use super::types::{CodeEditorConfig, TextPosition, ViewportSnapshot, DEFAULT_FONT_SIZE};
 use crate::core::{Point, Rect};

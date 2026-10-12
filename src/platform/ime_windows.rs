@@ -52,6 +52,10 @@ use crate::platform::ime::{ImeBridge, ImeCandidatePosition, ImeComposition};
 #[cfg(target_os = "windows")]
 mod tsf {
     use core::ffi::c_void;
+    // `Box` is not in the `core` prelude, and this module does not inherit the parent's imports, so
+    // a `no_std` profile (`mini`/`embedded`) needs it named here. It is the comlink allocation's
+    // owner, not an implementation detail: `Box::from_raw` is what reclaims it in `Release`.
+    use crate::compat::Box;
 
     /// `S_OK`. Any `HRESULT >= 0` is success, but this is the only success these calls return.
     pub const S_OK: i32 = 0;

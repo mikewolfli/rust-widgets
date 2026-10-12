@@ -2129,6 +2129,51 @@ mod tests {
         assert_eq!(action.icon_source(), None, "the typed value must not win by key order");
     }
 
+    /// A token the crate does not know is **refused**, and refusing must not clear a live icon.
+    ///
+    /// §19.13 case I06 keeps three "no glyph" states distinct: an empty slot, an explicit "no
+    /// icon", and an unknown token. The dangerous conflation is the last becoming the second — a
+    /// property layer that turned an unknown name into a *valid* empty value would let one typo
+    /// silently erase the icon the document already set, which is the "an unknown entry must not
+    /// silently succeed" rule §19.6 states for the typed entries.
+    #[test]
+    fn an_unknown_builtin_token_is_refused_rather_than_applied() {
+        use crate::widget::icon_source::IconSource;
+        use crate::widget::{Button, IconName};
+
+        let mut button = Button::new("Save".into(), crate::core::Rect::new(0, 0, 80, 24));
+        button.set_icon_source(Some(IconSource::Builtin(IconName::Info)));
+
+        apply_properties(
+            &mut button,
+            serde_json::json!({
+                "icon_source": { "kind": "builtin", "name": "definitely_not_a_token" }
+            })
+            .as_object()
+            .expect("a declaration is an object"),
+        );
+
+        assert_eq!(
+            button.icon_source(),
+            Some(IconSource::Builtin(IconName::Info)),
+            "a refused token must leave the live icon alone, not clear it"
+        );
+
+        // Control: the same declaration with a **known** token is applied, so the assertion above
+        // is about the token and not about the whole property being inert.
+        apply_properties(
+            &mut button,
+            serde_json::json!({ "icon_source": { "kind": "builtin", "name": "save" } })
+                .as_object()
+                .expect("a declaration is an object"),
+        );
+        assert_eq!(
+            button.icon_source(),
+            Some(IconSource::Builtin(IconName::Save)),
+            "a known token is applied through the same path"
+        );
+    }
+
     #[test]
     fn load_valid_minimal_window() {
         let json = r#"{"window": {"id": "main", "title": "Test", "width": 400, "height": 300}}"#;
@@ -3020,6 +3065,35 @@ mod tests {
         let json = r#"{"window": {"id": "w", "title": "T", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"icon": {"id": "ic", "icon_name": "star", "size": 48}}]}}}"#;
         let layout = JsonLoader::load(json).expect("a control the factory knows must load");
         assert!(layout.id("ic").is_some(), "the icon must be registered by its JSON id");
+    }
+
+    /// An `Icon` loads its **typed** source from a document, not only the legacy name string.
+    ///
+    /// §19.10 asks for the structured `icon_source` property on the entries that carry an icon, and
+    /// the standalone `Icon` is the first of them (§19.5). The read goes through the live control's
+    /// own capability getter, so this asserts the document reached the widget rather than merely
+    /// that the parser accepted the object.
+    #[cfg(full_widgets)]
+    #[test]
+    fn an_icon_loads_a_typed_source_from_a_document() {
+        use crate::widget::capability::{widget_property_get, CapabilityValue};
+
+        let json = r#"{"window": {"id": "w", "title": "T", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"icon": {"id": "ic", "icon_source": {"kind": "builtin", "name": "info"}}}]}}}"#;
+        let layout = JsonLoader::load(json).expect("a typed icon source must load");
+        let icon = layout.id("ic").expect("the document names the icon");
+
+        let read = crate::widget::runtime::with_widget(icon, |widget| {
+            widget_property_get(widget, "icon_source")
+        })
+        .expect("the icon is mounted")
+        .expect("`icon_source` is readable");
+        assert_eq!(
+            read,
+            CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(
+                crate::widget::IconName::Info
+            )),
+            "the document's typed source must reach the live control"
+        );
     }
 
     /// The kind a factory-routed control registers must match what `infer_kind`

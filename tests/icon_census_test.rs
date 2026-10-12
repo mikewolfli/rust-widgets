@@ -6,7 +6,7 @@
 //! # What this asserts, and why each one can fail
 //!
 //! The census renders **every** `IconName` through the real draw pipeline and records what came
-//! out. This test turns the measurements into four assertions:
+//! out. This test turns the measurements into six assertions:
 //!
 //! | # | Assertion | The defect it catches |
 //! |---|---|---|
@@ -14,7 +14,24 @@
 //! | C2 | no two tokens draw byte-identical pictures | the `Close == Cross` class: two names, one picture |
 //! | C3 | the committed `tools/icon_census.txt` matches a fresh run | a data change nobody regenerated the census for |
 //! | C4 | every token has a row, and every row names a token | a token that escapes the census, or a stale row for one that is gone |
-//! | C5 | the `info` counter remains transparent | a compound outline whose inner contour is painted as a separate solid polygon |
+//! | C5 | the counters of a compound icon stay transparent | a compound outline whose inner contour is painted as a separate solid polygon |
+//! | C6 | the painted pixels are the non-zero winding fill of the emitted contours | a fill rule that paints *more* than the geometry asks for (§19.3.1) |
+//!
+//! # Why C5 and C6 exist, and why the earlier four could not see the defect
+//!
+//! BLUE27 §19.3.1 records the defect as measured, not predicted: `draw_outline_in` submitted each
+//! contour separately and the scanline filler filled each polygon even-odd, so every counter was
+//! painted over — `info` rendered as a solid disk. C1–C4 are all blind to it. They count subpaths
+//! (4 is 4 either way), compare pictures (all four are distinct either way), compare the census
+//! against a fresh run (which agrees with itself), and check coverage (every token still has one).
+//! The census could not see it either, because `ink` was a copy of `contours` — it counted a
+//! counter as ink, which is the same wrong model the filler had.
+//!
+//! So the evidence has to be about **pixels**: C5 checks two of them directly, and C6 checks all of
+//! them against the fill rule, computed here by a crossing-number implementation that shares no
+//! code with the rasteriser. C6 is deliberately not a hand-picked token list: it re-derives the
+//! expected picture from the geometry the *other* backends receive, so it also fails if the SVG
+//! backend and the software backend ever disagree about which contours an icon has.
 //!
 //! # Why C2 is a *rendering* comparison and not a data one
 //!
@@ -29,7 +46,11 @@
 //! and agree with itself. The committed `tools/icon_census.txt` is the *record*; C3 requires it to
 //! still equal a fresh run, so a change in what an icon draws appears as a diff in review.
 
-#![cfg(all(feature = "icons", not(feature = "mini")))]
+// Gated on `widgets_unstripped` rather than on `not(mini)`: this file renders the `Icon` **widget**,
+// and the widget set is what a sized profile drops. With `icons` on and a sized profile the payload
+// is present but there is no `Icon` to render, so `not(mini)` claimed a configuration the file
+// cannot run in — the same shape of false gate that let a build failure read as a defect elsewhere.
+#![cfg(all(feature = "icons", widgets_unstripped))]
 
 use std::collections::BTreeMap;
 
@@ -42,13 +63,19 @@ use rust_widgets::widget::{Icon, IconName};
 /// Where the committed census lives, relative to the crate root.
 const CENSUS_PATH: &str = "tools/icon_census.txt";
 
+/// The frame the census rasterises into, in pixels.
+const SIDE: u32 = 24;
+
 /// One icon's census row.
 struct Row {
     token: &'static str,
     contours: usize,
     ink: usize,
+    runs: usize,
     digest: String,
     svg: String,
+    /// Painted pixels of the 24 px software rendering, row-major.
+    painted: Vec<bool>,
 }
 
 /// Renders every token and measures it.
@@ -56,22 +83,54 @@ fn census() -> Vec<Row> {
     IconName::ALL
         .into_iter()
         .map(|token| {
-            let mut icon = Icon::new(Rect::new(0, 0, 24, 24));
+            let mut icon = Icon::new(Rect::new(0, 0, SIDE, SIDE));
             icon.set_icon_enum(token);
             let svg = render_to_svg(&mut icon);
             let contours = svg.matches("M ").count();
+            let (ink, runs, painted) = measure_ink(&mut icon);
             Row {
                 token: token.as_str(),
                 contours,
-                ink: contours,
+                ink,
+                runs,
                 digest: sha256_hex(svg.as_bytes()),
                 svg,
+                painted,
             }
         })
         .collect()
 }
 
-/// C1 — a tokened icon that draws no subpath is an icon the user cannot see.
+/// Draws `icon` into a fresh software frame and measures the ink it laid down.
+///
+/// This is the same measurement `examples/icon_census.rs` makes, restated here because a test
+/// cannot import from an example; C3 is what keeps the two honest — if they disagreed, the
+/// committed census would read as stale.
+fn measure_ink(icon: &mut Icon) -> (usize, usize, Vec<bool>) {
+    let mut backend = SoftwarePaintBackend::new(Size::new(SIDE, SIDE), 1.0);
+    backend.begin_frame(Color::TRANSPARENT);
+    {
+        let mut context = RenderContext::new(&mut backend);
+        icon.draw(&mut context);
+    }
+    backend.end_frame();
+    let pixels = backend.frame_rgba();
+    let painted: Vec<bool> = (0..SIDE * SIDE).map(|i| pixels[(i * 4 + 3) as usize] > 0).collect();
+
+    let ink = painted.iter().filter(|&&hit| hit).count();
+    let mut runs = 0;
+    let mut inside = false;
+    for x in 0..SIDE as usize {
+        let hit = painted[(SIDE as usize / 2) * SIDE as usize + x];
+        if hit && !inside {
+            runs += 1;
+        }
+        inside = hit;
+    }
+    (ink, runs, painted)
+}
+
+/// C1 — a tokened icon that draws nothing is an icon the user cannot see.
 #[test]
 fn c1_every_icon_draws_an_outline() {
     for row in census() {
@@ -80,6 +139,12 @@ fn c1_every_icon_draws_an_outline() {
             "{} drew no outline subpath (the data did not reach the draw):\n{}",
             row.token,
             row.svg
+        );
+        assert!(
+            row.ink > 0,
+            "{} laid down no ink: {} contours reached the backend and none of them painted a pixel",
+            row.token,
+            row.contours
         );
     }
 }
@@ -131,22 +196,247 @@ fn c4_the_census_covers_every_token_once() {
     assert_eq!(before, tokens.len(), "`IconName::ALL` repeats a token");
 }
 
-/// C5 — a representative compound icon must keep its counter as empty space.
+/// C5 — every compound icon the plan names must keep its counters as empty space.
+///
+/// Two measurements, because either alone can be satisfied while the picture is wrong. The pixel
+/// check is the direct one: a point inside `info`'s ring must come out unpainted. The `runs` check
+/// is the shape one: a ring crossed by the middle scanline yields two or more opaque segments, a
+/// solid disk yields one. A token that is a disk *and* has an unpainted pixel somewhere (an
+/// unrelated gap) would pass the first and fail the second.
 #[test]
-fn c5_info_counter_is_transparent() {
-    let bounds = Rect::new(0, 0, 24, 24);
-    let mut icon = Icon::new(bounds);
+fn c5_compound_icons_keep_their_counters_transparent() {
+    let info = Rect::new(0, 0, SIDE, SIDE);
+    let mut icon = Icon::new(info);
     icon.set_icon_enum(IconName::Info);
-    let mut backend = SoftwarePaintBackend::new(Size::new(24, 24), 1.0);
-    backend.begin_frame(Color::TRANSPARENT);
-    {
-        let mut context = RenderContext::new(&mut backend);
-        icon.draw(&mut context);
+    let (_, _, painted) = measure_ink(&mut icon);
+    assert!(
+        !painted[12 * SIDE as usize + 7],
+        "the interior of the info counter must remain unpainted"
+    );
+
+    // BLUE27 §19.13 I16: these four are the ring-bearing tokens named by the plan.
+    let mut seen: Vec<&str> = Vec::new();
+    for row in census() {
+        if !matches!(row.token, "info" | "settings" | "mail" | "star") {
+            continue;
+        }
+        seen.push(row.token);
+        assert!(
+            row.runs >= 2,
+            "{} is a ring, so the middle scanline must cross at least two opaque segments; it \
+             crossed {} — the counters were painted over",
+            row.token,
+            row.runs
+        );
     }
-    backend.end_frame();
-    let pixels = backend.frame_rgba();
-    let alpha = pixels[(12 * 24 + 7) * 4 + 3];
-    assert_eq!(alpha, 0, "the interior of the info counter must remain unpainted");
+    seen.sort_unstable();
+    assert_eq!(
+        seen,
+        ["info", "mail", "settings", "star"],
+        "the plan's ring-bearing tokens must all be present in the census"
+    );
+}
+
+/// C6 — the painted pixels must be the non-zero winding fill of the emitted contours.
+///
+/// # Why a winding oracle in a test is not a second rasteriser
+///
+/// The rasteriser answers "which pixels does this contour set cover"; the helper below answers
+/// "what does the winding rule say about this one point", by counting signed ray crossings. They
+/// are different algorithms over the same input, which is what makes agreement evidence — a copy of
+/// the rasteriser's own loop would only show that it is deterministic.
+///
+/// # Why the margin
+///
+/// A pixel centre within `MARGIN` of an edge is skipped: coverage and antialiasing at a boundary
+/// are the rasteriser's business and its answer there may legitimately differ from a point test.
+/// What this asserts is the *rule*, not the edge policy.
+///
+/// # Why the floors
+///
+/// Half of this test is a measurement of the icon set rather than of a token: how many tokens
+/// paint *less* than their contours would suggest, because the winding rule erased a counter. On
+/// this set that is 33 tokens and 1784 pixels. If a change made the counters unobservable — the
+/// data flattening a ring into a disk, say — the assertions above would keep passing while
+/// measuring nothing, so the floors fail instead.
+#[test]
+fn c6_painted_pixels_are_the_non_zero_winding_fill() {
+    const MARGIN: f32 = 1.0;
+    const MIN_TOKENS_THAT_ERASE: usize = 30;
+    const MIN_ERASED_PIXELS: usize = 1500;
+    const PLAN_RING_TOKENS: [&str; 4] = ["info", "mail", "settings", "star"];
+
+    let mut erasing_tokens = 0usize;
+    let mut erased_pixels = 0usize;
+    for row in census() {
+        let contours = compound_contours(&row.svg);
+        assert_eq!(
+            contours.len(),
+            row.contours,
+            "{}: the census counted {} contours, the emitted path parses to {}",
+            row.token,
+            row.contours,
+            contours.len()
+        );
+        let mut erased_here = 0usize;
+        for y in 0..SIDE {
+            for x in 0..SIDE {
+                let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                if distance_to_contours(&contours, px, py) < MARGIN {
+                    continue;
+                }
+                let winding = winding_number(&contours, px, py);
+                let painted = row.painted[(y * SIDE + x) as usize];
+                assert_eq!(
+                    painted,
+                    winding != 0,
+                    "{}: pixel ({x}, {y}) is painted={painted} while its winding number is {winding}",
+                    row.token
+                );
+                if winding == 0 && inside_any_contour(&contours, px, py) {
+                    erased_here += 1;
+                }
+            }
+        }
+        if erased_here > 0 {
+            erasing_tokens += 1;
+            erased_pixels += erased_here;
+        }
+        if PLAN_RING_TOKENS.contains(&row.token) {
+            assert!(
+                erased_here > 0,
+                "{}: the winding fill erases nothing, so the counter is gone before it is drawn — \
+                 the ring was flattened into a solid shape",
+                row.token
+            );
+        }
+    }
+    assert!(
+        erasing_tokens >= MIN_TOKENS_THAT_ERASE,
+        "only {erasing_tokens} tokens erase ink that the per-contour fill would have painted, \
+         expected at least {MIN_TOKENS_THAT_ERASE}: the counters are no longer exercised"
+    );
+    assert!(
+        erased_pixels >= MIN_ERASED_PIXELS,
+        "only {erased_pixels} pixels are erased by the winding rule, expected at least \
+         {MIN_ERASED_PIXELS}: the counters are no longer exercised"
+    );
+}
+
+/// The closed contours of the icon in `svg`, as `(x, y)` points.
+///
+/// Reads what the SVG backend emitted — the same contour list every other backend is handed — so a
+/// disagreement about *which* contours an icon has shows up here instead of hiding behind a second
+/// reading of the source data. Every qualifying `<path` is read, not just the first: one fill
+/// command emits one path, so a backend that submitted the contours separately would hand the
+/// software rasteriser a different picture, and that has to reach the comparison rather than
+/// stopping at the parse.
+fn compound_contours(svg: &str) -> Vec<Vec<(f32, f32)>> {
+    let mut contours = Vec::new();
+    for element in svg.split("<path ").skip(1) {
+        let element = match element.find("/>") {
+            Some(end) => &element[..end],
+            None => element,
+        };
+        // A **text run** is emitted as a `<path` too. The icon's own fill is the one with the
+        // non-zero rule and no `data-text`; anywhere else in this file the same rule identifies it.
+        if element.contains("data-text") || !element.contains("fill-rule=\"nonzero\"") {
+            continue;
+        }
+        let Some(open) = element.find("d=\"") else {
+            continue;
+        };
+        let rest = &element[open + 3..];
+        let Some(close) = rest.find('"') else {
+            continue;
+        };
+        contours.extend(parse_path_data(&rest[..close]));
+    }
+    contours
+}
+
+/// The closed contours of one SVG path's `d` attribute.
+fn parse_path_data(data: &str) -> Vec<Vec<(f32, f32)>> {
+    data.split("M ")
+        .map(str::trim)
+        .filter(|subpath| !subpath.is_empty())
+        .map(|subpath| {
+            let numbers: Vec<f32> = subpath
+                .split(|character: char| {
+                    !(character.is_ascii_digit() || character == '-' || character == '.')
+                })
+                .filter_map(|number| number.parse().ok())
+                .collect();
+            let mut points: Vec<(f32, f32)> =
+                numbers.as_chunks::<2>().0.iter().map(|pair| (pair[0], pair[1])).collect();
+            // The emitter may or may not repeat the first point before `Z`; a repeated point is a
+            // zero-length edge to the winding test, so drop it and let the closing edge be implicit.
+            if points.len() > 1 && points[0] == points[points.len() - 1] {
+                points.pop();
+            }
+            points
+        })
+        .collect()
+}
+
+/// The non-zero winding number of `contours` around `(px, py)`: signed crossings of a +x ray.
+fn winding_number(contours: &[Vec<(f32, f32)>], px: f32, py: f32) -> i32 {
+    let mut winding = 0;
+    for contour in contours {
+        for (index, &(x0, y0)) in contour.iter().enumerate() {
+            let (x1, y1) = contour[(index + 1) % contour.len()];
+            let side = (x1 - x0) * (py - y0) - (px - x0) * (y1 - y0);
+            if y0 <= py {
+                if y1 > py && side > 0.0 {
+                    winding += 1;
+                }
+            } else if y1 <= py && side < 0.0 {
+                winding -= 1;
+            }
+        }
+    }
+    winding
+}
+
+/// Whether `(px, py)` is inside any single contour — the union the per-contour fill used to paint.
+fn inside_any_contour(contours: &[Vec<(f32, f32)>], px: f32, py: f32) -> bool {
+    contours.iter().any(|contour| inside_contour(contour, px, py))
+}
+
+/// An even-odd crossing test for one closed contour.
+fn inside_contour(contour: &[(f32, f32)], px: f32, py: f32) -> bool {
+    let mut inside = false;
+    for (index, &(x0, y0)) in contour.iter().enumerate() {
+        let (x1, y1) = contour[(index + 1) % contour.len()];
+        if (y0 > py) != (y1 > py) {
+            let along = (py - y0) / (y1 - y0);
+            if px < x0 + along * (x1 - x0) {
+                inside = !inside;
+            }
+        }
+    }
+    inside
+}
+
+/// The distance from `(px, py)` to the nearest contour edge.
+fn distance_to_contours(contours: &[Vec<(f32, f32)>], px: f32, py: f32) -> f32 {
+    let mut nearest = f32::MAX;
+    for contour in contours {
+        for (index, &(x0, y0)) in contour.iter().enumerate() {
+            let (x1, y1) = contour[(index + 1) % contour.len()];
+            let (dx, dy) = (x1 - x0, y1 - y0);
+            let length_squared = dx * dx + dy * dy;
+            let along = if length_squared == 0.0 {
+                0.0
+            } else {
+                (((px - x0) * dx + (py - y0) * dy) / length_squared).clamp(0.0, 1.0)
+            };
+            let distance =
+                ((px - (x0 + along * dx)).powi(2) + (py - (y0 + along * dy)).powi(2)).sqrt();
+            nearest = nearest.min(distance);
+        }
+    }
+    nearest
 }
 
 /// The census body, exactly as `examples/icon_census.rs` prints it, minus the header comment.
@@ -154,8 +444,8 @@ fn render_census_text() -> String {
     let mut out = String::new();
     for row in census() {
         out.push_str(&format!(
-            "{}\tcontours={}\tink={}\tsha256={}\n",
-            row.token, row.contours, row.ink, row.digest
+            "{}\tcontours={}\tink={}\truns={}\tsha256={}\n",
+            row.token, row.contours, row.ink, row.runs, row.digest
         ));
     }
     out

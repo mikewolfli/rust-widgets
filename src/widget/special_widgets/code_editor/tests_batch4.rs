@@ -11,6 +11,13 @@
 //! language actually selects the lexer, and that an unsupported command actually
 //! declines rather than corrupting the buffer.
 
+// The module-level gate, so tooling that scans file text recognises this as a test module.
+// The parent declares `mod tests;` under `#[cfg(test)]`, which the compiler sees but a text scan
+// of this file does not — and a scan that cannot tell a test module from production code reports
+// its `Mutex` as widget state (`tools/check_locking.sh`). Same line as
+// `special_widgets/toast/tests.rs`, which records the reasoning in full.
+#![cfg(test)]
+
 use super::editor::CodeEditor;
 use super::syntax::{LanguageId, LineState, SyntaxHighlighter};
 use super::types::{ReadOnlySpan, TextPosition, TokenKind, TokenSpan};

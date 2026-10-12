@@ -42,6 +42,14 @@
 #                   so it cannot block a paint path behind real work. Exempted by name
 #                   rather than by loosening the pattern, so any *other* lock appearing in
 #                   this module is still a finding.
+#   metrics.rs    — the widget layer's one-time cache of the **default font**. `Font` owns its
+#                   family as a `String`, so `Font::default()` is not a `static` initialiser and
+#                   the value cannot be a `const`; a `OnceLock` initialised once and then only read
+#                   is the honest way to hand out `&'static Font` without allocating a `String` per
+#                   text-emitting control per frame (`effective_font`'s doc records that reasoning).
+#                   There is no second lock over anything, and after the first initialisation the
+#                   read path does not block. Exempted by name rather than by loosening the pattern,
+#                   so any *other* lock appearing in this file is still a finding.
 #
 # Usage: tools/check_locking.sh
 set -euo pipefail
@@ -68,6 +76,7 @@ SCAN_ROOT = "src/widget"
 # one module's lock is load-bearing" without also excusing every future lock in it.
 EXEMPT_FILES = {
     "src/widget/display_widgets/icon_data_set.rs",
+    "src/widget/metrics.rs",
 }
 # Only *blocking* primitives are a finding. `Atomic*` is deliberately not matched:
 # a monotonic id counter (`static NEXT_ID: AtomicU64`) is lock-free — it cannot

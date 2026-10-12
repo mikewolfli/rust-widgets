@@ -34,13 +34,18 @@
 # desktop`, which carried no icon data, so the icon controls drew the hand-drawn fallback shapes
 # while a runtime built from `default` drew the real outlines.
 #
-# What this checks (four assertions)
-# ----------------------------------
+# What this checks (five assertions)
+# -----------------------------------
 #   1. `icons` is declared in `[features]`.
 #   2. `icons` is in the `desktop`, `tablet` and `mobile` lists.
 #   3. `icons` is absent from `default` and from the sized profiles (`embedded`, `mini`).
 #   4. Both states build: `--features desktop` (on) and a sized profile with and without the
 #      feature, so the data is *reachable* and still *removable*.
+#   5. A sized profile with the feature **manually enabled** still builds, tests and examples
+#      included. The profile lists are the contract; the feature is public, so a downstream host
+#      can still ask for it by name, and a combination nothing builds is a combination that
+#      rots. `embedded,icons` was exactly that: the lib failed to resolve the runtime registry,
+#      which only the unstripped widget set has, and no gate compiled the pair.
 #
 # Reverse injection
 # -----------------
@@ -49,7 +54,7 @@
 #
 # Usage: tools/check_icon_data_is_opt_in.sh
 # Exit 0 = the data is in every capable profile, out of `default` and the sized ones, and both
-# build states work.
+# build states work — including the sized profile that asks for the feature by name.
 # Exit 1 = a finding.
 # ============================================================================
 
@@ -61,7 +66,7 @@ cd "$ROOT_DIR"
 
 MANIFEST="Cargo.toml"
 
-echo "[1/4] \`icons\` is a declared feature"
+echo "[1/5] \`icons\` is a declared feature"
 if ! grep -qE '^icons = \[\]' "$MANIFEST"; then
     echo "  FAIL  Cargo.toml no longer declares \`icons = []\`"
     echo "        The assertions below can only prove a feature that exists."
@@ -78,7 +83,7 @@ feature_list() {
     ' "$MANIFEST"
 }
 
-echo '[2/4] `icons` is in the capable device profiles'
+echo '[2/5] `icons` is in the capable device profiles'
 for profile in desktop tablet mobile; do
     list="$(feature_list "$profile")"
     if ! printf '%s' "$list" | grep -qE '"icons"'; then
@@ -91,7 +96,7 @@ for profile in desktop tablet mobile; do
 done
 echo '  PASS  present in every capable profile'
 
-echo '[3/4] `icons` is out of `default` and the sized profiles'
+echo '[3/5] `icons` is out of `default` and the sized profiles'
 for profile in default embedded mini; do
     list="$(feature_list "$profile")"
     if [ -z "$list" ]; then
@@ -108,12 +113,18 @@ for profile in default embedded mini; do
 done
 echo '  PASS  absent from default and the sized profiles'
 
-echo '[4/4] both build states compile'
+echo '[4/5] both build states compile'
 # The first command is a capable profile, which now carries `icons`; the second is a sized profile,
 # which does not — so this asserts the data is *reachable* and still *removable*.
 rw_run_bounded 900 cargo check --no-default-features --features desktop --lib
 rw_run_bounded 900 cargo check --no-default-features --features mini --lib
 echo '  PASS  builds with the feature on (desktop) and off (mini)'
+
+echo '[5/5] a sized profile with `icons` enabled by hand compiles its tests and examples'
+# `--all-targets` and not `--lib`: the target that broke was a test, and a `--lib` check reported
+# the pair as healthy while `tests/icon_census_test.rs` could not resolve `Icon`.
+rw_run_bounded 900 cargo check --no-default-features --features embedded,icons --all-targets
+echo '  PASS  embedded,icons builds'
 
 echo
 echo "check_icon_data_is_opt_in: OK"

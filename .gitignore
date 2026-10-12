@@ -66,3 +66,7 @@ cookbook/*/book/
 
 # Stray lint/build dumps
 clippy_output.txt
+# `rustc`'s default output name when it is invoked without `-o`. One such file
+# (a 4.5 MB Linux ELF) had been committed by accident and then sat in the tree as
+# a hashed input to every gate, so the name is ignored rather than re-committed.
+rust_out

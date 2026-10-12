@@ -129,7 +129,44 @@ rw_cargo_cached "$PROFILE_TIMEOUT" check \
 # The check is deliberately two-sided: `lib.exe` OR a mingw `gcc` satisfies
 # cc-rs for this target, so requiring MSVC specifically would skip a gate that
 # would genuinely have run.
-have_windows_linker() {
+#
+# **The linker alone is not enough**, which is why the second half exists. A host
+# with a linker but no way to compile C for the target takes the non-skip path and
+# then fails inside `minimp3-sys`'s build script:
+#
+#     cargo:warning=minimp3/minimp3.h:46:10: fatal error: 'stdlib.h' file not found
+#     error occurred in cc-rs: command did not execute successfully ...
+#
+# That message names a C header in a build script, so it reads as a defect in the
+# code under test when in fact nothing on this host can compile for that target.
+# Measured here: `x86_64-w64-mingw32-gcc` was installed, `lib.exe`/`link.exe` were
+# not, `cc-rs` still chose the host `cc` with `--target=x86_64-pc-windows-msvc`,
+# and clang could not find the MSVC SDK headers. A presence test on a *different*
+# compiler cannot answer "will the compiler cc-rs picks work", so this asks that
+# question directly: compile one file that includes a standard header, exactly the
+# way cc-rs invokes it, and let the answer decide.
+#
+# # What actually makes this step runnable off Windows: an `xwin` splat
+#
+# What a non-Windows host lacks is not a linker but the **CRT and Windows SDK
+# headers/libs**, and `xwin` is the tool that fetches them:
+#
+#     cargo install xwin
+#     xwin --accept-license splat --output ~/xwin-splat
+#
+# With that splat present this script arms the toolchain itself (clang-cl for the
+# target, `llvm-lib` to archive, `-Lnative=` to the splat's lib dirs) and the step
+# runs for real. Measured on this host:
+#
+#   * before: `cargo check --target x86_64-pc-windows-msvc --no-default-features
+#     --features desktop` → `'stdlib.h' file not found` inside `minimp3-sys`;
+#   * after: the same command finishes clean, and this step covers three profiles
+#     plus the no-profile feature set.
+#
+# The splat lives outside the repository (`$XWIN_SPLAT`, else `~/xwin-splat`), so
+# the gate reads it rather than owning it; a host without one still gets an honest
+# SKIP that names the command to fix it.
+require_windows_linker() {
   if command -v lib.exe >/dev/null 2>&1 || command -v link.exe >/dev/null 2>&1; then
     return 0
   fi
@@ -139,14 +176,101 @@ have_windows_linker() {
   return 1
 }
 
+# The `xwin` splat directory, if this host has one.
+#
+# Both halves are checked because a half-populated directory would arm a toolchain
+# that fails later, with the failure attributed to the code under test rather than
+# to the splat.
+xwin_splat_dir() {
+  local splat="${XWIN_SPLAT:-$HOME/xwin-splat}"
+  if [ -d "$splat/crt/include" ] && [ -d "$splat/sdk/include/um" ] \
+     && [ -d "$splat/sdk/lib/ucrt/x86_64" ]; then
+    printf '%s' "$splat"
+  fi
+}
+
+# Point cc-rs at the splat. Returns non-zero, exporting nothing, when it cannot.
+#
+# LLVM ships `clang-cl` and `llvm-lib`; Homebrew and most Linux distributions keep
+# them off `PATH`, so the candidate directories are probed rather than assumed.
+arm_windows_toolchain_from_xwin() {
+  local splat
+  splat="$(xwin_splat_dir)"
+  if [ -z "$splat" ]; then
+    return 1
+  fi
+  local candidate
+  for candidate in /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin /usr/lib/llvm/bin; do
+    if [ -x "$candidate/clang-cl" ]; then
+      PATH="$candidate:$PATH"
+      break
+    fi
+  done
+  if ! command -v clang-cl >/dev/null 2>&1 || ! command -v llvm-lib >/dev/null 2>&1; then
+    return 1
+  fi
+  export PATH
+  # cc-rs reads both spellings; the underscored one is the canonical Rust target env
+  # name, the dashed one is what `cargo` itself exports to build scripts.
+  local includes="-imsvc $splat/crt/include -imsvc $splat/sdk/include/ucrt \
+    -imsvc $splat/sdk/include/shared -imsvc $splat/sdk/include/um"
+  export CC_x86_64_pc_windows_msvc=clang-cl
+  export CXX_x86_64_pc_windows_msvc=clang-cl
+  export AR_x86_64_pc_windows_msvc=llvm-lib
+  export CFLAGS_x86_64_pc_windows_msvc="$includes"
+  export CXXFLAGS_x86_64_pc_windows_msvc="$includes"
+  export RUSTFLAGS="-Lnative=$splat/crt/lib/x86_64 -Lnative=$splat/sdk/lib/um/x86_64 \
+    -Lnative=$splat/sdk/lib/ucrt/x86_64 ${RUSTFLAGS:-}"
+  return 0
+}
+
+# Can this host compile C for the target?
+#
+# `CC_x86_64_pc_windows_msvc` overrides the compiler, so a host that sets it is
+# taken at its word and probed with its own flags. Otherwise the splat is tried and,
+# failing that, the host `cc` with the target flag — one translation unit that
+# includes `<stdlib.h>`, which is the include that exposed the false failure.
+have_c_for_windows_target() {
+  local probe_dir probe compiler
+  probe_dir="$(mktemp -d)"
+  probe="$probe_dir/probe.c"
+  printf '#include <stdlib.h>\nint main(void) { return 0; }\n' > "$probe"
+
+  local status=1
+  if [ -n "${CC_x86_64_pc_windows_msvc:-}" ]; then
+    # `clang-cl` takes `/Fo`, `cc` takes `-o`; try the one that fits the compiler.
+    if command -v "$CC_x86_64_pc_windows_msvc" >/dev/null 2>&1 \
+       && "$CC_x86_64_pc_windows_msvc" ${CFLAGS_x86_64_pc_windows_msvc:-} /c \
+          "/Fo$probe_dir/probe.obj" "$probe" >/dev/null 2>&1; then
+      status=0
+    fi
+  elif arm_windows_toolchain_from_xwin; then
+    if clang-cl ${CFLAGS_x86_64_pc_windows_msvc} /c "/Fo$probe_dir/probe.obj" "$probe" \
+       >/dev/null 2>&1; then
+      status=0
+    fi
+  else
+    compiler="${CC_x86_64_pc_windows_msvc:-cc}"
+    if "$compiler" --target=x86_64-pc-windows-msvc -c "$probe" -o "$probe_dir/probe.o" \
+       >/dev/null 2>&1; then
+      status=0
+    fi
+  fi
+  rm -rf "$probe_dir"
+  return $status
+}
+
 if rustc --print target-list 2>/dev/null | grep -qx 'x86_64-pc-windows-msvc' \
    && rustup target list --installed 2>/dev/null | grep -qx 'x86_64-pc-windows-msvc'; then
-  if ! have_windows_linker; then
+  if ! have_c_for_windows_target || ! require_windows_linker; then
     echo "[6b/9] SKIPPED: unsupported host -- the x86_64-pc-windows-msvc target"
-    echo "   is installed but no MSVC linker is available (need lib.exe/link.exe,"
-    echo "   or x86_64-w64-mingw32-gcc). Not a defect in the code under test:"
-    echo "   nothing here can link a Windows binary. Install MSVC build tools to"
-    echo "   run this step."
+    echo "   is installed but this host cannot compile C for it, so the Windows C"
+    echo "   dependency in the tree (minimp3-sys) cannot build. Not a defect in the"
+    echo "   code under test. To run this step off Windows, fetch the CRT and SDK:"
+    echo "       cargo install xwin"
+    echo "       xwin --accept-license splat --output ~/xwin-splat"
+    echo "   (or set CC_x86_64_pc_windows_msvc to a compiler that finds the headers,"
+    echo "   plus lib.exe/link.exe or a mingw gcc)."
   else
     echo "[6b/9] cargo check --target x86_64-pc-windows-msvc (windows backend, mixed profiles)"
     for profile in desktop embedded mini; do

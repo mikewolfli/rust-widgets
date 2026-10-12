@@ -22,7 +22,9 @@ use crate::platform::windows::notify;
 use crate::platform::windows::types::*;
 use crate::platform::DropEvent;
 use std::sync::atomic::Ordering;
-#[cfg(target_os = "windows")]
+// Only `set_widget_visible`'s `widgets_unstripped` body shows or hides a window, so a stripped
+// profile would import these and never use them.
+#[cfg(all(target_os = "windows", widgets_unstripped))]
 use winapi::um::winuser::{SW_HIDE, SW_SHOW};
 
 // SAFETY: All Win32 FFI calls in this module follow standard Windows API safety patterns:

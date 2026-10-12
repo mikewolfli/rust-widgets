@@ -1,5 +1,4 @@
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(target_arch = "wasm32"))]
 use criterion::{criterion_group, criterion_main, Criterion};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -41,9 +40,7 @@ fn bench_flow_layout_200_items(c: &mut Criterion) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(target_arch = "wasm32"))]
 criterion_group!(benches, bench_flow_layout_200_items);
-#[cfg(not(target_arch = "wasm32"))]
 #[cfg(not(target_arch = "wasm32"))]
 criterion_main!(benches);
 

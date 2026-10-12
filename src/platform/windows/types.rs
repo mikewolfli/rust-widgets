@@ -27,16 +27,20 @@ pub(crate) unsafe extern "system" fn wnd_proc(
 ) -> isize {
     use winapi::um::winuser::NMHDR;
     use winapi::um::winuser::{
-        DefWindowProcW, GetClientRect, GetDlgCtrlID, PostQuitMessage, WM_CHAR, WM_CLOSE,
-        WM_COMMAND, WM_DESTROY, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDBLCLK,
-        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NOTIFY,
-        WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WM_UNICHAR,
+        DefWindowProcW, GetDlgCtrlID, PostQuitMessage, WM_CLOSE, WM_COMMAND, WM_DESTROY,
+        WM_ERASEBKGND, WM_GETMINMAXINFO, WM_NOTIFY,
     };
-    // The focus- and key-release messages are only matched by arms gated on `widgets_unstripped`,
-    // so their imports are gated with them: importing unconditionally warns on a stripped profile,
-    // and a warning is a build failure for a downstream `-D warnings` consumer.
+    // Every message that is only *matched* by a `widgets_unstripped` arm is imported under the
+    // same condition: an unconditional import would be unused on a stripped profile, and an
+    // unused import is a build failure for a downstream `-D warnings` consumer. Both groups are
+    // here because both are the same rule — focus and key-release first, then the input arms that
+    // route into the tree (paint, mouse, wheel, key, character).
     #[cfg(widgets_unstripped)]
-    use winapi::um::winuser::{WM_KEYUP, WM_KILLFOCUS, WM_SETFOCUS};
+    use winapi::um::winuser::{
+        GetClientRect, WM_CHAR, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDBLCLK,
+        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
+        WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SIZE, WM_UNICHAR,
+    };
     match msg {
         // The window's own painting: every control the window owns, drawn as one frame.
         //
@@ -50,6 +54,11 @@ pub(crate) unsafe extern "system" fn wnd_proc(
         //
         // This arm is the Windows half of the window-level painter the Linux backend already
         // has; both call `render_frame_tree`, which walks the window's child list.
+        // Gated with `widgets_unstripped`, like `WM_KEYUP`/`WM_SETFOCUS` below and for the same
+        // reason: the body routes the message into `widget::runtime`, which `mini`/`embedded`
+        // do not compile. An ungated arm is a compile error there rather than a no-op, and the
+        // `_` arm still answers the message — with no tree to route to, it is the honest answer.
+        #[cfg(widgets_unstripped)]
         WM_PAINT => {
             paint_window_tree(hwnd);
             0
@@ -76,14 +85,21 @@ pub(crate) unsafe extern "system" fn wnd_proc(
         // controls are positioned in that same space (`frame_origin` is `(0, 0)` for a
         // window), so no origin offset is applied — unlike the canvas, which sits at an
         // offset inside its parent.
+        // Gated with `widgets_unstripped`, like `WM_KEYUP`/`WM_SETFOCUS` below and for the same
+        // reason: the body routes the message into `widget::runtime`, which `mini`/`embedded`
+        // do not compile. An ungated arm is a compile error there rather than a no-op, and the
+        // `_` arm still answers the message — with no tree to route to, it is the honest answer.
+        #[cfg(widgets_unstripped)]
         WM_MOUSEMOVE => {
             forward_window_mouse(hwnd, lparam, MousePhase::Drag);
             0
         }
+        #[cfg(widgets_unstripped)]
         WM_LBUTTONDOWN => {
             forward_window_mouse(hwnd, lparam, MousePhase::Press);
             0
         }
+        #[cfg(widgets_unstripped)]
         WM_LBUTTONUP => {
             forward_window_mouse(hwnd, lparam, MousePhase::Release);
             0
@@ -92,16 +108,19 @@ pub(crate) unsafe extern "system" fn wnd_proc(
         // keys double-click handling off `button`'s second bit (see `event::mouse_button`).
         // Without this arm Win32's own double-click synthesis would be swallowed by
         // `DefWindowProcW` and a `Button` would simply activate twice.
+        #[cfg(widgets_unstripped)]
         WM_LBUTTONDBLCLK => {
             forward_window_mouse(hwnd, lparam, MousePhase::DoubleClick);
             0
         }
         // The secondary button is a press/release pair of its own: context menus, and any
         // control that distinguishes a right-click, are unreachable without them.
+        #[cfg(widgets_unstripped)]
         WM_RBUTTONDOWN => {
             forward_window_mouse(hwnd, lparam, MousePhase::SecondaryPress);
             0
         }
+        #[cfg(widgets_unstripped)]
         WM_RBUTTONUP => {
             forward_window_mouse(hwnd, lparam, MousePhase::SecondaryRelease);
             0
@@ -110,11 +129,13 @@ pub(crate) unsafe extern "system" fn wnd_proc(
         // (`GET_WHEEL_DELTA_WPARAM`), not a client point in `lParam`. Both halves are decoded
         // in `forward_window_wheel`, which is also where the `WHEEL_DELTA`-multiples rule is
         // applied — a scroll area needs the direction, not the raw tick count.
+        #[cfg(widgets_unstripped)]
         WM_MOUSEWHEEL => {
             forward_window_wheel(hwnd, wparam, lparam);
             0
         }
         // A hover highlight has to be cleared when the pointer leaves, or it sticks.
+        #[cfg(widgets_unstripped)]
         WM_MOUSELEAVE => {
             if let Some(window_id) = window_widget_for(hwnd) {
                 // The point is only carried into the `MouseLeave` the router delivers, and
@@ -147,6 +168,7 @@ pub(crate) unsafe extern "system" fn wnd_proc(
         // sending it to a widget is a no-op and the user could never leave the first
         // control. The canvas learned this first and the window did not, so the very
         // keyboard the window gives focus to could not be used to leave it.
+        #[cfg(widgets_unstripped)]
         WM_KEYDOWN => {
             if let Some(window_id) = window_widget_for(hwnd) {
                 const VK_TAB: u32 = 0x09;
@@ -215,6 +237,7 @@ pub(crate) unsafe extern "system" fn wnd_proc(
         // `WM_UNICHAR` for `WM_UNICHAR`-aware windows), which is the message a text control
         // must consume. `TranslateMessage` in the run loop is what performs the translation,
         // and the canvas procedure had the same gap — see `canvas::forward_char`.
+        #[cfg(widgets_unstripped)]
         WM_CHAR | WM_UNICHAR => {
             if let Some(window_id) = window_widget_for(hwnd) {
                 forward_window_char(hwnd, window_id, wparam as u32);
@@ -303,6 +326,9 @@ pub(crate) unsafe extern "system" fn wnd_proc(
         // `window_widget_for` is that fix, and the failure is now reported rather than
         // swallowed: a resize that cannot be attributed to a widget is a defect in the
         // host's window set-up, not a routine no-op.
+        // Gated with `widgets_unstripped` for the reason the mouse arms above are: the body's
+        // first call is `window_widget_for`, which resolves through `widget::runtime`.
+        #[cfg(widgets_unstripped)]
         WM_SIZE => {
             if let Some(widget_id) = unsafe { window_widget_for(hwnd) } {
                 let mut rect =
@@ -431,6 +457,9 @@ pub(crate) unsafe extern "system" fn wnd_proc(
         // `DefWindowProcW` still runs afterwards, which destroys the window and reaches
         // `WM_DESTROY` below.
         WM_CLOSE => {
+            // The window still closes on a stripped profile; only the callback path is gated,
+            // because running it needs the widget tree `window_widget_for` resolves through.
+            #[cfg(widgets_unstripped)]
             if let Some(window_id) = window_widget_for(hwnd) {
                 if !crate::close_widget(window_id) {
                     // The id exists in the registry (the painter found it) but carries no
@@ -490,7 +519,7 @@ pub(crate) unsafe extern "system" fn wnd_proc(
 ///
 /// Skipping a hop would look up an id that addresses no widget and draw nothing — a
 /// silently blank window, which is the failure this function exists to remove.
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", widgets_unstripped))]
 unsafe fn paint_window_tree(hwnd: HWND) {
     use winapi::um::winuser::{BeginPaint, EndPaint, PAINTSTRUCT};
 
@@ -556,7 +585,7 @@ unsafe fn paint_window_tree(hwnd: HWND) {
 /// `hwnd` → platform id → widget-registry id, in that order. Win32 hands every callback
 /// the `HWND`, the backend binds `HWND`s against **platform** ids, and the tree is keyed by
 /// **registry** id, so both hops are required.
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", widgets_unstripped))]
 unsafe fn window_widget_for(hwnd: HWND) -> Option<u64> {
     crate::widget::runtime::widget_id_for_host_window(widget_id_by_native_handle(hwnd)?)
 }
@@ -623,7 +652,7 @@ fn key_target_for_id(window_id: u64) -> u64 {
 }
 
 /// The platform's own id for `hwnd`, or `None` when this backend did not create it.
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", widgets_unstripped))]
 unsafe fn widget_id_by_native_handle(hwnd: HWND) -> Option<u64> {
     // SAFETY: forwarded from this function's own unsafe contract — `hwnd` is a live handle
     // Win32 handed to a callback, which is what `widget_id_by_native_handle` requires.
@@ -631,13 +660,13 @@ unsafe fn widget_id_by_native_handle(hwnd: HWND) -> Option<u64> {
 }
 
 /// Marks `hwnd`'s whole client area as needing a repaint.
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", widgets_unstripped))]
 unsafe fn invalidate_window(hwnd: HWND) {
     // SAFETY: a null `RECT` invalidates the entire client area, which is intended.
     winapi::um::winuser::InvalidateRect(hwnd, std::ptr::null(), 0);
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", widgets_unstripped))]
 use crate::platform::MousePhase;
 
 /// Translates a Win32 mouse message on a **window** into a widget event and delivers it.
@@ -661,7 +690,7 @@ use crate::platform::MousePhase;
 /// `dispatch_pointer_event` hit-tests the point against the window's child tree, so a click
 /// on a button reaches that button. Child geometry is window-relative, which is the space
 /// `position` is already in.
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", widgets_unstripped))]
 unsafe fn forward_window_mouse(hwnd: HWND, lparam: isize, phase: MousePhase) {
     use crate::core::Point;
     let Some(window_id) = window_widget_for(hwnd) else {
@@ -727,7 +756,7 @@ unsafe fn forward_window_mouse(hwnd: HWND, lparam: isize, phase: MousePhase) {
 /// Spelled once here rather than as a bare `1` at each construction site: the value is
 /// [`crate::event::mouse_button::PRIMARY`], and a raw `1` next to a named `SECONDARY`
 /// reads as if the two came from different conventions.
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", widgets_unstripped))]
 const MOUSE_PRIMARY: u32 = crate::event::mouse_button::PRIMARY;
 
 /// Translates a `WM_MOUSEWHEEL` into a widget wheel event and delivers it.
@@ -756,7 +785,7 @@ const MOUSE_PRIMARY: u32 = crate::event::mouse_button::PRIMARY;
 /// touchpad-driven wheel produces to the nearest whole notch. Rounding *away* from zero
 /// when the quotient is `0` is deliberate: a delta of `-1..-119` is still a scroll in that
 /// direction, and discarding it would make a slow touchpad scroll do nothing at all.
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", widgets_unstripped))]
 unsafe fn forward_window_wheel(hwnd: HWND, wparam: usize, lparam: isize) {
     use crate::core::Point;
     use winapi::um::winuser::{ScreenToClient, GET_WHEEL_DELTA_WPARAM, WHEEL_DELTA};
@@ -809,7 +838,7 @@ unsafe fn forward_window_wheel(hwnd: HWND, wparam: usize, lparam: isize) {
 /// decides whether a character means anything to it. That is the same contract the Linux
 /// backend's key handler follows, and it keeps this backend from carrying a list of "text
 /// kinds" that would drift from the widget set.
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", widgets_unstripped))]
 unsafe fn forward_window_char(hwnd: HWND, window_id: u64, character: u32) {
     // Control characters (backspace 0x08, tab 0x09, escape 0x1B, the C0 range generally)
     // are *commands*, not text, and `WM_KEYDOWN` already delivered them as key presses.
@@ -847,7 +876,7 @@ unsafe fn forward_window_char(hwnd: HWND, window_id: u64, character: u32) {
 /// so a failure can say *which* hop failed: an unknown handle and a known handle with no
 /// widget behind it are different faults, and collapsing them into one `None` is how a
 /// missing association goes unnoticed.
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", widgets_unstripped))]
 unsafe fn paint_target_for(hwnd: HWND) -> Option<u64> {
     let Some(host) = widget_id_by_native_handle(hwnd) else {
         log::error!("[windows] WM_PAINT for hwnd {hwnd:?}, which has no platform id bound to it");

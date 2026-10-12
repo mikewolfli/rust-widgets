@@ -1375,6 +1375,9 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::Icon => match property_name {
             "icon_name" => CapabilityValue::String(String::new()),
+            // A control starts with no typed source, so the default is `Null` — the same "no icon
+            // set" answer the other `icon_source` owners publish.
+            "icon_source" => CapabilityValue::Null,
             "size" => CapabilityValue::Float(24.0),
             // An icon with no explicit colour follows the theme, so the schema
             // default is the empty string rather than a colour literal: "unset" is

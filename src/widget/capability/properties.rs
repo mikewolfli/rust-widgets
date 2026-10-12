@@ -2323,7 +2323,6 @@ pub(crate) fn bar_chart_capability() -> WidgetCapability {
 }
 
 #[cfg(not(alloc_frugal))]
-#[cfg(not(alloc_frugal))]
 pub(crate) fn candlestick_chart_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::CandlestickChart,

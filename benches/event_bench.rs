@@ -1,5 +1,4 @@
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(target_arch = "wasm32"))]
 use criterion::{criterion_group, criterion_main, Criterion};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -33,9 +32,7 @@ fn bench_event_queue_post_and_dequeue_10k(c: &mut Criterion) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(target_arch = "wasm32"))]
 criterion_group!(benches, bench_event_queue_post_and_dequeue_10k);
-#[cfg(not(target_arch = "wasm32"))]
 #[cfg(not(target_arch = "wasm32"))]
 criterion_main!(benches);
 

@@ -37,10 +37,19 @@ ERRORS=0
 #     View, so the in-process menu tree plus its injectable trigger queue is a host
 #     capability. See the module docs in each backend for the full reasoning.
 #   * `create_native_platform` / `create_event_loop_pump` / `create_web_engine` /
-#     `create_ui_window` / `create_ns_window` / `create_widget` / `create_child_widget`
+#     `create_ui_window` / `create_ns_window` / `create_toplevel` / `create_widget` /
+#     `create_child_widget`
 #     — host-level constructors of the backend, its loop, its engine and its state
 #     rows, not per-kind controls.
-ALLOWED='^(create_window|create_menu|create_menu_bar|create_native_platform|create_event_loop_pump|create_web_engine|create_ui_window|create_ns_window|create_widget|create_child_widget|create_with_list_data)$'
+#
+#     `create_toplevel` is the Wayland spelling of the window constructor the other two
+#     name: it builds one `xdg_toplevel` (Wayland's window role) on the session the
+#     backend owns, and it is a private inherent helper of
+#     `src/platform/wayland/platform_impl.rs`, not a `Platform` trait method. It was
+#     simply missing from this list, so the gate reported the *window* constructor as a
+#     per-kind control — a stale allowlist rather than a violation. The distinction the
+#     rule is about is unchanged: no backend may construct a per-kind **control**.
+ALLOWED='^(create_window|create_menu|create_menu_bar|create_native_platform|create_event_loop_pump|create_web_engine|create_ui_window|create_ns_window|create_toplevel|create_widget|create_child_widget|create_with_list_data)$'
 
 echo "=== [1] Backends must not override per-kind control constructors ==="
 

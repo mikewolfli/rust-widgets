@@ -8,6 +8,13 @@
 //! The property under test is that per-frame cost does not grow with the
 //! document, so the tests count how many lines each path touches.
 
+// The module-level gate, so tooling that scans file text recognises this as a test module.
+// The parent declares `mod tests;` under `#[cfg(test)]`, which the compiler sees but a text scan
+// of this file does not — and a scan that cannot tell a test module from production code reports
+// its `Mutex` as widget state (`tools/check_locking.sh`). Same line as
+// `special_widgets/toast/tests.rs`, which records the reasoning in full.
+#![cfg(test)]
+
 use super::editor::{CodeEditor, MAX_MINIMAP_ROWS};
 use super::syntax::{LanguageId, LineState, SyntaxHighlighter};
 use super::types::{

@@ -17,10 +17,23 @@
 # returns produced `c_void_p` addresses. The gate reported full coverage
 # throughout, because it only ever read the source.
 #
-# The library is built here when it is missing, so the check is runnable from a
-# clean tree; when the build itself fails the runtime half is reported as FAILED
-# rather than skipped, since a binding that cannot load its library is the
-# defect this half exists to catch.
+# The library is built here unconditionally, so the runtime half measures the
+# *current* source rather than whatever the last `cargo build` happened to leave
+# behind. The previous form built only when the file was **missing**, which was
+# wrong in both directions and both were observed:
+#
+#   * a **false failure**: an artifact built before the `RW_VALUE_ICON_SPEC`
+#     round trip existed made the `icon_source` check report "the property does
+#     not accept that value kind" against source that had supported it for
+#     hours, and reading the gate's output alone could not tell that apart from
+#     a real regression;
+#   * a **false pass**: a source-level regression made after the artifact was
+#     built is invisible, which is the more dangerous half.
+#
+# Cargo decides what to rebuild, so an unconditional build costs nothing when
+# the sources are unchanged. A build failure is reported as FAILED rather than
+# skipped, since a binding that cannot load its library is the defect this half
+# exists to catch.
 # ============================================================================
 
 set -euo pipefail
@@ -44,13 +57,24 @@ if [[ ! -f "$LIB_PATH" ]]; then
   LIB_PATH="target/debug/librust_widgets.dylib"
 fi
 
+echo ""
+echo "[runtime] building the shared library so the check measures the current source"
+rw_run_bounded 900 cargo build --lib --no-default-features --features desktop >/dev/null 2>&1 || {
+  echo "❌ runtime half: could not build the shared library" >&2
+  exit 1
+}
+
+# Re-resolve the path **after** the build: on a clean tree the file did not exist when the
+# block above ran, so a path chosen before it could be the empty string.
 if [[ ! -f "$LIB_PATH" ]]; then
-  echo ""
-  echo "[runtime] building the shared library for the binding smoke test"
-  rw_run_bounded 900 cargo build --lib --no-default-features --features desktop >/dev/null 2>&1 || {
-    echo "❌ runtime half: could not build the shared library" >&2
-    exit 1
-  }
+  LIB_PATH="target/debug/librust_widgets.so"
+fi
+if [[ ! -f "$LIB_PATH" ]]; then
+  LIB_PATH="target/debug/librust_widgets.dylib"
+fi
+if [[ ! -f "$LIB_PATH" ]]; then
+  echo "❌ runtime half: the build produced no shared library to load" >&2
+  exit 1
 fi
 
 echo ""
