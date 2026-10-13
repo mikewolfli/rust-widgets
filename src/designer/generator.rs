@@ -1942,7 +1942,7 @@ fn assemble(
             // Deliberately no `crate::view` / `crate::json` / factory import: their absence is the
             // point of this template, and an unused import would be a warning on the target, which
             // is how this template is verified (the DoD requires a real build).
-            source.push_str("use rust_widgets::view::Node;\nuse rust_widgets::widget::Widget;\n");
+            source.push_str("use rust_widgets::widget::Widget;\n");
         }
     }
 

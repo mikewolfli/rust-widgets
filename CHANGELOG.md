@@ -5,6 +5,127 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.8.6 (2026-10-13) — One icon contract, and a composite fill that finally respects a hole
+
+The icon system had every part a contract needs except the contract: a bundled token drew through
+one code path, a host-registered name through a second, a file icon through a third, and a per-item
+icon in a collection through four more — each with its own idea of what "fit the icon into this box"
+meant. Underneath, the software backend filled **one polygon per contour**, so every outlined icon
+that has a counter (`info`, `settings`, `mail`, `star`, …) was drawn as a solid disc: the inner ring
+was painted over instead of cut out, and had been for the whole 2.x line.
+
+This release unifies the content, the fill and the entries, and keeps every old entry point working.
+
+### 1. A composite fill, so a counter is a hole
+
+`render::CompoundPath` packs several closed contours into one command, and
+`RenderContext::fill_path_non_zero` fills them with the **non-zero winding rule** — the same rule the
+glyph rasteriser already used, which is why the icon side had been the odd one out. The command is
+carried through the immediate software backend, the SVG backend (one `<path fill-rule="nonzero">`
+instead of N `<path>` elements) and the independent WGPU command set.
+
+Two consequences beyond correctness: an icon is now **one** render command instead of one per
+contour, and the fill reuses a bounded intersection buffer instead of allocating per scanline. The
+old `draw_path` keeps its per-polygon semantics for every existing caller.
+
+Evidence, not assertion: `tools/icon_census.txt` now measures the **painted pixels** and the number
+of opaque runs the middle scanline crosses (a ring crosses it twice or more; a solid disc once), and
+`tests/icon_census_test.rs` adds C5 (the four named ring tokens must not paint their interior) and
+C6, which checks every token's every pixel against an **independent crossing-number oracle** written
+in the test. Both were shown to go red against the old per-contour fill before going green.
+
+### 2. One content model, one shared measurement
+
+* `IconSource::{Builtin, StaticGeometry}` — a widget stores *resolved content*, so an icon it was
+  given directly does not need a name, a registry slot, or a file.
+* `IconRef` — the borrowed view used for one measure/paint, so nothing is cloned per frame.
+* `IconSpec::{Builtin, Resource}` — the persistable description, which unlike `IconSource` can cross
+  a document boundary. `IconResourceResolver` is the host seam that resolves a project resource id;
+  without one, a resource descriptor is refused rather than guessed at as a path.
+* `SharedIconPixels` — an `Arc`-shared, validated RGBA8 handle. Moving an owned image in takes its
+  buffer; cloning the handle clones a pointer. The image cache hands out the entry it already holds,
+  so an icon costs no decode and no copy.
+* `measure_icon` / `validate_icon` / `paint_icon` — the measurement, the size-independent validation
+  and the draw. All three read the same `glyph_box` fit rule (square, `contain`, centred), which is
+  what makes "the box I reserved" and "the glyph I drew" the same box; `IconPaintError` and
+  `IconPaintOutcome` keep an empty slot, an unsupported source and a backend refusal distinct.
+* `fit_image_into` is the one aspect-preserving rule for image content, shared with the legacy
+  `Image` icon slots so the two cannot disagree.
+
+The registry keeps its documented role: a 16-slot **legacy name adapter**, now with a detailed
+`try_register_icon` refusal (`IconRegistrationError`) beside the `bool` wrapper. A directly supplied
+geometry does not occupy a slot — asserted with every slot full.
+
+### 3. The entries adopt it, keyed by real identity
+
+`Button`, `ToolButton`, `Action`, `MenuButton`, `FAB` and the standalone `Icon` publish a typed
+`icon_source` property beside their legacy one: the newest explicit set wins, a source with no
+document form is **refused** on read (never reported as "no icon", which a round-trip would then
+erase), and a resource descriptor is refused without a resolver.
+
+Collections address per-item icons by the identity their item type actually has, not by position:
+`Chip` by its host id, `DropdownMenu` by `DropdownItem::value`, `MenuButton` by `MenuItem::id`, and
+`PieMenu` by a new stable `PieMenuItem::id` (so an insert no longer re-points an icon at a different
+item). `Chip`, `DropdownMenu`, `MenuButton` and `PieMenu` also publish their items as **record rows**
+so a document can read every item's typed icon; those rows are read-only where a row cannot express a
+nested `submenu`/`children` or a recomputed pie angle — a write is refused with a named reason rather
+than silently dropping a subtree.
+
+### 4. Profile and platform boundaries are declared, then checked
+
+* `icons` is still opt-in, and the opt-in gate now covers `embedded,icons` — a combination that did
+  not compile, because the bundled outline table arrives with `icons` while the runtime registry
+  belongs to the unstripped widget set and one `cfg` had been serving both.
+* The Windows and macOS platform backends now compile on the **stripped** device profiles: their
+  modules had been authorized correctly while their callers still referenced widget-tree symbols
+  (`widget::runtime`, `super::canvas`, the AppKit input delegates). `tools/check_profiles.sh` can also
+  run the Windows target off Windows now, by arming `cc-rs` from an `xwin` SDK splat — the step had
+  been silently skipping, which is how hundreds of lines of Windows backend code went unbuilt.
+* `native_menu_item_icons_supported()` answers whether the platform's **native** menu bar can present
+  an icon, and `WindowHandle::new_menu_item_with_icon` consults it: an unsupported presentation is
+  reported and the item keeps its text, instead of the icon being dropped and the row looking exactly
+  like one whose icon failed to load. No desktop backend claims support yet — the OS image handle's
+  update, destroy, DPI and threading behaviour has to be verified first — and the query is what makes
+  that a statement rather than an omission. Window/installer icons keep the §13 file-path contract.
+
+### 5. The Node binding: loadable everywhere, and its icon contract is gated
+
+The binding was ported from `ffi-napi`/`ref-napi` to **koffi**, which ships prebuilt binaries: Node 16,
+18, 20, 22 and 24 each pass the probe (17 checks) with no compiler involved, where the old dependency
+could only be built against Node 16. The port came with four real binding defects fixed — a `BigInt`
+argument the old ffi layer rejected, widget ids collapsing through `Number()`, a freed out-slot pointer
+that aborted the *next* call, and a second `ref-napi` copy that core-dumped the process.
+
+Two host-assumption defects were also fixed: the gate and the loader both hardcoded `librust_widgets.so`,
+which never exists on macOS (cargo writes `.dylib`), so the gate rebuilt the library every run and then
+failed to load it, and a macOS consumer could not load a locally built library at all.
+
+### 6. Verification, and what it costs
+
+New or extended gates: `tools/check_icon_entry_contract.sh` (every published owner must refuse a
+non-persistable source; every item setter must reach a draw; every collection is either a record
+channel or a **named** index-only exception; the token vocabulary is closed; the inventory in
+`tools/icon_entry_inventory.txt` is regenerated and diffed), `tools/check_node_icon_contract.sh`,
+and `tests/icon_allocations.rs`, which now reads a recorded U0 baseline
+(`tools/icon_allocations_baseline.txt`, 22–279 allocations per draw before this work) and asserts
+the current steady state of **zero** allocations per draw across whole frames. The SVG snapshots and
+the census were regenerated, and the gate cache no longer hashes a 1 GB download cache it never read
+(one gate step's key cost measured 8.6 s → 0.13 s).
+
+### Source-compatibility notes
+
+* `CapabilityValue` and `PropertyValueKind` gain an `IconSpec` variant, so a downstream `match` on
+  either enum needs an arm. Same for `IconRegistrationError`, `IconPaintError`, `IconPaintOutcome`
+  and `IconLoadOutcome` (all newly public).
+* `IconItemError` is `Clone` rather than `Copy`, because it now carries string identities
+  (`UnknownItemId` / `DuplicateItemId`) alongside the numeric ones.
+* A submenu row no longer draws its shortcut: the trailing column is shared with the arrow, and
+  nothing enforced "at most one of them" — an entry given both drew them on top of each other. The
+  arrow wins (`Menu::row_shows_shortcut`), because hiding the arrow makes the subtree unreachable.
+* Every legacy entry point keeps its signature and behaviour: `set_icon(&str)`, `set_icon(Image)`,
+  `register_icon`, the text `icon_text` fields, and the emoji/symbol fallback in the navigation
+  collections are unchanged.
+
 ## 2.8.5 (2026-10-12) — The designer contract: a schema that says what the parser does, and an identity map that admits when it cannot
 
 Backward compatible for every public signature: this release only *adds* public items (a layout
