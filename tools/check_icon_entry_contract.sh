@@ -150,6 +150,20 @@ if [ -f "$tokens_file" ]; then
   if [ "$unknown" -eq 0 ]; then
     ok "every declared token parses through IconName::from_name ($declared tokens)"
   fi
+
+  # The count is documented in prose, and prose drifts: the two READMEs and the cookbook all said 68
+  # while `tools/icon_tokens.txt` held 69, and nothing noticed until the READMEs were rewritten. The
+  # sibling gate for the widget-kind count states the rule — a documented number needs a check tied to
+  # the single source of truth — so the same assertion is made here against `icon_tokens.txt`.
+  #
+  # The scanner is its own file for the same reason `text_coverage_claim_scan.py` is: a heredoc holding
+  # regexes inside `$( )` is a quoting trap (the first attempt broke `bash -n`), and a gate that cannot
+  # be parsed cannot fail.
+  . "$ROOT_DIR/tools/lib_python.sh"
+  if ! doc_errors="$("$PYTHON" tools/icon_count_claim_scan.py "$declared" 2>&1)"; then
+    printf '%s\n' "$doc_errors" >&2
+    bad "a document states an icon count that disagrees with $tokens_file"
+  fi
 else
   bad "$tokens_file is missing; the closed-vocabulary check cannot run"
 fi

@@ -95,11 +95,23 @@ for lang in ("en", "zh-CN", "zh-TW"):
 # pattern's first group is the number. `\s` matches newlines, so a wrapped claim
 # ("All 179\n  widget kinds") is still caught. Only 3-digit numbers are matched.
 PATTERNS = [
-    re.compile(r"\b(\d{3})\s+(?:built-in\s+)?(?:widget\s+)?[Kk]inds\b"),
+    # `IGNORECASE` on this one because the prefix is written both ways in the tree — `181 kinds` and
+    # `180 Widget Kinds` — and the lowercase-only form silently skipped the cookbook heading.
+    re.compile(r"\b(\d{3})\s+(?:built-in\s+)?(?:widget\s+)?[Kk]inds\b", re.IGNORECASE),
     re.compile(r"\b(\d{3})\s+(?:WidgetKind\s+)?[Vv]ariants\b"),
     re.compile(r"\b(\d{3})\s*[種种]"),                       # 179 种控件 / 179 種
     re.compile(r"\b(\d{3})\s*(?:個|个)?\s*[變变][體体]"),      # 179 變體 / 179 变体
     re.compile(r"\b(\d{3})\s*[（(]\s*(?:full|完整)\s*[)）]"),  # 179 (full) / 179（完整）
+    # `controls` / `控件` spellings, and the badge URL, were NOT matched by the set above, so
+    # `## What "180 controls" covers`, `「180 个控件」覆盖什么` and the `controls-180-blue` badge all
+    # sat at a stale 180 while 22 other documents said 181. The gate was passing — it simply was not
+    # looking at the spelling these files actually use, which is the failure mode its own header
+    # comment describes ("a gate whose pattern is narrower than the vocabulary drifts"). These rows
+    # are the vocabulary in use; add a new spelling here rather than assuming the set is complete.
+    re.compile(r"\b(\d{3})\s+controls?\b"),                   # 181 controls
+    re.compile(r"\b(\d{3})\s*(?:個|个)\s*控件"),                # 181 个控件 / 181 個控件
+    re.compile(r"controls-(\d{3})-"),                         # badges/controls-181-blue
+    re.compile(r"\b(\d{3})\s+in a device profile\b"),         # "(181 in a device profile)"
 ]
 
 scanned = 0

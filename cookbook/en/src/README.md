@@ -59,7 +59,7 @@ fn main() {
 
 ## Key Features
 
-### Rich Widget Library — 180 Widget Kinds
+### Rich Widget Library — 181 Widget Kinds
 
 181 built-in widget kinds span every common UI need, and **all of them are
 self-drawn and therefore available on every platform**:
