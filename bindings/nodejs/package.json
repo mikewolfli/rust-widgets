@@ -20,11 +20,9 @@
     "url": "git+https://github.com/mikewolfli/rust-widgets.git"
   },
   "engines": {
-    "node": ">=14.0.0"
+    "node": ">=16"
   },
   "dependencies": {
-    "ffi-napi": "^4.0.3",
-    "ref-napi": "^3.0.3",
-    "ref-struct-napi": "^1.1.0"
+    "koffi": "^3.3.3"
   }
 }

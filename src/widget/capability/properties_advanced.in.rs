@@ -96,6 +96,15 @@ macro_rules! impl_properties_advanced {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const PIE_MENU_PROPERTIES: &[PropertySchema] = &[
+            // The rows are published so a document can read each item's identity and typed icon; the
+            // write side is refused because a row cannot express the recomputed slice angles or
+            // guarantee a unique id (see `PIE_MENU_ITEM_SCHEMA`).
+            PropertySchema::records(
+                "items",
+                true,
+                false,
+                &crate::widget::advanced_widgets::pie_menu::PIE_MENU_ITEM_SCHEMA,
+            ),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("radius", PropertyValueKind::Float, true, true),
             PropertySchema::new("inner_radius", PropertyValueKind::Float, true, true),

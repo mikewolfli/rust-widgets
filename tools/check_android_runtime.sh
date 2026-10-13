@@ -42,6 +42,8 @@
 #   ANDROID_AVD        AVD to boot (default: the first installed one, else created)
 #   ANDROID_SERIAL     attached device; skips emulator boot entirely
 #
+# rw-gate-budget: 2400
+#
 # Usage: tools/check_android_runtime.sh
 set -euo pipefail
 
@@ -68,7 +70,10 @@ if [[ ! -x "$SDK_ROOT/emulator/emulator" && -z "${ANDROID_SERIAL:-}" ]]; then
 fi
 
 # A boot plus an install plus a launch is the long pole; bound it so a wedged emulator reports a
-# timeout instead of hanging the whole run.
+# timeout instead of hanging the whole run. The runner honours this number because it is declared in
+# the `rw-gate-budget` line above `set`: while the runner's own floor (900 s) was the smaller of the
+# two, its bound fired first and this budget never applied — the run then reported `TIMEOUT` with no
+# probe output instead of this gate's verdict.
 ANDROID_PROBE_TIMEOUT=2400
 
 # If no device is attached, pick an installed AVD rather than letting the runner invent a name and

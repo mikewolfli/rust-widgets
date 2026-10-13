@@ -19,6 +19,10 @@
 #       static geometry?" and the answer is an error, never `Null` — because `Null` reads as "this
 #       control has no icon" and a document round-trip would then erase the icon. The first version
 #       of `Icon`'s property and the chip item channel both got this wrong; see the log's §19.13 I13.
+#       The pattern is anchored so that only the *getter's own* refusal satisfies it: a `mod tests`
+#       mention (`assert_eq!(control.get("icon_source"), Err(...))`) is not a `get` implementation,
+#       and matching it would let A1 stay green with the production arm deleted — measured, see
+#       tools/gates_reverse_injection.md.
 #
 #   A2  A collection with `set_item_icon_source` must **draw** what it stores.
 #       A typed setter with no draw call is a dead state: it accepts a value, reports success, and
@@ -49,7 +53,7 @@ note() { printf '  %s\n' "$*"; }
 ok() { printf '  ✅ %s\n' "$*"; }
 bad() { printf '  ❌ %s\n' "$*" >&2; failures=$((failures + 1)); }
 
-echo "[1/4] A1 every published icon_source owner refuses a non-persistable source"
+echo "[1/5] A1 every published icon_source owner refuses a non-persistable source"
 
 # The three property tables that declare `icon_source`, and the control source that must implement
 # the refusal for each. Pairing by file is the check: a declared property with no refusal in the
@@ -69,14 +73,14 @@ for pair in "${a1_pairs[@]}"; do
     bad "$table no longer declares icon_source (update this gate's pairing)"
     continue
   fi
-  if grep -q 'IconSourceNotPersistable' "$control"; then
-    ok "$(basename "$control") refuses a borrowed source"
+  if grep -qE '^[[:space:]]*(return[[:space:]]+)?Err\(CapabilityAccessError::IconSourceNotPersistable\)' "$control"; then
+    ok "$(basename "$control") refuses a borrowed source in its getter"
   else
-    bad "$(basename "$control") publishes icon_source but never returns IconSourceNotPersistable"
+    bad "$(basename "$control") publishes icon_source but its getter never returns IconSourceNotPersistable"
   fi
 done
 
-echo "[2/4] A2 every set_item_icon_source collection reaches a draw call"
+echo "[2/5] A2 every set_item_icon_source collection reaches a draw call"
 while IFS= read -r file; do
   if grep -qE 'paint_icon\(|draw_image\(' "$file"; then
     ok "$(basename "$file") draws what it stores"
@@ -85,14 +89,18 @@ while IFS= read -r file; do
   fi
 done < <(grep -rl 'fn set_item_icon_source' --include=*.rs src/widget | sort)
 
-echo "[3/4] A3 every set_item_icon_source collection is either a record channel or a named exception"
+echo "[3/5] A3 every set_item_icon_source collection is either a record channel or a named exception"
 
 # The item-level record channel: a collection that publishes its rows through `items` and carries
 # `icon_source` as a row field. `chip` is the implementation; others are added as they grow one.
 record_channel() { grep -q 'RecordField::optional(' "$1" && grep -q '"icon_source"' "$1"; }
 
-# Collections that keep only a positional identity, with the reason. bLUE27 §19.6 allows this; what
+# Collections that keep only a positional identity, with the reason. blue27 §19.6 allows this; what
 # it forbids is inventing an identity to make a record channel possible.
+#
+# `pie_menu` left this list on 2026-10-13: its items gained a stable id (the menu assigns one, a host
+# may pin one) and an item-owned typed icon, so it publishes a record channel above instead of being
+# exempted here.
 index_only() {
   case "$1" in
     *mdiarea.rs)
@@ -100,8 +108,6 @@ index_only() {
     *tabwidget.rs|*tab_bar.rs)
       echo "tabs are addressed by position; the collection has no stable id to key a row on";;
     *toolbox.rs)
-      echo "items hold private fields and no id; a row would have to invent one";;
-    *pie_menu.rs)
       echo "items hold private fields and no id; a row would have to invent one";;
     *bottom_navigation_bar.rs|*navigation_drawer.rs|*core.rs)
       echo "nav items are position/keyed by their own model; no item id is published";;
@@ -123,7 +129,7 @@ for file in $(grep -rl 'fn set_item_icon_source' --include=*.rs src/widget | sor
   fi
 done
 
-echo "[4/4] A4 the typed token vocabulary is closed"
+echo "[4/5] A4 the typed token vocabulary is closed"
 # The list's format is `token | RustVariant | doc string` with `#` section comments (see its own
 # header), so the token is the first `|`-separated field of a non-comment line — not the whole line.
 tokens_file="tools/icon_tokens.txt"
@@ -146,6 +152,22 @@ if [ -f "$tokens_file" ]; then
   fi
 else
   bad "$tokens_file is missing; the closed-vocabulary check cannot run"
+fi
+
+echo "[5/5] A5 the committed inventory matches the source it was generated from"
+
+# U0 asked for an *exported* inventory, and the plan's own note records why an assertion list is not
+# one: it can only speak about the entries somebody thought to assert about. The artifact is
+# generated from the source, so the check is a regeneration and a diff — an entry that appears or
+# disappears changes the file, and the gate says so instead of passing quietly.
+. "$ROOT_DIR/tools/lib_python.sh"
+INVENTORY="tools/icon_entry_inventory.txt"
+if [ ! -f "$INVENTORY" ]; then
+  bad "$INVENTORY is missing; regenerate with tools/gen_icon_entry_inventory.py"
+elif "$PYTHON" tools/gen_icon_entry_inventory.py --check --output "$INVENTORY" >/dev/null 2>&1; then
+  ok "$INVENTORY matches the source ($(grep -v '^#' "$INVENTORY" | grep -c ' | ') entries)"
+else
+  bad "$INVENTORY is stale; regenerate with tools/gen_icon_entry_inventory.py"
 fi
 
 if [ "$failures" -ne 0 ]; then

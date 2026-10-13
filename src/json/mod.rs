@@ -139,6 +139,13 @@ pub use loader::bind_event_binding;
 pub use loader::{is_loader_owned_key, load_layout_from_str, JsonLoader};
 pub use project::{JsonProject, ProjectNode, MAX_DEPTH as PROJECT_MAX_DEPTH};
 pub use properties::is_widget_property;
+/// The record writer, the inverse of the loader's record reader.
+///
+/// Public because the round trip has to be usable by whoever reads a control's rows: a designer that
+/// displays a control's `items` and saves the document back must be able to write the value it read
+/// (§19.10's "content read and write"). Both directions are decided in one module so they cannot
+/// disagree about a row's document shape.
+pub use properties::records_to_json;
 /// The crate's single JSON→`CapabilityValue` reading, for the generator's schema pre-check.
 ///
 /// Re-exported rather than duplicated: the loader's write and the generator's pre-check must agree

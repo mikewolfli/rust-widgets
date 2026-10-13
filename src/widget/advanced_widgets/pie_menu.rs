@@ -22,11 +22,87 @@ use crate::widget::metrics::{dimensions, effective_font};
 use crate::widget::{BaseWidget, Draw, IconItemError, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+/// The record form of the `items` property: one row per pie item.
+///
+/// # Why the row is read-only
+///
+/// `PieMenuItem` is crate-constructed and carries slice angles the menu recomputes, plus an id the
+/// menu must keep unique. A writable row would have to invent angles and could collide two items on
+/// one id — the silent-loss shape blue27 §19.6 forbids. The rows publish what a document can hold
+/// faithfully (identity, label, text icon, typed icon, enabled) and a write is refused with the
+/// standard read-only error; behaviour changes through the control's own API
+/// (`add_item_with_id` / `set_item_icon_source`).
+pub const PIE_MENU_ITEM_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "id",
+                crate::widget::capability::PropertyValueKind::UInt,
+            ),
+            crate::widget::capability::RecordField::required(
+                "text",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "icon",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "icon_source",
+                crate::widget::capability::PropertyValueKind::IconSpec,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "enabled",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+        ],
+        id_field: "id",
+        ids_unique: true,
+        ids_required: true,
+    };
+
+/// One row of [`PIE_MENU_ITEM_SCHEMA`]; refuses a source with no document form.
+fn pie_menu_item_record(
+    item: &PieMenuItem,
+) -> Result<crate::widget::capability::RecordValue, CapabilityAccessError> {
+    let mut record = crate::widget::capability::RecordValue::new()
+        .with("id", CapabilityValue::UInt(item.id()))
+        .with("text", CapabilityValue::String(item.text().to_string()))
+        .with("icon", CapabilityValue::String(item.icon_text().to_string()))
+        .with("enabled", CapabilityValue::Bool(item.is_enabled()));
+    match item.icon_source() {
+        // No typed override: the field is omitted, which is how a document says "no typed icon"
+        // (the item's text icon travels in its own field).
+        None => {}
+        Some(IconSource::Builtin(name)) => {
+            record = record.with(
+                "icon_source",
+                CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(name)),
+            );
+        }
+        // A borrowed static geometry has no document form, so the read refuses rather than
+        // reporting the row as icon-less — the rule the control-level `icon_source` owners follow.
+        Some(IconSource::StaticGeometry(_)) => {
+            return Err(CapabilityAccessError::IconSourceNotPersistable)
+        }
+    }
+    Ok(record)
+}
+
 /// A single item in a `PieMenu`.
 #[derive(Debug, Clone)]
 pub struct PieMenuItem {
+    /// Stable identity within the menu, unique among its items.
+    ///
+    /// The menu assigns one to every item it is asked to append without an explicit id, and a host
+    /// may pin one instead (a document's identity for the row). It is what a typed icon is addressed
+    /// by, so an assignment cannot land on a different item after an insertion or removal — the
+    /// failure a position-keyed side table allows (blue27 §19.6).
+    id: u64,
     text: String,
     icon_text: String,
+    /// Typed icon owned by the item, so structural edits carry it along instead of shifting it.
+    icon_source: Option<IconSource>,
     enabled: bool,
     angle_start: f32,
     angle_end: f32,
@@ -39,14 +115,38 @@ impl PieMenuItem {
     /// The angles are placeholders until the item is inserted into a
     /// [`PieMenu`], which recomputes them to divide the circle evenly among all
     /// items.
+    ///
+    /// The item carries no identity yet — the menu assigns one when it appends the item, so
+    /// [`PieMenuItem::id`] is only meaningful afterwards. Use [`PieMenu::add_item_with_id`] when
+    /// the id has to be the caller's own (a document's identity for the row).
     pub fn new(text: impl Into<String>) -> Self {
         Self {
+            id: 0,
             text: text.into(),
             icon_text: String::new(),
+            icon_source: None,
             enabled: true,
             angle_start: 0.0,
             angle_end: 0.0,
         }
+    }
+
+    /// The item's stable identity within its menu.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// The typed icon assigned to this item, if any.
+    pub fn icon_source(&self) -> Option<IconSource> {
+        self.icon_source
+    }
+
+    /// Assigns the item's typed icon.
+    ///
+    /// [`PieMenu::set_item_icon_source`] is the collection-level entry point and refuses an
+    /// unknown id; this is the same assignment without the lookup.
+    pub fn set_icon_source(&mut self, source: Option<IconSource>) {
+        self.icon_source = source;
     }
 
     /// Returns the item's label.
@@ -120,7 +220,11 @@ impl PieMenuItem {
 pub struct PieMenu {
     base: BaseWidget,
     items: Vec<PieMenuItem>,
-    item_icon_sources: Vec<Option<IconSource>>,
+    /// The next id an item appended without one receives.
+    ///
+    /// Ids are unique within the menu: appending without an id takes this one, and pinning a higher
+    /// id pushes this past it, so a host-chosen id can never be handed out twice.
+    next_id: u64,
     radius: f32,
     inner_radius: f32,
     hovered_index: Option<usize>,
@@ -183,7 +287,7 @@ impl PieMenu {
         Self {
             base: BaseWidget::new(WidgetKind::PieMenu, geometry, "PieMenu"),
             items: Vec::new(),
-            item_icon_sources: Vec::new(),
+            next_id: 1,
             radius,
             inner_radius,
             hovered_index: None,
@@ -228,42 +332,85 @@ impl PieMenu {
         }
     }
 
-    /// Adds a menu item and returns its index.
-    pub fn add_item(&mut self, text: impl Into<String>) -> usize {
+    /// Adds a menu item and returns the id the menu assigned it.
+    ///
+    /// The id is what [`PieMenu::set_item_icon_source`] addresses the item by, which is why it is
+    /// returned rather than the index: an index only names the item until the next insertion.
+    pub fn add_item(&mut self, text: impl Into<String>) -> u64 {
         self.add_item_with_icon(text, "")
     }
 
-    /// Adds an item with a text icon and returns its index.
+    /// Adds an item with a text icon and returns the id the menu assigned it.
     ///
     /// Angles are recomputed so all items share the circle equally, which means
     /// adding an item moves every existing slice.
-    pub fn add_item_with_icon(
-        &mut self,
-        text: impl Into<String>,
-        icon: impl Into<String>,
-    ) -> usize {
-        let idx = self.items.len();
+    pub fn add_item_with_icon(&mut self, text: impl Into<String>, icon: impl Into<String>) -> u64 {
         let mut item = PieMenuItem::new(text);
         item.set_icon_text(icon);
+        let id = self.take_next_id();
+        item.id = id;
         self.items.push(item);
-        self.item_icon_sources.push(None);
         self.recalculate_angles();
-        idx
+        id
     }
 
-    /// Assigns a typed icon source to an existing item index.
+    /// Adds an item whose id the caller chose — the identity a document carries.
+    ///
+    /// The id must not already exist. Ids the menu assigns from now on skip past a pinned one, so
+    /// the two sources cannot collide.
+    pub fn add_item_with_id(
+        &mut self,
+        id: u64,
+        text: impl Into<String>,
+    ) -> Result<u64, IconItemError> {
+        if self.items.iter().any(|item| item.id == id) {
+            // The numeric-identity variant: `DuplicateItemId` carries a text id (a chip's), and
+            // widening one payload to cover both kinds would make callers convert an id they
+            // already hold in the right type.
+            return Err(IconItemError::AmbiguousItemId { id });
+        }
+        let mut item = PieMenuItem::new(text);
+        item.id = id;
+        // Auto-assigned ids skip past a pinned one, so the two sources cannot collide.
+        self.next_id = self.next_id.max(id.saturating_add(1));
+        self.items.push(item);
+        self.recalculate_angles();
+        Ok(id)
+    }
+
+    /// The next id to hand out, and the counter moved past it.
+    fn take_next_id(&mut self) -> u64 {
+        let id = self.next_id;
+        self.next_id = self.next_id.saturating_add(1);
+        id
+    }
+
+    /// Assigns a typed icon source to the item with this id.
+    ///
+    /// Addressing by id rather than by position is what keeps an assignment attached to the item it
+    /// was made for: inserting or removing another item may move indices, but it cannot change
+    /// which item an id names (blue27 §19.6).
     pub fn set_item_icon_source(
         &mut self,
-        index: usize,
+        id: u64,
         source: Option<IconSource>,
     ) -> Result<(), IconItemError> {
-        let len = self.items.len();
-        let Some(slot) = self.item_icon_sources.get_mut(index) else {
-            return Err(IconItemError::IndexOutOfBounds { index, len });
+        let Some(item) = self.items.iter_mut().find(|item| item.id == id) else {
+            return Err(IconItemError::ItemNotFound { id });
         };
-        *slot = source;
+        item.set_icon_source(source);
         self.base.request_redraw();
         Ok(())
+    }
+
+    /// The typed icon assigned to the item with this id.
+    pub fn item_icon_source(&self, id: u64) -> Option<IconSource> {
+        self.items.iter().find(|item| item.id == id).and_then(PieMenuItem::icon_source)
+    }
+
+    /// The id of the item at `index`, or `None` when the index is out of range.
+    pub fn item_id(&self, index: usize) -> Option<u64> {
+        self.items.get(index).map(PieMenuItem::id)
     }
 
     /// Inserts an item at `index`, or appends when `index` is past the end.
@@ -273,8 +420,9 @@ impl PieMenu {
     /// different item than before.
     pub fn insert_item(&mut self, index: usize, text: impl Into<String>) {
         let idx = index.min(self.items.len());
-        self.items.insert(idx, PieMenuItem::new(text));
-        self.item_icon_sources.insert(idx, None);
+        let mut item = PieMenuItem::new(text);
+        item.id = self.take_next_id();
+        self.items.insert(idx, item);
         self.recalculate_angles();
     }
 
@@ -286,7 +434,6 @@ impl PieMenu {
     pub fn remove_item(&mut self, index: usize) {
         if index < self.items.len() {
             self.items.remove(index);
-            self.item_icon_sources.remove(index);
             self.recalculate_angles();
         }
     }
@@ -297,7 +444,6 @@ impl PieMenu {
     /// item.
     pub fn clear(&mut self) {
         self.items.clear();
-        self.item_icon_sources.clear();
         self.hovered_index = None;
     }
 
@@ -721,6 +867,15 @@ impl Widget for PieMenu {
 impl WidgetProperties for PieMenu {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            "items" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &PIE_MENU_ITEM_SCHEMA,
+                    self.items
+                        .iter()
+                        .map(pie_menu_item_record)
+                        .collect::<Result<Vec<_>, CapabilityAccessError>>()?,
+                )))
+            }
             "item_count" => Ok(CapabilityValue::UInt(self.item_count() as u64)),
             "radius" => Ok(CapabilityValue::Float(self.radius() as f64)),
             "inner_radius" => Ok(CapabilityValue::Float(self.inner_radius() as f64)),
@@ -745,12 +900,17 @@ impl WidgetProperties for PieMenu {
             }
             // Derived from the item vector, so there is nothing to assign.
             "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            // The rows carry identity and recomputed slice angles, so a write would have to invent
+            // both. Refused with the standard read-only error; the control's own API is the write
+            // path. See `PIE_MENU_ITEM_SCHEMA`.
+            "items" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
+            "items",
             "item_count",
             "radius",
             "inner_radius",
@@ -977,7 +1137,7 @@ impl Draw for PieMenu {
             } else {
                 self.text_color
             };
-            if let Some(source) = self.item_icon_sources.get(i).copied().flatten() {
+            if let Some(source) = item.icon_source() {
                 let icon_rect =
                     Rect::new((lx - 12.0).round() as i32, (ly - 12.0).round() as i32, 24, 24);
                 if let Err(error) =
@@ -1052,16 +1212,18 @@ mod tests {
     fn test_add_item() {
         let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
 
+        // Each append returns the id it assigned. Ids start at 1 because an item that arrives
+        // without one cannot be told from an item whose id *is* 0 (see `PieMenuItem::new`).
         let idx0 = menu.add_item("Cut");
-        assert_eq!(idx0, 0);
+        assert_eq!(idx0, 1);
         assert_eq!(menu.item_count(), 1);
 
         let idx1 = menu.add_item("Copy");
-        assert_eq!(idx1, 1);
+        assert_eq!(idx1, 2);
         assert_eq!(menu.item_count(), 2);
 
         let idx2 = menu.add_item_with_icon("Paste", "📋");
-        assert_eq!(idx2, 2);
+        assert_eq!(idx2, 3);
         assert_eq!(menu.item_count(), 3);
 
         // Verify items
@@ -1070,6 +1232,112 @@ mod tests {
         assert_eq!(items[1].text(), "Copy");
         assert_eq!(items[2].text(), "Paste");
         assert_eq!(items[2].icon_text(), "📋");
+    }
+
+    #[test]
+    /// The `items` row is the document channel: it carries the item's identity and its typed icon,
+    /// which is what lets a designer round-trip a per-item icon for this collection (blue27 §19.10,
+    /// and the U5 gap the exemption table recorded while these items had no identity).
+    fn the_items_record_carries_identity_and_the_typed_icon() {
+        use crate::widget::capability::{widget_property_get, CapabilityValue};
+
+        let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
+        let first = menu.add_item("Cut");
+        menu.add_item_with_icon("Copy", "📋");
+        menu.set_item_icon_source(first, Some(IconSource::Builtin(crate::widget::IconName::Save)))
+            .expect("the item exists");
+
+        let rows = widget_property_get(&menu, "items").expect("`items` is readable");
+        let CapabilityValue::Records(list) = rows else {
+            panic!("`items` must read as a record list, got {rows:?}");
+        };
+        assert_eq!(list.len(), 2, "one row per item");
+
+        let row = list.get(0).expect("the first item has a row");
+        assert_eq!(row.get("id"), Some(&CapabilityValue::UInt(first)), "the row carries the id");
+        assert_eq!(row.get("text"), Some(&CapabilityValue::String(String::from("Cut"))));
+        assert!(matches!(
+            row.get("icon_source"),
+            Some(CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(
+                crate::widget::IconName::Save
+            )))
+        ));
+        // The row's id is the same identity the setter takes, so a document's value addresses the
+        // item directly rather than by a position that an edit could move.
+        assert_eq!(
+            menu.item_icon_source(first),
+            Some(IconSource::Builtin(crate::widget::IconName::Save))
+        );
+
+        // A row for an item with no typed icon omits the field rather than reporting `null`, so
+        // "no icon" and "cleared" stay distinguishable.
+        let second = list.get(1).expect("the second item has a row");
+        assert_eq!(second.get("icon_source"), None);
+    }
+
+    /// A source with no document form refuses the read instead of dropping the icon.
+    #[test]
+    fn the_items_record_refuses_a_source_with_no_document_form() {
+        use crate::widget::capability::{widget_property_get, CapabilityAccessError};
+
+        static RING: crate::widget::IconData = crate::widget::IconData {
+            name: "row-ring",
+            grid: 24,
+            paths: &["M2-2H22V-22H2Z M7-7V-17H17V-7Z"],
+        };
+
+        let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
+        let id = menu.add_item("Ring");
+        menu.set_item_icon_source(id, Some(IconSource::static_geometry(&RING)))
+            .expect("the item exists");
+        assert_eq!(
+            widget_property_get(&menu, "items"),
+            Err(CapabilityAccessError::IconSourceNotPersistable),
+            "a runtime-only source must refuse the row, not vanish from it"
+        );
+    }
+
+    /// The row list is read-only: writing it would have to invent slice angles and could collide
+    /// two items on one id.
+    #[test]
+    fn the_items_record_is_read_only() {
+        use crate::widget::capability::{
+            widget_property_get, widget_property_set, CapabilityAccessError,
+        };
+
+        let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
+        menu.add_item("Cut");
+        let rows = widget_property_get(&menu, "items").expect("`items` is readable");
+        assert_eq!(
+            widget_property_set(&mut menu, "items", rows),
+            Err(CapabilityAccessError::ReadOnlyProperty)
+        );
+        assert_eq!(menu.item_count(), 1, "a refused write changes nothing");
+    }
+
+    /// The row survives the JSON round trip the designer performs: rows -> document -> rows.
+    #[test]
+    fn the_items_row_round_trips_through_the_document_form() {
+        use crate::widget::capability::{widget_property_get, CapabilityValue};
+
+        let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
+        let id = menu.add_item_with_id(7, "Save").expect("a fresh id is accepted");
+        menu.set_item_icon_source(id, Some(IconSource::Builtin(crate::widget::IconName::Save)))
+            .expect("the item exists");
+
+        let rows = widget_property_get(&menu, "items").expect("`items` is readable");
+        let json = crate::json::records_to_json(&rows).expect("the rows have a document form");
+        let text = serde_json::to_string(&json).expect("a record array serialises");
+        assert!(
+            text.contains(r#""kind":"builtin""#) && text.contains(r#""name":"save""#),
+            "the typed icon must reach the document in its own form, got {text}"
+        );
+        assert!(text.contains(r#""id":7"#), "the identity must reach the document, got {text}");
+
+        // The same rows read back as the same rows: the document is a faithful carrier.
+        let again = crate::json::records_to_json(&rows).expect("still a document form");
+        assert_eq!(json, again);
+        assert!(matches!(rows, CapabilityValue::Records(_)));
     }
 
     #[test]
@@ -1082,20 +1350,48 @@ mod tests {
 
         let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
         menu.add_item("First");
-        menu.add_item("Second");
-        menu.set_item_icon_source(1, Some(IconSource::static_geometry(&RING)))
+        let second = menu.add_item("Second");
+        menu.set_item_icon_source(second, Some(IconSource::static_geometry(&RING)))
             .expect("existing item accepts typed source");
+
+        // The assignment follows the item it was made for, not the position it happened to occupy:
+        // inserting ahead of it moves the index, and the icon must move *with the item* rather than
+        // stay on the position (blue27 §19.6 — an index -> icon side table is what allows the
+        // icon to silently land on a different item).
         menu.insert_item(0, "Inserted");
         assert_eq!(
-            menu.set_item_icon_source(3, None),
-            Err(IconItemError::IndexOutOfBounds { index: 3, len: 3 })
+            menu.item_icon_source(second),
+            Some(IconSource::static_geometry(&RING)),
+            "the inserted item must not inherit the earlier assignment"
+        );
+        assert_eq!(menu.item_icon_source(1), None, "only the assigned item carries the icon");
+
+        assert_eq!(
+            menu.set_item_icon_source(99, None),
+            Err(IconItemError::ItemNotFound { id: 99 })
         );
         assert!(render_to_svg(&mut menu).starts_with("<svg"));
+
         menu.remove_item(0);
+        assert_eq!(
+            menu.item_icon_source(second),
+            Some(IconSource::static_geometry(&RING)),
+            "removing an earlier item must not move the icon to another item"
+        );
+
+        // A pinned id is what a document carries, and it must not be handed out twice.
+        assert_eq!(
+            menu.add_item_with_id(second, "Duplicate"),
+            Err(IconItemError::AmbiguousItemId { id: second })
+        );
+        let pinned = menu.add_item_with_id(42, "Pinned").expect("a fresh id is accepted");
+        assert_eq!(pinned, 42);
+        assert_eq!(menu.item_icon_source(42), None);
+
         menu.clear();
         assert_eq!(
-            menu.set_item_icon_source(0, None),
-            Err(IconItemError::IndexOutOfBounds { index: 0, len: 0 })
+            menu.set_item_icon_source(second, None),
+            Err(IconItemError::ItemNotFound { id: second })
         );
     }
 

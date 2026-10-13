@@ -92,7 +92,7 @@ gcc -o demo demo.c -Ltarget/release -lrw_ffi -lpthread -ldl
 ## 2. Python Bindings
 
 Python bindings use `ctypes` to load the shared library and wrap each C ABI
-function in Pythonic methods. The `RustWidgets` class exposes 89 methods covering
+function in Pythonic methods. The `RustWidgets` class exposes 137 methods covering
 widget creation, mutation, menu operations, and platform queries.
 
 ### Installation
@@ -160,7 +160,7 @@ while True:
 rw.quit()
 ```
 
-### Python API Surface (89 methods)
+### Python API Surface (137 methods)
 
 | Category | Methods |
 |----------|---------|
@@ -491,8 +491,12 @@ demo: RustWidgetsDemo.java
 
 ## 5. Node.js Bindings
 
-Node.js bindings use `ffi-napi` and `ref-napi` to load the native library
-and call C ABI functions directly from JavaScript.
+Node.js bindings load the native library with `koffi` and call C ABI functions directly from
+JavaScript. `koffi` ships prebuilt binaries, so `npm install` needs no compiler and works on any
+Node in the supported range (measured: 16.20.2, 18.20.8, 20.20.2, 22.23.3 and 24.15.0 each pass
+17/17 checks of the binding's own probe). The previous `ffi-napi`/`ref-napi` stack could not be
+compiled on Node 18+ at all — see `bindings/nodejs/README.md` ("Why koffi rather than the
+previous ffi-napi") for the measured reason.
 
 ### Package Configuration
 
@@ -503,8 +507,7 @@ and call C ABI functions directly from JavaScript.
   "description": "Node.js bindings for the rust-widgets GUI library",
   "main": "index.js",
   "dependencies": {
-    "ffi-napi": "^4.0.3",
-    "ref-napi": "^3.0.3"
+    "koffi": "^3.3.3"
   }
 }
 ```
@@ -512,13 +515,14 @@ and call C ABI functions directly from JavaScript.
 ### Singleton Pattern (index.js)
 
 ```javascript
-const ffi = require('ffi-napi');
-const ref = require('ref-napi');
+const koffi = require('koffi');
 
-// Type aliases
-const ObjectId = ref.types.uint64;
-const cstr = ref.types.CString;
-const voidPtr = ref.refType(ref.types.void);
+// Type aliases. `char *` is declared **opaque** on purpose: koffi would otherwise
+// convert it to a JS string, and the raw pointer is what `rw_free_string` needs —
+// a converted string cannot be freed, so every read would leak.
+const ObjectId = 'uint64';
+const rawString = koffi.opaque('rw_string');
+const charPtr = koffi.pointer(rawString);
 
 let _instance = null;
 
@@ -526,26 +530,34 @@ class RustWidgets {
     constructor(libPath) {
         if (_instance) return _instance;
 
-        this.lib = ffi.Library(libPath, {
-            rw_init: ['void', []],
-            rw_run: ['void', []],
-            rw_quit: ['void', []],
-            rw_create_window: [ObjectId, [cstr, 'int', 'int', 'uint', 'uint']],
-            rw_create_button: [ObjectId, [ObjectId, cstr, 'int', 'int', 'uint', 'uint']],
-            rw_free_string: ['void', [voidPtr]],
-            // ... all 102 functions ...
-        });
+        const dll = koffi.load(libPath);
+        // One entry per C function: `dll.func(name, returnType, [argTypes])`.
+        this.lib = {
+            rw_init: dll.func('rw_init', 'void', []),
+            rw_run: dll.func('rw_run', 'void', []),
+            rw_quit: dll.func('rw_quit', 'void', []),
+            rw_create_window: dll.func('rw_create_window', ObjectId,
+                ['str', 'int', 'int', 'uint', 'uint']),
+            rw_create_button: dll.func('rw_create_button', ObjectId,
+                [ObjectId, 'str', 'int', 'int', 'uint', 'uint']),
+            rw_free_string: dll.func('rw_free_string', 'void', [charPtr]),
+            // ... all 146 functions ...
+        };
 
         _instance = this;
     }
 
-    // Buffer to string conversion helper
+    // Read a C string, release it, return a JS string.
+    //
+    // A `uint64` arrives as a BigInt (exact — widget ids exceed 2^53, so a Number
+    // could not hold one) and a numeric argument must be a Number or a BigInt:
+    // koffi rejects the decimal String form that ffi-napi required.
     _readString(fn) {
-        const buf = fn();
-        if (!buf || buf.isNull()) return '';
+        const ptr = fn();
+        if (!ptr) return '';
         try {
-            const s = ref.readCString(buf, 0);
-            this.lib.rw_free_string(buf);
+            const s = koffi.decode(ptr, 'char', -1);
+            this.lib.rw_free_string(ptr);
             return s;
         } catch (e) {
             return '';
@@ -574,8 +586,7 @@ class RustWidgets {
     }
 
     backendName() {
-        const buf = this.lib.rw_backend_name();
-        return ref.readCString(buf, 0);
+        return this._readString(() => this.lib.rw_backend_name());
     }
 }
 

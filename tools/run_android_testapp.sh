@@ -165,7 +165,16 @@ if [[ -z "$TARGET_SERIAL" ]]; then
   fi
   nohup "$EMULATOR" -avd "$AVD" -no-window -no-audio -no-boot-anim \
     -gpu swiftshader_indirect -no-snapshot > /tmp/emu_${AVD}.log 2>&1 &
-  "$ADB" wait-for-device
+  # Bounded, because `adb wait-for-device` otherwise blocks forever when the emulator never comes up:
+  # that is what turned this probe into an unbounded wait whose only bound was the outer runner, which
+  # then reported "result unknown" instead of an answer. A device that never registers is a limitation
+  # of this host (no usable AVD/accel), not a defect in the code, so it reports `unsupported host`.
+  if ! timeout "${EMULATOR_READY_TIMEOUT:-180}" "$ADB" wait-for-device; then
+    echo "unsupported host (emulator $AVD did not register with adb within ${EMULATOR_READY_TIMEOUT:-180}s)" >&2
+    echo "  its log is /tmp/emu_${AVD}.log — a common cause is missing /dev/kvm acceleration" >&2
+    echo "  attach a booted device instead: ANDROID_SERIAL=<serial> bash $0" >&2
+    exit 2
+  fi
   TARGET_SERIAL="$("$ADB" get-serialno)"
   ADB_ARGS=(-s "$TARGET_SERIAL")
   IS_EMULATOR="yes"
@@ -173,14 +182,25 @@ fi
 
 if [[ "$IS_EMULATOR" == "yes" ]]; then
   echo -n "      waiting for boot"
+  BOOTED=""
   for _ in $(seq 1 90); do
     if [[ -n "$("$ADB" "${ADB_ARGS[@]}" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" ]]; then
       echo " done"
+      BOOTED="yes"
       break
     fi
     echo -n "."
     sleep 2
   done
+  # The loop used to fall through silently on exhaustion, so an unbooted device was diagnosed by
+  # whatever the install step failed with (or by an outer timeout). The failure is now stated where it
+  # is known, and it is a host limitation rather than a project defect.
+  if [[ -z "$BOOTED" ]]; then
+    echo "" >&2
+    echo "unsupported host ($TARGET_SERIAL never reported sys.boot_completed within 180s)" >&2
+    echo "  its log is /tmp/emu_${AVD:-$TARGET_SERIAL}.log" >&2
+    exit 2
+  fi
 else
   echo "      physical device; skipping boot wait"
 fi

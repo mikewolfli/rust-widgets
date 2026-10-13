@@ -1180,6 +1180,11 @@ pub fn default_widget_property_default_value(
 
         // ── Advanced widgets ────────────────────────────────
         WidgetKind::PieMenu => match property_name {
+            // An empty list of the declared schema, not `Null`: a dropped binding resets through the
+            // default, and `Null` is a value the property's own schema check refuses (B26.09).
+            "items" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::advanced_widgets::pie_menu::PIE_MENU_ITEM_SCHEMA,
+            )),
             "item_count" => CapabilityValue::UInt(0),
             "radius" => CapabilityValue::Float(100.0),
             "inner_radius" => CapabilityValue::Float(35.0),

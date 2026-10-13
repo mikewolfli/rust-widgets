@@ -62,7 +62,8 @@ function main() {
   // ── Create a window ──────────────────────────────────────────────
   console.log('\n  Creating window...');
   const windowId = rw.createWindow('Node.js Demo', 100, 100, 640, 480);
-  if (windowId === 0) {
+  // Ids are BigInts (they exceed `Number.MAX_SAFE_INTEGER`), so the "no widget" result is `0n`.
+  if (windowId === 0n) {
     console.error('  ❌ Failed to create window');
     rw.quit();
     process.exit(1);
@@ -164,7 +165,7 @@ function main() {
   // ── Poll for events (non-blocking, single pass) ──────────────────
   console.log('\n  Polling events (non-blocking)...');
   const triggeredId = rw.pollWidgetTriggered();
-  if (triggeredId !== 0) {
+  if (triggeredId !== 0n) {
     console.log('  Widget triggered (simple):', triggeredId);
   }
 
@@ -175,7 +176,7 @@ function main() {
   }
 
   const menuId = rw.pollMenuTriggered();
-  if (menuId !== 0) {
+  if (menuId !== 0n) {
     console.log('  Menu triggered:', menuId);
   }
 

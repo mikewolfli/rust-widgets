@@ -36,6 +36,8 @@
 
 use serde_json::Value;
 
+use crate::compat::String;
+
 use crate::widget::capability::{
     widget_property_names, widget_property_set, CapabilityValue, PropertyValueKind,
 };
@@ -351,6 +353,81 @@ fn declares_icon_spec_field(
     schema.fields.iter().any(|field| {
         field.name == name && field.kind == crate::widget::capability::PropertyValueKind::IconSpec
     })
+}
+
+/// Serialises a record list back into the JSON array a document carries (the inverse of
+/// [`records_from_json`]).
+///
+/// # Why the writer lives beside the reader
+///
+/// `records_from_json` is the only place that decides which field kinds a row may carry and which
+/// JSON shape each one takes. An independent writer would be a second copy of those two decisions,
+/// and the two would drift exactly as rule #101 describes — a row read back as
+/// `{"kind":"builtin","name":"info"}` must be a row this same module reads as an `IconSpec` again.
+/// One round-trip test therefore covers both directions at once.
+///
+/// # What it refuses
+///
+/// The kinds the reader refuses. A row field whose value has no document grammar (`Color`, `Rect`, a
+/// nested `Records` or `Tuple`) returns `None`, and so does a non-list value. Approximating one of
+/// them — stringifying it, say — would write a document that the reader reads back as a *different*
+/// value, so refusing is what keeps "what I read" and "what I write" the same statement.
+pub fn records_to_json(value: &CapabilityValue) -> Option<Value> {
+    let CapabilityValue::Records(list) = value else {
+        return None;
+    };
+    let mut items = crate::compat::Vec::new();
+    for record in list.items() {
+        let mut object = serde_json::Map::new();
+        for (name, field) in record.fields() {
+            object.insert(name.clone(), capability_value_to_json(field)?);
+        }
+        items.push(Value::Object(object));
+    }
+    Some(Value::Array(items))
+}
+
+/// The document form of one record field, or `None` when the field has none.
+fn capability_value_to_json(value: &CapabilityValue) -> Option<Value> {
+    match value {
+        CapabilityValue::Null => Some(Value::Null),
+        CapabilityValue::Bool(flag) => Some(Value::Bool(*flag)),
+        CapabilityValue::Int(number) => Some(Value::Number((*number).into())),
+        CapabilityValue::UInt(number) => Some(Value::Number((*number).into())),
+        // A float that is `NaN`/infinite has no JSON number either, so this reports "no document
+        // form" rather than writing a `null` that would read back as `CapabilityValue::Null`.
+        CapabilityValue::Float(number) => serde_json::Number::from_f64(*number).map(Value::Number),
+        CapabilityValue::String(text) => Some(Value::String(text.clone())),
+        CapabilityValue::IconSpec(spec) => Some(icon_spec_to_json(spec)),
+        // Every other kind is either not a field a row declares or has no document grammar; see the
+        // function's own note on why approximating one is worse than refusing it.
+        _ => None,
+    }
+}
+
+/// The document form of an icon descriptor — the shape [`icon_spec_from_json`] reads.
+fn icon_spec_to_json(spec: &crate::widget::icon_source::IconSpec) -> Value {
+    use crate::widget::icon_source::{IconColorMode, IconSpec};
+
+    let mut object = serde_json::Map::new();
+    match spec {
+        IconSpec::Builtin(name) => {
+            object.insert(String::from("kind"), Value::String(String::from("builtin")));
+            object.insert(String::from("name"), Value::String(String::from(name.as_str())));
+        }
+        IconSpec::Resource { id, color_mode } => {
+            object.insert(String::from("kind"), Value::String(String::from("resource")));
+            object.insert(String::from("id"), Value::String(id.clone()));
+            object.insert(
+                String::from("color_mode"),
+                Value::String(String::from(match color_mode {
+                    IconColorMode::Monochrome => "monochrome",
+                    IconColorMode::Original => "original",
+                })),
+            );
+        }
+    }
+    Value::Object(object)
 }
 
 /// Look up the full declared schema for a property from the factory registry.

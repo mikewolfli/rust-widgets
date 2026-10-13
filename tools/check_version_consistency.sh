@@ -35,7 +35,7 @@
 #     `Cargo.toml` — a tutorial's version, not this crate's;
 #   * `api-reference.md` says "Since 2.0.0 every control publishes its own property
 #     contract" — history, and the only way to describe when a behaviour changed;
-#   * `language-bindings.md` pins npm deps (`"ffi-napi": "^4.0.3"`), which are not
+#   * `language-bindings.md` pins npm deps (`"koffi": "^3.3.3"`), which are not
 #     this crate at all.
 #
 # A check that rejects those is a check that trains its reader to ignore it, and the

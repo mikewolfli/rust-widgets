@@ -1446,8 +1446,8 @@ mod tests {
                     "{name}: {box_name} collapsed to zero width, so nothing was asserted about it"
                 );
                 for (other_name, other) in &drawn[i + 1..] {
-                    let disjoint =
-                        box_.x + box_.width as i32 <= other.x || other.x + other.width as i32 <= box_.x;
+                    let disjoint = box_.x + box_.width as i32 <= other.x
+                        || other.x + other.width as i32 <= box_.x;
                     assert!(
                         disjoint,
                         "{name}: {box_name} {box_:?} overlaps {other_name} {other:?}; the drawn \

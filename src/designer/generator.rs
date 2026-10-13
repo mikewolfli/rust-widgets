@@ -196,6 +196,32 @@ pub struct GenerationReport {
     pub capacity_overflow: Vec<GenerationGap>,
     /// Names whose availability could not be settled under the running profile.
     pub cross_profile_caveats: Vec<GenerationGap>,
+    /// Every built-in icon token the generated source names, in first-reference order, once each.
+    ///
+    /// # Why the generator reports this instead of leaving it to a reader of the output
+    ///
+    /// §19.10's pipeline has a step between "resolve the descriptor" and "construct the target API":
+    /// report which content the output actually *reaches*, so the build can decide what to carry
+    /// before anything is compiled. A caller holding only the source text would have to re-parse the
+    /// program to answer the same question, and a trimming decision must not rest on a guess about
+    /// what the emitter wrote. The list is deduplicated because it answers "which tokens are
+    /// reachable", not "how many times is one written".
+    ///
+    /// # What it does not claim
+    ///
+    /// A token appearing here means the generated program *references* it — not that only that
+    /// token's payload is linked. The crate compiles its icon payload as one table per build, so
+    /// shrinking the table itself is a property of the `icons` feature rather than of a generated
+    /// file; this list is the reachable set a build would trim against, which is the part the
+    /// generator can answer truthfully.
+    pub icon_tokens: Vec<&'static str>,
+}
+
+/// Notes one built-in icon token as reachable, ignoring a repeat.
+fn note_icon_reference(report: &mut GenerationReport, token: &'static str) {
+    if !report.icon_tokens.contains(&token) {
+        report.icon_tokens.push(token);
+    }
 }
 
 impl GenerationReport {
@@ -210,14 +236,15 @@ impl GenerationReport {
     pub fn summary(&self) -> String {
         format!(
             "{} nodes, {} properties, {} wires, {} resolved at generation time, {} unsupported, \
-             {} over capacity, {} cross-profile caveats",
+             {} over capacity, {} cross-profile caveats, {} icon tokens reachable",
             self.nodes_emitted,
             self.properties_emitted,
             self.wires_emitted,
             self.resolved_at_generation.len(),
             self.unsupported.len(),
             self.capacity_overflow.len(),
-            self.cross_profile_caveats.len()
+            self.cross_profile_caveats.len(),
+            self.icon_tokens.len()
         )
     }
 }
@@ -759,7 +786,7 @@ fn emit_node(
         }
         let row_schema =
             schema.record_schema.expect("a `Records` schema declares its record shape");
-        let Some(expr) = record_list_expr(&value, row_schema) else {
+        let Some(expr) = record_list_expr(&value, row_schema, &mut report.icon_tokens) else {
             report.unsupported.push(GenerationGap {
                 path: path.to_vec(),
                 widget: node.widget.clone(),
@@ -879,6 +906,7 @@ fn emit_node(
             quote(&name),
             quote(icon.as_str())
         ));
+        note_icon_reference(report, icon.as_str());
         report.properties_emitted += 1;
     }
 
@@ -1672,6 +1700,10 @@ fn capability_value_expr(value: &Value) -> String {
 fn record_list_expr(
     value: &Value,
     schema: &crate::widget::capability::RecordSchema,
+    // The icon tokens this list's rows reference, appended as they are emitted. Collected here
+    // rather than by a second pass over the document so the report cannot name a token the emitter
+    // did not write (see `GenerationReport::icon_tokens`).
+    referenced: &mut Vec<&'static str>,
 ) -> Option<String> {
     let Value::Array(items) = value else {
         return None;
@@ -1692,7 +1724,7 @@ fn record_list_expr(
             out.push_str(&format!(
                 ".with({}, {})",
                 quote(name),
-                record_field_expr(field, name, schema)?
+                record_field_expr(field, name, schema, referenced)?
             ));
         }
     }
@@ -1709,6 +1741,7 @@ fn record_field_expr(
     value: &Value,
     name: &str,
     schema: &crate::widget::capability::RecordSchema,
+    referenced: &mut Vec<&'static str>,
 ) -> Option<String> {
     if value.is_null() {
         return Some(String::from("CapabilityValue::Null"));
@@ -1734,11 +1767,16 @@ fn record_field_expr(
             )? {
                 crate::widget::capability::CapabilityValue::IconSpec(
                     crate::widget::icon_source::IconSpec::Builtin(icon),
-                ) => Some(format!(
-                    "CapabilityValue::IconSpec(rust_widgets::widget::icon_source::IconSpec::Builtin(\
-                     rust_widgets::widget::IconName::from_name({}).expect(\"validated icon token\")))",
-                    quote(icon.as_str())
-                )),
+                ) => {
+                    if !referenced.contains(&icon.as_str()) {
+                        referenced.push(icon.as_str());
+                    }
+                    Some(format!(
+                        "CapabilityValue::IconSpec(rust_widgets::widget::icon_source::IconSpec::Builtin(\
+                         rust_widgets::widget::IconName::from_name({}).expect(\"validated icon token\")))",
+                        quote(icon.as_str())
+                    ))
+                }
                 // A resource descriptor needs the host's resolver, so it is not emitted; `None`
                 // makes the caller report a generation gap rather than write a program that cannot
                 // honour it.
@@ -2442,6 +2480,104 @@ mod tests {
             }),
             "the unsupported report must name the missing resolver: {:?}",
             resource.report
+        );
+    }
+
+    /// §19.10's reachability step: the report names the icon tokens the output reaches, once each.
+    #[test]
+    fn the_report_names_exactly_the_icon_tokens_the_output_references() {
+        let generated = generate(&GenerationRequest {
+            json: String::from(
+                r#"{"window":{"id":"root","layout":{"type":"vbox","children":[
+                    {"button":{"id":"b1","icon_source":{"kind":"builtin","name":"info"}}},
+                    {"button":{"id":"b2","icon_source":{"kind":"builtin","name":"info"}}},
+                    {"chip":{"id":"c","items":[{"id":"a","label":"A","icon_source":{"kind":"builtin","name":"save"}}]}}
+                ]}}}"#,
+            ),
+            target: TargetProfile::Default,
+            width: 320,
+            height: 240,
+            function_name: String::from("build_icon_reachability"),
+        })
+        .expect("the document generates");
+
+        assert_eq!(
+            generated.report.icon_tokens,
+            vec!["info", "save"],
+            "the report lists each reachable token once, in first-reference order: {:?}",
+            generated.report
+        );
+        assert_eq!(
+            generated.source.matches("IconName::from_name(\"info\")").count(),
+            2,
+            "both property writes must be emitted:\n{}",
+            generated.source
+        );
+        assert_eq!(
+            generated.source.matches("IconName::from_name(\"save\")").count(),
+            1,
+            "the row icon must be emitted once:\n{}",
+            generated.source
+        );
+    }
+
+    /// The trimming property the generator can actually answer: a project with no icon references
+    /// emits no icon reference at all, so nothing reaches an icon payload it did not ask for.
+    #[test]
+    fn a_document_without_icons_reaches_no_icon_payload() {
+        let generated = generate(&GenerationRequest {
+            json: String::from(
+                r#"{"window":{"id":"root","layout":{"type":"vbox","children":[{"button":{"id":"b","text":"OK"}}]}}}"#,
+            ),
+            target: TargetProfile::Default,
+            width: 320,
+            height: 240,
+            function_name: String::from("build_no_icons"),
+        })
+        .expect("the document generates");
+
+        assert!(
+            generated.report.icon_tokens.is_empty(),
+            "nothing was referenced, so nothing is reachable: {:?}",
+            generated.report
+        );
+        assert!(
+            !generated.source.contains("IconName::"),
+            "an icon-free project must not name an icon token:\n{}",
+            generated.source
+        );
+    }
+
+    /// I14's "block it before generating": a descriptor whose kind has no document form is refused
+    /// at generation time, exactly as a resource is, rather than emitted as a setter that cannot be
+    /// honoured.
+    #[test]
+    fn an_icon_descriptor_with_no_document_form_is_refused_before_generation() {
+        let generated = generate(&GenerationRequest {
+            json: String::from(
+                r#"{"window":{"id":"root","layout":{"type":"vbox","children":[{"button":{"id":"b","icon_source":{"kind":"geometry","name":"ring"}}}]}}}"#,
+            ),
+            target: TargetProfile::Default,
+            width: 320,
+            height: 240,
+            function_name: String::from("build_unknown_icon_kind"),
+        })
+        .expect("the document generates with an explicit refusal");
+
+        assert!(
+            !generated.source.contains(".prop(\"icon_source\""),
+            "an unimplementable descriptor must not become a property write:\n{}",
+            generated.source
+        );
+        assert!(
+            generated.report.unsupported.iter().any(|gap| gap.reason.contains("icon_source")),
+            "the refusal must name the property it refused: {:?}",
+            generated.report
+        );
+        assert!(
+            generated.report.icon_tokens.is_empty(),
+            "a refused descriptor reaches no token: {:?}",
+            generated.report
         );
     }
 

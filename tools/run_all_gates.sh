@@ -250,7 +250,17 @@ for gate in tools/check_*.sh; do
   # `if`/`elif` chain replaces `$?` — the timeout branch would then never fire and a
   # wedged gate would be misreported as a failure of the code under test.
   status_code=0
-  rw_run_bounded "$GATE_BUDGET" bash "$gate" >"$log_file" 2>&1 || status_code=$?
+  # A gate may declare a larger budget than the floor above with a `# rw-gate-budget: <seconds>` line,
+  # because the *inner* bound is what produces a verdict: while this one is the smaller of the two it
+  # always fires first and the run records "result unknown" instead of the gate's answer. Measured
+  # before this was honoured: check_android_runtime.sh declared 2400 s internally, so every run ended
+  # in `TIMEOUT` — `GATES_EXIT=1`, no probe output, and the gate never once reported its own result.
+  gate_budget="$GATE_BUDGET"
+  declared_budget="$(sed -n 's/^# rw-gate-budget: *\([0-9][0-9]*\).*/\1/p' "$gate" | head -1)"
+  if [[ -n "$declared_budget" && "$declared_budget" -gt "$gate_budget" ]]; then
+    gate_budget="$declared_budget"
+  fi
+  rw_run_bounded "$gate_budget" bash "$gate" >"$log_file" 2>&1 || status_code=$?
 
   status="PASS"
   if [[ "$status_code" -eq 124 ]]; then
@@ -269,7 +279,7 @@ for gate in tools/check_*.sh; do
     PASS) PASS=$((PASS + 1)) ;;
     SKIP) SKIPPED=$((SKIPPED + 1)); SKIPPED_GATES+=("$name") ;;
     FAIL) FAIL=$((FAIL + 1)); FAILED_GATES+=("$name") ;;
-    TIMEOUT) TIMED_OUT=$((TIMED_OUT + 1)); TIMEOUT_GATES+=("$name") ;;
+    TIMEOUT) TIMED_OUT=$((TIMED_OUT + 1)); TIMEOUT_GATES+=("$name (budget ${gate_budget}s)") ;;
   esac
 
   printf '%-52s %-7s %5ss\n' "$name" "$status" "$elapsed_s"
@@ -300,7 +310,7 @@ if [[ "${#SKIPPED_GATES[@]}" -gt 0 ]]; then
 fi
 
 if [[ "${#TIMEOUT_GATES[@]}" -gt 0 ]]; then
-  echo "timed out after ${GATE_BUDGET}s (result unknown — NOT a pass and NOT a defect):"
+  echo "timed out (result unknown — NOT a pass and NOT a defect):"
   for g in "${TIMEOUT_GATES[@]}"; do
     echo "  - $g"
   done

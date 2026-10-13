@@ -1,0 +1,3 @@
+# Installed by `npm install` (see README.md: koffi ships prebuilt binaries, so no build step).
+node_modules/
+package-lock.json

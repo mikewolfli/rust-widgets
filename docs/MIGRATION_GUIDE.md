@@ -213,6 +213,125 @@ These are fixes, not migrations, but they change what you observe:
 
 ---
 
+## 6. Typed icon sources (`icon_source`) — additive, lands in the next release
+
+This section is written for a **host** that reads and writes control content — the
+Rustage designer above all — because that is who depends on which collections publish a
+persistable icon row. Nothing here removes or changes an existing signature.
+
+### 6.1 The document form
+
+A typed icon is one of exactly two document values, on a property or a row field the
+control declares as `IconSpec`:
+
+```json
+{ "kind": "builtin", "name": "save" }
+```
+
+```json
+{ "kind": "resource", "id": "project/icons/save", "color_mode": "monochrome" }
+```
+
+Rules the library enforces, so a host can rely on them instead of re-deriving them:
+
+- An explicit clear is `null`. A **missing** field means "this document version's default",
+  which is *not* the same as "unknown built-in" or "resource missing".
+- A `resource` descriptor is resolved by an **explicit apply context** (`IconResourceResolver`),
+  never by turning the id into a file path. Written through a plain property setter, which has
+  no resolver, it is refused with `ResourceResolutionRequired`.
+- A source that exists only at runtime (borrowed geometry) has **no** document form. Reading
+  it back is refused with `IconSourceNotPersistable` rather than reported as "no icon" — an
+  omitted field cannot be told apart from an empty one, and a designer that could not tell
+  them apart would drop the icon on the next save.
+- A document that declares the **legacy** text channel (`icon_text`, or an item's text `icon`)
+  *and* `icon_source` for the same thing is **diagnosed and refused**. It is never resolved by
+  JSON key order.
+
+### 6.2 Reading rows back, and writing them out
+
+`json::records_to_json` is the inverse of the loader's record reader, and the two live in one
+module so they cannot disagree about a row's shape. The round trip a designer needs is:
+
+```rust
+let rows = widget_property_get(widget, "items")?;      // CapabilityValue::Records
+let json = rust_widgets::json::records_to_json(&rows)?; // serde_json::Value
+```
+
+Reloading what that produced reproduces the same rows byte for byte — see
+`tests/icon_record_roundtrip_test.rs`, which asserts that for all three channels below and
+that identity does not drift while it happens.
+
+### 6.3 Which collections publish a row — and which deliberately do not
+
+Four collections have an item-level `icon_source` row, and three of them are **read-only**: a row
+cannot express `children`/`submenu`, so accepting a write would silently discard a subtree. Writes go
+through the control's own API (`add_item` / `set_item_icon_source`; `Chip` is the exception — its row
+*is* the whole item, so the row is writable).
+
+| Collection | Row key | Identity the row is keyed by |
+|---|---|---|
+| `Chip` | `items` (also writable — a chip row is the whole item) | host-supplied text id |
+| `DropdownMenu` | `items` (read-only) | `DropdownItem::value` |
+| `MenuButton` | `items` (read-only) | `MenuItem::id` |
+| `PieMenu` | `items` (read-only) | `PieMenuItem::id` — `u64`, assigned by the menu or pinned by the host |
+
+### 6.3.1 `PieMenu` item identity (breaking, 2026-10-13)
+
+`PieMenu` is the one collection that **both** keeps its typed icons in a position-keyed side table
+**and** offers `insert_item` / `remove_item`. Its own documentation said `current_index` "can end up
+naming a different item than before", and a side table keyed by position is exactly the shape blue27
+§19.6 forbids ("do not build a permanent index -> icon side map"). Typed icons are therefore addressed
+by a **stable id** as well as owned by the item:
+
+> The tab/toolbox family (`TabWidget`, `TabBar`, `ToolBox`) also offers insert/remove, but it already
+> stores the icon **on the item**, so an edit carries it along; what those collections still lack is a
+> document identity, which §6.3's exemption table records.
+
+| Before | Now |
+|---|---|
+| `set_item_icon_source(index, source)` | `set_item_icon_source(id, source)` |
+| `add_item(text) -> usize` (the index) | `add_item(text) -> u64` (the assigned id) |
+| `add_item_with_icon(text, icon) -> usize` | `add_item_with_icon(text, icon) -> u64` |
+| — | `add_item_with_id(id, text) -> Result<u64, IconItemError>` — a document's identity |
+| — | `item_icon_source(id)`, `item_id(index)`, `PieMenuItem::id()`, `PieMenuItem::icon_source()` |
+
+Errors changed with the addressing: an unknown id is `IconItemError::ItemNotFound { id }` and a
+duplicate pinned id is `IconItemError::AmbiguousItemId { id }` (the numeric counterparts of the
+`UnknownItemId`/`DuplicateItemId` variants a chip's text ids use). Assigned ids start at **1** and
+skip past any pinned id, so the two sources cannot collide.
+
+The typed icon is now **owned by the item**, so an insertion or removal carries it along instead of
+shifting it.
+
+The other four collections with a typed item icon — `BottomNavigationBar`, `NavigationDrawer`,
+`Cupertino` rail and `AdaptiveScaffold` — were deliberately **left index-addressed**: each offers
+only append and clear, so their side table cannot shift under an edit, and
+`BottomNavigationBar::set_item_icon_source` documents that "the index is stable for the item's
+lifetime". An id there would add API surface without changing any behaviour — a separate decision from
+PieMenu's, and one that can be revisited when a document actually needs their rows.
+
+These collections have `set_item_icon_source` but **no** record row. This is a named
+decision, not an oversight — do not read a missing row as something to be added later:
+
+| Collection | Its identity | Why there is no row |
+|---|---|---|
+| `MdiArea` | child-window `ObjectId` | an `ObjectId` is a runtime handle, not a document value |
+| `TabWidget` | position | the collection has position identity only |
+| `ToolBox` | none | item fields are private and there is no id; inventing a row would be inventing an identity |
+| `BottomNavigationBar` / `NavigationDrawer` / Cupertino rail | its own model | no item id is published |
+| `TabView` | position | `TabPage`'s fields are public; replacing that model is deferred to a breaking version |
+
+If one of these genuinely needs a stable identity, that is a **separate, breaking** version
+change (a content model with a builder and a migration example), not a per-collection patch.
+
+### 6.4 What "no icon support" looks like
+
+An unsupported presentation is not the same as a failed load, and the library keeps them
+apart: a native menu that cannot draw a decoration icon reports that outcome and keeps its
+text (`native_menu_item_icons_supported()` answers whether the running host can).
+
+---
+
 # Migration Guide: 0.9.x → 1.0.0
 
 > **Note (2026-09-02)**: this guide was originally drafted for the planned

@@ -403,8 +403,17 @@ mod tests {
     /// re-registering `on_startup` re-locked the same non-reentrant mutex on the same thread and
     /// hung. `fire_startup` takes the slot and releases the lock before invoking, so the
     /// re-registered callback simply takes effect on the next startup.
+    ///
+    /// # Why this holds `app_init_test_lock()`
+    ///
+    /// `STARTUP` is one process-wide slot and `App::init` fires it, so a test that calls
+    /// `App::init` concurrently *consumes this test's callback* and the first assertion below fails
+    /// — measured before this lock was added: 1 failure in 25 runs of `app::app_core`, which is the
+    /// "既有抖动" this file's race used to show in the full suite. The two tests must exclude each
+    /// other because they share the slot, not because either one is wrong on its own.
     #[test]
     fn a_startup_callback_can_reenter_registration() {
+        let _lock = app_init_test_lock();
         let calls = Arc::new(AtomicU32::new(0));
 
         let c1 = Arc::clone(&calls);
@@ -427,8 +436,12 @@ mod tests {
     }
 
     /// A shutdown callback that re-registers a shutdown callback must not deadlock.
+    ///
+    /// Holds the same lock as the startup reentrancy test: `SHUTDOWN` is one process-wide slot that
+    /// `App::init`/`App::shutdown` also fire, so the two tests must not run concurrently.
     #[test]
     fn a_shutdown_callback_can_reenter_registration() {
+        let _lock = app_init_test_lock();
         let calls = Arc::new(AtomicU32::new(0));
 
         let c1 = Arc::clone(&calls);

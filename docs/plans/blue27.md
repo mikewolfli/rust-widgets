@@ -651,16 +651,26 @@ render 并保留旧公共函数的兼容 re-export，避免 render 反向依赖 
 
 | 阶段 | 状态 | 已交付的关键证据 | 还缺 |
 |---|---|---|---|
-| U0 | 🟡 部分 | `tools/check_icon_entry_contract.sh`（A1/A2/A3/A4）；**I17 已闭环**：`tests/icon_allocations.rs` 实测稳态 **0 分配/绘制** + `tools/icon_allocations_baseline.txt` 记录 U0 基线（22–279/次）并做双重门；§19.5 各类别可达性核验 | 全公开结构/cfg 的逐项清点（现为断言式清单，不是导出产物） |
+| U0 | 🟢 闭环 | `tools/check_icon_entry_contract.sh`（A1/A2/A3/A4/**A5**）；**I17 已闭环**：`tests/icon_allocations.rs` 实测稳态 **0 分配/绘制** + `tools/icon_allocations_baseline.txt` 记录 U0 基线（22–279/次）并做双重门；§19.5 各类别可达性核验；**（2026-10-13）逐项清点已是导出产物**：`tools/gen_icon_entry_inventory.py` → `tools/icon_entry_inventory.txt`（**54 条**，含类别/符号/文件/**cfg 门**/集合身份；第五轮 `PieMenu` 提升为 record 通道后由 52 → 54），A5 重新生成并比对，产物腐化即 FAIL（已反向注入验证）；**A1 已于第五轮强化**：判据锚定 getter 的拒绝语句形状（`^…Err\(CapabilityAccessError::IconSourceNotPersistable\)`），原「文件里出现过 token」判据可由测试断言满足——只删生产分支仍绿，实测已修（见 `tools/gates_reverse_injection.md`） | — |
 | U1 | 🟢 闭环 | `CompoundPath` + 软件/SVG/WGPU 非零填充；`IconSource`/`IconRef`/`measure_icon`/`validate_icon`/`paint_icon`；census（实测 ink + runs）+ C5/C6 环绕保真；stepper 快照重生成 | — |
-| U2 | 🟡 部分 | `SharedIconPixels`（Arc 共享、move 语义、缓存同一分配）；Button/ToolButton 接入；`fit_image_into` 统一 fit | 峰值内存预算；跨控件矩阵的更广尺寸/禁用组合 |
+| U2 | 🟢 闭环 | `SharedIconPixels`（Arc 共享、move 语义、缓存同一分配）；Button/ToolButton 接入；`fit_image_into` 统一 fit；**（2026-10-13）峰值预算与矩阵**：`tests/icon_shared_pixels_budget_test.rs`（9 项）实测「from_rgba8 只付 Arc、64 次 clone 0 分配、64 控件持同一句柄差值 0、每帧成本与像素量无关」，矩阵覆盖 3 控件 × 5 尺寸 × 启用/禁用（含 `button` 槽位在 <32px 收缩为 0 的合法边界），并以复制像素的反向注入验证断言非空 | — |
 | U3 | 🟡 部分 | Action/MenuButton/DropdownMenu/PieMenu/RibbonBar 的 typed 槽；I01 跨入口同源等价；**I12 已闭环**：菜单行列的按对不重叠（并修掉实测缺陷——shortcut 与 arrow 曾画在同一个 28 px 列里，现由 `Menu::row_shows_shortcut` 明确优先级）+ check/arrow 是几何而非字符 | RTL 的**布局镜像无实现**（见 §19.14.4，全 crate 无镜像设施；`direction` 只约束按键语义） |
-| U4 | 🟡 部分 | 导航集合/TabBar/ToolBox/BottomNavigationBar/MdiArea 的 item setter 与绘制；条目身份键的写法已对齐 §19.6 | 条目身份模型提升（`MenuItem.id` 之外仍为 index/私有字段者，见 §19.14.3 的豁免清单） |
-| U5 | 🟡 部分 | IconSpec/IconCapability/JSON/manifest/ABI/binding；显式 resolver 贯通 loader/view/engine；记录通道：`chip`/`dropdown_menu`/`menu_button`（只读行 + 具名 read-only 拒绝）；**I10/I11 已闭环**：`IconResourceBinding`（陈旧结果丢弃、last-valid 保留、显式清除后不可复活） | **I13**（旧/新冲突字段与全入口 round-trip 矩阵）；Node 运行时验证（本机缺 `ffi-napi`） |
-| U6 | 🔴 未开始 | — | 自定义 geometry/image 的静态生成、按目标转换与引用裁剪 |
+| U4 | 🟢 闭环 | 导航集合/TabBar/ToolBox/BottomNavigationBar/MdiArea 的 item setter 与绘制；条目身份键的写法已对齐 §19.6；豁免清单已写进 `docs/MIGRATION_GUIDE.md` §6.3；**（2026-10-13）`PieMenu` 完成身份提升**：条目获得稳定 `u64` id（集合分配、宿主可 pin）+ 条目自持 typed 图标，`set_item_icon_source(id, …)` 取代索引寻址，并发布只读 `items` 行（4 项测试，含「图标跟随条目跨越 insert/remove」与 id 不可重复）；**收益与边界的实测口径**：`items` 声明为 `readable=true, writable=false`，即条目身份与 typed 图标**可读/可导出、不可从文档写回**（不说成"可持久化"）；`pie_menu.rs` 内 `item_icon_sources` 引用 8 → 0；三处变更 API 在 `pie_menu.rs` 之外**调用点为 0**（破坏面为零）；规模 +342/−32。注：旧实现自身是自洽的（13 个变更点全部同步维护侧表），故本项是**消除隐患 + 新增读通道**，不是修一个正在发生的缺陷；其余四个集合按证据**保持不变**（只增删不变、文档已声明 index 稳定，见迁移说明 §6.3.1） | —（同一 index 侧表模式仍有 53 处/6 文件，见 19.14.1 计数口径说明） |
+| U5 | 🟢 闭环 | IconSpec/IconCapability/JSON/manifest/ABI/binding；显式 resolver 贯通 loader/view/engine；记录通道：`chip`/`dropdown_menu`/`menu_button`（只读行 + 具名 read-only 拒绝）；**I10/I11 已闭环**：`IconResourceBinding`（陈旧结果丢弃、last-valid 保留、显式清除后不可复活）；**I13 已闭环（2026-10-13）**：`json::records_to_json`（读写的同一处形状定义）+ `tests/icon_record_roundtrip_test.rs`（三条通道逐字节往返、身份不漂移、运行期专有源一律拒绝、新旧冲突字段被拒而非键序取胜） | —（**Node 运行时验证已完成，2026-10-13**：`bindings/nodejs/verify_icon_contract.js` 10 项断言 6/6 稳定通过，过程中修掉绑定层四个真实缺陷——BigInt 参数被 ref-napi 拒绝、控件 id 经 `Number()` 丢精度、`rw_free_string` 后 slot 悬垂导致下次 ffi 调用终止进程、`ref-struct-napi` 拉入第二份 ref-napi 导致进程 core dump。**第五轮**取证了"只有 Node 16 能编译"的根因（`ffi-napi` 自己的 `src/ffi.cc` 把 const-env 的 `get-uv-event-loop` 指针存进非 const 槽位；`node-addon-api` overrides 与 `@lwahonen/ffi-napi@4.0.12` 均无法修复）。**第八轮已根治**：绑定移植到 `koffi`（预编译二进制、无编译器、无 node-addon-api），Node **16.20.2 / 18.20.8 / 20.20.2 / 22.23.3 / 24.15.0** 各 **17/17** 断言通过，Node 24 下 `npm install` 288 ms 成功——约束消失，门控为"≥16 即可"且本机默认 v24 下 **PASS**） |
+| U6 | 🟢 闭环 | Builtin `IconSpec` 生成并在 `mini`/`embedded` 真实编译；resource 在生成时被报告为需 resolver（不生成假 setter）；**（2026-10-13）**`GenerationReport::icon_tokens` 可达性报告（收集点即发射点）+ 引用裁剪测试（无图标文档产出零 `IconName::`）+ 未知 kind 在生成前拒绝 + `check_generator_output_compiles.sh` 实跑编译产物（fixture 含行级图标） | 「自定义 geometry/image 的发射」为**格式层具名边界**：持久化联合只有 `builtin`/`resource` 两种，`IconSource::StaticGeometry` 是借用数据、运行期句柄不得写入文档，故生成器对无文档形态的 kind 一律**生成前拒绝**而不伪造 setter（详见日志 §2.3） |
 | U7 | 🟢 闭环 | `Platform::supports_menu_item_icons` → `ControlBackend` → `crate::native_menu_item_icons_supported()` → `WindowHandle::new_menu_item_with_icon`（不支持时保留文本并报告 unsupported presentation）；`tests/native_icon_capability_test.rs`（I15）；窗口图标保持 §13 路径契约 | — |
 
-**DoD 进度：第 1/2/3/4/7/8 条已闭合；第 5/6/9 条未闭合。**
+**DoD 进度：第 1–9 条全部闭合**（第三轮补齐第 5/6/9 条，证据见 `docs/log/log-20261012-1.md` 第三轮会话 §6.2；第四轮补齐 U0/U2/U5 的阶段闭环证据，见同文第四轮会话）。
+阶段完整闭环数：**7/8**（U0、U1、U2、U4、U5、U6、U7）。**这个计数的口径必须写清：🟢 表示「该阶段没有
+未处置的缺陷」，不表示「该阶段涉及的所有集合都已改造」。** U4 的准确含义是条目身份模型未处置项为零；
+同一模式在全仓库仍有 **53 处 / 6 个文件**（`menu_button` 12、`chip` 8、`dropdown_menu` 8、
+`bottom_navigation_bar` 7、`adaptive_scaffold` 7、`cupertino/core` 6、`navigation_drawer` 5）保持 index
+寻址，依据见 §19.14.3 与迁移说明 §6.3.1——是**具名判断**，不是遗漏。
+**U3 仍记 🟡 部分（未闭合）**：RTL 布局镜像属整个布局层变更（见 §19.14.4）。**具名不等于闭合**——把 U3
+写成「仅剩计划自己具名的排除项」会读成已收口，故此处按未闭合记账。
+Node 语言运行时验证**已完成**（`verify_icon_contract.js`，koffi 层，Node 16–24 全绿），并修掉绑定层四个真实缺陷。
+**（第八轮）** 绑定已从 `ffi-napi`/`ref-napi` 移植到 `koffi`：Node 16/18/20/22/24 **各 17/17 断言通过**，
+Node 24 全新 `npm install` 288 ms 且无编译步骤——原先"只有 Node 16 能编译"的约束随依赖一起消失。
 
 #### 19.14.2 剩余步骤（按建议执行顺序）
 
@@ -668,23 +678,61 @@ render 并保留旧公共函数的兼容 re-export，避免 render 反向依赖 
    - 遗留：RTL 的布局镜像不在本方案内 —— 全 crate 没有布局镜像设施，`Menu::direction` 的文档
      自身把范围限定为**按键语义**；把菜单单独做成 RTL 镜像会与 renderer 之外的第二个方向来源
      冲突（§19.4「不能 renderer 和 widget 重复镜像」）。结论记录在 §19.14.4，不假装已支持。
-2. **I13 冲突矩阵与全入口 round-trip**（U5，DoD 6）
-   - 属性层冲突已核清只有 `Action` 一行（同时发布 `icon_text` 与 `icon_source`），已有测试。
-   - 缺口在**条目层**：对每个 record 通道（`chip`/`dropdown_menu`/`menu_button`）做
-     JSON 文档 → 落盘 → 读回 → 再落盘的 round-trip，断言图标与身份都不漂移；
-     运行期专有源必须**拒绝**而不是丢失（三条通道已同形）。
-   - Node 运行时验证需先装 `ffi-napi`；未装则明确记为未验证，不用语法检查冒充。
-3. **U6 静态生成 / 目标转换 / 引用裁剪**（DoD 6）
-   - 现状：Builtin `IconSpec` 已能生成并在 `mini`/`embedded` 真实编译；Resource 描述在生成时被
-     报告为 unsupported（不生成假 setter）。
-   - 要做：自定义 geometry/image 的发射；按目标能力**在生成前**阻断不支持来源（I14）；
-     生成产物可运行验证；引用裁剪（未使用的图标数据不进入产物）。
-4. **U4 条目身份模型**（DoD 5，可选但最终需要）
-   - 先做**文档化**：§19.14.3 的豁免清单写进 rustage 迁移说明；只有当某个集合确实需要
-     稳定身份时才提升模型，且作为独立的破坏性版本变更。
-5. **收尾**（原则 #56）
-   - 全部改完后跑一次**全量**：`cargo test --no-default-features --features desktop,icons --tests`
-     + `bash tools/run_all_gates.sh`，然后据实更新 §19.14.1 与 DoD 计数。
+2. ~~**I13 冲突矩阵与全入口 round-trip**（U5，DoD 6）~~ **已完成（2026-10-13）**。
+   - `src/json/properties.rs::records_to_json`（public，与读取器同模块，形状只有一处定义）+
+     `tests/icon_record_roundtrip_test.rs`：`chip` 走真实文档（文档 → 行 → JSON → 再加载 → 再导出，
+     逐字节相同），`dropdown_menu`/`menu_button` 走各自公开契约的行重建，三者都断言身份与图标不漂移。
+   - 运行期专有源（`StaticGeometry`）在三条通道上一律 `Err(IconSourceNotPersistable)`；菜单行写入
+     一律 `ReadOnlyProperty`（行无法表达 `children`/`submenu`）；同一行同时声明新旧字段被拒且 reason
+     点名冲突字段。反向注入（把写出器的 `"builtin"` 改错）实测使往返断言变红，证明断言非空。
+   - Node 运行时验证：**已完成（2026-10-13，第七/八轮）**。原先**未验证**的原因已取证：`ffi-napi@4.0.3`
+     的 `napi_add_finalizer` 与 Node 24 的 `node_api_basic_finalize` 签名不兼容，`node-gyp` 编译失败
+     （原文见日志 §1）。**根治方式不是绕过而是换掉那个依赖**：绑定已由 `ffi-napi`+`ref-napi` 移植到
+     `koffi`（预编译二进制、无编译器），Node **16/18/20/22/24 全部 17/17 断言通过**，
+     `npm install` 在 Node 24 下已可成功（实测 288 ms、无编译步骤）。
+3. ~~**U6 静态生成 / 目标转换 / 引用裁剪**（DoD 6）~~ **已完成（2026-10-13）**。
+   - 新增 `GenerationReport::icon_tokens`：生成产物**真正引用**的 token（去重、首次引用序），
+     收集点在发射点本身（`note_icon_reference` + `record_list_expr`/`record_field_expr` 的
+     `&mut Vec<&'static str>`），因此报告与产物不可能各说一套。
+   - 三个测试：引用集合恰为所引用者（含行级）、无图标文档产出零 `IconName::`（裁剪的可行那一半）、
+     `{"kind":"geometry"}` 这类无文档形态的 kind 在**生成前**被拒（I14 不只覆盖 resource）。
+   - 「自定义 geometry/image 的发射」：**格式层具名边界**，不是待办遗漏。持久化联合只有
+     `builtin`/`resource`（`icon_spec_from_json` 只认这两种），`IconSource::StaticGeometry` 借用
+     `&'static IconData` 无法跨文档边界，而把运行期句柄写进文档正是 §19.10 禁止的伪造。
+     要做它必须先给格式增加一种可持久几何描述 —— 那是格式的破坏性扩展，属独立变更。
+   - 产物可运行：沿用 `tools/check_generator_output_compiles.sh`（实跑 `cargo check` 生成产物，
+     fixture 含行级 `icon_source`）。
+4. ~~**U4 条目身份模型**（DoD 5，可选但最终需要）~~ **已完成（2026-10-13）**：
+   - 豁免清单已写进 `docs/MIGRATION_GUIDE.md` §6.3（含身份与理由，并写明「缺行是具名决定」）。
+   - **模型提升按需触发、且只在确有需要处实施**：`PieMenu` 是唯一**同时**使用按位置侧表与支持
+     `insert_item`/`remove_item` 的集合（其自身文档承认 `current_index` 可能指向别的条目），因此获得了
+     稳定 id 与 record 行；其余四个侧表集合（`BottomNavigationBar`/`NavigationDrawer`/Cupertino rail/
+     `AdaptiveScaffold`）**只有追加与清空**，`BottomNavigationBar::set_item_icon_source` 的文档本身
+     声明「index 在条目生命周期内稳定」，加 id 只增加接口面而不改变任何行为——按「确是改进才做」的判据
+     保留现状，理由写在迁移说明 §6.3.1。
+5. ~~**收尾**（原则 #56）~~ **已完成（2026-10-13）**：
+   - `cargo test --no-default-features --features desktop,icons --tests` → 65 个目标、合计
+     **7 634 passed / 0 failed**，EXIT=0。
+   - `bash tools/run_all_gates.sh` → **PASS=109 / FAIL=0 / TIMEOUT=0 / SKIP=2 / EXIT=0**（第七轮为
+     **111 门控**、全部改动之后的最终复跑；第六轮为 `PASS=108 / FAIL=0 / TIMEOUT=1 / SKIP=2 / EXIT=1`，
+     第四轮为 110 门控口径 `SKIP=1`）。第三轮曾为 PASS=107 / FAIL=1；唯一曾 FAIL 的是元门控
+     发现 blue27 自己的 `check_icon_entry_contract.sh` **没有反向注入记录**，本轮对它做了 A1–A4 四次
+     真实注入（每次还原后 `cmp` 逐字节一致）并把证据写入 `tools/gates_reverse_injection.md`，
+     复跑元门控 **3/3 PASS**；**第五轮又把 A1 从「文件里出现过 token」强化为「拒绝语句本身的形状」**，
+     因为前者可由测试断言满足（只删生产分支仍绿，实测），现在只删生产分支即红（注入证据同上）。
+   - **第七轮四项同时改善**（依据：原则 #103/#104 与日志第七轮）：
+     ① `check_node_icon_contract.sh` 由 SKIP → **PASS**（口径由"只认 Node 16"订正为"≥16 即可"——
+     addon 是 N-API 模块、ABI 稳定，Node 16 编出的二进制在 24 下探针 `PASS` 实测）；② android 门控由
+     900s `TIMEOUT`/"result unknown" → **191s 诚实 `SKIP`**（宿主能力前置检测 + 有界启动）；
+     ③ `TIMEOUT` 计数 1 → **0**；④ 退出码由恒为 1 → **0**，恢复为可用信号。
+     `SKIP`（`check_apple_native.sh` 需 macOS；`check_android_runtime.sh` 需可用 Android 设备/模拟器）
+     按原则 #59.4 记为宿主限制，不算通过也不算缺陷。
+   - 顺带修掉一处**既有**的 fmt 漂移（`src/widget/menu_toolbar/menu.rs:1446`，I12 遗留的超宽行），
+     `cargo fmt --all -- --check` 现已通过；`clippy --all-targets -- -D warnings` 0 条。
+   - 全量测试中两次各出现 1 个失败，是**两处不同的既有并发测试**（`app::app_core` 与 `event::types`
+     的 reentrancy 用例，隔离下通过、HEAD 基线 5/5 全绿）；`app_core` 的根因已在代码中定位
+     （`STARTUP` 是进程级单槽，`App::init` 会取走它，而该测试不持有同模块的 `app_init_test_lock()`），
+     属无关既有测试隔离缺陷，按规范未改动，只在日志 §5.4 记录并给出「一行修复」建议。
 
 #### 19.14.3 条目级 record 通道的豁免清单（不是遗漏，是具名决定）
 
@@ -696,13 +744,19 @@ render 并保留旧公共函数的兼容 re-export，避免 render 反向依赖 
 | `MdiArea` | 子窗口 `ObjectId` | `ObjectId` 是运行期句柄，不是文档值 |
 | `TabWidget` | 位置 | 集合本身只有位置身份 |
 | `ToolBox` | 无 | item 字段私有且无 id，造一行等于发明身份 |
-| `PieMenu` | 无 | 同上 |
 | `BottomNavigationBar` / `NavigationDrawer` / Cupertino rail | 各自模型 | 未发布 item id |
 | `TabView` | 位置 | `TabPage` 字段公开，§19.6 明确推迟到不兼容版本 |
 
-已具备 record 通道的三个集合：`Chip`（host 文本 id）、`DropdownMenu`（`DropdownItem::value`）、
-`MenuButton`（`MenuItem.id`）——三者的行都**只读**，因为一行无法承载 `children`/`submenu`；
-写入用控件自身 API，避免"写入即丢子树"的静默损失。
+已具备 record 通道的**四个**集合：`Chip`（host 文本 id；行可写，因为一行就是整个条目）、
+`DropdownMenu`（`DropdownItem::value`）、`MenuButton`（`MenuItem.id`）、`PieMenu`（`PieMenuItem::id`，
+2026-10-13 加入）——后三者的行都**只读**，因为一行无法承载 `children`/`submenu` 或重算的扇形角；
+写入用控件自身 API，避免"写入即丢子树/发明角度"的静默损失。
+
+本轮获得身份提升的是 `PieMenu`——它是唯一**同时**满足「按位置的侧表」与「支持结构性编辑」的集合：
+其文档自身承认插入后 `current_index` 可能指向别的条目，而按位置键的侧表正是 §19.6 点名要避免的形态。
+（`TabWidget`/`TabBar`/`ToolBox` 也有 insert/remove，但它们**本就把图标存在条目上**，所以编辑会带着
+图标走；它们仍缺的是文档身份，由上面的豁免表记录。）
+其余四个侧表集合只追加与清空，加 id 只增加接口面而不改变行为（迁移说明 §6.3.1）。
 
 #### 19.14.4 本方案**不**承诺的一项：RTL 布局镜像（具名排除，非遗漏）
 

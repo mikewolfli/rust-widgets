@@ -2,70 +2,199 @@
 
 // ---------------------------------------------------------------------------
 // Node.js binding for rust-widgets native GUI library
-// Uses ffi-napi to load librust_widgets and wraps every C ABI function
+// Uses koffi to load librust_widgets and wraps every C ABI function
 // in a clean, idiomatic JavaScript API.
+//
+// # Why koffi rather than ffi-napi
+//
+// `ffi-napi@4.0.3` cannot be compiled against Node 18+ headers: its own `src/ffi.cc` stores the
+// const-env `get-uv-event-loop` pointer in a non-const slot, so `npm install` fails on 18/20/22/24
+// (the maintained-looking fork `@lwahonen/ffi-napi@4.0.12` fails identically; overriding
+// `node-addon-api` does not help, measured). koffi ships prebuilt binaries, so it installs on every
+// supported Node with no compiler at all.
 // ---------------------------------------------------------------------------
 
-const ffi = require("ffi-napi");
-const ref = require("ref-napi");
-const Struct = require("ref-struct-napi");
+const koffi = require("koffi");
 
 // ---------------------------------------------------------------------------
 // Type aliases
 // ---------------------------------------------------------------------------
-const uint8 = ref.types.uint8;
-const uint16 = ref.types.uint16;
-const uint32 = ref.types.uint32;
-const uint64 = ref.types.uint64;
-const int8 = ref.types.int8;
-const int16 = ref.types.int16;
-const int32 = ref.types.int32;
-const int64 = ref.types.int64;
-const int = ref.types.int;
-const uint = ref.types.uint;
-const cfloat = ref.types.float;
-const cbool = ref.types.bool;
-const void_t = ref.types.void;
-const char_t = ref.types.char;
+const uint8 = "uint8";
+const uint16 = "uint16";
+const uint32 = "uint32";
+const uint64 = "uint64";
+const int8 = "int8";
+const int16 = "int16";
+const int32 = "int32";
+const int64 = "int64";
+const int = "int";
+const uint = "uint";
+const cfloat = "float";
+const cbool = "bool";
+const void_t = "void";
+const char_t = "char";
 
-// Pointer types
-const charPtr = ref.refType(char_t);
-const uint64Ptr = ref.refType(uint64);
-const intPtr = ref.refType(int);
-const int64Ptr = ref.refType(int64);
-const uintPtr = ref.refType(uint);
-const bytePtr = ref.refType(uint8);
-const bytePtrPtr = ref.refType(bytePtr);
-const charPtrPtr = ref.refType(charPtr);
+// Pointer types.
+//
+// `char *` is **opaque** on purpose: koffi auto-converts a plain `char *` to a JS string, which would
+// lose the pointer this binding has to hand back to `rw_free_string` — and a lost pointer is a leak.
+// Measured against the real library: with `koffi.pointer('char')` the out-slot decoded to a string
+// and the free became impossible; with the opaque type it decodes to a pointer the free accepts.
+const rawString = koffi.opaque("rw_string");
+const charPtr = koffi.pointer(rawString);
+const uint64Ptr = koffi.pointer(uint64);
+const intPtr = koffi.pointer(int);
+const int64Ptr = koffi.pointer(int64);
+const uintPtr = koffi.pointer(uint);
+const bytePtr = koffi.pointer(uint8);
+const bytePtrPtr = koffi.pointer(bytePtr);
+const charPtrPtr = koffi.pointer(charPtr);
+
+/** koffi's NULL (there is no `NULL`: koffi spells a null pointer as `null`). */
+const NULL = null;
 
 // ---------------------------------------------------------------------------
-// Helper: read a uint64 return buffer as a JS number
-// ffi-napi returns uint64 as a Buffer; widget IDs are small so Number is safe.
+// Helper: read a uint64 return as an exact id
+//
+// # Why a BigInt rather than a Number
+//
+// This library's `ObjectId`s sit far above 2^53 — measured against the real ABI:
+//
+//   rw_create_window -> 6000285942072475648n
+//   rw_create_button -> 6000285942072475649n
+//
+// Doubles are spaced 1024 apart up there, so a `Number` cannot hold either id: `Number(windowId)`
+// and `Number(buttonId)` are the **same** value. A `Number(...)` conversion therefore made every
+// id-based call address whichever widget the rounded value happened to land on, and
+// `widgetPropertyNames(buttonId)` answered with the window's property list.
+//
+// koffi returns a `uint64` as a BigInt already (measured), so the id stays exact with no conversion
+// on the way in either — koffi accepts the BigInt directly where the old layer needed a Number or a
+// decimal String.
+//
+// A caller that compares an id against a literal must compare against a BigInt
+// (`id === 0n`, not `id === 0`).
 // ---------------------------------------------------------------------------
 function readUint64(buf) {
-  if (buf === 0 || buf === null || buf === undefined) return 0;
+  if (buf === 0 || buf === null || buf === undefined) return 0n;
+  if (typeof buf === "bigint") return buf; // koffi's uint64 form: exact by construction
   if (Buffer.isBuffer(buf)) {
-    // Read as BigInt then coerce — safe for widget IDs (< 2^53)
-    return Number(buf.readBigUInt64LE(0));
+    // The Buffer form carries all 64 bits, so this is exact by construction.
+    return buf.readBigUInt64LE(0);
   }
-  return Number(buf);
+  // The decimal-string form: `BigInt` parses it without the rounding a `Number` would apply.
+  return BigInt(buf);
+}
+
+/** A pointer koffi handed back, with the accessors this file's call sites use. */
+class NativePtr {
+  constructor(raw) {
+    this.raw = raw;
+  }
+
+  isNull() {
+    return this.raw === null || this.raw === undefined || this.raw === 0 || this.raw === 0n;
+  }
+
+  /** Read `length` bytes into a Buffer (a koffi byte decode yields a plain array). */
+  bytes(length) {
+    if (this.isNull() || length <= 0) return Buffer.alloc(0);
+    return Buffer.from(koffi.decode(this.raw, "uint8", length));
+  }
+}
+
+/** Read a C string from a pointer. koffi's `-1` length means "until the NUL". */
+function readCString(ptr) {
+  return koffi.decode(ptr, "char", -1);
 }
 
 // ---------------------------------------------------------------------------
 // Helper: read a C string from a pointer, free it, return JS string
+//
+// The pointer arrives in two shapes and both are handled here: a `NativePtr` wrapper (what a slot's
+// `deref()` returns) and the raw value koffi returns for a `char *` **return type** (a BigInt, since
+// the type is opaque). A `char *` return cannot be auto-converted to a JS string, or the pointer
+// needed by `rw_free_string` would be gone and every call would leak.
 // ---------------------------------------------------------------------------
+function isNullPtr(ptr) {
+  return ptr === null || ptr === undefined || ptr === 0 || ptr === 0n;
+}
+
 function readAndFreeString(lib, ptr) {
-  if (!ptr || ptr.isNull()) return "";
-  const str = ref.readCString(ptr);
-  lib.rw_free_string(ptr);
+  const raw = ptr instanceof NativePtr ? ptr.raw : ptr;
+  if (isNullPtr(raw)) return "";
+  const str = readCString(raw);
+  lib.rw_free_string(raw);
   return str;
+}
+
+/**
+ * Read a NUL-terminated string out of an **out-slot**, release it, and clear the slot.
+ *
+ * # Why the slot is cleared rather than just freed
+ *
+ * The ABI hands a string property's payload back as a pointer written into a caller-allocated slot,
+ * and the caller must release it with `rw_free_string`. Leaving the freed pointer in that slot is a
+ * dangling reference, and it is not benign: measured against the real library, the sequence
+ * *read a string property → free it → make one more ffi call* aborted the process **8 times out of
+ * 8** with
+ *
+ * ```text
+ * Fatal error ... Check failed: result.second.
+ *   v8::internal::GlobalBackingStoreRegistry::Register
+ *   napi_get_typedarray_info
+ * ```
+ *
+ * while the identical sequence with the free removed was clean 8/8 — which is what identifies the
+ * stale slot reference (registered as a typed-array backing store) rather than the free itself.
+ * Clearing the slot removes the dangling reference, so the next call cannot find it.
+ *
+ * It also makes the reason the free exists observable: a caller that forgets it leaks one
+ * allocation per read, and a caller that reads the slot after it returns sees NULL rather than a
+ * pointer into freed memory.
+ */
+function readAndFreeSlot(lib, slot) {
+  const raw = koffi.decode(slot[SLOT_CELL], charPtr);
+  if (!raw) return "";
+  const text = readCString(raw);
+  lib.rw_free_string(raw);
+  koffi.encode(slot[SLOT_CELL], charPtr, NULL);
+  return text;
 }
 
 // ---------------------------------------------------------------------------
 // Helper: allocate a typed buffer for output pointer parameters
+//
+// koffi pointer values are opaque (a BigInt for an opaque `char *`, an external for the rest), so the
+// ref-napi-shaped accessors the call sites use — `deref()`, `writePointer()`, and `.isNull()` on
+// what `deref()` returns — live on this wrapper instead of on the value itself. `withWireArguments`
+// unwraps the wrapper at the call boundary, so a slot is passed exactly like the raw pointer it
+// holds and no call site had to change shape.
 // ---------------------------------------------------------------------------
+const SLOT_CELL = Symbol("koffi cell");
+const SLOT_TYPE = Symbol("koffi slot type");
+
 function allocOut(type) {
-  return ref.alloc(type);
+  const cell = koffi.alloc(type === charPtr ? "void *" : type, 1);
+  const slot = {
+    [SLOT_CELL]: cell,
+    [SLOT_TYPE]: type,
+    deref() {
+      const value = koffi.decode(cell, type);
+      // A string slot holds a `char *`: wrap it so `.isNull()` keeps working (koffi hands the
+      // pointer back as a BigInt, which has no methods at all).
+      return type === charPtr ? new NativePtr(value) : value;
+    },
+    writePointer(value) {
+      koffi.encode(cell, type, value === undefined ? NULL : value);
+    },
+  };
+  return slot;
+}
+
+/** True for the wrapper `allocOut` returns (used by the call boundary to unwrap it). */
+function isSlot(value) {
+  return value !== null && typeof value === "object" && SLOT_CELL in value;
 }
 
 // ---------------------------------------------------------------------------
@@ -112,6 +241,62 @@ function f64FromBits(bits) {
   return buffer.readDoubleLE(0);
 }
 
+// The largest integer a JS Number represents exactly, as a BigInt (kept for `f64FromBits` callers
+// and for the doc below).
+const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
+
+/**
+ * The value to hand to the ABI's `int64` argument slot.
+ *
+ * # Why this is now the identity
+ *
+ * With ffi-napi this had to translate a BigInt into a Number or a decimal String, because `ref-napi`
+ * rejected a BigInt outright:
+ *
+ * ```text
+ * $ node -e "require('ref-napi').types.int64.set(Buffer.alloc(8), 0, 0n)"
+ * writeInt64: Number/String 64-bit value required
+ * ```
+ *
+ * koffi accepts a BigInt for a 64-bit slot and keeps all 64 bits (measured: `6000285942072475648n`
+ * reaches the ABI intact), while it **rejects** a decimal String for a numeric slot
+ * (`TypeError: Unexpected String value, expected number`). So the conversion is not only unnecessary
+ * but wrong for this layer, and it is kept as the single named place where the decision lives.
+ */
+function int64Argument(value) {
+  return value;
+}
+
+/**
+ * The loaded library, with output slots unwrapped at the call boundary.
+ *
+ * Two things happen here and nowhere else:
+ *
+ *   1. **Slots are unwrapped.** `allocOut` returns a wrapper carrying the koffi cell plus the
+ *      ref-napi-shaped accessors the call sites use; the ABI has to receive the raw cell. Doing it
+ *      here keeps the ~14 out-parameter call sites unchanged.
+ *   2. **BigInt arguments pass through.** koffi accepts a BigInt for any integer parameter width
+ *      (measured: 16n into `uint`, and a full 64-bit id into `uint64`), so no conversion is applied
+ *      — the old layer had to convert because `ref-napi` rejected BigInt, and koffi rejects the
+ *      String that conversion produced.
+ */
+function withWireArguments(lib) {
+  return new Proxy(lib, {
+    get(target, property) {
+      // Read straight off the target: passing the proxy as the receiver would run a native
+      // accessor with the wrong `this`, which the addon rejects.
+      const value = target[property];
+      if (typeof value !== "function") return value;
+      return function (...args) {
+        return value.apply(
+          target,
+          args.map((arg) => (isSlot(arg) ? arg[SLOT_CELL] : arg)),
+        );
+      };
+    },
+  });
+}
+
 /**
  * Map a JS value onto the `(kind, num, text)` triple the ABI expects.
  *
@@ -120,22 +305,22 @@ function f64FromBits(bits) {
  */
 function encodePropertyValue(value) {
   if (value === null || value === undefined) {
-    return [RW_VALUE_NULL, 0n, ref.NULL];
+    return [RW_VALUE_NULL, int64Argument(0n), NULL];
   }
   if (typeof value === 'boolean') {
-    return [RW_VALUE_BOOL, value ? 1n : 0n, ref.NULL];
+    return [RW_VALUE_BOOL, int64Argument(value ? 1n : 0n), NULL];
   }
   if (typeof value === 'number') {
     if (!Number.isInteger(value)) {
       const buffer = Buffer.alloc(8);
       buffer.writeDoubleLE(value);
-      return [RW_VALUE_FLOAT, buffer.readBigInt64LE(0), ref.NULL];
+      return [RW_VALUE_FLOAT, int64Argument(buffer.readBigInt64LE(0)), NULL];
     }
-    if (value < 0) return [RW_VALUE_INT, BigInt(value), ref.NULL];
-    return [RW_VALUE_UINT, BigInt(value), ref.NULL];
+    if (value < 0) return [RW_VALUE_INT, int64Argument(BigInt(value)), NULL];
+    return [RW_VALUE_UINT, int64Argument(BigInt(value)), NULL];
   }
   if (typeof value === 'string') {
-    return [RW_VALUE_STRING, 0n, value];
+    return [RW_VALUE_STRING, int64Argument(0n), value];
   }
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     let wire;
@@ -158,7 +343,7 @@ function encodePropertyValue(value) {
     } else {
       throw new TypeError('invalid icon descriptor fields or kind');
     }
-    return [RW_VALUE_ICON_SPEC, 0n, wire];
+    return [RW_VALUE_ICON_SPEC, int64Argument(0n), wire];
   }
   throw new TypeError(`unsupported property value type: ${typeof value}`);
 }
@@ -196,8 +381,8 @@ function decodeIconSpec(wire) {
  */
 function readNameList(lib, symbol, custom) {
   const required = custom
-    ? custom(lib, ref.NULL, 0)
-    : lib[symbol](ref.NULL, 0);
+    ? custom(lib, NULL, 0)
+    : lib[symbol](NULL, 0);
   if (!required) return [];
   const buffer = Buffer.alloc(required + 1);
   if (custom) {
@@ -236,7 +421,7 @@ function getLibrary() {
   let lastError;
   for (const name of candidates) {
     try {
-      _lib = loadFunctions(name);
+      _lib = withWireArguments(loadFunctions(name));
       return _lib;
     } catch (err) {
       lastError = err;
@@ -256,9 +441,16 @@ function getLibrary() {
 
 // ---------------------------------------------------------------------------
 // Define all C ABI function bindings
+//
+// The declarations stay a table of `name: [returnType, [argTypes]]`, exactly as they were: koffi
+// takes them per function (`lib.func(name, ret, args)`) instead of once per library, so the table is
+// walked here once and every call site keeps calling `this._lib.rw_x(...)`.
+//
+// `"string"` is ffi-napi's spelling for a `char *` input; koffi spells it `"str"`.
 // ---------------------------------------------------------------------------
 function loadFunctions(libName) {
-  const lib = ffi.Library(libName, {
+  const koffiLib = koffi.load(libName);
+  const table = {
     // ── Core ────────────────────────────────────────────────────────────
     rw_init: [void_t, []],
     rw_run: [void_t, []],
@@ -513,8 +705,17 @@ function loadFunctions(libName) {
     // ── Error helpers (from rw_errors.h) ─────────────────────
     rw_error_message: [charPtr, [uint64]],
     rw_error_code: [int32, [uint64]],
-  });
+  };
 
+  const lib = {};
+  for (const name of Object.keys(table)) {
+    const [returns, args] = table[name];
+    lib[name] = koffiLib.func(
+      name,
+      returns,
+      args.map((arg) => (arg === "string" ? "str" : arg)),
+    );
+  }
   return lib;
 }
 
@@ -935,7 +1136,11 @@ class RustWidgets {
    *
    * `kindName` is a canonical factory name or alias (`"button"`,
    * `"tree_view"`, `"command_palette"`, ...); see `widgetKindNames()`.
-   * Returns the new widget id, or 0 when the name matches no control.
+   * Returns the new widget id, or `0n` when the name matches no control.
+   *
+   * Ids are BigInts: this library's `ObjectId`s exceed `Number.MAX_SAFE_INTEGER`, so a `Number`
+   * cannot tell two of them apart (see `readUint64`). Treat an id as opaque and pass it back
+   * unchanged.
    */
   createWidgetOfKind(
     parent,
@@ -1013,18 +1218,16 @@ class RustWidgets {
       // them is the point: `rw_get_widget_property` allocates for each, so a branch
       // that returned without freeing leaked one buffer per call. A tuple's string
       // is the `kind:value;…` wire form, returned verbatim so a caller can decode
-      // it with the component kinds.
-      const ptr = strOut.deref();
-      if (!ptr || ptr.isNull()) return "";
-      const text = ptr.readCString();
-      this._lib.rw_free_string(ptr);
+      // it with the component kinds. `readAndFreeSlot` also clears the slot: the
+      // dangling pointer it would otherwise leave behind aborts the next ffi call
+      // (see that helper).
+      const text = readAndFreeSlot(this._lib, strOut);
       return kind === RW_VALUE_ICON_SPEC ? decodeIconSpec(text) : text;
     }
     // An unknown kind is a newer ABI than this binding knows about. Free the payload
     // if there is one, so an unrecognised kind cannot leak either.
-    const unknownPtr = strOut.deref();
-    if (unknownPtr && !unknownPtr.isNull()) {
-      this._lib.rw_free_string(unknownPtr);
+    if (!strOut.deref().isNull()) {
+      readAndFreeSlot(this._lib, strOut);
     }
     return undefined;
   }
@@ -1210,7 +1413,7 @@ class RustWidgets {
 
   menuAddItem(parentMenu, text, shortcut) {
     // shortcut may be null/undefined — pass NULL pointer so Rust sees None
-    const scPtr = shortcut == null ? ref.NULL : shortcut;
+    const scPtr = shortcut == null ? NULL : shortcut;
     return readUint64(
       this._lib.rw_menu_add_item(parentMenu, text, scPtr),
     );
@@ -1355,20 +1558,21 @@ class RustWidgets {
     let mime = "";
     const mimePtr = mimeOut.deref();
     if (mimePtr && !mimePtr.isNull()) {
-      mime = ref.readCString(mimePtr);
-      this._lib.rw_free_string(mimePtr);
+      // Clears the slot as it frees; a live pointer to freed memory aborts the next ffi call.
+      mime = readAndFreeSlot(this._lib, mimeOut);
     }
 
     let payload = null;
     const payPtr = payOut.deref();
     const payLen = lenOut.deref();
     if (payPtr && !payPtr.isNull() && payLen > 0) {
-      payload = Buffer.alloc(payLen);
-      payPtr.copy(payload, 0, 0, payLen);
+      // koffi decodes bytes to a plain array, so the wrapper turns them into the Buffer callers
+      // receive (the ref-napi pointer this replaced had a `.copy` that did the same).
+      payload = payPtr.bytes(payLen);
       // Free the Rust-allocated payload with its own deallocator: the buffer is a
       // byte allocation, not a NUL-terminated string, so `rw_free_string` would
       // pass a length that does not match the allocation.
-      this._lib.rw_free_bytes(payPtr, payLen);
+      this._lib.rw_free_bytes(payPtr.raw, payLen);
     }
 
     return new DropEvent(sourceId, targetId, mime, payload);
@@ -1565,6 +1769,9 @@ class RustWidgets {
 
   /**
    * Get the raw ffi-napi Library object (for advanced use).
+   *
+   * The object is wrapped so a BigInt argument is converted to the Number or decimal String
+   * ffi-napi accepts; every function is otherwise the loaded one, callable directly.
    * @returns {object}
    */
   getRawLibrary() {

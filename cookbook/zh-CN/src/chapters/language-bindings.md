@@ -85,7 +85,7 @@ gcc -o demo demo.c -Ltarget/release -lrw_ffi -lpthread -ldl
 
 ## 2. Python 绑定
 
-Python 绑定使用 `ctypes` 加载共享库，并将每个 C ABI 函数包装为 Pythonic 方法。`RustWidgets` 类暴露了 89 个方法，涵盖窗口部件创建、修改、菜单操作和平台查询。
+Python 绑定使用 `ctypes` 加载共享库，并将每个 C ABI 函数包装为 Pythonic 方法。`RustWidgets` 类暴露了 137 个方法，涵盖窗口部件创建、修改、菜单操作和平台查询。
 
 ### 安装
 
@@ -152,7 +152,7 @@ while True:
 rw.quit()
 ```
 
-### Python API 表面（89 个方法）
+### Python API 表面（137 个方法）
 
 | 类别 | 方法 |
 |----------|---------|
@@ -480,7 +480,10 @@ demo: RustWidgetsDemo.java
 
 ## 5. Node.js 绑定
 
-Node.js 绑定使用 `ffi-napi` 和 `ref-napi` 加载原生库并直接从 JavaScript 调用 C ABI 函数。
+Node.js 绑定使用 `koffi` 加载原生库并直接从 JavaScript 调用 C ABI 函数。`koffi` 自带预编译二进制，
+因此 `npm install` 不需要编译器，且在受支持范围内任意 Node 版本都可用（实测：16.20.2、18.20.8、
+20.20.2、22.23.3、24.15.0 各通过绑定自身探针的 17/17 项检查）。原先的 `ffi-napi`/`ref-napi` 组合在
+Node 18+ 上**根本无法编译**，实测原因见绑定 README。
 
 ### 包配置
 
@@ -491,22 +494,20 @@ Node.js 绑定使用 `ffi-napi` 和 `ref-napi` 加载原生库并直接从 JavaS
   "description": "rust-widgets GUI 库的 Node.js 绑定",
   "main": "index.js",
   "dependencies": {
-    "ffi-napi": "^4.0.3",
-    "ref-napi": "^3.0.3"
+    "koffi": "^3.3.3"
   }
 }
 ```
 
 ### 单例模式 (index.js)
-
 ```javascript
-const ffi = require('ffi-napi');
-const ref = require('ref-napi');
+const koffi = require('koffi');
 
-// 类型别名
-const ObjectId = ref.types.uint64;
-const cstr = ref.types.CString;
-const voidPtr = ref.refType(ref.types.void);
+// 类型别名。`char *` 刻意声明为 **opaque（不透明）**：否则 koffi 会把它转成 JS 字符串，
+// 而 `rw_free_string` 需要的是原始指针——被转换过的字符串无法释放，每次读取都会泄漏。
+const ObjectId = 'uint64';
+const rawString = koffi.opaque('rw_string');
+const charPtr = koffi.pointer(rawString);
 
 let _instance = null;
 
@@ -514,26 +515,33 @@ class RustWidgets {
     constructor(libPath) {
         if (_instance) return _instance;
 
-        this.lib = ffi.Library(libPath, {
-            rw_init: ['void', []],
-            rw_run: ['void', []],
-            rw_quit: ['void', []],
-            rw_create_window: [ObjectId, [cstr, 'int', 'int', 'uint', 'uint']],
-            rw_create_button: [ObjectId, [ObjectId, cstr, 'int', 'int', 'uint', 'uint']],
-            rw_free_string: ['void', [voidPtr]],
-            // ... 所有 102 个函数 ...
-        });
+        const dll = koffi.load(libPath);
+        // 每个 C 函数一条：`dll.func(名称, 返回类型, [参数类型])`。
+        this.lib = {
+            rw_init: dll.func('rw_init', 'void', []),
+            rw_run: dll.func('rw_run', 'void', []),
+            rw_quit: dll.func('rw_quit', 'void', []),
+            rw_create_window: dll.func('rw_create_window', ObjectId,
+                ['str', 'int', 'int', 'uint', 'uint']),
+            rw_create_button: dll.func('rw_create_button', ObjectId,
+                [ObjectId, 'str', 'int', 'int', 'uint', 'uint']),
+            rw_free_string: dll.func('rw_free_string', 'void', [charPtr]),
+            // ... 全部 146 个函数 ...
+        };
 
         _instance = this;
     }
 
-    // Buffer 到字符串的转换辅助函数
+    // 读取 C 字符串、释放它、返回 JS 字符串。
+    //
+    // `uint64` 以 BigInt 返回（精确——控件 id 超过 2^53，Number 装不下），而数值参数必须是
+    // Number 或 BigInt：koffi 会拒绝 `ffi-napi` 时代所需的十进制字符串形式。
     _readString(fn) {
-        const buf = fn();
-        if (!buf || buf.isNull()) return '';
+        const ptr = fn();
+        if (!ptr) return '';
         try {
-            const s = ref.readCString(buf, 0);
-            this.lib.rw_free_string(buf);
+            const s = koffi.decode(ptr, 'char', -1);
+            this.lib.rw_free_string(ptr);
             return s;
         } catch (e) {
             return '';
@@ -562,8 +570,7 @@ class RustWidgets {
     }
 
     backendName() {
-        const buf = this.lib.rw_backend_name();
-        return ref.readCString(buf, 0);
+        return this._readString(() => this.lib.rw_backend_name());
     }
 }
 

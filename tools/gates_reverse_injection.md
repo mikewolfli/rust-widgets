@@ -358,3 +358,44 @@
 > name *is* exported from `src/bindings/java_jni.rs` — the wrong question. A document that shows a
 > host what to bind against has to be checked against **that** wrapper's declarations, and the
 > sample's `package` line is the only thing that says which wrapper it means.
+
+## BLUE27 icon entry contract round (2026-10-13)
+
+`check_icon_entry_contract.sh` landed with the U0 entry inventory and had no line here, which
+`check_gates_are_worth_running.sh` reported as criterion 3 — a gate that has never been shown to go
+red is indistinguishable from one that always passes. All four of its checks were injected
+separately, each restored byte-identically (`cmp`-verified) before the next.
+
+| gate | injected | reported |
+|---|---|---|
+| `check_icon_entry_contract.sh` (A1) | reverted `Button`'s refusal to the pre-U1 shape: the getter's `Err(CapabilityAccessError::IconSourceNotPersistable)` → `UnknownProperty`, leaving the test's `assert_eq!` mention in place (the defect the check exists for is a getter that reports no icon instead of refusing) | `❌ button.rs publishes icon_source but its getter never returns IconSourceNotPersistable` |
+| `check_icon_entry_contract.sh` (A2) | removed `Chip`'s icon draw so the typed setter stores a value nothing paints: `paint_icon(` → `sketch_icon(` in `src/widget/special_widgets/chip.rs` | `❌ chip.rs has set_item_icon_source but no icon draw call (dead state)` |
+| `check_icon_entry_contract.sh` (A3) | removed `Chip`'s row-channel marker so a collection with typed item icons had neither a document channel nor a named reason: every `RecordField::optional(` → `RecordField::required(` in `src/widget/special_widgets/chip.rs` | `❌ chip.rs has no record channel and no documented reason` |
+| `check_icon_entry_contract.sh` (A4) | removed one `from_name` arm so the closed token vocabulary had a hole: `"info" => Some(Self::Info),` deleted from `src/widget/display_widgets/icon_names.rs` | `❌ token 'info' from tools/icon_tokens.txt has no from_name arm` |
+| `check_icon_entry_contract.sh` (A5, added 2026-10-13) | made the committed inventory stale: deleted one entry line from `tools/icon_entry_inventory.txt` | `❌ tools/icon_entry_inventory.txt is stale; regenerate with tools/gen_icon_entry_inventory.py` / `check_icon_entry_contract: 1 finding(s)` (exit 1; exit 0 after restoring) |
+| `check_node_icon_contract.sh` (added 2026-10-13) | made the JS encoder emit a token the library does not know: `wire = \`builtin\|${value.name}\`` → `+ "X"` in `bindings/nodejs/index.js` | `❌ FAIL writing a built-in descriptor succeeds` / `❌ FAIL the built-in descriptor round-trips through the JS wire form — null` / `NODE-ICON-PROBE: FAIL (2)` / `check_node_icon_contract: the Node binding failed the icon contract` (exit 1; exit 0 after restoring) |
+| `check_node_icon_contract.sh` (re-run 2026-10-13 after the koffi port) | the same injection, to confirm the port did not weaken the gate: `wire = \`builtin\|${value.name}\`` → `+ "X"` in `bindings/nodejs/index.js` (now koffi-based) | `❌ FAIL writing a built-in descriptor succeeds` / `❌ FAIL the built-in descriptor round-trips through the JS wire form — null` / `NODE-ICON-PROBE: FAIL (2)` (exit 1; `cmp`-verified restore → `NODE-ICON-PROBE: PASS`, exit 0) |
+
+> **Two injections that did NOT fire, recorded because they are the more useful part.** The first
+> attempts at `check_node_icon_contract.sh` reverted `encodePropertyValue`'s 64-bit slots to raw
+> BigInts — the shape that originally threw `writeInt64: Number/String 64-bit value required`. Both
+> passed. The reason is that the fix *is* a conversion at the call boundary
+> (`withWireArguments` → `int64Argument`), so a BigInt produced inside the encoder never reaches
+> `ref-napi`; the injection was neutralised by the very code it was meant to test. The hook that
+> still discriminates is the **encoder's output** (the row above), not its internal representation —
+> and the same lesson applies to the id fix, whose `Number()` rounding is also converted at the
+> boundary. Recorded here so the next person does not spend the same time re-deriving it.
+
+After all four restorations the gate exits 0.
+
+> **A1 was strengthened because that injection did not fire on the first attempt.** The original A1
+> test was `grep -q 'IconSourceNotPersistable' "$control"`, which the **test** assertion
+> (`assert_eq!(control.get("icon_source"), Err(...))`) satisfies just as well as the production arm
+> does; deleting only the production arm left the gate green, which is the one thing a gate must
+> never do. It now requires the refusal to *be* the line — `^[[:space:]]*(return[[:space:]]+)?Err\(CapabilityAccessError::IconSourceNotPersistable\)`
+> — a shape no `assert_eq!` line has, measured above: production arm deleted → `❌`, restored
+> byte-identically (`cmp`) → `✅`. The rule this yields: a text gate must anchor on the shape of the
+> code it is about, not on a token that appears anywhere in the file. The behavioural proof is still
+> `tests/icon_record_roundtrip_test.rs::a_runtime_only_source_refuses_the_row_read_on_every_channel`
+> (entry level) and the per-control property tests (control level); A1 is the text-level smoke check
+> that the refusal has not been deleted outright.
