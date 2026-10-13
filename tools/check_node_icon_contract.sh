@@ -65,12 +65,32 @@ fi
 
 # The library the binding loads. Built here rather than assumed, so the gate cannot pass against a
 # stale cdylib that predates the icons work.
-LIBRARY="target/debug/librust_widgets.so"
+#
+# # Why the extension comes from `uname` and not a literal
+#
+# This read `target/debug/librust_widgets.so` unconditionally, which is the **Linux** spelling. On
+# macOS cargo writes `librust_widgets.dylib`, so on that host the path never existed: the gate
+# rebuilt the cdylib on every run (the `-f` test was always false) and then handed
+# `RUST_WIDGETS_LIB_PATH` a path that did not exist, so the binding could not load anything and the
+# gate failed. It was invisible because the gate sits behind a `node_modules` prerequisite, and on a
+# host without that prerequisite it reports `unsupported host` (a SKIP) rather than failing — so the
+# first run *with* the prerequisite is what found it.
+case "$(uname -s)" in
+  Darwin) LIBRARY_EXT=dylib ;;
+  *) LIBRARY_EXT=so ;;
+esac
+LIBRARY="target/debug/librust_widgets.$LIBRARY_EXT"
 if [ ! -f "$LIBRARY" ]; then
   echo "[1/2] building the cdylib the binding loads"
   cargo build --no-default-features --features desktop
-else
-  echo "[1/2] using the existing $LIBRARY"
+fi
+# Asserted rather than assumed: a wrong extension must fail here, naming the path, instead of
+# surfacing later as "the binding failed the icon contract" with the real cause buried in a dlopen
+# list.
+if [ ! -f "$LIBRARY" ]; then
+  echo "FAIL: expected the cdylib at $LIBRARY after \`cargo build\`; the host's library extension" >&2
+  echo "      may be neither .so nor .dylib (uname -s = $(uname -s)). Fix this gate's mapping." >&2
+  exit 1
 fi
 
 echo "[2/2] running the binding's icon contract probe"

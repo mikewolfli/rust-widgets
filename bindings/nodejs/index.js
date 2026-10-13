@@ -405,17 +405,28 @@ let _lib = null;
 function getLibrary() {
   if (_lib) return _lib;
 
+  // The cdylib's extension is decided by the host, not by a literal: cargo writes
+  // `librust_widgets.dylib` on macOS and `librust_widgets.so` on Linux. The list used to name only
+  // the `.so` spelling, so a macOS consumer could not load a locally built library at all — and the
+  // failure mode was a dlopen list of paths that were never going to exist. Both spellings are
+  // offered, platform-appropriate one first, because a cross-built Linux artifact on a macOS host is
+  // unusual but not something this loader needs to forbid.
+  const cdylibExt = process.platform === "darwin" ? "dylib" : "so";
+  const otherExt = cdylibExt === "dylib" ? "so" : "dylib";
   const envPath = process.env.RUST_WIDGETS_LIB_PATH;
   const candidates = envPath
     ? [envPath]
     : [
+        `librust_widgets.${cdylibExt}`,
         "librust_widgets",
-        "librust_widgets.so",
+        `librust_widgets.${otherExt}`,
         "rust_widgets",
+        `./target/release/librust_widgets.${cdylibExt}`,
+        `./target/debug/librust_widgets.${cdylibExt}`,
         "./target/release/librust_widgets",
         "./target/debug/librust_widgets",
-        "./target/release/librust_widgets.so",
-        "./target/debug/librust_widgets.so",
+        `./target/release/librust_widgets.${otherExt}`,
+        `./target/debug/librust_widgets.${otherExt}`,
       ];
 
   let lastError;

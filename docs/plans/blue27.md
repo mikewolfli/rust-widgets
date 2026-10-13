@@ -654,20 +654,24 @@ render 并保留旧公共函数的兼容 re-export，避免 render 反向依赖 
 | U0 | 🟢 闭环 | `tools/check_icon_entry_contract.sh`（A1/A2/A3/A4/**A5**）；**I17 已闭环**：`tests/icon_allocations.rs` 实测稳态 **0 分配/绘制** + `tools/icon_allocations_baseline.txt` 记录 U0 基线（22–279/次）并做双重门；§19.5 各类别可达性核验；**（2026-10-13）逐项清点已是导出产物**：`tools/gen_icon_entry_inventory.py` → `tools/icon_entry_inventory.txt`（**54 条**，含类别/符号/文件/**cfg 门**/集合身份；第五轮 `PieMenu` 提升为 record 通道后由 52 → 54），A5 重新生成并比对，产物腐化即 FAIL（已反向注入验证）；**A1 已于第五轮强化**：判据锚定 getter 的拒绝语句形状（`^…Err\(CapabilityAccessError::IconSourceNotPersistable\)`），原「文件里出现过 token」判据可由测试断言满足——只删生产分支仍绿，实测已修（见 `tools/gates_reverse_injection.md`） | — |
 | U1 | 🟢 闭环 | `CompoundPath` + 软件/SVG/WGPU 非零填充；`IconSource`/`IconRef`/`measure_icon`/`validate_icon`/`paint_icon`；census（实测 ink + runs）+ C5/C6 环绕保真；stepper 快照重生成 | — |
 | U2 | 🟢 闭环 | `SharedIconPixels`（Arc 共享、move 语义、缓存同一分配）；Button/ToolButton 接入；`fit_image_into` 统一 fit；**（2026-10-13）峰值预算与矩阵**：`tests/icon_shared_pixels_budget_test.rs`（9 项）实测「from_rgba8 只付 Arc、64 次 clone 0 分配、64 控件持同一句柄差值 0、每帧成本与像素量无关」，矩阵覆盖 3 控件 × 5 尺寸 × 启用/禁用（含 `button` 槽位在 <32px 收缩为 0 的合法边界），并以复制像素的反向注入验证断言非空 | — |
-| U3 | 🟡 部分 | Action/MenuButton/DropdownMenu/PieMenu/RibbonBar 的 typed 槽；I01 跨入口同源等价；**I12 已闭环**：菜单行列的按对不重叠（并修掉实测缺陷——shortcut 与 arrow 曾画在同一个 28 px 列里，现由 `Menu::row_shows_shortcut` 明确优先级）+ check/arrow 是几何而非字符 | RTL 的**布局镜像无实现**（见 §19.14.4，全 crate 无镜像设施；`direction` 只约束按键语义） |
+| U3 | 🟢 闭环（**2026-10-13 裁定 A1**） | Action/MenuButton/DropdownMenu/PieMenu/RibbonBar 的 typed 槽；I01 跨入口同源等价；**I12 已闭环**：菜单行列的按对不重叠（并修掉实测缺陷——shortcut 与 arrow 曾画在同一个 28 px 列里，现由 `Menu::row_shows_shortcut` 明确优先级）+ check/arrow 是几何而非字符 | —（RTL 布局镜像是**具名排除**，不是待办：见 §19.14.4；排除理由已证实为**推导**而非回避——方向在本 crate 是**逐控件单轴**的，且子菜单落点那条线不属于 `Menu`（`submenu_requested` 只带标签、无锚点/方向），单侧翻箭头只会得到「箭头指左而子菜单向右展开」这种**比不做更错**的状态；RTL 只有在整个布局层一起改时才可能正确。口径订正见 §19.14.4） |
 | U4 | 🟢 闭环 | 导航集合/TabBar/ToolBox/BottomNavigationBar/MdiArea 的 item setter 与绘制；条目身份键的写法已对齐 §19.6；豁免清单已写进 `docs/MIGRATION_GUIDE.md` §6.3；**（2026-10-13）`PieMenu` 完成身份提升**：条目获得稳定 `u64` id（集合分配、宿主可 pin）+ 条目自持 typed 图标，`set_item_icon_source(id, …)` 取代索引寻址，并发布只读 `items` 行（4 项测试，含「图标跟随条目跨越 insert/remove」与 id 不可重复）；**收益与边界的实测口径**：`items` 声明为 `readable=true, writable=false`，即条目身份与 typed 图标**可读/可导出、不可从文档写回**（不说成"可持久化"）；`pie_menu.rs` 内 `item_icon_sources` 引用 8 → 0；三处变更 API 在 `pie_menu.rs` 之外**调用点为 0**（破坏面为零）；规模 +342/−32。注：旧实现自身是自洽的（13 个变更点全部同步维护侧表），故本项是**消除隐患 + 新增读通道**，不是修一个正在发生的缺陷；其余四个集合按证据**保持不变**（只增删不变、文档已声明 index 稳定，见迁移说明 §6.3.1） | —（同一 index 侧表模式仍有 53 处/6 文件，见 19.14.1 计数口径说明） |
 | U5 | 🟢 闭环 | IconSpec/IconCapability/JSON/manifest/ABI/binding；显式 resolver 贯通 loader/view/engine；记录通道：`chip`/`dropdown_menu`/`menu_button`（只读行 + 具名 read-only 拒绝）；**I10/I11 已闭环**：`IconResourceBinding`（陈旧结果丢弃、last-valid 保留、显式清除后不可复活）；**I13 已闭环（2026-10-13）**：`json::records_to_json`（读写的同一处形状定义）+ `tests/icon_record_roundtrip_test.rs`（三条通道逐字节往返、身份不漂移、运行期专有源一律拒绝、新旧冲突字段被拒而非键序取胜） | —（**Node 运行时验证已完成，2026-10-13**：`bindings/nodejs/verify_icon_contract.js` 10 项断言 6/6 稳定通过，过程中修掉绑定层四个真实缺陷——BigInt 参数被 ref-napi 拒绝、控件 id 经 `Number()` 丢精度、`rw_free_string` 后 slot 悬垂导致下次 ffi 调用终止进程、`ref-struct-napi` 拉入第二份 ref-napi 导致进程 core dump。**第五轮**取证了"只有 Node 16 能编译"的根因（`ffi-napi` 自己的 `src/ffi.cc` 把 const-env 的 `get-uv-event-loop` 指针存进非 const 槽位；`node-addon-api` overrides 与 `@lwahonen/ffi-napi@4.0.12` 均无法修复）。**第八轮已根治**：绑定移植到 `koffi`（预编译二进制、无编译器、无 node-addon-api），Node **16.20.2 / 18.20.8 / 20.20.2 / 22.23.3 / 24.15.0** 各 **17/17** 断言通过，Node 24 下 `npm install` 288 ms 成功——约束消失，门控为"≥16 即可"且本机默认 v24 下 **PASS**） |
 | U6 | 🟢 闭环 | Builtin `IconSpec` 生成并在 `mini`/`embedded` 真实编译；resource 在生成时被报告为需 resolver（不生成假 setter）；**（2026-10-13）**`GenerationReport::icon_tokens` 可达性报告（收集点即发射点）+ 引用裁剪测试（无图标文档产出零 `IconName::`）+ 未知 kind 在生成前拒绝 + `check_generator_output_compiles.sh` 实跑编译产物（fixture 含行级图标） | 「自定义 geometry/image 的发射」为**格式层具名边界**：持久化联合只有 `builtin`/`resource` 两种，`IconSource::StaticGeometry` 是借用数据、运行期句柄不得写入文档，故生成器对无文档形态的 kind 一律**生成前拒绝**而不伪造 setter（详见日志 §2.3） |
-| U7 | 🟢 闭环 | `Platform::supports_menu_item_icons` → `ControlBackend` → `crate::native_menu_item_icons_supported()` → `WindowHandle::new_menu_item_with_icon`（不支持时保留文本并报告 unsupported presentation）；`tests/native_icon_capability_test.rs`（I15）；窗口图标保持 §13 路径契约 | — |
+| U7 | 🟢 闭环 | `Platform::supports_menu_item_icons` → `ControlBackend` → `crate::native_menu_item_icons_supported()` → `WindowHandle::new_menu_item_with_icon`（不支持时保留文本并报告 unsupported presentation）；`tests/native_icon_capability_test.rs`（I15；2026-10-13：I06/I01/I02 三个单案例文件合并为 `tests/icon_contract_test.rs`，I15 因只需 `not(alloc_frugal)` 而**单独保留**——并入会把它窄化成 `full_widgets`，静默丢掉 `embedded` 覆盖）；窗口图标保持 §13 路径契约 | — |
 
 **DoD 进度：第 1–9 条全部闭合**（第三轮补齐第 5/6/9 条，证据见 `docs/log/log-20261012-1.md` 第三轮会话 §6.2；第四轮补齐 U0/U2/U5 的阶段闭环证据，见同文第四轮会话）。
-阶段完整闭环数：**7/8**（U0、U1、U2、U4、U5、U6、U7）。**这个计数的口径必须写清：🟢 表示「该阶段没有
+阶段完整闭环数：**8/8**（U0–U7 全部）。**这个计数的口径必须写清：🟢 表示「该阶段没有
 未处置的缺陷」，不表示「该阶段涉及的所有集合都已改造」。** U4 的准确含义是条目身份模型未处置项为零；
 同一模式在全仓库仍有 **53 处 / 6 个文件**（`menu_button` 12、`chip` 8、`dropdown_menu` 8、
 `bottom_navigation_bar` 7、`adaptive_scaffold` 7、`cupertino/core` 6、`navigation_drawer` 5）保持 index
 寻址，依据见 §19.14.3 与迁移说明 §6.3.1——是**具名判断**，不是遗漏。
-**U3 仍记 🟡 部分（未闭合）**：RTL 布局镜像属整个布局层变更（见 §19.14.4）。**具名不等于闭合**——把 U3
-写成「仅剩计划自己具名的排除项」会读成已收口，故此处按未闭合记账。
+**U3 由 🟡 转 🟢 的依据是 2026-10-13 的裁定 A1**：§19.14.4 的 RTL 排除**即**该阶段的完成判据。
+此前记账为「具名不等于闭合」是**误用了同一条规则**——「具名」确实不等于闭合，但这里不是靠命名收口，
+而是 §19.14.4 给出了**推导**：方向是逐控件单轴的，且子菜单落点那条线不属于 `Menu`（`submenu_requested`
+只带标签，无锚点/方向），局部翻转箭头会产出「箭头指左、子菜单却向右展开」的错误态，故 RTL 只有在
+整层一起改时才可能正确（复核命令见该节）。裁定同时给 RTL 留了明确出口：
+它应当作为独立计划交付，而不是在本方案里塞半程特例。
 Node 语言运行时验证**已完成**（`verify_icon_contract.js`，koffi 层，Node 16–24 全绿），并修掉绑定层四个真实缺陷。
 **（第八轮）** 绑定已从 `ffi-napi`/`ref-napi` 移植到 `koffi`：Node 16/18/20/22/24 **各 17/17 断言通过**，
 Node 24 全新 `npm install` 288 ms 且无编译步骤——原先"只有 Node 16 能编译"的约束随依赖一起消失。
@@ -675,9 +679,10 @@ Node 24 全新 `npm install` 288 ms 且无编译步骤——原先"只有 Node 1
 #### 19.14.2 剩余步骤（按建议执行顺序）
 
 1. ~~**I12 菜单槽位与 RTL 矩阵**（U3，DoD 4）~~ **已完成**（槽位按对不重叠 + check/arrow 为几何）。
-   - 遗留：RTL 的布局镜像不在本方案内 —— 全 crate 没有布局镜像设施，`Menu::direction` 的文档
-     自身把范围限定为**按键语义**；把菜单单独做成 RTL 镜像会与 renderer 之外的第二个方向来源
-     冲突（§19.4「不能 renderer 和 widget 重复镜像」）。结论记录在 §19.14.4，不假装已支持。
+   - RTL 的布局镜像不在本方案内，且**已由 2026-10-13 的裁定 A1 定为 U3 的完成判据**（§19.14.4）：
+     方向是逐控件单轴的、且那条线不属于 `Menu`（落点由宿主契约决定），局部翻转箭头会产出「箭头指左、
+     子菜单却向右展开」的错误态，故它只有整层
+     一起改才可能正确，应作为独立计划交付。此处不再是"遗留待办"，而是"已裁定的边界 + 出口"。
 2. ~~**I13 冲突矩阵与全入口 round-trip**（U5，DoD 6）~~ **已完成（2026-10-13）**。
    - `src/json/properties.rs::records_to_json`（public，与读取器同模块，形状只有一处定义）+
      `tests/icon_record_roundtrip_test.rs`：`chip` 走真实文档（文档 → 行 → JSON → 再加载 → 再导出，
@@ -760,13 +765,53 @@ Node 24 全新 `npm install` 288 ms 且无编译步骤——原先"只有 Node 1
 
 #### 19.14.4 本方案**不**承诺的一项：RTL 布局镜像（具名排除，非遗漏）
 
-I12 的"方向正确"容易读成"菜单要支持 RTL 镜像"。实测三件事，因此判定它不属于本方案：
+I12 的"方向正确"容易读成"菜单要支持 RTL 镜像"。实测四件事，因此判定它不属于本方案：
 
-1. 全 crate 搜索 `is_rtl` / `layout_direction` / `mirror_rect` **零命中**：没有布局镜像设施。
+1. **方向在本 crate 是逐控件、单轴、可选加入的；缺的是"整层镜像"，不是"方向支持"。**
+   `src/core/text_direction.rs` 的模块文档自己把范围写死——该类型 "is not a layout engine and
+   not a mirroring transform"，只回答"一条线的哪一端是起点"；`TextDirection` 在 `src/` 出现
+   **143 处**（含测试），`AppBar`（**绘制与命中区一起**镜像）、`TabBar`、`Scrollbar`、`Slider`、
+   `ProgressBar`、`RangeSlider`、`SpinBox`、`ComboBox` 各自镜像**自己拥有的那条轴或那对边**。
+   而整层镜像（padding/border/图标放置/文本 run 顺序/滚动条侧）确实不存在：全 crate 搜索
+   `is_rtl` / `layout_direction` / `mirror_rect` 零命中，`Chip`/`Breadcrumb`/`SegmentedControl`/
+   `EmojiPicker`/`Carousel` 等仍把 37/39 写死。
+   （**订正 2026-10-13**：早前把这条写成"没有布局镜像设施"，可被 `grep -rn TextDirection src | wc -l`
+   一行推翻；准确口径是"**没有整层镜像设施**"，不是"没有控件处理方向"。）
 2. `Menu::direction` 的文档把范围写清楚了——"the whole content of the direction field as it applies
    here"指的是**水平方向键**在 RTL 下取反（`begin_step_to_left_step`），不是绘制镜像。
-3. §19.4 的规则要求方向只解析一次：若菜单自己镜像而其它控件不镜像，就出现第二个方向事实来源。
+3. **`Menu` 不拥有那条线。** 子菜单的落点完全由宿主决定：`submenu_requested` 是
+   `Signal1<String>`，只带一个标签，**没有锚点、没有方向**（schema 见
+   `src/widget/capability/event_payloads.rs` 的 `submenu_requested` 行）。菜单单侧镜像时宿主没有
+   可跟随的契约，得到的不是"第二个方向事实来源可以叠加"，而是**半套契约对半套契约**。
+   （**订正 2026-10-13**：早前写成"其它控件不镜像"，与事实相反——其它控件有镜像，只是各镜像自己的
+   轴；§19.4 的"不能 renderer 和 widget 重复镜像"讲的是**图标几何**是否已镜像，此处是它的**类比**，
+   不是同一条规则。）
 
 要做 RTL 镜像应当是**整个布局层**的一次变更（镜像 `Rect` 派生、影响全部控件与快照），
-并在那个变更里带上 RTL 视觉基线；它不属于图标统一契约。**当前状态：RTL 菜单渲染与 LTR 相同**，
+并在那个变更里带上 RTL 视觉基线；它不属于图标统一契约。**当前状态：RTL 菜单渲染与 LTR 相同**
+（submenu mark 恒为 `IconName::ChevronRight`，label 恒为 `HorizontalAlignment::Left`），
 这是已知且已具名的边界，不是本方案漏掉的一步。
+
+**裁定（2026-10-13）：本节即 U3 的完成判据**，故 U3 记 🟢、本方案按 8/8 阶段收口。判据是
+「图标契约内没有未处置的缺陷」，而 RTL 不属于图标契约——下面是这一步的**推导**，不是回避：
+
+* 只让 arrow 的**方向**随 `TextDirection` 翻转、而位置不镜像，会得到「箭头指左、子菜单却向右展开」
+  的状态，**比不做更错**；而位置镜像就是整层布局改动本身——何况落点根本不由菜单决定（见第 3 点）。
+* 因此「RTL 下方向正确」在**没有整层镜像设施、且那条线不属于本控件**时**不可能被局部满足**，
+  只有整层一起改才成立。
+* 届时它应当作为独立计划交付（`Rect` 派生镜像 + 全部控件回归 + RTL 快照基线 + 「方向单一来源」
+  断言），并在完成后更新本表；而不是在本方案里塞一个半程特例。
+
+复核方式（可独立重跑）：
+
+```text
+$ grep -rn "is_rtl\|layout_direction\|mirror_rect" --include=*.rs src | wc -l
+0                                                          # 没有整层镜像设施
+$ grep -rn "TextDirection" --include=*.rs src | wc -l
+143                                                        # 但逐控件方向支持确实存在
+$ grep -rn "pub fn direction\b" -A 6 src/widget/menu_toolbar/menu.rs   # 范围限定为按键语义
+$ grep -n "pub submenu_requested" src/widget/menu_toolbar/menu.rs
+228:    pub submenu_requested: Signal1<String>,                # 只带标签：无锚点、无方向
+$ sed -n '1241p' src/widget/menu_toolbar/menu.rs
+                    IconName::ChevronRight,                 # 渲染与方向无关
+```
