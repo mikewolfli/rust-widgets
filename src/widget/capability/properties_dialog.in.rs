@@ -52,7 +52,10 @@ macro_rules! impl_properties_dialog {
             PropertySchema::new("title", PropertyValueKind::String, true, true),
             PropertySchema::new("modal", PropertyValueKind::Bool, true, true),
             PropertySchema::new("directory", PropertyValueKind::String, true, true),
-            PropertySchema::new("selected_file", PropertyValueKind::String, true, false),
+            // `true, true`: the host owns the list the dialog selects from, so it must be able to
+            // write the row the user chose back into a *mounted* dialog by id. See
+            // `FileDialog`'s `set` arm for why a read-only route made that impossible.
+            PropertySchema::new("selected_file", PropertyValueKind::String, true, true),
             PropertySchema::enumerated(
                 "mode",
                 true,

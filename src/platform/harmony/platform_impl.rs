@@ -149,6 +149,11 @@ impl Platform for HarmonyPlatform {
             accessibility: cfg!(all(feature = "xcomponent", not(alloc_frugal))),
             native_menu: false,
             typed_widget_trigger: true,
+            // Neither host service is reachable from this backend: the clipboard bodies write
+            // the in-process state record rather than a host clipboard, and there is no
+            // handler spawn.
+            clipboard: false,
+            open_external: false,
         }
     }
 
@@ -188,8 +193,12 @@ impl Platform for HarmonyPlatform {
             thread::sleep(Duration::from_millis(FRAME_INTERVAL_MS));
         }
     }
-    fn quit(&self) {
+    fn quit(&self) -> bool {
+        // The loop this backend runs reads `self.runtime.running` every tick, so a stop
+        // request from any thread lands and is honoured; `true` reports that fact rather
+        // than merely that the call was made.
         self.runtime.running.store(false, Ordering::SeqCst);
+        true
     }
 
     /// Release the state record for `widget_id`.

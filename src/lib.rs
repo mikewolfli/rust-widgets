@@ -455,9 +455,16 @@ pub fn run() {
     platform::profile::runtime_run();
 }
 /// Request platform event loop shutdown.
-pub fn quit() {
+///
+/// Returns whether the request was **delivered to the thread that owns the loop**. A backend
+/// whose toolkit only accepts a stop from its own thread (AppKit is the case in point) answers
+/// `false` when this is called from anywhere else, and the loop will keep running: a host that
+/// does not drive the loop itself — a smoke test, CI, a script — must read the `false` and end
+/// its own process rather than assuming the shutdown took. On backends whose loop reads a
+/// shared exit flag, a request from any thread is honoured and this answers `true`.
+pub fn quit() -> bool {
     trace_runtime_route("quit");
-    platform::profile::runtime_quit();
+    platform::profile::runtime_quit()
 }
 /// Logs the resolved profile/backend/route when `RUST_WIDGETS_TRACE_RUNTIME=1`.
 ///
@@ -2100,6 +2107,17 @@ pub fn set_clipboard_text(text: &str) -> bool {
 pub fn get_clipboard_text() -> String {
     platform::get_platform().get_clipboard_text()
 }
+/// The platform clipboard's text, or `None` when it holds no text.
+///
+/// Where [`get_clipboard_text`] answers `""` for an empty clipboard, a clipboard holding an
+/// image or a file list, *and* a failed read, this reports the one fact a paste handler needs:
+/// `Some(text)` when there is text to paste, `None` when there is not. It does not by itself
+/// distinguish "empty" from "non-text" — use [`platform_clipboard`] for that — but it is the
+/// difference between "paste this" and "there is nothing text-shaped to paste".
+#[cfg(not(alloc_frugal))]
+pub fn clipboard_text() -> Option<String> {
+    platform::get_platform().clipboard_text()
+}
 /// Returns the platform's rich clipboard backend, if available.
 #[cfg(not(alloc_frugal))]
 pub fn platform_clipboard() -> Option<&'static dyn crate::platform::clipboard::RichClipboardBackend>
@@ -2391,7 +2409,7 @@ pub use platform::{
 };
 pub use platform::{
     CapabilityContract, DropEvent, EmbeddedCapabilityContract, MobileBackend,
-    NativeCapabilityContract, PlatformCapabilities, RuntimeGuiMode, WidgetTriggerEvent,
+    NativeCapabilityContract, OpenError, PlatformCapabilities, RuntimeGuiMode, WidgetTriggerEvent,
     WidgetTriggerKind, WindowStateFlag,
 };
 

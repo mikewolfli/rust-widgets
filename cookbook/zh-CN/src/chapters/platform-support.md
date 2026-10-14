@@ -98,6 +98,39 @@ Linux (GTK)、Wayland、iOS、Android 与 HarmonyOS 都把菜单保存在进程�
 `default_capabilities_for(family)` 暴露了这个默认值，便于你与后端自身的报告作对照；
 而上表由测试钉住，不会与源码脱节。
 
+### 1.4 宿主服务是另一个问题
+
+另外两个标志回答的是「这个后端能用*宿主的某项服务*吗」，而不是「它与哪个工具包集成」。
+它们存在，是为了让宿主在**动手之前**就能判断，而不是靠一次「什么都不返回」的调用才发现不可用。
+
+| 操作系统 | 宿主剪贴板 | 外部打开 |
+|----|:--------------:|:-------------:|
+| Windows | ✅ | ✅ |
+| macOS | ✅ | ✅ |
+| Linux / GTK | ✅ ¹ | ✅ |
+| Linux / Wayland | ❌ | ❌ |
+| iOS | ❌ | ❌ |
+| Android | ❌ | ❌ |
+| HarmonyOS | ❌ | ❌ |
+| WASM | ❌ | ❌ |
+| Portable | ❌ | ❌ |
+
+¹ `clipboard` 只有在启用 `gtk-native` feature 时才为 `true`：正是它把复制的内容发布到 GDK 显示剪贴板。
+没有它时（以及在所有纯状态后端上），`set_clipboard_text` 写的是**进程内**记录 —— 在库内有用，
+但其它应用程序看不到，因此该标志为 `false`，而不是一个宿主会误信的承诺。
+
+- **宿主剪贴板**（`clipboard`）：复制的内容能否离开本进程。读取请用
+  [`clipboard_text()`](../api-reference/functions.md)，它把「没有文本」与空字符串分开。
+- **外部打开**（`open_external`）：后端能否把 URL 或路径交给宿主默认处理器。请调用
+  [`Platform::open_external`]，而不是自己 spawn `open` / `xdg-open` / `cmd` —— 它在一处
+  拒绝形如选项的目标，并把「没有安装处理器」与「请求被拒绝」分开报告。
+
+**文件选择器故意不在这张表里。** 文件选择器是一个*控件*，而本 crate 自己绘制所有控件：
+[`FileDialog`](../api-reference/widgets.md) 在每个后端上都是**自绘**控件。列表由宿主负责
+（库不会替你去浏览目录），宿主通过该控件可写的 `selected_file` 属性与 `files_selected`
+信号回报用户点中的行与确认的路径。因为只有一种机制，就没有可问的能力位 ——
+「我会拿到哪种选择器」在哪里都是同一个答案。
+
 ---
 
 ## 2. `Platform` 特质 — 通用契约
@@ -116,6 +149,9 @@ fn inspect_backend(platform: &dyn Platform) {
     println!("IME:            {}", caps.ime);
     println!("无障碍:  {}", caps.accessibility);
     println!("原生菜单:   {}", caps.native_menu);
+    println!("系统对话框: {}", caps.file_dialog);
+    println!("剪贴板:     {}", caps.clipboard);
+    println!("外部打开:   {}", caps.open_external);
 }
 ```
 
@@ -666,6 +702,8 @@ pub struct PlatformCapabilities {
     pub accessibility: bool,         // 无障碍桥接
     pub native_menu: bool,           // 原生菜单支持
     pub typed_widget_trigger: bool,  // 带类型的窗口部件事件
+    pub clipboard: bool,             // 宿主剪贴板
+    pub open_external: bool,         // 把 URL/路径交给宿主处理器
 }
 ```
 
@@ -682,6 +720,8 @@ pub struct PlatformCapabilities {
 | `accessibility` | 屏幕阅读器桥接 |
 | `native_menu` | 平台原生菜单栏 |
 | `typed_widget_trigger` | 带类型的触发事件 |
+| `clipboard` | 有宿主剪贴板（不只是进程内缓冲） |
+| `open_external` | 能把 URL/路径交给宿主默认处理器 |
 
 ### `EmbeddedCapabilityContract`
 

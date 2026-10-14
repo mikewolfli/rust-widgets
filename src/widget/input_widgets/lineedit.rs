@@ -119,6 +119,16 @@ pub struct LineEdit {
 /// it.
 pub use crate::platform::EchoMode;
 
+/// The [`EchoMode`] a published token names, or `None` for an unknown token.
+fn echo_mode_from_token(token: &str) -> Option<EchoMode> {
+    match token {
+        "normal" => Some(EchoMode::Normal),
+        "password" => Some(EchoMode::Password),
+        "no_echo" => Some(EchoMode::NoEcho),
+        _ => None,
+    }
+}
+
 impl LineEdit {
     /// Creates an empty line edit with geometry.
     pub fn new(geometry: Rect) -> Self {
@@ -795,12 +805,57 @@ impl LineEdit {
     pub fn clear(&mut self) {
         self.set_text(String::new());
     }
+    /// The published spelling of an [`EchoMode`].
+    fn echo_mode_token(mode: EchoMode) -> &'static str {
+        match mode {
+            EchoMode::Normal => "normal",
+            EchoMode::Password => "password",
+            EchoMode::NoEcho => "no_echo",
+        }
+    }
+
+    /// The `*`-masked form of `text`, as [`EchoMode::Password`] presents it.
+    ///
+    /// One definition for the two readers that must agree: [`LineEdit::display_text`]
+    /// paints with it and the clipboard path copies with it, so a copy can never mask the
+    /// value differently from the way the field drew it.
+    fn mask_text(text: &str) -> String {
+        "*".repeat(text.len())
+    }
+
+    /// The text a copy or cut gesture may place on the platform clipboard, or `None`
+    /// when the echo mode forbids copying the value at all.
+    ///
+    /// # Why masking is not only a paint concern
+    ///
+    /// The system clipboard is process-global: anything written to it is readable by every
+    /// other application. So [`EchoMode`] has to gate the copy path as well as the drawing
+    /// path — a masked field that copied the real value would leak the plaintext the moment a
+    /// user selected it and pressed Copy, and the mask on screen would have been the only
+    /// thing that was ever masked. The masked form is exactly what the field paints, so the
+    /// clipboard never carries more than the screen shows, and [`EchoMode::NoEcho`], which
+    /// shows nothing, copies nothing.
+    #[cfg(not(alloc_frugal))]
+    fn clipboard_selection(&self) -> Option<String> {
+        let selection = self.selected_text();
+        if selection.is_empty() {
+            return None;
+        }
+        match self.echo_mode {
+            EchoMode::Normal => Some(selection),
+            EchoMode::Password => Some(Self::mask_text(&selection)),
+            EchoMode::NoEcho => None,
+        }
+    }
+
     /// Copy the current selection to the platform clipboard (no-op when empty).
+    ///
+    /// The clipboard receives [`LineEdit::clipboard_selection`] rather than
+    /// [`LineEdit::selected_text`], so a masked field copies its mask.
     #[cfg(not(alloc_frugal))]
     fn copy_selection_to_clipboard(&self) {
-        let selection = self.selected_text();
-        if !selection.is_empty() {
-            crate::set_clipboard_text(&selection);
+        if let Some(text) = self.clipboard_selection() {
+            crate::set_clipboard_text(&text);
         }
     }
     /// Returns display text based on echo mode.
@@ -811,7 +866,7 @@ impl LineEdit {
     fn display_text(&self) -> String {
         match self.echo_mode {
             EchoMode::Normal => self.text.clone(),
-            EchoMode::Password => "*".repeat(self.text.len()),
+            EchoMode::Password => Self::mask_text(&self.text),
             EchoMode::NoEcho => String::new(),
         }
     }
@@ -1086,6 +1141,9 @@ impl WidgetProperties for LineEdit {
             },
             "read_only" => Ok(CapabilityValue::Bool(self.is_read_only())),
             "cursor_position" => Ok(CapabilityValue::UInt(self.cursor_position() as u64)),
+            "echo_mode" => {
+                Ok(CapabilityValue::String(Self::echo_mode_token(self.echo_mode()).to_string()))
+            }
             "prefix" => Ok(CapabilityValue::String(self.prefix().to_string())),
             "suffix" => Ok(CapabilityValue::String(self.suffix().to_string())),
             "helper" => Ok(CapabilityValue::String(self.helper_text().to_string())),
@@ -1121,6 +1179,12 @@ impl WidgetProperties for LineEdit {
             }
             "read_only" => {
                 self.set_read_only(expect_bool(value)?);
+                Ok(())
+            }
+            "echo_mode" => {
+                let token = expect_string(value)?;
+                let mode = echo_mode_from_token(&token).ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_echo_mode(mode);
                 Ok(())
             }
             "prefix" => {
@@ -1161,6 +1225,7 @@ impl WidgetProperties for LineEdit {
             "placeholder_text",
             "max_length",
             "read_only",
+            "echo_mode",
             "cursor_position",
             "prefix",
             "suffix",
@@ -1296,11 +1361,19 @@ impl LineEdit {
             }
             88 if modifiers.contains(crate::shortcut::Modifiers::PRIMARY) => {
                 // Primary+X: Copy selection, then delete it.
+                //
+                // The two halves have different conditions on purpose. What reaches the
+                // clipboard is `clipboard_selection`, which a masked field limits to its mask
+                // (and `NoEcho` to nothing); the *deletion* is the edit the user asked for and
+                // happens whenever there is a selection, so a cut in a password field still
+                // removes what the user cut.
                 #[cfg(not(alloc_frugal))]
                 {
-                    let selection = self.selected_text();
-                    if !selection.is_empty() {
-                        crate::set_clipboard_text(&selection);
+                    let had_selection = !self.selected_text().is_empty();
+                    if let Some(text) = self.clipboard_selection() {
+                        crate::set_clipboard_text(&text);
+                    }
+                    if had_selection {
                         self.backspace(); // removes the selection
                     }
                 }
@@ -1893,6 +1966,42 @@ mod tests {
         assert_eq!(le.echo_mode(), EchoMode::NoEcho);
         le.set_echo_mode(EchoMode::Normal);
         assert_eq!(le.echo_mode(), EchoMode::Normal);
+    }
+
+    /// A masked field must not hand its plaintext to the process-global clipboard.
+    ///
+    /// `selected_text` keeps returning the real value — the host needs it to store a
+    /// credential — but the clipboard path is a *different* reader, and the clipboard is
+    /// readable by every other process. In `Password` mode it must therefore receive the
+    /// same `*` mask the field paints; in `NoEcho` mode, which paints nothing, nothing may
+    /// be copied at all.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn lineedit_masked_selection_copies_the_mask_not_the_plaintext() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.set_text("s3cret".to_string());
+        le.select_all();
+        // The host's own read still sees the real value.
+        assert_eq!(le.selected_text(), "s3cret");
+
+        le.set_echo_mode(EchoMode::Password);
+        assert_eq!(le.clipboard_selection().as_deref(), Some("******"));
+
+        le.set_echo_mode(EchoMode::NoEcho);
+        assert_eq!(le.clipboard_selection(), None);
+
+        le.set_echo_mode(EchoMode::Normal);
+        assert_eq!(le.clipboard_selection().as_deref(), Some("s3cret"));
+    }
+
+    /// An empty selection is not a copy, whatever the echo mode.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn lineedit_no_selection_copies_nothing() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.set_text("s3cret".to_string());
+        le.clear_selection();
+        assert_eq!(le.clipboard_selection(), None);
     }
 
     /// The widget layer and the platform layer must name the **same** echo-mode

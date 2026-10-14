@@ -115,6 +115,10 @@ impl Platform for MacOSPlatform {
     /// the AppKit bridge), and `shortcut_style()` really is `Mac`. What is fixed here is
     /// only the pair with no implementation behind it (principle #37 — an honest
     /// absence, not a fabricated value).
+    ///
+    /// The two host-service flags follow the same rule: both are `true` because both
+    /// methods have real bodies (`NSPasteboard`, and the `open` handler spawned by
+    /// [`Self::open_external`]).
     fn capabilities(&self) -> PlatformCapabilities {
         PlatformCapabilities {
             dpi_scaling: false,
@@ -122,7 +126,21 @@ impl Platform for MacOSPlatform {
             accessibility: true,
             native_menu: false,
             typed_widget_trigger: true,
+            // `set/get_clipboard_text` talk to `NSPasteboard`, so a copy is visible outside
+            // this process.
+            clipboard: true,
+            // `open_external` spawns `open`.
+            open_external: true,
         }
+    }
+
+    /// Hands a URL or path to the system's default handler by spawning `open`.
+    ///
+    /// See [`Platform::open_external`] for why this returns on hand-off rather than on the
+    /// handler finishing, and [`crate::platform::external`] for the shared validation and
+    /// spawn.
+    fn open_external(&self, target: &str) -> Result<(), crate::platform::types::OpenError> {
+        crate::platform::external::spawn_handler("open", &[], target)
     }
 
     /// Reads installed physical memory via `sysconf` (`_SC_PHYS_PAGES` x `_SC_PAGESIZE`).
@@ -208,11 +226,22 @@ impl Platform for MacOSPlatform {
             NSApp().run();
         }
     }
-    fn quit(&self) {
-        // Stopping the shared application is also main-thread-only.
+    /// Requests that the AppKit run loop stop.
+    ///
+    /// # Why the off-main case returns `false` instead of a quiet success
+    ///
+    /// `-[NSApplication stop:]` is main-thread-only, so this backend cannot honour a request
+    /// that arrives on any other thread — and there is no safe way for it to hand the request
+    /// to the main thread from here: the obvious selector (`performSelectorOnMainThread:…`) is
+    /// banned by the `check_apple_thread_safety.sh` gate, and this crate links no dispatch
+    /// queue to use instead. The refusal is therefore **reported** rather than logged, which is
+    /// what lets a host that is not driving the loop itself (a smoke test, CI, a script)
+    /// learn that its stop request will not take effect and arrange its own ending. It used to
+    /// log and return `()`, so the same caller could not tell "asked" from "will stop".
+    fn quit(&self) -> bool {
         if !super::types::is_main_thread() {
-            log::debug!("[macos] quit skipped: not on the AppKit main thread");
-            return;
+            log::debug!("[macos] quit refused: NSApplication stop is main-thread-only");
+            return false;
         }
         // SAFETY: NSApp().stop_(nil) is safe to call on the main thread after the
         // application has been initialized. The nil argument tells the app to stop
@@ -220,6 +249,7 @@ impl Platform for MacOSPlatform {
         unsafe {
             NSApp().stop_(nil);
         }
+        true
     }
     /// Pops the next typed widget-trigger event from this backend's queue.
     ///

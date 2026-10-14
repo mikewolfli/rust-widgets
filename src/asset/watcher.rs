@@ -6,6 +6,10 @@
 //! Provides a `notify`-based watcher that can be configured to watch
 //! a directory and filter file change events through a user-supplied predicate.
 //!
+//! Each event reports *what* happened through this crate's own [`ChangeKind`]
+//! (`Created` / `Modified` / `Removed` / `Renamed`), so a consumer can tell a deletion or a
+//! rename from a write without depending on `notify` itself.
+//!
 //! # Example
 //!
 //! ```rust
@@ -23,6 +27,46 @@ use crossbeam_channel::{bounded, Receiver, Sender};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+/// How a watched path changed, in this crate's own vocabulary.
+///
+/// # Why this is not `notify::EventKind`
+///
+/// [`AssetEvent`] used to carry `notify::EventKind` directly, so a consumer had to name a
+/// type from a crate it did not depend on to say anything about an event. `notify` was never
+/// re-exported alongside it, which left two bad options: treat `kind` as opaque and print its
+/// `Debug` spelling (losing the ability to ask "was this a create or a modify?"), or add a
+/// second `notify` dependency just to match on it — a second source for one fact
+/// (principle #54). The four cases below are the whole question a host asks of a change
+/// event, and they are declared here rather than borrowed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChangeKind {
+    /// The path did not exist and now does.
+    Created,
+    /// The path existed before and was written to.
+    Modified,
+    /// The path stopped existing.
+    Removed,
+    /// The path was renamed (either the old name or the new one, as the OS reports it).
+    Renamed,
+}
+
+/// Projects a `notify` event onto this crate's [`ChangeKind`].
+///
+/// `None` means the event is not a filesystem-content change the watcher reports: an access
+/// (read/attribute) notification, or a backend-specific event with no content meaning. Those
+/// are dropped rather than mapped onto a misleading `Modified`.
+fn change_kind_of(kind: &EventKind) -> Option<ChangeKind> {
+    match kind {
+        EventKind::Create(_) => Some(ChangeKind::Created),
+        // A rename arrives as `Modify(ModifyKind::Name(_))`; it is a distinct fact from an
+        // ordinary content write, so it must not collapse into `Modified`.
+        EventKind::Modify(notify::event::ModifyKind::Name(_)) => Some(ChangeKind::Renamed),
+        EventKind::Modify(_) => Some(ChangeKind::Modified),
+        EventKind::Remove(_) => Some(ChangeKind::Removed),
+        EventKind::Access(_) | EventKind::Any | EventKind::Other => None,
+    }
+}
 
 /// Maximum number of pending events the watcher keeps in memory (D09-WATCH-01).
 ///
@@ -42,13 +86,13 @@ pub(crate) const ASSET_POLL_BATCH_LIMIT: usize = 256;
 /// Events produced by the `AssetWatcher`.
 #[derive(Debug, Clone)]
 pub enum AssetEvent {
-    /// A watched file was modified or created.
+    /// A watched path was created, modified, removed or renamed.
     FileChanged {
         /// Path reported by the OS watcher: absolute on every platform this
         /// library targets, and the same path the filter predicate saw.
         path: PathBuf,
-        /// The OS-level event kind.
-        kind: EventKind,
+        /// What happened to the path, in this crate's own [`ChangeKind`] vocabulary.
+        kind: ChangeKind,
         /// Monotonic timestamp.
         timestamp: std::time::SystemTime,
     },
@@ -143,7 +187,7 @@ impl AssetWatcher {
         let mut watcher: RecommendedWatcher = RecommendedWatcher::new(
             move |res: Result<Event, notify::Error>| match res {
                 Ok(event) => {
-                    if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
+                    if let Some(kind) = change_kind_of(&event.kind) {
                         // One event per matching path: a single notify callback may
                         // describe several paths, and the consumer expects one
                         // `FileChanged` per changed file (its filter already saw
@@ -155,7 +199,7 @@ impl AssetWatcher {
                                 let path = path.to_path_buf();
                                 pending.insert(
                                     path.clone(),
-                                    AssetEvent::FileChanged { path, kind: event.kind, timestamp },
+                                    AssetEvent::FileChanged { path, kind, timestamp },
                                 );
                             }
                         }
@@ -258,6 +302,26 @@ mod tests {
         drop(watcher);
     }
 
+    /// The watcher must report deletion and rename, not only creation and modification.
+    ///
+    /// Before this mapping existed the callback matched only `Modify`/`Create`, so a
+    /// removed or renamed path produced no event at all and a host could not detect either
+    /// fact. The map is asserted directly because the mapping is the whole contract.
+    #[test]
+    fn change_kind_projects_every_reported_change_and_drops_access() {
+        use notify::event::{AccessKind, CreateKind, ModifyKind, RemoveKind, RenameMode};
+        assert_eq!(change_kind_of(&EventKind::Create(CreateKind::File)), Some(ChangeKind::Created));
+        assert_eq!(change_kind_of(&EventKind::Modify(ModifyKind::Any)), Some(ChangeKind::Modified));
+        assert_eq!(
+            change_kind_of(&EventKind::Modify(ModifyKind::Name(RenameMode::Any))),
+            Some(ChangeKind::Renamed)
+        );
+        assert_eq!(change_kind_of(&EventKind::Remove(RemoveKind::File)), Some(ChangeKind::Removed));
+        // An access notification is not a content change; it must not be reported as one.
+        assert_eq!(change_kind_of(&EventKind::Access(AccessKind::Read)), None);
+        assert_eq!(change_kind_of(&EventKind::Any), None);
+    }
+
     #[test]
     fn asset_watcher_channel_roundtrip() {
         let watcher = AssetWatcher::new();
@@ -266,7 +330,7 @@ mod tests {
             .sender
             .send(AssetEvent::FileChanged {
                 path: PathBuf::from("test.png"),
-                kind: EventKind::Create(notify::event::CreateKind::File),
+                kind: ChangeKind::Created,
                 timestamp: std::time::SystemTime::now(),
             })
             .expect("send should succeed");
@@ -351,7 +415,7 @@ mod tests {
         let mut pending: EventMap = HashMap::new();
 
         let path = PathBuf::from("assets/icon.png");
-        let kind = EventKind::Modify(notify::event::ModifyKind::Any);
+        let kind = ChangeKind::Modified;
         // A burst the callback's own map sees: many changes to one path before any
         // flush. The map must hold one entry per path, not one per change.
         for i in 0..5_000u64 {
@@ -393,7 +457,7 @@ mod tests {
         // multi-thousand-element fixture.
         let (tx, rx) = crossbeam_channel::bounded::<AssetEvent>(3);
         let mut pending: EventMap = HashMap::new();
-        let kind = EventKind::Create(notify::event::CreateKind::File);
+        let kind = ChangeKind::Created;
         for i in 0..10u64 {
             let path = PathBuf::from(format!("assets/{i}.png"));
             pending.insert(
@@ -431,7 +495,7 @@ mod tests {
     fn asset_watcher_paused_consumer_drains_in_bounded_batches() {
         let watcher = AssetWatcher::new();
         let sender = watcher.sender.clone();
-        let kind = EventKind::Create(notify::event::CreateKind::File);
+        let kind = ChangeKind::Created;
 
         // Fill past the batch limit (without exceeding capacity, so nothing is
         // left behind in the callback's pending map).

@@ -293,90 +293,151 @@ pub trait WidgetHandle: Sized {
     /// Set this widget's primary numeric value (slider, progress bar, spin box,
     /// scroll bar, ...).
     ///
-    /// Returns `true` when the backend wrote it to a real native control or an
-    /// authoritative state model; `false` when this backend's control has no
-    /// numeric value. Callers branch on the result at runtime if they care — they
-    /// never branch on the OS. See [`crate::platform::Platform::set_widget_value`].
+    /// Returns `true` when the control accepted the value; `false` when it did not — an id that
+    /// is not a mounted widget, or a control that publishes no `value`. A caller branches on the
+    /// result at runtime if it cares; it never branches on the OS. See
+    /// [`write_control_property`] for why this is a property write rather than a call into the
+    /// platform's host-native surface.
     fn set_value(&self, value: f64) -> bool {
-        crate::platform::get_platform().set_widget_value(self.raw_id(), value)
+        write_control_property(
+            self.raw_id(),
+            "value",
+            crate::widget::capability::CapabilityValue::Float(value),
+        )
     }
 
     /// Read this widget's primary numeric value.
     fn value(&self) -> Option<f64> {
-        crate::platform::get_platform().widget_value(self.raw_id())
+        read_control_property(self.raw_id(), "value").as_ref().and_then(capability_as_f64)
     }
 
     /// Set this widget's `(min, max)` range, when it has one.
     fn set_range(&self, min: f64, max: f64) -> bool {
-        crate::platform::get_platform().set_widget_range(self.raw_id(), min, max)
+        {
+            let low = write_control_property(
+                self.raw_id(),
+                "minimum",
+                crate::widget::capability::CapabilityValue::Float(min),
+            );
+            let high = write_control_property(
+                self.raw_id(),
+                "maximum",
+                crate::widget::capability::CapabilityValue::Float(max),
+            );
+            low && high
+        }
     }
 
     /// Read this widget's `(min, max)` range, when it has one.
     fn range(&self) -> Option<(f64, f64)> {
-        crate::platform::get_platform().widget_range(self.raw_id())
+        {
+            let low = read_control_property(self.raw_id(), "minimum")
+                .as_ref()
+                .and_then(capability_as_f64)?;
+            let high = read_control_property(self.raw_id(), "maximum")
+                .as_ref()
+                .and_then(capability_as_f64)?;
+            Some((low, high))
+        }
     }
 
     /// Set this widget's selection index (combo box, list box, tab widget).
     ///
     /// `index == None` clears the selection where the control supports it.
     fn set_selected_index(&self, index: Option<usize>) -> bool {
-        crate::platform::get_platform().set_widget_selected_index(self.raw_id(), index)
+        {
+            let value = match index {
+                Some(i) => crate::widget::capability::CapabilityValue::UInt(i as u64),
+                None => crate::widget::capability::CapabilityValue::Null,
+            };
+            write_control_property(self.raw_id(), "selected_index", value)
+        }
     }
 
     /// Read this widget's selection index.
     fn selected_index(&self) -> Option<usize> {
-        crate::platform::get_platform().widget_selected_index(self.raw_id())
+        read_control_property(self.raw_id(), "selected_index")
+            .as_ref()
+            .and_then(capability_as_usize)
     }
 
     /// Set a checkable control's checked state (check box, radio button, toggle
     /// button).
     fn set_checked(&self, checked: bool) -> bool {
-        crate::platform::get_platform().set_widget_checked(self.raw_id(), checked)
+        write_control_property(
+            self.raw_id(),
+            "checked",
+            crate::widget::capability::CapabilityValue::Bool(checked),
+        )
     }
 
     /// Read this widget's checked state, or `None` when it is not checkable.
     fn checked(&self) -> Option<bool> {
-        crate::platform::get_platform().is_widget_checked(self.raw_id())
+        match read_control_property(self.raw_id(), "checked") {
+            Some(crate::widget::capability::CapabilityValue::Bool(checked)) => Some(checked),
+            _ => None,
+        }
     }
 
     /// Set this widget's increment step (slider, spin box, scroll bar).
     fn set_step(&self, step: f64) -> bool {
-        crate::platform::get_platform().set_widget_step(self.raw_id(), step)
+        write_control_property(self.raw_id(), "single_step", step_carrier(step))
     }
 
     /// Read this widget's increment step.
     fn step(&self) -> Option<f64> {
-        crate::platform::get_platform().widget_step(self.raw_id())
+        read_control_property(self.raw_id(), "single_step").as_ref().and_then(capability_as_f64)
     }
 
     /// Set a progress-style control's indeterminate (busy) state.
     fn set_indeterminate(&self, indeterminate: bool) -> bool {
-        crate::platform::get_platform().set_widget_indeterminate(self.raw_id(), indeterminate)
+        write_control_property(
+            self.raw_id(),
+            "indeterminate",
+            crate::widget::capability::CapabilityValue::Bool(indeterminate),
+        )
     }
 
     /// Read a progress-style control's indeterminate state.
     fn is_indeterminate(&self) -> Option<bool> {
-        crate::platform::get_platform().is_widget_indeterminate(self.raw_id())
+        match read_control_property(self.raw_id(), "indeterminate") {
+            Some(crate::widget::capability::CapabilityValue::Bool(v)) => Some(v),
+            _ => None,
+        }
     }
 
     /// Set a text-entry control's read-only state.
     fn set_read_only(&self, read_only: bool) -> bool {
-        crate::platform::get_platform().set_widget_read_only(self.raw_id(), read_only)
+        write_control_property(
+            self.raw_id(),
+            "read_only",
+            crate::widget::capability::CapabilityValue::Bool(read_only),
+        )
     }
 
     /// Read a text-entry control's read-only state.
     fn is_read_only(&self) -> Option<bool> {
-        crate::platform::get_platform().is_widget_read_only(self.raw_id())
+        match read_control_property(self.raw_id(), "read_only") {
+            Some(crate::widget::capability::CapabilityValue::Bool(v)) => Some(v),
+            _ => None,
+        }
     }
 
     /// Set a text-entry control's maximum accepted length.
     fn set_max_length(&self, max_length: u32) -> bool {
-        crate::platform::get_platform().set_widget_max_length(self.raw_id(), max_length)
+        write_control_property(
+            self.raw_id(),
+            "max_length",
+            crate::widget::capability::CapabilityValue::UInt(u64::from(max_length)),
+        )
     }
 
     /// Read a text-entry control's maximum accepted length.
     fn max_length(&self) -> Option<u32> {
-        crate::platform::get_platform().widget_max_length(self.raw_id())
+        match read_control_property(self.raw_id(), "max_length") {
+            Some(crate::widget::capability::CapabilityValue::UInt(v)) => u32::try_from(v).ok(),
+            _ => None,
+        }
     }
 
     /// Apply or clear a window state (maximised, minimised, full-screen, ...).
@@ -415,32 +476,58 @@ pub trait WidgetHandle: Sized {
 
     /// Set a text entry's selection range as `(start, end)` character offsets.
     fn set_widget_selection(&self, start: u32, end: u32) -> bool {
-        crate::platform::get_platform().set_widget_selection(self.raw_id(), start, end)
+        write_control_property(
+            self.raw_id(),
+            "cursor_position",
+            crate::widget::capability::CapabilityValue::UInt(u64::from(end.max(start))),
+        )
     }
 
     /// Read a text entry's selection range, or `None` when nothing is selected.
     fn widget_selection(&self) -> Option<(u32, u32)> {
-        crate::platform::get_platform().widget_selection(self.raw_id())
+        {
+            let caret = match read_control_property(self.raw_id(), "cursor_position") {
+                Some(crate::widget::capability::CapabilityValue::UInt(v)) => {
+                    u32::try_from(v).ok()?
+                }
+                _ => return None,
+            };
+            Some((0, caret))
+        }
     }
 
     /// Set a text entry's placeholder (cue) text.
     fn set_widget_placeholder(&self, text: &str) -> bool {
-        crate::platform::get_platform().set_widget_placeholder(self.raw_id(), text)
+        write_control_property(
+            self.raw_id(),
+            "placeholder_text",
+            crate::widget::capability::CapabilityValue::String(text.to_string()),
+        )
     }
 
     /// Read a text entry's placeholder text.
     fn widget_placeholder(&self) -> Option<String> {
-        crate::platform::get_platform().widget_placeholder(self.raw_id())
+        match read_control_property(self.raw_id(), "placeholder_text") {
+            Some(crate::widget::capability::CapabilityValue::String(v)) => Some(v),
+            _ => None,
+        }
     }
 
     /// Set a text entry's echo mode.
     fn set_widget_echo_mode(&self, mode: EchoMode) -> bool {
-        crate::platform::get_platform().set_widget_echo_mode(self.raw_id(), mode)
+        write_control_property(
+            self.raw_id(),
+            "echo_mode",
+            crate::widget::capability::CapabilityValue::String(echo_mode_token(mode).to_string()),
+        )
     }
 
     /// Read a text entry's echo mode.
     fn widget_echo_mode(&self) -> Option<EchoMode> {
-        crate::platform::get_platform().widget_echo_mode(self.raw_id())
+        match read_control_property(self.raw_id(), "echo_mode") {
+            Some(crate::widget::capability::CapabilityValue::String(v)) => echo_mode_from_token(&v),
+            _ => None,
+        }
     }
 
     /// Apply a slider's creation-time orientation.
@@ -455,32 +542,72 @@ pub trait WidgetHandle: Sized {
 
     /// Set a checkable control's tri-state mode.
     fn set_tristate(&self, enabled: bool) -> bool {
-        crate::platform::get_platform().set_widget_tristate(self.raw_id(), enabled)
+        write_control_property(
+            self.raw_id(),
+            "tristate_enabled",
+            crate::widget::capability::CapabilityValue::Bool(enabled),
+        )
     }
 
     /// Read a checkable control's tri-state mode.
     fn is_tristate(&self) -> Option<bool> {
-        crate::platform::get_platform().is_widget_tristate(self.raw_id())
+        match read_control_property(self.raw_id(), "tristate_enabled") {
+            Some(crate::widget::capability::CapabilityValue::Bool(v)) => Some(v),
+            _ => None,
+        }
     }
 
     /// Put a radio button into a named mutually-exclusive group.
     fn set_group(&self, group: &str) -> bool {
-        crate::platform::get_platform().set_widget_group(self.raw_id(), group)
+        write_control_property(
+            self.raw_id(),
+            "group_id",
+            crate::widget::capability::CapabilityValue::String(group.to_string()),
+        )
     }
 
     /// Read a radio button's group name.
     fn group(&self) -> Option<String> {
-        crate::platform::get_platform().widget_group(self.raw_id())
+        match read_control_property(self.raw_id(), "group_id") {
+            Some(crate::widget::capability::CapabilityValue::String(v)) => Some(v),
+            _ => None,
+        }
     }
 
     /// Set a scrollable container's scroll offset.
     fn set_scroll_position(&self, x: i32, y: i32) -> bool {
-        crate::platform::get_platform().set_widget_scroll_position(self.raw_id(), x, y)
+        {
+            let wrote_x = write_control_property(
+                self.raw_id(),
+                "scroll_position_x",
+                crate::widget::capability::CapabilityValue::Int(i64::from(x)),
+            );
+            let wrote_y = write_control_property(
+                self.raw_id(),
+                "scroll_position_y",
+                crate::widget::capability::CapabilityValue::Int(i64::from(y)),
+            );
+            wrote_x && wrote_y
+        }
     }
 
     /// Read a scrollable container's scroll offset.
     fn scroll_position(&self) -> Option<(i32, i32)> {
-        crate::platform::get_platform().widget_scroll_position(self.raw_id())
+        {
+            let x = match read_control_property(self.raw_id(), "scroll_position_x") {
+                Some(crate::widget::capability::CapabilityValue::Int(v)) => {
+                    i32::try_from(v).ok()?
+                }
+                _ => return None,
+            };
+            let y = match read_control_property(self.raw_id(), "scroll_position_y") {
+                Some(crate::widget::capability::CapabilityValue::Int(v)) => {
+                    i32::try_from(v).ok()?
+                }
+                _ => return None,
+            };
+            Some((x, y))
+        }
     }
 
     /// Register a callback for the "clicked" trigger.
@@ -2093,7 +2220,11 @@ impl SliderHandle {
             let state = map.entry(self.raw_id()).or_default();
             state.value = ordered_clamp_i32(value, state.min, state.max);
         });
-        crate::platform::get_platform().set_widget_value(self.raw_id(), f64::from(self.value()));
+        write_control_property(
+            self.raw_id(),
+            "value",
+            crate::widget::capability::CapabilityValue::Int(i64::from(self.value())),
+        );
     }
 
     /// Return the current slider value.
@@ -2132,22 +2263,33 @@ impl SliderHandle {
             state.max = max;
             state.value = ordered_clamp_i32(state.value, state.min, state.max);
         });
-        crate::platform::get_platform().set_widget_range(
-            self.raw_id(),
-            f64::from(min),
-            f64::from(max),
-        );
+        {
+            let low = write_control_property(
+                self.raw_id(),
+                "minimum",
+                crate::widget::capability::CapabilityValue::Int(i64::from(min)),
+            );
+            let high = write_control_property(
+                self.raw_id(),
+                "maximum",
+                crate::widget::capability::CapabilityValue::Int(i64::from(max)),
+            );
+            // Both halves are written; a refusal has already been logged by the funnel, and this
+            // signature has no channel to report one on.
+            let _ = low && high;
+        };
     }
 
     /// Set the slider step increment.
     ///
-    /// Mirrored into the in-process state *and* pushed to the native control
+    /// Written to the control through its property contract, and recorded in the
+    /// in-process mirror as well
     /// through [`crate::platform::Platform::set_widget_step`].
     pub fn set_step(&self, step: i32) {
         SLIDER_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).step = step;
         });
-        crate::platform::get_platform().set_widget_step(self.raw_id(), f64::from(step));
+        write_control_property(self.raw_id(), "single_step", step_carrier(f64::from(step)));
     }
 
     /// Return the slider orientation this handle was created with.
@@ -2192,15 +2334,22 @@ thread_local! {
 impl ProgressBarHandle {
     /// Set the current progress value (clamped to min/max).
     ///
-    /// Mirrored into the in-process state *and* pushed to the native control
-    /// through [`crate::platform::Platform::set_widget_value`], so the bar actually moves.
+    /// Written to the control through its property contract, and recorded in the
+    /// in-process mirror as well
+    /// through the control's own `value` property, so the bar actually moves. (It used to call
+    /// `Platform::set_widget_value`, a host-native surface this library never populates: the call
+    /// answered `false` and was dropped, so the bar did not move at all.)
     pub fn set_value(&self, value: u32) {
         PROGRESS_BAR_STATES.with(|map| {
             let mut map = map.borrow_mut();
             let state = map.entry(self.raw_id()).or_default();
             state.value = ordered_clamp_u32(value, state.min, state.max);
         });
-        crate::platform::get_platform().set_widget_value(self.raw_id(), f64::from(self.value()));
+        write_control_property(
+            self.raw_id(),
+            "value",
+            crate::widget::capability::CapabilityValue::Int(i64::from(self.value())),
+        );
     }
 
     /// Return the current progress value.
@@ -2211,7 +2360,8 @@ impl ProgressBarHandle {
 
     /// Set the minimum value.
     ///
-    /// Mirrored into the in-process state *and* pushed to the native control
+    /// Written to the control through its property contract, and recorded in the
+    /// in-process mirror as well
     /// through [`crate::platform::Platform::set_widget_range`].
     ///
     /// # Crossed bounds
@@ -2219,8 +2369,8 @@ impl ProgressBarHandle {
     /// `set_min(100)` on a bar still at its `0..100` default crosses the bounds.
     /// `u32::clamp` panics on that, and although the panic is not reachable here
     /// (the call sites clamp with the ordering already applied) the pair was
-    /// forwarded to the backend as `(100, 0)` — an inverted range stored in the
-    /// native control, read back verbatim by `widget_range()`. Both are fixed by
+    /// forwarded to the control as `(100, 0)` — an inverted range stored on the
+    /// control, read back verbatim by `range()`. Both are fixed by
     /// the same change: order the bounds once, use that ordering for the clamp
     /// and for the write.
     pub fn set_min(&self, min: u32) {
@@ -2231,16 +2381,25 @@ impl ProgressBarHandle {
             state.value = ordered_clamp_u32(state.value, state.min, state.max);
             (state.min.min(state.max), state.min.max(state.max))
         });
-        crate::platform::get_platform().set_widget_range(
-            self.raw_id(),
-            f64::from(range.0),
-            f64::from(range.1),
-        );
+        {
+            let low = write_control_property(
+                self.raw_id(),
+                "minimum",
+                crate::widget::capability::CapabilityValue::Int(i64::from(range.0)),
+            );
+            let high = write_control_property(
+                self.raw_id(),
+                "maximum",
+                crate::widget::capability::CapabilityValue::Int(i64::from(range.1)),
+            );
+            let _ = low && high;
+        };
     }
 
     /// Set the maximum value.
     ///
-    /// Mirrored into the in-process state *and* pushed to the native control
+    /// Written to the control through its property contract, and recorded in the
+    /// in-process mirror as well
     /// through [`crate::platform::Platform::set_widget_range`].
     ///
     /// # Crossed bounds
@@ -2256,24 +2415,47 @@ impl ProgressBarHandle {
             state.value = ordered_clamp_u32(state.value, state.min, state.max);
             (state.min.min(state.max), state.min.max(state.max))
         });
-        crate::platform::get_platform().set_widget_range(
-            self.raw_id(),
-            f64::from(range.0),
-            f64::from(range.1),
-        );
+        {
+            let low = write_control_property(
+                self.raw_id(),
+                "minimum",
+                crate::widget::capability::CapabilityValue::Int(i64::from(range.0)),
+            );
+            let high = write_control_property(
+                self.raw_id(),
+                "maximum",
+                crate::widget::capability::CapabilityValue::Int(i64::from(range.1)),
+            );
+            let _ = low && high;
+        };
     }
 
     /// Set whether the progress bar is in indeterminate mode.
     ///
-    /// Mirrored into the in-process state *and* pushed to the native control
+    /// Written to the control through its property contract, and recorded in the
+    /// in-process mirror as well
     /// through [`crate::platform::Platform::set_widget_indeterminate`], so a native bar
     /// animates instead of showing a fixed fraction.
+    /// # Limitation
+    ///
+    /// `ProgressBar` publishes no `indeterminate` property (the concept lives on `Arc` and
+    /// `ProgressCircle`), so this write is **refused** and the state is not recorded: the mirror
+    /// is only updated once the control accepted the value, which keeps `is_indeterminate` from
+    /// reporting a state nothing is in. The refusal is logged.
     pub fn set_indeterminate(&self, indeterminate: bool) {
-        PROGRESS_BAR_STATES.with(|map| {
-            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).indeterminate =
-                indeterminate;
-        });
-        crate::platform::get_platform().set_widget_indeterminate(self.raw_id(), indeterminate);
+        let applied = write_control_property(
+            self.raw_id(),
+            "indeterminate",
+            crate::widget::capability::CapabilityValue::Bool(indeterminate),
+        );
+        if applied {
+            PROGRESS_BAR_STATES.with(|map| {
+                map.borrow_mut()
+                    .entry(self.raw_id())
+                    .or_insert_with(Default::default)
+                    .indeterminate = indeterminate;
+            });
+        }
     }
 }
 
@@ -2310,11 +2492,13 @@ impl CheckBoxHandle {
 
     /// Set the check-box to checked or unchecked.
     ///
-    /// Mirrored into the in-process state *and* pushed to the native control
-    /// through [`crate::platform::Platform::set_widget_checked`], so the box really moves.
+    /// Written to the control through its property contract, and recorded in the
+    /// in-process mirror as well
+    /// through the control's own `checked` property, so the box really moves. (See
+    /// [`write_control_property`] for the host-native surface this replaced.)
     ///
     /// This always lands on a definite state, tri-state mode or not, so
-    /// [`CheckBoxHandle::check_state`] and the native control cannot disagree.
+    /// [`CheckBoxHandle::check_state`] and the control cannot disagree.
     /// Use [`CheckBoxHandle::set_check_state`] to reach the mixed state.
     pub fn set_checked(&self, checked: bool) {
         self.set_check_state(if checked { CheckState::Checked } else { CheckState::Unchecked });
@@ -2327,10 +2511,9 @@ impl CheckBoxHandle {
     /// two positions, so this returns `false` and changes nothing rather than
     /// silently degrading the mixed state to one of the two real ones.
     ///
-    /// The native control only has off/on, so `PartiallyChecked` is pushed as
-    /// "on" — which is how Win32 `BS_AUTO3STATE` and AppKit
-    /// `NSControlStateValueMixed` present as to the checked flag — while this
-    /// handle keeps the precise state.
+    /// The control's two-position `checked` flag cannot carry the mixed state, so
+    /// `PartiallyChecked` is pushed as "on", while this handle keeps the precise three-way state
+    /// in its mirror — which is what [`CheckBoxHandle::check_state`] reports.
     pub fn set_check_state(&self, state: CheckState) -> bool {
         let applied = CHECKBOX_STATES.with(|map| {
             let mut map = map.borrow_mut();
@@ -2342,15 +2525,21 @@ impl CheckBoxHandle {
             true
         });
         if applied {
-            crate::platform::get_platform()
-                .set_widget_checked(self.raw_id(), state != CheckState::Unchecked);
+            // Only the *control's* acceptance can change the answer: the mirror already holds the
+            // precise state, and the control's two-position `checked` flag is what the box paints.
+            write_control_property(
+                self.raw_id(),
+                "checked",
+                crate::widget::capability::CapabilityValue::Bool(state != CheckState::Unchecked),
+            );
         }
         applied
     }
 
     /// Enable/disable tri-state mode.
     ///
-    /// Mirrored into the in-process state *and* pushed to the native control
+    /// Written to the control through its property contract, and recorded in the
+    /// in-process mirror as well
     /// through [`crate::platform::Platform::set_widget_tristate`] (`setAllowsMixedState:` on
     /// macOS, `BS_3STATE`/`BS_AUTO3STATE` on Windows, `set_inconsistent` on GTK),
     /// so all three desktops actually gain a third state.
@@ -2371,9 +2560,17 @@ impl CheckBoxHandle {
             }
         });
         if collapsed {
-            crate::platform::get_platform().set_widget_checked(self.raw_id(), false);
+            write_control_property(
+                self.raw_id(),
+                "checked",
+                crate::widget::capability::CapabilityValue::Bool(false),
+            );
         }
-        crate::platform::get_platform().set_widget_tristate(self.raw_id(), tristate);
+        write_control_property(
+            self.raw_id(),
+            "tristate_enabled",
+            crate::widget::capability::CapabilityValue::Bool(tristate),
+        );
     }
 
     /// Return whether tri-state mode is on for this check-box.
@@ -2423,10 +2620,9 @@ impl RadioButtonHandle {
 
     /// Select this radio button and deselect all others in the same group.
     ///
-    /// Both the selection *and* the de-selection of siblings are pushed to the
-    /// native controls through [`crate::platform::Platform::set_widget_checked`], so the
-    /// group is actually mutually exclusive on screen rather than only in the
-    /// in-process mirror.
+    /// Both the selection *and* the de-selection of siblings are written through each control's
+    /// own `checked` property, so the group is actually mutually exclusive on screen rather than
+    /// only in the in-process mirror.
     pub fn select(&self) {
         let group = RADIO_BUTTON_STATES.with(|map| {
             let mut map = map.borrow_mut();
@@ -2434,7 +2630,11 @@ impl RadioButtonHandle {
             state.selected = true;
             state.group.clone()
         });
-        crate::platform::get_platform().set_widget_checked(self.raw_id(), true);
+        write_control_property(
+            self.raw_id(),
+            "checked",
+            crate::widget::capability::CapabilityValue::Bool(true),
+        );
 
         // Deselect all other radio buttons in the same group.
         if !group.is_empty() {
@@ -2469,7 +2669,11 @@ impl RadioButtonHandle {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).group =
                 group.to_owned();
         });
-        crate::platform::get_platform().set_widget_group(self.raw_id(), group);
+        write_control_property(
+            self.raw_id(),
+            "group_id",
+            crate::widget::capability::CapabilityValue::String(group.to_string()),
+        );
     }
 }
 
@@ -2510,7 +2714,8 @@ thread_local! {
 impl LineEditHandle {
     /// Set the placeholder text shown when the field is empty.
     ///
-    /// Mirrored into the in-process state *and* pushed to the native control
+    /// Written to the control through its property contract, and recorded in the
+    /// in-process mirror as well
     /// through [`crate::platform::Platform::set_widget_placeholder`] (`EM_SETCUEBANNER` on
     /// Windows, `set_placeholder_text` on GTK). AppKit's `NSTextView` has no
     /// placeholder concept, so on macOS the platform call reports `false` and only
@@ -2520,12 +2725,17 @@ impl LineEditHandle {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).placeholder =
                 text.to_owned();
         });
-        crate::platform::get_platform().set_widget_placeholder(self.raw_id(), text);
+        write_control_property(
+            self.raw_id(),
+            "placeholder_text",
+            crate::widget::capability::CapabilityValue::String(text.to_string()),
+        );
     }
 
     /// Set whether the line-edit is read-only.
     ///
-    /// Mirrored into the in-process state *and* pushed to the native control
+    /// Written to the control through its property contract, and recorded in the
+    /// in-process mirror as well
     /// through [`crate::platform::Platform::set_widget_read_only`], so the native field
     /// actually stops accepting input. On a backend whose text control is not an
     /// entry, the platform call reports `false` and only the mirror changes —
@@ -2535,12 +2745,17 @@ impl LineEditHandle {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).read_only =
                 read_only;
         });
-        crate::platform::get_platform().set_widget_read_only(self.raw_id(), read_only);
+        write_control_property(
+            self.raw_id(),
+            "read_only",
+            crate::widget::capability::CapabilityValue::Bool(read_only),
+        );
     }
 
     /// Set the maximum number of characters allowed.
     ///
-    /// Mirrored into the in-process state *and* pushed to the native control
+    /// Written to the control through its property contract, and recorded in the
+    /// in-process mirror as well
     /// through [`crate::platform::Platform::set_widget_max_length`]. Not every OS text
     /// control has a settable limit (AppKit's `NSTextField` does not), so the
     /// platform call may report `false`; the mirror still updates for the
@@ -2549,7 +2764,11 @@ impl LineEditHandle {
         LINE_EDIT_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).max_length = len;
         });
-        crate::platform::get_platform().set_widget_max_length(self.raw_id(), len);
+        write_control_property(
+            self.raw_id(),
+            "max_length",
+            crate::widget::capability::CapabilityValue::UInt(u64::from(len)),
+        );
     }
 
     /// Clear the line-edit text.
@@ -2559,7 +2778,8 @@ impl LineEditHandle {
 
     /// Set the echo mode (Normal / Password / NoEcho).
     ///
-    /// Mirrored into the in-process state *and* pushed to the native control
+    /// Written to the control through its property contract, and recorded in the
+    /// in-process mirror as well
     /// through [`crate::platform::Platform::set_widget_echo_mode`] (`EM_SETPASSWORDCHAR` on
     /// Windows, `set_visibility` on GTK). AppKit picks the text class instead, so
     /// macOS reports `false` here; and `NoEcho` has no equivalent on any toolkit,
@@ -2568,7 +2788,11 @@ impl LineEditHandle {
         LINE_EDIT_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).echo_mode = mode;
         });
-        crate::platform::get_platform().set_widget_echo_mode(self.raw_id(), mode);
+        write_control_property(
+            self.raw_id(),
+            "echo_mode",
+            crate::widget::capability::CapabilityValue::String(echo_mode_token(mode).to_string()),
+        );
     }
 
     /// Return the placeholder text set via [`Self::set_placeholder`].
@@ -2618,8 +2842,10 @@ impl LineEditHandle {
 
     /// Select all text in the line-edit.
     ///
-    /// Pushed to the native control through [`crate::platform::Platform::set_widget_selection`]
-    /// as the full range, so the OS selection matches what the mirror reports.
+    /// Written through the control's `cursor_position` property as the end of the value, so the
+    /// control's caret matches what the mirror reports. The contract names the caret and not an
+    /// anchor pair, so there is no property that selects *and* keeps an anchor: the caret lands at
+    /// the end rather than a range being highlighted.
     pub fn select_all(&self) {
         LINE_EDIT_STATES.with(|map| {
             let mut map = map.borrow_mut();
@@ -2630,12 +2856,17 @@ impl LineEditHandle {
         });
         // u32::MAX is the crate's "to the end" sentinel; Win32 and GTK both clamp
         // it, and macOS clamps the NSRange itself.
-        crate::platform::get_platform().set_widget_selection(self.raw_id(), 0, u32::MAX);
+        write_control_property(
+            self.raw_id(),
+            "cursor_position",
+            crate::widget::capability::CapabilityValue::UInt(u64::from(u32::MAX)),
+        );
     }
 
     /// Set the selection range (start..end).
     ///
-    /// Mirrored into the in-process state *and* pushed to the native control
+    /// Written to the control through its property contract, and recorded in the
+    /// in-process mirror as well
     /// through [`crate::platform::Platform::set_widget_selection`].
     pub fn set_selection(&self, start: u32, end: u32) {
         LINE_EDIT_STATES.with(|map| {
@@ -2645,7 +2876,11 @@ impl LineEditHandle {
             state.selection_start = start;
             state.selection_end = end;
         });
-        crate::platform::get_platform().set_widget_selection(self.raw_id(), start, end);
+        write_control_property(
+            self.raw_id(),
+            "cursor_position",
+            crate::widget::capability::CapabilityValue::UInt(u64::from(end.max(start))),
+        );
     }
 }
 
@@ -2669,7 +2904,8 @@ thread_local! {
 impl ScrollAreaHandle {
     /// Set the scroll offset.
     ///
-    /// Mirrored into the in-process state *and* pushed to the native container
+    /// Written to the control through its property contract, and recorded in the
+    /// in-process mirror as well
     /// through [`crate::platform::Platform::set_widget_scroll_position`] (`SetScrollPos` on
     /// Windows, the GTK adjustments, the AppKit clip view).
     pub fn set_scroll_position(&self, x: i32, y: i32) {
@@ -2679,7 +2915,19 @@ impl ScrollAreaHandle {
             state.scroll_x = x;
             state.scroll_y = y;
         });
-        crate::platform::get_platform().set_widget_scroll_position(self.raw_id(), x, y);
+        {
+            let wrote_x = write_control_property(
+                self.raw_id(),
+                "scroll_position_x",
+                crate::widget::capability::CapabilityValue::Int(i64::from(x)),
+            );
+            let wrote_y = write_control_property(
+                self.raw_id(),
+                "scroll_position_y",
+                crate::widget::capability::CapabilityValue::Int(i64::from(y)),
+            );
+            let _ = wrote_x && wrote_y;
+        };
     }
 
     /// Return the current scroll offset.
@@ -2707,9 +2955,11 @@ impl ScrollAreaHandle {
 
     /// Scroll to the bottom of the content.
     ///
-    /// Computes the bottom offset from the last `set_content_size` height and
-    /// pushes it through [`Self::set_scroll_position`], so the native container
-    /// actually scrolls rather than only the in-process mirror moving.
+    /// Computes the bottom offset from the last `set_content_size` height and pushes it through
+    /// [`Self::set_scroll_position`], so the control scrolls rather than only the in-process
+    /// mirror moving. The control clamps the offset against **its own** content size, which
+    /// [`ScrollAreaHandle::set_content_size`] cannot set (the control publishes no such
+    /// property), so on a control with no content this lands at 0.
     pub fn scroll_to_bottom(&self) {
         let bottom = SCROLL_AREA_STATES
             .with(|map| map.borrow().get(&self.raw_id()).map(|s| s.content_h).unwrap_or(0));
@@ -2779,14 +3029,20 @@ impl ListViewHandle {
         LIST_VIEW_STATES.with(|map| map.borrow().get(&self.raw_id()).and_then(|s| s.selected_row))
     }
 
-    /// Select a row by index, mirroring the in-process state and pushing the
-    /// selection to the native control.
+    /// Select a row by index, writing it through the control's selection property and recording
+    /// it in the in-process mirror.
     ///
-    /// `None` clears the selection. Returns `false` when the backend has no
-    /// selection model or the id is unknown, in which case the mirror is left
-    /// unchanged so `selected_row()` keeps reporting the previous value.
+    /// `None` clears the selection. Returns `false` when the control publishes no selection
+    /// property (it neither does today — see the limitation in
+    /// `handle_setters_reach_their_control_test`) or the id is not mounted, in which case the
+    /// mirror is left unchanged so `selected_row()` keeps reporting the previous value rather than
+    /// claiming a selection the control does not have.
     pub fn select_row(&self, row: Option<usize>) -> bool {
-        let pushed = crate::platform::get_platform().set_widget_selected_index(self.raw_id(), row);
+        let value = match row {
+            Some(i) => crate::widget::capability::CapabilityValue::UInt(i as u64),
+            None => crate::widget::capability::CapabilityValue::Null,
+        };
+        let pushed = write_control_property(self.raw_id(), "selected_index", value);
         if pushed {
             LIST_VIEW_STATES.with(|map| {
                 map.borrow_mut()
@@ -2856,21 +3112,143 @@ thread_local! {
 /// this helper exists to remove. A control that refuses (an unmounted id, or a backend
 /// build where `SpinBox` is absent) says so at `warn`.
 fn write_spinbox_affix(id: ObjectId, property: &str, value: &str) {
+    let _ = write_control_property(
+        id,
+        property,
+        crate::widget::capability::CapabilityValue::String(value.to_string()),
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The one route to a mounted control's properties
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Writes one property on the control the id addresses, and reports whether it took.
+///
+/// # Why every handle setter must go through here
+///
+/// The handles used to write an in-process mirror and then call
+/// [`Platform::set_widget_value`](crate::platform::Platform::set_widget_value) and its
+/// siblings — a surface that exists for **host-native** controls. This library creates no
+/// native controls: `App`-created widgets are mounted into `widget::runtime` by
+/// `control_backend::custom`, so the platform holds no record for their ids and every one of
+/// those calls answered `false`. The result was discarded, the mirror was written anyway, and
+/// the getters read only the mirror — measured, with a line edit created through a
+/// `WindowHandle`:
+///
+/// ```text
+/// platform.set_widget_placeholder(id, "hint") -> false
+/// handle.placeholder()                        -> "hint"      <- what the getter reported
+/// widget read_property(placeholder_text)      -> String("")  <- what the control held
+/// ```
+///
+/// So a host could set a slider's value, a field's placeholder or a check box's state and the
+/// control never received it, while the read-back said it had. Two mechanisms for one fact
+/// (only one of which reaches the control), and a mirror that drifted into a wrong answer.
+///
+/// This helper is the single mechanism. It is the same one `write_spinbox_affix` already used
+/// for the spin box's affixes, generalised: `WidgetFactory::write_property` dispatches on the
+/// control's own [`WidgetProperties`](crate::widget::capability::WidgetProperties) contract, so
+/// a control that does not publish `name` **refuses** the write rather than accepting it into
+/// a store nothing reads.
+///
+/// Returns `false` when the id is not a mounted widget, or when the control refused the write
+/// (an unpublished name, or a value of the wrong kind). The refusal is also logged, because a
+/// silent `false` is the defect this replaced.
+fn write_control_property(
+    id: ObjectId,
+    name: &str,
+    value: crate::widget::capability::CapabilityValue,
+) -> bool {
     let written = crate::widget::runtime::with_widget_mut(id, |widget| {
-        crate::widget::capability::WidgetFactory::new_with_defaults().write_property(
-            widget,
-            property,
-            crate::widget::capability::CapabilityValue::String(value.to_string()),
-        )
+        crate::widget::capability::WidgetFactory::new_with_defaults()
+            .write_property(widget, name, value)
     });
     match written {
-        Some(Ok(())) => {}
+        Some(Ok(())) => true,
         Some(Err(error)) => {
-            log::warn!("[handle] spin box `{property}` was refused for id={id}: {error:?}")
+            log::warn!("[handle] `{name}` was refused for id={id}: {error:?}");
+            false
         }
-        None => log::warn!(
-            "[handle] spin box `{property}` ignored for id={id}: the id is not a mounted widget"
-        ),
+        None => {
+            log::warn!("[handle] `{name}` ignored for id={id}: the id is not a mounted widget");
+            false
+        }
+    }
+}
+
+/// Reads one property off the control the id addresses.
+///
+/// `None` means "this control does not publish that name, or the id is not mounted" — the
+/// same two cases, which a caller distinguishes by whether it expects the control to have the
+/// property at all. See [`write_control_property`] for why the platform is not asked.
+fn read_control_property(
+    id: ObjectId,
+    name: &str,
+) -> Option<crate::widget::capability::CapabilityValue> {
+    crate::widget::runtime::with_widget_mut(id, |widget| {
+        crate::widget::capability::WidgetFactory::new_with_defaults()
+            .read_property(widget, name)
+            .ok()
+    })
+    .flatten()
+}
+
+/// Extracts a `f64` from a numeric capability value, whichever carrier it arrived in.
+fn capability_as_f64(value: &crate::widget::capability::CapabilityValue) -> Option<f64> {
+    use crate::widget::capability::CapabilityValue as V;
+    match value {
+        V::Int(v) => Some(*v as f64),
+        V::UInt(v) => Some(*v as f64),
+        V::Float(v) => Some(*v),
+        _ => None,
+    }
+}
+
+/// The carrier `single_step` expects, for the value given.
+///
+/// The property is declared `Int` on the slider, dial and scroll bar and `Number` on the spin
+/// box, so an integral step is written as the integer carrier the declaration asks for. A
+/// fractional step keeps the float carrier; a control that cannot represent it **refuses**
+/// (the funnel logs it) rather than silently rounding the step the caller asked for.
+fn step_carrier(step: f64) -> crate::widget::capability::CapabilityValue {
+    if step.fract() == 0.0 && step >= i64::MIN as f64 && step <= i64::MAX as f64 {
+        crate::widget::capability::CapabilityValue::Int(step as i64)
+    } else {
+        crate::widget::capability::CapabilityValue::Float(step)
+    }
+}
+
+/// The published spelling of an [`EchoMode`].
+///
+/// The property contract carries tokens, not Rust variants, so the handle and the control name
+/// the three modes the same way. Kept beside the reverse mapping so a mode added to the enum
+/// fails to compile here rather than silently losing its token.
+fn echo_mode_token(mode: EchoMode) -> &'static str {
+    match mode {
+        EchoMode::Normal => "normal",
+        EchoMode::Password => "password",
+        EchoMode::NoEcho => "no_echo",
+    }
+}
+
+/// The [`EchoMode`] a published token names, or `None` for an unknown token.
+fn echo_mode_from_token(token: &str) -> Option<EchoMode> {
+    match token {
+        "normal" => Some(EchoMode::Normal),
+        "password" => Some(EchoMode::Password),
+        "no_echo" => Some(EchoMode::NoEcho),
+        _ => None,
+    }
+}
+
+/// Extracts a `usize` from an unsigned capability value.
+fn capability_as_usize(value: &crate::widget::capability::CapabilityValue) -> Option<usize> {
+    use crate::widget::capability::CapabilityValue as V;
+    match value {
+        V::UInt(v) => usize::try_from(*v).ok(),
+        V::Int(v) => usize::try_from(*v).ok(),
+        _ => None,
     }
 }
 
@@ -2878,7 +3256,8 @@ fn write_spinbox_affix(id: ObjectId, property: &str, value: &str) {
 impl SpinBoxHandle {
     /// Set the spin-box value (clamped to range).
     ///
-    /// Mirrored into the in-process state *and* pushed to the native control
+    /// Written to the control through its property contract, and recorded in the
+    /// in-process mirror as well
     /// through [`crate::platform::Platform::set_widget_value`], so the number the user sees
     /// matches `value()`.
     pub fn set_value(&self, value: i32) {
@@ -2887,7 +3266,11 @@ impl SpinBoxHandle {
             let state = map.entry(self.raw_id()).or_default();
             state.value = ordered_clamp_i32(value, state.min, state.max);
         });
-        crate::platform::get_platform().set_widget_value(self.raw_id(), f64::from(self.value()));
+        write_control_property(
+            self.raw_id(),
+            "value",
+            crate::widget::capability::CapabilityValue::Int(i64::from(self.value())),
+        );
     }
 
     /// Return the current spin-box value.
@@ -2910,11 +3293,21 @@ impl SpinBoxHandle {
             state.max = max;
             state.value = ordered_clamp_i32(state.value, state.min, state.max);
         });
-        crate::platform::get_platform().set_widget_range(
-            self.raw_id(),
-            f64::from(min),
-            f64::from(max),
-        );
+        {
+            let low = write_control_property(
+                self.raw_id(),
+                "minimum",
+                crate::widget::capability::CapabilityValue::Int(i64::from(min)),
+            );
+            let high = write_control_property(
+                self.raw_id(),
+                "maximum",
+                crate::widget::capability::CapabilityValue::Int(i64::from(max)),
+            );
+            // Both halves are written; a refusal has already been logged by the funnel, and this
+            // signature has no channel to report one on.
+            let _ = low && high;
+        };
     }
 
     /// Set the prefix text displayed before the value.
@@ -2957,13 +3350,14 @@ impl SpinBoxHandle {
 
     /// Set the spin-box step increment.
     ///
-    /// Mirrored into the in-process state *and* pushed to the native control
+    /// Written to the control through its property contract, and recorded in the
+    /// in-process mirror as well
     /// through [`crate::platform::Platform::set_widget_step`].
     pub fn set_step(&self, step: i32) {
         SPINBOX_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).step = step;
         });
-        crate::platform::get_platform().set_widget_step(self.raw_id(), f64::from(step));
+        write_control_property(self.raw_id(), "single_step", step_carrier(f64::from(step)));
     }
 }
 
@@ -3755,7 +4149,9 @@ mod tests {
         }
         fn init(&self) {}
         fn run(&self) {}
-        fn quit(&self) {}
+        fn quit(&self) -> bool {
+            true
+        }
         fn create_window(&self, _t: &str, _x: i32, _y: i32, _w: u32, _h: u32) -> ObjectId {
             1
         }
@@ -3824,7 +4220,9 @@ mod tests {
             }
             fn init(&self) {}
             fn run(&self) {}
-            fn quit(&self) {}
+            fn quit(&self) -> bool {
+                true
+            }
             fn create_window(&self, _t: &str, _x: i32, _y: i32, _w: u32, _h: u32) -> ObjectId {
                 1
             }

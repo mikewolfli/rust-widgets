@@ -209,6 +209,11 @@ macro_rules! impl_properties_input {
             PropertySchema::new("placeholder_text", PropertyValueKind::String, true, true),
             PropertySchema::new("max_length", PropertyValueKind::UInt, true, true),
             PropertySchema::new("read_only", PropertyValueKind::Bool, true, true),
+            // How the field echoes its value. Published because the *masking* is the point of
+            // `Password`/`NoEcho`: the copy and cut paths consult it (so a masked field copies
+            // its mask rather than the plaintext), and a host that can set the text but not the
+            // echo mode cannot put a field into the one state that protects a credential.
+            PropertySchema::enumerated("echo_mode", true, true, &["normal", "password", "no_echo"]),
             PropertySchema::new("cursor_position", PropertyValueKind::UInt, true, true),
             // The five non-value strings a text entry shows. `prefix`/`suffix` are in-field unit marks;
             // `helper`/`error`/`counter` share the support row below.

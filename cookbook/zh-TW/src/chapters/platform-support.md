@@ -79,6 +79,39 @@ Wayland 沒有選單列的協議，因此它的後端會把選單樹留在行程
 
 `native_menu` 這個欄位很容易誤讀，因此值得了解這些值的來源：`Platform::capabilities` 的預設是誠實的全 `false`，由後端覆寫為自己真正接通的能力。**這個旗標記錄的是「有沒有實作」，不是「這個 OS 有沒有該功能」**：Windows 與 macOS 都*有* OS 選單 API（Win32 選單、`NSMenu`），但兩者的 `native_menu` 仍是 `❌`，因為這兩個後端都沒有呼叫它 —— `grep` 在 `src/platform/windows/` 與 `src/platform/macos/` 找不到任何 `create_menu_bar` / `menu_add_item`。macOS 的 `dpi_scaling` 同理：AppKit 能提供螢幕縮放，但後端沒有查詢，所以它誠實回報 `false`，而不是許下一個兌現不了的承諾。Linux (GTK)、Wayland、iOS、Android 與 HarmonyOS 都把選單保存在行程內。`default_capabilities_for(family)` 會公開這個預設值，讓你可以將它與後端自身的回報做比較，而且上表有測試把關，因此不會與原始碼脫節。
 
+### 1.4 宿主服務是另一個問題
+
+另外兩個旗標回答的是「這個後端能用*宿主的某項服務*嗎」，而不是「它與哪個工具包整合」。
+它們存在，是為了讓宿主在**動手之前**就能判斷，而不是靠一次「什麼都不回傳」的呼叫才發現不可用。
+
+| 作業系統 | 宿主剪貼簿 | 外部開啟 |
+|----|:--------------:|:-------------:|
+| Windows | ✅ | ✅ |
+| macOS | ✅ | ✅ |
+| Linux / GTK | ✅ ¹ | ✅ |
+| Linux / Wayland | ❌ | ❌ |
+| iOS | ❌ | ❌ |
+| Android | ❌ | ❌ |
+| HarmonyOS | ❌ | ❌ |
+| WASM | ❌ | ❌ |
+| Portable | ❌ | ❌ |
+
+¹ `clipboard` 只有在啟用 `gtk-native` feature 時才為 `true`：正是它把複製的內容發佈到 GDK 顯示剪貼簿。
+沒有它時（以及在所有純狀態後端上），`set_clipboard_text` 寫的是**行程內**記錄 —— 在函式庫內有用，
+但其它應用程式看不到，因此該旗標為 `false`，而不是一個宿主會誤信的承諾。
+
+- **宿主剪貼簿**（`clipboard`）：複製的內容能否離開本行程。讀取請用
+  [`clipboard_text()`](../api-reference/functions.md)，它把「沒有文字」與空字串分開。
+- **外部開啟**（`open_external`）：後端能否把 URL 或路徑交給宿主預設處理器。請呼叫
+  [`Platform::open_external`]，而不是自己 spawn `open` / `xdg-open` / `cmd` —— 它在一處
+  拒絕形如選項的目標，並把「沒有安裝處理器」與「請求被拒絕」分開回報。
+
+**檔案選擇器刻意不在這張表裡。** 檔案選擇器是一個*控件*，而本 crate 自己繪製所有控件：
+[`FileDialog`](../api-reference/widgets.md) 在每個後端上都是**自繪**控件。清單由宿主負責
+（函式庫不會替你去瀏覽目錄），宿主透過該控件可寫的 `selected_file` 屬性與 `files_selected`
+信號回報使用者點中的列與確認的路徑。因為只有一種機制，就沒有可問的能力位 ——
+「我會拿到哪種選擇器」在哪裡都是同一個答案。
+
 ---
 
 ## 2. `Platform` Trait — 通用合約
@@ -97,6 +130,9 @@ fn inspect_backend(platform: &dyn Platform) {
     println!("IME:            {}", caps.ime);
     println!("Accessibility:  {}", caps.accessibility);
     println!("Native menus:   {}", caps.native_menu);
+    println!("File chooser:   {}", caps.file_dialog);
+    println!("Clipboard:      {}", caps.clipboard);
+    println!("Open external:  {}", caps.open_external);
 }
 ```
 
@@ -647,6 +683,8 @@ pub struct PlatformCapabilities {
     pub accessibility: bool,         // 無障礙橋接
     pub native_menu: bool,           // 原生選單支援
     pub typed_widget_trigger: bool,  // 型別化 widget 事件
+    pub clipboard: bool,             // 宿主剪貼簿
+    pub open_external: bool,         // 把 URL/路徑交給宿主處理器
 }
 ```
 
@@ -654,7 +692,7 @@ pub struct PlatformCapabilities {
 
 由具備桌面能力的執行時期（Windows、macOS、Linux）使用。
 
-這是 `PlatformCapabilities` 的**型別別名**，而非另一個獨立的 struct。它帶有相同的五個旗標，而且必須如此：否則協商結果與後端自身的回報可能會互相矛盾，而新加入的能力可能被加入到其中一邊、卻被另一邊默默丟掉。之所以保留這個名稱，是因為它是協商 API 的詞彙（`CapabilityContract::Native(..)`、`Platform::native_capability_contract`）；由於它是別名，兩者可互換使用，也不存在任何可能寫錯的轉換。
+這是 `PlatformCapabilities` 的**型別別名**，而非另一個獨立的 struct。它帶有相同的旗標，而且必須如此：否則協商結果與後端自身的回報可能會互相矛盾，而新加入的能力可能被加入到其中一邊、卻被另一邊默默丟掉。之所以保留這個名稱，是因為它是協商 API 的詞彙（`CapabilityContract::Native(..)`、`Platform::native_capability_contract`）；由於它是別名，兩者可互換使用，也不存在任何可能寫錯的轉換。
 
 | 欄位 | 說明 |
 |-------|-------------|
@@ -663,6 +701,8 @@ pub struct PlatformCapabilities {
 | `accessibility` | 螢幕閱讀器橋接 |
 | `native_menu` | 平台原生選單列 |
 | `typed_widget_trigger` | 型別化觸發事件 |
+| `clipboard` | 有宿主剪貼簿（不只是行程內緩衝） |
+| `open_external` | 能把 URL/路徑交給宿主預設處理器 |
 
 ### `EmbeddedCapabilityContract`
 

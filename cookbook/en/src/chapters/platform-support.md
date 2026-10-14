@@ -117,6 +117,44 @@ Linux (GTK), Wayland, iOS, Android and HarmonyOS keep the menu in-process.
 against a backend's own report, and the table above is pinned by a test so it
 cannot drift from the source.
 
+### 1.4 Host services are a separate question
+
+Two flags answer "can this backend use a *service of the host*" rather than "what does the
+toolkit integrate with". They exist so a host can decide **before** acting, instead of
+discovering the absence from a call that returns nothing.
+
+| OS | Host clipboard | External open |
+|----|:--------------:|:-------------:|
+| Windows | ✅ | ✅ |
+| macOS | ✅ | ✅ |
+| Linux / GTK | ✅ ¹ | ✅ |
+| Linux / Wayland | ❌ | ❌ |
+| iOS | ❌ | ❌ |
+| Android | ❌ | ❌ |
+| HarmonyOS | ❌ | ❌ |
+| WASM | ❌ | ❌ |
+| Portable | ❌ | ❌ |
+
+¹ `clipboard` is `true` only with the `gtk-native` feature: that is what publishes a copy to the
+GDK display clipboard. Without it — and on every state-only backend — `set_clipboard_text` writes
+an **in-process** record, which is useful inside the library but invisible to other applications,
+so the flag is `false` rather than a promise the host would act on wrongly.
+
+- **Host clipboard** (`clipboard`): whether a copy leaves the process. Use
+  [`clipboard_text()`](../api-reference/functions.md) for a read that tells "no text" apart from
+  an empty string.
+- **External open** (`open_external`): `true` where the backend can hand a URL or path to the
+  host's default handler. Call [`Platform::open_external`] rather than spawning `open` /
+  `xdg-open` / `cmd` yourself — it refuses an option-shaped target once, in one place, and
+  reports "no handler installed" separately from "the request was refused".
+
+**The file chooser is not on this list, on purpose.** A file chooser is a *control*, and this
+crate paints every control itself: [`FileDialog`](../api-reference/widgets.md) is a self-drawn
+widget on every backend. The host owns the list (the library does not browse for you) and reports
+the user's row and the confirmed path through the widget's writable `selected_file` property and
+its `files_selected` signal. Because there is only one mechanism, there is no capability flag to
+ask about — "which chooser will I get" has one answer everywhere.
+
 ---
 
 ## 2. The `Platform` Trait — Universal Contract
@@ -710,6 +748,8 @@ pub struct PlatformCapabilities {
     pub accessibility: bool,         // Accessibility bridge
     pub native_menu: bool,           // Native menu support
     pub typed_widget_trigger: bool,  // Typed widget events
+    pub clipboard: bool,             // Host clipboard
+    pub open_external: bool,         // Hand a URL/path to the host handler
 }
 ```
 
@@ -718,7 +758,7 @@ pub struct PlatformCapabilities {
 Used by desktop-capable runtimes (Windows, macOS, Linux).
 
 This is a **type alias** for `PlatformCapabilities`, not a separate struct. It
-carries the same five flags, and it must: the negotiation result and the backend's
+carries the same flags, and it must: the negotiation result and the backend's
 own report would otherwise be able to disagree, and a new capability would be
 added to one and silently dropped by the other. The name is kept because it is the
 vocabulary of the negotiation API (`CapabilityContract::Native(..)`,
@@ -732,6 +772,8 @@ interchangeable and no conversion exists to get wrong.
 | `accessibility` | Screen reader bridge |
 | `native_menu` | Platform-native menu bar |
 | `typed_widget_trigger` | Typed trigger events |
+| `clipboard` | Host clipboard for text (not just an in-process buffer) |
+| `open_external` | Can hand a URL/path to the host's default handler |
 
 ### `EmbeddedCapabilityContract`
 

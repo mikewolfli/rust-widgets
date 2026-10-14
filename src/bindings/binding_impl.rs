@@ -89,6 +89,14 @@ fn capability_contract_mask(contract: crate::platform::CapabilityContract) -> c_
             if native.typed_widget_trigger {
                 mask |= 1 << 5;
             }
+            // Host services, appended after the original five. Appending (rather than
+            // renumbering) is what keeps every published bit meaning the same thing it did.
+            if native.clipboard {
+                mask |= 1 << 6;
+            }
+            if native.open_external {
+                mask |= 1 << 7;
+            }
             mask
         }
         crate::platform::CapabilityContract::Embedded(embedded) => {
@@ -2559,6 +2567,11 @@ pub extern "C" fn rw_backend_name() -> *const c_char {
 /// - bit2: accessibility
 /// - bit3: native menu bar
 /// - bit4: typed widget trigger events
+/// - bit5: host clipboard
+/// - bit6: external open (hand a URL/path to the host's default handler)
+///
+/// The last two are appended, so a host compiled against an earlier layout still reads bits 0-4
+/// exactly as before. See [`PlatformCapabilities::clipboard`] for what each one means.
 ///
 /// This reflects the platform's *general* capabilities; use
 /// [`rw_platform_capability_contract`] for the contract of a specific runtime
@@ -2581,6 +2594,13 @@ pub extern "C" fn rw_platform_capabilities() -> c_uint {
         }
         if caps.typed_widget_trigger {
             mask |= 1 << 4;
+        }
+        // Host services, appended after the original five so bits 0-4 keep their meaning.
+        if caps.clipboard {
+            mask |= 1 << 5;
+        }
+        if caps.open_external {
+            mask |= 1 << 6;
         }
         mask
     })
@@ -2681,8 +2701,9 @@ pub extern "C" fn rw_embedded_engine_button_count() -> u64 {
 ///
 /// Bit meanings are not shared between the two contract kinds. For native
 /// contracts: bit0 is always set, bit1 DPI scaling, bit2 IME, bit3 accessibility,
-/// bit4 native menu, bit5 typed widget triggers. For embedded contracts: bit0 is
-/// never set, bit1 fixed DPI, bit2 low-memory mode, bit3 typed widget triggers.
+/// bit4 native menu, bit5 typed widget triggers, bit6 clipboard,
+/// bit7 external open. For embedded contracts: bit0 is never set, bit1 fixed DPI,
+/// bit2 low-memory mode, bit3 typed widget triggers.
 pub extern "C" fn rw_platform_capability_contract(profile_code: c_uint) -> c_uint {
     c_try!({
         let profile = if profile_code == 1 {

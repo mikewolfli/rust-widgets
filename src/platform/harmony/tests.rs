@@ -322,6 +322,11 @@ fn capabilities_are_explicit_and_honest() {
     );
     assert!(!caps.native_menu, "the Harmony menu is an in-process tree, not an OS menu");
     assert!(caps.typed_widget_trigger, "typed trigger events are supported");
+    assert!(
+        !caps.clipboard,
+        "the clipboard writes the in-process state record, not a host clipboard"
+    );
+    assert!(!caps.open_external, "no handler spawn exists in this backend");
 }
 
 /// The accessibility flag and its method must agree — the capability contract, locally.

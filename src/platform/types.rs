@@ -314,6 +314,28 @@ pub enum MobileBackend {
     HarmonyMobile,
 }
 /// Cross-platform runtime capability flags.
+///
+/// # Why the host-service flags are here and not inferred from a failed call
+///
+/// [`clipboard`](Self::clipboard) and [`open_external`](Self::open_external) describe host
+/// *services*, which a backend may or may not have. They used to be unanswerable: a caller
+/// learned that it has no clipboard only by writing one and watching the result, and could not
+/// ask about external opening at all because no such method existed. That is a capability
+/// difference expressed by *trial and error* rather than by a runtime query, which principle #37
+/// rules out. `capabilities()` is already the one channel for exactly this kind of fact, so the
+/// two flags belong beside the five that were already here.
+///
+/// # Why there is no `file_dialog` flag beside them
+///
+/// A file chooser *is* a control, and this crate paints every control itself: the library ships
+/// [`FileDialog`](crate::widget::dialog::file_dialog::FileDialog), and the host drives it (it owns
+/// the list and writes the chosen row back through the writable `selected_file`). "Is the chooser
+/// the host's or ours" is therefore a **mechanism** question, and principle #4 says a caller
+/// expresses only *what it wants* — "a file chooser" — never which mechanism produces it. A flag
+/// spelling out "the backend can present the host's own file chooser" put that mechanism choice on
+/// the public API (principle #52), and it would have been `false` on every backend, so it carried
+/// no fact a caller could act on either. `native_menu` is not a counter-example: a menu bar is a
+/// host integration this crate has no self-drawn equivalent of, whereas the file chooser does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlatformCapabilities {
     /// High-DPI scale-aware geometry and text support.
@@ -326,10 +348,41 @@ pub struct PlatformCapabilities {
     pub native_menu: bool,
     /// Typed widget trigger event support.
     pub typed_widget_trigger: bool,
+    /// The backend has a host clipboard for text (not merely an in-process buffer).
+    pub clipboard: bool,
+    /// The backend can hand a URL or path to the host's default handler
+    /// (see [`Platform::open_external`]).
+    pub open_external: bool,
+}
+
+/// Why handing a target to the host's default handler failed.
+///
+/// The three cases are kept apart because they call for different responses from a caller:
+/// `Unsupported` is permanent on this backend, `InvalidTarget` is the caller's argument, and
+/// `NoHandler` is a host configuration fact that the caller may want to report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenError {
+    /// This backend has no way to hand a target to the host (see
+    /// [`PlatformCapabilities::open_external`]).
+    Unsupported,
+    /// `target` is not something the host's handler can be given: empty, or shaped like a
+    /// command-line option.
+    ///
+    /// # Why option-shaped targets are refused here rather than escaped
+    ///
+    /// On Linux the handler is `xdg-open`, and it parses its own arguments: `xdg-open -` and
+    /// `xdg-open -- /path` both fail with "unexpected option" and exit 1, so inserting a `--`
+    /// separator is not a fix. Every caller would otherwise have to re-derive the same
+    /// rejection, and the platform knowledge would leak out of `src/platform/` — the
+    /// duplication principle #36 forbids. Refusing once, here, is what keeps that check in one
+    /// place.
+    InvalidTarget,
+    /// The host has no default handler for this target on `PATH`.
+    NoHandler,
 }
 /// Native-runtime capability contract used by desktop-oriented negotiation.
 ///
-/// This is the same five flags as [`PlatformCapabilities`], and deliberately so:
+/// This is the same flag set as [`PlatformCapabilities`], and deliberately so:
 /// the negotiation result and the backend's own report must not be able to
 /// disagree. It was previously a separate struct with a field-for-field
 /// `from_platform_caps` copy, which is exactly how the two drift — a new
@@ -386,6 +439,8 @@ pub fn default_capabilities_for(_family: PlatformFamily) -> PlatformCapabilities
         accessibility: false,
         native_menu: false,
         typed_widget_trigger: true,
+        clipboard: false,
+        open_external: false,
     }
 }
 
@@ -440,13 +495,10 @@ pub trait Platform: Send + Sync {
     /// The capability-matrix gate compares what each backend claims against this default, so a
     /// backend that reports `false` here on purpose is visible rather than merely quiet.
     fn capabilities(&self) -> PlatformCapabilities {
-        PlatformCapabilities {
-            dpi_scaling: false,
-            ime: false,
-            accessibility: false,
-            native_menu: false,
-            typed_widget_trigger: true,
-        }
+        // One definition for the honest default. This used to spell the literal out again
+        // beside `default_capabilities_for`, which is the same flags written twice — the
+        // drift shape principle #54 forbids, and the one the capability-matrix gate reads.
+        default_capabilities_for(self.family())
     }
     /// Native capability contract published by desktop-capable runtimes.
     fn native_capability_contract(&self) -> Option<NativeCapabilityContract> {
@@ -537,7 +589,18 @@ pub trait Platform: Send + Sync {
     ///
     /// A request, not a synchronous stop: the loop exits at its next
     /// opportunity, so state may still be delivered after this returns.
-    fn quit(&self);
+    ///
+    /// # Why this returns `bool`
+    ///
+    /// Some toolkits accept a stop request only from the thread that runs the loop. AppKit is
+    /// the case in point: `-[NSApplication stop:]` is main-thread-only, so a backend reached
+    /// from another thread cannot honour the request. That backend used to log the refusal and
+    /// return `()`, which made "I asked it to stop" and "it will stop" indistinguishable to a
+    /// caller — the quiet no-op principle #53 rules out. The return value is the fact the
+    /// caller needs: `true` means the request was delivered to the loop's own thread and the
+    /// loop will stop; `false` means this backend cannot deliver it from here, and a caller
+    /// that needs a hard stop must arrange one itself (for example by ending the process).
+    fn quit(&self) -> bool;
 
     /// Destroy a widget and release the resources associated with it.
     ///
@@ -2138,8 +2201,51 @@ pub trait Platform: Send + Sync {
         false
     }
     /// Read plain text clipboard content.
+    ///
+    /// Returns `""` for three different situations — the clipboard holds no text, it holds a
+    /// non-text format, or the read failed — so a caller that must tell them apart should use
+    /// [`Platform::clipboard_text`] instead.
     fn get_clipboard_text(&self) -> String {
         String::new()
+    }
+    /// The clipboard's text, or `None` when there is no text to read.
+    ///
+    /// # Why this exists beside `get_clipboard_text`
+    ///
+    /// A host that wants to tell the user "the clipboard holds an image, not text" needs the
+    /// distinction the `String` accessor deliberately collapses. `None` here means "there is no
+    /// text" — the clipboard is empty, holds a non-text format, or this backend has no clipboard —
+    /// which is exactly the fact a paste handler branches on.
+    ///
+    /// The default derives it from [`Platform::get_clipboard_text`] and therefore treats an empty
+    /// string as "no text". That is the honest reading for a backend whose only source is the
+    /// merging accessor; a backend with a richer clipboard overrides this to answer precisely.
+    fn clipboard_text(&self) -> Option<String> {
+        let text = self.get_clipboard_text();
+        if text.is_empty() {
+            None
+        } else {
+            Some(text)
+        }
+    }
+    /// Hands `target` — a URL or a filesystem path — to the host's default handler.
+    ///
+    /// # What this is for, and why it is on the trait
+    ///
+    /// Opening a file or a link in the user's own application is a host service, and each OS
+    /// spells it differently (`open` on macOS, `xdg-open` on Linux, `cmd /C start` on Windows).
+    /// Without this method every host re-derives the same `cfg(target_os)` ladder and re-handles
+    /// the same argument-injection question, which spreads platform knowledge outside
+    /// `src/platform/` (principles #35/#36) and gives each host its own subtly different bugs.
+    ///
+    /// Returns as soon as the request has been handed off, **not** when the target has been
+    /// opened: the handler is a separate process with its own lifetime. A caller that needs to
+    /// know the target was actually opened must not read this `Ok(())` as proof that it was.
+    ///
+    /// The default reports [`OpenError::Unsupported`], which pairs with a `false`
+    /// [`PlatformCapabilities::open_external`].
+    fn open_external(&self, _target: &str) -> Result<(), OpenError> {
+        Err(OpenError::Unsupported)
     }
     /// Start a drag operation from source widget.
     fn begin_drag(&self, _source_widget_id: ObjectId, _mime: &str, _payload: &[u8]) -> bool {

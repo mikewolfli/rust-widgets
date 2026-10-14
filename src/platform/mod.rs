@@ -104,6 +104,8 @@ pub mod accessibility;
 /// "calls probes that do not exist everywhere".
 #[cfg(target_vendor = "apple")]
 pub mod darwin_probes;
+/// Shared host-handler spawn used by the desktop backends' `open_external`.
+pub(crate) mod external;
 /// Linux-kernel system probes (`/proc`, `/sys`) shared by the backends that sit
 /// on a Linux kernel: Android, HarmonyOS, Linux/GTK, Wayland and mobile.
 pub mod os_probes;

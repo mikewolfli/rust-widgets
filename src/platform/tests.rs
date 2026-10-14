@@ -349,7 +349,9 @@ fn every_backend_is_reported_at_the_mode_it_actually_has() {
         }
         fn init(&self) {}
         fn run(&self) {}
-        fn quit(&self) {}
+        fn quit(&self) -> bool {
+            true
+        }
         fn create_window(&self, _t: &str, _x: i32, _y: i32, _w: u32, _h: u32) -> ObjectId {
             0
         }

@@ -6,7 +6,7 @@
 # Why this gate exists
 
 `PlatformCapabilities` is not documentation — it is a **promise that escapes the process**.
-`rw_platform_capabilities()` (`src/bindings/binding_impl.rs`) packs the five flags into a C ABI
+`rw_platform_capabilities()` (`src/bindings/binding_impl.rs`) packs the flags into a C ABI
 bitmask, and a host application reads that mask to decide whether to offer an input method, a
 screen reader, or a native menu. So a flag set to `true` without a method behind it is not a
 cosmetic inaccuracy: it is a host-visible false claim.
@@ -20,6 +20,8 @@ The fields map one-to-one onto trait methods:
 | `accessibility`   | `Platform::accessibility_bridge`       |
 | `native_menu`     | `Platform::create_menu_bar` and friends|
 | `typed_widget_trigger` | `Platform::poll_widget_trigger_event` (library-implemented) |
+| `clipboard`       | `Platform::set_clipboard_text` / `get_clipboard_text` |
+| `open_external`   | `Platform::open_external`              |
 
 # The defect class this catches
 
@@ -117,6 +119,10 @@ PROMISED: dict[str, tuple[str, ...]] = {
     "typed_widget_trigger": ("poll_widget_trigger_event", "inject_widget_trigger_event"),
     # Computed or literal; checked for an override, not for a value. See the module doc.
     "dpi_scaling": ("dpi_scale_factor",),
+    # The host-service flags. Each promises the method a host would call; a backend that has no
+    # such method must leave the flag absent (which is the honest `false`).
+    "clipboard": ("set_clipboard_text", "get_clipboard_text"),
+    "open_external": ("open_external",),
 }
 
 # The backends whose `capabilities()` is read, as (name, source path). Explicit rather than a

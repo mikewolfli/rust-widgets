@@ -474,17 +474,22 @@ pub fn runtime_run() {
 }
 
 /// Requests runtime shutdown.
-pub fn runtime_quit() {
+pub fn runtime_quit() -> bool {
     #[cfg(feature = "mini")]
     {
         log::info!("rust_widgets: mini mode quit (no platform to shut down)");
+        // No profile owns a loop here, so there is no request that could go unheeded.
+        true
     }
     #[cfg(not(feature = "mini"))]
     {
         if has_os_runtime() {
-            crate::platform::quit();
+            crate::platform::quit()
         } else {
             runtime_engine().quit();
+            // The render engine's own `quit` reports nothing: it has been asked, there is no
+            // result to forward.
+            true
         }
     }
 }

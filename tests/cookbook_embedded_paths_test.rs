@@ -173,7 +173,9 @@ fn chapter_platform_runtime_resolves_where_it_exists() {
     let _: fn() -> &'static str = rust_widgets::platform::backend_name;
     let _ = rust_widgets::platform::capabilities();
     let _ = rust_widgets::platform::get_platform();
-    let _: fn() = rust_widgets::platform::quit;
+    // `quit` now reports whether the request reached the loop's own thread, so it is
+    // `fn() -> bool` rather than `fn()`.
+    let _: fn() -> bool = rust_widgets::platform::quit;
 }
 
 /// The module the old chapter taught must **not** come back unnoticed: if

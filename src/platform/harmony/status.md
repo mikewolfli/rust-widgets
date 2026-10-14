@@ -196,6 +196,9 @@ capability default must err.
 - `typed_widget_trigger: true` — implemented by this backend
   (`inject_widget_trigger_event`, `poll_widget_trigger_event`) over the shared queue,
   so it cannot be absent.
+- `clipboard: false`, `open_external: false` — the two host services. This backend's
+  clipboard is the in-process `BackendState` record rather than the host's, and it spawns
+  no handler process. Asserted by `capabilities_are_explicit_and_honest`.
 
 `supports_surfaces()` returns `true`: the backend records mounted surfaces and
 queues repaints for the host to drain. That claim is now reachable from outside the

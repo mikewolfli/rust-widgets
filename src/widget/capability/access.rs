@@ -533,6 +533,8 @@ pub fn default_widget_property_default_value(
             "placeholder_text" => CapabilityValue::String(String::new()),
             "max_length" => CapabilityValue::Null,
             "read_only" => CapabilityValue::Bool(false),
+            // Mirrors `LineEdit::new`, which starts in `EchoMode::Normal`.
+            "echo_mode" => CapabilityValue::String("normal".to_string()),
             "cursor_position" => CapabilityValue::UInt(0),
             // A fresh field shows nothing but its value, so every decoration slot is empty and the
             // derived pair is "no counter" / "nothing refused".
@@ -568,6 +570,10 @@ pub fn default_widget_property_default_value(
             "node_count" => CapabilityValue::UInt(0),
             "focused_node" => CapabilityValue::Null,
             "selected_node" => CapabilityValue::Null,
+            "has_delegate" => CapabilityValue::Bool(false),
+            // `Null` rather than `false`: a fresh tree has no focused branch, and "no branch" is not
+            // the same fact as "the branch is collapsed".
+            "expanded_focused_node" => CapabilityValue::Null,
             _ => return None,
         },
         WidgetKind::TreeTable => match property_name {

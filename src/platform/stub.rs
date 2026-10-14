@@ -249,8 +249,12 @@ impl Platform for StubPlatform {
         log::info!("[stub] StubPlatform run (testing backend)");
     }
 
-    fn quit(&self) {
+    fn quit(&self) -> bool {
         log::info!("[stub] StubPlatform quit");
+        // `run()` returns immediately on this backend, so there is no loop that could fail to
+        // observe the request. Reporting `true` says the stop request has nothing left to
+        // stop, not that a loop was signalled.
+        true
     }
 
     /// Releases the registry entry the host holds for `widget_id`.

@@ -138,6 +138,8 @@ fn platform_capabilities_have_typed_widget_trigger() {
         accessibility: true,
         native_menu: true,
         typed_widget_trigger: true,
+        clipboard: true,
+        open_external: true,
     };
     assert!(desktop_caps.typed_widget_trigger);
     assert!(desktop_caps.dpi_scaling);
@@ -149,6 +151,8 @@ fn platform_capabilities_have_typed_widget_trigger() {
         accessibility: false,
         native_menu: false,
         typed_widget_trigger: true,
+        clipboard: false,
+        open_external: false,
     };
     assert!(embedded_caps.typed_widget_trigger);
 }

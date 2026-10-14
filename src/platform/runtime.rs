@@ -353,7 +353,9 @@ impl Platform for RecordingInvalidations {
 
     fn run(&self) {}
 
-    fn quit(&self) {}
+    fn quit(&self) -> bool {
+        true
+    }
 
     fn create_window(
         &self,
@@ -464,9 +466,12 @@ pub fn run() {
 }
 
 /// Requests platform main loop shutdown.
+///
+/// Returns whether the active backend delivered the request to the loop's own thread; see
+/// [`Platform::quit`].
 #[cfg(not(alloc_frugal))]
-pub fn quit() {
-    get_platform().quit();
+pub fn quit() -> bool {
+    get_platform().quit()
 }
 
 /// Returns runtime capabilities for the active backend.

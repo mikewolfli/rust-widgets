@@ -91,6 +91,9 @@ inheriting desktop defaults:
 - `native_menu: false` — the menu is an in-process tree served through an
   injectable queue, **not** an OS menu. This is asserted by
   `ios_platform_reports_explicit_mobile_capabilities`.
+- `clipboard: false`, `open_external: false` — the two host services. This backend's
+  clipboard writes the in-process state record rather than the system pasteboard, and it
+  spawns no handler process. Asserted field by field, like the flags above.
 
 ## Build and test
 

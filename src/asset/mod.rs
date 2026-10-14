@@ -17,7 +17,7 @@
 
 mod watcher;
 
-pub use watcher::{AssetEvent, AssetWatcher};
+pub use watcher::{AssetEvent, AssetWatcher, ChangeKind};
 
 pub mod resource;
 pub use resource::{

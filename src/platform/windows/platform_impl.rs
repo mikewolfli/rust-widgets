@@ -696,7 +696,23 @@ impl Platform for WindowsPlatform {
             accessibility: true,
             native_menu: false,
             typed_widget_trigger: true,
+            // `create_file_dialog` is not overridden, so there is no system chooser to offer;
+            // the trait default answers "no control was created".
+            // `set/get_clipboard_text` use the Win32 clipboard (`OpenClipboard` /
+            // `SetClipboardData`), so a copy is visible outside this process.
+            clipboard: true,
+            // `open_external` spawns `cmd /C start`.
+            open_external: true,
         }
+    }
+
+    /// Hands a URL or path to the shell's default handler through `cmd /C start`.
+    ///
+    /// The empty `""` after `start` is its *window title* argument: without it, a quoted
+    /// target would be consumed as the title and nothing would be opened. See
+    /// [`Platform::open_external`] for the hand-off contract.
+    fn open_external(&self, target: &str) -> Result<(), crate::platform::types::OpenError> {
+        crate::platform::external::spawn_handler("cmd", &["/C", "start", ""], target)
     }
     fn dpi_scale_factor(&self) -> f32 {
         #[cfg(target_os = "windows")]
@@ -781,13 +797,18 @@ impl Platform for WindowsPlatform {
             self.runtime_running.store(false, Ordering::SeqCst);
         }
     }
-    fn quit(&self) {
+    fn quit(&self) -> bool {
+        // `runtime_running` is the flag the Win32 loop reads, so storing it stops the loop
+        // from any thread. `PostQuitMessage` additionally wakes the message pump so the loop
+        // notices without waiting for its next tick; it is Windows-only because there is no
+        // pump to wake anywhere else.
+        self.runtime_running.store(false, Ordering::SeqCst);
         #[cfg(target_os = "windows")]
         unsafe {
             use winapi::um::winuser::PostQuitMessage;
-            self.runtime_running.store(false, Ordering::SeqCst);
             PostQuitMessage(0);
         }
+        true
     }
 
     /// Release every registry entry the backend holds for `widget_id`.

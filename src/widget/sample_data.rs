@@ -37,6 +37,10 @@
 //! be indistinguishable from a difference in content.
 
 use crate::compat::{String, ToString, Vec};
+// `view_widgets` (and so `NodeView`) exists only where the full widget set does; the sample data
+// for the tree is compiled out with it, which is why the import and `tree_nodes` share this gate.
+#[cfg(full_widgets)]
+use crate::widget::view_widgets::tree_view::NodeView;
 
 /// A column header shared by every tabular control in the sample set.
 pub const HEADERS: [&str; 4] = ["Name", "Qty", "Price", "Status"];
@@ -135,29 +139,54 @@ pub fn x_labels() -> Vec<String> {
     ["0", "1", "2", "3", "4", "5"].iter().map(|label| label.to_string()).collect()
 }
 
-/// The rows of the sample tree, **indented to express the hierarchy**.
+/// The nodes of the sample tree, with their shape.
 ///
-/// # Why the structure is in the text
+/// # Why this returns [`NodeView`]s rather than strings
 ///
-/// `TreeModel::node_path` returns one string per visible row, and `VecTreeModel` is a flat
-/// `Vec<String>` — the model has no parent/child relation to express. So a tree's shape is carried by
-/// leading spaces, which is also what the control's own doc means by "node path". Without the
-/// indentation the snapshot is a flat list drawn under a tree's chrome, and the feature the control
-/// exists for (showing depth) would be absent from its own picture.
-pub fn tree_rows() -> Vec<String> {
-    let mut rows = Vec::new();
+/// This used to return one *indented string* per row, because the model could not express a
+/// hierarchy: `TreeModel::node_path` returns a string per row and nothing about parent/child
+/// relations, so the sample carried the tree's shape in leading spaces — a workaround that also
+/// meant the snapshot showed a flat list with a tree's chrome around it, and that collapsing a
+/// branch was impossible for a model built this way.
+///
+/// [`TreeModel::node`] now accepts shape, so the sample states it directly: two branches that each
+/// have two children, and leaves below. The snapshot therefore shows what the control is for —
+/// disclosure glyphs, real indentation, and a row hierarchy a reader can check against this list.
+#[cfg(full_widgets)]
+pub fn tree_nodes() -> Vec<NodeView> {
+    let mut nodes = Vec::new();
     for (index, name) in LIST_ITEMS.iter().enumerate() {
-        // Two branches with children and four leaves, so a snapshot shows both an expandable node and a
-        // leaf rather than six identical rows.
+        // Two branches with children and the rest leaves, so a snapshot shows both an expandable
+        // node and a leaf rather than six identical rows.
         if index < 2 {
-            rows.push(name.to_string());
-            rows.push(format!("  {name} · child 1"));
-            rows.push(format!("  {name} · child 2"));
+            nodes.push(NodeView {
+                label: name.to_string(),
+                depth: 0,
+                has_children: true,
+                expanded: true,
+            });
+            nodes.push(NodeView {
+                label: format!("{name} · child 1"),
+                depth: 1,
+                has_children: false,
+                expanded: true,
+            });
+            nodes.push(NodeView {
+                label: format!("{name} · child 2"),
+                depth: 1,
+                has_children: false,
+                expanded: true,
+            });
         } else {
-            rows.push(format!("    {name}"));
+            nodes.push(NodeView {
+                label: name.to_string(),
+                depth: 0,
+                has_children: false,
+                expanded: true,
+            });
         }
     }
-    rows
+    nodes
 }
 
 #[cfg(test)]

@@ -126,7 +126,23 @@ impl Platform for LinuxPlatform {
             accessibility: true,
             native_menu: false,
             typed_widget_trigger: true,
+            // `create_file_dialog` is not overridden, so it falls through to the trait default
+            // (which answers "no control was created") and there is no system chooser.
+            // Only the GDK display clipboard makes a copy visible outside this process;
+            // `BackendState`'s in-process record alone is not a host clipboard.
+            clipboard: cfg!(all(target_os = "linux", feature = "gtk-native")),
+            // `open_external` spawns `xdg-open`.
+            open_external: true,
         }
+    }
+
+    /// Hands a URL or path to the desktop's default handler by spawning `xdg-open`.
+    ///
+    /// See [`Platform::open_external`] for the hand-off (not completion) contract, and
+    /// [`crate::platform::external`] for why an option-shaped target is refused rather than
+    /// escaped: `xdg-open` parses its own arguments and rejects both `-` and `-- /path`.
+    fn open_external(&self, target: &str) -> Result<(), crate::platform::types::OpenError> {
+        crate::platform::external::spawn_handler("xdg-open", &[], target)
     }
 
     /// Reads `MemTotal` from `/proc/meminfo` via [`crate::platform::os_probes`].
@@ -172,7 +188,7 @@ impl Platform for LinuxPlatform {
                     }
                 }
             }
-            return gdk_scale_override() * gdk_dpi_scale_override();
+            gdk_scale_override() * gdk_dpi_scale_override()
         }
         #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
         {
@@ -392,12 +408,16 @@ impl Platform for LinuxPlatform {
             }
         }
     }
-    fn quit(&self) {
+    fn quit(&self) -> bool {
+        // The exit condition of this backend's own frame loop is `runtime.running`, an atomic
+        // any thread may store, so the request lands whatever thread it comes from. The
+        // GTK-native branch additionally asks GTK to quit, exactly as this method always has.
         self.runtime.running.store(false, Ordering::SeqCst);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
             gtk::main_quit();
         }
+        true
     }
 
     /// Release every registry entry the backend holds for `widget_id`.
@@ -639,7 +659,6 @@ impl Platform for LinuxPlatform {
             // **canvas** (which connects both): no control ever showed a hover highlight,
             // and a scroll area never scrolled. That is the same window/canvas asymmetry
             // this block's own doc records for the click and key paths, one message later.
-            let motion_area = paint_area.clone();
             paint_area.connect_motion_notify_event(move |widget, event| {
                 let (x, y) = event.position();
                 let point = crate::core::Point::new(x as i32, y as i32);
@@ -662,7 +681,7 @@ impl Platform for LinuxPlatform {
             });
 
             let wheel_area = paint_area.clone();
-            paint_area.connect_scroll_event(move |widget, event| {
+            paint_area.connect_scroll_event(move |_widget, event| {
                 let Some(window_widget) = crate::widget::runtime::widget_id_for_host_window(id)
                 else {
                     return glib::Propagation::Proceed;

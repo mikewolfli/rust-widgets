@@ -141,7 +141,7 @@ impl Platform for WaylandPlatform {
     /// GTK backend owns; a Wayland client reaches the compositor's `text-input` protocol, which
     /// is not bound here).
     ///
-    /// The flag escapes the process: `rw_platform_capabilities()` packs these five into a C ABI
+    /// The flag escapes the process: `rw_platform_capabilities()` packs these flags into a C ABI
     /// bitmask (`bindings/binding_impl.rs`), so a host application read the false `ime`/`access`
     /// bits and would offer an input-method or screen-reader affordance that cannot answer.
     ///
@@ -168,6 +168,10 @@ impl Platform for WaylandPlatform {
             accessibility: false,
             native_menu: false,
             typed_widget_trigger: true,
+            // No display clipboard (the `set/get_clipboard_text` bodies write the in-process
+            // `BackendState` record) and no handler spawn.
+            clipboard: false,
+            open_external: false,
         }
     }
 
@@ -256,9 +260,11 @@ impl Platform for WaylandPlatform {
         }
     }
 
-    fn quit(&self) {
+    fn quit(&self) -> bool {
         self.runtime.running.store(false, std::sync::atomic::Ordering::SeqCst);
         log::info!("[wayland] Platform quit.");
+        // The loop reads `running` each tick, so the request is honoured from any thread.
+        true
     }
 
     /// Release every registry entry the backend holds for `widget_id`.
@@ -878,15 +884,17 @@ thread_local! {
         core::cell::RefCell::new(crate::compat::HashMap::new());
 }
 
-/// The session checked out by the event loop for a dispatch pass.
-///
-/// While [`run_native_event_loop`](WaylandPlatform::run_native_event_loop) or
-/// [`dispatch_native_events`](WaylandPlatform::dispatch_native_events) is dispatching
-/// compositor events, the session is moved out of `native_session` so a re-entrant
-/// `create_window` (a close handler that opens a new window) can reach it without
-/// deadlocking on the same non-recursive mutex. This thread-local lets that call reuse
-/// the checked-out session instead of opening a second connection whose events nobody
-/// would dispatch.
+// The session checked out by the event loop for a dispatch pass.
+//
+// While `run_native_event_loop` or `dispatch_native_events` is dispatching compositor events, the
+// session is moved out of `native_session` so a re-entrant `create_window` (a close handler that
+// opens a new window) can reach it without deadlocking on the same non-recursive mutex. This
+// thread-local lets that call reuse the checked-out session instead of opening a second connection
+// whose events nobody would dispatch.
+//
+// Written as `//` rather than `///`: a doc comment on a `thread_local!` invocation documents
+// nothing, and rustdoc says so (`unused_doc_comments`) — the note belongs in the source, not in a
+// doc block attached to a macro.
 #[cfg(all(feature = "wayland-native", target_os = "linux"))]
 thread_local! {
     static DISPATCHING_SESSION: core::cell::RefCell<Option<*mut WaylandSession>> =

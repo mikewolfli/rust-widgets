@@ -46,6 +46,13 @@ macro_rules! impl_properties_view {
             PropertySchema::new("node_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("focused_node", PropertyValueKind::UInt, true, true),
             PropertySchema::new("selected_node", PropertyValueKind::UInt, true, false),
+            // Whether an in-place edit delegate is bound. Published so a designer can tell "this
+            // tree can be renamed in place" from "the host left the seam empty" before offering
+            // the gesture — the same reason `TableWidget` publishes `has_delegate`.
+            PropertySchema::new("has_delegate", PropertyValueKind::Bool, true, false),
+            // The focused node's expansion state. Optional by construction: `Null` means the
+            // focused node is not a visible branch.
+            PropertySchema::new("expanded_focused_node", PropertyValueKind::Bool, true, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

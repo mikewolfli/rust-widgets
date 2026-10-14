@@ -120,8 +120,12 @@ impl Platform for AndroidPlatform {
         }
     }
 
-    fn quit(&self) {
+    fn quit(&self) -> bool {
+        // The loop this backend runs reads `self.runtime.running` every tick, so a stop
+        // request from any thread lands and is honoured; `true` reports that fact rather
+        // than merely that the call was made.
         self.runtime.running.store(false, Ordering::SeqCst);
+        true
     }
 
     /// Release every registry entry the backend holds for `widget_id`.

@@ -328,10 +328,10 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
         },
         "tree_view" => match widget_as_mut::<TreeView>(widget) {
             Some(tree) => {
-                // `node_path` is a *string per visible row*, so the hierarchy is expressed in the text —
-                // see `VecTreeModel`. `sample::tree_rows` is the indented form, and the indentation is
-                // what makes the snapshot show a tree rather than a flat list under a tree's chrome.
-                tree.set_model(Arc::new(VecTreeModel::new(sample::tree_rows())));
+                // The sample states the hierarchy through `NodeView`s, so the snapshot shows the
+                // control doing its job — disclosure glyphs and real indentation — instead of a
+                // flat list whose shape was carried by leading spaces in the text.
+                tree.set_model(Arc::new(VecTreeModel::from_views(sample::tree_nodes())));
                 tree.select_node(0);
                 true
             }

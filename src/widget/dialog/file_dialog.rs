@@ -1,7 +1,26 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! File dialog widget.
+//! File dialog widget — the crate's one file chooser, and it is **self-drawn**.
+//!
+//! # What this control is, and what the host owes it
+//!
+//! There is no second, host-provided chooser behind this widget: every backend draws this one
+//! (see `PlatformCapabilities`, which has no `file_dialog` flag for exactly that reason). What the
+//! control does **not** own is the directory listing — the host supplies the rows and reports the
+//! user's movement through [`FileDialog::set_current_file`]. The library never browses a directory
+//! on the host's behalf.
+//!
+//! The host's half is therefore one loop, and all of it goes through this widget's own API:
+//!
+//! * the user picks a row in the host's list → [`FileDialog::set_current_file`] (cursor) and the
+//!   writable `selected_file` property (selection), which is why that property is *not* read-only;
+//! * the user confirms → [`FileDialog::accept`], which emits `files_selected` with the whole
+//!   selection;
+//! * the user dismisses → [`FileDialog::reject`].
+//!
+//! A host that mounts the dialog and then only reads it has a box that can never be filled — which
+//! is why the selection has a reachable write path from an `ObjectId`.
 use crate::core::{Color, HorizontalAlignment, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
@@ -248,6 +267,21 @@ impl FileDialog {
         self.selected_files = vec![path.clone()];
         self.file_selected.emit(path);
     }
+    /// Clears the pending selection without closing the dialog.
+    ///
+    /// The counterpart to [`FileDialog::select_file`]: that one replaces the selection, this one
+    /// removes it. Distinct from [`FileDialog::reject`], which also hides the dialog — a host whose
+    /// own list the user deselected wants the box cleared, not dismissed.
+    ///
+    /// Repaints when there was something to clear, because the selected-file strip is drawn from
+    /// this field.
+    pub fn clear_selection(&mut self) {
+        if self.selected_files.is_empty() {
+            return;
+        }
+        self.selected_files.clear();
+        self.base.request_redraw();
+    }
     /// Reports that the host's file cursor moved onto `path`, emitting
     /// `current_changed`.
     ///
@@ -399,10 +433,36 @@ impl WidgetProperties for FileDialog {
                 self.set_directory(expect_string(value)?);
                 Ok(())
             }
-            // `selected_file` is the dialog's *output*, chosen by the user through the list; the
-            // property contract deliberately offers no write path for it, so a write is read-only
-            // rather than silently dropped.
-            "selected_file" => Err(CapabilityAccessError::ReadOnlyProperty),
+            // `selected_file` is the dialog's *output* — but the host owns the list that produces
+            // it, so the write path has to exist.
+            //
+            // # Why this used to be read-only, and why that was wrong
+            //
+            // The dialog draws no file list of its own: the host does (see
+            // [`FileDialog::set_current_file`]). Setting the selection therefore used to be
+            // `&mut FileDialog`-only, which works *before* `runtime::register` and nowhere after
+            // it — once mounted, a host holds an `ObjectId`, and no downcast to `FileDialog`
+            // exists. So a host whose own list the user had just clicked on could not hand the
+            // chosen row to the box it had created: the "the list belongs to the host" design was
+            // one-way in practice. Property writes are reachable by id, so this is the route that
+            // closes it.
+            //
+            // `Null` clears the pending selection without closing the dialog, which is a fact a
+            // `String` write cannot express.
+            "selected_file" => match value {
+                CapabilityValue::Null => {
+                    self.clear_selection();
+                    Ok(())
+                }
+                other => {
+                    self.select_file(expect_string(other)?);
+                    // `select_file` alone does not repaint (its doc says so), but a mounted dialog
+                    // is already on screen, so a host's write must be visible without waiting for
+                    // an unrelated event.
+                    self.base.request_redraw();
+                    Ok(())
+                }
+            },
             _ => base_property_set(self, name, value),
         }
     }
@@ -791,6 +851,50 @@ mod tests {
         dialog.select_file("/tmp/demo.txt");
         assert_eq!(dialog.selected_file(), Some("/tmp/demo.txt"));
         assert_eq!(*selected.lock().expect("selected lock"), "/tmp/demo.txt");
+    }
+
+    /// A **mounted** dialog must accept the selection the host's own list produced.
+    ///
+    /// Once registered, a host holds an `ObjectId`, so the `&mut FileDialog` setter is out of
+    /// reach; the property route is the only way back in, and it used to refuse with
+    /// `ReadOnlyProperty`. This pins the write, the clear (`Null`), and the signal that tells the
+    /// host the write landed.
+    #[test]
+    fn a_mounted_dialog_accepts_a_selection_written_through_the_property_route() {
+        use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+        use crate::widget::capability::WidgetProperties;
+
+        let mut dialog = FileDialog::new(Rect::new(0, 0, 420, 280));
+        assert_eq!(dialog.selected_file(), None);
+
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen_clone = Arc::clone(&seen);
+        dialog.file_selected.connect(move |path| {
+            if let Ok(mut v) = seen_clone.lock() {
+                v.push((*path).clone());
+            }
+        });
+
+        dialog
+            .set("selected_file", CapabilityValue::String("/tmp/picked.txt".to_string()))
+            .expect("a host-owned list must be able to write the chosen path");
+        assert_eq!(dialog.selected_file(), Some("/tmp/picked.txt"));
+        assert_eq!(
+            *seen.lock().expect("selected lock"),
+            vec!["/tmp/picked.txt".to_string()],
+            "the write must announce itself the same way the setter does"
+        );
+
+        // `Null` clears without closing the dialog.
+        dialog.set("selected_file", CapabilityValue::Null).expect("clearing is a valid write");
+        assert_eq!(dialog.selected_file(), None);
+        assert!(dialog.is_visible(), "clearing the selection must not dismiss the dialog");
+
+        // A wrong carrier type is still the caller's error, not a silent drop.
+        assert_eq!(
+            dialog.set("selected_file", CapabilityValue::UInt(3)),
+            Err(CapabilityAccessError::TypeMismatch)
+        );
     }
 
     #[test]

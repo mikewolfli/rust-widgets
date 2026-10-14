@@ -412,7 +412,11 @@ pub(crate) fn tree_view_capability() -> WidgetCapability {
         aliases: &[],
         properties: TREE_VIEW_PROPERTIES,
         events: events_of!("tree_view"),
-        commands: &["clear_selection", "clear_focused_node"],
+        // The payload-free expand/collapse/toggle verbs act on the **focused** node, because a
+        // command with no payload cannot name another row. The spellings are the ones the sibling
+        // hierarchical control (`cascader`) already publishes, so a host sees one vocabulary for
+        // "open the current branch" rather than one per control.
+        commands: &["clear_selection", "clear_focused_node", "expand", "collapse", "toggle"],
     }
 }
 

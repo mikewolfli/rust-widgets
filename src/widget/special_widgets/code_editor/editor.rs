@@ -2955,8 +2955,80 @@ impl CodeEditor {
     /// The renderer uses this to tell a continuation row apart from a fresh one
     /// without re-running the lexer, which is what makes a multi-line block
     /// comment paint as one visually continuous band.
+    ///
+    /// # What this does **not** answer
+    ///
+    /// The cache is filled by the paint path, so a line the walk has not reached reads back
+    /// `LineState::Clean` — its `Default` — which is the same value a genuinely clean line
+    /// returns. `Clean` here therefore means "clean, *or* not looked at yet", and the accessor
+    /// alone cannot say which. A caller that needs a dependable answer for a line that may not
+    /// be on screen must either check [`CodeEditor::line_state_is_known`] first, or call
+    /// [`CodeEditor::resolve_line_state`], which advances the chain so the answer is real.
     pub fn line_state(&self, line: usize) -> LineState {
         self.line_states.get(line).copied().unwrap_or_default()
+    }
+
+    /// Returns whether `line`'s entry state has been **proven** by the lexer.
+    ///
+    /// # Why the predicate has to be part of the public contract
+    ///
+    /// [`CodeEditor::line_state`] can only report the cached value, and the cache's untouched
+    /// tail holds `Clean`. That makes two different facts — "this line starts outside any
+    /// construct" and "this line has not been lexed yet" — share one representation, which is
+    /// the "success-shaped default hiding a failure" pattern the project rules forbid. The
+    /// distinction is real and reachable: right after `set_text("/* open\nstill\n*/")`,
+    /// `line_state(1)` answers `Clean` while the line is in fact inside a block comment.
+    ///
+    /// This predicate restores the missing distinction without changing the value type:
+    ///
+    /// * `true`  — the walk reached `line`, so `line_state` is trustworthy even when non-clean;
+    /// * `false` — `line_state` is the `Default` and proves nothing.
+    ///
+    /// A consumer that needs an answer rather than a guess follows `false` with
+    /// [`CodeEditor::resolve_line_state`] (or simply calls that method directly).
+    pub fn line_state_is_known(&self, line: usize) -> bool {
+        // `walked_lines` is how far the entry-state chain has been proven, and it counts the
+        // entry state itself: after the walk processes line `n` it records `n + 1` as the exit
+        // state of `n`, which *is* the entry state of `n + 1`. So index `line` is proven exactly
+        // when `line <= walked_lines`. Index 0 is always proven: a document starts `Clean`.
+        line < self.line_states.len() && line <= self.walked_lines
+    }
+
+    /// Advances the entry-state chain to `line`, then returns the proven state.
+    ///
+    /// This is the "pay the cost, get a real answer" half of the contract. The paint path is not
+    /// the only caller that needs a dependable state: a designer asks about lines that are not on
+    /// screen — to fold a region, infer indentation, or decide "is this line inside a block
+    /// comment" — and for those, [`CodeEditor::line_state`] would hand back the unproven default.
+    ///
+    /// The walk is bounded by the distance from the last proven line to `line`, not by the
+    /// document: a request for a line far below the viewport costs a walk through the intervening
+    /// lines (which stops early across plain code), and a request for a line already proven costs
+    /// nothing.
+    pub fn resolve_line_state(&mut self, line: usize) -> LineState {
+        // `ensure_line_states(upto)` proves entry states for indices `0..=upto`, so asking for
+        // `line` is exactly enough to make `line_state(line)` real.
+        self.ensure_line_states(line);
+        self.line_state(line)
+    }
+
+    /// Returns the token spans of `line` with its entry state **resolved** first.
+    ///
+    /// [`CodeEditor::tokens_on_line`] tokenizes with whatever entry state happens to be cached,
+    /// so for a line the paint path has not reached it produces the `Clean`-based segmentation
+    /// — which is wrong exactly where it matters (a continuation line of a block comment or a
+    /// multi-line string). That makes the same query return different answers at different times
+    /// depending on scroll history. This variant removes the dependence: it advances the chain to
+    /// `line` first, so the spans are the ones a full walk would produce.
+    pub fn tokens_on_line_resolved(&mut self, line: usize) -> Vec<TokenSpan> {
+        self.resolve_line_state(line);
+        // A span list computed before this line's entry state was proven was derived from the
+        // `Clean` default. Drop it rather than return it as if it were the resolved answer.
+        if let Some(slot) = self.line_tokens.get_mut(line) {
+            *slot = None;
+        }
+        self.fill_tokens_on_line(line);
+        self.tokens_on_line(line)
     }
 
     // ── Minimap summary ─────────────────────────────────────────────────────
@@ -4369,6 +4441,14 @@ impl CodeEditor {
     ///
     /// Results are cached per line and keyed by the lexer state the line starts
     /// in, so a repaint of an unchanged document does no lexing at all.
+    ///
+    /// # What this does **not** guarantee
+    ///
+    /// The entry state used is whatever is cached, and for a line the paint path has not reached
+    /// that is the `Clean` default — so a continuation line of a block comment or a multi-line
+    /// string is segmented as if it were plain code. The answer therefore depends on scroll
+    /// history for off-screen lines. When that matters, use
+    /// [`CodeEditor::tokens_on_line_resolved`], which proves the entry state first.
     pub fn tokens_on_line(&self, line: usize) -> Vec<TokenSpan> {
         if let Some(cached) = self.line_tokens.get(line).and_then(|slot| slot.as_ref()) {
             return cached.clone();

@@ -50,6 +50,7 @@ objc2 backend. **Both are now native-verified** (see below).
 | Dialogs (`NSAlert` / `NSOpenPanel`) | ⛔ Removed | no `create_message_box`/`create_file_dialog` override |
 | Widget surfaces (`mount_surface` + repaint queue) | ✅ Implemented | the library-painted path every `WidgetKind` now uses |
 | Clipboard (`NSPasteboard`) | ✅ Verified | round-trip on the main thread; also `clipboard_backend()` for rich content |
+| External open | ✅ Implemented | `open_external()` spawns the host's `open` handler; `capabilities().open_external` is `true` for that reason. Hand-off, not completion — see the method's doc. Not exercised on this host (the status table can only be filled where macOS runs) |
 | IME / accessibility bridges | ✅ Implemented | `ime_bridge()` and `accessibility_bridge()` both answer with real bridges, which is why `capabilities()` reports `ime`/`accessibility` as `true` |
 | Geometry / visibility / text / enabled | ✅ Verified | reflected on the live native objects |
 | Off-main-thread calls | ✅ Guarded | state-only fallback (`ptr == 0`), never aborts |
@@ -61,7 +62,7 @@ objc2 backend. **Both are now native-verified** (see below).
 | `create_window` | ✅ Implemented | real AppKit object; state fallback off-main |
 | `init()` bootstraps `NSApplication` | ✅ Added 2026-09-11 | `sharedApplication` + `finishLaunching` |
 | Native window registered with AppKit | ✅ Verified | `NSApplication.windows.count >= 1` |
-| Per-kind controls / menu bar / dialogs | ⛔ Not implemented | this backend overrides no `create_*` except `create_window`; `capabilities()` reports `ime`, `accessibility`, `native_menu` and `dpi_scaling` all `false` for exactly that reason |
+| Per-kind controls / menu bar / dialogs | ⛔ Not implemented | this backend overrides no `create_*` except `create_window`; `capabilities()` reports `ime`, `accessibility`, `native_menu` and `dpi_scaling` as `false` for exactly that reason, and `clipboard`/`open_external` as `true` because both have real bodies (`NSPasteboard`, and the `open` handler) |
 | Widget surfaces | ✅ Implemented | records displayed widgets and returns their frames |
 | Clipboard | ✅ Verified | `NSPasteboard` |
 | Geometry / visibility / text | ✅ Verified | `setNative…` helpers |

@@ -718,6 +718,8 @@ pub extern "C" fn rw_platform_capabilities(caps: *mut u32) {
     //   bit 2: accessibility
     //   bit 3: native_menu
     //   bit 4: typed_widget_trigger
+    //   bit 5: clipboard
+    //   bit 6: open_external
 }
 ```
 

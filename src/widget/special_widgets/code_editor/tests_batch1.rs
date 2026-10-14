@@ -122,6 +122,63 @@ fn a_block_comment_spanning_the_viewport_is_still_coloured() {
     );
 }
 
+/// An off-screen line's multi-line state must be **decidable** from the public API.
+///
+/// `line_state` alone cannot answer: for a line the paint path has not reached it returns the
+/// `Clean` default, which is the same value a genuinely clean line returns, so "not in a
+/// multi-line construct" and "not lexed yet" share one representation. `line_state_is_known`
+/// separates them, and `resolve_line_state` turns "unknown" into a real answer.
+#[test]
+fn an_unproven_line_state_is_reported_as_unknown_and_can_be_resolved() {
+    let mut editor = CodeEditor::new(Rect::new(0, 0, 400, 300));
+    editor.set_language(LanguageId::Rust);
+    editor.set_text("/* open\nstill\n*/\nfn main() {}\n".to_string());
+
+    // Only line 0 is proven before anything is lexed: a document always starts clean.
+    assert!(editor.line_state_is_known(0), "line 0 is the document start, so always proven");
+    assert!(!editor.line_state_is_known(1), "the walk has not reached line 1");
+    // The bare accessor reports the default — which is exactly why the predicate must exist.
+    assert_eq!(editor.line_state(1), LineState::Clean);
+
+    // Resolving proves the state and returns the real one.
+    assert_eq!(editor.resolve_line_state(1), LineState::BlockComment);
+    assert!(editor.line_state_is_known(1), "resolving proves the entry state");
+    // Line 2 closes the comment, so it still *starts* inside it; line 3 starts clean.
+    assert_eq!(editor.resolve_line_state(2), LineState::BlockComment);
+    assert_eq!(editor.resolve_line_state(3), LineState::Clean);
+
+    // The resolved token view agrees with the resolved entry state.
+    let spans = editor.tokens_on_line_resolved(1);
+    assert!(
+        spans.iter().all(|span| span.kind == TokenKind::BlockComment),
+        "a line inside a block comment must tokenize as comment, got {spans:?}"
+    );
+}
+
+/// The resolved token view must not be perturbed by paint history.
+///
+/// `tokens_on_line` answers from whatever entry state happens to be cached, so the same query
+/// returns different spans before and after the paint path reaches the line. The resolved
+/// variant is the one a caller can rely on.
+#[test]
+fn resolved_tokens_are_independent_of_paint_history() {
+    let mut editor = CodeEditor::new(Rect::new(0, 0, 400, 300));
+    editor.set_language(LanguageId::Rust);
+    editor.set_text("/* open\nstill\n*/\n".to_string());
+
+    let before = editor.tokens_on_line_resolved(1);
+    // Paint-path preparation introduces the cache that used to change the answer.
+    editor.base.set_geometry(Rect::new(0, 0, 400, 300));
+    editor.refresh_visible_rows();
+    editor.prepare_visible_line_cache();
+    let after = editor.tokens_on_line_resolved(1);
+    assert_eq!(before, after, "the resolved answer must not depend on what was painted");
+    assert!(
+        after.iter().all(|span| span.kind == TokenKind::BlockComment),
+        "line 1 is inside the block comment, got {after:?}"
+    );
+}
+
 /// Changing the language must drop stale token caches.
 #[test]
 fn switching_language_invalidates_the_token_cache() {

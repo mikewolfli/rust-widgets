@@ -199,9 +199,11 @@ impl Platform for AndroidMobilePlatform {
         }
     }
 
-    fn quit(&self) {
+    fn quit(&self) -> bool {
         self.running.store(false, Ordering::SeqCst);
         log::info!("[mobile] AndroidMobilePlatform quit");
+        // The preview loop reads `running` each tick, so the request lands from any thread.
+        true
     }
     /// Release every registry entry the backend holds for `widget_id`.
     ///
