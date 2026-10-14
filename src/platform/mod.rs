@@ -105,6 +105,18 @@ pub mod accessibility;
 #[cfg(target_vendor = "apple")]
 pub mod darwin_probes;
 /// Shared host-handler spawn used by the desktop backends' `open_external`.
+///
+/// Gated to the backends that call it — Windows, Linux (which also covers the
+/// OpenHarmony targets, since they report `target_os = "linux"`) and the
+/// cocoa-based macOS backend. Ungated, this module also compiled into every
+/// profile without a desktop backend (`tablet`/`mobile`/`mini`/`embedded` on a
+/// non-Linux host, the `android-jni` set), where nothing referenced it and the
+/// build reported it as dead code.
+#[cfg(any(
+    target_os = "windows",
+    target_os = "linux",
+    all(target_os = "macos", feature = "cocoa-legacy")
+))]
 pub(crate) mod external;
 /// Linux-kernel system probes (`/proc`, `/sys`) shared by the backends that sit
 /// on a Linux kernel: Android, HarmonyOS, Linux/GTK, Wayland and mobile.

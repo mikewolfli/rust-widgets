@@ -36,6 +36,7 @@ use super::types::{IosHandleKind, IosMobilePlatform};
 use crate::compat::atomic::Ordering;
 use crate::compat::{format, lock, String};
 use crate::core::PlatformFamily;
+use crate::platform::clipboard::RichClipboardBackend;
 use crate::platform::{Platform, PlatformCapabilities, WidgetTriggerEvent, WidgetTriggerKind};
 use core::time::Duration;
 use std::thread;
@@ -164,10 +165,17 @@ impl Platform for IosMobilePlatform {
             accessibility: false,
             native_menu: false,
             typed_widget_trigger: true,
-            // Neither host service is reachable from this backend: the clipboard bodies write
-            // the in-process state record rather than a host clipboard, and there is no
-            // handler spawn.
-            clipboard: false,
+            // `UIPasteboard`, through the UIKit FFI — which is a *build-time* fact, so it is
+            // asked of the feature rather than assumed. Without `ios-uikit-ffi` the clipboard
+            // bodies below fall back to the in-process record, which is not a host clipboard,
+            // and this reports `false` for exactly that build.
+            //
+            // The flag is a promise that escapes the process (`rw_platform_capabilities`), and
+            // `set_clipboard_text`/`get_clipboard_text` are the methods behind it, so the pair
+            // moves together: no path, no claim.
+            clipboard: cfg!(all(target_os = "ios", feature = "ios-uikit-ffi")),
+            // No handler spawn on iOS: opening a URL goes through `UIApplication`, which needs
+            // the app's own delegate, and this backend has no window scene to hang it on.
             open_external: false,
         }
     }
@@ -264,13 +272,80 @@ impl Platform for IosMobilePlatform {
         id
     }
 
-    // ─── Menu Bar / Menu / Menu Item ───
+    // ─── Host clipboard ───
+    //
+    // `UIPasteboard` when the UIKit FFI is compiled in (`ios-uikit-ffi`), the in-process
+    // `BackendState` record otherwise. Each `#[cfg]` block is removed in the build it does not
+    // describe, which leaves exactly one as the body's tail expression — so the method keeps
+    // **one** signature for one capability, and the "which host is this" fact stays here rather
+    // than in an `Option` the caller has to read.
     fn set_clipboard_text(&self, text: &str) -> bool {
-        self.state.set_clipboard_text(text)
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
+        {
+            // The pasteboard's own answer: `setString:` reports nothing, so `native` confirms the
+            // write by reading it back. A refused write is reported as refused rather than
+            // mirrored into the record, which is the difference between a host clipboard and a
+            // convincing imitation of one.
+            super::native::pasteboard_set_text(text)
+        }
+        #[cfg(not(all(target_os = "ios", feature = "ios-uikit-ffi")))]
+        {
+            self.state.set_clipboard_text(text)
+        }
     }
 
     fn get_clipboard_text(&self) -> String {
-        self.state.clipboard_text()
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
+        {
+            // `""` for "the pasteboard holds no text": the `String` accessor's contract collapses
+            // that with "holds an empty string" (see its own documentation).
+            super::native::pasteboard_text().unwrap_or_default()
+        }
+        #[cfg(not(all(target_os = "ios", feature = "ios-uikit-ffi")))]
+        {
+            self.state.clipboard_text()
+        }
+    }
+
+    /// The pasteboard's text, or `None` when it holds none.
+    ///
+    /// Overridden because the trait default derives it from [`Self::get_clipboard_text`], and on
+    /// the host path the empty string means "the pasteboard holds text that is empty" — which the
+    /// default would then report as "no text". `Some("")` is a real answer here (`hasStrings()`
+    /// is satisfied), and the paste-path caller branches on the difference.
+    fn clipboard_text(&self) -> Option<String> {
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
+        {
+            super::native::pasteboard_text()
+        }
+        #[cfg(not(all(target_os = "ios", feature = "ios-uikit-ffi")))]
+        {
+            // No host path: the in-process record is the only source, and an empty one is
+            // indistinguishable from "no text" — the honest reading of that source.
+            let text = self.state.clipboard_text();
+            if text.is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        }
+    }
+
+    /// The host pasteboard backend, or `None` when this build has no UIKit path.
+    ///
+    /// Returning `None` is what the trait documents for a backend whose only clipboard is an
+    /// in-process record: a host that asks before offering a paste action must be told the truth.
+    fn clipboard_backend(&self) -> Option<&dyn RichClipboardBackend> {
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
+        {
+            static CLIPBOARD: std::sync::OnceLock<super::native::IosClipboard> =
+                std::sync::OnceLock::new();
+            Some(CLIPBOARD.get_or_init(super::native::IosClipboard::new))
+        }
+        #[cfg(not(all(target_os = "ios", feature = "ios-uikit-ffi")))]
+        {
+            None
+        }
     }
 
     // ─── Menu Bar / Menu / Menu Item ───
@@ -545,6 +620,30 @@ mod tests {
         );
         assert!(!caps.native_menu, "the menu tree is kept in-process, so no OS menu is created");
         assert!(caps.typed_widget_trigger, "the backend owns and forwards the trigger queue");
+    }
+
+    /// The clipboard flag, the backend and the host path must tell one story.
+    ///
+    /// Three separate code paths answer "does this process have a clipboard": the flag in
+    /// `capabilities()` (which escapes the process through `rw_platform_capabilities`), the
+    /// backend `clipboard_backend()` hands out, and the `UIPasteboard` binding in `super::native`.
+    /// All three are produced from the same `ios-uikit-ffi` gate, and this asserts that they still
+    /// are — a flag of `true` with no backend, or a backend with no FFI behind it, is exactly the
+    /// defect the capability contract forbids.
+    #[test]
+    fn the_clipboard_flag_matches_its_backend() {
+        let platform = IosMobilePlatform::new();
+        let claimed = platform.capabilities().clipboard;
+        assert_eq!(
+            claimed,
+            cfg!(all(target_os = "ios", feature = "ios-uikit-ffi")),
+            "`clipboard` must track the UIKit FFI gate, not a literal"
+        );
+        assert_eq!(
+            claimed,
+            platform.clipboard_backend().is_some(),
+            "the flag and `clipboard_backend()` must agree in both directions"
+        );
     }
 
     /// The host must create **no** control: the library paints every `WidgetKind`,

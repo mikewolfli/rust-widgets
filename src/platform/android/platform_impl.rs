@@ -29,7 +29,8 @@ use super::types::{AndroidHandleKind, AndroidPlatform};
 use crate::compat::atomic::Ordering;
 use crate::compat::{format, lock, String, ToString};
 use crate::core::PlatformFamily;
-use crate::platform::{Platform, WidgetTriggerEvent, WidgetTriggerKind};
+use crate::platform::clipboard::RichClipboardBackend;
+use crate::platform::{Platform, PlatformCapabilities, WidgetTriggerEvent, WidgetTriggerKind};
 use core::time::Duration;
 use std::thread;
 
@@ -59,6 +60,29 @@ impl Platform for AndroidPlatform {
 
     fn family(&self) -> PlatformFamily {
         PlatformFamily::Mobile
+    }
+
+    /// The capabilities this backend can honour, over the trait's honest all-`false` default.
+    ///
+    /// # Why Android answers for itself
+    ///
+    /// It has exactly one host integration — the system clipboard, through the JNI bridge — and
+    /// the trait default would report it as absent. `clipboard` is a **runtime** fact rather than
+    /// a build fact: the `JavaVM` and the host `Activity`'s `Context` are both supplied by the app
+    /// at startup, so the flag asks [`crate::platform::android_jni::clipboard_ready`] instead of
+    /// the feature. A host that has not attached its `Context` gets `false`, which is the honest
+    /// answer for a process that cannot reach the clipboard yet, and a `widget-handle` caller that
+    /// reads the bit acts on a fact rather than on a hope.
+    fn capabilities(&self) -> PlatformCapabilities {
+        #[cfg(feature = "android-jni")]
+        let clipboard = crate::platform::android_jni::clipboard_ready();
+        #[cfg(not(feature = "android-jni"))]
+        let clipboard = false;
+
+        PlatformCapabilities {
+            clipboard,
+            ..crate::platform::types::default_capabilities_for(self.family())
+        }
     }
 
     /// Reads `MemTotal` from `/proc/meminfo` via [`crate::platform::os_probes`].
@@ -315,13 +339,87 @@ impl Platform for AndroidPlatform {
     // ─── Widget manipulation ─────────────────────────────────────────────
 
     // ─── Clipboard ───────────────────────────────────────────────────
+    //
+    // The host `ClipboardManager` when the JNI bridge is compiled in *and* the host app has run
+    // the VM/`Activity` handshake; the in-process `BackendState` record otherwise. The `Option`
+    // bindings below are the mechanism: each `#[cfg]` block is removed in the build it does not
+    // describe, so exactly one supplies the value and the method keeps one signature.
 
     fn set_clipboard_text(&self, text: &str) -> bool {
-        self.state.set_clipboard_text(text)
+        #[cfg(feature = "android-jni")]
+        {
+            // Three outcomes, and the middle one is why this is not a one-liner:
+            //   * the bridge is ready and the write landed   → `true`
+            //   * the bridge is ready and the write was refused (the platform refuses background
+            //     clipboard writes without an error) → `false`, *not* a mirror write
+            //   * the bridge is not ready (no `JavaVM`, or no `Activity` `Context`) → the
+            //     in-process record, which is the honest answer for a process that has not
+            //     finished the handshake yet
+            crate::platform::android_jni::set_clipboard_text(text)
+                .unwrap_or_else(|| self.state.set_clipboard_text(text))
+        }
+        #[cfg(not(feature = "android-jni"))]
+        {
+            self.state.set_clipboard_text(text)
+        }
     }
 
     fn get_clipboard_text(&self) -> String {
-        self.state.clipboard_text()
+        #[cfg(feature = "android-jni")]
+        {
+            crate::platform::android_jni::clipboard_text()
+                .unwrap_or_else(|| self.state.clipboard_text())
+        }
+        #[cfg(not(feature = "android-jni"))]
+        {
+            self.state.clipboard_text()
+        }
+    }
+
+    /// The primary clip's text, or `None` when it holds none.
+    ///
+    /// Overridden because the trait default derives it from [`Self::get_clipboard_text`], and on
+    /// the host path an empty string means "the clipboard holds an empty text clip" — a real
+    /// answer (`hasPrimaryClip` is satisfied) that the default would report as "no text".
+    fn clipboard_text(&self) -> Option<String> {
+        #[cfg(feature = "android-jni")]
+        {
+            crate::platform::android_jni::clipboard_text()
+        }
+        #[cfg(not(feature = "android-jni"))]
+        {
+            let text = self.state.clipboard_text();
+            if text.is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        }
+    }
+
+    /// The host clipboard, or `None` when this process cannot reach it.
+    ///
+    /// Gated on the same [`crate::platform::android_jni::clipboard_ready`] the capability flag
+    /// asks, so the two answer together: a host that reads `clipboard: true` and then calls this
+    /// gets a backend, and a host that reads `false` gets `None` rather than a backend whose every
+    /// write is refused. The rich methods still check readiness themselves — the handshake can be
+    /// undone by a configuration change — so this is the first of two gates, not the only one.
+    fn clipboard_backend(&self) -> Option<&dyn RichClipboardBackend> {
+        #[cfg(feature = "android-jni")]
+        {
+            if crate::platform::android_jni::clipboard_ready() {
+                static CLIPBOARD: std::sync::OnceLock<
+                    crate::platform::android_jni::AndroidClipboard,
+                > = std::sync::OnceLock::new();
+                Some(CLIPBOARD.get_or_init(crate::platform::android_jni::AndroidClipboard::new))
+            } else {
+                None
+            }
+        }
+        #[cfg(not(feature = "android-jni"))]
+        {
+            None
+        }
     }
 
     // ─── Drag and drop ───────────────────────────────────────────────────

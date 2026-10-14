@@ -91,9 +91,14 @@ inheriting desktop defaults:
 - `native_menu: false` — the menu is an in-process tree served through an
   injectable queue, **not** an OS menu. This is asserted by
   `ios_platform_reports_explicit_mobile_capabilities`.
-- `clipboard: false`, `open_external: false` — the two host services. This backend's
-  clipboard writes the in-process state record rather than the system pasteboard, and it
-  spawns no handler process. Asserted field by field, like the flags above.
+- `clipboard: cfg!(all(target_os = "ios", feature = "ios-uikit-ffi"))`, `open_external: false` —
+  the two host services, now answered separately. The clipboard is `UIPasteboard`
+  (`super::native`), reached through objc2-ui-kit; the flag and the trait method bodies are
+  produced from the same `cfg`, so a build without the UIKit FFI reports `false` and keeps the
+  in-process record. Writes are confirmed by a read-back, because `setString:` reports nothing.
+  `open_external` stays `false`: opening a URL needs the app's own `UIApplicationDelegate`.
+  Asserted by `ios_platform_reports_explicit_mobile_capabilities` and
+  `the_clipboard_flag_matches_its_backend`.
 
 ## Build and test
 

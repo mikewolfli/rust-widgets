@@ -531,6 +531,45 @@ pub mod objc2_macos {
     /// macOS clipboard backend using objc2 NSPasteboard bindings.
     pub struct MacOsObjc2Clipboard;
 
+    /// Whether the current thread is the AppKit main thread.
+    ///
+    /// `NSPasteboard` is a window-server singleton, so the same rule the cocoa backend applies
+    /// (see `clipboard_stubs::macos`) applies here: the thread that may touch it is the one the
+    /// app was started on. The check is what keeps this backend from turning a call from a worker
+    /// thread into an AppKit access off the main thread; the caller then gets `false` / `None`,
+    /// which is the honest "no host clipboard from here" answer, and its own record is the
+    /// fallback.
+    pub fn on_main_thread() -> bool {
+        objc2::MainThreadMarker::new().is_some()
+    }
+
+    /// Puts `text` on the general pasteboard as plain text, and reports the system write.
+    ///
+    /// A thin wrapper over [`RichClipboardBackend::set_contents`] so that the text path and the
+    /// rich path are the *same* code: two implementations of "write text to the clipboard" is
+    /// precisely the drift this crate's principles forbid.
+    pub fn write_text(text: &str) -> bool {
+        if !on_main_thread() {
+            return false;
+        }
+        RichClipboardBackend::set_contents(
+            &MacOsObjc2Clipboard,
+            ClipboardContent::Text(text.into()),
+        )
+    }
+
+    /// The general pasteboard's plain text, or `None` when it holds none.
+    pub fn read_text() -> Option<String> {
+        if !on_main_thread() {
+            return None;
+        }
+        let result = std::panic::catch_unwind(|| unsafe {
+            let pb: *mut AnyObject = msg_send![class!(NSPasteboard), generalPasteboard];
+            MacOsObjc2Clipboard::read_plain_text(pb)
+        });
+        result.unwrap_or(None)
+    }
+
     impl MacOsObjc2Clipboard {
         /// Get the general pasteboard and clear its contents.
         #[allow(clippy::missing_safety_doc)]
@@ -564,6 +603,13 @@ pub mod objc2_macos {
 
     impl RichClipboardBackend for MacOsObjc2Clipboard {
         fn set_contents(&self, content: ClipboardContent) -> bool {
+            if !on_main_thread() {
+                log::debug!(
+                    "[macOS objc2 clipboard] refusing a write off the AppKit main thread; the \
+                     caller's own record is the fallback"
+                );
+                return false;
+            }
             let result = std::panic::catch_unwind(|| unsafe {
                 let pb = Self::prepare_pasteboard();
 
@@ -625,6 +671,9 @@ pub mod objc2_macos {
         }
 
         fn get_contents(&self) -> Option<ClipboardContent> {
+            if !on_main_thread() {
+                return None;
+            }
             let result = std::panic::catch_unwind(|| unsafe {
                 let pb: *mut AnyObject = msg_send![class!(NSPasteboard), generalPasteboard];
                 let items: *mut AnyObject = msg_send![pb, pasteboardItems];
@@ -653,6 +702,9 @@ pub mod objc2_macos {
         }
 
         fn has_format(&self, content_type: &str) -> bool {
+            if !on_main_thread() {
+                return false;
+            }
             let result = std::panic::catch_unwind(|| unsafe {
                 let pb: *mut AnyObject = msg_send![class!(NSPasteboard), generalPasteboard];
                 let ns_type = NSString::from_str(content_type);

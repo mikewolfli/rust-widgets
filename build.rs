@@ -271,6 +271,9 @@ fn check_system_dependencies() {
     // host it compiles but stays inert, and the check warns there (see `check_xcomponent`).
     // Checking it here means the message appears whichever target is being built.
     check_xcomponent();
+    // Unconditional on an OpenHarmony target: the harmony backend is selected by `target_env`,
+    // not by a feature, and its pasteboard bodies call into the SDK.
+    check_ohos_pasteboard();
 }
 
 fn check_linux() {
@@ -365,43 +368,91 @@ fn check_xcomponent() {
     // The SDK's own sysroot is where the `.so` lives, and `cargo-ohos` sets `--sysroot` for the
     // compiler but does not add the arch-specific library directory to the linker's search
     // path. Adding it here is what makes the bridge linkable rather than merely compilable.
-    if let Ok(native) = std::env::var("OHOS_SDK_NATIVE") {
-        let target = std::env::var("TARGET").unwrap_or_default();
-        let arch_dir = match target.split('-').next().unwrap_or_default() {
-            "aarch64" => "aarch64-linux-ohos",
-            "armv7" | "arm" => "arm-linux-ohos",
-            "x86_64" => "x86_64-linux-ohos",
-            other => {
-                warn(&format!(
-                    "'xcomponent' is enabled for target '{target}', whose OHOS library directory \
-                     this build script does not know; expected one of aarch64/armv7/x86_64. \
-                     Link will fail unless the SDK's lib directory is passed with -L."
-                ));
-                let _ = other;
-                ""
-            }
-        };
-        if !arch_dir.is_empty() {
-            let lib_dir = format!("{native}/sysroot/usr/lib/{arch_dir}");
-            if std::path::Path::new(&lib_dir).is_dir() {
-                println!("cargo:rustc-link-search=native={lib_dir}");
-            } else {
-                warn(&format!(
-                    "'xcomponent': expected the OpenHarmony libraries at '{lib_dir}', which does \
-                     not exist. Check that OHOS_SDK_NATIVE points at the SDK's 'native' directory."
-                ));
-            }
-            // Rust needs to find the shared object at link time; the device supplies it at run
-            // time from its own system libraries.
-            println!("cargo:rustc-link-arg=-Wl,-rpath-link,{lib_dir}");
+    let _ = ohos_sysroot_lib_dir("xcomponent");
+}
+
+/// Emits the linker search path for the OpenHarmony sysroot's library directory, once per build.
+///
+/// # Why one helper for both consumers
+///
+/// Two independent pieces of this crate link libraries from that directory: the ArkUI bridge
+/// (`libace_ndk`) and the system pasteboard (`libpasteboard`, `libudmf`). The arch-to-directory
+/// table is the half that is easy to get wrong — `aarch64` maps to `aarch64-linux-ohos`, not to
+/// the target triple — so it exists here once rather than in two callers that would drift.
+///
+/// The directives are emitted once even when both consumers are active: a duplicate
+/// `rustc-link-search` is noise, and a duplicate `-Wl,-rpath-link` invites a reader to wonder
+/// whether two different paths are involved.
+fn ohos_sysroot_lib_dir(consumer: &str) -> Option<String> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static EMITTED: AtomicBool = AtomicBool::new(false);
+
+    let native = match std::env::var("OHOS_SDK_NATIVE") {
+        Ok(native) => native,
+        Err(_) => {
+            warn(&format!(
+                "'{consumer}' is enabled for an OpenHarmony target but OHOS_SDK_NATIVE is not set."
+            ));
+            return None;
         }
-    } else {
-        warn("'xcomponent' is enabled for an OpenHarmony target but OHOS_SDK_NATIVE is not set.");
-        warn("  The ArkUI bridge links the SDK's 'libace_ndk.z.so':");
-        warn("    export OHOS_SDK_NATIVE=<sdk>/linux/native");
-        warn("  and build with, e.g.:");
-        warn("    cargo ohos build -t aarch64 --features 'harmony xcomponent'");
+    };
+    let target = std::env::var("TARGET").unwrap_or_default();
+    let arch_dir = match target.split('-').next().unwrap_or_default() {
+        "aarch64" => "aarch64-linux-ohos",
+        "armv7" | "arm" => "arm-linux-ohos",
+        "x86_64" => "x86_64-linux-ohos",
+        other => {
+            warn(&format!(
+                "'{consumer}' is enabled for target '{target}', whose OHOS library directory \
+                 this build script does not know; expected one of aarch64/armv7/x86_64. \
+                 Link will fail unless the SDK's lib directory is passed with -L."
+            ));
+            let _ = other;
+            return None;
+        }
+    };
+    let lib_dir = format!("{native}/sysroot/usr/lib/{arch_dir}");
+    if !std::path::Path::new(&lib_dir).is_dir() {
+        warn(&format!(
+            "'{consumer}': expected the OpenHarmony libraries at '{lib_dir}', which does not \
+             exist. Check that OHOS_SDK_NATIVE points at the SDK's 'native' directory."
+        ));
+        return None;
     }
+    if !EMITTED.swap(true, Ordering::SeqCst) {
+        println!("cargo:rustc-link-search=native={lib_dir}");
+        // Rust needs to find the shared object at link time; the device supplies it at run
+        // time from its own system libraries.
+        println!("cargo:rustc-link-arg=-Wl,-rpath-link,{lib_dir}");
+    }
+    Some(lib_dir)
+}
+
+/// Emits the link directives for the OpenHarmony system pasteboard.
+///
+/// # Why this is unconditional on an OpenHarmony target
+///
+/// The harmony backend is compiled for every `*-unknown-linux-ohos` target (not behind a feature
+/// switch — `target_env == "ohos"` is what selects it), and its clipboard bodies call
+/// `OH_Pasteboard_*` / `OH_Udmf*` from `libpasteboard.so` and `libudmf.so`. Emitting the
+/// directives from the build script rather than a `#[link]` attribute keeps the library names in
+/// one place and works whatever layout the SDK uses, exactly as the ArkUI bridge does.
+///
+/// On a host build nothing is emitted, and nothing needs to be: the module's declarations are
+/// `#[cfg(target_env = "ohos")]`, so a host compiles the inert stand-in instead.
+fn check_ohos_pasteboard() {
+    let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    if target_env != "ohos" {
+        return;
+    }
+    println!("cargo:rerun-if-env-changed=OHOS_SDK_NATIVE");
+    if ohos_sysroot_lib_dir("pasteboard").is_none() {
+        return;
+    }
+    // The sonames the SDK ships are `libpasteboard.so` and `libudmf.so`, so the link names are
+    // `pasteboard` and `udmf` — no `.z` variant here, unlike `libace_ndk.z.so`.
+    println!("cargo:rustc-link-lib=pasteboard");
+    println!("cargo:rustc-link-lib=udmf");
 }
 
 fn check_pkg(name: &str, dev_pkg: &str, install_cmd: &str) {

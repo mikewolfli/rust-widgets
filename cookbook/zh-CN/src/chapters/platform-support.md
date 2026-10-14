@@ -109,15 +109,24 @@ Linux (GTK)、Wayland、iOS、Android 与 HarmonyOS 都把菜单保存在进程�
 | macOS | ✅ | ✅ |
 | Linux / GTK | ✅ ¹ | ✅ |
 | Linux / Wayland | ❌ | ❌ |
-| iOS | ❌ | ❌ |
-| Android | ❌ | ❌ |
-| HarmonyOS | ❌ | ❌ |
+| iOS | ✅ ² | ❌ |
+| Android | ✅ ² | ❌ |
+| HarmonyOS | ✅ ³ | ❌ |
 | WASM | ❌ | ❌ |
 | Portable | ❌ | ❌ |
 
-¹ `clipboard` 只有在启用 `gtk-native` feature 时才为 `true`：正是它把复制的内容发布到 GDK 显示剪贴板。
-没有它时（以及在所有纯状态后端上），`set_clipboard_text` 写的是**进程内**记录 —— 在库内有用，
-但其它应用程序看不到，因此该标志为 `false`，而不是一个宿主会误信的承诺。
+¹ Linux 是唯一一个「答案有一半取决于**会话**」的桌面平台：`gtk-native` 把接口
+（`GtkClipboard`）链接进来，还需要背后真的有一个显示服务；所以该标志 = `gtk-native`
+**且** 当前能取到显示剪贴板。没有 `gtk-native` 时（以及在所有纯状态后端上），
+`set_clipboard_text` 写的是**进程内**记录 —— 在库内有用，但其它应用程序看不到，
+因此该标志为 `false`，而不是一个宿主会误信的承诺。
+
+² 移动端的答案是**运行时**的：只有宿主完成握手后该标志才为 `true`
+（iOS：编译进 UIKit FFI；Android：`JavaVM` 已保存**且** `Activity` 的 `Context` 已附加）。
+在此之前，进程内记录是本进程唯一能触及的剪贴板，标志也如实如此回答。
+
+³ HarmonyOS 在 OpenHarmony 目标上链接 SDK 的 `libpasteboard`/`libudmf`；
+宿主构建编译的是惰性替身，因此报 `false`。
 
 - **宿主剪贴板**（`clipboard`）：复制的内容能否离开本进程。读取请用
   [`clipboard_text()`](../api-reference/functions.md)，它把「没有文本」与空字符串分开。
@@ -424,7 +433,9 @@ if let Some(content) = clip.get_contents() {
 
 ### 平台剪贴板集成
 
-`Platform` 特质暴露 `clipboard_backend()`，返回 `Option<&dyn RichClipboardBackend>`。桌面平台提供真实的剪贴板集成；嵌入式平台返回 `None`。
+`Platform` 特质暴露 `clipboard_backend()`，返回 `Option<&dyn RichClipboardBackend>`。当后端能触达**宿主**剪贴板时返回 `Some` —— macOS（`NSPasteboard`）、Windows（`CF_UNICODETEXT`/`CF_HTML`）、Linux/GTK（GDK）、iOS（`UIPasteboard`）、Android（`ClipboardManager`）、HarmonyOS（`OH_Pasteboard` + UDMF）；当唯一的剪贴板就是进程内记录时返回 `None`（Wayland、WASM、portable，以及任何没有编译进对应平台通道的构建）。这些后端都携带**文本与 HTML**；其余内容类型一律被拒绝而不是静默丢弃 —— 对没有真正存入的格式回答 `true`，正是能力契约所禁止的「假成功」。
+
+分支前需要知道两个宿主事实：Linux/GTK 除了要开启 feature，还需要能取到*显示*服务；移动端需要宿主已完成握手（iOS：编译进 UIKit FFI；Android：`JavaVM` + `Activity` 的 `Context`）。
 
 ```rust
 let platform = rust_widgets::platform::get_platform();

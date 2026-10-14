@@ -128,9 +128,28 @@ impl Platform for LinuxPlatform {
             typed_widget_trigger: true,
             // `create_file_dialog` is not overridden, so it falls through to the trait default
             // (which answers "no control was created") and there is no system chooser.
-            // Only the GDK display clipboard makes a copy visible outside this process;
-            // `BackendState`'s in-process record alone is not a host clipboard.
-            clipboard: cfg!(all(target_os = "linux", feature = "gtk-native")),
+            //
+            // The clipboard is the GDK display clipboard (see `super::gdk_clipboard`), and GDK
+            // is a *build* fact while a display is a *session* fact: a `gtk-native` build in a
+            // headless shell has the interface and nothing behind it, so both are asked.
+            //
+            // # Why this is a `cfg` block and not `cfg!(…) && …`
+            //
+            // `cfg!` is a runtime `bool`, so its right-hand operand is still *type-checked* in
+            // every build. `gdk_clipboard` is compiled only with `gtk-native`, and this module is
+            // compiled for **OpenHarmony** targets too (`target_os = "linux"`, no `gtk-native`),
+            // so `cfg!(gtk-native) && super::gdk_clipboard::available()` failed to resolve there
+            // — which is how `check_harmony_cross.sh` caught it.
+            clipboard: {
+                #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+                {
+                    super::gdk_clipboard::available()
+                }
+                #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
+                {
+                    false
+                }
+            },
             // `open_external` spawns `xdg-open`.
             open_external: true,
         }
@@ -923,42 +942,82 @@ impl Platform for LinuxPlatform {
         crate::queue_resize_trigger(window_id, width, height)
     }
 
-    /// Stores the text in the backend's clipboard record.
+    /// Publishes `text` on the display clipboard, or stores it in the backend's record when this
+    /// build has no GTK path.
     ///
-    /// Without `gtk-native` this backend has no GDK clipboard to hand the text
-    /// to, but the record is still the honest answer for the running process —
-    /// and it is what every other backend's `state` delegation does
-    /// (macOS/Harmony/iOS/Android/Wayland/Wasm). Inheriting the trait default
-    /// here made a copy/paste inside the library a silent no-op while the
-    /// identical call on every sibling backend worked.
+    /// Without `gtk-native` there is no GDK clipboard to hand the text to, but the record is
+    /// still the honest answer for the running process — and it is what every other backend's
+    /// `state` delegation does. Inheriting the trait default here made a copy/paste inside the
+    /// library a silent no-op while the identical call on every sibling backend worked.
     ///
-    /// With `gtk-native` the text is also published to the display clipboard.
-    /// That path is guarded by `is_initialized_main_thread()` because GDK aborts
-    /// when driven from any other thread ("GDK may only be used from the main
-    /// thread") — and widgets legitimately call this from worker threads, e.g. a
-    /// background copy. Off the main thread the in-process record is still
-    /// updated, which keeps the call useful instead of aborting the process.
+    /// With `gtk-native` the write goes through [`super::gdk_clipboard`], which owns the
+    /// main-thread rule and the read-back confirmation. This method used to publish to GDK
+    /// inline and then report **`state`'s** answer, so a failed display write was indistinguishable
+    /// from a successful one — and `get_clipboard_text` below read only the record, so the two
+    /// halves of one clipboard never met.
     fn set_clipboard_text(&self, text: &str) -> bool {
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
-        {
-            // Same contract every native entry point in this backend follows
-            // (see the `Send` note in `linux/types.rs`): touch GTK only from the
-            // thread that called `gtk::init`.
-            if gtk::is_initialized_main_thread() {
-                if let Some(display) = gtk::gdk::Display::default() {
-                    if let Some(clipboard) = gtk::Clipboard::default(&display) {
-                        clipboard.set_text(text);
-                        clipboard.store();
-                    }
-                }
-            }
+        if super::gdk_clipboard::available() {
+            // The record is updated *as well*: a worker thread that reads back through
+            // `get_clipboard_text` off the main thread has no GDK to ask, and the process-local
+            // answer keeps copy/paste inside the library working there.
+            self.state.set_clipboard_text(text);
+            return super::gdk_clipboard::set_text(text);
         }
         self.state.set_clipboard_text(text)
     }
 
-    /// Reads back what [`Platform::set_clipboard_text`] stored.
+    /// The clipboard's text: the display's when a display clipboard is reachable, the in-process
+    /// record otherwise.
+    ///
+    /// Reading only the record (as this used to) meant the text another application had put on
+    /// the clipboard was invisible here, and the text this process published to GDK could not be
+    /// read back — the write and the read answered from two different places.
     fn get_clipboard_text(&self) -> String {
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        if let Some(text) = super::gdk_clipboard::text() {
+            return text;
+        }
         self.state.clipboard_text()
+    }
+
+    /// The clipboard's text, or `None` when there is none.
+    ///
+    /// Overridden so that "the display clipboard holds no text" is distinguishable from "this
+    /// process wrote nothing": the trait default would collapse both into an empty `String` and
+    /// then report `None`, which is right for the record but wrong for a display clipboard that
+    /// another application can fill.
+    fn clipboard_text(&self) -> Option<String> {
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        if super::gdk_clipboard::available() {
+            return super::gdk_clipboard::text();
+        }
+        let text = self.state.clipboard_text();
+        if text.is_empty() {
+            None
+        } else {
+            Some(text)
+        }
+    }
+
+    /// The host clipboard, or `None` when this build has no display clipboard.
+    fn clipboard_backend(&self) -> Option<&dyn crate::platform::clipboard::RichClipboardBackend> {
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            if super::gdk_clipboard::available() {
+                // A unit struct, so no `OnceLock` is needed: the backend holds no GTK object (it
+                // looks the clipboard up per call, which is also what keeps it `Send + Sync`).
+                static CLIPBOARD: super::gdk_clipboard::GdkClipboard =
+                    super::gdk_clipboard::GdkClipboard;
+                Some(&CLIPBOARD)
+            } else {
+                None
+            }
+        }
+        #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
+        {
+            None
+        }
     }
 
     #[cfg(target_os = "linux")]

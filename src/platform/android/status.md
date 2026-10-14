@@ -98,6 +98,7 @@ use: the library paints every `WidgetKind` and the host supplies pixels.
 | ToolBar | ✅ Implemented | painted by the library. The former `androidx.appcompat.widget.Toolbar` note described a class this project never instantiated |
 | MessageBox | ✅ Implemented | a painted widget; no `android.app.AlertDialog` is constructed and no `create_native_dialog` is exported |
 | FileDialog | ✅ Verified | the one genuine **Activity operation** — launches `ACTION_OPEN_DOCUMENT` (`com.android.documentsui`) through the stored Activity. A host operation, not a control; see "File dialog" below |
+| Clipboard | ✅ Implemented (compile-verified) | the system `ClipboardManager`, through the stored Activity `Context` (`android_jni::set_clipboard_text` / `clipboard_text`, text and HTML via `ClipData.newPlainText` / `newHtmlText`). Needs the `JavaVM` **and** an attached `Context`, so `capabilities().clipboard` asks `android_jni::clipboard_ready()` at runtime rather than assuming it; writes are confirmed by reading the primary clip back, because the platform refuses background clipboard writes without an error. Not run on a device in this round — see "Clipboard" below |
 | ColorDialog / FontDialog | 🔶 Logical only | no system picker on Android; emits an explicit diagnostic when the JNI bridge is ready |
 | Menu kind validation | ✅ Enforced | `MenuBar`←Window, `Menu`←MenuBar/Menu, `MenuItem`←Menu, trigger←MenuItem |
 | JNI signature validation | ✅ Automated | `tools/check_jni_signatures.sh` (Java ↔ Rust ↔ exported symbols, plus `target/qa/jni_*_map*.json` mapping reports) |
@@ -164,6 +165,40 @@ ActivityTaskManager: Displayed com.google.android.documentsui/
 `ColorDialog`/`FontDialog` remain logical-only because Android genuinely ships
 no platform color/font picker — that is a platform fact, not a missing wiring.
 
+## Clipboard (2026-10-14)
+
+`set_clipboard_text` / `get_clipboard_text` reached only the in-process `BackendState` record
+before this round, and `capabilities().clipboard` was left at the trait default (`false`). Both
+halves now go through the system `ClipboardManager`, which the stored `Activity` `Context` hands
+out:
+
+| Step | Call |
+|---|---|
+| Service | `Context.getSystemService("clipboard")` on the context `nativeAttachContext` stored |
+| Write (text) | `ClipData.newPlainText(label, text)` → `ClipboardManager.setPrimaryClip` |
+| Write (HTML) | `ClipData.newHtmlText(label, text, html)` → `setPrimaryClip` |
+| Read | `getPrimaryClip().getItemAt(0).coerceToText(context)` |
+| Present? | `hasPrimaryClip()` + `coerceToText` / `getHtmlText` |
+
+Three properties are deliberate:
+
+1. **The write is confirmed by a read-back.** `setPrimaryClip` returns `void` and the platform
+   *silently* refuses a clipboard write from a background process on API 30+. Reporting the call
+   as success would be the "reported success for something that did not happen" failure the
+   trait forbids, so `set_clipboard_text` compares the primary clip with what it wrote and logs
+   when they differ.
+2. **The capability flag is a runtime answer.** `clipboard: android_jni::clipboard_ready()`
+   (`JavaVM` stored **and** `Context` attached) rather than `cfg!(feature = "android-jni")`: a
+   process that has not run the handshake genuinely cannot reach the clipboard, and the mask
+   `rw_platform_capabilities` publishes must describe that process.
+3. **The bridge is not required.** Without `android-jni`, or before the handshake, both methods
+   fall back to the in-process record — the same behaviour the rest of the state-backed backends
+   have — instead of failing a copy/paste inside the library.
+
+**Not verified on a device in this round.** The code is compile-verified for all four Android
+ABIs (`tools/check_android_cross.sh`); no emulator or phone was attached, so the JNI calls have
+not been exercised at runtime. `tools/run_android_testapp.sh` is the path that would do it.
+
 ## Toolbar investigation (2026-09-11)
 
 Status was previously "not guaranteed; host-provided". This was verified on a
@@ -218,6 +253,7 @@ would be an architectural decision, not a backend fix.
 
 - An AndroidX `Toolbar` inside the library — the on-device constraint is now
   characterised rather than merely assumed (see "Toolbar investigation").
+- The JNI clipboard calls on a real device or emulator (see "Clipboard"): compile-verified only.
 - Device coverage beyond one arm64 device.
 
 ## Device install note (MIUI/HyperOS)

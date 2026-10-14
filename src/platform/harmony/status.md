@@ -196,9 +196,14 @@ capability default must err.
 - `typed_widget_trigger: true` — implemented by this backend
   (`inject_widget_trigger_event`, `poll_widget_trigger_event`) over the shared queue,
   so it cannot be absent.
-- `clipboard: false`, `open_external: false` — the two host services. This backend's
-  clipboard is the in-process `BackendState` record rather than the host's, and it spawns
-  no handler process. Asserted by `capabilities_are_explicit_and_honest`.
+- `clipboard: cfg!(target_env = "ohos")`, `open_external: false` — the two host services, now
+  answered separately. The clipboard is the system pasteboard: `super::pasteboard` binds
+  `OH_Pasteboard` over UDMF from the SDK's `libpasteboard`/`libudmf`, and the flag is produced
+  from the *same* `PASTEBOARD_AVAILABLE` constant the trait method bodies use, so a host build
+  (where the inert stand-in compiles instead) reports `false` and an OpenHarmony target reports
+  `true`. `open_external` stays `false`: opening a URL needs an `AbilityContext` this backend has
+  no handle on. Asserted by `capabilities_are_explicit_and_honest` and
+  `the_clipboard_flag_matches_its_backend`.
 
 `supports_surfaces()` returns `true`: the backend records mounted surfaces and
 queues repaints for the host to drain. That claim is now reachable from outside the

@@ -392,22 +392,38 @@ fn attach_menu_bar_refuses_unknown_ids() {
     assert!(!rust_widgets::attach_menu_bar_to_window(window, 0xdead_beee_u64));
 }
 
-// ── Documented gaps ─────────────────────────────────────────────────────────
+// ── Echo mode ───────────────────────────────────────────────────────────────
 //
-// These two accessors have no property to write to yet: the text controls track
-// an echo mode and a selection internally but publish neither. The assertions
-// below pin the *honest* answer (`false` / `None`) rather than the feature, so a
-// caller is never told a mode was applied when it was not — and so implementing
-// the properties is what flips these tests, rather than a silent change.
+// `echo_mode` used to be a documented gap here: the text controls tracked the
+// masking mode internally but published no property, so these assertions pinned
+// the honest `false` / `None`. `LineEdit` now publishes `echo_mode`, which is
+// what flips this case into a round trip — the same guard reads the other way
+// rather than being deleted.
 
 #[test]
-fn echo_mode_reports_unsupported_until_a_control_publishes_it() {
+fn echo_mode_round_trips_through_the_accessors_and_reaches_the_control() {
     let id = mount("line_edit", "");
     assert!(
-        !rust_widgets::set_widget_echo_mode(id, rust_widgets::platform::EchoMode::Password),
-        "no control publishes `echo_mode` yet, so the write must be reported as refused"
+        rust_widgets::set_widget_echo_mode(id, rust_widgets::platform::EchoMode::Password),
+        "`LineEdit` publishes `echo_mode`, so the write must be accepted"
     );
-    assert_eq!(rust_widgets::widget_echo_mode(id), None);
+    assert_eq!(
+        rust_widgets::widget_echo_mode(id),
+        Some(rust_widgets::platform::EchoMode::Password)
+    );
+
+    // Read back through the control's own property contract as well: an accessor
+    // that agrees only with its own mirror is exactly the failure this file
+    // exists to catch, and the masking mode is what the copy path consults.
+    assert_eq!(
+        rust_widgets::read_widget_property_by_id(id, "echo_mode"),
+        Ok(rust_widgets::widget::capability::CapabilityValue::String("password".to_string()))
+    );
+
+    // Back to `Normal`, so the round trip is proven in both directions rather
+    // than latching on the first non-default value.
+    assert!(rust_widgets::set_widget_echo_mode(id, rust_widgets::platform::EchoMode::Normal));
+    assert_eq!(rust_widgets::widget_echo_mode(id), Some(rust_widgets::platform::EchoMode::Normal));
 }
 
 #[test]

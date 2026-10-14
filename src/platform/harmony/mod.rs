@@ -21,6 +21,14 @@ pub mod xcomponent;
 #[cfg(all(feature = "xcomponent", not(alloc_frugal)))]
 pub mod accessibility;
 
+/// The system pasteboard (`OH_Pasteboard` over UDMF).
+///
+/// Compiled wherever this backend is — an OpenHarmony target, or the `harmony` preview feature on
+/// a host. The FFI itself is `#[cfg(target_env = "ohos")]` inside, so a host build compiles the
+/// module (and its unit tests) with the declarations replaced by an inert stand-in rather than
+/// failing to link a device library. See the module docs.
+pub mod pasteboard;
+
 pub use types::*;
 #[cfg(test)]
 pub mod tests;

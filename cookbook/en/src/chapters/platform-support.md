@@ -129,16 +129,26 @@ discovering the absence from a call that returns nothing.
 | macOS | ✅ | ✅ |
 | Linux / GTK | ✅ ¹ | ✅ |
 | Linux / Wayland | ❌ | ❌ |
-| iOS | ❌ | ❌ |
-| Android | ❌ | ❌ |
-| HarmonyOS | ❌ | ❌ |
+| iOS | ✅ ² | ❌ |
+| Android | ✅ ² | ❌ |
+| HarmonyOS | ✅ ³ | ❌ |
 | WASM | ❌ | ❌ |
 | Portable | ❌ | ❌ |
 
-¹ `clipboard` is `true` only with the `gtk-native` feature: that is what publishes a copy to the
-GDK display clipboard. Without it — and on every state-only backend — `set_clipboard_text` writes
-an **in-process** record, which is useful inside the library but invisible to other applications,
-so the flag is `false` rather than a promise the host would act on wrongly.
+¹ Linux is the one desktop where the answer has a *session* half: `gtk-native` links the interface
+(`GtkClipboard`) and a display must be there behind it, so the flag is `gtk-native` **and** a
+display clipboard being reachable right now. Without `gtk-native` — and on every state-only
+backend — `set_clipboard_text` writes an **in-process** record, which is useful inside the library
+but invisible to other applications, so the flag is `false` rather than a promise the host would
+act on wrongly.
+
+² Mobile answers at *runtime*: the flag is `true` only once the host has run its handshake (iOS:
+the UIKit FFI is compiled in; Android: the `JavaVM` is stored **and** the `Activity` `Context` is
+attached). Before that, the in-process record is the only clipboard this process can reach, and
+the flag says so.
+
+³ HarmonyOS links the SDK's `libpasteboard`/`libudmf` on an OpenHarmony target; a host build
+compiles the inert stand-in and reports `false`.
 
 - **Host clipboard** (`clipboard`): whether a copy leaves the process. Use
   [`clipboard_text()`](../api-reference/functions.md) for a read that tells "no text" apart from
@@ -462,8 +472,18 @@ if let Some(content) = clip.get_contents() {
 ### Platform Clipboard Integration
 
 The `Platform` trait exposes `clipboard_backend()` which returns
-`Option<&dyn RichClipboardBackend>`. Desktop platforms provide real clipboard
-integration; embedded platforms return `None`.
+`Option<&dyn RichClipboardBackend>`. It answers `Some` where the backend reaches the *host*
+clipboard — macOS (`NSPasteboard`), Windows (`CF_UNICODETEXT`/`CF_HTML`), Linux/GTK (GDK),
+iOS (`UIPasteboard`), Android (`ClipboardManager`), HarmonyOS (`OH_Pasteboard` over UDMF) — and
+`None` where the only clipboard is the in-process record (Wayland, WASM, portable, and any build
+without the platform's own path compiled in). Each of those backends carries **text and HTML**;
+the remaining content kinds are refused rather than silently dropped, because a backend that
+answers `true` for a format it did not store is the fake-success shape the capability contract
+forbids.
+
+Two host facts worth knowing before you branch on it: on Linux/GTK a *display* must be reachable
+as well as the feature being on, and on the mobile backends the host handshake (iOS: UIKit FFI
+compiled in; Android: `JavaVM` + `Activity` `Context`) must have run.
 
 ```rust
 let platform = rust_widgets::platform::get_platform();

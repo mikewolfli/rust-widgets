@@ -539,6 +539,19 @@ fn capability_flags_agree_with_the_methods_they_promise() {
                 "{name}: claims `accessibility: true` but `accessibility_bridge()` answers None"
             );
         }
+        if caps.clipboard {
+            // `clipboard` is the one flag whose promise is a *backend* rather than a bridge, and
+            // it is the flag a host reads before offering a paste action. A backend that reports
+            // it while `clipboard_backend()` answers `None` would leave the host with no clipboard
+            // to call — the same false-claim shape the two checks above exist for. (The reverse
+            // direction stays unchecked here, per this test's rule: a backend that answers `None`
+            // while reporting `false` is under-claiming, which is the honest side to err on.)
+            assert!(
+                platform.clipboard_backend().is_some(),
+                "{name}: claims `clipboard: true` but `clipboard_backend()` answers None, so the \
+                 flag promises a host clipboard this backend cannot hand out"
+            );
+        }
         if caps.dpi_scaling {
             // Not asserted for `dpi_scaling: true` — plenty of honest backends report the flag
             // while `dpi_scale_factor()` happens to be `1.0` on this host (an unscaled display is

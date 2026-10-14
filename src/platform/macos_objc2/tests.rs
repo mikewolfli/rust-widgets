@@ -83,6 +83,20 @@ fn objc2_owns_no_control_state() {
 /// Visibility is window state the shared `BackendState` owns: a freshly created
 /// window is visible and stops being visible once hidden. The id contract is the
 /// other half this backend owes a caller.
+///
+/// # Why the teardown half is host-dependent
+///
+/// `destroy_widget` performs the **native** teardown before dropping the record, and the AppKit
+/// path refuses to run off the main thread (`destroy_native_handle` →
+/// `NativeDestroyOutcome::RefusedOffMainThread`) — which is the thread libtest gives every test.
+/// That refusal is deliberate and load-bearing: it is what keeps a window on screen from being
+/// forgotten by the bookkeeping before a main-thread retry can close it. So on an Apple host with
+/// `macos` compiled, the assertion that can actually be made here is the refusal *plus* the
+/// retained record; where the native module is compiled out, the state round trip runs.
+///
+/// Before this split the test asserted only the state round trip, so it passed on every host
+/// *except* the one whose target it exercises (`macos` on macOS failed at this line) — the
+/// host-invisible-test class in reverse. Both halves are now asserted where they hold.
 #[test]
 fn objc2_window_lifecycle_parity() {
     let backend = MacOSObjc2Platform::new();
@@ -94,9 +108,28 @@ fn objc2_window_lifecycle_parity() {
     assert!(backend.is_widget_visible(window), "a new window is visible");
     backend.set_widget_visible(window, false);
     assert!(!backend.is_widget_visible(window), "a window hidden through state is not visible");
-    // Teardown reports whether the widget existed, which is state this host owns.
-    assert!(backend.destroy_widget(window), "an existing window must be destroyable");
-    assert!(!backend.destroy_widget(window), "a destroyed window must not report existence twice");
+
+    #[cfg(all(target_os = "macos", feature = "macos"))]
+    {
+        assert!(
+            !backend.destroy_widget(window),
+            "the native teardown must be refused on this thread rather than reported as done"
+        );
+        assert_eq!(
+            backend.get_widget_text(window),
+            "TestWindow",
+            "a refused teardown must keep the record, so a main-thread retry has an id to use"
+        );
+    }
+    #[cfg(not(all(target_os = "macos", feature = "macos")))]
+    {
+        // Teardown reports whether the widget existed, which is state this host owns.
+        assert!(backend.destroy_widget(window), "an existing window must be destroyable");
+        assert!(
+            !backend.destroy_widget(window),
+            "a destroyed window must not report existence twice"
+        );
+    }
 }
 
 #[test]

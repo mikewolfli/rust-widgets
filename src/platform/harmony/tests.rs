@@ -322,11 +322,36 @@ fn capabilities_are_explicit_and_honest() {
     );
     assert!(!caps.native_menu, "the Harmony menu is an in-process tree, not an OS menu");
     assert!(caps.typed_widget_trigger, "typed trigger events are supported");
-    assert!(
-        !caps.clipboard,
-        "the clipboard writes the in-process state record, not a host clipboard"
+    assert_eq!(
+        caps.clipboard,
+        crate::platform::harmony::pasteboard::PASTEBOARD_AVAILABLE,
+        "`clipboard` must track whether the `OH_Pasteboard` binding is compiled in; the flag and \
+         the method bodies are produced from this one constant"
     );
     assert!(!caps.open_external, "no handler spawn exists in this backend");
+}
+
+/// The clipboard flag, the backend and its methods must all tell the same story.
+///
+/// The three halves are separate code (`capabilities()`, `clipboard_backend()`, the two text
+/// methods), so a later edit could move one and not the others: a flag of `true` with `None` from
+/// `clipboard_backend()` is a host-visible false claim, and a `false` flag over a real pasteboard
+/// would hide a working backend. `src/platform/tests.rs` checks the generic half for every
+/// backend the host can construct; this pins the pair for Harmony in both directions.
+#[test]
+fn the_clipboard_flag_matches_its_backend() {
+    let backend = HarmonyPlatform::new();
+    let claimed = backend.capabilities().clipboard;
+    let answers = backend.clipboard_backend().is_some();
+    assert_eq!(
+        claimed, answers,
+        "`clipboard` must be true exactly when `clipboard_backend()` answers a backend"
+    );
+    assert_eq!(
+        claimed,
+        crate::platform::harmony::pasteboard::PASTEBOARD_AVAILABLE,
+        "and both must follow the build fact, not a literal"
+    );
 }
 
 /// The accessibility flag and its method must agree — the capability contract, locally.

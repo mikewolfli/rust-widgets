@@ -90,15 +90,24 @@ Wayland 沒有選單列的協議，因此它的後端會把選單樹留在行程
 | macOS | ✅ | ✅ |
 | Linux / GTK | ✅ ¹ | ✅ |
 | Linux / Wayland | ❌ | ❌ |
-| iOS | ❌ | ❌ |
-| Android | ❌ | ❌ |
-| HarmonyOS | ❌ | ❌ |
+| iOS | ✅ ² | ❌ |
+| Android | ✅ ² | ❌ |
+| HarmonyOS | ✅ ³ | ❌ |
 | WASM | ❌ | ❌ |
 | Portable | ❌ | ❌ |
 
-¹ `clipboard` 只有在啟用 `gtk-native` feature 時才為 `true`：正是它把複製的內容發佈到 GDK 顯示剪貼簿。
-沒有它時（以及在所有純狀態後端上），`set_clipboard_text` 寫的是**行程內**記錄 —— 在函式庫內有用，
-但其它應用程式看不到，因此該旗標為 `false`，而不是一個宿主會誤信的承諾。
+¹ Linux 是唯一一個「答案有一半取決於**工作階段**」的桌面平台：`gtk-native` 把介面
+（`GtkClipboard`）連結進來，還需要背後真的有一個顯示服務；所以該旗標 = `gtk-native`
+**且** 當前能取得顯示剪貼簿。沒有 `gtk-native` 時（以及在所有純狀態後端上），
+`set_clipboard_text` 寫的是**行程內**記錄 —— 在函式庫內有用，但其它應用程式看不到，
+因此該旗標為 `false`，而不是一個宿主會誤信的承諾。
+
+² 行動端的答案是**執行期**的：只有宿主完成握手後該旗標才為 `true`
+（iOS：編譯進 UIKit FFI；Android：`JavaVM` 已保存**且** `Activity` 的 `Context` 已附加）。
+在此之前，行程內記錄是本行程唯一能觸及的剪貼簿，旗標也如實如此回答。
+
+³ HarmonyOS 在 OpenHarmony 目標上連結 SDK 的 `libpasteboard`/`libudmf`；
+宿主建置編譯的是惰性替身，因此報 `false`。
 
 - **宿主剪貼簿**（`clipboard`）：複製的內容能否離開本行程。讀取請用
   [`clipboard_text()`](../api-reference/functions.md)，它把「沒有文字」與空字串分開。
@@ -405,7 +414,9 @@ if let Some(content) = clip.get_contents() {
 
 ### 平台剪貼簿整合
 
-`Platform` trait 公開 `clipboard_backend()` 方法，回傳 `Option<&dyn RichClipboardBackend>`。桌面平台提供真實的剪貼簿整合；嵌入式平台回傳 `None`。
+`Platform` trait 公開 `clipboard_backend()` 方法，回傳 `Option<&dyn RichClipboardBackend>`。當後端能觸達**宿主**剪貼簿時回傳 `Some` —— macOS（`NSPasteboard`）、Windows（`CF_UNICODETEXT`/`CF_HTML`）、Linux/GTK（GDK）、iOS（`UIPasteboard`）、Android（`ClipboardManager`）、HarmonyOS（`OH_Pasteboard` + UDMF）；當唯一的剪貼簿就是行程內記錄時回傳 `None`（Wayland、WASM、portable，以及任何沒有編譯進對應平台通道的建置）。這些後端都攜帶**文字與 HTML**；其餘內容型別一律被拒絕而不是靜默丟棄 —— 對沒有真正存入的格式回答 `true`，正是能力契約所禁止的「假成功」。
+
+分支前需要知道兩個宿主事實：Linux/GTK 除了要開啟 feature，還需要能取得*顯示*服務；行動端需要宿主已完成握手（iOS：編譯進 UIKit FFI；Android：`JavaVM` + `Activity` 的 `Context`）。
 
 ```rust
 let platform = rust_widgets::platform::get_platform();

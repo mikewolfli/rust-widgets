@@ -335,6 +335,335 @@ fn launch_document_picker(env: &mut jni::JNIEnv<'_>, mime_type: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// System clipboard
+// ---------------------------------------------------------------------------
+
+/// The Java service name behind `Context.CLIPBOARD_SERVICE`.
+///
+/// Spelled out rather than reaching for the constant: the constant lives in `android.content.Context`,
+/// which would mean another class lookup to read a field whose value is a fixed string in the
+/// platform's public API.
+const CLIPBOARD_SERVICE: &str = "clipboard";
+
+/// Whether the bridge can reach the system clipboard.
+///
+/// Both halves are required and neither is sufficient: the `JavaVM` to attach a thread and call
+/// into Java at all, and the `Activity` `Context` because `Context.getSystemService` is what hands
+/// out the `ClipboardManager`.
+pub fn clipboard_ready() -> bool {
+    is_initialized() && has_activity_context()
+}
+
+/// Puts `text` on the system clipboard.
+///
+/// * `None` — the bridge is not ready (no `JavaVM`, or no attached `Activity` `Context`), so no
+///   request was made. A caller must not read this as "the write failed": it means this process
+///   has no host clipboard *yet*.
+/// * `Some(true)` / `Some(false)` — the host was asked, and this is its answer.
+///
+/// The answer is a **read-back**, not the absence of an exception: `setPrimaryClip` returns
+/// `void`, and on Android 10+ the system may refuse a clipboard write from a process that is not
+/// in the foreground. Reporting success there would be exactly the "reported success for
+/// something that did not happen" failure the trait forbids.
+pub fn set_clipboard_text(text: &str) -> Option<bool> {
+    with_jni_env(|env| write_primary_clip(env, text)).flatten()
+}
+
+/// The system clipboard's text, or `None` when it holds none.
+///
+/// `None` also covers "the bridge is not ready", which is the same fact the synchronous
+/// accessor's empty string is honest about: there is nothing this process can read.
+pub fn clipboard_text() -> Option<String> {
+    with_jni_env(read_primary_clip).flatten()
+}
+
+/// The host `Activity`'s `Context`, cloned out of the slot.
+fn attached_context() -> Option<jni::objects::GlobalRef> {
+    let slot = activity_context_slot().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    slot.clone()
+}
+
+/// `Context.getSystemService(Context.CLIPBOARD_SERVICE)`, or `None` when there is no context.
+fn clipboard_manager<'local>(
+    env: &mut jni::JNIEnv<'local>,
+) -> Option<jni::objects::JObject<'local>> {
+    let context = attached_context()?;
+    let service = env.new_string(CLIPBOARD_SERVICE).ok()?;
+    let manager = env
+        .call_method(
+            context.as_obj(),
+            "getSystemService",
+            "(Ljava/lang/String;)Ljava/lang/Object;",
+            &[jni::objects::JValue::Object(&service)],
+        )
+        .ok()?
+        .l()
+        .ok()?;
+    if manager.is_null() {
+        log::warn!("[android-jni] getSystemService(\"clipboard\") returned null");
+        return None;
+    }
+    Some(manager)
+}
+
+/// The first item of the primary clip, or `None` when the clipboard holds no clip.
+fn primary_clip_item<'local>(
+    env: &mut jni::JNIEnv<'local>,
+    manager: &jni::objects::JObject<'local>,
+) -> Option<jni::objects::JObject<'local>> {
+    let has_clip = env.call_method(manager, "hasPrimaryClip", "()Z", &[]).ok()?.z().ok()?;
+    if !has_clip {
+        return None;
+    }
+    let clip = env
+        .call_method(manager, "getPrimaryClip", "()Landroid/content/ClipData;", &[])
+        .ok()?
+        .l()
+        .ok()?;
+    if clip.is_null() {
+        return None;
+    }
+    let item = env
+        .call_method(
+            &clip,
+            "getItemAt",
+            "(I)Landroid/content/ClipData$Item;",
+            &[jni::objects::JValue::Int(0)],
+        )
+        .ok()?
+        .l()
+        .ok()?;
+    if item.is_null() {
+        log::warn!("[android-jni] the primary clip holds no item");
+        return None;
+    }
+    Some(item)
+}
+
+/// Calls a no-argument `CharSequence` accessor on a clip item and reads it as Rust text.
+fn item_text(
+    env: &mut jni::JNIEnv<'_>,
+    item: &jni::objects::JObject<'_>,
+    method: &str,
+) -> Option<String> {
+    let chars = env.call_method(item, method, "()Ljava/lang/CharSequence;", &[]).ok()?.l().ok()?;
+    if chars.is_null() {
+        return None;
+    }
+    let text = env.call_method(&chars, "toString", "()Ljava/lang/String;", &[]).ok()?.l().ok()?;
+    if text.is_null() {
+        return None;
+    }
+    env.get_string(&jni::objects::JString::from(text)).ok().map(|value| value.into())
+}
+
+/// Reads the primary clip's first item as text.
+fn read_primary_clip(env: &mut jni::JNIEnv<'_>) -> Option<String> {
+    let context = attached_context()?;
+    let manager = clipboard_manager(env)?;
+    let item = primary_clip_item(env, &manager)?;
+
+    // `coerceToText` is what makes a URI or an `Intent` item answer with its textual form; a
+    // plain `CharSequence` item comes back unchanged. Reading the `text` field directly would
+    // report `None` for every non-text clip, which is the distinction this exists for.
+    let chars = env
+        .call_method(
+            &item,
+            "coerceToText",
+            "(Landroid/content/Context;)Ljava/lang/CharSequence;",
+            &[jni::objects::JValue::Object(context.as_obj())],
+        )
+        .ok()?
+        .l()
+        .ok()?;
+    if chars.is_null() {
+        return None;
+    }
+    let text = env.call_method(&chars, "toString", "()Ljava/lang/String;", &[]).ok()?.l().ok()?;
+    if text.is_null() {
+        return None;
+    }
+    env.get_string(&jni::objects::JString::from(text)).ok().map(|value| value.into())
+}
+
+/// The primary clip's HTML, or `None` when the clip carries none.
+fn read_primary_html(env: &mut jni::JNIEnv<'_>) -> Option<String> {
+    let manager = clipboard_manager(env)?;
+    let item = primary_clip_item(env, &manager)?;
+    item_text(env, &item, "getHtmlText")
+}
+
+/// Publishes `clip` as the primary clip and reports whether the clipboard then holds `expect`.
+///
+/// The read-back is the evidence: `setPrimaryClip` returns `void` and cannot fail loudly, and on
+/// API 30+ the platform silently refuses a background process's clipboard write. Reporting the
+/// request as success there is the "reported success for something that did not happen" failure
+/// the trait forbids.
+fn publish_primary_clip(
+    env: &mut jni::JNIEnv<'_>,
+    clip: &jni::objects::JObject<'_>,
+    expect: &str,
+    reader: fn(&mut jni::JNIEnv<'_>) -> Option<String>,
+) -> Option<bool> {
+    let manager = clipboard_manager(env)?;
+    if let Err(error) = env.call_method(
+        &manager,
+        "setPrimaryClip",
+        "(Landroid/content/ClipData;)V",
+        &[jni::objects::JValue::Object(clip)],
+    ) {
+        log::error!("[android-jni] setPrimaryClip failed: {error}");
+        return Some(false);
+    }
+    let written = reader(env).is_some_and(|stored| stored == expect);
+    if !written {
+        log::warn!(
+            "[android-jni] setPrimaryClip returned without error but the clipboard does not hold \
+             the value that was written (the platform refuses background clipboard writes)"
+        );
+    }
+    Some(written)
+}
+
+/// Writes `text` as the primary clip and confirms it by reading the clipboard back.
+fn write_primary_clip(env: &mut jni::JNIEnv<'_>, text: &str) -> Option<bool> {
+    let clip = build_text_clip(env, text)?;
+    publish_primary_clip(env, &clip, text, read_primary_clip)
+}
+
+/// Writes `html` (with `plain` as its fallback) as the primary clip.
+fn write_primary_html_clip(env: &mut jni::JNIEnv<'_>, html: &str, plain: &str) -> Option<bool> {
+    let clip = build_html_clip(env, html, plain)?;
+    publish_primary_clip(env, &clip, html, read_primary_html)
+}
+
+/// `ClipData.newPlainText(label, text)`.
+fn build_text_clip<'local>(
+    env: &mut jni::JNIEnv<'local>,
+    text: &str,
+) -> Option<jni::objects::JObject<'local>> {
+    let label = env.new_string("rust-widgets").ok()?;
+    let value = env.new_string(text).ok()?;
+    let clip_data = env.find_class("android/content/ClipData").ok()?;
+    new_clip(
+        env,
+        &clip_data,
+        "newPlainText",
+        "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Landroid/content/ClipData;",
+        &[jni::objects::JValue::Object(&label), jni::objects::JValue::Object(&value)],
+    )
+}
+
+/// `ClipData.newHtmlText(label, text, htmlText)`.
+fn build_html_clip<'local>(
+    env: &mut jni::JNIEnv<'local>,
+    html: &str,
+    plain: &str,
+) -> Option<jni::objects::JObject<'local>> {
+    let label = env.new_string("rust-widgets").ok()?;
+    let text = env.new_string(plain).ok()?;
+    let html_text = env.new_string(html).ok()?;
+    let clip_data = env.find_class("android/content/ClipData").ok()?;
+    new_clip(
+        env,
+        &clip_data,
+        "newHtmlText",
+        "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Landroid/content/ClipData;",
+        &[
+            jni::objects::JValue::Object(&label),
+            jni::objects::JValue::Object(&text),
+            jni::objects::JValue::Object(&html_text),
+        ],
+    )
+}
+
+/// Calls one of `ClipData`'s static factories and returns the clip it built.
+fn new_clip<'local>(
+    env: &mut jni::JNIEnv<'local>,
+    clip_data: &jni::objects::JClass<'local>,
+    factory: &str,
+    signature: &str,
+    args: &[jni::objects::JValue<'_, '_>],
+) -> Option<jni::objects::JObject<'local>> {
+    match env.call_static_method(clip_data, factory, signature, args) {
+        Ok(clip) => clip.l().ok().filter(|clip| !clip.is_null()),
+        Err(error) => {
+            log::error!("[android-jni] ClipData.{factory} failed: {error}");
+            None
+        }
+    }
+}
+
+/// The Android host clipboard.
+///
+/// # What it carries, and what it does not
+///
+/// Text and HTML, through `ClipData.newPlainText` / `ClipData.newHtmlText` — the same pair the
+/// macOS and iOS backends implement. Images, RTF and file lists are refused (`false` / `None`)
+/// rather than silently dropped: a file list would need a `ContentResolver`-backed `Uri`, which
+/// the bridge has no handle on, and returning `true` for a conversion that did not happen is the
+/// fake-success shape this crate's principles forbid.
+pub struct AndroidClipboard;
+
+impl AndroidClipboard {
+    /// Creates the backend. It holds no state: the host clipboard is the state.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for AndroidClipboard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl crate::platform::clipboard::RichClipboardBackend for AndroidClipboard {
+    fn set_contents(&self, content: crate::platform::clipboard::ClipboardContent) -> bool {
+        use crate::platform::clipboard::ClipboardContent;
+        let written = match content {
+            ClipboardContent::Text(text) => {
+                with_jni_env(|env| write_primary_clip(env, &text)).flatten()
+            }
+            ClipboardContent::Html { html, plain } => {
+                with_jni_env(|env| write_primary_html_clip(env, &html, &plain)).flatten()
+            }
+            other => {
+                log::warn!(
+                    "[android-jni] {} is not carried by this backend; the write is reported as \
+                     refused rather than pretended",
+                    other.content_type()
+                );
+                return false;
+            }
+        };
+        written.unwrap_or(false)
+    }
+
+    fn get_contents(&self) -> Option<crate::platform::clipboard::ClipboardContent> {
+        use crate::platform::clipboard::ClipboardContent;
+        if let Some(html) = clipboard_text_of(read_primary_html) {
+            let plain = clipboard_text_of(read_primary_clip).unwrap_or_default();
+            return Some(ClipboardContent::Html { html, plain });
+        }
+        clipboard_text_of(read_primary_clip).map(ClipboardContent::Text)
+    }
+
+    fn has_format(&self, content_type: &str) -> bool {
+        match content_type {
+            "text/html" => clipboard_text_of(read_primary_html).is_some(),
+            "text/plain" => clipboard_text_of(read_primary_clip).is_some(),
+            _ => false,
+        }
+    }
+}
+
+/// Runs one of the clipboard readers through the JNI bridge.
+fn clipboard_text_of(reader: fn(&mut jni::JNIEnv<'_>) -> Option<String>) -> Option<String> {
+    with_jni_env(reader).flatten()
+}
+
+// ---------------------------------------------------------------------------
 // JNI entry points called by the host's Java class
 // ---------------------------------------------------------------------------
 //

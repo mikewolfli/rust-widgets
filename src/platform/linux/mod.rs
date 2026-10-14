@@ -16,6 +16,14 @@ pub mod platform_impl;
 pub mod tests;
 pub mod types;
 
+/// The Linux/GTK system clipboard, over GDK.
+///
+/// Gated with the rest of this backend's GTK code: the module binds `gtk::Clipboard`, which only
+/// exists when `linux-gtk` pulled the crate in. Which host it was verified on, and the one arm of
+/// it that could not be verified there, are recorded in the module docs.
+#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+pub(crate) mod gdk_clipboard;
+
 /// Absolute child placement for the Linux/GTK backend, on a `gtk::Overlay`.
 ///
 /// Split out because the placement rule (position, size, no size-request propagation) is

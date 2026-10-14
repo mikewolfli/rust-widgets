@@ -84,10 +84,12 @@ impl Platform for MacOSObjc2Platform {
             accessibility: false,
             native_menu: false,
             typed_widget_trigger: true,
-            // No host-service plumbing in this preview backend: the clipboard is the
-            // in-process `BackendState` buffer rather than `NSPasteboard`, and there is no
-            // handler spawn.
-            clipboard: false,
+            // `NSPasteboard`, through the objc2 bindings — a build-time fact, so it is asked of
+            // the target and feature rather than assumed. The module that holds the binding is
+            // `clipboard_stubs::objc2_macos`, gated on exactly this pair, and the trait methods
+            // above call it through the same gate, so the flag and the bodies cannot drift.
+            clipboard: cfg!(all(target_os = "macos", feature = "macos")),
+            // No handler spawn in this preview backend.
             open_external: false,
         }
     }
@@ -467,10 +469,88 @@ impl Platform for MacOSObjc2Platform {
     }
 
     // ---- Clipboard & Drag-Drop ----
+    //
+    // `NSPasteboard` through the objc2 backend's own implementation
+    // (`clipboard_stubs::objc2_macos`, which binds `NSPasteboard` with objc2 rather than the
+    // `cocoa`/`objc` crates the legacy backend uses). Each `#[cfg]` block below is removed in the
+    // build it does not describe, which leaves exactly one as the method's tail expression; on a
+    // host without AppKit the in-process `BackendState` record remains the answer.
     fn set_clipboard_text(&self, text: &str) -> bool {
-        self.state.set_clipboard_text(text)
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            if crate::platform::clipboard_stubs::objc2_macos::on_main_thread() {
+                // The pasteboard's own answer, confirmed by a read-back (`writeObjects:` is the
+                // system write; building the item is not).
+                return crate::platform::clipboard_stubs::objc2_macos::write_text(text);
+            }
+            // Off the AppKit main thread the pasteboard may not be touched, and widgets do call
+            // this from worker threads (a background copy). The in-process record keeps the call
+            // useful there, which is exactly the rule the cocoa backend follows.
+            self.state.set_clipboard_text(text)
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        {
+            self.state.set_clipboard_text(text)
+        }
     }
+
     fn get_clipboard_text(&self) -> String {
-        self.state.clipboard_text()
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            if crate::platform::clipboard_stubs::objc2_macos::on_main_thread() {
+                return crate::platform::clipboard_stubs::objc2_macos::read_text()
+                    .unwrap_or_default();
+            }
+            self.state.clipboard_text()
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        {
+            self.state.clipboard_text()
+        }
+    }
+
+    /// The pasteboard's text, or `None` when it holds none.
+    ///
+    /// Overridden because the trait default derives it from [`Self::get_clipboard_text`], and an
+    /// empty string on the host path means "the pasteboard holds an empty string" — a real answer
+    /// the default would report as "no text". Off the main thread (where the pasteboard may not be
+    /// touched) the record is the source, exactly as `get_clipboard_text` has it.
+    fn clipboard_text(&self) -> Option<String> {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            if crate::platform::clipboard_stubs::objc2_macos::on_main_thread() {
+                return crate::platform::clipboard_stubs::objc2_macos::read_text();
+            }
+            let text = self.state.clipboard_text();
+            if text.is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        {
+            let text = self.state.clipboard_text();
+            if text.is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        }
+    }
+
+    /// The host pasteboard, or `None` when this build has no AppKit path.
+    fn clipboard_backend(&self) -> Option<&dyn crate::platform::clipboard::RichClipboardBackend> {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            // A unit struct, so the backend needs no `OnceLock`: there is nothing to initialise.
+            static CLIPBOARD: crate::platform::clipboard_stubs::objc2_macos::MacOsObjc2Clipboard =
+                crate::platform::clipboard_stubs::objc2_macos::MacOsObjc2Clipboard;
+            Some(&CLIPBOARD)
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        {
+            None
+        }
     }
 }

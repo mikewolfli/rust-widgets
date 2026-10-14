@@ -142,6 +142,7 @@ impl Platform for HarmonyPlatform {
     /// `typed_widget_trigger` is `true` and stays `true`: unlike the others it is implemented
     /// by this backend (`inject_widget_trigger_event`, `poll_widget_trigger_event`) over the
     /// shared queue rather than by the host, so it cannot be absent.
+    /// The capabilities this backend can honour.
     fn capabilities(&self) -> crate::platform::types::PlatformCapabilities {
         crate::platform::types::PlatformCapabilities {
             dpi_scaling: false,
@@ -149,10 +150,13 @@ impl Platform for HarmonyPlatform {
             accessibility: cfg!(all(feature = "xcomponent", not(alloc_frugal))),
             native_menu: false,
             typed_widget_trigger: true,
-            // Neither host service is reachable from this backend: the clipboard bodies write
-            // the in-process state record rather than a host clipboard, and there is no
-            // handler spawn.
-            clipboard: false,
+            // `OH_Pasteboard` over UDMF, linked from the SDK's `libpasteboard`/`libudmf`. The
+            // flag and the method bodies are produced from the **same** `cfg`
+            // ([`super::pasteboard::PASTEBOARD_AVAILABLE`]), so a build that compiles the host
+            // stand-in reports `false` while a build that links the real service reports `true`.
+            clipboard: super::pasteboard::PASTEBOARD_AVAILABLE,
+            // No handler spawn: OpenHarmony opens a URL through an `AbilityContext`, which this
+            // backend has no handle on.
             open_external: false,
         }
     }
@@ -213,11 +217,56 @@ impl Platform for HarmonyPlatform {
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         self.insert_widget(HarmonyHandleKind::Window, title, x, y, width, height)
     }
+    // ─── Clipboard ───
+    //
+    // The system pasteboard when this build links it (OpenHarmony targets), the in-process
+    // `BackendState` record otherwise. The `Option` bindings below are the mechanism: the host
+    // path answers `None` exactly when it is not compiled for this target, so a host build keeps
+    // the record's behaviour instead of silently reporting failed writes.
+
     fn set_clipboard_text(&self, text: &str) -> bool {
-        self.state.set_clipboard_text(text)
+        match super::pasteboard::set_text(text) {
+            Some(written) => written,
+            None => self.state.set_clipboard_text(text),
+        }
     }
+
     fn get_clipboard_text(&self) -> String {
-        self.state.clipboard_text()
+        super::pasteboard::text().unwrap_or_else(|| self.state.clipboard_text())
+    }
+
+    /// The pasteboard's text, or `None` when it holds none.
+    ///
+    /// Overridden because the trait default derives it from [`Self::get_clipboard_text`], and on
+    /// the host path an empty string means "the clipboard holds an empty text" — a real answer
+    /// that the default would report as "no text".
+    fn clipboard_text(&self) -> Option<String> {
+        match super::pasteboard::text() {
+            Some(text) => Some(text),
+            None => {
+                if super::pasteboard::PASTEBOARD_AVAILABLE {
+                    // The pasteboard answered, and it holds no text: that is the answer, and it
+                    // is not the same fact as the record below being empty.
+                    return None;
+                }
+                let text = self.state.clipboard_text();
+                if text.is_empty() {
+                    None
+                } else {
+                    Some(text)
+                }
+            }
+        }
+    }
+
+    /// The host clipboard, or `None` when this build has no OpenHarmony pasteboard.
+    fn clipboard_backend(&self) -> Option<&dyn crate::platform::clipboard::RichClipboardBackend> {
+        if !super::pasteboard::PASTEBOARD_AVAILABLE {
+            return None;
+        }
+        static CLIPBOARD: std::sync::OnceLock<super::pasteboard::HarmonyClipboard> =
+            std::sync::OnceLock::new();
+        Some(CLIPBOARD.get_or_init(super::pasteboard::HarmonyClipboard::new))
     }
 
     /// Pops the next typed widget-trigger event injected into this backend.
