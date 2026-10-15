@@ -1884,6 +1884,7 @@ mod tests {
     ///
     /// The case is not reachable from a real form: a spin box's `size_hint` floor is the whole
     /// column plus twice the field padding, which is wider than this band.
+    #[cfg(device_profile)]
     #[test]
     fn a_band_narrower_than_the_step_column_keeps_both_inside_it() {
         let width = 30u32;

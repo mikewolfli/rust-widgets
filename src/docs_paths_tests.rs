@@ -357,6 +357,10 @@ fn documented_matrix_matches_real_backends() {
             true
         }
     };
+    // objc2's `clipboard` flag is computed the same way Linux's is: the AppKit pasteboard is
+    // wired only under `cfg!(all(target_os = "macos", feature = "macos"))`, so a build that
+    // compiles the backend without that feature reports `false`. See its `capabilities()`.
+    let expect_objc2_clipboard = cfg!(all(target_os = "macos", feature = "macos"));
     let published: &[Row] = &[
         // `native_menu: false` on all three desktop backends with an OS menu API: the flag records
         // an implementation, not an OS feature. See `PlatformCapabilities::native_menu` and each
@@ -372,7 +376,7 @@ fn documented_matrix_matches_real_backends() {
             false,
             false,
             false,
-            false,
+            expect_objc2_clipboard,
             false,
             false,
         ),

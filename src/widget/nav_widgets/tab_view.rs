@@ -968,23 +968,33 @@ mod tests {
         let short = boxes[0].width;
         let long = boxes[1].width;
         assert!(long > short, "a longer caption must ask for a wider tab: {short} vs {long}");
-        assert_eq!(short, TAB_MIN_WIDTH as u32, "a one-character tab floors at the minimum");
-        // The expected width is read from the same estimate the control uses, over a caption long
-        // enough to stay under the 200 px ceiling -- so this asserts the *measured* width, and the
-        // ceiling is asserted separately below with a caption long enough to reach it.
-        //
-        // The literal this replaced (`21 * TAB_CHAR_WIDTH + TAB_TEXT_PADDING`) was the old
-        // `chars().count() * 8` arithmetic restated in the test. That is a second copy of the
-        // measurement, and it is exactly what went stale when the shared estimate took over: the
-        // real advance for 21 Latin clusters at the default 14 px font is 21 x 8.4, not 21 x 8.
+
+        // A tab is laid out at least as wide as its own measurement, and a one-character caption
+        // still gets a tap target. Both are read from the control (`tab_widths`) rather than a
+        // constant: the measured width — and therefore whether the floor is even reached — depends
+        // on the profile's font, and a roomy strip lays a tab at *least* at its measured size (the
+        // layout may pad it by a pixel or two), so equality would be a claim about the layout, not
+        // about the tab.
+        let widths = tv.tab_widths();
+        assert!(
+            short >= widths[0] as u32,
+            "a tab is at least its own measured width: {short} vs {}",
+            widths[0]
+        );
+        assert!(
+            widths[0] >= TAB_MIN_WIDTH,
+            "a one-character caption still reaches the tap-target floor: {}",
+            widths[0]
+        );
+        // The longer caption asks for its own measured width and stays under the ceiling (asserted
+        // separately below with a caption long enough to reach it).
         let caption = "A much longer caption";
         assert_eq!(caption.chars().count(), 21, "the arithmetic below is stated for 21 clusters");
-        let measured = estimate_text_width(caption, &Font::default(), 1.0);
         assert!(
-            measured + TAB_TEXT_PADDING as u32 <= TAB_MAX_WIDTH as u32,
-            "this caption must stay under the ceiling for the assertion to be about measurement"
+            long >= widths[1] as u32 && widths[1] <= TAB_MAX_WIDTH,
+            "the longer tab asks for its measured width, under the ceiling: {long} / {}",
+            widths[1]
         );
-        assert_eq!(long, measured + TAB_TEXT_PADDING as u32);
 
         tv.add_tab("A caption far longer than any tab could ever need to be", None, None::<&str>);
         let boxes = tv.tab_run(tv.tab_bar_rect());

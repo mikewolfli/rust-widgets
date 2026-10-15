@@ -4,7 +4,9 @@
 # macOS Backends Status (cocoa-legacy + objc2)
 
 > Last verified: 2026-09-11 on a real Mac (macOS 15.7.3, arm64, rustc 1.98.0).
-> Evidence: `docs/log/log-20260911-2.md`, gate `tools/check_apple_native.sh`.
+> Evidence: `docs/log/archive/log-20260911-2.md`. The runtime AppKit control probes were
+> deleted with the BLUE15 self-drawn refactor (see the note on the tables below); the
+> surviving static gate is `tools/check_apple_thread_safety.sh`.
 
 ## Backend selection
 
@@ -19,7 +21,9 @@ Two macOS backends coexist and are selected by feature flag via
 
 `desktop` enables `cocoa-legacy` only, so the default desktop build on macOS
 selects the legacy `cocoa` backend. Requesting `--features macos` selects the
-objc2 backend. **Both are now native-verified** (see below).
+objc2 backend. The window/surface paths of both run in the host test suite
+(`cargo test --no-default-features --features "macos,desktop"`); the pre-BLUE15
+per-kind native *control* probe no longer exists (see the note above the tables).
 
 > Fixed 2026-09-11: the native FFI in `macos_objc2` was gated on the *alias*
 > `feature = "objc2-macos"`. Cargo aliases are one-way, so `--features macos`
@@ -85,6 +89,14 @@ objc2 backend. **Both are now native-verified** (see below).
 > `set_native_enabled` / `set_native_text` probe `respondsToSelector:` first.
 
 ## Verification (real Mac, 2026-09-11)
+
+> **Historical.** The two `examples/apple_appkit_probe*` probes asserted the pre-BLUE15
+> per-kind native *control* path and were **deleted** with that architecture
+> (`tools/check_apple_native.sh` records the removal). The transcript below is kept as the
+> record of what was verified *then*; it does not describe the current build, which paints
+> every `WidgetKind` (see the corrected tables above). The current cocoa coverage is the
+> window/surface path in the ordinary host test suite
+> (`cargo test --no-default-features --features desktop --lib`).
 
 `cargo run --example apple_appkit_probe --features <backend>` runs on the AppKit
 main thread and asserts against live Objective-C objects:

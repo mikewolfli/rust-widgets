@@ -1033,7 +1033,7 @@ mod tests {
             RecoverableError::Unrecoverable(_)
         ));
         assert!(matches!(
-            classify_symphonia_error(&Error::IoError(IoError::new(ErrorKind::Other, ""))),
+            classify_symphonia_error(&Error::IoError(IoError::other(""))),
             RecoverableError::Unrecoverable(_)
         ));
     }

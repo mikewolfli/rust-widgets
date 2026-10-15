@@ -170,6 +170,16 @@ pub(crate) enum NativeDestroyOutcome {
 /// call logs and reports [`NativeDestroyOutcome::RefusedOffMainThread`] and the
 /// caller keeps the bookkeeping it had.
 pub(crate) fn destroy_native_handle(widget_id: u64) -> NativeDestroyOutcome {
+    // The lookup runs **before** the thread check. A state-only widget (no native
+    // object) has nothing for AppKit to refuse, so its teardown must succeed on any
+    // thread; doing the thread check first made an off-main destroy of a widget that
+    // was never natively created report `RefusedOffMainThread`, keeping bookkeeping it
+    // never needed and breaking the shared teardown contract (a host that creates and
+    // destroys off the main loop could not finish a destroy it was entitled to). Only a
+    // real native handle is main-thread-bound, so only it is refused.
+    if !NATIVE_VIEWS.lock().unwrap().contains_key(&widget_id) {
+        return NativeDestroyOutcome::NoNativeObject;
+    }
     if MainThreadMarker::new().is_none() {
         log::error!(
             "[macos-objc2] destroy_handle: refused off the AppKit main thread (id={widget_id})"
@@ -299,6 +309,16 @@ define_class!(
         #[cfg(widgets_unstripped)]
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
+            // A second primary press inside the system's double-click interval is its
+            // own event (`Event::MouseDoubleClick`), not a press with a higher count —
+            // the same rule `macos::canvas` applies, and the `DoubleClick` arm of
+            // `forward_mouse` below exists for exactly this. AppKit reports the run
+            // length in `clickCount`, so the interval's definition is never
+            // re-derived here.
+            if event.clickCount() >= 2 {
+                self.forward_mouse(event, MousePhase::DoubleClick);
+                return;
+            }
             self.forward_mouse(event, MousePhase::Press);
         }
 
@@ -513,8 +533,9 @@ impl RustWidgetsObjc2CanvasView {
                 (origin.x + local.x).round() as i32,
                 (origin.y + local.y).round() as i32,
             );
-            let modifiers =
-                crate::platform::macos::types::map_modifiers(event.modifierFlags().bits() as u64);
+            let modifiers = crate::platform::macos::accelerator::map_modifiers(
+                event.modifierFlags().bits() as u64,
+            );
             let translated = match phase {
                 MousePhase::Press => Event::mouse_press_with(
                     position.x,
@@ -581,8 +602,9 @@ impl RustWidgetsObjc2CanvasView {
                 (origin.x + local.x).round() as i32,
                 (origin.y + local.y).round() as i32,
             );
-            let modifiers =
-                crate::platform::macos::types::map_modifiers(event.modifierFlags().bits() as u64);
+            let modifiers = crate::platform::macos::accelerator::map_modifiers(
+                event.modifierFlags().bits() as u64,
+            );
             // AppKit reports a positive `scrollingDeltaY` for scrolling up; the widget
             // layer's wheel `delta.y` is positive for scrolling down, so the sign is
             // inverted (matching `macos::canvas` and `windows::canvas`).
@@ -612,8 +634,9 @@ impl RustWidgetsObjc2CanvasView {
                 return;
             };
             let key = event.keyCode() as u32;
-            let modifiers =
-                crate::platform::macos::types::map_modifiers(event.modifierFlags().bits() as u64);
+            let modifiers = crate::platform::macos::accelerator::map_modifiers(
+                event.modifierFlags().bits() as u64,
+            );
             if release {
                 // A release produces no text, so `KeyRelease` is the only event it can be.
                 let target = crate::widget::runtime::focused_widget().unwrap_or(widget_id);

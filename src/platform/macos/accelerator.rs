@@ -42,6 +42,67 @@ pub(crate) const MOD_OPTION: u64 = 1 << 19;
 /// `NSEventModifierFlagCommand`.
 pub(crate) const MOD_COMMAND: u64 = 1 << 20;
 
+/// Translates an AppKit `NSEvent` key event into `(key_code, widget_modifiers)`.
+///
+/// Testable core of the cocoa backend's `translate_key_event`: takes the raw
+/// AppKit values so the mapping can be asserted without constructing an `NSEvent`.
+///
+/// # Modifier mapping
+///
+/// The widget layer uses a small fixed bitfield: shift = 1, control = 2,
+/// alt = 4, meta/command = 8 (see `Modifiers::from_event_bits`). This converts
+/// AppKit's `NSEventModifierFlag` bits into that layout, so a `KeyPress`
+/// arriving through a self-drawn canvas carries the same bits as one arriving
+/// through the regular event loop.
+///
+/// Command **must** be forwarded as bit 3: it is the macOS primary accelerator
+/// (`⌘Z`, `⌘S`, ...). Dropping it made every Command chord reach the widget as a
+/// bare key press, which is why application shortcuts never fired on macOS.
+///
+/// # Key code
+///
+/// AppKit's `keyCode` is a hardware layout code and is returned unchanged; the
+/// widget layer's key handling is written against exactly those codes for the
+/// non-printing keys (arrows, Enter, Escape, Backspace, Delete, Page Up/Down,
+/// Home/End). Printable characters travel as `Event::TextInput` and therefore
+/// never depend on this number.
+#[cfg(widgets_unstripped)]
+pub(crate) fn map_key_modifiers(appkit_flags: u64, key_code: u16) -> (u32, u32) {
+    (key_code as u32, map_modifiers(appkit_flags))
+}
+
+/// Converts AppKit's `NSEventModifierFlag` bits into the widget-layer bitfield.
+///
+/// Split out of [`map_key_modifiers`] so a **pointer** event can carry the same
+/// modifier state a key event does. A `Shift`/`Ctrl` press is what selects a range or
+/// toggles one row in an extended-selection view, and the widget layer can only honour
+/// that if the press it receives says which modifiers were held.
+///
+/// Lives here rather than in `macos/types.rs` for the same reason [`parse_shortcut`]
+/// does: both macOS backends convert modifier flags, and `macos/types.rs` is gated on
+/// `cocoa-legacy` while the objc2 backend is selected by the `macos` feature.
+#[cfg(widgets_unstripped)]
+pub(crate) fn map_modifiers(appkit_flags: u64) -> u32 {
+    const WIDGET_SHIFT: u32 = 1;
+    const WIDGET_CONTROL: u32 = 2;
+    const WIDGET_ALT: u32 = 4;
+    const WIDGET_META: u32 = 8;
+    let mut modifiers = 0u32;
+    if appkit_flags & MOD_SHIFT != 0 {
+        modifiers |= WIDGET_SHIFT;
+    }
+    if appkit_flags & MOD_CONTROL != 0 {
+        modifiers |= WIDGET_CONTROL;
+    }
+    if appkit_flags & MOD_OPTION != 0 {
+        modifiers |= WIDGET_ALT;
+    }
+    if appkit_flags & MOD_COMMAND != 0 {
+        modifiers |= WIDGET_META;
+    }
+    modifiers
+}
+
 /// Parses a **displayed** accelerator (e.g. `"⌘Z"`, `"Ctrl+Shift+Z"`, `"F1"`)
 /// into a Cocoa key equivalent string plus its `NSEventModifierFlag` mask.
 ///

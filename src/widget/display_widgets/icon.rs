@@ -1542,6 +1542,7 @@ mod tests {
     /// A slot that is not square must not stretch the glyph, and the box `measure_icon` reports
     /// must be the box a draw lands in — otherwise a caller reserving room from the measurement
     /// would reserve the wrong room.
+    #[cfg(feature = "icons")]
     #[test]
     fn measure_icon_is_square_contain_and_matches_where_the_glyph_is_drawn() {
         use crate::core::Size;
@@ -1607,6 +1608,7 @@ mod tests {
 
     /// Stage one answers the source questions, including the contour budget, which is not rounded by
     /// device placement.
+    #[cfg(feature = "icons")]
     #[test]
     fn validate_icon_reports_the_source_budget_and_refuses_the_undrawable() {
         let metadata =

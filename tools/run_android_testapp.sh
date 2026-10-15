@@ -29,6 +29,13 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# The emulator-ready wait is bounded with the project's portable helper rather than
+# GNU `timeout`: coreutils is absent from a default macOS userland, where a raw
+# `timeout` made the wait fail for the *wrong* reason — reported as "the emulator
+# never registered" when the real cause was a missing command. See
+# `tools/lib_timeout.sh` for why the bound is implemented in pure bash.
+. "$ROOT_DIR/tools/lib_timeout.sh"
+
 SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}"
 # Same macOS layout fallback the build script applies, and for the same reason: without
 # it the whole runner reported `adb not found` on a machine whose SDK was right there
@@ -169,7 +176,7 @@ if [[ -z "$TARGET_SERIAL" ]]; then
   # that is what turned this probe into an unbounded wait whose only bound was the outer runner, which
   # then reported "result unknown" instead of an answer. A device that never registers is a limitation
   # of this host (no usable AVD/accel), not a defect in the code, so it reports `unsupported host`.
-  if ! timeout "${EMULATOR_READY_TIMEOUT:-180}" "$ADB" wait-for-device; then
+  if ! rw_run_bounded "${EMULATOR_READY_TIMEOUT:-180}" "$ADB" wait-for-device; then
     echo "unsupported host (emulator $AVD did not register with adb within ${EMULATOR_READY_TIMEOUT:-180}s)" >&2
     echo "  its log is /tmp/emu_${AVD}.log — a common cause is missing /dev/kvm acceleration" >&2
     echo "  attach a booted device instead: ANDROID_SERIAL=<serial> bash $0" >&2
