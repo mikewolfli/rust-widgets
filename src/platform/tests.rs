@@ -635,6 +635,15 @@ impl Platform for LoopingPlatform {
     }
 }
 
+/// Serializes the two tests that drive a real loop against the process-global seams.
+///
+/// [`crate::platform::stop`]'s request flag and [`crate::platform::main_thread`]'s queue are
+/// process-wide by design, so two loops running at once drain each other's requests and queued
+/// work — one test's `quit`/`schedule_on_main` can stop or run inside the other's loop, which is a
+/// cross-test race rather than a defect in either seam. Holding this guard for a test's duration is
+/// what makes each a statement about its own loop.
+static LOOP_SEAM_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// A stop request from a thread that does not own the loop must end the session.
 ///
 /// # The shape this stages
@@ -659,6 +668,9 @@ impl Platform for LoopingPlatform {
 fn a_request_from_another_thread_ends_a_running_loop() {
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
+
+    // Held for the whole test: see [`LOOP_SEAM_SERIAL`].
+    let _serial = LOOP_SEAM_SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
     static LOOP_PLATFORM: LoopingPlatform = LoopingPlatform::new();
 
@@ -716,6 +728,9 @@ fn a_request_from_another_thread_ends_a_running_loop() {
 fn work_scheduled_from_another_thread_runs_on_the_loops_thread() {
     use std::sync::atomic::AtomicU64;
     use std::time::{Duration, Instant};
+
+    // Held for the whole test: see [`LOOP_SEAM_SERIAL`].
+    let _serial = LOOP_SEAM_SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
     static LOOP_PLATFORM: LoopingPlatform = LoopingPlatform::new();
     /// Set by the callback, with the elapsed time it observed when it ran.

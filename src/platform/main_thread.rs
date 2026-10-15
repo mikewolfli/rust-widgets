@@ -55,6 +55,48 @@ struct Due {
 /// the rest, which is a partition over one collection rather than a receive.
 static QUEUE: OnceLock<Mutex<Vec<Due>>> = OnceLock::new();
 
+/// Locks a queue, recovering a poisoned one.
+///
+/// A callback panics with the due items already *out* of the queue, so the contents are still
+/// consistent and the lock is safe to take back.
+fn lock(queue: &Mutex<Vec<Due>>) -> std::sync::MutexGuard<'_, Vec<Due>> {
+    match queue.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// Appends `work` with its deadline.
+///
+/// Shared by [`schedule_in`] and the tests' own queues, so the queue's rule is exercised directly
+/// rather than through the process-global instance — which two tests running in parallel would
+/// otherwise race each other for.
+fn append(queue: &Mutex<Vec<Due>>, after: Duration, work: Box<dyn FnOnce() + Send + 'static>) {
+    lock(queue).push(Due { at: Instant::now() + after, work });
+}
+
+/// Runs the items in `queue` that have come due, leaving the rest.
+///
+/// # Why the due items are taken out before they run
+///
+/// A callback may schedule more work (the documented way to repeat), which takes the same lock.
+/// Running callbacks while holding it would deadlock the loop on the first one that did, so the
+/// due items are moved out under the lock and executed after it is released. Work queued *by* a
+/// callback that is due immediately therefore runs on the **next** frame, not this one — a
+/// one-frame delay rather than re-entrancy.
+fn run_due(queue: &Mutex<Vec<Due>>) {
+    let now = Instant::now();
+    let due: Vec<Due> = {
+        let mut guard = lock(queue);
+        let (due, later): (Vec<Due>, Vec<Due>) = guard.drain(..).partition(|item| item.at <= now);
+        *guard = later;
+        due
+    };
+    for item in due {
+        (item.work)();
+    }
+}
+
 /// Hands `work` to the loop's own thread, to run at or after `after` from now.
 ///
 /// Returns whether a loop in this process is in a position to run it: `true` when a loop has
@@ -74,45 +116,21 @@ static QUEUE: OnceLock<Mutex<Vec<Due>>> = OnceLock::new();
 /// with the remaining work intact.
 pub fn schedule_in(after: Duration, work: impl FnOnce() + Send + 'static) -> bool {
     let queued = QUEUE.get_or_init(|| Mutex::new(Vec::new()));
-    let mut guard = match queued.lock() {
-        Ok(guard) => guard,
-        // A previous callback panicked while nothing else held the lock; the queue's contents are
-        // still consistent (the panic happened while the items were *out* of it).
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    guard.push(Due { at: Instant::now() + after, work: Box::new(work) });
-    drop(guard);
+    // The poison recovery lives in `lock`; a previous callback panicked with the items already
+    // *out* of the queue, so its contents are still consistent.
+    append(queued, after, Box::new(work));
     crate::platform::stop::loop_has_ticked()
 }
 
-/// Runs everything that has come due. Called by the frame tick, on the loop's own thread.
-///
-/// # Why the due items are taken out before they run
-///
-/// A callback may schedule more work (the documented way to repeat), which takes the same lock.
-/// Running callbacks while holding it would deadlock the loop on the first one that did, so the
-/// due items are moved out under the lock and executed after it is released. Work queued *by* a
-/// callback that is due immediately therefore runs on the **next** frame, not this one — a
-/// one-frame delay rather than re-entrancy.
+/// Runs everything that has come due on the process-global queue. Called by the frame tick, on
+/// the loop's own thread. See [`run_due`] for the rule it applies.
 pub(crate) fn run_due_on_loop_thread() {
     let Some(queued) = QUEUE.get() else {
         // Nothing was ever scheduled in this process: no allocation, no lock, no branch taken
         // beyond this one.
         return;
     };
-    let now = Instant::now();
-    let due: Vec<Due> = {
-        let mut guard = match queued.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        let (due, later): (Vec<Due>, Vec<Due>) = guard.drain(..).partition(|item| item.at <= now);
-        *guard = later;
-        due
-    };
-    for item in due {
-        (item.work)();
-    }
+    run_due(queued);
 }
 
 #[cfg(test)]
@@ -123,53 +141,69 @@ mod tests {
 
     /// Work must not run before its deadline, and must run when the tick reaches it.
     ///
-    /// Driven by calling the tick's own entry point directly, which is what makes this
-    /// deterministic: no loop, no sleep race — the queue's rule ("due at its deadline, run on the
-    /// next tick") is asserted on its own.
+    /// Driven by calling the drain directly, on a queue this test owns (a function-local
+    /// `static`), which is what makes it deterministic: no loop, no sleep race, and no other
+    /// test — every other test that touches work uses its own instance. The queue's rule ("due at
+    /// its deadline, run on the next tick") is asserted on its own.
     #[test]
     fn work_runs_on_the_tick_that_reaches_its_deadline() {
+        static TICK_QUEUE: Mutex<Vec<Due>> = Mutex::new(Vec::new());
         let ran = Arc::new(AtomicBool::new(false));
         let flag = ran.clone();
         let asking_thread = std::thread::current().id();
-        schedule_in(Duration::from_millis(40), move || {
-            // The tick runs this on the *loop's* thread, so a direct call from this test thread
-            // must see it here; what the flag records is that it ran exactly once.
-            assert_eq!(std::thread::current().id(), asking_thread);
-            flag.store(true, Ordering::SeqCst);
-        });
+        append(
+            &TICK_QUEUE,
+            Duration::from_millis(40),
+            Box::new(move || {
+                // The drain runs this on the thread that drove it, so a direct call from this test
+                // thread must see it here; the flag records that it ran at all.
+                assert_eq!(std::thread::current().id(), asking_thread);
+                flag.store(true, Ordering::SeqCst);
+            }),
+        );
 
         // Before the deadline the tick must leave it alone.
-        run_due_on_loop_thread();
+        run_due(&TICK_QUEUE);
         assert!(!ran.load(Ordering::SeqCst), "work ran before its deadline");
 
         // After it, the next tick must run it.
-        let deadline = Instant::now() + Duration::from_millis(500);
-        while !ran.load(Ordering::SeqCst) && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-            run_due_on_loop_thread();
-        }
+        std::thread::sleep(Duration::from_millis(60));
+        run_due(&TICK_QUEUE);
         assert!(ran.load(Ordering::SeqCst), "the tick never ran work that was due");
 
         // ... and the queue does not keep it: a second tick must find nothing, so work runs once
         // rather than once per frame for the rest of the session.
-        let queue = QUEUE.get().expect("the queue exists");
-        let remaining = queue.lock().expect("not poisoned").len();
-        assert_eq!(remaining, 0, "a consumed item must leave the queue");
+        assert_eq!(lock(&TICK_QUEUE).len(), 0, "a consumed item must leave the queue");
     }
 
     /// A callback that schedules more work must not deadlock the tick.
+    ///
+    /// On a queue this test owns, so no other test can take the item out from under it.
     #[test]
     fn work_scheduled_by_a_callback_does_not_deadlock_the_tick() {
+        static CALLBACK_QUEUE: Mutex<Vec<Due>> = Mutex::new(Vec::new());
         let ran = Arc::new(AtomicBool::new(false));
         let flag = ran.clone();
-        schedule_in(Duration::from_millis(1), move || {
-            // Repeating work is exactly this: the callback reschedules itself.
-            schedule_in(Duration::from_millis(0), move || flag.store(true, Ordering::SeqCst));
-        });
+        append(
+            &CALLBACK_QUEUE,
+            Duration::from_millis(1),
+            Box::new(move || {
+                // Repeating work is exactly this: the callback reschedules itself.
+                append(
+                    &CALLBACK_QUEUE,
+                    Duration::from_millis(0),
+                    Box::new(move || flag.store(true, Ordering::SeqCst)),
+                );
+            }),
+        );
         std::thread::sleep(Duration::from_millis(5));
-        run_due_on_loop_thread();
-        // The nested item is due, but it was queued *by* a callback, so it runs on the next tick.
-        run_due_on_loop_thread();
+        // The first item is due; running it queues the second, which the *same* drain must not run
+        // (it was taken out under the lock before the callback ran) ...
+        run_due(&CALLBACK_QUEUE);
+        // ... so the next tick is what runs it. A single drain would leave it unfired, which is
+        // the stall the callback-reschedules-itself shape used to risk.
+        run_due(&CALLBACK_QUEUE);
         assert!(ran.load(Ordering::SeqCst), "the rescheduled work never ran");
+        assert_eq!(lock(&CALLBACK_QUEUE).len(), 0, "the rescheduled item must not be left behind");
     }
 }

@@ -2003,12 +2003,16 @@ mod tests {
         // a real spooler exists on the test host.
         let printer = Printer::with_backend(PrintBackend::Memory, Size { width: 595, height: 842 });
         printer.print_with_settings_result(&OnePage, &settings).expect("memory backend accepts");
+        // Matched by content, not by position: the memory sink is a process-global that other
+        // tests write to in parallel, so "the last job" is not necessarily this one. The
+        // landscape page size is unique to this test.
         let jobs = MEMORY_PRINT_JOBS.lock().unwrap();
-        let (_, content) = jobs.last().expect("a job was stored");
+        let swapped = jobs.iter().any(|(_, content)| content.contains("page_size=842x595"));
         // Portrait default is 595x842; landscape swaps it to 842x595.
         assert!(
-            content.contains("page_size=842x595"),
-            "orientation must swap the page size: {content}"
+            swapped,
+            "orientation must swap the page size to 842x595 (the sink is shared, so the job is \
+             matched by content, not by position)"
         );
     }
 

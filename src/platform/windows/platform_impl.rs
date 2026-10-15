@@ -813,10 +813,13 @@ impl Platform for WindowsPlatform {
         }
     }
     fn quit(&self) -> bool {
-        // `runtime_running` is the flag the Win32 loop reads, so storing it stops the loop
-        // from any thread. `PostQuitMessage` additionally wakes the message pump so the loop
-        // notices without waiting for its next tick; it is Windows-only because there is no
-        // pump to wake anywhere else.
+        // `runtime_running` is the flag the Win32 loop reads every iteration, so storing it
+        // stops the loop from any thread within one frame: that store is the stop, and it holds
+        // however this was called. `PostQuitMessage` is an extra wake-up for the common case
+        // where the caller *is* the pump's thread -- there it makes the loop notice immediately
+        // instead of waiting for its next tick. It is Windows-only (no other backend has a pump
+        // to wake) and it is thread-affine, posting to the *calling* thread's queue, so from
+        // another thread it wakes nothing; the flag above is what ends the loop in that case.
         self.runtime_running.store(false, Ordering::SeqCst);
         #[cfg(target_os = "windows")]
         unsafe {

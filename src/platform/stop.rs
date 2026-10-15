@@ -60,9 +60,11 @@ static LOOP_TICKED: AtomicBool = AtomicBool::new(false);
 /// the request right now — the request stays recorded and a loop started later honours it at
 /// its first frame.
 ///
-/// This is what `Platform::quit_from_any_thread` answers with, and the reason it can be called
-/// from a thread the toolkit would refuse: recording is one atomic store, which every thread
-/// may do.
+/// This is the answer the public [`crate::quit`] reports (the entry a host calls), and the
+/// reason it can be asked from a thread the toolkit would refuse: recording is one atomic
+/// store, which every thread may do. Performing the toolkit's own stop is a *separate*,
+/// thread-bound half — [`Platform::quit`](crate::platform::Platform::quit) — which the frame
+/// tick above calls on the loop's own thread.
 pub fn request() -> bool {
     STOP_REQUESTED.store(true, Ordering::SeqCst);
     loop_has_ticked()
