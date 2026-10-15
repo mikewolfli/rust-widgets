@@ -156,6 +156,55 @@ fn staged() {
         );
     }
 
+    // ── E: the same ending arranged by the loop itself — no watcher thread at all ─────────────
+    println!("\nE. a session that ends itself: schedule_on_main(300ms, quit)");
+    {
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        use std::sync::Arc;
+
+        /// Where the callback ran, so the caller can compare it with the thread it asked from.
+        static RAN_ON: AtomicU64 = AtomicU64::new(0);
+        const SCHEDULE_AFTER: Duration = Duration::from_millis(300);
+
+        let ran = Arc::new(AtomicBool::new(false));
+        let flag = ran.clone();
+        let asking_thread = format!("{:?}", std::thread::current().id());
+        let scheduled = rust_widgets::schedule_on_main(SCHEDULE_AFTER, move || {
+            RAN_ON.store(
+                format!("{:?}", std::thread::current().id())
+                    .trim_start_matches("ThreadId(")
+                    .trim_end_matches(')')
+                    .parse()
+                    .unwrap_or(0),
+                Ordering::SeqCst,
+            );
+            flag.store(true, Ordering::SeqCst);
+            // The whole point of being on the loop's thread: `quit` performs the backend's own
+            // stop from here, so nothing has to be dispatched across threads.
+            let _ = rust_widgets::quit();
+        });
+        check(scheduled, "the running loop accepted the work (it reads the queue every frame)");
+
+        let started = Instant::now();
+        rust_widgets::run();
+        let took = started.elapsed();
+        println!("   run() returned after {took:?}; callback ran={}", ran.load(Ordering::SeqCst));
+        check(
+            ran.load(Ordering::SeqCst),
+            "the callback ran (a queued item that never runs would leave the session unstoppable)",
+        );
+        check(took >= SCHEDULE_AFTER, "the callback did not run before its deadline");
+        check(
+            RAN_ON.load(Ordering::SeqCst)
+                == asking_thread
+                    .trim_start_matches("ThreadId(")
+                    .trim_end_matches(')')
+                    .parse()
+                    .unwrap_or(1),
+            "the callback ran on the loop's own thread, not on the thread that scheduled it",
+        );
+    }
+
     let _ = rust_widgets::close_widget(window);
 
     println!(

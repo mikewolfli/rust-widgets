@@ -2167,6 +2167,33 @@ pub fn choose_path(
 ) -> Result<Option<std::path::PathBuf>, crate::platform::PathPickerError> {
     platform::get_platform().choose_path(purpose, title)
 }
+/// Runs `work` on the event loop's own thread, at or after `after` from now.
+///
+/// # What a host uses this for
+///
+/// A host that is not driving the loop sometimes has to get work *onto* it: ending a session after
+/// a deadline (a smoke test that must terminate itself, without a watcher thread and without a
+/// process kill), refreshing a status line, polling something the toolkit wants read on its own
+/// thread. Every toolkit has a timer API for that, and none of them may be created from another
+/// thread — which is exactly where such a host is standing.
+///
+/// # The answer, and its precision
+///
+/// Returns whether a loop in this process will run the work: `true` when a loop has ticked, so it
+/// reaches the queue on its next frame. `false` means no loop has ticked yet; the work stays
+/// queued, and a loop started afterwards runs it — so "schedule the ending, then run the loop"
+/// works from a single thread.
+///
+/// `after` is a **lower bound**: work runs on the first frame at or after its deadline, so the
+/// granularity is one frame interval (~16 ms). Repeating work is done by having the callback call
+/// this again; there is deliberately no repeating form (one mechanism, one interval).
+///
+/// See [`platform::main_thread`](crate::platform::main_thread) for why the frame tick is the
+/// executor and what a panicking callback does.
+#[cfg(not(alloc_frugal))]
+pub fn schedule_on_main(after: std::time::Duration, work: impl FnOnce() + Send + 'static) -> bool {
+    platform::main_thread::schedule_in(after, work)
+}
 /// Asks the user to pick an existing file — [`choose_path`] with
 /// [`PathPurpose::OpenFile`](crate::platform::PathPurpose::OpenFile).
 ///

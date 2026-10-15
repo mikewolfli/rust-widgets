@@ -169,6 +169,9 @@ pub mod ime_macos;
 /// internally; on other hosts `TsfThreadMgr::try_create` reports TSF as
 /// unavailable and the bridge runs in pure state-machine mode.
 pub mod ime_windows;
+/// Work any thread may hand to the loop's own thread, run by the same frame tick.
+#[cfg(not(alloc_frugal))]
+pub mod main_thread;
 pub(crate) mod runtime;
 pub mod state;
 /// The stop request any thread may make and the frame tick that reads it.

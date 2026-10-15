@@ -1399,15 +1399,16 @@ impl core::fmt::Display for FrameStats {
 ///    makes the frame that observes a control settling report `true` (so the settle gets
 ///    painted) and the next one report `false` (so an idle window stops paying).
 ///
-/// # A stop request is honoured before step 0
+/// # Two loop-owned jobs run before step 0
 ///
-/// One thing here is not a *frame* task: a loop-stop request made from another thread
-/// ([`crate::platform::stop`]). It is honoured at the top of this function because this is
-/// the one function every loop this library owns calls **on the thread that owns the loop** —
-/// GTK's timeout closure, the polling loops of the state/wayland/windows/mobile backends, and
-/// AppKit's per-window `NSTimer` — which is the only place a toolkit permits a stop. Honouring
-/// it first means a loop already on its way out is not asked for one more frame of work before
-/// it may leave.
+/// Two things here are not *frame* tasks, and both belong to the loop rather than to a frame:
+/// work another thread handed to this thread ([`crate::platform::main_thread`]) and a loop-stop
+/// request made from another thread ([`crate::platform::stop`]). They are done at the top of this
+/// function because this is the one function every loop this library owns calls **on the thread
+/// that owns the loop** — GTK's timeout closure, the polling loops of the
+/// state/wayland/windows/mobile backends, and AppKit's per-window `NSTimer` — which is the only
+/// thread a toolkit permits either a modal-free callback or a stop on. Running them first means a
+/// loop already on its way out is not asked for one more frame of work before it may leave.
 ///
 /// # `repaints_submitted`: why it is counted rather than performed here
 ///
@@ -1425,8 +1426,11 @@ impl core::fmt::Display for FrameStats {
 /// host sleeps until the next event. That property is what lets the loop run at the
 /// display's rate while the window is still, and it is asserted by this module's tests.
 pub fn drive_frame(delta_ms: u32) -> FrameOutcome {
-    // A stop request any thread may make is read here, on the loop's own thread, before the
-    // frame's own work; see this function's docs for why the check belongs to the tick.
+    // The two jobs that belong to the *loop* rather than to a frame are done here, on the
+    // thread that owns the loop, before the frame's own work: work another thread handed to this
+    // thread (`platform::main_thread`), then a stop request another thread made
+    // (`platform::stop`). See this function's docs for why the tick is the place for both.
+    crate::platform::main_thread::run_due_on_loop_thread();
     crate::platform::stop::honour_request_on_loop_thread();
 
     // The decode counters, read before anything else in the frame so this frame's share is exactly

@@ -590,6 +590,51 @@ fn capability_flags_agree_with_the_methods_they_promise() {
     assert_agrees("ios", &crate::platform::ios::IosMobilePlatform::new());
 }
 
+use crate::compat::atomic::{AtomicBool, Ordering};
+
+/// A loop that ticks until it is asked to stop.
+struct LoopingPlatform {
+    /// Set by the loop thread once its first frame has been driven.
+    ticking: AtomicBool,
+    /// The loop's own exit condition, as every polling backend here has.
+    running: AtomicBool,
+}
+
+impl LoopingPlatform {
+    const fn new() -> Self {
+        Self { ticking: AtomicBool::new(false), running: AtomicBool::new(false) }
+    }
+}
+
+impl Platform for LoopingPlatform {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+    fn backend_name(&self) -> &'static str {
+        "looping-test-backend"
+    }
+    fn family(&self) -> PlatformFamily {
+        PlatformFamily::Desktop
+    }
+    fn init(&self) {}
+    fn run(&self) {
+        self.running.store(true, Ordering::SeqCst);
+        while self.running.load(Ordering::SeqCst) {
+            // One frame, on the loop's own thread — which is where the stop request is read.
+            crate::drive_frame(1);
+            self.ticking.store(true, Ordering::SeqCst);
+            std::thread::yield_now();
+        }
+    }
+    fn quit(&self) -> bool {
+        self.running.store(false, Ordering::SeqCst);
+        true
+    }
+    fn create_window(&self, _t: &str, _x: i32, _y: i32, _w: u32, _h: u32) -> ObjectId {
+        0
+    }
+}
+
 /// A stop request from a thread that does not own the loop must end the session.
 ///
 /// # The shape this stages
@@ -612,52 +657,8 @@ fn capability_flags_agree_with_the_methods_they_promise() {
 /// live GTK session.
 #[test]
 fn a_request_from_another_thread_ends_a_running_loop() {
-    use crate::compat::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
-
-    /// A loop that ticks until it is asked to stop.
-    struct LoopingPlatform {
-        /// Set by the loop thread once its first frame has been driven.
-        ticking: AtomicBool,
-        /// The loop's own exit condition, as every polling backend here has.
-        running: AtomicBool,
-    }
-
-    impl LoopingPlatform {
-        const fn new() -> Self {
-            Self { ticking: AtomicBool::new(false), running: AtomicBool::new(false) }
-        }
-    }
-
-    impl Platform for LoopingPlatform {
-        fn as_any(&self) -> &dyn core::any::Any {
-            self
-        }
-        fn backend_name(&self) -> &'static str {
-            "looping-test-backend"
-        }
-        fn family(&self) -> PlatformFamily {
-            PlatformFamily::Desktop
-        }
-        fn init(&self) {}
-        fn run(&self) {
-            self.running.store(true, Ordering::SeqCst);
-            while self.running.load(Ordering::SeqCst) {
-                // One frame, on the loop's own thread — which is where the stop request is read.
-                crate::drive_frame(1);
-                self.ticking.store(true, Ordering::SeqCst);
-                std::thread::yield_now();
-            }
-        }
-        fn quit(&self) -> bool {
-            self.running.store(false, Ordering::SeqCst);
-            true
-        }
-        fn create_window(&self, _t: &str, _x: i32, _y: i32, _w: u32, _h: u32) -> ObjectId {
-            0
-        }
-    }
 
     static LOOP_PLATFORM: LoopingPlatform = LoopingPlatform::new();
 
@@ -699,4 +700,99 @@ fn a_request_from_another_thread_ends_a_running_loop() {
         !LOOP_PLATFORM.running.load(Ordering::SeqCst),
         "the loop returned but its exit condition is still set, so something else ended it"
     );
+}
+
+/// Work handed over from another thread must run on the loop's own thread.
+///
+/// The feedback's second suggestion for ending a session from a non-driver host: instead of asking
+/// the loop to stop, a host arranges *what* happens on the loop, at a time of its choosing — the
+/// same shape a smoke test's "quit in 500 ms" has, and the shape a status-line refresh needs.
+///
+/// What is asserted is the two things a host cannot check for itself: the callback ran on the
+/// thread that owns the loop (a toolkit may only be touched there), and the call reported that a
+/// loop would run it. The delay is a lower bound by contract, so the test asserts "not before"
+/// rather than a precise instant.
+#[test]
+fn work_scheduled_from_another_thread_runs_on_the_loops_thread() {
+    use std::sync::atomic::AtomicU64;
+    use std::time::{Duration, Instant};
+
+    static LOOP_PLATFORM: LoopingPlatform = LoopingPlatform::new();
+    /// Set by the callback, with the elapsed time it observed when it ran.
+    static RAN_ON: AtomicU64 = AtomicU64::new(0);
+    static RAN: AtomicBool = AtomicBool::new(false);
+    /// Set by the loop thread, so the callback's own thread can be compared with it.
+    static LOOP_THREAD: AtomicU64 = AtomicU64::new(0);
+
+    const DELAY_MS: u64 = 120;
+
+    let loop_thread = std::thread::spawn(|| {
+        crate::platform::with_platform(&LOOP_PLATFORM, || {
+            // Recorded from the loop's own thread, before any frame: what the callback compares
+            // itself against.
+            LOOP_THREAD.store(thread_id_as_u64(), Ordering::SeqCst);
+            crate::platform::get_platform().run();
+        })
+    });
+
+    // Wait for the first frame, so the queue has a reader (and so "not before the delay" is a
+    // statement about a loop that is really running).
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !LOOP_PLATFORM.ticking.load(Ordering::SeqCst) {
+        assert!(Instant::now() < deadline, "the loop never reached its first frame");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    let scheduled = crate::schedule_on_main(Duration::from_millis(DELAY_MS), || {
+        RAN_ON.store(thread_id_as_u64(), Ordering::SeqCst);
+        RAN.store(true, Ordering::SeqCst);
+        // The callback asks the loop to stop, which is the whole point of being on its thread:
+        // `quit` performs the backend's own stop from here.
+        let _ = crate::platform::get_platform().quit();
+    });
+    assert!(
+        scheduled,
+        "a running loop reads the queue at its next frame, so this must answer `true`"
+    );
+
+    let asked_at = Instant::now();
+    let (returned_tx, returned_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = loop_thread.join();
+        let _ = returned_tx.send(());
+    });
+    assert!(
+        returned_rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+        "the loop must return once the scheduled callback stopped it"
+    );
+    let after = asked_at.elapsed();
+
+    assert!(RAN.load(Ordering::SeqCst), "the scheduled work never ran");
+    assert_eq!(
+        RAN_ON.load(Ordering::SeqCst),
+        LOOP_THREAD.load(Ordering::SeqCst),
+        "the work ran on a thread that does not own the loop, so a toolkit call inside it would \
+         be a cross-thread call"
+    );
+    assert!(
+        after >= Duration::from_millis(DELAY_MS),
+        "the work ran before its deadline ({after:?} < {DELAY_MS} ms)"
+    );
+    assert!(
+        !LOOP_PLATFORM.running.load(Ordering::SeqCst),
+        "the loop is still marked as running, so the callback did not stop it"
+    );
+}
+
+/// The running thread's id as a number, for comparison across threads in the tests above.
+///
+/// `ThreadId` itself is not comparable across allocations by value in a `static`, and the tests
+/// above only need "same thread or not".
+fn thread_id_as_u64() -> u64 {
+    // `ThreadId`'s `Debug` form is the only stable accessor (`as_u64` is unstable), and it is
+    // unique per thread for the process's lifetime, which is all this comparison needs.
+    format!("{:?}", std::thread::current().id())
+        .rsplit_once('(')
+        .and_then(|(_, tail)| tail.trim_end_matches(')').parse().ok())
+        .unwrap_or(0)
 }
