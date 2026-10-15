@@ -1,25 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! AppKit's own file picker, behind [`Platform::choose_path`](crate::platform::Platform::choose_path).
-//!
-//! # Why this is its own file
-//!
-//! The body is AppKit message sends, and a non-Apple host cannot compile this crate for
-//! `x86_64-apple-darwin` (a C dependency in the graph needs an Apple toolchain). Keeping the body
-//! free of crate-internal names — it depends on `objc`/`cocoa` and on the two types
-//! `super::super::{PathPurpose, PathPickerError}` and nothing else — is what lets the same file be
-//! compiled on its own for the target (see `docs/log/log-20261014-1.md`, probe P-2), so the code
-//! is verified by a compiler rather than by review.
-//!
-//! # Which panel, and why one function covers all three purposes
-//!
-//! `NSSavePanel` is the base class and the one that owns the modal loop and the path answer;
-//! `NSOpenPanel` is its subclass, which adds "can choose files / directories / many". So "open a
-//! file" is an `NSOpenPanel` with files enabled, "choose a directory" is the same panel with
-//! directories enabled and files off, and "save a file" is the base `NSSavePanel` — the three
-//! purposes differ only in those flags.
-
 use super::super::{PathPickerError, PathPurpose};
 use cocoa::base::{id, nil, BOOL, NO};
 // `NSAutoreleasePool` is the trait that provides `autorelease()`: without it the call below does

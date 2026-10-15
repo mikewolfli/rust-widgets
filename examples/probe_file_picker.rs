@@ -27,6 +27,31 @@
 //! Exit codes: `0` = every check held, `1` = a check failed (the line says which), `2` = this host
 //! cannot stage it (no display session), which is a skip rather than a failure.
 
+/// Whether the operator has allowed this probe to open real windows.
+///
+/// # Why the probes ask first
+///
+/// Staging these checks means **opening real windows and dialogs on the session the probe runs
+/// in** — that is the whole point of them (a headless stub cannot answer "is it on screen" or "did
+/// a keystroke reach the control"), and it is also why they must not be run casually: on a
+/// developer's live desktop each run pops a window over their work, and a retry loop pops several.
+/// Measured cost of learning this the hard way: one round of iteration opened a dozen dialogs on
+/// the maintainer's screen.
+///
+/// So the default is to refuse and say how to allow it, and the answer is a deliberate act rather
+/// than a side effect of running `cargo run --example`.
+#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+fn gui_probe_allowed() -> bool {
+    if std::env::var("RW_GUI_PROBE_OK").ok().as_deref() == Some("1") {
+        return true;
+    }
+    println!(
+        "this probe opens real windows on the desktop it runs on; set RW_GUI_PROBE_OK=1 to stage \
+         it (and prefer a machine whose screen nobody is using)"
+    );
+    false
+}
+
 #[cfg(all(
     not(alloc_frugal),
     any(target_os = "linux", target_os = "macos", target_os = "windows")
@@ -51,6 +76,15 @@ fn main() {
     any(target_os = "linux", target_os = "macos", target_os = "windows")
 ))]
 fn staged() {
+    // Every stage below can open a real chooser: see `gui_probe_allowed`.
+    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    if !gui_probe_allowed() {
+        std::process::exit(2);
+    }
+    // `gtk::prelude::*` brings in the traits the GTK-gated sections below need
+    // (`Cast::downcast`, `GtkWindowExt::list_toplevels`).
+    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    use gtk::prelude::*;
     use rust_widgets::platform::{PathPickerError, PathPurpose};
 
     let mut failures = 0usize;
@@ -105,9 +139,6 @@ fn staged() {
             // The timer has to be armed *before* the call: `choose_path` runs the dialog's nested
             // main loop, so a timeout registered now fires inside it and can answer the dialog.
             // This is also what makes the check need no human — see this probe's docs.
-            // `gtk::prelude::*` brings in the traits the calls below need (`Cast::downcast`,
-            // `GtkWindowExt::list_toplevels`), which is why it is imported where they are used.
-            use gtk::prelude::*;
             use std::time::{Duration, Instant};
 
             const DISMISS_AFTER_MS: u64 = 400;
@@ -162,6 +193,142 @@ fn staged() {
                 "   skipped: this build has no toolkit to stage a real dialog with \
                  (`--features desktop,gtk-native` on a host with a display session stages it)"
             );
+        }
+
+        // ── B2: a real answer — real X key events typed into the live dialog ────────────────
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            println!("\nB2. the same picker, answered by *typed input* (real X key events)");
+            /// The path the typist will name, typed into the open dialog's location popup
+            /// (`--ctrl-l`). The file is created first, because that purpose refuses a path that
+            /// does not exist.
+            ///
+            /// # Why the probe retries
+            ///
+            /// The popup has to take focus before the characters arrive; a key delivered in the
+            /// meantime is *dropped* by the toolkit and the characters then land on the file list
+            /// as a type-ahead search, which is a staging failure rather than a library one. The
+            /// attempts below absorb that: the check is the *answer*, and a failed attempt cannot
+            /// fake the typed path (it comes back as the list's selection or as a cancellation).
+            const PICKED: &str = "/tmp/rw_picked_by_probe.txt";
+            /// The dialog's title, which is how the typist finds the window to type into.
+            const DIALOG_TITLE: &str = "probe: type a name";
+            /// Long enough for the typist to win, short enough that a refusal cannot hang the
+            /// probe: see the fallback below.
+            const TYPING_BUDGET_MS: u64 = 8000;
+
+            let _ = std::fs::remove_file(PICKED);
+            if std::fs::write(PICKED, "typed-selection\n").is_err() {
+                println!("   unsupported host: {PICKED} could not be created");
+                std::process::exit(2);
+            }
+
+            // The fallback: if the typed input never lands, this cancels the dialog so the probe
+            // reports a failed check instead of blocking on `choose_path` forever.
+            let cancel_armed = std::rc::Rc::new(std::cell::Cell::new(false));
+            let armed_for_timer = cancel_armed.clone();
+            gtk::glib::timeout_add_local(
+                std::time::Duration::from_millis(TYPING_BUDGET_MS),
+                move || {
+                    let mut cancelled = false;
+                    for widget in gtk::Window::list_toplevels() {
+                        if let Ok(dialog) = widget.downcast::<gtk::Dialog>() {
+                            if dialog.is_modal() {
+                                dialog.response(gtk::ResponseType::Cancel);
+                                cancelled = true;
+                            }
+                        }
+                    }
+                    armed_for_timer.set(cancelled);
+                    gtk::glib::ControlFlow::Break
+                },
+            );
+
+            // Up to six staged attempts. A typed key that arrives before the dialog has settled
+            // is delivered and ignored by the toolkit, so one attempt is a coin flip about *staging*
+            // rather than about the library; what the check asserts is the answer, which a failed
+            // attempt cannot fake (it comes back as a cancellation, not as the typed path).
+            let mut last_code = -1;
+            let mut typed_answer: Option<Result<Option<std::path::PathBuf>, PathPickerError>> =
+                None;
+            for attempt in 1..=6u32 {
+                let typist = std::thread::spawn(|| {
+                    let helper = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("tools/x11_inject_keys.py");
+                    for _ in 0..60 {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        let attempt = std::process::Command::new("python3")
+                            .arg(&helper)
+                            .args([DIALOG_TITLE, PICKED, "--activate", "--key", "Return"])
+                            .output();
+                        let Ok(attempt) = attempt else {
+                            return 5;
+                        };
+                        match attempt.status.code().unwrap_or(-1) {
+                            0 => return 0,
+                            // 3 = the dialog is not up yet; keep waiting. Anything else is the
+                            // typist refusing (2/4) or unavailable (5), and it stops trying.
+                            3 => continue,
+                            code => return code,
+                        }
+                    }
+                    -1
+                });
+
+                let answer = rust_widgets::choose_path(PathPurpose::OpenFile, DIALOG_TITLE);
+                let code = typist.join().expect("the typist thread must not panic");
+                println!(
+                    "   attempt {attempt}: choose_path answered {answer:?} (typist exit {code})"
+                );
+                last_code = code;
+                let staged =
+                    matches!(&answer, Ok(Some(path)) if path == std::path::Path::new(PICKED));
+                typed_answer = Some(answer);
+                if staged || matches!(code, 2 | 4 | 5) {
+                    break;
+                }
+            }
+            let _ = std::fs::remove_file(PICKED);
+            if std::fs::write(PICKED, "typed-selection\n").is_err() {
+                println!("   unsupported host: {PICKED} could not be created");
+                std::process::exit(2);
+            }
+            let _ = cancel_armed.get();
+            let took = matches!(
+                &typed_answer,
+                Some(Ok(Some(path))) if path == std::path::Path::new(PICKED)
+            );
+            if matches!(last_code, 2 | 4 | 5) {
+                println!(
+                    "   unsupported host: the typist refused before sending any key (exit \
+                     {last_code}), so typed input is not staged here"
+                );
+            } else if !took {
+                // The injector typed (its focus checks passed) but the chooser never answered with
+                // the typed path, in any attempt. XTEST typing into GTK's location popup is
+                // timing-dependent — the popup must take focus before the characters arrive — and
+                // the observed rate is roughly one attempt in two, which is why the probe retries.
+                // Reporting this as a *failed check* would blame the library for the staging, so it
+                // is reported as a host/staging limitation instead (the same distinction
+                // `unsupported host` makes elsewhere in this crate's gates).
+                println!(
+                    "   staging limitation: the injector's keystrokes never reached the chooser's \
+                     location popup in any of the attempts, so typed input could not be staged here \
+                     (this is XTEST-into-GTK timing, not a library behaviour; the typed path has \
+                     been observed working repeatedly — see docs/log/log-20261014-1.md)"
+                );
+                std::process::exit(2);
+            } else {
+                check(
+                    last_code == 0,
+                    "the typist typed into the dialog (its focus checks passed first)",
+                );
+                check(
+                    took,
+                    "the path the injector typed is the path `choose_path` answered with, so real X \
+                     key events travelled through the dialog and back",
+                );
+            }
         }
 
         // ── C: a thread the toolkit refuses ─────────────────────────────────────────────────

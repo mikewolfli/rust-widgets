@@ -546,6 +546,70 @@ mod tests {
         assert!(after.button_count > before.button_count);
     }
 
+    /// A stop requested from another thread must end the embedded run loop.
+    ///
+    /// # Why this profile needs the same guarantee
+    ///
+    /// `mini`/`embedded` have no platform event loop: the loop a host sits in is the embedded
+    /// engine's. Its exit condition lives in the **mutex-guarded** state that `quit()` sets, so any
+    /// thread may set it — the same guarantee the desktop profiles get from `platform::stop` and
+    /// the frame tick, reaching the same caller shape (a smoke test that must end itself). Without
+    /// it, a host on these profiles could only end a session by killing the process, which is the
+    /// complaint that guarantee exists to answer.
+    ///
+    /// # Why it drives an instance of its own
+    ///
+    /// `quit()` clears the registry *and* the pending-task queue, so stopping the process-wide
+    /// engine would change what every later test in this binary observes. (The first draft did
+    /// exactly that: `a_queued_task_publishes_its_id_and_label` began failing under `mini`, a
+    /// profile whose other tests share the same singleton.) The contract under test is a property
+    /// of the loop, so an instance is enough — and it makes the test order-independent.
+    #[test]
+    fn a_quit_from_another_thread_ends_the_embedded_loop() {
+        let _guard = test_guard();
+        use core::time::Duration;
+        use std::sync::Arc;
+        use std::time::Instant;
+
+        let engine = Arc::new(EmbeddedEngineShared::new());
+        let for_loop = engine.clone();
+        let (returned_tx, returned_rx) = std::sync::mpsc::channel();
+        let loop_thread = std::thread::spawn(move || {
+            for_loop.run_loop();
+            let _ = returned_tx.send(());
+        });
+
+        // Wait until the loop says it is running, so the request below is a statement about a loop
+        // that really started rather than about one that never did.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let running = {
+                let state = engine.lock_state();
+                state.running
+            };
+            if running {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the embedded loop never started");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        // The request, from *this* thread — not the loop's.
+        engine.quit();
+
+        assert!(
+            returned_rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+            "the embedded loop did not return after a cross-thread quit, so a host on a profile \
+             without a platform event loop could not end its session cleanly"
+        );
+        loop_thread.join().expect("the loop thread must not panic");
+        let still_running = {
+            let state = engine.lock_state();
+            state.running
+        };
+        assert!(!still_running, "the loop returned but still reports itself running");
+    }
+
     /// A submitted task's id and label must be observable while it is queued.
     ///
     /// Pins the defect: `EmbeddedTask` stored an `id` and a `label` that nothing read (the old

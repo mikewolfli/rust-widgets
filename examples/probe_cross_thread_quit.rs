@@ -32,6 +32,31 @@
 //! Exit codes: `0` = every check held, `1` = a check failed (the line says which), `2` = this host
 //! cannot stage it (no display session for GTK), which is a skip and not a failure.
 
+/// Whether the operator has allowed this probe to open real windows.
+///
+/// # Why the probes ask first
+///
+/// Staging these checks means **opening real windows and dialogs on the session the probe runs
+/// in** — that is the whole point of them (a headless stub cannot answer "is it on screen" or "did
+/// a keystroke reach the control"), and it is also why they must not be run casually: on a
+/// developer's live desktop each run pops a window over their work, and a retry loop pops several.
+/// Measured cost of learning this the hard way: one round of iteration opened a dozen dialogs on
+/// the maintainer's screen.
+///
+/// So the default is to refuse and say how to allow it, and the answer is a deliberate act rather
+/// than a side effect of running `cargo run --example`.
+#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+fn gui_probe_allowed() -> bool {
+    if std::env::var("RW_GUI_PROBE_OK").ok().as_deref() == Some("1") {
+        return true;
+    }
+    println!(
+        "this probe opens real windows on the desktop it runs on; set RW_GUI_PROBE_OK=1 to stage \
+         it (and prefer a machine whose screen nobody is using)"
+    );
+    false
+}
+
 #[cfg(all(
     not(alloc_frugal),
     any(target_os = "linux", target_os = "macos", target_os = "windows")
@@ -51,11 +76,64 @@ fn main() {
     );
 }
 
+/// Arms a watchdog for a `run()` call that must return, and reports it if it does not.
+///
+/// # Why the probe needs this
+///
+/// The failure this probe exists for is "`run()` never returns" — the symptom the designer
+/// reported as "`--exit-after-ms 500` still running after 60 s". A probe that only measures how
+/// long `run()` took cannot report that case at all: the measurement never happens, and the
+/// process has to be killed from outside, which turns a *finding* into an unexplained timeout.
+/// The watchdog makes the finding self-reported: if `run()` has not returned after
+/// `RETURN_BUDGET`, the probe says so and exits 3, distinguishably from a normal check failure (1)
+/// and from a host that cannot stage the probe (2).
+///
+/// The returned flag is set by the caller once `run()` returns; the watchdog then ends without
+/// saying anything.
+#[cfg(all(
+    not(alloc_frugal),
+    any(target_os = "linux", target_os = "macos", target_os = "windows")
+))]
+fn arm_watchdog(
+    what: &'static str,
+    budget: std::time::Duration,
+) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let returned = Arc::new(AtomicBool::new(false));
+    let watched = returned.clone();
+    std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + budget;
+        while std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            if watched.load(Ordering::SeqCst) {
+                return;
+            }
+        }
+        if !watched.load(Ordering::SeqCst) {
+            println!(
+                "\n  FAIL {what}: `run()` did not return within {budget:?}; a stop request made \
+                 from another thread was not honoured, so this session cannot end itself (the \
+                 symptom this probe exists for). Exiting 3 to make that unambiguous."
+            );
+            std::process::exit(3);
+        }
+    });
+    returned
+}
+
 #[cfg(all(
     not(alloc_frugal),
     any(target_os = "linux", target_os = "macos", target_os = "windows")
 ))]
 fn staged() {
+    // This probe creates a window and enters a loop, so on a toolkit build it puts a window on the
+    // screen it runs on: see `gui_probe_allowed`.
+    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    if !gui_probe_allowed() {
+        std::process::exit(2);
+    }
     use std::time::{Duration, Instant};
 
     /// How long the watcher waits before it decides the session has gone on long enough. Long
@@ -111,8 +189,10 @@ fn staged() {
         let _ = answered_tx.send(asked);
     });
 
+    let watchdog = arm_watchdog("B. loop ended by a watcher thread", RETURN_BUDGET);
     let run_started = Instant::now();
     rust_widgets::run();
+    watchdog.store(true, std::sync::atomic::Ordering::SeqCst);
     let run_took = run_started.elapsed();
     let watcher_answered = answered_rx
         .recv_timeout(RETURN_BUDGET)
@@ -185,8 +265,10 @@ fn staged() {
         });
         check(scheduled, "the running loop accepted the work (it reads the queue every frame)");
 
+        let watchdog = arm_watchdog("E. session ends itself at its deadline", RETURN_BUDGET);
         let started = Instant::now();
         rust_widgets::run();
+        watchdog.store(true, std::sync::atomic::Ordering::SeqCst);
         let took = started.elapsed();
         println!("   run() returned after {took:?}; callback ran={}", ran.load(Ordering::SeqCst));
         check(
