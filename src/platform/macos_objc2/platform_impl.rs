@@ -91,6 +91,10 @@ impl Platform for MacOSObjc2Platform {
             clipboard: cfg!(all(target_os = "macos", feature = "macos")),
             // No handler spawn in this preview backend.
             open_external: false,
+            // This preview backend presents no picker of its own; see
+            // [`Platform::choose_path`] for what the flag promises and what a `false` costs a
+            // host (it draws its own list instead).
+            file_dialog: false,
         }
     }
 

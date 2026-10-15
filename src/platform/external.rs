@@ -47,15 +47,20 @@ pub(crate) fn spawn_handler(
     target: &str,
 ) -> Result<(), OpenError> {
     validate_target(target)?;
-    std::process::Command::new(program)
+    let mut command = std::process::Command::new(program);
+    command
         .args(prefix_args)
         .arg(target)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map(|_child| ())
-        .map_err(|_error| OpenError::NoHandler)
+        .stderr(std::process::Stdio::null());
+    // The handler gets its own process group, which is what keeps the two ownership sets
+    // disjoint in both directions: a host that ends "the process groups this session created"
+    // does not kill the browser it asked the library to open, and the library does not put a
+    // long-lived user application in the group the host will tear down. See
+    // [`super::child_process`] for the boundary this states.
+    super::child_process::in_own_group(&mut command);
+    command.spawn().map(|_child| ()).map_err(|_error| OpenError::NoHandler)
 }
 
 #[cfg(test)]

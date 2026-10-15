@@ -119,21 +119,21 @@ cannot drift from the source.
 
 ### 1.4 Host services are a separate question
 
-Two flags answer "can this backend use a *service of the host*" rather than "what does the
+Three flags answer "can this backend use a *service of the host*" rather than "what does the
 toolkit integrate with". They exist so a host can decide **before** acting, instead of
 discovering the absence from a call that returns nothing.
 
-| OS | Host clipboard | External open |
-|----|:--------------:|:-------------:|
-| Windows | ✅ | ✅ |
-| macOS | ✅ | ✅ |
-| Linux / GTK | ✅ ¹ | ✅ |
-| Linux / Wayland | ❌ | ❌ |
-| iOS | ✅ ² | ❌ |
-| Android | ✅ ² | ❌ |
-| HarmonyOS | ✅ ³ | ❌ |
-| WASM | ❌ | ❌ |
-| Portable | ❌ | ❌ |
+| OS | Host clipboard | External open | File picker |
+|----|:--------------:|:-------------:|:-----------:|
+| Windows | ✅ | ✅ | ✅ ⁴ |
+| macOS | ✅ | ✅ | ✅ ⁴ |
+| Linux / GTK | ✅ ¹ | ✅ | ✅ ¹ |
+| Linux / Wayland | ❌ | ❌ | ❌ |
+| iOS | ✅ ² | ❌ | ❌ |
+| Android | ✅ ² | ❌ | ❌ |
+| HarmonyOS | ✅ ³ | ❌ | ❌ |
+| WASM | ❌ | ❌ | ❌ |
+| Portable | ❌ | ❌ | ❌ |
 
 ¹ Linux is the one desktop where the answer has a *session* half: `gtk-native` links the interface
 (`GtkClipboard`) and a display must be there behind it, so the flag is `gtk-native` **and** a
@@ -150,6 +150,10 @@ the flag says so.
 ³ HarmonyOS links the SDK's `libpasteboard`/`libudmf` on an OpenHarmony target; a host build
 compiles the inert stand-in and reports `false`.
 
+⁴ Windows and macOS report the picker as a **build** fact: `GetOpenFileNameW` / `SHBrowseForFolderW`
+and `NSOpenPanel` / `NSSavePanel` are called from the backend, and every failure to *present* them
+is reported per call as `Err(Unavailable)` rather than pre-emptively by the flag.
+
 - **Host clipboard** (`clipboard`): whether a copy leaves the process. Use
   [`clipboard_text()`](../api-reference/functions.md) for a read that tells "no text" apart from
   an empty string.
@@ -157,13 +161,21 @@ compiles the inert stand-in and reports `false`.
   host's default handler. Call [`Platform::open_external`] rather than spawning `open` /
   `xdg-open` / `cmd` yourself — it refuses an option-shaped target once, in one place, and
   reports "no handler installed" separately from "the request was refused".
+- **File picker** (`file_dialog`): `true` where the backend can present the **operating system's**
+  chooser and answer with a path. Call [`choose_path`](../api-reference/functions.md) (or its
+  three named forms `open_path` / `save_path` / `select_directory`) rather than drawing a list
+  yourself. `Ok(Some(path))` is a choice, `Ok(None)` is a cancellation — a complete interaction,
+  not an error — and `Err(Unavailable)` means this *session* cannot show it (no display, or the
+  wrong thread). `Err(Unsupported)` means this backend has none, which is the flag you are reading.
 
-**The file chooser is not on this list, on purpose.** A file chooser is a *control*, and this
-crate paints every control itself: [`FileDialog`](../api-reference/widgets.md) is a self-drawn
-widget on every backend. The host owns the list (the library does not browse for you) and reports
-the user's row and the confirmed path through the widget's writable `selected_file` property and
-its `files_selected` signal. Because there is only one mechanism, there is no capability flag to
-ask about — "which chooser will I get" has one answer everywhere.
+  **This is a service, not the [`FileDialog`](../api-reference/widgets.md) control.** Both exist
+  and they answer different questions. `FileDialog` is a control this crate paints and the
+  **host** fills: it has no directory listing of its own, so it is the right choice when the host
+  already has a file list (a project tree, a recent-files pane). `choose_path` asks the platform,
+  which browses the filesystem itself, so it is the right choice when the host has no list.
+  An earlier revision of this chapter said there was no such capability, because it read "is there
+  a chooser widget" as the same question as "can the OS browse for me"; the two are different, and
+  the flag is what makes the second one answerable before the call.
 
 ---
 

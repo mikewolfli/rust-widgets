@@ -589,3 +589,114 @@ fn capability_flags_agree_with_the_methods_they_promise() {
     #[cfg(target_os = "ios")]
     assert_agrees("ios", &crate::platform::ios::IosMobilePlatform::new());
 }
+
+/// A stop request from a thread that does not own the loop must end the session.
+///
+/// # The shape this stages
+///
+/// A host that is not the loop's driver — a smoke test, CI, a scripted demo — runs `run()` on one
+/// thread and decides on another that the session has gone on long enough. No toolkit accepts a
+/// stop from that second thread, so before [`crate::platform::stop`] the request could only be
+/// *reported* as undeliverable (which is what the round that added the `bool` to `quit` did) and
+/// the host's only remaining exit was `std::process::exit`, indistinguishable from a killed
+/// process.
+///
+/// # Why the loop is a double rather than a real backend
+///
+/// The mechanism under test *is* the loop's own frame tick: the request is read by the thread that
+/// owns the loop. A real backend stages that only on the host that has it (and the stub's `run`
+/// returns immediately, so it has no loop at all), which would make this test either
+/// host-dependent or an assertion about a loop that does not exist. The double is the minimum a
+/// backend needs for the request to have a reader: a loop that drives frames and stops when asked.
+/// The real-toolkit run is `examples/probe_cross_thread_quit.rs`, which stages the same shape on a
+/// live GTK session.
+#[test]
+fn a_request_from_another_thread_ends_a_running_loop() {
+    use crate::compat::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    /// A loop that ticks until it is asked to stop.
+    struct LoopingPlatform {
+        /// Set by the loop thread once its first frame has been driven.
+        ticking: AtomicBool,
+        /// The loop's own exit condition, as every polling backend here has.
+        running: AtomicBool,
+    }
+
+    impl LoopingPlatform {
+        const fn new() -> Self {
+            Self { ticking: AtomicBool::new(false), running: AtomicBool::new(false) }
+        }
+    }
+
+    impl Platform for LoopingPlatform {
+        fn as_any(&self) -> &dyn core::any::Any {
+            self
+        }
+        fn backend_name(&self) -> &'static str {
+            "looping-test-backend"
+        }
+        fn family(&self) -> PlatformFamily {
+            PlatformFamily::Desktop
+        }
+        fn init(&self) {}
+        fn run(&self) {
+            self.running.store(true, Ordering::SeqCst);
+            while self.running.load(Ordering::SeqCst) {
+                // One frame, on the loop's own thread — which is where the stop request is read.
+                crate::drive_frame(1);
+                self.ticking.store(true, Ordering::SeqCst);
+                std::thread::yield_now();
+            }
+        }
+        fn quit(&self) -> bool {
+            self.running.store(false, Ordering::SeqCst);
+            true
+        }
+        fn create_window(&self, _t: &str, _x: i32, _y: i32, _w: u32, _h: u32) -> ObjectId {
+            0
+        }
+    }
+
+    static LOOP_PLATFORM: LoopingPlatform = LoopingPlatform::new();
+
+    let loop_thread = std::thread::spawn(|| {
+        crate::platform::with_platform(&LOOP_PLATFORM, || crate::platform::get_platform().run())
+    });
+
+    // The request has a reader only once the loop has ticked. Waiting on the *loop's own* flag
+    // rather than the process-wide one is what keeps this deterministic: another test in this
+    // binary may have run a loop already, and that must not let this one skip its own wait.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !LOOP_PLATFORM.ticking.load(Ordering::SeqCst) {
+        assert!(
+            Instant::now() < deadline,
+            "the loop never reached its first frame, so nothing could read a request"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    // The request, from *this* thread — not the loop's.
+    assert!(
+        crate::platform::quit(),
+        "a running loop reads the request at its next frame, so this must answer `true`; \
+         answering `false` tells a host its session will not end, and it will kill the process"
+    );
+
+    // ... and the loop must really end, not merely be asked to. `join` has no deadline, so a
+    // thread that returns is reported through a channel and *that* wait is the bounded one.
+    let (returned_tx, returned_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = loop_thread.join();
+        let _ = returned_tx.send(());
+    });
+    assert!(
+        returned_rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+        "the loop was asked to stop and did not return, which is the defect this test exists for"
+    );
+    assert!(
+        !LOOP_PLATFORM.running.load(Ordering::SeqCst),
+        "the loop returned but its exit condition is still set, so something else ended it"
+    );
+}

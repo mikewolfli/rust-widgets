@@ -131,7 +131,20 @@ impl Platform for MacOSPlatform {
             clipboard: true,
             // `open_external` spawns `open`.
             open_external: true,
+            // `choose_path` presents `NSOpenPanel`/`NSSavePanel`, so the flag and the method are
+            // one implementation.
+            file_dialog: true,
         }
+    }
+
+    /// Presents AppKit's own file picker — see [`super::file_picker`] for the panel choice, the
+    /// main-thread rule and what the answer does and does not claim.
+    fn choose_path(
+        &self,
+        purpose: crate::platform::PathPurpose,
+        title: &str,
+    ) -> Result<Option<std::path::PathBuf>, crate::platform::PathPickerError> {
+        super::file_picker::choose_path(purpose, title)
     }
 
     /// Hands a URL or path to the system's default handler by spawning `open`.

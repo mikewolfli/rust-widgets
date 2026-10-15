@@ -136,6 +136,8 @@ pub mod portable;
 pub mod profile;
 
 // Internal sub-modules (split from monolithic mod.rs)
+/// Process-group isolation for the children this library spawns itself.
+pub(crate) mod child_process;
 /// Rich clipboard content types and backend trait (BLUE10 R8.6).
 pub mod clipboard;
 /// Platform-specific rich clipboard stubs (BLUE10 R8.6).
@@ -169,6 +171,8 @@ pub mod ime_macos;
 pub mod ime_windows;
 pub(crate) mod runtime;
 pub mod state;
+/// The stop request any thread may make and the frame tick that reads it.
+pub mod stop;
 /// The uniform widget-property `Platform` methods, shared by every backend whose widget
 /// state lives in [`state::BackendState`]. See the module docs for the defect it removes.
 #[macro_use]

@@ -253,6 +253,7 @@ fn published_os_capability_matrix_matches_the_trait_default() {
             // are pinned per backend by the backend-vs-row test below.
             clipboard: false,
             open_external: false,
+            file_dialog: false,
         };
         let default = default_capabilities_for(*family);
         assert!(
@@ -338,7 +339,7 @@ fn documented_matrix_matches_real_backends() {
     /// computes it rather than hard-coding one build's answer. (The cookbook's human-readable
     /// matrix still prints `✅`, because it describes a GTK-backed build; this row has to hold on
     /// any host the test runs on.)
-    type Row = (&'static str, PlatformFamily, bool, bool, bool, bool, bool, bool);
+    type Row = (&'static str, PlatformFamily, bool, bool, bool, bool, bool, bool, bool);
     // Linux's `clipboard` flag is computed the same way its `dpi_scaling` is: the GDK display
     // clipboard only exists with `gtk-native`, so the honest answer depends on the build.
     let expect_linux_clipboard = cfg!(feature = "gtk-native");
@@ -360,11 +361,21 @@ fn documented_matrix_matches_real_backends() {
         // `native_menu: false` on all three desktop backends with an OS menu API: the flag records
         // an implementation, not an OS feature. See `PlatformCapabilities::native_menu` and each
         // backend's `capabilities()` for the per-flag evidence.
-        ("WindowsPlatform", PlatformFamily::Desktop, true, true, true, false, true, true),
+        ("WindowsPlatform", PlatformFamily::Desktop, true, true, true, false, true, true, true),
         // macOS also reports `dpi_scaling: false`: AppKit supplies the screen scale, but this
         // backend does not query it, so `dpi_scale_factor()` answers the trait default `1.0`.
-        ("cocoa", PlatformFamily::Desktop, false, true, true, false, true, true),
-        ("macos-objc2-preview", PlatformFamily::Desktop, false, false, false, false, false, false),
+        ("cocoa", PlatformFamily::Desktop, false, true, true, false, true, true, true),
+        (
+            "macos-objc2-preview",
+            PlatformFamily::Desktop,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        ),
         (
             "linux-gtk",
             PlatformFamily::Desktop,
@@ -374,19 +385,54 @@ fn documented_matrix_matches_real_backends() {
             false,
             expect_linux_clipboard,
             true,
+            // The picker is the GTK file chooser, so it follows the GTK build the same way the
+            // clipboard above follows it — and unlike the clipboard it is a pure build fact, since
+            // a host asks this before it drives a loop (see the backend's `capabilities()` for the
+            // probe that settled it).
+            cfg!(all(target_os = "linux", feature = "gtk-native")),
         ),
         // Wayland: `dpi_scaling` is true because `dpi_scale_factor()` really answers; `ime` and
         // `accessibility` are false because neither bridge method is overridden. See its
         // `capabilities()` doc for the grep evidence.
-        ("wayland", PlatformFamily::Desktop, true, false, false, false, false, false),
+        ("wayland", PlatformFamily::Desktop, true, false, false, false, false, false, false),
         // iOS reports the honest absence of all three: no `dpi_scale_factor()` (so the flag would
         // promise the fabricated `1.0` on a 2x/3x screen), no `ime_bridge()`, no
         // `accessibility_bridge()`. See its `capabilities()` doc for the grep evidence.
-        ("ios-state-backend", PlatformFamily::Mobile, false, false, false, false, false, false),
-        ("android-mobile", PlatformFamily::Mobile, true, true, true, false, false, false),
-        ("harmony-state-backend", PlatformFamily::Desktop, true, true, true, false, false, false),
-        ("wasm-state-backend", PlatformFamily::Embedded, false, false, false, false, false, false),
-        ("portable", PlatformFamily::Embedded, false, false, false, false, false, false),
+        (
+            "ios-state-backend",
+            PlatformFamily::Mobile,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        ),
+        ("android-mobile", PlatformFamily::Mobile, true, true, true, false, false, false, false),
+        (
+            "harmony-state-backend",
+            PlatformFamily::Desktop,
+            true,
+            true,
+            true,
+            false,
+            false,
+            false,
+            false,
+        ),
+        (
+            "wasm-state-backend",
+            PlatformFamily::Embedded,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        ),
+        ("portable", PlatformFamily::Embedded, false, false, false, false, false, false, false),
     ];
 
     // Every backend constructible on this host, paired with the row above that must
@@ -450,6 +496,7 @@ fn documented_matrix_matches_real_backends() {
             typed_widget_trigger: true,
             clipboard: row.6,
             open_external: row.7,
+            file_dialog: row.8,
         };
         assert_eq!(
             actual, expected,
@@ -481,10 +528,11 @@ fn documented_capability_fields_exist() {
         typed_widget_trigger: true,
         clipboard: true,
         open_external: true,
+        file_dialog: true,
     };
     assert!(caps.dpi_scaling && caps.ime && caps.accessibility && caps.typed_widget_trigger);
     assert!(!caps.native_menu);
-    assert!(caps.clipboard && caps.open_external);
+    assert!(caps.clipboard && caps.open_external && caps.file_dialog);
 
     // `NativeCapabilityContract` is documented as a type alias, so the two must be
     // interchangeable with no conversion.

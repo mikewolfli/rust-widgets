@@ -100,20 +100,20 @@ Linux (GTK)、Wayland、iOS、Android 与 HarmonyOS 都把菜单保存在进程�
 
 ### 1.4 宿主服务是另一个问题
 
-另外两个标志回答的是「这个后端能用*宿主的某项服务*吗」，而不是「它与哪个工具包集成」。
+另外三个标志回答的是「这个后端能用*宿主的某项服务*吗」，而不是「它与哪个工具包集成」。
 它们存在，是为了让宿主在**动手之前**就能判断，而不是靠一次「什么都不返回」的调用才发现不可用。
 
-| 操作系统 | 宿主剪贴板 | 外部打开 |
-|----|:--------------:|:-------------:|
-| Windows | ✅ | ✅ |
-| macOS | ✅ | ✅ |
-| Linux / GTK | ✅ ¹ | ✅ |
-| Linux / Wayland | ❌ | ❌ |
-| iOS | ✅ ² | ❌ |
-| Android | ✅ ² | ❌ |
-| HarmonyOS | ✅ ³ | ❌ |
-| WASM | ❌ | ❌ |
-| Portable | ❌ | ❌ |
+| 操作系统 | 宿主剪贴板 | 外部打开 | 文件选择器 |
+|----|:--------------:|:-------------:|:-----------:|
+| Windows | ✅ | ✅ | ✅ ⁴ |
+| macOS | ✅ | ✅ | ✅ ⁴ |
+| Linux / GTK | ✅ ¹ | ✅ | ✅ ¹ |
+| Linux / Wayland | ❌ | ❌ | ❌ |
+| iOS | ✅ ² | ❌ | ❌ |
+| Android | ✅ ² | ❌ | ❌ |
+| HarmonyOS | ✅ ³ | ❌ | ❌ |
+| WASM | ❌ | ❌ | ❌ |
+| Portable | ❌ | ❌ | ❌ |
 
 ¹ Linux 是唯一一个「答案有一半取决于**会话**」的桌面平台：`gtk-native` 把接口
 （`GtkClipboard`）链接进来，还需要背后真的有一个显示服务；所以该标志 = `gtk-native`
@@ -128,17 +128,29 @@ Linux (GTK)、Wayland、iOS、Android 与 HarmonyOS 都把菜单保存在进程�
 ³ HarmonyOS 在 OpenHarmony 目标上链接 SDK 的 `libpasteboard`/`libudmf`；
 宿主构建编译的是惰性替身，因此报 `false`。
 
+⁴ Windows 与 macOS 把选择器作为**构建**事实报告：后端调用 `GetOpenFileNameW` /
+`SHBrowseForFolderW` 与 `NSOpenPanel` / `NSSavePanel`，而任何「弹不出来」的情况
+都在每次调用时以 `Err(Unavailable)` 报告，而不是由标志预先否定。
+
 - **宿主剪贴板**（`clipboard`）：复制的内容能否离开本进程。读取请用
   [`clipboard_text()`](../api-reference/functions.md)，它把「没有文本」与空字符串分开。
 - **外部打开**（`open_external`）：后端能否把 URL 或路径交给宿主默认处理器。请调用
   [`Platform::open_external`]，而不是自己 spawn `open` / `xdg-open` / `cmd` —— 它在一处
   拒绝形如选项的目标，并把「没有安装处理器」与「请求被拒绝」分开报告。
 
-**文件选择器故意不在这张表里。** 文件选择器是一个*控件*，而本 crate 自己绘制所有控件：
-[`FileDialog`](../api-reference/widgets.md) 在每个后端上都是**自绘**控件。列表由宿主负责
-（库不会替你去浏览目录），宿主通过该控件可写的 `selected_file` 属性与 `files_selected`
-信号回报用户点中的行与确认的路径。因为只有一种机制，就没有可问的能力位 ——
-「我会拿到哪种选择器」在哪里都是同一个答案。
+- **文件选择器**（`file_dialog`）：后端能否弹出**操作系统自带**的选择器并回答一个路径。
+  请调用 [`choose_path`](../api-reference/functions.md)（或它的三个具名形式 `open_path` /
+  `save_path` / `select_directory`），而不是自己画一个列表。`Ok(Some(path))` 是选中，
+  `Ok(None)` 是取消 —— 这是一次完整的交互而不是错误 —— `Err(Unavailable)` 表示**当前会话**
+  无法弹出它（没有显示服务，或不在允许的线程上），`Err(Unsupported)` 表示该后端没有，
+  正是你正在读的这个标志。
+
+  **这是一项服务，而不是 [`FileDialog`](../api-reference/widgets.md) 控件。** 两者都存在，
+  回答的是不同问题。`FileDialog` 是本 crate 绘制、由**宿主**填充的控件：它自身没有目录列表，
+  所以当宿主已经有一份文件清单（工程树、最近文件）时它是正确选择。`choose_path` 问的是平台，
+  由平台自己去浏览文件系统，所以当宿主没有清单时它是正确选择。本章早先的版本说没有这样的能力，
+  原因是它把「有没有选择器控件」与「能不能让操作系统替我浏览」当成了同一个问题；这两者是不同的，
+  而这个标志就是把第二个问题在调用之前变得可回答。
 
 ---
 

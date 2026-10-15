@@ -353,6 +353,62 @@ pub struct PlatformCapabilities {
     /// The backend can hand a URL or path to the host's default handler
     /// (see [`Platform::open_external`]).
     pub open_external: bool,
+    /// The backend can present the host's own path picker — "open file", "save file" or "choose a
+    /// directory" — and answer with the path the user chose or with "cancelled"
+    /// (see [`Platform::choose_path`]).
+    ///
+    /// # What this flag is not
+    ///
+    /// It is not "the library can ask a user for a path". That is
+    /// [`crate::widget::dialog::file_dialog`]: a library-painted dialog the *host* fills — it has
+    /// no directory listing of its own, so a host that has no list can browse nothing with it.
+    /// `true` here means the request can be handed to the operating system's picker, which
+    /// browses the filesystem itself and is what a host that has no list needs.
+    ///
+    /// A `false` is therefore not a defect but a boundary a host plans around: the designer who
+    /// reported the original gap ends up on this flag, because the alternative — trying the call
+    /// and reading the error — is the "learn it when the action fails" shape principle #37
+    /// forbids.
+    pub file_dialog: bool,
+}
+
+/// What a host wants a path for.
+///
+/// # Why one enum rather than three trait methods
+///
+/// "Open a file", "save a file" and "choose a directory" are three *purposes* of one platform
+/// operation: each toolkit spells them as one dialog with a mode flag (`FOS_PICKFOLDERS` /
+/// `OFN_PICKFOLDERS` on Windows, `FileChooserAction` on GTK), and the work a backend does —
+/// present it, wait, translate the answer — is identical. Three trait methods would triplicate
+/// that work in every backend and would let one of the three drift (principles #54/#101).
+pub enum PathPurpose {
+    /// Pick an existing file to read.
+    OpenFile,
+    /// Pick a path to write; most toolkits warn about overwriting an existing file.
+    SaveFile,
+    /// Pick a directory.
+    SelectDirectory,
+}
+
+/// Why the host's own path picker did not answer.
+///
+/// # Why "cancelled" is not one of these
+///
+/// A cancelled dialog is a *successful* interaction with a defined outcome, so it is
+/// `Ok(None)`; only "there is no picker" and "there is one but it cannot be shown here" are
+/// errors. Collapsing those two into `Ok(None)` is the merge the clipboard read was fixed for
+/// (a host could not tell "the user pressed Cancel" from "this backend cannot show a dialog") —
+/// and this time the merge would be worse, because the host's fallback differs: with no picker it
+/// should draw its own list, whereas a picker that failed to open is worth reporting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathPickerError {
+    /// This backend has no picker of its own (pairs with a `false`
+    /// [`PlatformCapabilities::file_dialog`]).
+    Unsupported,
+    /// This backend has a picker, but it cannot be presented from here: no display session, or a
+    /// thread the toolkit does not allow a modal window on. Asking later from the right thread or
+    /// session can succeed, which is why this is not folded into [`Self::Unsupported`].
+    Unavailable,
 }
 
 /// Why handing a target to the host's default handler failed.
@@ -441,6 +497,9 @@ pub fn default_capabilities_for(_family: PlatformFamily) -> PlatformCapabilities
         typed_widget_trigger: true,
         clipboard: false,
         open_external: false,
+        // An undeclared capability, like the four above it: no backend gets a picker by
+        // inference from its family (see this function's docs).
+        file_dialog: false,
     }
 }
 
@@ -600,6 +659,16 @@ pub trait Platform: Send + Sync {
     /// caller needs: `true` means the request was delivered to the loop's own thread and the
     /// loop will stop; `false` means this backend cannot deliver it from here, and a caller
     /// that needs a hard stop must arrange one itself (for example by ending the process).
+    ///
+    /// # Stopping from another thread
+    ///
+    /// This method is the *perform it now* half, so a backend that the toolkit restricts answers
+    /// `false` when the call reaches it from a thread the toolkit would refuse. A caller that is
+    /// not the loop's driver — a smoke test, CI, a scripted demo — should call
+    /// [`crate::platform::quit`] instead: it records a request that the loop reads at its own
+    /// next frame tick, where every toolkit permits the stop, so the session can end without a
+    /// cross-thread toolkit call and without `std::process::exit`. See
+    /// [`crate::platform::stop`] for that seam.
     fn quit(&self) -> bool;
 
     /// Destroy a widget and release the resources associated with it.
@@ -2246,6 +2315,39 @@ pub trait Platform: Send + Sync {
     /// [`PlatformCapabilities::open_external`].
     fn open_external(&self, _target: &str) -> Result<(), OpenError> {
         Err(OpenError::Unsupported)
+    }
+    /// Asks the host for a path, using the picker the user's own desktop provides.
+    ///
+    /// # Why a host needs this beside the library's own dialog
+    ///
+    /// [`crate::widget::dialog::file_dialog`] is painted by this library and **filled by the
+    /// host**: it has no directory listing, so a host that has no list of its own can browse
+    /// nothing with it. This request goes to the operating system's picker instead, which browses
+    /// the filesystem itself — the difference between "here is a file selector you must feed" and
+    /// "let the user pick a file" that the designer reported as missing.
+    ///
+    /// # Return value
+    ///
+    /// * `Ok(Some(path))` — the user chose that path.
+    /// * `Ok(None)` — the user cancelled. A complete interaction, not a failure; see
+    ///   [`PathPickerError`] for why it is not merged with the errors.
+    /// * `Err(PathPickerError::Unavailable)` — this backend has a picker but cannot present it
+    ///   here (no display session, or a thread the toolkit forbids a modal window on).
+    /// * `Err(PathPickerError::Unsupported)` — this backend has none. That is the default below,
+    ///   and [`PlatformCapabilities::file_dialog`] is the same fact queryable **before** the call,
+    ///   so a host can choose its fallback without provoking the failure.
+    ///
+    /// # This call blocks
+    ///
+    /// A picker is modal on every desktop toolkit: it owns the user's input until it is answered.
+    /// Call it from the thread that owns the event loop; the loop keeps running while the dialog
+    /// is up, which is what makes the call safe from inside a callback as well.
+    fn choose_path(
+        &self,
+        _purpose: PathPurpose,
+        _title: &str,
+    ) -> Result<Option<std::path::PathBuf>, PathPickerError> {
+        Err(PathPickerError::Unsupported)
     }
     /// Start a drag operation from source widget.
     fn begin_drag(&self, _source_widget_id: ObjectId, _mime: &str, _payload: &[u8]) -> bool {

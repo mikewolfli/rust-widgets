@@ -22,6 +22,7 @@ The fields map one-to-one onto trait methods:
 | `typed_widget_trigger` | `Platform::poll_widget_trigger_event` (library-implemented) |
 | `clipboard`       | `Platform::set_clipboard_text` / `get_clipboard_text` |
 | `open_external`   | `Platform::open_external`              |
+| `file_dialog`     | `Platform::choose_path`                |
 
 # The defect class this catches
 
@@ -123,6 +124,7 @@ PROMISED: dict[str, tuple[str, ...]] = {
     # such method must leave the flag absent (which is the honest `false`).
     "clipboard": ("set_clipboard_text", "get_clipboard_text"),
     "open_external": ("open_external",),
+    "file_dialog": ("choose_path",),
 }
 
 # The backends whose `capabilities()` is read, as (name, source path). Explicit rather than a

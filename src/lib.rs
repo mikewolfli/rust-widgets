@@ -454,14 +454,29 @@ pub fn run() {
     trace_runtime_route("run");
     platform::profile::runtime_run();
 }
-/// Request platform event loop shutdown.
+/// Request platform event loop shutdown, from any thread.
 ///
-/// Returns whether the request was **delivered to the thread that owns the loop**. A backend
-/// whose toolkit only accepts a stop from its own thread (AppKit is the case in point) answers
-/// `false` when this is called from anywhere else, and the loop will keep running: a host that
-/// does not drive the loop itself — a smoke test, CI, a script — must read the `false` and end
-/// its own process rather than assuming the shutdown took. On backends whose loop reads a
-/// shared exit flag, a request from any thread is honoured and this answers `true`.
+/// Returns whether this call put the session on a path to ending: `true` means either a loop in
+/// this process is running its frames — so it reads the request at its next one and stops,
+/// whatever thread this was called from — or the backend performed its own stop from here.
+/// `false` means neither: no loop has driven a frame yet and this thread could not stop one, so
+/// nothing is reading the request right now. A host that receives `false` and needs the session
+/// over immediately must arrange that itself; the request stays recorded, so a loop started
+/// later honours it at its first frame.
+///
+/// # Why this works from a thread the toolkit would refuse
+///
+/// No toolkit accepts a stop from an arbitrary thread (`-[NSApplication stop:]` is
+/// main-thread-only, `gtk_main_quit` walks a global main-loop stack only the loop's thread may
+/// touch, `PostQuitMessage` is thread-affine). Recording the request is one atomic store, which
+/// every thread may do, and the loop's own frame tick performs the toolkit's stop — every loop
+/// this library owns calls `drive_frame` on the thread that owns it. See
+/// [`platform::stop`](crate::platform::stop) for that seam, and [`platform::Platform::quit`] for
+/// the backend-level "perform it now" half.
+///
+/// This is the entry a host should use when it is **not** driving the loop: a smoke test that
+/// has to end its own session, CI, or a scripted demo. It is also what makes such a host's exit
+/// distinguishable from a killed process, because the loop returns normally.
 pub fn quit() -> bool {
     trace_runtime_route("quit");
     platform::profile::runtime_quit()
@@ -2123,6 +2138,61 @@ pub fn clipboard_text() -> Option<String> {
 pub fn platform_clipboard() -> Option<&'static dyn crate::platform::clipboard::RichClipboardBackend>
 {
     platform::get_platform().clipboard_backend()
+}
+/// Asks the user for a path, using the picker the host's own desktop provides.
+///
+/// # Why this is a host-level call and not a dialog widget
+///
+/// [`widget::dialog::file_dialog`] is painted by this library and filled by the **host**: it has no
+/// directory listing, so a host without one of its own can browse nothing with it. This call goes
+/// to the operating system's picker instead, which browses the filesystem itself.
+///
+/// # What the three answers mean
+///
+/// `Ok(Some(path))` the user chose that path; `Ok(None)` the user cancelled (a complete
+/// interaction, not a failure); `Err(`[`platform::PathPickerError::Unavailable`]`)` this backend has
+/// a picker but cannot present it here (no display session, or a thread the toolkit forbids a modal
+/// window on); `Err(`[`platform::PathPickerError::Unsupported`]`)` this backend has none, which
+/// [`platform::capabilities`]'.`file_dialog` reports **before** the call so a host can pick its
+/// fallback without provoking the failure.
+///
+/// # This blocks
+///
+/// The picker is modal: it owns the user's input until it is answered, and the event loop keeps
+/// running while it is up. Call it from the thread that owns the loop.
+#[cfg(not(alloc_frugal))]
+pub fn choose_path(
+    purpose: crate::platform::PathPurpose,
+    title: &str,
+) -> Result<Option<std::path::PathBuf>, crate::platform::PathPickerError> {
+    platform::get_platform().choose_path(purpose, title)
+}
+/// Asks the user to pick an existing file — [`choose_path`] with
+/// [`PathPurpose::OpenFile`](crate::platform::PathPurpose::OpenFile).
+///
+/// The three named entry points below are the vocabulary a host asks in; they are one call with
+/// one implementation, so they cannot drift apart (principles #54/#101).
+#[cfg(not(alloc_frugal))]
+pub fn open_path(
+    title: &str,
+) -> Result<Option<std::path::PathBuf>, crate::platform::PathPickerError> {
+    choose_path(crate::platform::PathPurpose::OpenFile, title)
+}
+/// Asks the user to name a path to write — [`choose_path`] with
+/// [`PathPurpose::SaveFile`](crate::platform::PathPurpose::SaveFile).
+#[cfg(not(alloc_frugal))]
+pub fn save_path(
+    title: &str,
+) -> Result<Option<std::path::PathBuf>, crate::platform::PathPickerError> {
+    choose_path(crate::platform::PathPurpose::SaveFile, title)
+}
+/// Asks the user to pick a directory — [`choose_path`] with
+/// [`PathPurpose::SelectDirectory`](crate::platform::PathPurpose::SelectDirectory).
+#[cfg(not(alloc_frugal))]
+pub fn select_directory(
+    title: &str,
+) -> Result<Option<std::path::PathBuf>, crate::platform::PathPickerError> {
+    choose_path(crate::platform::PathPurpose::SelectDirectory, title)
 }
 // Menu operations
 /// Creates a native menu bar as a child of `parent`.

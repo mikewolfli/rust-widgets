@@ -17,6 +17,8 @@ pub(crate) mod accelerator;
 
 /// Cocoa 0.24 platform implementation (legacy, behind `cocoa-legacy` feature).
 #[cfg(feature = "cocoa-legacy")]
+/// AppKit's own file picker (`NSOpenPanel`/`NSSavePanel`), for `Platform::choose_path`.
+pub(crate) mod file_picker;
 mod platform_impl;
 
 /// CoreGraphics FFI used to blit self-drawn frames.

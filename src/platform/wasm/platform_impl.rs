@@ -71,6 +71,11 @@ impl Platform for WasmPlatform {
             // handler spawn.
             clipboard: false,
             open_external: false,
+            // Web content cannot open a file picker synchronously: the browser's chooser is a
+            // promise-based API (`showOpenFilePicker`) and a `wasm32` build has no loop to await
+            // it in. A host runs its own `<input type=file>` instead, which is why this is a
+            // boundary rather than a missing binding.
+            file_dialog: false,
         }
     }
 

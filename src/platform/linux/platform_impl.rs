@@ -152,7 +152,75 @@ impl Platform for LinuxPlatform {
             },
             // `open_external` spawns `xdg-open`.
             open_external: true,
+            // The GTK file chooser, in the builds that compile GTK in.
+            //
+            // This is a **build** fact and not the `is_initialized_main_thread()` the method
+            // itself checks, which the probe (`examples/probe_file_picker.rs`) is what settled: a
+            // host asks `capabilities()` before it drives a loop — that is the whole point of
+            // asking — and a predicate that is false until `init()` has run told such a host there
+            // is no picker on a machine that has one. So the flag states what the backend has
+            // ("there is a GTK chooser here"), and *availability* is the method's own answer:
+            // with no display session the call reports `PathPickerError::Unavailable`, which is
+            // exactly the case that variant is documented for.
+            file_dialog: cfg!(all(target_os = "linux", feature = "gtk-native")),
         }
+    }
+
+    /// Presents the GTK file chooser and answers with what the user picked.
+    ///
+    /// # Why the answer type is not `Option<PathBuf>`
+    ///
+    /// See [`crate::platform::PathPickerError`]: "the user cancelled" and "there is no picker
+    /// here" are different facts with different host fallbacks, so they are different values. The
+    /// three outcomes this maps are: `ResponseType::Accept` with a filename → `Ok(Some(path))`;
+    /// any other response → `Ok(None)`; a thread or session without a usable toolkit →
+    /// `Err(Unavailable)`.
+    ///
+    /// # Why the dialog is destroyed rather than merely dropped
+    ///
+    /// `gtk::Dialog::run` runs a nested main loop and leaves the dialog hidden on return. GTK's
+    /// own documentation says a dialog created this way must be destroyed explicitly, or it stays
+    /// on the (invisible) widget stack for the rest of the session, and a host that picks files
+    /// repeatedly would accumulate one per pick.
+    ///
+    /// # What is *not* claimed
+    ///
+    /// The returned path is not checked for existence or writability. A save dialog legitimately
+    /// names a file that does not exist yet, and a toolkit filter cannot promise that what the
+    /// user typed is something the process may open — the caller's own `open`/`create` reports
+    /// that, with the error the OS actually produced.
+    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    fn choose_path(
+        &self,
+        purpose: crate::platform::PathPurpose,
+        title: &str,
+    ) -> Result<Option<std::path::PathBuf>, crate::platform::PathPickerError> {
+        use crate::platform::PathPickerError;
+        if !gtk::is_initialized_main_thread() {
+            // The same rule as `create_window`: a GTK widget built off the main thread aborts the
+            // process, and a dialog is a widget. Reported rather than skipped, so the caller knows
+            // to ask from the loop's thread instead.
+            return Err(PathPickerError::Unavailable);
+        }
+        let action = match purpose {
+            crate::platform::PathPurpose::OpenFile => gtk::FileChooserAction::Open,
+            crate::platform::PathPurpose::SaveFile => gtk::FileChooserAction::Save,
+            crate::platform::PathPurpose::SelectDirectory => gtk::FileChooserAction::SelectFolder,
+        };
+        let dialog = gtk::FileChooserDialog::new(Some(title), None::<&gtk::Window>, action);
+        dialog.add_button("Cancel", gtk::ResponseType::Cancel);
+        dialog.add_button("Select", gtk::ResponseType::Accept);
+        let chosen = if dialog.run() == gtk::ResponseType::Accept {
+            dialog.filename().map(|path| path.to_path_buf())
+        } else {
+            None
+        };
+        // SAFETY: `dialog` is a live GTK widget on the main thread, and it is not used again
+        // after this call.
+        unsafe {
+            dialog.destroy();
+        }
+        Ok(chosen)
     }
 
     /// Hands a URL or path to the desktop's default handler by spawning `xdg-open`.
@@ -429,12 +497,27 @@ impl Platform for LinuxPlatform {
     }
     fn quit(&self) -> bool {
         // The exit condition of this backend's own frame loop is `runtime.running`, an atomic
-        // any thread may store, so the request lands whatever thread it comes from. The
-        // GTK-native branch additionally asks GTK to quit, exactly as this method always has.
+        // any thread may store, so a request from anywhere ends the *state* loop.
         self.runtime.running.store(false, Ordering::SeqCst);
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
-            gtk::main_quit();
+            // GTK's stop is main-thread-only: `gtk_main_quit` walks the global main-loop stack
+            // that `gtk::main()` installs, and GTK permits only the thread that owns the toolkit
+            // to touch it -- the same rule `create_window` above obeys. So a caller on any other
+            // thread records the request instead, and the loop's own frame tick performs the stop
+            // there (`crate::platform::stop`). That keeps the answer below honest: the request
+            // does have a reader, because `run`'s `glib::timeout_add_local` closure calls
+            // `drive_frame` on the GTK main thread every frame.
+            //
+            // Before this, the off-main case called `gtk_main_quit` directly, which is an
+            // unsynchronised touch of GTK's main-loop stack from a thread GTK does not allow --
+            // a data race whose symptom (a loop that stops, or one that does not) would depend on
+            // timing. The tick path is the same stop, performed where it is legal.
+            if gtk::is_initialized_main_thread() {
+                gtk::main_quit();
+            } else {
+                crate::platform::stop::request();
+            }
         }
         true
     }

@@ -227,36 +227,57 @@ impl fmt::Display for SpoolerFailure {
 /// `output()` waits without a bound, so a spooler that never exits blocks the calling
 /// thread forever — and this runs on the UI path of a print request. The child is
 /// spawned with piped stdio, then polled against [`SPOOLER_TIMEOUT`]; a child that
-/// outlives the timeout is killed and reported so it can never outlive the job file.
+/// outlives the timeout has its whole process group ended ([`super::child_process`]),
+/// so a spooler that forked helpers cannot leave them running against a job file the
+/// caller is about to delete.
 fn run_spooler(program: &str, job_file: &std::path::Path) -> Result<(), SpoolerFailure> {
-    let mut child = std::process::Command::new(program)
+    run_spooler_with_timeout(program, job_file, SPOOLER_TIMEOUT)
+}
+
+/// The body of [`run_spooler`] with its bound as a parameter.
+///
+/// # Why the bound is a parameter
+///
+/// The production bound is 30 s (a real spooler talking to a CUPS server), so a test could never
+/// wait for it; what the timeout path *does* — end the process group so nothing outlives the job
+/// file — would then stay unverified, which is exactly how the descendants were left behind
+/// before. Parameterising it lets a test drive the timeout in 300 ms and assert on the process
+/// tree; production passes the constant below, so there is still one bound in the shipped code.
+fn run_spooler_with_timeout(
+    program: &str,
+    job_file: &std::path::Path,
+    timeout: std::time::Duration,
+) -> Result<(), SpoolerFailure> {
+    let mut command = std::process::Command::new(program);
+    command
         .arg(job_file)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|error| {
-            SpoolerFailure::Unavailable(format!(
-                "spooler command '{program}' could not be spawned: {error} (check that it is \
-                 installed and on PATH)"
-            ))
-        })?;
+        .stderr(std::process::Stdio::piped());
+    // Its own group, so the host's session cleanup cannot reach a job it did not start — and so
+    // the timeout below can end everything the spooler forked, not just the spooler itself.
+    super::child_process::in_own_group(&mut command);
+    let mut child = command.spawn().map_err(|error| {
+        SpoolerFailure::Unavailable(format!(
+            "spooler command '{program}' could not be spawned: {error} (check that it is \
+             installed and on PATH)"
+        ))
+    })?;
 
-    let deadline = std::time::Instant::now() + SPOOLER_TIMEOUT;
+    let deadline = std::time::Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => {
                 if std::time::Instant::now() >= deadline {
-                    // The child never exited. Reap it so the job file the caller is about
-                    // to delete is not still open, and report the timeout honestly rather
-                    // than as a submission.
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    // The child never exited. End its whole group so the job file the caller is
+                    // about to delete is not still open, and report the timeout honestly rather
+                    // than as a submission. `kill_whole_group` reaps the direct child too.
+                    super::child_process::kill_whole_group(&mut child);
                     return Err(SpoolerFailure::Rejected(format!(
                         "{program}: timed out after {}s without exiting; the job was not \
                          confirmed as submitted",
-                        SPOOLER_TIMEOUT.as_secs()
+                        timeout.as_secs()
                     )));
                 }
                 std::thread::sleep(SPOOLER_POLL_INTERVAL);
@@ -480,6 +501,99 @@ mod tests {
         let _ = std::fs::remove_file(&fake);
         let _ = std::fs::remove_file(&job);
         assert!(result.is_ok(), "a spooler that exits 0 must report success, got {result:?}");
+    }
+
+    /// A spooler that forked helpers must not leave them behind when it is timed out.
+    ///
+    /// # The defect this pins down
+    ///
+    /// `run_spooler` used to end a timed-out spooler with `child.kill()`, which addresses the
+    /// **direct child only**. A real spooler is not one process (`lp` hands the job to a filter
+    /// chain), so its helpers outlived the timeout: still running, still holding the job file the
+    /// caller deletes on return, and recorded nowhere — the designer feedback's "库内自行启动的
+    /// 进程不在宿主的会话归属范围内" (a host whose cleanup criterion is "the process groups this
+    /// session created" cannot reach them).
+    ///
+    /// # How the survival is observed
+    ///
+    /// The stand-in spooler forks a descendant that writes a marker **after** the timeout has
+    /// fired, then the spooler itself sleeps past the timeout. The timeout is 300 ms and the
+    /// marker is due at 600 ms, so a marker means the descendant was still alive when the
+    /// timeout was handled. The pid file is written before any sleeping, which is what proves the
+    /// descendant existed at all — otherwise a script that failed to fork would pass this test by
+    /// accident.
+    ///
+    /// Unix-only because process groups are: on Windows this crate creates no job object, and the
+    /// boundary is written in [`super::child_process`] rather than implied by a skipped test.
+    #[cfg(unix)]
+    #[test]
+    fn a_timed_out_spooler_takes_its_descendants_with_it() {
+        use std::io::Write as _;
+        use std::time::{Duration, Instant};
+
+        let dir = std::env::temp_dir().join(format!("rw_spool_group_{}", std::process::id()));
+        if std::fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        let marker = dir.join("descendant_alive.txt");
+        let pid_file = dir.join("descendant.pid");
+        let _ = std::fs::remove_file(&marker);
+        let _ = std::fs::remove_file(&pid_file);
+
+        // `$!` is the descendant's pid, written immediately; the marker is due well after the
+        // spooler's own timeout, so it can only appear if the descendant survived the timeout.
+        let script = format!(
+            "( sleep 0.6; echo alive > \"{}\" ) &\necho $! > \"{}\"\nsleep 30\n",
+            marker.display(),
+            pid_file.display()
+        );
+        let fake = dir.join("forking_spool.sh");
+        let written =
+            std::fs::File::create(&fake).and_then(|mut file| file.write_all(script.as_bytes()));
+        if written.is_err() {
+            return;
+        }
+        let job = dir.join("job.txt");
+        let _ = std::fs::write(&job, "page:1\n");
+
+        let started = Instant::now();
+        let result = run_spooler_with_timeout("sh", &fake, Duration::from_millis(300));
+
+        // The descendant was forked (its pid file appeared), so the check below is about
+        // survival rather than about a script that never ran.
+        let forked = Instant::now();
+        while !pid_file.exists() && forked.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let descendant_existed = pid_file.exists();
+        // Wait until the descendant's marker would have been written had it lived (600 ms after
+        // the fork, plus a margin), then look.
+        while started.elapsed() < Duration::from_millis(1500) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let survived = marker.exists();
+
+        let _ = std::fs::remove_file(&fake);
+        let _ = std::fs::remove_file(&job);
+        let _ = std::fs::remove_file(&marker);
+        let _ = std::fs::remove_file(&pid_file);
+
+        assert!(
+            matches!(result, Err(SpoolerFailure::Rejected(_))),
+            "a spooler that never exits must be reported as a rejected job, got {result:?}"
+        );
+        assert!(
+            descendant_existed,
+            "the stand-in spooler forked nothing (no pid file at {}), so this run proves nothing",
+            pid_file.display()
+        );
+        assert!(
+            !survived,
+            "the timed-out spooler's descendant was still alive and wrote {} — the timeout ended \
+             the direct child only, so a real spooler's filter chain would outlive the job it was \
+             printing",
+            marker.display()
+        );
     }
 
     /// A program that is not installed must be reported as missing, not as a rejected

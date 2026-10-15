@@ -703,7 +703,22 @@ impl Platform for WindowsPlatform {
             clipboard: true,
             // `open_external` spawns `cmd /C start`.
             open_external: true,
+            // `choose_path` presents the Win32 common dialogs (`GetOpenFileNameW` /
+            // `GetSaveFileNameW`, `SHBrowseForFolderW`), so the flag and the method are one
+            // implementation.
+            file_dialog: true,
         }
+    }
+
+    /// Presents the Win32 picker — see [`super::file_picker`] for which dialog answers which
+    /// purpose, how Cancel is told apart from a dialog that failed to appear, and what the answer
+    /// does and does not claim.
+    fn choose_path(
+        &self,
+        purpose: crate::platform::PathPurpose,
+        title: &str,
+    ) -> Result<Option<std::path::PathBuf>, crate::platform::PathPickerError> {
+        super::file_picker::choose_path(purpose, title)
     }
 
     /// Hands a URL or path to the shell's default handler through `cmd /C start`.

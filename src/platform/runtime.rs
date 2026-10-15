@@ -463,15 +463,51 @@ pub fn init() {
 #[cfg(not(alloc_frugal))]
 pub fn run() {
     get_platform().run();
+    // A request made while this loop ran is spent once the loop is over: it asked *this* session
+    // to stop, and this session has stopped. Clearing it here is what keeps one session's request
+    // from ending the next one in the same process — a later `run` whose first frame reads a
+    // leftover would stop immediately, which is the opposite of what its host asked for.
+    //
+    // The clearing is needed because a loop can leave without driving another frame (the state
+    // backends' loops test their own exit condition, which a request also clears), so the tick
+    // that normally consumes the request never runs again. `take` is a no-op in the case where the
+    // tick did consume it, which is why this is unconditional rather than checked.
+    let _ = crate::platform::stop::take();
 }
 
-/// Requests platform main loop shutdown.
+/// Requests platform main loop shutdown, from any thread.
 ///
-/// Returns whether the active backend delivered the request to the loop's own thread; see
-/// [`Platform::quit`].
+/// # What "from any thread" costs, and why it is free here
+///
+/// No toolkit accepts a stop from an arbitrary thread (`-[NSApplication stop:]` is
+/// main-thread-only, `gtk_main_quit` walks a global main-loop stack only the loop's thread may
+/// touch, `PostQuitMessage` is thread-affine), so this records a request the loop reads at its
+/// own next frame — see [`crate::platform::stop`] for the seam and for the backends' tick. The
+/// immediate path is still taken where it is legal: on the loop's thread
+/// [`Platform::quit`] performs the toolkit's own stop, which is the one case a backend can
+/// answer `true` for on its own.
+///
+/// # Return value
+///
+/// `true` when this call put the session on a path to ending, which is one of two facts:
+///
+/// * a loop in this process has driven a frame, so it reads the request at its next one and
+///   stops ([`crate::platform::stop::loop_has_ticked`]); or
+/// * the backend performed its own stop from here ([`Platform::quit`] — the state backends make
+///   their loop's exit condition false, which any thread may do).
+///
+/// `false` means neither happened: no loop has ticked, and this thread could not perform the
+/// backend's stop, so nothing is reading the request right now and a caller that needs the
+/// session over must arrange that itself (`std::process::exit`, or a bounded wait). The request
+/// is not discarded in that case: a loop started afterwards reads it at its first frame.
+///
+/// This is the entry a host should call when it is not driving the loop: it is the only one
+/// that works from a thread the toolkit would refuse, and its answer is the fact such a host
+/// needs ("will this session end?").
 #[cfg(not(alloc_frugal))]
 pub fn quit() -> bool {
-    get_platform().quit()
+    let has_a_reader = crate::platform::stop::request();
+    get_platform().quit() || has_a_reader
 }
 
 /// Returns runtime capabilities for the active backend.

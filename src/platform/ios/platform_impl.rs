@@ -177,6 +177,9 @@ impl Platform for IosMobilePlatform {
             // No handler spawn on iOS: opening a URL goes through `UIApplication`, which needs
             // the app's own delegate, and this backend has no window scene to hang it on.
             open_external: false,
+            // No picker: `UIDocumentPickerViewController` needs the same window scene the handler
+            // above lacks, and this backend presents no dialog of its own.
+            file_dialog: false,
         }
     }
 

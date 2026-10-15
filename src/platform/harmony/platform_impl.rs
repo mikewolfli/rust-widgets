@@ -158,6 +158,9 @@ impl Platform for HarmonyPlatform {
             // No handler spawn: OpenHarmony opens a URL through an `AbilityContext`, which this
             // backend has no handle on.
             open_external: false,
+            // No picker: the ArkUI file dialog needs the same `AbilityContext` the handler above
+            // lacks.
+            file_dialog: false,
         }
     }
 

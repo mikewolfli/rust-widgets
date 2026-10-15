@@ -97,6 +97,10 @@ fn capability_contract_mask(contract: crate::platform::CapabilityContract) -> c_
             if native.open_external {
                 mask |= 1 << 7;
             }
+            // The host's own path picker; appended, for the same reason as the two above.
+            if native.file_dialog {
+                mask |= 1 << 8;
+            }
             mask
         }
         crate::platform::CapabilityContract::Embedded(embedded) => {
@@ -2601,6 +2605,11 @@ pub extern "C" fn rw_platform_capabilities() -> c_uint {
         }
         if caps.open_external {
             mask |= 1 << 6;
+        }
+        // The host's own path picker, appended after the services above for the same reason: the
+        // bits already published keep their meaning.
+        if caps.file_dialog {
+            mask |= 1 << 7;
         }
         mask
     })

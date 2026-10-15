@@ -3,6 +3,8 @@
 
 //! Windows platform backend implementation.
 
+/// The Win32 common file dialogs, for `Platform::choose_path`.
+pub(crate) mod file_picker;
 mod notify;
 mod platform_impl;
 pub mod types;

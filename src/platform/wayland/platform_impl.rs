@@ -172,6 +172,9 @@ impl Platform for WaylandPlatform {
             // `BackendState` record) and no handler spawn.
             clipboard: false,
             open_external: false,
+            // No picker: this backend has no `xdg-desktop-portal` binding, and the portal is the
+            // only way a Wayland client may present a file chooser.
+            file_dialog: false,
         }
     }
 
