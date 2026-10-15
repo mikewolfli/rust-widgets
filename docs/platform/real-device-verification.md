@@ -32,7 +32,7 @@
 | **macOS / `macos-objc2-preview`** | 真 Mac | ⚠️ **部分（原生探针已删；post-BLUE15 仅剪贴板测试）** | 2026-09-11（原生，已过期）/ 2026-10-14 | `NSPasteboard` 往返：`cargo test … platform::macos_objc2` → 10 passed（`docs/log/log-20261014-1.md` 第 3 轮 §5）；`run()` 仍是轮询 loop（`src/platform/macos/status.md:127-129`） |
 | **iOS** | **iOS Simulator**（iPhone 17 Pro，iOS 26.2 / 23C54）——**非真机** | ✅ **已确认（模拟器；真机 ❌ 从未验证）** | 2026-10-15，`1f3a6fa8` | `bash tools/run_ios_testapp.sh` → 12 项全 `[PASS]`，`RESULT: PASS`（原始输出见本节 §4，宿主 macOS 15.7.3 / Apple M4 / Xcode 26.2） |
 | **Android** | **真机 Xiaomi M2102J2SC**（Android 13/API 33，arm64-v8a）**+ 模拟器**（API 34 x86_64 KVM） | ✅ **已确认（旧修订，需复跑）** | 2026-09-11 | `ANDROID_ABI=arm64-v8a ANDROID_SERIAL=65441025 bash tools/run_android_testapp.sh` → JNI 双向 `RESULT: PASS`，真 `ACTION_OPEN_DOCUMENT` 选择器弹出。见 `docs/log/archive/log-20260911-1.md`、`src/platform/android/status.md` |
-| **HarmonyOS / OpenHarmony** | 无设备、无模拟器（`hdc list targets` → `[Empty]`；SDK 不含 emulator） | ❌ **未验证（仅交叉编译 + 链接）** | 2026-09-16 → 2026-10-14 | `cargo ohos build -t {aarch64,armv7,x86_64}` 真产出 `librust_widgets.so`（ELF machine 校验）；`loongarch64` 为 Tier 3、无法构建。见 `tools/check_harmony_cross.sh`、`src/platform/harmony/status.md` |
+| **HarmonyOS / OpenHarmony** | **DevEco 模拟器** `Pura X View`（HarmonyOS 6.0.0(20)；guest `OpenHarmony-6.0.0.47` / API 20 / kernel 5.10.210 aarch64） | ✅ **库 core 已在真运行时验证（模拟器）；ArkUI/NAPI 面 ❌ 未验证** | 2026-10-15 | `bash tools/run_harmony_testapp.sh` → `examples/embedded_host` 在 guest 上跑完（rc=0）并打印 `DONE`。见 §6、`src/platform/harmony/status.md`；交叉编译 + 链接证据另由 `tools/check_harmony_cross.sh` 提供 |
 | **Wayland** | 真 **headless weston** 合成器（`wl_compositor`/`xdg_wm_base` 真绑定） | ✅ **已确认（协议绑定；非屏幕合成/输入）** | 2026-09-11 | `tools/run_wayland_compositor_tests.sh` → `bound live compositor … 14 passed`。见 `docs/log/archive/log-20260911-1.md` |
 | **WASM / Web** | **WASI 运行时（wasmtime）** 跑库代码；**浏览器 ❌ 未验证** | ✅ **已确认（仅库代码）** | 2026-09-02 | `cargo test --target wasm32-wasip1 --no-default-features --features wasm` → 2155 passed；浏览器 `wasm32-unknown-unknown` 只 `check`/`build`。见 `docs/log/archive/log-20260902-1.md` |
 | **Embedded / mini** | **宿主模拟**（内存 framebuffer / 内嵌引擎）——**无真实硬件** | ⚠️ **宿主模拟** | 2026-10-15 | `cargo test --lib --no-default-features --features mini -- render_engine::embedded` → 4 passed；生成器产物真编译（`tools/check_generator_output_compiles.sh`）。见 `docs/log/log-20261014-1.md` 第 4 轮 |
@@ -147,28 +147,46 @@ I RustWidgetsTest: RESULT: PASS
 - **MIUI/HyperOS 安装守卫**（真机发现）：普通 `adb install` 报 `INSTALL_FAILED_USER_RESTRICTED`，runner 自动回退到 `pm install-create/-write/-commit` 会话 API。
 - 无 `ANDROID_SERIAL`/无 AVD 时，`tools/check_android_runtime.sh` 前置探测后 `exit 2`（`unsupported host`），**不**靠超时收场。
 
-## 6. HarmonyOS / OpenHarmony — ❌ 未验证（仅交叉编译 + 链接）
+## 6. HarmonyOS / OpenHarmony — ✅ 库 core 已在真实运行时验证（模拟器）；ArkUI 面 ❌ 未验证
 
-**边界（不是遗漏）**：仓库里没有任何 HarmonyOS **运行时**验证工具（既无 `run_harmony_testapp.sh`，也无 `.hap` 构建/签名/安装流程），所以真机/模拟器**运行**从未被断言过。SDK 与模拟器本身是**装好的**（2026-10-15 在本机核对）：
+**运行时（模拟器）**：**DevEco 模拟器实例 `Pura X View`**（HarmonyOS 6.0.0(20)）。
 
 ```text
-$ hdc -v
-Ver: 3.1.0e                                    ← ~/Library/OpenHarmony/Sdk/18/toolchains
 $ hdc list targets
-[Empty]                                        ← 当前没有模拟器在运行
-$ ls ~/Library/Huawei/Sdk/system-image
-HarmonyOS-6.0.0                                ← 模拟器镜像（phone_all_arm）已安装
-$ ls ~/.Huawei/Emulator/deployed
-phone_config.json  versionInfo.txt  "Pura X View"  ...   ← 已部署一个模拟器实例
+127.0.0.1:5555
+$ hdc shell param get const.ohos.fullname
+OpenHarmony-6.0.0.47
+$ hdc shell param get const.ohos.apiversion
+20
+$ hdc shell uname -a
+Linux localhost 5.10.210 #1 SMP Thu Sep 18 17:17:55 CST 2025 aarch64
+$ bash tools/run_harmony_testapp.sh
+      ok   DEMO_PROFILE=embedded
+      ok   SUPPORTS_SURFACES=true
+      ok   DONE
+✅ OpenHarmony runtime verification PASSED (embedded_host, target=127.0.0.1:5555)
 ```
 
-> ⚠️ **订正**：本节此前写「无设备、无模拟器」并列出「SDK 不含 emulator」。那只描述了 `~/Library/OpenHarmony/Sdk/<ver>/`（其中确实没有 `emulator/` 子目录）；模拟器实际由 DevEco Studio 提供——镜像在 `~/Library/Huawei/Sdk/system-image/`，二进制在 `DevEco-Studio.app/Contents/tools/emulator/Emulator`，且已有一个部署好的实例（`~/.Huawei/Emulator/deployed/`）。因此准确的表述是：**模拟器已安装、但未启动**（`hdc list targets` → `[Empty]`），而且**仓库缺少把它跑起来所需的 `.hap` 构建 + runner**——这仍是一个 ⬜ 工程，不是一条命令。
+宿主：macOS 15.7.3（24G419）/ Apple M4；DevEco SDK `hdc` 3.2.0f。runner 为 `tools/run_harmony_testapp.sh`。
 
-历史记录（当时确实无模拟器）：`docs/log/archive/log-20260930-4.md:595-609`；`docs/plans/harmony_integration.md` 亦把「真机/模拟器运行验证」标为 ⬜。
+**判定口径**：`examples/embedded_host.rs`（`embedded` profile）在 guest 上**跑完**（rc=0），逐行断言其输出。覆盖构建身份查询、帧预算、帧调度任务队列、显式 stride 的表面分配、行拷贝、引擎登记表与能力契约。
 
-**已确认的只是编译 + 链接**：`aarch64` / `armv7` / `x86_64` 各**产出并链接**真 `librust_widgets.so`（ELF machine 与 triple 一致），XComponent 桥链接 `libace_ndk.z.so`；`tools/check_harmony_cross.sh` 正向断言该状态（`src/platform/harmony/status.md:255-259`、`:272-288`）。
+**未覆盖范围（为何不是「HarmonyOS 全绿」）**：
+- **ArkUI / `XComponent` / NAPI 完全未执行**——那需要一个带 ArkTS 宿主的 `.hap`，本仓库不构建（`docs/plans/harmony_integration.md` 仍标 ⬜）。
+- 故探针用 `embedded` 而非 `desktop`：本 triple 的 `desktop` 构建链接 `libace_napi.z.so`，其依赖 `libark_jsruntime.so` 在 `hdc shell` 进程里无法解析（沙箱之外无 ArkTS VM），加载即 `rc=127`。限制来自**执行上下文**，不是代码。
+- **模拟器 ≠ 真机**：本行全部是模拟器；无 HarmonyOS 真机证据。
+- 覆盖的**只有一个 ABI**（`aarch64`），即模拟器的 ABI。
+
+**编译 + 链接（独立于上面的运行，仍成立）**：`aarch64` / `armv7` / `x86_64` 各产出并链接真 `librust_widgets.so`（ELF machine 与 triple 一致），XComponent 桥链接 `libace_ndk.z.so`；`tools/check_harmony_cross.sh` 正向断言该状态（`src/platform/harmony/status.md:255-259`、`:272-288`）。
 
 **Tier 3 限制（如实记录）**：`loongarch64-unknown-linux-ohos` **无法构建**——rustup 无预编译 std（Tier 3）+ SDK 无 loongarch64 libc（`bits/alltypes.h` 缺失）。门禁把这一状态当作**正面断言**，而非假装通过。
+
+**复现前置与宿主事实（都实际踩过）**：
+- 模拟器必须**已在运行**（DevEco Device Manager，或 `DevEco-Studio.app/Contents/tools/emulator/Emulator -start '<instance>'`）；无目标时 runner 前置探测后 `exit 2` + `unsupported host (...)`（原则 #103），**不**靠超时收场。
+- 冷启动实例会被 DevEco 的 `emulator-crash-service` 看门狗在约 21s 后杀掉（`Emulator snapshot boot timeout, try to restart`），早于 guest 启动完成——故不能从脚本托管启动。
+- 模拟器自身日志里的 `hdc is not connected, hdc not init` **不代表传输不可用**：同一时刻 `hdc list targets` 正常返回目标。
+
+**边界订正（推翻本节此前结论）**：本节此前写「❌ 未验证（仅交叉编译 + 链接）」并断言「仓库缺少把它跑起来所需的 `.hap` 构建 + runner」。前半句已被本轮推翻——**不需要 `.hap` 即可执行**：OpenHarmony 的 `hdc shell` 直接运行 `/data/local/tmp` 下的 ELF（已用最小 aarch64-musl 探针实测）。后半句只对 **ArkUI 面**成立。历史记录（当时确实无模拟器）：`docs/log/archive/log-20260930-4.md:595-609`。
 
 ## 7. Wayland — ✅ 已确认（协议绑定）
 

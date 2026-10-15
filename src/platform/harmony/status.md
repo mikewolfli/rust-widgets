@@ -19,6 +19,13 @@ The host is what puts pixels on screen, and with `feature = "xcomponent"` the re
 direction is wired too: ArkUI's own `XComponent` delivers touch, mouse, key and focus
 into the widget tree (see "The XComponent bridge" below).
 
+The backend's *compile and link* state has been verified for a long time. Since
+2026-10-15 the library also **runs** on a real OpenHarmony 6.0.0 (API 20) aarch64
+target: `tools/run_harmony_testapp.sh` copies a native ELF to a connected emulator
+over `hdc` and asserts what it prints there. That run covers the portable surface,
+not ArkUI — "Runtime on a live target" below states what it does and does not
+prove.
+
 ## How the backend is selected
 
 This is the part that is easy to get wrong, and was wrong before the OpenHarmony
@@ -268,6 +275,54 @@ events and the capability contract.
    resulting `--target` mismatch surfaces as
    `Relocations in generic ELF (EM: 183)` / `file in wrong format`, or as
    `bits/alltypes.h: file not found`. Let `cargo ohos` set the whole environment.
+
+### Runtime on a live target
+
+`tools/run_harmony_testapp.sh` is the OpenHarmony analogue of the iOS and Android
+test-app runners: build → copy over `hdc` → run → assert. It consumes a target that
+is **already connected** (booting is DevEco's job — see the host notes below).
+
+```bash
+bash tools/run_harmony_testapp.sh
+```
+
+Verified 2026-10-15 on a DevEco emulator instance (`Pura X View`, HarmonyOS
+6.0.0(20)); the guest identifies itself as `OpenHarmony-6.0.0.47`, API 20, kernel
+5.10.210 aarch64. `examples/embedded_host.rs` ran to completion there:
+
+```text
+[4/4] Checking the run
+      ok   DEMO_PROFILE=embedded
+      ok   SUPPORTS_SURFACES=true
+      ok   DONE
+✅ OpenHarmony runtime verification PASSED (embedded_host, target=127.0.0.1:5555)
+```
+
+**What this proves.** The library's portable surface executes on a real OpenHarmony
+userland: the build-identity queries, the frame budget, the frame-paced task queue,
+surface allocation with an explicit stride, the row copier, the engine registry and
+the capability contract.
+
+**What it does not prove.** No ArkUI object, `XComponent` or NAPI callback is
+exercised — that needs a `.hap` carrying an ArkTS host, which this repository does
+not build (see `docs/plans/harmony_integration.md`). The probe therefore uses the
+`embedded` profile: a `desktop` build for this triple links `libace_napi.z.so`, whose
+own dependency `libark_jsruntime.so` is not resolvable from an `hdc shell` process
+(there is no ArkTS VM outside an application sandbox), so it dies in the loader with
+`rc=127` before `main` runs. It is the *execution context* that limits this, not the
+code.
+
+Three host facts, each of which cost real time:
+
+1. **The emulator must already be running.** Its `emulator-crash-service` watchdog
+   kills a cold-booting instance about 21 s after launch (`Emulator snapshot boot
+   timeout, try to restart`), which is *before* the guest finishes booting, so the
+   instance cannot be supervised from a script.
+2. **`unsupported host` is the no-target outcome.** With nothing connected the
+   runner preflights and exits 2 rather than waiting for a timeout (principle #103).
+3. **`hdc is not connected, hdc not init` in the emulator's own log is not a
+   failure signal.** It is printed during startup even when `hdc list targets`
+   reports the instance and every `hdc` command succeeds.
 
 ### Target support
 

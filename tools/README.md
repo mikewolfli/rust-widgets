@@ -77,6 +77,7 @@ compares all three and names the file to update when they disagree.
 | `add_spdx_headers.py` | Adds the SPDX header to source files that lack one. |
 | `build_android_testapp.sh`, `run_android_testapp.sh` | Builds and runs the Android test app. |
 | `build_ios_testapp.sh`, `run_ios_testapp.sh` | Builds and runs the iOS Simulator app. |
+| `run_harmony_testapp.sh` | Builds the `embedded_host` example for `aarch64-unknown-linux-ohos`, copies it to a **connected** OpenHarmony target over `hdc`, runs it there and asserts its printed facts. A bare ELF, not a `.hap`: it covers the portable surface, not ArkUI. With no target it reports `unsupported host` and exits 2. See `src/platform/harmony/status.md`. |
 | `run_wayland_compositor_tests.sh` | Runs the Wayland tests against a real compositor. |
 | `smoke_demos.sh` | Smoke-runs every demo. |
 | `gtk_source_snapshot.py` | Writes the Linux/GTK canvas source, with crate-internal imports and platform-dependent bodies replaced, into a scratch directory for **offline reading**. This is a *source snapshot generator, not a compile check* — the real GTK compile check is the `linux-gtk` CI job (`cargo check --features desktop,gtk-native` on a host with GTK 3). Renamed from `gtk_check.py`, whose name and README line overstated it (D08-G-04). |
