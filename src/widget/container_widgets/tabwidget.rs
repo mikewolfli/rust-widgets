@@ -586,7 +586,7 @@ impl TabWidget {
                 .clamp(MIN_TAB_WIDTH, MAX_TAB_WIDTH)
             })
             .collect();
-        let total: i32 = measured.iter().sum::<i32>() + TAB_SPACING * (count as i32 - 1);
+        let total: i32 = measured.iter().sum::<i32>() + scaled_tab_spacing() * (count as i32 - 1);
         let available = match self.tab_position {
             TabPosition::North | TabPosition::South => rect.width as i32,
             TabPosition::West | TabPosition::East => rect.height as i32,
@@ -600,7 +600,7 @@ impl TabWidget {
         // the band *before* the division, otherwise the last tab's trailing gap is charged to the
         // tabs themselves and the run overshoots the strip by `TAB_SPACING` — which is what made the
         // layout scale a second time even after this rule had run.
-        let gaps = TAB_SPACING * (count as i32 - 1);
+        let gaps = scaled_tab_spacing() * (count as i32 - 1);
         let share = ((available - gaps) / count as i32).max(MIN_TAB_WIDTH / 2);
         // `pref == max == share` with `min` at the floor: the tab *wants* no more than its share, and
         // can survive down to the floor. A layout given this reaches the share itself rather than
@@ -650,7 +650,7 @@ impl TabWidget {
                     Rect::new(0, cursor, TAB_HEIGHT as u32, *width as u32)
                 };
                 placed.push(box_rect);
-                cursor += *width + TAB_SPACING;
+                cursor += *width + scaled_tab_spacing();
             }
             // No `return`: the block below is `#[cfg(full_widgets)]`, so exactly one of the two is
             // compiled, and here `placed` is already the expression's value. Keeping the `return`
@@ -673,7 +673,7 @@ impl TabWidget {
             // today, and reading `self.tabs` here is what keeps them agreeing if the accessor ever
             // grows a different meaning.
             let count = self.tabs.len() as i32;
-            let gaps = TAB_SPACING * (count.saturating_sub(1));
+            let gaps = scaled_tab_spacing() * (count.saturating_sub(1));
             let extent = widths.iter().sum::<i32>() + gaps;
             let strip = if horizontal {
                 Rect::new(0, 0, extent.max(0) as u32, TAB_HEIGHT as u32)
@@ -854,6 +854,21 @@ const TAB_HEIGHT: i32 = 24;
 
 /// Horizontal gap between adjacent tabs.
 const TAB_SPACING: i32 = 2;
+
+/// `TAB_SPACING` as the strip's layout will actually charge it.
+///
+/// The strip is arranged by a `CompositeBuilder`, whose context-free `arrange` reads
+/// `LayoutContext::default()` — which carries the device's text-scale preference and widens the
+/// gap by it. The strip's band and the width hints must therefore be sized with the *same* gap, or
+/// the run overflows the band it was given and the proportional shrink takes a pixel off the tabs:
+/// a 100 px strip of two shares (each 49, the nominal 2 counted once) drew as two 48s once the
+/// layout charged 3. Deriving the band from this same value keeps the declaration and the run in
+/// agreement on every device.
+fn scaled_tab_spacing() -> i32 {
+    let context = crate::layout::types::LayoutContext::default();
+    let scale = context.layout_scale.max(context.font_scale);
+    (TAB_SPACING as f32 * scale).round() as i32
+}
 
 /// Widest a measured tab may become, and narrowest it may stay.
 ///
@@ -1386,7 +1401,7 @@ mod tests {
         let second = tw.tab_rect(1).expect("tab 1");
         assert_eq!(
             second.x,
-            first.x + first.width as i32 + TAB_SPACING,
+            first.x + first.width as i32 + scaled_tab_spacing(),
             "the second tab begins one gap after the first"
         );
         assert!(

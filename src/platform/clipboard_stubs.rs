@@ -313,6 +313,29 @@ pub mod windows {
             Some(result)
         }
 
+        /// The CF_HTML fragment the clipboard holds, or `None` when it holds none.
+        ///
+        /// The clipboard must already be open: `GetClipboardData` is only valid between
+        /// `OpenClipboard` and `CloseClipboard`, and this leaves that ownership with the caller.
+        unsafe fn read_html_fragment() -> Option<String> {
+            let cf_html_format = Self::html_format_id();
+            let h_html = GetClipboardData(cf_html_format);
+            if h_html.is_null() {
+                return None;
+            }
+            let ptr = GlobalLock(h_html);
+            if ptr.is_null() {
+                return None;
+            }
+            let byte_size = GlobalSize(h_html);
+            let slice = std::slice::from_raw_parts(ptr as *const u8, byte_size as usize);
+            // The document is a NUL-terminated string; anything after the terminator is padding.
+            let nul_pos = slice.iter().position(|&c| c == 0).unwrap_or(slice.len());
+            let cf_html_str = String::from_utf8_lossy(&slice[..nul_pos]).into_owned();
+            GlobalUnlock(h_html);
+            Some(Self::parse_cf_html(&cf_html_str))
+        }
+
         /// Format HTML content into the Windows CF_HTML clipboard format.
         ///
         /// Delegates to the platform-independent [`super::cf_html`] codec so the byte
@@ -331,6 +354,20 @@ pub mod windows {
             let name = std::ffi::CString::new("HTML Format").unwrap();
             // winapi's *-A entry points take `*const i8` (CHAR); `c_char` is
             // `i8` on Windows MSVC, matching the C ABI.
+            RegisterClipboardFormatA(name.as_ptr() as *const std::os::raw::c_char)
+        }
+
+        /// The registered Win32 clipboard format id for an application-defined MIME type.
+        ///
+        /// `RegisterClipboardFormatA` names any string and returns the same id for the same name
+        /// for the life of the process, so this is the Win32 mechanism a custom type is carried
+        /// under (the CF_* constants only cover the formats Windows itself defines). A name that
+        /// cannot be encoded as a NUL-terminated C string, or one whose registration fails,
+        /// answers `0`, which no real format id is (registered ids start at `0xC000`).
+        unsafe fn registered_format_id(content_type: &str) -> UINT {
+            let Ok(name) = std::ffi::CString::new(content_type) else {
+                return 0;
+            };
             RegisterClipboardFormatA(name.as_ptr() as *const std::os::raw::c_char)
         }
     }
@@ -438,6 +475,48 @@ pub mod windows {
                         CloseClipboard();
                         success
                     }
+                    ClipboardContent::Custom { content_type, data } => {
+                        // The application-defined type is carried under a clipboard format
+                        // registered by its MIME name — the Win32 mechanism for a type Windows
+                        // does not itself define through a `CF_*` constant. This is what makes the
+                        // type negotiable by name instead of smuggled through `text/plain`.
+                        let format = Self::registered_format_id(content_type);
+                        if format == 0 {
+                            CloseClipboard();
+                            return false;
+                        }
+                        // `GlobalAlloc` of a zero-byte payload may answer null; an empty payload
+                        // is still a legitimate write, so at least one byte is allocated for it.
+                        let h_mem = GlobalAlloc(GHND, data.len().max(1));
+                        if h_mem.is_null() {
+                            CloseClipboard();
+                            return false;
+                        }
+                        let ptr = GlobalLock(h_mem);
+                        if ptr.is_null() {
+                            GlobalFree(h_mem);
+                            CloseClipboard();
+                            return false;
+                        }
+                        if !data.is_empty() {
+                            std::ptr::copy_nonoverlapping(
+                                data.as_ptr(),
+                                ptr as *mut u8,
+                                data.len(),
+                            );
+                        }
+                        GlobalUnlock(h_mem);
+                        let set = SetClipboardData(format, h_mem);
+                        if set.is_null() {
+                            // Only a successful `SetClipboardData` transfers ownership to the
+                            // system, so a refused write is ours to free rather than leak.
+                            GlobalFree(h_mem);
+                            CloseClipboard();
+                            return false;
+                        }
+                        CloseClipboard();
+                        true
+                    }
                     _ => {
                         CloseClipboard();
                         log::warn!("[Windows clipboard] non-text/html format not yet supported");
@@ -455,26 +534,10 @@ pub mod windows {
                 }
 
                 // Try HTML Format first
-                let cf_html_format = Self::html_format_id();
-                let h_html = GetClipboardData(cf_html_format);
-                if !h_html.is_null() {
-                    let ptr = GlobalLock(h_html);
-                    if !ptr.is_null() {
-                        let byte_size = GlobalSize(h_html);
-                        let slice =
-                            std::slice::from_raw_parts(ptr as *const u8, byte_size as usize);
-                        // Find NUL terminator
-                        let nul_pos = slice.iter().position(|&c| c == 0).unwrap_or(slice.len());
-                        let cf_html_str = String::from_utf8_lossy(&slice[..nul_pos]).into_owned();
-
-                        // Parse CF_HTML to extract the fragment
-                        let html_content = Self::parse_cf_html(&cf_html_str);
-                        let plain = Self::read_unicode_text().unwrap_or_default();
-
-                        GlobalUnlock(h_html);
-                        CloseClipboard();
-                        return Some(ClipboardContent::Html { html: html_content, plain });
-                    }
+                if let Some(html_content) = Self::read_html_fragment() {
+                    let plain = Self::read_unicode_text().unwrap_or_default();
+                    CloseClipboard();
+                    return Some(ClipboardContent::Html { html: html_content, plain });
                 }
 
                 // Fall back to plain text
@@ -499,12 +562,65 @@ pub mod windows {
                         let h = GetClipboardData(cf_html_format);
                         !h.is_null()
                     } else {
-                        false
+                        // Any application-defined type is a registered clipboard format, so it is
+                        // asked for by name. A format no writer ever registered answers `false`,
+                        // which is the honest "this type is not on the clipboard".
+                        let format = Self::registered_format_id(content_type);
+                        format != 0 && !GetClipboardData(format).is_null()
                     };
                 CloseClipboard();
                 has
             });
             result.unwrap_or(false)
+        }
+
+        /// Reads by type directly from Win32, rather than from [`Self::get_contents`].
+        ///
+        /// The structured accessor only recognises the fixed kinds it knows; a custom type has to
+        /// be asked for by its registered clipboard format. That typed channel is the request in
+        /// `docs/issues/feedback-20261015.md` §十一, and it is why a designer's own payload
+        /// (`application/vnd.rustage.nodes+json`) can be read back by name instead of sniffed out
+        /// of `text/plain`. The fixed byte-oriented kinds are served too, so a caller that reads
+        /// everything by type gets a uniform answer.
+        fn get_contents_for_type(&self, content_type: &str) -> Option<Vec<u8>> {
+            let result = std::panic::catch_unwind(|| unsafe {
+                if OpenClipboard(std::ptr::null_mut()) == FALSE {
+                    return None;
+                }
+                let answer =
+                    if content_type == "text/plain" || content_type == "public.utf8-plain-text" {
+                        Self::read_unicode_text().map(String::into_bytes)
+                    } else if content_type == "text/html" {
+                        // The HTML *fragment*, not the CF_HTML envelope: the same bytes
+                        // `ClipboardContent::Html` reports through `raw_bytes`, so the typed read and
+                        // the structured read agree on what `text/html` means.
+                        Self::read_html_fragment().map(String::into_bytes)
+                    } else {
+                        let format = Self::registered_format_id(content_type);
+                        if format == 0 {
+                            None
+                        } else {
+                            let h_mem = GetClipboardData(format);
+                            if h_mem.is_null() {
+                                None
+                            } else {
+                                let ptr = GlobalLock(h_mem);
+                                if ptr.is_null() {
+                                    None
+                                } else {
+                                    let size = GlobalSize(h_mem) as usize;
+                                    let bytes =
+                                        std::slice::from_raw_parts(ptr as *const u8, size).to_vec();
+                                    GlobalUnlock(h_mem);
+                                    Some(bytes)
+                                }
+                            }
+                        }
+                    };
+                CloseClipboard();
+                answer
+            });
+            result.unwrap_or(None)
         }
     }
 }

@@ -261,7 +261,17 @@ mod tests {
     fn resolved_style_carries_the_theme_font() {
         let manager = ThemeManager::new();
         let style = manager.resolve_style("label");
-        let expected = manager.current_theme().unwrap().fonts.body.clone();
+        // The resolved font is the theme's body token **scaled by the device's text-size
+        // preference** (see `role_base_style`), so the expectation carries the same scale the
+        // resolver applied rather than the nominal token — otherwise the test would only pass on a
+        // host whose text size is 100%.
+        let expected = manager
+            .current_theme()
+            .unwrap()
+            .fonts
+            .body
+            .clone()
+            .scaled(crate::style::environment::environment().effective_text_scale());
         assert_eq!(style.font, Some(expected));
     }
 

@@ -107,4 +107,95 @@ mod windows_backend {
         assert!(!platform.invalidate_surface(4242));
         assert!(!platform.unmount_surface(4242));
     }
+
+    /// The display set must be enumerable on a real session, and a window must be locatable on one
+    /// of the enumerated displays.
+    ///
+    /// These are the two readings `docs/issues/feedback-20261015.md` §十二 needs to keep a window
+    /// visible across a monitor change ("put the panel back on a display that remains"): the set of
+    /// screens, and which one the window is on. The Windows backend answered the trait's empty
+    /// default before this, so the assertions below were the visible half of that gap.
+    #[test]
+    fn displays_are_enumerable_and_a_window_is_located_on_one() {
+        use crate::platform::Platform;
+
+        let platform = WindowsPlatform::new();
+        platform.init();
+
+        let displays = platform.displays();
+        assert!(!displays.is_empty(), "a desktop session must enumerate at least one monitor");
+        assert_eq!(
+            displays.iter().filter(|d| d.is_primary).count(),
+            1,
+            "exactly one monitor is the primary"
+        );
+        for display in &displays {
+            assert!(
+                display.bounds.width > 0 && display.bounds.height > 0,
+                "an enumerated monitor must have extents"
+            );
+            assert!(
+                display.work_area.width > 0 && display.work_area.height > 0,
+                "an enumerated monitor must have a work area"
+            );
+            assert!(display.scale > 0.0, "a scale factor must be positive");
+        }
+
+        let window = platform.create_window("display-probe", 100, 100, 320, 200);
+        assert!(window > 0, "the probe window must be created");
+        let located = platform.display_of_window(window);
+        let located = located.expect("a created window must be located on a monitor");
+        assert!(
+            displays.iter().any(|d| d.id == located),
+            "the located id must be one of the enumerated displays"
+        );
+
+        // A change is always reportable here, so a host can compare readings instead of polling
+        // every frame.
+        assert_ne!(platform.display_generation(), 0);
+
+        // An id that names no window answers `None` rather than a made-up display.
+        assert_eq!(platform.display_of_window(0), None);
+    }
+
+    /// An empty **text** clip is a real clipboard state, and `clipboard_text()` must report it as
+    /// `Some("")` rather than collapsing it into the `None` that means "there is no text".
+    ///
+    /// The trait default does collapse them (it reads the merging `get_clipboard_text`), so this is
+    /// what the Windows override exists for — the same precision the Linux/GTK, Android, iOS and
+    /// HarmonyOS backends already answer (`docs/issues/feedback-20261015.md` §8.6). The clipboard is
+    /// saved and restored so running the suite does not clobber what the session had.
+    #[test]
+    fn clipboard_text_distinguishes_an_empty_text_clip_from_no_text() {
+        // `crate::compat::String` rather than the bare name: the `mini` profile is `no_std`, so the
+        // std prelude that normally supplies `String` is suppressed and `--all-targets` compiles
+        // this test module there too.
+        use crate::compat::String;
+        use crate::platform::Platform;
+
+        let platform = WindowsPlatform::new();
+        platform.init();
+        let saved = platform.clipboard_text();
+
+        assert!(platform.set_clipboard_text(""), "an empty text clip must be writeable");
+        assert_eq!(
+            platform.clipboard_text(),
+            Some(String::new()),
+            "an empty text clip is `Some(\"\")`, not `None`"
+        );
+
+        assert!(platform.set_clipboard_text("clipboard-text-probe"));
+        assert_eq!(platform.clipboard_text(), Some(String::from("clipboard-text-probe")));
+        // The merging accessor still answers the plain string, unchanged.
+        assert_eq!(platform.get_clipboard_text(), "clipboard-text-probe");
+
+        match saved {
+            Some(text) => {
+                let _ = platform.set_clipboard_text(&text);
+            }
+            None => {
+                let _ = platform.set_clipboard_text("");
+            }
+        }
+    }
 }

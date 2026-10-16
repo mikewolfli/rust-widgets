@@ -3390,8 +3390,15 @@ mod tests {
             manager.set_appearance(AppearanceMode::Light);
         }
         let resolved = resolved_theme_style("label").expect("theme resolves");
-        let expected_font =
-            global_theme_manager().current_theme().expect("active theme").fonts.body.clone();
+        // `resolve_style` scales the theme's body token by the device's text-size preference, so
+        // the expectation carries that scale too rather than the nominal token.
+        let expected_font = global_theme_manager()
+            .current_theme()
+            .expect("active theme")
+            .fonts
+            .body
+            .clone()
+            .scaled(crate::style::environment::environment().effective_text_scale());
         assert_eq!(
             resolved.font,
             Some(expected_font),

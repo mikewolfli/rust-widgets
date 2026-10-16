@@ -3,6 +3,8 @@
 
 //! Windows platform backend implementation.
 
+/// Display (monitor) enumeration, over Win32's monitor API.
+mod displays;
 /// The Win32 common file dialogs, behind
 /// [`Platform::choose_path`](crate::platform::Platform::choose_path).
 ///

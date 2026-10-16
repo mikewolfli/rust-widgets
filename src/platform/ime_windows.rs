@@ -1,14 +1,15 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! Windows IME bridge — a real TSF (Text Services Framework) TIP.
+//! Windows IME bridge — a real TSF (Text Services Framework) probe plus an honest state machine.
 //!
-//! On `target_os = "windows"` this module binds the TSF COM interfaces by hand and *is* a
-//! text service: it creates `ITfThreadMgr` with `CoCreateInstance(CLSID_TF_ThreadMgr)`,
-//! activates it, installs a document manager with a live context and a **sink**, and receives
-//! the OS input method's composition and commit callbacks. The committed text is routed through
-//! [`ImeBridge`] into the focused widget exactly the way [`super::ime::deliver_commit`] already
-//! joined the platform and widget halves.
+//! On `target_os = "windows"` this module binds the TSF COM interfaces by hand and asks the OS
+//! the one question it can answer correctly: can this thread create and activate an
+//! `ITfThreadMgr` (`CoCreateInstance(CLSID_TF_ThreadMgr)` + `Activate`)? That result is what
+//! [`WindowsImeBridge::has_native_ime`] records. Building an edit context on top of the thread
+//! manager is only defined against a real `ITextStoreACP` text store; there is none here, and
+//! issuing those calls anyway faulted on Windows (see the `tsf` module), so the binding honestly
+//! stops at activation.
 //!
 //! On every other target — and in headless testing — the same type is a pure state machine
 //! that correctly tracks marked text, composition start offsets, and cursor positions, and
@@ -37,37 +38,26 @@ use crate::platform::ime::{ImeBridge, ImeCandidatePosition, ImeComposition};
 // |---|---|
 // | `IUnknown` | the three root slots every vtable begins with; `Release` is how every COM object here is freed |
 // | `ITfThreadMgr` | the per-thread TSF entry point (`Activate` / `Deactivate`), created by `CoCreateInstance` |
-// | `ITfDocumentMgr` | holds the stack of contexts; created by `ITfThreadMgr::CreateDocumentMgr` |
-// | `ITfContext` | the edit target the input method writes composition into; created by `CreateContext` |
-// | `ITfThreadMgrEventSink` | document-manager focus notifications; marks the context as setup |
-// | `ITfTextEditSink` | the **composition/commit** callbacks (`OnEndEdit`) |
 //
-// `ITfThreadMgr` alone carries ~22 methods after the ones bound here; its vtable is
-// transcribed up to and including the last used slot, with the unused tail covered by opaque
-// `usize` (pointer-sized) padding. A vtable is only ever read through the slots the ABI
-// defines, so the padding preserves the used slots' offsets without transcribing the rest.
-// `ITfContext` needs no table of its own: this bridge only `QueryInterface`s its leading
-// `IUnknown` slots (see `advise_sink`), so it is bound as an opaque pointer.
+// # Why the binding stops after `Activate`
+//
+// The probe's question is "can this thread create and activate a TSF thread manager?". The
+// next steps — `CreateDocumentMgr`, `CreateContext`, `Push`, and advising an `ITfTextEditSink`
+// comlink — build an *edit target*, which TSF only defines in terms of a real `ITextStoreACP`
+// text store. There is no store in a capability probe, and issuing those calls anyway was
+// measured to fault with `STATUS_ACCESS_VIOLATION` (`0xc0000005`). Rather than transcribe an
+// edit-context setup it cannot complete, the binding stops at the boundary of what it can do
+// correctly (rule #37): the used slots are exactly `Activate` / `Deactivate`.
 
 #[cfg(target_os = "windows")]
 mod tsf {
     use core::ffi::c_void;
-    // `Box` is not in the `core` prelude, and this module does not inherit the parent's imports, so
-    // a `no_std` profile (`mini`/`embedded`) needs it named here. It is the comlink allocation's
-    // owner, not an implementation detail: `Box::from_raw` is what reclaims it in `Release`.
-    use crate::compat::Box;
 
     /// `S_OK`. Any `HRESULT >= 0` is success, but this is the only success these calls return.
     pub const S_OK: i32 = 0;
-    /// `E_NOINTERFACE`, returned by `QueryInterface` when an interface is unsupported.
-    pub const E_NOINTERFACE: i32 = 0x8000_4002u32 as i32;
 
     /// `CLSCTX_INPROC_SERVER` (0x1): the TSF thread manager is an in-process COM server.
     pub const CLSCTX_INPROC_SERVER: u32 = 0x1;
-    /// `TF_POPF_ALL`: pop every context off the document stack on teardown.
-    pub const TF_POPF_ALL: u32 = 0x1;
-    /// `TF_CES_CURRENTINPUTTHREAD` classification for `CreateContext` — the ordinary desktop case.
-    pub const TF_CES_CURRENTINPUTTHREAD: i32 = 0x2;
 
     /// `GUID`, as `winapi::shared::guiddef::GUID`. `c_ulong` is `u32` on every Windows ABI.
     #[repr(C)]
@@ -105,14 +95,6 @@ mod tsf {
     pub const IID_ITF_THREAD_MGR: Guid =
         guid!(0xAA80_E801, 0x2021, 0x11D2, 0x93, 0xE0, 0x00, 0x60, 0xB0, 0x67, 0xB8, 0x6E);
 
-    /// `IID_ITfThreadMgrEventSink` — `{AA80E80E-2021-11D2-93E0-0060B067B86E}`.
-    pub const IID_ITF_THREAD_MGR_EVENT_SINK: Guid =
-        guid!(0xAA80_E80E, 0x2021, 0x11D2, 0x93, 0xE0, 0x00, 0x60, 0xB0, 0x67, 0xB8, 0x6E);
-
-    /// `IID_ITfTextEditSink` — `{8127D901-F856-4E52-814F-6D6CC3B1C6A1}`.
-    pub const IID_ITF_TEXT_EDIT_SINK: Guid =
-        guid!(0x8127_D901, 0xF856, 0x4E52, 0x81, 0x4F, 0x6D, 0x6C, 0xC3, 0xB1, 0xC6, 0xA1);
-
     /// An opaque COM interface pointer. Only the leading `lpVtbl` word is ever read.
     #[repr(C)]
     pub struct IUnknown {
@@ -139,8 +121,10 @@ mod tsf {
         pub lp_vtbl: *const ITfThreadMgrVtbl,
     }
 
-    /// `ITfThreadMgrVtbl` through `CreateContext` (0-based slot 14); the remaining methods are
-    /// not called and so are represented by pointer-sized padding.
+    /// `ITfThreadMgrVtbl`, transcribed up to and including the last slot this bridge calls:
+    /// `Activate` (0-based slot 3) and `Deactivate` (slot 4). The remaining ~20 methods are not
+    /// called, so they are not transcribed — a slot that is never read is a transposition that
+    /// could be silently wrong.
     #[repr(C)]
     pub struct ITfThreadMgrVtbl {
         /// `IUnknown` slots.
@@ -149,326 +133,77 @@ mod tsf {
         pub activate: unsafe extern "system" fn(*mut ITfThreadMgr, *mut u32) -> i32,
         /// `HRESULT Deactivate()`.
         pub deactivate: unsafe extern "system" fn(*mut ITfThreadMgr) -> i32,
-        /// `HRESULT CreateDocumentMgr(ITfDocumentMgr**)`.
-        pub create_document_mgr:
-            unsafe extern "system" fn(*mut ITfThreadMgr, *mut *mut ITfDocumentMgr) -> i32,
-        /// `HRESULT EnumDocumentMgrs(IEnumTfDocumentMgrs**)`.
-        pub enum_document_mgrs: usize,
-        /// `HRESULT GetFocus(ITfDocumentMgr**)`.
-        pub get_focus:
-            unsafe extern "system" fn(*mut ITfThreadMgr, *mut *mut ITfDocumentMgr) -> i32,
-        /// `HRESULT SetFocus(ITfDocumentMgr*)`.
-        pub set_focus: unsafe extern "system" fn(*mut ITfThreadMgr, *mut ITfDocumentMgr) -> i32,
-        /// `HRESULT AssociateFocus(HWND, ITfDocumentMgr, ITfDocumentMgr**)`.
-        pub associate_focus: usize,
-        /// `HRESULT IsThreadFocus(BOOL*)`.
-        pub is_thread_focus: usize,
-        /// `HRESULT GetFunctionProvider(REFCLSID, ITfFunctionProvider**)`.
-        pub get_function_provider: usize,
-        /// `HRESULT EnumFunctionProviders(IEnumTfFunctionProviders**)`.
-        pub enum_function_providers: usize,
-        /// `HRESULT GetGlobalCompartment(ITfCompartmentMgr**)`.
-        pub get_global_compartment:
-            unsafe extern "system" fn(*mut ITfThreadMgr, *mut *mut c_void) -> i32,
-        /// `HRESULT CreateContext(TfClientId, DWORD, IUnknown*, ITfContext**)`.
-        pub create_context: unsafe extern "system" fn(
-            *mut ITfThreadMgr,
-            u32,
-            u32,
-            *mut IUnknown,
-            *mut *mut ITfContext,
-        ) -> i32,
     }
 
-    /// `ITfDocumentMgr`: bound through `CreateContext`/`Pop`.
-    #[repr(C)]
-    pub struct ITfDocumentMgr {
-        /// `ITfDocumentMgrVtbl`.
-        pub lp_vtbl: *const ITfDocumentMgrVtbl,
-    }
+    // ── COM apartment staging for the probe ──
 
-    /// `ITfDocumentMgrVtbl` through `Pop` (slot 6).
-    #[repr(C)]
-    pub struct ITfDocumentMgrVtbl {
-        /// `IUnknown` slots.
-        pub base: IUnknownVtbl,
-        /// `HRESULT CreateContext(TfClientId, DWORD, IUnknown*, ITfContext**)`.
-        pub create_context: unsafe extern "system" fn(
-            *mut ITfDocumentMgr,
-            u32,
-            u32,
-            *mut IUnknown,
-            *mut *mut ITfContext,
-        ) -> i32,
-        /// `HRESULT Push(ITfContext*)`.
-        pub push: unsafe extern "system" fn(*mut ITfDocumentMgr, *mut ITfContext) -> i32,
-        /// `HRESULT Pop(DWORD)`.
-        pub pop: unsafe extern "system" fn(*mut ITfDocumentMgr, u32) -> i32,
-        /// `HRESULT GetTop(ITfContext**)`.
-        pub get_top: unsafe extern "system" fn(*mut ITfDocumentMgr, *mut *mut ITfContext) -> i32,
-        /// `HRESULT GetBase(ITfContext**)`.
-        pub get_base: unsafe extern "system" fn(*mut ITfDocumentMgr, *mut *mut ITfContext) -> i32,
-        /// `HRESULT EnumContexts(IEnumTfContexts**)`.
-        pub enum_contexts: usize,
-    }
+    /// `S_FALSE` — `CoInitializeEx` reporting the thread was already in the requested apartment.
+    pub const S_FALSE: i32 = 1;
 
-    /// `ITfContext`: an opaque COM pointer to the edit context.
+    /// `RPC_E_CHANGED_MODE` — the thread is already in the **multithreaded** apartment, so the STA
+    /// TSF requires cannot be entered without tearing down COM for the whole thread.
+    pub const RPC_E_CHANGED_MODE: i32 = 0x8001_0106u32 as i32;
+
+    /// `COINIT_APARTMENTTHREADED`.
+    pub const COINIT_APARTMENTTHREADED: u32 = 0x2;
+
+    /// Why a TSF probe could not be staged on this thread.
     ///
-    /// This bridge never calls a context method directly — it only `QueryInterface`s the
-    /// context's leading `IUnknown` slots (see [`advise_sink`]), so no context vtable beyond
-    /// `IUnknown` is transcribed. That is deliberate: the full `ITfContext` table is 25 slots
-    /// past `IUnknown`, and a slot this code does not call is a transposition that could be
-    /// silently wrong — the honest binding stops at what is used.
-    #[repr(C)]
-    pub struct ITfContext {
-        /// The context's vtable pointer; only its leading `IUnknownVtbl` is read.
-        pub lp_vtbl: *const IUnknownVtbl,
+    /// A plain value (like [`TsfCreateError`]) so the caller logs the exact reason instead of a bare
+    /// `false`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ComStaError {
+        /// The thread is already in the MTA; carrying on would create an `ITfThreadMgr` the thread
+        /// cannot legally host, which is the state that used to hang then fault.
+        Multithreaded(i32),
+        /// `CoInitializeEx` failed for some other reason, with the raw `HRESULT`.
+        Init(i32),
     }
 
-    /// `ITfThreadMgrEventSink`: bound through `OnSetFocus`/`OnSetFocus`; the three callbacks
-    /// below the bound ones are irrelevant and padded.
-    #[repr(C)]
-    pub struct ITfThreadMgrEventSink {
-        /// `ITfThreadMgrEventSinkVtbl`.
-        pub lp_vtbl: *const ITfThreadMgrEventSinkVtbl,
+    unsafe extern "system" {
+        /// `HRESULT CoInitializeEx(void* pvReserved, DWORD dwCoInit)`.
+        fn CoInitializeEx(pv_reserved: *mut c_void, dw_coinit: u32) -> i32;
+        /// `void CoUninitialize()`. Reverses exactly one successful `CoInitializeEx` on this thread.
+        fn CoUninitialize();
     }
 
-    /// `ITfThreadMgrEventSinkVtbl`.
-    #[repr(C)]
-    pub struct ITfThreadMgrEventSinkVtbl {
-        /// `IUnknown` slots.
-        pub base: IUnknownVtbl,
-        /// `HRESULT OnInitDocumentMgr(ITfDocumentMgr*)`.
-        pub init_document_mgr:
-            unsafe extern "system" fn(*mut ITfThreadMgrEventSink, *mut ITfDocumentMgr) -> i32,
-        /// `HRESULT OnUninitDocumentMgr(ITfDocumentMgr*)`.
-        pub uninit_document_mgr:
-            unsafe extern "system" fn(*mut ITfThreadMgrEventSink, *mut ITfDocumentMgr) -> i32,
-        /// `HRESULT OnSetFocus(ITfDocumentMgr *pdimFocus, ITfDocumentMgr *pdimPrevFocus)`.
-        pub set_focus: unsafe extern "system" fn(
-            *mut ITfThreadMgrEventSink,
-            *mut ITfDocumentMgr,
-            *mut ITfDocumentMgr,
-        ) -> i32,
-        /// `HRESULT OnPushContext(ITfContext*)`.
-        pub push_context:
-            unsafe extern "system" fn(*mut ITfThreadMgrEventSink, *mut ITfContext) -> i32,
-        /// `HRESULT OnPopContext(ITfContext*)`.
-        pub pop_context:
-            unsafe extern "system" fn(*mut ITfThreadMgrEventSink, *mut ITfContext) -> i32,
-    }
-
-    /// `ITfTextEditSink`: the composition/commit callback the input method drives.
-    #[repr(C)]
-    pub struct ITfTextEditSink {
-        /// `ITfTextEditSinkVtbl`.
-        pub lp_vtbl: *const ITfTextEditSinkVtbl,
-    }
-
-    /// `ITfTextEditSinkVtbl`.
-    #[repr(C)]
-    pub struct ITfTextEditSinkVtbl {
-        /// `IUnknown` slots.
-        pub base: IUnknownVtbl,
-        /// `HRESULT OnEndEdit(ITfContext*, TfEditCookie, ITfEditRecord*)`.
-        pub on_end_edit: unsafe extern "system" fn(
-            *mut ITfTextEditSink,
-            *mut ITfContext,
-            u32,
-            *mut c_void,
-        ) -> i32,
-    }
-
-    // ── The comlink that is handed to TSF as a sink ────────────────────────────────────────
-    //
-    // A COM object that TSF calls back into needs a stable heap address whose `lpVtbl` points
-    // at one static vtable. `ComLink` is that object: it holds a borrowed pointer to the
-    // bridge, keeps its own COM refcount atomically, and is what `QueryInterface` returns for
-    // the two sink IIDs. It is deliberately a raw `Box::into_raw` allocation whose lifetime is
-    // governed by
-    // `AddRef`/`Release`, exactly as C++ COM expects.
-
-    use super::WindowsImeBridge;
-
-    /// The `ITfThreadMgrEventSink` vtable this crate installs (a single static instance).
-    pub static THREAD_MGR_EVENT_SINK_VTBL: ITfThreadMgrEventSinkVtbl = ITfThreadMgrEventSinkVtbl {
-        base: IUnknownVtbl {
-            query_interface: comlink_query_interface,
-            add_ref: comlink_add_ref,
-            release: comlink_release,
-        },
-        init_document_mgr: sink_init_document_mgr,
-        uninit_document_mgr: sink_uninit_document_mgr,
-        set_focus: sink_set_focus,
-        push_context: sink_push_context,
-        pop_context: sink_pop_context,
-    };
-
-    /// The `ITfTextEditSink` vtable this crate installs (a single static instance).
-    pub static TEXT_EDIT_SINK_VTBL: ITfTextEditSinkVtbl = ITfTextEditSinkVtbl {
-        base: IUnknownVtbl {
-            query_interface: comlink_query_interface,
-            add_ref: comlink_add_ref,
-            release: comlink_release,
-        },
-        on_end_edit: sink_on_end_edit,
-    };
-
-    /// A heap-allocated, refcounted COM object that both sink interfaces share. Its
-    /// `lpVtbl` field must be first so a pointer to it *is* a valid `ITfThreadMgrEventSink*` /
-    /// `ITfTextEditSink*` / `IUnknown*` to the OS.
+    /// Holds the thread in the STA for as long as it lives, undoing **only** what this scope added.
     ///
-    /// # A note on the single vtable pointer
-    ///
-    /// The two sink interfaces have different tables, so `QueryInterface` re-points
-    /// `lp_vtbl` at the table matching the requested IID before handing the object back. This
-    /// is the standard IDispatch-free comlink shape: the caller reads `lp_vtbl` from the
-    /// pointer it just received, so the immediately-following call lands in the right table.
-    /// It also means the comlink must not hold the bridge — the bridge is owned by the
-    /// platform, outlives the connection, and must not be freed when the last COM reference
-    /// drops.
-    #[repr(C)]
-    pub struct ComLink {
-        /// Vtable for the interface this comlink was last requested as.
-        pub lp_vtbl: *const c_void,
-        /// COM reference count. Starts at 1 for the bridge's own hold.
-        pub ref_count: core::sync::atomic::AtomicU32,
-        /// The bridge the sink callbacks deliver into. Borrowed, never owned.
-        pub bridge: *const WindowsImeBridge,
+    /// TSF creates a thread-affine `ITfThreadMgr` and documents an STA requirement, so the probe
+    /// must run inside one. `CoInitializeEx` is reference-counted per thread and *does not* switch a
+    /// thread that is already in the MTA (`RPC_E_CHANGED_MODE`), so the guard records whether
+    /// **this** call did the initialisation and calls `CoUninitialize` only then — it never
+    /// disturbs an apartment the host, or a previous test on a reused worker thread, established.
+    pub struct ComStaGuard {
+        /// Whether this scope owns one `CoInitializeEx` reference to release.
+        owned: bool,
     }
 
-    unsafe impl Send for ComLink {}
-    unsafe impl Sync for ComLink {}
-
-    /// `IUnknown::QueryInterface` for [`ComLink`]. Answers the two sink IIDs this object
-    /// implements and `E_NOINTERFACE` for everything else — never fakes a supported interface.
-    unsafe extern "system" fn comlink_query_interface(
-        this: *mut IUnknown,
-        riid: *const Guid,
-        ppv: *mut *mut c_void,
-    ) -> i32 {
-        if ppv.is_null() {
-            return E_NOINTERFACE;
-        }
-        let comlink = this as *mut ComLink;
-        let iid = &*riid;
-        if guid_eq(iid, &IID_ITF_THREAD_MGR_EVENT_SINK) {
-            (*comlink).lp_vtbl = &THREAD_MGR_EVENT_SINK_VTBL as *const _ as *const c_void;
-            (*comlink).add_ref();
-            *ppv = comlink as *mut c_void;
-            S_OK
-        } else if guid_eq(iid, &IID_ITF_TEXT_EDIT_SINK) {
-            (*comlink).lp_vtbl = &TEXT_EDIT_SINK_VTBL as *const _ as *const c_void;
-            (*comlink).add_ref();
-            *ppv = comlink as *mut c_void;
-            S_OK
-        } else {
-            *ppv = core::ptr::null_mut();
-            E_NOINTERFACE
+    impl Drop for ComStaGuard {
+        fn drop(&mut self) {
+            if self.owned {
+                // SAFETY: balances the `CoInitializeEx` that returned `S_OK` for this scope.
+                unsafe { CoUninitialize() };
+            }
         }
     }
 
-    /// `IUnknown::AddRef` for [`ComLink`].
-    unsafe extern "system" fn comlink_add_ref(this: *mut IUnknown) -> u32 {
-        let comlink = this as *mut ComLink;
-        (*comlink).add_ref()
-    }
-
-    /// `IUnknown::Release` for [`ComLink`]: frees the comlink allocation when the last
-    /// reference goes away.
-    ///
-    /// The bridge is **borrowed**, not owned — dropping it here would free memory owned by
-    /// `WindowsPlatform`. Only the comlink itself is reclaimed.
-    unsafe extern "system" fn comlink_release(this: *mut IUnknown) -> u32 {
-        let comlink = this as *mut ComLink;
-        let prev = (*comlink).ref_count.fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
-        if prev == 1 {
-            drop(Box::from_raw(comlink));
-            0
-        } else {
-            prev - 1
+    /// Enters the STA for the caller's scope, or reports why it cannot.
+    pub fn enter_sta() -> Result<ComStaGuard, ComStaError> {
+        // SAFETY: both calls are the documented COM apartment entry/exit for this thread, and the
+        // apartment this scope changes is restored by `ComStaGuard::drop`.
+        unsafe {
+            let hr = CoInitializeEx(core::ptr::null_mut(), COINIT_APARTMENTTHREADED);
+            if hr == S_OK {
+                Ok(ComStaGuard { owned: true })
+            } else if hr == S_FALSE {
+                Ok(ComStaGuard { owned: false })
+            } else if hr == RPC_E_CHANGED_MODE {
+                Err(ComStaError::Multithreaded(hr))
+            } else {
+                Err(ComStaError::Init(hr))
+            }
         }
-    }
-
-    impl ComLink {
-        /// Atomically increments the COM reference count and returns the new value.
-        fn add_ref(&self) -> u32 {
-            self.ref_count.fetch_add(1, core::sync::atomic::Ordering::AcqRel) + 1
-        }
-    }
-
-    /// `GUID` equality by the four words, matching `IsEqualGUID`.
-    fn guid_eq(a: &Guid, b: &Guid) -> bool {
-        a.data1 == b.data1 && a.data2 == b.data2 && a.data3 == b.data3 && a.data4 == b.data4
-    }
-
-    // ── The TSF sink callbacks ─────────────────────────────────────────────────────────────
-    //
-    // These run on the thread that owns the TSF context — the same thread the bridge was
-    // created on. They never block and never assume the bridge is still alive beyond the
-    // refcount that keeps the comlink (and therefore the bridge) allocated.
-
-    /// `ITfThreadMgrEventSink::OnInitDocumentMgr` — nothing to record; the manager is already
-    /// tracked by the bridge.
-    unsafe extern "system" fn sink_init_document_mgr(
-        _this: *mut ITfThreadMgrEventSink,
-        _pdim: *mut ITfDocumentMgr,
-    ) -> i32 {
-        S_OK
-    }
-
-    /// `ITfThreadMgrEventSink::OnUninitDocumentMgr` — nothing to do; the bridge releases the
-    /// manager on teardown.
-    unsafe extern "system" fn sink_uninit_document_mgr(
-        _this: *mut ITfThreadMgrEventSink,
-        _pdim: *mut ITfDocumentMgr,
-    ) -> i32 {
-        S_OK
-    }
-
-    /// `ITfThreadMgrEventSink::OnSetFocus` — the document manager gained/lost keyboard focus.
-    /// The bridge only needs to know this happened; the widget-level focus is tracked by
-    /// `ImeBridge::focus_in`/`focus_out`.
-    unsafe extern "system" fn sink_set_focus(
-        _this: *mut ITfThreadMgrEventSink,
-        _pdim_focus: *mut ITfDocumentMgr,
-        _pdim_prev_focus: *mut ITfDocumentMgr,
-    ) -> i32 {
-        S_OK
-    }
-
-    /// `ITfThreadMgrEventSink::OnPushContext` — a context was pushed onto the stack.
-    unsafe extern "system" fn sink_push_context(
-        _this: *mut ITfThreadMgrEventSink,
-        _pic: *mut ITfContext,
-    ) -> i32 {
-        S_OK
-    }
-
-    /// `ITfThreadMgrEventSink::OnPopContext` — a context was popped off the stack.
-    unsafe extern "system" fn sink_pop_context(
-        _this: *mut ITfThreadMgrEventSink,
-        _pic: *mut ITfContext,
-    ) -> i32 {
-        S_OK
-    }
-
-    /// `ITfTextEditSink::OnEndEdit` — the input method finished an edit. TSF calls this for the
-    /// end of a composition and for a commit; the bridge's composition state is refreshed by
-    /// the host's own `WM_IME_*` / `process_key_event` path, so this callback marks the TSF
-    /// side of the same action and returns success.
-    ///
-    /// A full read of the finished range would need `ITfEditRecord`/`ITfRange`, which this
-    /// bridge does not bind; the committed text is lifted by the host and delivered through
-    /// [`ImeBridge::commit_text`](super::ImeBridge::commit_text), which is the join into the
-    /// focused widget. This callback is the OS-side acknowledgement that the edit ended.
-    unsafe extern "system" fn sink_on_end_edit(
-        _this: *mut ITfTextEditSink,
-        _pic: *mut ITfContext,
-        _ec: u32,
-        _prec: *mut c_void,
-    ) -> i32 {
-        S_OK
     }
 
     // ── The real TSF activation procedure ─────────────────────────────────────────────────
@@ -483,30 +218,14 @@ mod tsf {
         CoCreate(i32),
         /// `ITfThreadMgr::Activate` returned a failure `HRESULT`.
         Activate(i32),
-        /// The thread manager exists but `CreateDocumentMgr`/`CreateContext`/`Push` or the
-        /// sink install failed, with the raw `HRESULT`.
-        Context(i32),
     }
 
-    /// Every TSF COM pointer the bridge holds, plus the two sink cookies TSF assigned so the
-    /// connection can be unwound cleanly. All pointers are `*mut c_void` at the boundary so the
-    /// struct can live on any target shape; they are cast to the concrete interface only inside
-    /// `tsf` code.
+    /// A live TSF connection: the activated `ITfThreadMgr`. The pointer is `*mut c_void` at the
+    /// boundary so the struct can live on any target shape; it is cast to the concrete interface
+    /// only inside `tsf` code.
     pub struct TsfConnection {
         /// `ITfThreadMgr*`.
         pub thread_mgr: *mut c_void,
-        /// `ITfDocumentMgr*`.
-        pub doc_mgr: *mut c_void,
-        /// `ITfContext*`.
-        pub context: *mut c_void,
-        /// The comlink installed as both sinks; held so `Release` can be called on teardown.
-        pub sink: *mut ComLink,
-        /// The cookie the context's `ITfSource::AdviseSink(ITfTextEditSink)` returned, or 0 if
-        /// that advise failed (in which case the connection was unwound and never returned).
-        pub text_edit_cookie: u32,
-        /// The cookie the thread manager's `ITfSource::AdviseSink(ITfThreadMgrEventSink)`
-        /// returned, or 0 when that (non-fatal) advise failed.
-        pub thread_mgr_cookie: u32,
     }
 
     /// Creates and activates a TSF thread manager on the current thread.
@@ -516,16 +235,18 @@ mod tsf {
     /// * `CoCreateInstance(CLSID_TF_ThreadMgr, …, IID_ITfThreadMgr, …)` — this is the call that
     ///   produces a genuine `ITfThreadMgr`, not a symbol lookup (rule #26).
     /// * `ITfThreadMgr::Activate` — allocates this thread's `TfClientId`. Without it the manager
-    ///   is not a client and cannot host a context.
-    /// * `CreateDocumentMgr` + `CreateContext` + `Push` — a real edit target for the IME.
-    /// * `ITfSource::AdviseSink` for `ITfThreadMgrEventSink` and `ITfTextEditSink` — installs the
-    ///   callback comlink so the input method has somewhere to report composition and commits.
+    ///   is not a client.
+    ///
+    /// # What is deliberately not attempted
+    ///
+    /// `CreateDocumentMgr`/`CreateContext`/`Push` and advising an edit sink build an edit target
+    /// that is only defined against a real `ITextStoreACP` text store. There is none here, and
+    /// issuing those calls anyway faulted on Windows; the binding stops at activation rather than
+    /// transcribe a setup it cannot complete (rule #37).
     ///
     /// Returns `Err` with the failing `HRESULT` at whichever step failed; the caller must not
     /// treat a partially-built connection as success.
-    pub fn create_thread_mgr(
-        bridge: *const WindowsImeBridge,
-    ) -> Result<TsfConnection, TsfCreateError> {
+    pub fn create_thread_mgr() -> Result<TsfConnection, TsfCreateError> {
         unsafe extern "system" {
             fn CoCreateInstance(
                 rclsid: *const Guid,
@@ -536,7 +257,7 @@ mod tsf {
             ) -> i32;
         }
 
-        // The whole body drives raw COM pointers; every call below is an FFI transition.
+        // The body drives a raw COM pointer; every call below is an FFI transition.
         unsafe {
             // ── Step 1: create the thread manager ──
             let mut thread_mgr: *mut c_void = core::ptr::null_mut();
@@ -561,214 +282,25 @@ mod tsf {
                 return Err(TsfCreateError::Activate(hr));
             }
 
-            // ── Step 3: document manager ──
-            let mut doc_mgr: *mut ITfDocumentMgr = core::ptr::null_mut();
-            let create_doc_mgr = (*(*mgr).lp_vtbl).create_document_mgr;
-            let hr = create_doc_mgr(mgr, &mut doc_mgr);
-            if hr < 0 || doc_mgr.is_null() {
-                release(mgr as *mut IUnknown);
-                return Err(TsfCreateError::Context(hr));
-            }
+            log::debug!("[Windows IME] TSF client {client_id} created and activated");
 
-            // ── Step 4: context inside the document manager ──
-            //
-            // The initial context is created with `pUnk` = null; the host supplies the edit
-            // surface implicitly through the push.
-            let mut context: *mut ITfContext = core::ptr::null_mut();
-            let create_ctx = (*(*doc_mgr).lp_vtbl).create_context;
-            let hr = create_ctx(
-                doc_mgr,
-                client_id,
-                TF_CES_CURRENTINPUTTHREAD as u32,
-                core::ptr::null_mut(),
-                &mut context,
-            );
-            if hr < 0 || context.is_null() {
-                release(doc_mgr as *mut IUnknown);
-                release(mgr as *mut IUnknown);
-                return Err(TsfCreateError::Context(hr));
-            }
-            let push = (*(*doc_mgr).lp_vtbl).push;
-            let hr = push(doc_mgr, context);
-            if hr < 0 {
-                release(context as *mut IUnknown);
-                release(doc_mgr as *mut IUnknown);
-                release(mgr as *mut IUnknown);
-                return Err(TsfCreateError::Context(hr));
-            }
-
-            // ── Step 5: install the sink comlink ──
-            // A comlink holds a pointer to a `WindowsImeBridge`; here the bridge is owned by the
-            // platform, so the comlink borrows it (the platform outlives the connection).
-            let sink = Box::into_raw(Box::new(ComLink {
-                lp_vtbl: &TEXT_EDIT_SINK_VTBL as *const _ as *const c_void,
-                ref_count: core::sync::atomic::AtomicU32::new(1),
-                bridge,
-            }));
-
-            let mut text_edit_cookie: u32 = 0;
-            let hr = advise_sink(
-                context as *mut IUnknown,
-                sink as *mut IUnknown,
-                &IID_ITF_TEXT_EDIT_SINK,
-                &mut text_edit_cookie,
-            );
-            if hr < 0 {
-                // A TSF context without a sink cannot deliver composition/commit callbacks; the
-                // connection is not usable, so unwind it rather than reporting a half-built
-                // success.
-                drop(Box::from_raw(sink));
-                pop_all(doc_mgr);
-                release(context as *mut IUnknown);
-                release(doc_mgr as *mut IUnknown);
-                release(mgr as *mut IUnknown);
-                return Err(TsfCreateError::Context(hr));
-            }
-
-            // `ITfThreadMgrEventSink` is installed on the thread manager itself, via its
-            // `ITfSource` facet — a *different* source object from the context, so its cookie is
-            // tracked separately (the two are unadvised on their own sources at teardown). A
-            // failure here is non-fatal: the text-edit sink is the one that carries
-            // composition/commit; this one only adds document-focus notifications.
-            let mut thread_mgr_cookie: u32 = 0;
-            if advise_sink(
-                mgr as *mut IUnknown,
-                sink as *mut IUnknown,
-                &IID_ITF_THREAD_MGR_EVENT_SINK,
-                &mut thread_mgr_cookie,
-            ) < 0
-            {
-                thread_mgr_cookie = 0;
-            }
-
-            log::debug!(
-                "[Windows IME] TSF client {client_id} connected: text-edit cookie {} on the \
-                 context, thread-mgr cookie {} on the thread manager",
-                text_edit_cookie,
-                thread_mgr_cookie,
-            );
-
-            Ok(TsfConnection {
-                thread_mgr: mgr as *mut c_void,
-                doc_mgr: doc_mgr as *mut c_void,
-                context: context as *mut c_void,
-                sink,
-                text_edit_cookie,
-                thread_mgr_cookie,
-            })
+            Ok(TsfConnection { thread_mgr: mgr as *mut c_void })
         }
     }
 
-    /// Releases every interface in a [`TsfConnection`], unadvises both sinks, and deactivates
-    /// the thread manager.
+    /// Deactivates and releases the [`TsfConnection`]'s thread manager.
     ///
-    /// Called from `Drop`; never runs twice because the connection is consumed. The order is
-    /// the reverse of creation: unadvise (so no callback can re-enter a half-freed bridge),
-    /// pop the context, then release each interface.
+    /// Called from `Drop`; never runs twice because the connection is consumed.
     pub fn destroy_thread_mgr(conn: TsfConnection) {
         unsafe {
-            let context = conn.context as *mut ITfContext;
-            let doc_mgr = conn.doc_mgr as *mut ITfDocumentMgr;
             let mgr = conn.thread_mgr as *mut ITfThreadMgr;
-
-            // Unadvise on the same source objects the advises were made on.
-            if !context.is_null() && conn.text_edit_cookie != 0 {
-                unadvise_sink(context as *mut IUnknown, conn.text_edit_cookie);
+            if mgr.is_null() {
+                return;
             }
-            if !mgr.is_null() && conn.thread_mgr_cookie != 0 {
-                unadvise_sink(mgr as *mut IUnknown, conn.thread_mgr_cookie);
-            }
-
-            // The sink comlink's remaining references are TSF's; drop ours. TSF released its
-            // own when the advises were removed above (a released sink is not called again).
-            if !conn.sink.is_null() {
-                comlink_release(conn.sink as *mut IUnknown);
-            }
-
-            if !doc_mgr.is_null() {
-                pop_all(doc_mgr);
-                release(doc_mgr as *mut IUnknown);
-            }
-            if !context.is_null() {
-                release(context as *mut IUnknown);
-            }
-            if !mgr.is_null() {
-                let deactivate = (*(*mgr).lp_vtbl).deactivate;
-                deactivate(mgr);
-                release(mgr as *mut IUnknown);
-            }
+            let deactivate = (*(*mgr).lp_vtbl).deactivate;
+            deactivate(mgr);
+            release(mgr as *mut IUnknown);
         }
-    }
-
-    /// `ITfSource::AdviseSink(REFIID, IUnknown*, DWORD*)` on an arbitrary interface that
-    /// exposes `ITfSource` (`ITfContext` and `ITfThreadMgr` both do). `ITfSource` is reached by
-    /// `QueryInterface`; its `AdviseSink` is slot 3 (after `IUnknown`).
-    unsafe fn advise_sink(
-        source_object: *mut IUnknown,
-        sink: *mut IUnknown,
-        iid: &Guid,
-        cookie: *mut u32,
-    ) -> i32 {
-        // ITfSourceVtbl: IUnknown (3 slots) + AdviseSink + UnadviseSink + DetachSink.
-        #[repr(C)]
-        struct ITfSourceVtbl {
-            base: IUnknownVtbl,
-            advise_sink: unsafe extern "system" fn(
-                *mut IUnknown,
-                *const Guid,
-                *mut IUnknown,
-                *mut u32,
-            ) -> i32,
-            unadvise_sink: usize,
-            detach_sink: usize,
-        }
-
-        let mut source: *mut c_void = core::ptr::null_mut();
-        let hr = query_itf_source(source_object, &mut source);
-        if hr < 0 || source.is_null() {
-            return hr;
-        }
-        let src = source as *mut IUnknown;
-        let advise = (*(*src).lp_vtbl.cast::<ITfSourceVtbl>()).advise_sink;
-        let hr = advise(src, iid, sink, cookie);
-        release(src);
-        hr
-    }
-
-    /// `ITfSource::UnadviseSink(DWORD)` on the same source object an advise was made on.
-    unsafe fn unadvise_sink(source_object: *mut IUnknown, cookie: u32) {
-        // Same table as `advise_sink`; read only the `UnadviseSink` slot.
-        #[repr(C)]
-        struct ITfSourceVtbl {
-            base: IUnknownVtbl,
-            advise_sink: usize,
-            unadvise_sink: unsafe extern "system" fn(*mut IUnknown, u32) -> i32,
-            detach_sink: usize,
-        }
-
-        let mut source: *mut c_void = core::ptr::null_mut();
-        if query_itf_source(source_object, &mut source) < 0 || source.is_null() {
-            return;
-        }
-        let src = source as *mut IUnknown;
-        let unadvise = (*(*src).lp_vtbl.cast::<ITfSourceVtbl>()).unadvise_sink;
-        unadvise(src, cookie);
-        release(src);
-    }
-
-    /// `QueryInterface` for `ITfSource` (`{4EA48A35-60AE-446F-8FD6-E6A8D82459F7}`) on any
-    /// object that supports it, writing the facet pointer to `out`.
-    unsafe fn query_itf_source(source_object: *mut IUnknown, out: *mut *mut c_void) -> i32 {
-        const IID_ITF_SOURCE: Guid =
-            guid!(0x4EA4_8A35, 0x60AE, 0x446F, 0x8F, 0xD6, 0xE6, 0xA8, 0xD8, 0x24, 0x59, 0xF7);
-        let qi = (*(*source_object).lp_vtbl.cast::<IUnknownVtbl>()).query_interface;
-        qi(source_object, &IID_ITF_SOURCE, out)
-    }
-
-    /// `ITfDocumentMgr::Pop(TF_POPF_ALL)`; used during teardown/unwind.
-    unsafe fn pop_all(doc_mgr: *mut ITfDocumentMgr) {
-        let pop = (*(*doc_mgr).lp_vtbl).pop;
-        pop(doc_mgr, TF_POPF_ALL);
     }
 
     /// `IUnknown::Release` on any interface pointer.
@@ -790,10 +322,38 @@ mod tsf {
 /// [`WindowsImeBridge::has_native_ime`] records — a genuine `CoCreateInstance`/`Activate`, not
 /// a symbol lookup and not a hardcoded constant (rules #26/#37).
 ///
+/// # Why the probe stages an STA first
+///
+/// TSF creates a thread-affine `ITfThreadMgr` and requires an STA. Calling `CoCreateInstance` on a
+/// thread left in the MTA does not fail cleanly: it hangs, then faults with
+/// `STATUS_ACCESS_VIOLATION` when the interface is used. A reused test worker thread (or a host
+/// thread some other component put in the MTA) is exactly that state, so the probe enters the STA
+/// itself — or, if the thread is already MTA, reports the honest absence without touching TSF.
+///
 /// The failure reason is logged at the point it is known so a Windows host can diagnose it.
+///
+/// # Why the probe is serialised
+///
+/// TSF's thread manager is process-wide COM state. Two threads creating and destroying one at the
+/// same time deadlocked the test binary even after each was in its own STA, so the create/teardown
+/// pair runs under a process-global lock. It is held only for the probe's own few milliseconds.
 #[cfg(target_os = "windows")]
-fn probe_native_tsf(bridge: *const WindowsImeBridge) -> bool {
-    match tsf::create_thread_mgr(bridge) {
+static PROBE_LOCK: crate::compat::Mutex<()> = crate::compat::Mutex::new(());
+
+#[cfg(target_os = "windows")]
+fn probe_native_tsf() -> bool {
+    let sta = match tsf::enter_sta() {
+        Ok(guard) => guard,
+        Err(reason) => {
+            log::debug!("[Windows IME] TSF probe skipped: {reason:?}");
+            return false;
+        }
+    };
+    // Serialise the whole create/teardown. TSF's thread manager is process-wide state, and two
+    // threads racing to create and destroy one at the same time deadlocked the test binary; a
+    // single probe holds this lock for only the few milliseconds it runs.
+    let _serialised = crate::compat::lock(&PROBE_LOCK);
+    let active = match tsf::create_thread_mgr() {
         Ok(conn) => {
             tsf::destroy_thread_mgr(conn);
             true
@@ -802,13 +362,16 @@ fn probe_native_tsf(bridge: *const WindowsImeBridge) -> bool {
             log::debug!("[Windows IME] TSF creation failed: {result:?}");
             false
         }
-    }
+    };
+    // Leave the thread's apartment as it was found before reporting.
+    drop(sta);
+    active
 }
 
 /// Off Windows there is no TSF to reach; the honest answer is `false` rather than a fabricated
 /// `true`. See the Windows arm for what a real probe measures.
 #[cfg(not(target_os = "windows"))]
-fn probe_native_tsf(_bridge: *const WindowsImeBridge) -> bool {
+fn probe_native_tsf() -> bool {
     false
 }
 
@@ -816,27 +379,28 @@ fn probe_native_tsf(_bridge: *const WindowsImeBridge) -> bool {
 // Bridge struct
 // ──────────────────────────────────────────────
 
-/// Real Windows IME bridge backed by TSF and an honest state machine.
+/// Real Windows IME bridge backed by a TSF availability probe and an honest state machine.
 ///
 /// # What "real" means here
 ///
-/// On `target_os = "windows"` the bridge creates and activates an `ITfThreadMgr` through TSF,
-/// installs a document manager + context, and advises an `ITfTextEditSink` comlink — see the
-/// `tsf` module for the bound COM interfaces. [`Self::has_native_ime`] reports the result of
-/// that **actual** creation (rule #26/#37), so `is_active` never claims an IME connection that
-/// does not exist.
+/// On `target_os = "windows"` the bridge creates and activates a genuine `ITfThreadMgr` through
+/// TSF — see the `tsf` module for the bound COM interface. [`Self::has_native_ime`] reports the
+/// result of that **actual** creation (rule #26/#37), so `is_active` never claims an IME
+/// connection that does not exist.
 ///
 /// The composition/**state** half (focus, marked text, cursor, candidate position) is a
 /// genuine, target-independent state machine and is always correct — it is what the host
-/// drives from `WM_IME_*`, and the component the TSF sink feeds on Windows.
+/// drives from `WM_IME_*`.
 ///
 /// # What is deliberately *not* claimed
 ///
-/// Reading the finished edit range out of `ITfTextEditSink::OnEndEdit` would need
-/// `ITfEditRecord`/`ITfRange`/`ITextStoreACP`, which this bridge does not bind; the committed
-/// string is lifted by the host and delivered through [`ImeBridge::commit_text`]. The sink is
-/// the OS-side half of the same action. A host that wants fully automatic commit lifting must
-/// implement `ITextStoreACP` and read the range — a larger binding than this module carries.
+/// An edit *context* (which is what would carry composition into the OS input method) is only
+/// defined against a real `ITextStoreACP` text store. This bridge does not implement one, so it
+/// does not attempt `CreateDocumentMgr`/`CreateContext`/`Push` — measured on Windows, issuing
+/// those without a store faulted (`STATUS_ACCESS_VIOLATION`). Committed text is lifted by the
+/// host and delivered through [`ImeBridge::commit_text`]. A host that wants the OS to write the
+/// composition directly must implement `ITextStoreACP` and advise an `ITfTextEditSink` — a
+/// larger binding than this module carries.
 pub struct WindowsImeBridge {
     /// The widget that currently has IME focus.
     focused_widget: Mutex<Option<ObjectId>>,
@@ -885,9 +449,9 @@ impl WindowsImeBridge {
         bridge
     }
 
-    /// Runs a real TSF creation probe against this bridge and returns the outcome.
+    /// Runs a real TSF creation probe and returns the outcome.
     fn probe(&self) -> bool {
-        let active = probe_native_tsf(self as *const Self);
+        let active = probe_native_tsf();
         if active {
             log::info!("[Windows IME] TSF thread manager created and activated");
         } else {
@@ -923,9 +487,10 @@ impl WindowsImeBridge {
     /// On native Windows a live TSF connection uses this to position the candidate window.
     pub fn set_cursor_rect(&self, x: i32, y: i32, w: u32, h: u32) {
         *lock(&self.cursor_rect) = (x, y, w, h);
-        // With a live TSF connection the candidate window is moved from the selection range
-        // (`ITfContext::GetSelection`/`SetSelection`); without one, the rectangle is recorded
-        // for a host that drives the state machine itself rather than claiming the OS moved.
+        // With an edit context installed the candidate window is moved from the selection range
+        // (via the TSF context API, which this module does not bind); without one, the rectangle
+        // is recorded for a host that drives the state machine itself rather than claiming the
+        // OS moved.
     }
 
     /// Process a raw key event through the IME.
@@ -1031,8 +596,9 @@ impl ImeBridge for WindowsImeBridge {
         *lock(&self.focused_widget) = Some(widget_id);
         log::info!("[Windows IME] focus_in: widget={}", widget_id);
 
-        // With a live TSF connection this is where `ITfThreadMgr::SetFocus(doc_mgr)` /
-        // `ITfDocumentMgr::Push(context)` would run. `is_active` reports the connection's
+        // Installing an edit context here (`ITfThreadMgr::SetFocus` + a pushed context) is only
+        // defined against a real `ITextStoreACP` store, which this bridge does not implement; the
+        // binding stops at the activated thread manager. `is_active` reports the connection's
         // actual availability, so focus alone never claims an IME that is not connected.
     }
 
@@ -1041,7 +607,8 @@ impl ImeBridge for WindowsImeBridge {
         self.clear_composition();
         log::info!("[Windows IME] focus_out: widget={}", widget_id);
 
-        // With a live TSF connection this is where `ITfDocumentMgr::Pop(TF_POPF_ALL)` would run.
+        // Popping the edit context would happen here if one had been pushed; none is, because
+        // this bridge binds only the activated thread manager.
     }
 
     fn commit_text(&self, text: &str) {
@@ -1049,8 +616,9 @@ impl ImeBridge for WindowsImeBridge {
         self.clear_composition();
 
         // Deliver the committed string to the focused widget as `Event::ImeCommit`. This is the
-        // same join `deliver_commit` makes for every backend; the TSF `ITfTextEditSink` above is
-        // the OS-side half of the same action on Windows.
+        // same join `deliver_commit` makes for every backend. On Windows the committed string is
+        // lifted by the host (from `WM_IME_*`/`process_key_event`) and handed to this method;
+        // this bridge installs no TSF edit sink, so it does not read the range itself.
         #[cfg(not(alloc_frugal))]
         {
             // Copy the focused widget out of the lock and release the guard before
@@ -1299,6 +867,53 @@ mod tests {
         assert!(!bridge.has_marked_text());
     }
 
+    /// A probe on a thread that is already in the **multithreaded** apartment must be refused, never
+    /// crash the process.
+    ///
+    /// TSF creates a thread-affine `ITfThreadMgr` and requires an STA. Running the full lib suite
+    /// left the (reused) test thread in the MTA — some earlier test had initialised COM that way —
+    /// and the next probe dereferenced the interface pointer it got anyway and took the process down
+    /// with `STATUS_ACCESS_VIOLATION` (`0xc0000005`). This reproduces that state deterministically:
+    /// enter the MTA on a worker thread, then build a bridge on it.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_probe_on_a_multithreaded_apartment_is_refused_instead_of_crashing() {
+        unsafe extern "system" {
+            fn CoInitializeEx(pv_reserved: *mut std::ffi::c_void, dw_coinit: u32) -> i32;
+            fn CoUninitialize();
+        }
+        /// `COINIT_MULTITHREADED`.
+        const COINIT_MULTITHREADED: u32 = 0x0;
+
+        let (hr, available, reprobe) = std::thread::spawn(|| {
+            // SAFETY: the documented COM apartment entry; paired with `CoUninitialize` below when
+            // the call added a reference (`hr >= 0`).
+            let hr = unsafe { CoInitializeEx(std::ptr::null_mut(), COINIT_MULTITHREADED) };
+            // Constructing the bridge is what probes TSF; this must not fault.
+            let bridge = WindowsImeBridge::new();
+            let available = bridge.has_native_ime();
+            let reprobe = bridge.probe();
+            if hr >= 0 {
+                // SAFETY: reverses the `CoInitializeEx` above.
+                unsafe { CoUninitialize() };
+            }
+            (hr, available, reprobe)
+        })
+        .join()
+        .expect("the MTA probe thread must not crash the process");
+
+        // `hr >= 0` means the thread really was in the MTA, so the refusal is what is being
+        // asserted. `RPC_E_CHANGED_MODE` (a thread already in the STA) would mean this run did not
+        // exercise the MTA path; the bridge is then legitimately free to report `true`.
+        if hr >= 0 {
+            assert!(
+                !available,
+                "an MTA thread cannot host TSF, so the probe must report the honest `false`"
+            );
+            assert!(!reprobe, "re-probing on the same MTA thread must agree");
+        }
+    }
+
     /// On every non-Windows target the bridge must report TSF as unavailable — the honest
     /// absence rule #37 requires — rather than a fabricated `true`. The Windows runtime path
     /// itself can only be exercised on a Windows host.
@@ -1418,34 +1033,15 @@ mod tsf_layout_tests {
 
     /// `ITfThreadMgrVtbl`'s used slots must land at the ABI offsets, checked against the real
     /// struct layout rather than re-derived arithmetic: `Activate` is slot 3 (0-based) and
-    /// `CreateContext` is slot 14. A missing or misordered field would shift these and make the
-    /// bridge call the wrong function through the vtable.
+    /// `Deactivate` is slot 4. A missing or misordered field would shift these and make the
+    /// bridge call the wrong function through the vtable. `Deactivate` is the last slot
+    /// transcribed, so it must sit at the end of the struct.
     #[test]
     fn thread_mgr_slots_match_the_abi() {
         let p = size_of::<usize>();
         assert_eq!(offset_of!(ITfThreadMgrVtbl, activate), 3 * p);
         assert_eq!(offset_of!(ITfThreadMgrVtbl, deactivate), 4 * p);
-        assert_eq!(offset_of!(ITfThreadMgrVtbl, create_document_mgr), 5 * p);
-        assert_eq!(offset_of!(ITfThreadMgrVtbl, create_context), 14 * p);
-        assert_eq!(offset_of!(ITfThreadMgrVtbl, create_context), size_of::<ITfThreadMgrVtbl>() - p);
-    }
-
-    /// `ITfDocumentMgrVtbl`'s used slots: `CreateContext` slot 3, `Push` slot 4, `Pop` slot 5.
-    #[test]
-    fn document_mgr_slots_match_the_abi() {
-        let p = size_of::<usize>();
-        assert_eq!(offset_of!(ITfDocumentMgrVtbl, create_context), 3 * p);
-        assert_eq!(offset_of!(ITfDocumentMgrVtbl, push), 4 * p);
-        assert_eq!(offset_of!(ITfDocumentMgrVtbl, pop), 5 * p);
-    }
-
-    /// The sink vtables must start with the three `IUnknown` slots so `QueryInterface` reaches
-    /// `lp_vtbl` before any sink-specific method.
-    #[test]
-    fn sink_vtables_begin_with_iunknown() {
-        assert_eq!(offset_of!(ITfThreadMgrEventSinkVtbl, base), 0);
-        assert_eq!(offset_of!(ITfTextEditSinkVtbl, base), 0);
-        assert_eq!(offset_of!(ITfTextEditSinkVtbl, on_end_edit), 3 * size_of::<usize>());
+        assert_eq!(offset_of!(ITfThreadMgrVtbl, deactivate), size_of::<ITfThreadMgrVtbl>() - p);
     }
 
     /// The GUIDs must match the SDK's byte order. These are the values from `msctf.h`; a
@@ -1459,14 +1055,5 @@ mod tsf_layout_tests {
 
         assert_eq!(IID_ITF_THREAD_MGR.data1, 0xAA80_E801);
         assert_eq!(IID_ITF_THREAD_MGR.data2, 0x2021);
-        assert_eq!(IID_ITF_TEXT_EDIT_SINK.data1, 0x8127_D901);
-        assert_eq!(IID_ITF_THREAD_MGR_EVENT_SINK.data1, 0xAA80_E80E);
-    }
-
-    /// A `ComLink` must be usable as any of the three interface pointers it exposes: the vtable
-    /// pointer has to be its first field.
-    #[test]
-    fn comlink_starts_with_the_vtable_pointer() {
-        assert_eq!(offset_of!(ComLink, lp_vtbl), 0);
     }
 }

@@ -17,7 +17,7 @@ use crate::platform::{
 // String/Vec in this scope` errors. Every other backend already routes alloc
 // types through `compat` (see `platform/linux/types.rs`).
 use crate::compat::{String, Vec};
-use crate::platform::types::windows_shell_spawnable;
+use crate::platform::types::{windows_shell_spawnable, Display, DisplayId};
 use crate::platform::windows::notify;
 use crate::platform::windows::types::*;
 use crate::platform::DropEvent;
@@ -51,6 +51,46 @@ use winapi::um::winuser::{SW_HIDE, SW_SHOW};
 /// is visible to the loop body's readers on every host, which is where it belongs
 /// (principle #42: the value is a frame rate, not an OS fact).
 const FRAME_INTERVAL_MS: u64 = 16;
+
+/// Reads `CF_UNICODETEXT` from the Win32 clipboard, or `None` when the clipboard holds no text.
+///
+/// `Some(String::new())` is a **real** answer — an empty *text* clip — that the merging
+/// [`Platform::get_clipboard_text`] cannot express, since it collapses "no text", "a non-text
+/// format" and "the read failed" into the same `""`. That distinction is what
+/// [`Platform::clipboard_text`] reports, and why this returns `Option` rather than `String`.
+///
+/// The clipboard is opened and closed inside the call, so a caller never holds it open across a
+/// second clipboard call.
+#[cfg(target_os = "windows")]
+fn read_clipboard_text() -> Option<String> {
+    use winapi::um::winbase::GlobalLock;
+    use winapi::um::winuser::{CloseClipboard, GetClipboardData, OpenClipboard, CF_UNICODETEXT};
+
+    // SAFETY: every Win32 call below is checked; `p_src` points into the clipboard's own memory,
+    // which stays valid until `CloseClipboard`, and the scan stops at its NUL terminator.
+    unsafe {
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            return None;
+        }
+        let h_mem = GetClipboardData(CF_UNICODETEXT);
+        if h_mem.is_null() {
+            CloseClipboard();
+            return None;
+        }
+        let p_src = GlobalLock(h_mem) as *const u16;
+        if p_src.is_null() {
+            CloseClipboard();
+            return None;
+        }
+        let mut len = 0;
+        while *p_src.add(len) != 0 {
+            len += 1;
+        }
+        let text = String::from_utf16_lossy(std::slice::from_raw_parts(p_src, len));
+        CloseClipboard();
+        Some(text)
+    }
+}
 
 impl Platform for WindowsPlatform {
     fn as_any(&self) -> &dyn std::any::Any {
@@ -759,6 +799,44 @@ impl Platform for WindowsPlatform {
             1.0
         }
     }
+
+    /// The monitors Win32 reports; see [`super::displays`].
+    ///
+    /// This backend used to answer the trait's empty default, so a host could not enumerate
+    /// monitors, locate a window on one, or notice that the set changed (see
+    /// `docs/issues/feedback-20261015.md` §十二). `EnumDisplayMonitors` supplies all of it, and
+    /// the enumeration is callable from any thread, so no main-thread guard is needed.
+    fn displays(&self) -> Vec<Display> {
+        super::displays::displays()
+    }
+
+    /// The monitor a window is on, from `MonitorFromWindow`; see [`super::displays`].
+    ///
+    /// # Both id spaces
+    ///
+    /// The id a host holds for a window is the **platform** id `create_window` returned, which the
+    /// handle table resolves directly. A host that holds the window's **widget-registry** id (the
+    /// window as a widget) reaches it through the same association `set_widget_visible` and the
+    /// paint path use — [`super::window_hwnd_for_widget_id`], which resolves both. A profile with
+    /// no widget runtime has neither a registry id nor that helper, so it resolves the platform id
+    /// alone.
+    #[cfg(all(target_os = "windows", widgets_unstripped))]
+    fn display_of_window(&self, window_id: ObjectId) -> Option<DisplayId> {
+        super::window_hwnd_for_widget_id(self, window_id)
+            .and_then(super::displays::display_of_window_handle)
+    }
+
+    /// See the `widgets_unstripped` sibling above; a stripped profile has no registry ids.
+    #[cfg(all(target_os = "windows", not(widgets_unstripped)))]
+    fn display_of_window(&self, window_id: ObjectId) -> Option<DisplayId> {
+        self.get_native_handle(window_id).and_then(super::displays::display_of_window_handle)
+    }
+
+    /// A revision of Win32's current display set; see [`super::displays::generation`].
+    fn display_generation(&self) -> u64 {
+        super::displays::generation()
+    }
+
     fn init(&self) {
         // `init` re-registers the platform and calls `InitCommonControls`, neither of
         // which is idempotent, so the flag guards a second entry rather than merely
@@ -1131,40 +1209,34 @@ impl Platform for WindowsPlatform {
     fn get_clipboard_text(&self) -> String {
         #[cfg(target_os = "windows")]
         {
-            use winapi::um::winbase::GlobalLock;
-            use winapi::um::winuser::{
-                CloseClipboard, GetClipboardData, OpenClipboard, CF_UNICODETEXT,
-            };
-
-            // SAFETY: Win32 clipboard API calls with proper error checking.
-            let result = unsafe {
-                if OpenClipboard(std::ptr::null_mut()) == 0 {
-                    return String::new();
-                }
-                let h_mem = GetClipboardData(CF_UNICODETEXT);
-                if h_mem.is_null() {
-                    CloseClipboard();
-                    return String::new();
-                }
-                let p_src = GlobalLock(h_mem) as *const u16;
-                if p_src.is_null() {
-                    CloseClipboard();
-                    return String::new();
-                }
-                let mut len = 0;
-                while *p_src.add(len) != 0 {
-                    len += 1;
-                }
-                let slice = std::slice::from_raw_parts(p_src, len);
-                let text = String::from_utf16_lossy(slice);
-                CloseClipboard();
-                text
-            };
-            result
+            // The merging accessor: no text, a non-text format and a failed read all become the
+            // same `""`. A caller that must tell them apart uses `clipboard_text` below.
+            read_clipboard_text().unwrap_or_default()
         }
         #[cfg(not(target_os = "windows"))]
         {
             String::new()
+        }
+    }
+
+    /// The clipboard's text, or `None` when there is no text to read.
+    ///
+    /// # Why this overrides the trait default on Windows
+    ///
+    /// The default maps an empty string to `None`, which would report an **empty text clip** — a
+    /// real clipboard state Win32 can hold — as "no text". Asking the clipboard for its
+    /// `CF_UNICODETEXT` handle directly tells the two apart: a null handle is "no text", a present
+    /// handle whose contents are empty is `Some("")`. This is the same precision the Linux/GTK,
+    /// Android, iOS and HarmonyOS backends already answer, and the distinction a paste action
+    /// branches on (`docs/issues/feedback-20261015.md` §8.6).
+    fn clipboard_text(&self) -> Option<String> {
+        #[cfg(target_os = "windows")]
+        {
+            read_clipboard_text()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            None
         }
     }
     fn begin_drag(&self, source_widget_id: ObjectId, mime: &str, payload: &[u8]) -> bool {

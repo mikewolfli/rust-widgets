@@ -895,11 +895,20 @@ impl Layout for FlexLayout {
     }
 
     fn arrange(&self, rect: Rect, children: &[ChildInfo], out: &mut dyn FnMut(ObjectId, Rect)) {
-        // No device context, so no touch growth — exactly what [`Layout::arrange`]'s default
-        // promises: a layout that has not been taught about the device lays out by its nominal
-        // numbers. `the_hint_channel_and_the_legacy_path_agree_on_the_same_sizes` is the test that
-        // pins this: `arrange` and `update` must return the same geometry for the same sizes.
-        self.arrange_body(rect, children, &LayoutContext::default(), false, out)
+        // No device context, so no touch growth *and no device scaling*: a layout that has not been
+        // taught about the device lays out by its nominal numbers, which is what
+        // [`Layout::arrange`]'s default promises and what
+        // `the_hint_channel_and_the_legacy_path_agree_on_the_same_sizes` pins (`arrange` and
+        // `update` must return the same geometry for the same sizes).
+        //
+        // `LayoutContext::default()` is *not* nominal — it carries the device's text-scale
+        // preference — so using it here widened every gap/padding by the text scale while `update`
+        // kept the nominal value, and the two entry points disagreed on any host whose text size is
+        // not 100%. A caller that has the device context uses [`Layout::arrange_with_context`],
+        // which does scale.
+        let nominal =
+            LayoutContext { layout_scale: 1.0, font_scale: 1.0, ..LayoutContext::default() };
+        self.arrange_body(rect, children, &nominal, false, out)
     }
 }
 

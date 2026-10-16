@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 use super::super::{PathPickerError, PathPurpose};
+// `String`/`Vec` come from the compat bridge rather than the prelude: the `mini` profile is
+// `no_std`, so the std prelude that normally supplies them is suppressed and this module failed to
+// compile for `--target x86_64-pc-windows-msvc --features mini` with `cannot find type Vec` /
+// `cannot find type String` (the same split `platform_impl.rs` records).
+use crate::compat::{String, Vec};
 use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
 
