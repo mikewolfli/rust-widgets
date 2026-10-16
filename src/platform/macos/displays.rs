@@ -34,6 +34,7 @@
 //! entry point checks `[NSThread isMainThread]` first and answers the honest absence
 //! (`Vec::new()` / `None` / `0`) otherwise, rather than messaging AppKit and raising.
 
+use crate::compat::Vec;
 use crate::core::Rect;
 use crate::platform::types::{Display, DisplayId};
 use cocoa::base::{id, nil};

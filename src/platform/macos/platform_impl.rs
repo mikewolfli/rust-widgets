@@ -6,6 +6,7 @@
 #![allow(deprecated)] // Cocoa 0.24 fallback; remove when objc2 backend fully replaces cocoa
 
 use crate::compat::String;
+use crate::compat::Vec;
 use crate::core::{ObjectId, PlatformFamily};
 use crate::platform::accessibility::AccessibilityBridge;
 use crate::platform::clipboard::RichClipboardBackend;
@@ -16,9 +17,13 @@ use crate::platform::Platform;
 use crate::platform::PlatformCapabilities;
 use cocoa::appkit::{
     NSApp, NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicyRegular,
-    NSBackingStoreBuffered, NSRunningApplication, NSView, NSWindow,
+    NSBackingStoreBuffered, NSRunningApplication, NSWindow,
 };
-use cocoa::base::{id, nil, BOOL, NO};
+// A plain content view is the `mini`/`embedded` fallback only; the canvas profile installs its own
+// drawing view, so the import is compiled out where it would otherwise be unused.
+#[cfg(not(widgets_unstripped))]
+use cocoa::appkit::NSView;
+use cocoa::base::{id, nil, BOOL, NO, YES};
 use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSRect, NSString};
 use objc::{class, msg_send, sel, sel_impl};
 use std::ffi::CStr;
@@ -35,6 +40,33 @@ use std::os::raw::c_char;
 /// Must be called on a thread with an active autorelease pool (AppKit's main thread has one).
 unsafe fn autoreleased_nsstring(s: &str) -> id {
     NSString::alloc(nil).init_str(s).autorelease()
+}
+
+/// `NSEventTypeApplicationDefined` (`15`).
+///
+/// The type of event `MacOSPlatform::quit` posts to wake `-[NSApplication run]` after `stop:`
+/// raises its flag. It is a literal rather than a `cocoa` constant because the crate exposes the
+/// obsolete `NSApplicationDefined` spelling, while the ABI value is what the message needs.
+const NS_EVENT_TYPE_APPLICATION_DEFINED: u64 = 15;
+
+/// Resolves a window id a host holds to the platform window id this backend's registry is keyed by.
+///
+/// A window has two ids: the **widget-registry** id the host gets back from `create_window` (the
+/// window *as a widget*), and the **platform** id `MacOSPlatform::create_window` returned and
+/// registered. `host_window_for` is the association recorded at creation — the same translation
+/// `set_widget_visible` and the paint path use — so an id that names a widget window resolves to the
+/// handle this backend knows. A profile with no widget runtime (alloc-frugal, i.e. `mini`) has
+/// neither a registry id nor that helper, and resolves the platform id alone; the caller tries the
+/// registry directly first, so a platform id still resolves there.
+#[cfg(not(alloc_frugal))]
+fn translate_widget_id(window_id: ObjectId) -> Option<ObjectId> {
+    crate::widget::runtime::host_window_for(window_id)
+}
+
+/// The `alloc_frugal` arm: there is no widget runtime, so only platform ids exist.
+#[cfg(alloc_frugal)]
+fn translate_widget_id(_window_id: ObjectId) -> Option<ObjectId> {
+    None
 }
 
 impl Platform for MacOSPlatform {
@@ -174,11 +206,14 @@ impl Platform for MacOSPlatform {
 
     /// The screen the window is on, asked of AppKit's `-[NSWindow screen]`.
     ///
-    /// The id is translated through this backend's handle registry (the map `create_window` fills)
-    /// and the window's own `screen` is read, which is AppKit's answer to the question rather than a
-    /// re-match of the window frame against the screen list. An id that names no window, or a
-    /// `Canvas` handle rather than a `Window`, answers `None` instead of messaging an object that is
-    /// not an `NSWindow`.
+    /// # Both id spaces
+    ///
+    /// The id a host holds for a window is the widget-registry id, while this backend's handle
+    /// table is keyed by the platform id `create_window` returned; the association recorded at
+    /// creation (`translate_widget_id`, the same translation the paint path uses) bridges them. A
+    /// caller that passes the platform id directly is honoured too, because the registry lookup
+    /// accepts it. An id that names no window, or a `Canvas` handle rather than a `Window`, answers
+    /// `None` instead of messaging an object that is not an `NSWindow`.
     fn display_of_window(&self, window_id: ObjectId) -> Option<DisplayId> {
         if !super::types::is_main_thread() {
             // AppKit is main-thread-only; messaging it from anywhere else would raise.
@@ -187,7 +222,15 @@ impl Platform for MacOSPlatform {
         // Looked up directly rather than through `get_handle`, which logs an error for a miss:
         // "which screen is *this* id on" is a question a host may ask of an id that is not a
         // window, and that is a `None`, not a defect worth a log line.
-        let handle = crate::compat::lock(&self.handles).get(&window_id).copied()?;
+        let host = {
+            let handles = crate::compat::lock(&self.handles);
+            if handles.contains_key(&window_id) {
+                Some(window_id)
+            } else {
+                translate_widget_id(window_id)
+            }
+        }?;
+        let handle = crate::compat::lock(&self.handles).get(&host).copied()?;
         if handle.kind != HandleKind::Window || handle.ptr == 0 {
             return None;
         }
@@ -271,11 +314,19 @@ impl Platform for MacOSPlatform {
             log::debug!("[macos] run skipped: not on the AppKit main thread (state-only loop)");
             return;
         }
-        // The trigger queue is drained by a repeating `NSTimer` installed with each
-        // window's resize delegate (see `canvas::install_resize_delegate`), so the
-        // queue is read while AppKit runs. It cannot happen here: `-[NSApplication run]`
-        // does not return until the app stops, so there is no point *after* it to drain,
-        // and the tick has to be scheduled on the run loop beforehand.
+        // The frame heartbeat is installed here, once, **before** entering the run loop, so a session
+        // ticks whether or not any window is created. It used to be a per-window `NSTimer` installed
+        // by `create_window`, which meant a session with no window never ticked: a stop request or
+        // any queued main-thread work had no reader, and the session could not end itself (designer
+        // feedback `docs/issues/feedback-20261015.md` §十.2). The tick has to be scheduled on the
+        // run loop before it runs; `-[NSApplication run]` does not return until the app stops, so
+        // there is no point *after* it to install anything.
+        #[cfg(widgets_unstripped)]
+        // SAFETY: the main thread is established above, and the timer is scheduled on its run loop.
+        unsafe {
+            super::canvas::install_frame_heartbeat();
+        }
+        // The `-[NSApplication run]` call that follows must be on the main thread too.
         //
         // SAFETY: `NSApp()` returns the shared application instance initialized in
         // `init()`. `run()` must be called on the main thread, which the guard above
@@ -306,6 +357,28 @@ impl Platform for MacOSPlatform {
         // without a specific sender.
         unsafe {
             NSApp().stop_(nil);
+            // `stop:` only raises a flag; `-[NSApplication run]` observes it when it next returns
+            // from `nextEventMatchingMask:`. When the loop is servicing timers rather than waiting
+            // for events — which is exactly what this backend's frame heartbeat makes it do — that
+            // return can be indefinitely delayed, so an application-defined event is posted to wake
+            // the loop. This is the documented companion to `stop:` for that case, and it is what
+            // makes a bounded session end promptly instead of "still running after 20 s"
+            // (`docs/issues/feedback-20261015.md` §十.2).
+            let event: id = msg_send![
+                class!(NSEvent),
+                otherEventWithType: NS_EVENT_TYPE_APPLICATION_DEFINED
+                location: NSPoint::new(0.0, 0.0)
+                modifierFlags: 0u64
+                timestamp: 0.0f64
+                windowNumber: 0i64
+                context: nil
+                subtype: 0i16
+                data1: 0i64
+                data2: 0i64
+            ];
+            if event != nil {
+                let _: () = msg_send![NSApp(), postEvent: event atStart: YES];
+            }
         }
         true
     }
@@ -407,14 +480,24 @@ impl Platform for MacOSPlatform {
             );
 
             // Check for nil after NSView::alloc
-            let raw_content = NSView::alloc(nil);
-            let content_view = if raw_content == nil {
-                log::error!("[macos] create_window: NSView::alloc returned nil (out of memory?)");
-                pool.drain();
-                return 0;
-            } else {
-                NSView::initWithFrame_(raw_content, Self::make_rect(0, 0, width, height))
-            };
+            //
+            // A profile without the library canvas (`mini`/`embedded`) gets a plain `NSView` as its
+            // content area. The canvas profile installs its own drawing view below, so this is
+            // compiled out there rather than allocated and thrown away.
+            #[cfg(not(widgets_unstripped))]
+            {
+                let raw_content = NSView::alloc(nil);
+                let content_view = if raw_content == nil {
+                    log::error!(
+                        "[macos] create_window: NSView::alloc returned nil (out of memory?)"
+                    );
+                    pool.drain();
+                    return 0;
+                } else {
+                    NSView::initWithFrame_(raw_content, Self::make_rect(0, 0, width, height))
+                };
+                let _: () = msg_send![window, setContentView: content_view];
+            }
 
             // Check for nil after NSString::alloc for the title
             let raw_title = NSString::alloc(nil);
@@ -424,11 +507,13 @@ impl Platform for MacOSPlatform {
                 return 0;
             }
 
-            let _: () = msg_send![window, setContentView: content_view];
             window.cascadeTopLeftFromPoint_(NSPoint::new(20.0, 20.0));
             NSWindow::setTitle_(window, raw_title.init_str(title));
-            window.makeKeyAndOrderFront_(nil);
-            let _: () = msg_send![window, display];
+            // The id has to exist before the canvas can be tagged with it, so `register_handle`
+            // runs before the content view is installed. The canvas stores the **host** id and
+            // paints the window's whole widget tree (`render_frame_tree`); a plain `NSView` here is
+            // why the client area of every cocoa window used to stay blank — nothing ever drew the
+            // children, which are not mounted surfaces.
             let id = self.register_handle(
                 HandleKind::Window,
                 title,
@@ -438,9 +523,14 @@ impl Platform for MacOSPlatform {
                 height,
                 window as usize,
             );
-            // The id has to exist before it can be associated with the delegate, so this
-            // comes after `register_handle`. A window resized by the user then re-runs the
-            // host's layout instead of keeping stale child geometry.
+            #[cfg(widgets_unstripped)]
+            if let Some(canvas) = super::canvas::make_window_canvas(id, width, height) {
+                let _: () = msg_send![window, setContentView: canvas];
+            }
+            window.makeKeyAndOrderFront_(nil);
+            let _: () = msg_send![window, display];
+            // A window resized by the user then re-runs the host's layout instead of keeping stale
+            // child geometry.
             //
             // Gated on `widgets_unstripped` because `macos::canvas` is: a
             // `macos-legacy + mini|embedded` build has no `NSView` canvas to install a

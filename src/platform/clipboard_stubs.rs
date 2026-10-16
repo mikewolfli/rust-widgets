@@ -125,8 +125,9 @@ pub mod macos {
     use super::super::clipboard::{ClipboardContent, RichClipboardBackend};
     // `compat` rather than the prelude: `#![no_std]` removes the prelude on the
     // `mini` profile, and this module is reachable from `mini,cocoa-legacy`.
-    // Only `String` is needed; `CStr::to_string_lossy` resolves inherently.
-    use crate::compat::String;
+    // `String` and `Vec` are both used (the typed read returns `Vec<u8>`);
+    // `CStr::to_string_lossy` resolves inherently.
+    use crate::compat::{String, Vec};
     use cocoa::base::{id, nil, BOOL, YES};
     use cocoa::foundation::{NSAutoreleasePool, NSString};
     use objc::{class, msg_send, sel, sel_impl};
@@ -142,6 +143,20 @@ pub mod macos {
     /// Must be called on a thread with an active autorelease pool (AppKit's main thread has one).
     unsafe fn nsstring(s: &str) -> id {
         NSString::alloc(nil).init_str(s).autorelease()
+    }
+
+    /// The pasteboard type name for one of this crate's MIME spellings.
+    ///
+    /// `text/plain` and `text/html` are the crate's MIME names; `NSPasteboard` calls the same two
+    /// channels by their UTIs. Every other type — including an application-defined one such as
+    /// `application/vnd.example.payload+json` — is used verbatim, which is exactly what makes a
+    /// custom type negotiable by name instead of smuggled through `text/plain`.
+    fn pasteboard_type_name(content_type: &str) -> &str {
+        match content_type {
+            "text/plain" => "public.utf8-plain-text",
+            "text/html" => "public.html",
+            other => other,
+        }
     }
 
     /// macOS rich clipboard backed by the general `NSPasteboard`.
@@ -218,8 +233,37 @@ pub mod macos {
                             false
                         }
                     }
-                    _ => {
-                        log::warn!("[macOS clipboard] non-text/html format not yet supported");
+                    // An application-defined (or any other) type is carried under its own type
+                    // name, verbatim.
+                    //
+                    // # Why this arm does not use the `NSPasteboardItem`/`writeObjects:` pair
+                    //
+                    // The item API validates the type as a **UTI** and refuses an application MIME
+                    // name: `setData:forType:` on `NSPasteboardItem` answers `NO` (and AppKit logs
+                    // "not a valid UTI string") for `application/vnd.example.nodes+json`, because
+                    // the `/` and `+` are not UTI syntax. The pasteboard's own
+                    // `declareTypes:owner:`/`setData:forType:` pair accepts an arbitrary type string
+                    // and round-trips it (measured on macOS 15: `setData:` `YES`, `dataForType:`
+                    // returns the bytes), which is the mechanism that makes the caller's type name
+                    // negotiable exactly as written.
+                    ClipboardContent::Custom { content_type, data } => {
+                        let ty = nsstring(content_type);
+                        let types: id = msg_send![class!(NSArray), arrayWithObject: ty];
+                        let _: i64 = msg_send![pb, declareTypes: types owner: nil];
+                        let ns_data: id = msg_send![
+                            class!(NSData),
+                            dataWithBytes: data.as_ptr() as *const std::os::raw::c_void
+                            length: data.len()
+                        ];
+                        let set_ok: BOOL = msg_send![pb, setData: ns_data forType: ty];
+                        set_ok == YES
+                    }
+                    other => {
+                        log::warn!(
+                            "[macOS clipboard] {} is not carried by this backend; the write is \
+                             reported as refused rather than pretended",
+                            other.content_type()
+                        );
                         false
                     }
                 }
@@ -257,12 +301,66 @@ pub mod macos {
         fn has_format(&self, content_type: &str) -> bool {
             let result = std::panic::catch_unwind(|| unsafe {
                 let pb: id = msg_send![class!(NSPasteboard), generalPasteboard];
-                let ns_type = nsstring(content_type);
+                let ns_type = nsstring(pasteboard_type_name(content_type));
                 let arr: id = msg_send![class!(NSArray), arrayWithObject: ns_type];
                 let available: id = msg_send![pb, availableTypeFromArray: arr];
                 available != nil
             });
             result.unwrap_or(false)
+        }
+
+        /// Reads by type directly, rather than from [`Self::get_contents`].
+        ///
+        /// The structured accessor only recognizes the two kinds this backend writes itself
+        /// (`text`/`html`); a custom type has to be asked for by name. The two fixed byte-oriented
+        /// kinds are read through their pasteboard UTIs, while every other type goes through the
+        /// pasteboard's own `dataForType:`, which is the accessor that carries an arbitrary type
+        /// string verbatim (see `set_contents`' `Custom` arm).
+        fn get_contents_for_type(&self, content_type: &str) -> Option<Vec<u8>> {
+            let result = std::panic::catch_unwind(|| unsafe {
+                let pb: id = msg_send![class!(NSPasteboard), generalPasteboard];
+                match content_type {
+                    // The two the backend writes itself, read through the item that holds them.
+                    "text/plain" => Self::read_plain_text(pb).map(String::into_bytes),
+                    "text/html" => {
+                        let items: id = msg_send![pb, pasteboardItems];
+                        let count: usize = msg_send![items, count];
+                        if count == 0 {
+                            return None;
+                        }
+                        let item: id = msg_send![items, objectAtIndex: 0u64];
+                        let html_id: id = msg_send![item, stringForType: nsstring("public.html")];
+                        if html_id == nil {
+                            return None;
+                        }
+                        let c_str: *const std::os::raw::c_char = msg_send![html_id, UTF8String];
+                        if c_str.is_null() {
+                            return None;
+                        }
+                        Some(
+                            std::ffi::CStr::from_ptr(c_str)
+                                .to_string_lossy()
+                                .into_owned()
+                                .into_bytes(),
+                        )
+                    }
+                    other => {
+                        let data: id = msg_send![pb, dataForType: nsstring(other)];
+                        if data == nil {
+                            return None;
+                        }
+                        let len: usize = msg_send![data, length];
+                        let bytes: *const u8 = msg_send![data, bytes];
+                        if bytes.is_null() {
+                            return None;
+                        }
+                        // `NSData`'s buffer is valid for the object's lifetime, which is this
+                        // call's; the bytes are copied out before it is released.
+                        Some(std::slice::from_raw_parts(bytes, len).to_vec())
+                    }
+                }
+            });
+            result.unwrap_or(None)
         }
     }
 }
@@ -636,13 +734,26 @@ pub mod objc2_macos {
     use super::super::clipboard::{ClipboardContent, RichClipboardBackend};
     // `read_plain_text` returns `compat::String`, which under `mini` is
     // `alloc::string::String` — not the prelude's, because `#![no_std]` removes
-    // that prelude. `CStr::to_string_lossy` resolves inherently, so only the
-    // `String` name needs importing.
-    use crate::compat::String;
+    // that prelude. The typed read returns `Vec<u8>`, so `Vec` comes from the same
+    // bridge. `CStr::to_string_lossy` resolves inherently, so its name needs no import.
+    use crate::compat::{String, Vec};
     use objc2::class;
     use objc2::msg_send;
     use objc2::runtime::AnyObject;
-    use objc2_foundation::NSString;
+    use objc2_foundation::{NSData, NSString};
+
+    /// The pasteboard type name for one of this crate's MIME spellings.
+    ///
+    /// `text/plain` and `text/html` are the crate's MIME names; `NSPasteboard` calls the same two
+    /// channels by their UTIs. Every other type — including an application-defined one — is used
+    /// verbatim, which is what makes a custom type negotiable by name (feedback §十一).
+    fn pasteboard_type_name(content_type: &str) -> &str {
+        match content_type {
+            "text/plain" => "public.utf8-plain-text",
+            "text/html" => "public.html",
+            other => other,
+        }
+    }
 
     /// macOS clipboard backend using objc2 NSPasteboard bindings.
     pub struct MacOsObjc2Clipboard;
@@ -775,9 +886,29 @@ pub mod objc2_macos {
                             false
                         }
                     }
-                    _ => {
+                    // An application-defined type travels as `NSData` under its own pasteboard type
+                    // name, verbatim.
+                    //
+                    // # Why this arm does not use the `NSPasteboardItem`/`writeObjects:` pair
+                    //
+                    // The item API validates the type as a **UTI** and refuses an application MIME
+                    // name (`application/vnd.example.nodes+json` has no UTI syntax). The pasteboard's
+                    // own `declareTypes:owner:`/`setData:forType:` pair accepts an arbitrary type
+                    // string and round-trips it — the same mechanism the cocoa arm documents.
+                    ClipboardContent::Custom { content_type, data } => {
+                        let ty = NSString::from_str(content_type);
+                        let types: *mut AnyObject =
+                            msg_send![class!(NSArray), arrayWithObject: &*ty];
+                        let _: i64 = msg_send![pb, declareTypes: types, owner: std::ptr::null_mut::<AnyObject>()];
+                        let ns_data = NSData::with_bytes(data);
+                        let set_ok: bool = msg_send![pb, setData: &*ns_data, forType: &*ty];
+                        set_ok
+                    }
+                    other => {
                         log::warn!(
-                            "[macOS objc2 clipboard] non-text/html format not yet supported"
+                            "[macOS objc2 clipboard] {} is not carried by this backend; the write \
+                             is reported as refused rather than pretended",
+                            other.content_type()
                         );
                         false
                     }
@@ -823,12 +954,71 @@ pub mod objc2_macos {
             }
             let result = std::panic::catch_unwind(|| unsafe {
                 let pb: *mut AnyObject = msg_send![class!(NSPasteboard), generalPasteboard];
-                let ns_type = NSString::from_str(content_type);
+                let ns_type = NSString::from_str(pasteboard_type_name(content_type));
                 let arr: *mut AnyObject = msg_send![class!(NSArray), arrayWithObject: &*ns_type];
                 let available: *mut AnyObject = msg_send![pb, availableTypeFromArray: arr];
                 !available.is_null()
             });
             result.unwrap_or(false)
+        }
+
+        /// Reads by type directly, rather than from [`Self::get_contents`].
+        ///
+        /// Mirrors the cocoa backend's override: the two fixed byte-oriented kinds are read through
+        /// their pasteboard UTIs, while every other type goes through the pasteboard's own
+        /// `dataForType:`, which carries an arbitrary type string verbatim.
+        fn get_contents_for_type(&self, content_type: &str) -> Option<Vec<u8>> {
+            if !on_main_thread() {
+                return None;
+            }
+            let result = std::panic::catch_unwind(|| unsafe {
+                let pb: *mut AnyObject = msg_send![class!(NSPasteboard), generalPasteboard];
+                match content_type {
+                    "text/plain" => Self::read_plain_text(pb).map(String::into_bytes),
+                    "text/html" => {
+                        let items: *mut AnyObject = msg_send![pb, pasteboardItems];
+                        let count: usize = msg_send![items, count];
+                        if count == 0 {
+                            return None;
+                        }
+                        let item: *mut AnyObject = msg_send![items, objectAtIndex: 0u64];
+                        let html_type = NSString::from_str("public.html");
+                        let html_id: *mut AnyObject = msg_send![item, stringForType: &*html_type];
+                        if html_id.is_null() {
+                            return None;
+                        }
+                        let c_str: *const std::os::raw::c_char = msg_send![html_id, UTF8String];
+                        if c_str.is_null() {
+                            return None;
+                        }
+                        Some(
+                            std::ffi::CStr::from_ptr(c_str)
+                                .to_string_lossy()
+                                .into_owned()
+                                .into_bytes(),
+                        )
+                    }
+                    other => {
+                        let ns_type = NSString::from_str(other);
+                        let data: *mut AnyObject = msg_send![pb, dataForType: &*ns_type];
+                        if data.is_null() {
+                            return None;
+                        }
+                        let len: usize = msg_send![data, length];
+                        // objc2 checks the selector's return encoding (`-[NSData bytes]` returns
+                        // `const void *`, `^v`), so the declared type must be `*const c_void` and
+                        // the cast to a byte pointer happens here.
+                        let bytes: *const std::os::raw::c_void = msg_send![data, bytes];
+                        if bytes.is_null() {
+                            return None;
+                        }
+                        // `NSData`'s buffer is valid for the object's lifetime, which is this
+                        // call's; the bytes are copied out before it is released.
+                        Some(std::slice::from_raw_parts(bytes as *const u8, len).to_vec())
+                    }
+                }
+            });
+            result.unwrap_or(None)
         }
     }
 }

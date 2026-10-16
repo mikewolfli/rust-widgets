@@ -1,15 +1,21 @@
 # docs/plans — 计划索引
 
-> **本文件是入口。** 目录里有 14 份 `.md`（4 份是**工具/门禁依赖**，不可移动），
+> **本文件是入口。** 目录里有 16 份 `.md`（4 份是**工具/门禁依赖**，不可移动），
 > 38 份历史计划已归档到 [`archive/`](archive/)。
 
 ---
 
-## 1. 活跃计划（正在推进）
+## 1. 根目录计划（`docs/plans/` 下，**未归档**）
+
+> 根目录**不等于「活跃」**。`blue25`–`blue27` 的主体已闭环却仍留在这里，原因是 `src/` 与门禁
+> **按路径**引用它们（见 §4 的说明）——迁入 `archive/` 只会把一条悬空引用变成三条。
 
 | 文件 | 内容 | 状态 |
 |---|---|---|
-| [`blue24.md`](blue24.md) | 帧循环 / 属性动画 / 正交状态 / 环境事实 / a11y 落地 | **主体已完成**（§10 批 0–8 与 §9 均 ✅）；**本文件仍是 BLUE24 自身后续条目的唯一入口**（§12 的 U-1…U-14），未完成项登记在那里 |
+| [`blue24.md`](blue24.md) | 帧循环 / 属性动画 / 正交状态 / 环境事实 / a11y 落地 | **主体已完成**（§10 批 0–8 与 §9 均 ✅）；**本文件仍是 BLUE24 自身后续条目的唯一入口**（§12 的 U-1…U-15），未完成项登记在那里 |
+| [`blue25.md`](blue25.md) | 全控件缺陷清理 + 图标库（Material Symbols，Apache-2.0） | **42/42 闭环**（A 6 / B 3 / C 9 / D 11 / ICON-1…8 / §8 五项）；逐条证据见 [`../log/`](../log/) |
+| [`blue26.md`](blue26.md) | Rustage 设计器所需的上游契约补齐（B26.01–B26.12） | **全部处置**：B26.01–B26.08、B26.10–B26.12 已实现；B26.09 的处置是**「探针完成、裁定不新增类型」**（是决定，不是未做）。随 2.8.5 发布，证据见 [`../log/log-20261011-1.md`](../log/log-20261011-1.md) |
+| [`blue27.md`](blue27.md) | 统一图标设计（内容 / 描述 / 绘制分离） | **U0–U7 8/8 🟢；DoD 1–9 闭合**；RTL 布局镜像是**具名排除**（出口 = 另立独立计划，理由见其 §19.14.4）|
 
 > **BLUE23 已归档** → [`archive/blue23.md`](archive/blue23.md)（本轮收口：0 个 `[ ]`，
 > 全部批次 ✅，5 个跟踪扫描 0 失败）。
@@ -21,6 +27,7 @@
 
 - **blue1 ~ blue23**：✅ 已完成 → 见 [`archive/`](archive/)
 - **blue24**：**主体已完成**，且仍是 BLUE24 自身后续条目（§12）的唯一入口
+- **blue25 / blue26 / blue27**：**主体已完成**，保留在根目录（引用原因见 §4 的说明）
 
 ---
 
@@ -36,6 +43,7 @@
 | [`steps.md`](steps.md) | 阶段进度 | 人读 |
 | [`custom_widget_mounting.md`](custom_widget_mounting.md) | 自绘控件挂载契约 | `src/platform/{linux,macos,windows}/canvas.rs` |
 | [`harmony_integration.md`](harmony_integration.md) | Harmony 集成说明 | 人读 |
+| [`research-icons.md`](research-icons.md) | 图标库调研与设计（`blue25.md` §6 与 `blue27.md` §19 的证据文件） | 人读；`src/widget/icon_registry.rs` 注释引用 |
 
 ---
 
@@ -44,7 +52,7 @@
 | 文件 | 是什么 |
 |---|---|
 | [`TODO.md`](TODO.md) | 路线图待办。**当前 `[x]` 127 / `[ ]` 0 / `[~]` 0**（即无待办） |
-| [`FUTURE.md`](FUTURE.md) | 环境受限项（需特定宿主才能验证）。**8 项中有 2 项已关闭** |
+| [`FUTURE.md`](FUTURE.md) | 环境受限项（需特定宿主才能验证）。**12 项中有 6 项已关闭**（`[x]` 6 / `[ ]` 6）|
 
 > `TODO.md` 与 `FUTURE.md` 都不在 `docs/plans/` 的历史归档范围内：
 > 前者被 `tools/check_locking.sh` / `tools/check_error_messages.py` / CI 引用，
@@ -57,6 +65,11 @@
 [`archive/`](archive/) 里的计划**全部已完成**或**已被取代**，仅供追溯。
 **不要再从里面取「当前要求」**——那是 BLUE24 §9.1 要消除的失败形态
 （同一件事在两处各写一半）。
+
+> **三份已完成计划（`blue25`–`blue27`）为何不在 `archive/`（具名决定，不是遗漏）**：
+> `src/render/path/parser.rs`、`src/render/path/flatten.rs`、`src/widget/icon_registry.rs` 与
+> `tools/check_icon_licences.sh` **按路径**引用 `docs/plans/blue25.md` 与 `docs/plans/research-icons.md`。
+> 把它们迁入 `archive/` 会把这些引用变成悬空路径——修一条、造三条，不是净改善。
 
 > **本表逐份列名**（`tools/check_plan_archive_has_index.sh` 断言每一份都在此有一行）：
 > 一个「`blue1.md` … `blue22.md`」的范围写法看起来更短，但它会让 `blue11.md` 与
@@ -111,7 +124,7 @@
 1. **新计划可以新建文件。**`docs/plans/blue26.md`、`blue27.md` … 均可；
    一条新主题就开一份新计划，不再要求把新主题塞进 `blue24.md`。
 2. **一份计划主体全部完成后**才移入 `archive/`，并**必须**在本文件 §4 补一行。
-3. **第 12 节的四份文件不可移动**：`codemap.md` / `platform_capability_matrix.md` /
+3. **下列四份文件不可移动**：`codemap.md` / `platform_capability_matrix.md` /
    `TODO.md` / `principle.md` 被门禁或源码引用，移动会让门禁报红。
 4. **同一件事不两处各写一半**。同一主题的两份计划允许并行（见 §1），但**同一主题**
    不应在两处各写一半——这是本目录收敛的唯一目标。
@@ -119,7 +132,7 @@
 ### 可复跑的检查
 
 ```text
-$ ls docs/plans/*.md | wc -l          # 13
+$ ls docs/plans/*.md | wc -l          # 16
 $ ls docs/plans/archive/*.md | wc -l  # 38
 $ grep -rn "docs/plans/" --include=*.rs --include=*.sh --include=*.py . | grep -v archive
   # 零命中指向 archive/ 的路径（除刻意保留的历史引注）
@@ -128,7 +141,7 @@ $ grep -rn "docs/plans/" --include=*.rs --include=*.sh --include=*.py . | grep -
 ### 两条元门禁（BLUE24 §9）
 
 > `check_single_open_plan.sh` 已于 2026-09-29 **删除**（用户指令）：它把「同一主题
-> 至多一份活计划」变成硬门禁，连带禁止新建 `blue25/blue26`。现已改为**目录纪律**（见 §5.4），
+> 至多一份活计划」变成硬门禁，连带禁止新建 `blue25/blue26`。现已改为**目录纪律**（见 §5 第 4 条），
 > 门禁本身不再存在。
 
 本目录的收敛由**两条可运行的门禁**钉住（而不是靠习惯）：

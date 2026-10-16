@@ -774,11 +774,34 @@ extern "C" fn draw_rect(this: &Object, _cmd: Sel, _rect: NSRect) {
             let bounds: NSRect = msg_send![view, bounds];
             let width = bounds.size.width.round().max(1.0) as u32;
             let height = bounds.size.height.round().max(1.0) as u32;
-            let Some(frame) = crate::widget::runtime::render_frame_cached(
-                widget_id,
-                Size::new(width, height),
-                Color::WHITE,
-            ) else {
+            let size = Size::new(width, height);
+
+            // A window's content view paints the window's own chrome **and every child**
+            // (`render_frame_tree`), whereas a mounted surface is one widget in its own box
+            // (`render_frame_cached`). Without this branch the client area of every cocoa window
+            // stayed blank: `create_window` installed a plain `NSView` and ordinary controls are
+            // never mounted surfaces, so nothing ever drew them. This is the cocoa spelling of
+            // the window painter Linux, Windows and the objc2 backend each already have
+            // (`render_frame_tree`); see `docs/log/log-20261016-3.md` §11.
+            let frame = if is_window_canvas(view) {
+                // The view stores the **host** id `create_window` returned, while
+                // `render_frame_tree` looks the widget up by its **registry** id; translate here
+                // (the same boundary the objc2 backend translates at). No association yet means
+                // the window has not been adopted by a widget — a normal transient just after
+                // `create_window`, so it is a debug note, not an error.
+                let Some(widget) = crate::widget::runtime::widget_id_for_host_window(widget_id)
+                else {
+                    log::debug!(
+                        "[macos] canvas: drawRect: host id={widget_id} has no owning widget yet; \
+                         nothing to paint"
+                    );
+                    return;
+                };
+                crate::widget::runtime::render_frame_tree(widget, size, Color::WHITE)
+            } else {
+                crate::widget::runtime::render_frame_cached(widget_id, size, Color::WHITE)
+            };
+            let Some(frame) = frame else {
                 // The widget is not mounted (dropped while the view survived) or
                 // refused to paint. Say so instead of leaving an unexplained blank.
                 log::error!(
@@ -836,6 +859,99 @@ unsafe fn set_widget_id(view: id, widget_id: ObjectId) {
         widget_id as *mut c_void,
         OBJC_ASSOCIATION_ASSIGN,
     );
+}
+
+/// The association key marking a canvas as a **window** canvas.
+///
+/// Its presence means "this view is a window's content view, so `drawRect:` paints the whole
+/// widget tree" rather than one mounted box. Carried as an associated object for the same reason
+/// the widget id is: a plain `NSView` subclass is not KVC-compliant and `setValue:forKey:` would
+/// raise.
+fn window_flag_key() -> id {
+    static KEY: OnceLock<usize> = OnceLock::new();
+    let ptr = *KEY.get_or_init(|| {
+        // SAFETY: standard `NSString` construction; the value lives for the process.
+        unsafe { NSString::alloc(nil).init_str("RustWidgetsCanvasIsWindow") as id as usize }
+    });
+    ptr as id
+}
+
+/// Marks `view` as a window canvas.
+///
+/// # Safety
+///
+/// `view` must be a live `NSView` on the AppKit main thread.
+unsafe fn set_window_canvas(view: id) {
+    // Any non-null value marks the view; the pointer is never dereferenced.
+    objc_setAssociatedObject(
+        view as *mut c_void,
+        window_flag_key() as *const c_void,
+        std::ptr::null_mut::<c_void>().wrapping_add(1),
+        OBJC_ASSOCIATION_ASSIGN,
+    );
+}
+
+/// Whether `view` is a window canvas (see [`window_flag_key`]).
+///
+/// # Safety
+///
+/// `view` must be a live `NSView`.
+unsafe fn is_window_canvas(view: id) -> bool {
+    let value = objc_getAssociatedObject(view as *mut c_void, window_flag_key() as *const c_void);
+    !value.is_null()
+}
+
+/// Side table from a **host** window id to its canvas content view.
+///
+/// Kept separate from [`mounted_views`]: a window canvas is the window's own content view, not a
+/// mounted surface, so `resize_surface`/`unmount_surface` (which are keyed by surface id) must not
+/// reach it. Only the invalidation path looks here.
+fn window_canvases() -> &'static Mutex<HashMap<ObjectId, usize>> {
+    static VIEWS: OnceLock<Mutex<HashMap<ObjectId, usize>>> = OnceLock::new();
+    VIEWS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The window canvas that should repaint `id`.
+///
+/// `id` may be a window's widget-registry id (what `request_repaint_subtree` names for the window)
+/// or a child control's id (which has no native view of its own). Both resolve, through the
+/// recorded host association, to the window whose canvas paints the whole tree.
+fn window_canvas_for(id: ObjectId) -> Option<id> {
+    let host = crate::widget::runtime::host_window_for(id).or_else(|| {
+        crate::widget::runtime::top_level_window_of(id)
+            .and_then(crate::widget::runtime::host_window_for)
+    })?;
+    let table = crate::compat::lock(window_canvases());
+    table.get(&host).map(|ptr| *ptr as id)
+}
+
+/// Creates a canvas content view for the window registered under `host_id`.
+///
+/// The view is sized to the window's content area, tagged with `host_id`, marked as a window
+/// canvas, and recorded in [`window_canvases`] so a repaint request can reach it. Returns `None`
+/// when the view could not be allocated.
+///
+/// # Safety
+///
+/// Must be called on the AppKit main thread with `host_id` already registered.
+pub(crate) unsafe fn make_window_canvas(host_id: ObjectId, width: u32, height: u32) -> Option<id> {
+    let class = canvas_view_class();
+    let allocated: id = msg_send![class, alloc];
+    let view: id = msg_send![
+        allocated,
+        initWithFrame: NSRect::new(
+            NSPoint::new(0.0, 0.0),
+            NSSize::new(width as f64, height as f64),
+        )
+    ];
+    if view == nil {
+        log::error!("[macos] create_window: canvas view allocation failed");
+        return None;
+    }
+    set_widget_id(view, host_id);
+    set_window_canvas(view);
+    crate::compat::lock(window_canvases()).insert(host_id, view as usize);
+    Some(view)
 }
 
 /// Side table from mounted `ObjectId` to its canvas view pointer.
@@ -981,8 +1097,14 @@ impl MacOSPlatform {
     /// Used when a widget is mutated from outside the event loop (a menu action
     /// or tool-bar button), so the change becomes visible without waiting for an
     /// unrelated invalidation.
+    ///
+    /// `id` may name a mounted surface, or a window / a control inside one. The latter two have no
+    /// canvas of their own — the window's content view paints the whole tree — so they resolve
+    /// through [`window_canvas_for`]. Without that resolution the repaint request the library makes
+    /// for a window (and for every control, which the same walk requests) reached nothing, and the
+    /// window stayed blank.
     pub(crate) fn invalidate_surface_impl(&self, id: ObjectId) -> bool {
-        let Some(view) = view_for(id) else {
+        let Some(view) = view_for(id).or_else(|| window_canvas_for(id)) else {
             return false;
         };
         if !macos_types::is_main_thread() {
@@ -1123,23 +1245,63 @@ fn window_delegate_class() -> *const Class {
                 window_did_resize_impl as extern "C" fn(&Object, Sel, id),
             );
         }
-        // The tick the trigger queue is drained on.
-        //
-        // `windowDidResize:` *queues* a `Resized` event for the library, and nothing in
-        // `-[NSApplication run]` reads that queue back — so without a tick, no window
-        // layout ever re-ran for a window the user resized. See
-        // `crate::drain_triggers`.
-        //
-        // The method lives on this delegate rather than on a new class because the
-        // delegate is already allocated per window and already on the main thread,
-        // which is what the widgets require.
-        // SAFETY: `tick:` takes no argument beyond the selector's implicit ones, so the
-        // ABI is `(self, _cmd)` and needs no third parameter.
+        (decl.register() as *const Class) as usize
+    })) as *const Class
+}
+
+/// The class AppKit's frame heartbeat targets.
+///
+/// # Why the heartbeat is its own class rather than the window delegate
+///
+/// The heartbeat must exist for the whole session, including before any window is created and for a
+/// session that never creates one. It used to be a repeating `NSTimer` installed *per window* in
+/// [`install_resize_delegate`], so a session with no window had no frame tick at all: a stop request
+/// (or any queued main-thread work) had no reader, and the session could not end itself — the
+/// designer feedback `docs/issues/feedback-20261015.md` §十.2. Moving the timer to its own class, and
+/// installing it once in `run()`, makes the tick a property of the loop rather than of a window.
+///
+/// # Why this is the *only* frame timer
+///
+/// `install_resize_delegate` no longer starts a timer, so there is exactly one heartbeat per process
+/// (principle #101: one implementation path). Two timers would call `crate::drive_frame` twice per
+/// interval and advance every animation at double speed.
+fn frame_tick_class() -> *const Class {
+    static CLASS: OnceLock<usize> = OnceLock::new();
+    (*CLASS.get_or_init(|| {
+        let superclass = class!(NSObject);
+        let mut decl = ClassDecl::new("RustWidgetsFrameTimer", superclass)
+            .expect("the Objective-C runtime refused to declare RustWidgetsFrameTimer");
+        // SAFETY: `tick:` takes no argument beyond the selector's implicit ones, so the ABI is
+        // `(self, _cmd)` plus the timer the selector carries. The registered implementation is the
+        // safe `extern "C"` form `add_method` accepts.
         unsafe {
             decl.add_method(sel!(tick:), drain_triggers_impl as extern "C" fn(&Object, Sel, id));
         }
         (decl.register() as *const Class) as usize
     })) as *const Class
+}
+
+/// Installs the process-wide frame heartbeat on the current run loop.
+///
+/// Called once from `MacOSPlatform::run()` before `-[NSApplication run]`, so the tick exists for the
+/// whole session regardless of how many windows are created (including none). The timer repeats
+/// unconditionally: an `NSTimer` cannot be told to stop without invalidating it, and invalidating it
+/// would also stop the drain that reads resize triggers — see [`drain_triggers_impl`].
+///
+/// # Safety
+///
+/// Must be called on the AppKit main thread with an active run loop (i.e. from `run()`), because
+/// `scheduledTimerWithTimeInterval:…` adds the timer to the current thread's run loop.
+pub(crate) unsafe fn install_frame_heartbeat() {
+    let target: id = msg_send![frame_tick_class(), new];
+    let _timer: id = msg_send![
+        class!(NSTimer),
+        scheduledTimerWithTimeInterval: (FRAME_INTERVAL_MS as f64) / 1000.0f64
+        target: target
+        selector: sel!(tick:)
+        userInfo: nil
+        repeats: YES
+    ];
 }
 
 /// Safe-ABI trampoline registered as the `windowDidResize:` implementation.
@@ -1217,6 +1379,10 @@ const FRAME_INTERVAL_MS: u64 = 16;
 
 /// Installs the resize delegate on `window` and tags it with `widget_id`.
 ///
+/// The frame heartbeat is **not** started here; it lives on the process-wide timer
+/// [`install_frame_heartbeat`] installs from `run()`, so a session ticks whether or not a window
+/// exists (feedback §十.2). This function only wires resize reporting.
+///
 /// # Safety
 ///
 /// `window` must be a live `NSWindow` on the AppKit main thread.
@@ -1231,23 +1397,6 @@ pub(crate) unsafe fn install_resize_delegate(window: id, widget_id: ObjectId) {
         OBJC_ASSOCIATION_ASSIGN,
     );
     let _: () = msg_send![window, setDelegate: delegate];
-
-    // Start the frame tick, targeting this delegate.
-    //
-    // Scheduled on the current run loop and repeating, so it fires for as long as
-    // AppKit runs. `retain` is not used: the timer is added to the run loop, which owns
-    // it, and the delegate is owned by the window.
-    //
-    // SAFETY: `delegate` is a live object on the main thread, and `tick:` is a method
-    // this module registered on its class above.
-    let _timer: id = msg_send![
-        class!(NSTimer),
-        scheduledTimerWithTimeInterval: (FRAME_INTERVAL_MS as f64) / 1000.0f64
-        target: delegate
-        selector: sel!(tick:)
-        userInfo: nil
-        repeats: YES
-    ];
 }
 
 /// Reads the logical widget id associated with `object`, or 0 when absent.

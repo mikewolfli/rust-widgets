@@ -104,7 +104,7 @@ This file tracks items that are currently not feasible to complete in the presen
     migration sign-off from the cocoa backend.
   - Target completion signal: `NativeInteractive` parity and replacement-readiness.
 
-- [ ] ITEM 5b: cocoa-legacy macOS backend off-main-thread crash
+- [x] ITEM 5b: cocoa-legacy macOS backend off-main-thread crash
   - Fixed 2026-09-11 (real bug found only on a macOS host).
   - Constraint was: no macOS host, so `cargo test --lib --features desktop` was
     never executed *on macOS*; on Linux the whole `MacOSPlatform` was compiled

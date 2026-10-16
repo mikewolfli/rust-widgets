@@ -18,9 +18,9 @@
 //!
 //! # Which backends stage it
 //!
-//! Linux/GTK (an X11/Wayland selection target) and Windows (a clipboard format registered by the MIME
-//! name, see `src/platform/clipboard_stubs.rs`). macOS's `NSPasteboard` path does not implement the
-//! typed channel yet, so it prints the honest refusal.
+//! Linux/GTK (an X11/Wayland selection target), Windows (a clipboard format registered by the MIME
+//! name) and macOS (an `NSPasteboard` type named by the MIME string, in both the cocoa and objc2
+//! backends; see `src/platform/clipboard_stubs.rs`).
 //!
 //! # This replaces your clipboard
 //!
@@ -34,6 +34,13 @@
 //!
 //! Exit codes: `0` = every check held, `1` = a check failed (the line says which), `2` = this host
 //! cannot stage it (no display session / no clipboard, or the operator did not opt in).
+//!
+//! # The three conditions, spelled once
+//!
+//! `cfg` attributes cannot name a `cfg` predicate through a helper, so the "this backend carries a
+//! custom type natively" condition is written out at each site below and has to stay in one shape:
+//! a GDK selection target (Linux), a registered clipboard format (Windows), or an `NSPasteboard`
+//! type named by the MIME string (macOS, either backend).
 
 #[cfg(not(all(
     not(alloc_frugal),
@@ -47,29 +54,41 @@ fn main() {
 }
 
 /// `main` for a desktop host: stages the probe where the backend carries a custom type natively
-/// (Linux/GTK, Windows), and prints the honest refusal where it does not (macOS).
+/// (Linux/GTK, Windows, macOS), and prints the honest refusal where it does not.
 #[cfg(all(
     not(alloc_frugal),
     any(target_os = "linux", target_os = "macos", target_os = "windows")
 ))]
 fn main() {
-    #[cfg(any(all(target_os = "linux", feature = "gtk-native"), target_os = "windows"))]
+    #[cfg(any(
+        all(target_os = "linux", feature = "gtk-native"),
+        target_os = "windows",
+        all(target_os = "macos", any(feature = "cocoa-legacy", feature = "macos"))
+    ))]
     {
         run_staging_probe();
     }
-    #[cfg(not(any(all(target_os = "linux", feature = "gtk-native"), target_os = "windows")))]
+    #[cfg(not(any(
+        all(target_os = "linux", feature = "gtk-native"),
+        target_os = "windows",
+        all(target_os = "macos", any(feature = "cocoa-legacy", feature = "macos"))
+    )))]
     {
         println!(
             "probe_clipboard_custom: this backend has no native custom-type clipboard \
              (`--features desktop,gtk-native` on a host with a display session, or `desktop` on \
-             Windows, stages it); its write reports the honest refusal instead."
+             Windows/macOS, stages it); its write reports the honest refusal instead."
         );
     }
 }
 
 #[cfg(all(
     not(alloc_frugal),
-    any(all(target_os = "linux", feature = "gtk-native"), target_os = "windows")
+    any(
+        all(target_os = "linux", feature = "gtk-native"),
+        target_os = "windows",
+        all(target_os = "macos", any(feature = "cocoa-legacy", feature = "macos"))
+    )
 ))]
 fn gui_probe_allowed() -> bool {
     if std::env::var("RW_GUI_PROBE_OK").ok().as_deref() == Some("1") {
@@ -84,7 +103,11 @@ fn gui_probe_allowed() -> bool {
 
 #[cfg(all(
     not(alloc_frugal),
-    any(all(target_os = "linux", feature = "gtk-native"), target_os = "windows")
+    any(
+        all(target_os = "linux", feature = "gtk-native"),
+        target_os = "windows",
+        all(target_os = "macos", any(feature = "cocoa-legacy", feature = "macos"))
+    )
 ))]
 fn run_staging_probe() {
     if !gui_probe_allowed() {

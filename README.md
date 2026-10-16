@@ -28,7 +28,7 @@ cannot even offer a surface, the library paints into an in-memory buffer and car
 
 ```toml
 [dependencies]
-rust_widgets = "2.8.6"
+rust_widgets = "2.8.7"
 ```
 
 Choose **exactly one device profile**. They are mutually exclusive: `mini` and `embedded` compile
@@ -36,11 +36,11 @@ parts of the crate *out*, so pairing one with `desktop` is not a lowest common d
 build that cannot work.
 
 ```toml
-rust_widgets = { version = "2.8.6", features = ["desktop"] }                       # default
-rust_widgets = { version = "2.8.6", default-features = false, features = ["tablet"] }
-rust_widgets = { version = "2.8.6", default-features = false, features = ["mobile"] }
-rust_widgets = { version = "2.8.6", default-features = false, features = ["embedded"] }
-rust_widgets = { version = "2.8.6", default-features = false, features = ["mini"] }
+rust_widgets = { version = "2.8.7", features = ["desktop"] }                       # default
+rust_widgets = { version = "2.8.7", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "2.8.7", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "2.8.7", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "2.8.7", default-features = false, features = ["mini"] }
 ```
 
 > `cargo check --features embedded` is **wrong**, and quietly so: `desktop` is a default feature, so
@@ -308,7 +308,7 @@ MIT — see [LICENSE](LICENSE).
 Issues: [GitHub Issues](https://github.com/mikewolfli/rust-widgets/issues)
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.8.6-blue)]()
+[![version](https://img.shields.io/badge/version-2.8.7-blue)]()
 [![tests](https://img.shields.io/badge/tests-7600%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 [![controls](https://img.shields.io/badge/controls-181-blue)]()

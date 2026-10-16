@@ -5,6 +5,100 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.8.7 (2026-10-16) — The macOS half of the platform contract, and a plan index that matches the tree again
+
+This release closes the **macOS** half of the cross-platform feedback round — host-set custom
+clipboard types, display enumeration, a bounded cocoa session that never ticked, and a cocoa
+window that opened as a blank white sheet — and repairs documentation that had stopped describing
+the repository.
+
+No public signature changed and no capability bit was added, so the notes below are behavioural.
+
+### 1. A host's own MIME type on the macOS clipboard
+
+The feedback proposed carrying a custom type by writing the **MIME name** as the pasteboard type.
+On a real Mac that assumption does not hold: a macOS pasteboard type is a **UTI**, and
+`NSPasteboardItem setData:forType:` **refuses** `application/vnd.…+json` — AppKit logs "not a valid
+UTI string" and the write is simply lost. The name-preserving channel is the older
+`NSPasteboard declareTypes:owner:` / `setData:forType:` / `dataForType:` triple, which accepts any
+type string and round-trips it byte for byte. The **cocoa** and **objc2** backends now both use it,
+so `set_contents_with_type` / `has_format` / `get_contents_for_type` negotiate by name on macOS.
+The same pass fixed `has_format("text/plain")` and `has_format("text/html")`, which had answered
+`false` on macOS for the whole 2.x line.
+
+### 2. Display enumeration on macOS — and an id-space defect only a real machine shows
+
+`displays()` now reads the real screens (`Display { id, bounds, work_area, scale, is_primary }`,
+with `id` the `CGDirectDisplayID`; measured on the verification host as one 1710×1112 screen at
+`scale = 2` whose work area is contained in its bounds), `display_of_window` answers which screen a
+window is on, and `display_generation()` is derived from the current configuration so a host can
+compare it across frames.
+
+`display_of_window` also exposed a defect the cross-compiler could not see: it read the cocoa
+`handles` map with the **widget-registry** id, while that map is keyed by the **platform** id, so it
+answered `None` for every real window. It now translates first, mirroring the Linux and Windows
+backends. The same round repaired a compile regression an earlier round had introduced:
+`--features mini,cocoa-legacy` and `--features mini,macos` failed with six `E0425`/`E0433` over a
+missing `compat::Vec`.
+
+### 3. A cocoa session that ticks to its deadline
+
+The cocoa frame heartbeat was installed **per window**, so a session with no window never ticked and
+a session whose window closed kept a run loop busy servicing timers — which `-[NSApplication stop:]`
+alone does not interrupt (it sets a flag the loop only reads on its next return from
+`nextEventMatchingMask:`). The heartbeat is now process-level, installed once by `run()` before
+entering `-[NSApplication run]`, and `quit()` posts an `NSEventTypeApplicationDefined` event after
+`stop:` so the loop wakes and observes it. Measured: a bounded session with a window ends one frame
+after its deadline (0.417 s, down from 2.186 s), a self-scheduled one at 0.303 s, and a session with
+no window at 0.306 s — where before it never ticked at all. The process still has exactly one frame
+driver.
+
+### 4. The cocoa window had no window-level painter
+
+Opening a cocoa window produced a blank white sheet: `create_window` installed a plain `NSView` as
+the content view, and `draw_rect` only ever called `render_frame_cached(widget_id)` — one widget.
+Ordinary `create_*` controls are tree nodes, not mounted surfaces, so nothing painted them. This was
+not new: `docs/log/archive/log-20260930-3.md` recorded "macOS cocoa / objc2 have no window-level
+painter", and the 2026-10-03 fix gave the painter to **objc2 only**. cocoa now has the same shape —
+a window canvas kept in a side table **separate** from `mounted_views` (so
+`resize_surface`/`unmount_surface` cannot tear down a window), `draw_rect` routing a window canvas
+through `render_frame_tree`, and `invalidate_surface_impl` resolving a repaint on a window (or any
+control inside it) to that window's canvas, without which a library-side `request_repaint_subtree`
+request lands nowhere. The measured window frame is 1 276 800 bytes with 319 200 non-white pixels and
+138 distinct RGB values; `tests/window_tree_paints_visible_controls_test.rs` is 5/5.
+
+The honest answer to "does every platform show a window?" is **no, not by one path**. The four
+desktop window backends (Linux/GTK, Windows, macOS cocoa, macOS objc2) paint the whole tree; the
+**host-pull** backends (Android, iOS, HarmonyOS, Wayland, WASM) paint only a surface the host
+explicitly mounted, because the C ABI exposes `rw_render_surface_frame` (one widget) and no
+whole-window entry. Adding one is a separate ABI change and was not attempted.
+
+### 5. Three items verified on the machine, with no code change
+
+The shared watcher classifies a deletion as `ChangeKind::Removed` (asserted end to end against a real
+directory/file lifecycle — the same assertion Linux makes, so the host does not fork by platform);
+the external-handler query reads `PATH` without spawning anything; and a cross-thread `quit()` is
+recorded and honoured by the loop thread.
+
+### 6. Documentation: the plan index had stopped describing the directory
+
+`docs/plans/README.md` is the one place a reader learns which plan is what, and it had drifted: it
+said the directory held **14** `.md` files while its own reproducible check printed **13** and the
+directory holds **16**; `blue25.md` / `blue26.md` / `blue27.md` (all closed) appeared in neither the
+plan table nor the archive table; and `research-icons.md` — the evidence file `blue25.md` §6 and
+`blue27.md` §19.6 are built on — was absent from the reference table. All four are now indexed with
+their real status, the counts are corrected, and the reason `blue25`–`blue27` stay in the root rather
+than moving to `archive/` is recorded: `src/render/path/parser.rs`,
+`src/render/path/flatten.rs`, `src/widget/icon_registry.rs` and `tools/check_icon_licences.sh` cite
+them **by path**, so moving them would create dangling references rather than remove one.
+
+Two smaller drifts in the same pass: `FUTURE.md` marked ITEM 5b (the cocoa off-main-thread crash)
+unchecked while its body already said **Fixed 2026-09-11**, and the index's recitation of
+`FUTURE.md` read "8 项中有 2 项已关闭" against a file of 12 items (now 6 closed). The third-round
+macOS log had been written to `log-20262016-2.md`, a date no calendar produces; it is now
+`log-20261016-3.md` (the third round of 2026-10-16, after `-1` and `-2`) with every reference
+updated.
+
 ## 2.8.6 (2026-10-13) — One icon contract, and a composite fill that finally respects a hole
 
 The icon system had every part a contract needs except the contract: a bundled token drew through
