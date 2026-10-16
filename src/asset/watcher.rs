@@ -51,18 +51,39 @@ pub enum ChangeKind {
     Renamed,
 }
 
-/// Projects a `notify` event onto this crate's [`ChangeKind`].
+/// Projects a `notify` event onto this crate's [`ChangeKind`], using `path` as evidence.
 ///
 /// `None` means the event is not a filesystem-content change the watcher reports: an access
 /// (read/attribute) notification, or a backend-specific event with no content meaning. Those
 /// are dropped rather than mapped onto a misleading `Modified`.
-fn change_kind_of(kind: &EventKind) -> Option<ChangeKind> {
+///
+/// # Why the classification needs the path
+///
+/// `notify` normalizes the *event kind* its backends report, not the filesystem's outcome, and the
+/// backends disagree about deletions. Linux's inotify sends `Remove`, but macOS's FSEvents reports
+/// the deletion of a watched file as `Modify` — so mapping `Modify` straight onto
+/// [`ChangeKind::Modified`] told a macOS host "this path was rewritten" for a path that no longer
+/// existed, and its external-delete/rebuild detection could never observe a removal.
+///
+/// The discriminator is available at the call site and costs one `stat`: a `Modify` whose path is
+/// **already gone** when the event arrives is a removal. This keeps the answer the same on every
+/// backend without a per-platform branch in the consumer (principles #35/#36) and without asking
+/// `notify` for a fact it does not carry.
+fn change_kind_of(kind: &EventKind, path: &Path) -> Option<ChangeKind> {
     match kind {
         EventKind::Create(_) => Some(ChangeKind::Created),
         // A rename arrives as `Modify(ModifyKind::Name(_))`; it is a distinct fact from an
         // ordinary content write, so it must not collapse into `Modified`.
         EventKind::Modify(notify::event::ModifyKind::Name(_)) => Some(ChangeKind::Renamed),
-        EventKind::Modify(_) => Some(ChangeKind::Modified),
+        // A `Modify` for a path that is no longer there is a removal: see the docs above for why
+        // this is the arm that makes FSEvents agree with inotify.
+        EventKind::Modify(_) => {
+            if path.exists() {
+                Some(ChangeKind::Modified)
+            } else {
+                Some(ChangeKind::Removed)
+            }
+        }
         EventKind::Remove(_) => Some(ChangeKind::Removed),
         EventKind::Access(_) | EventKind::Any | EventKind::Other => None,
     }
@@ -187,22 +208,32 @@ impl AssetWatcher {
         let mut watcher: RecommendedWatcher = RecommendedWatcher::new(
             move |res: Result<Event, notify::Error>| match res {
                 Ok(event) => {
-                    if let Some(kind) = change_kind_of(&event.kind) {
-                        // One event per matching path: a single notify callback may
-                        // describe several paths, and the consumer expects one
-                        // `FileChanged` per changed file (its filter already saw
-                        // those paths). The newest change for a path replaces the
-                        // pending one so repeated changes collapse.
-                        let timestamp = std::time::SystemTime::now();
-                        for path in &event.paths {
-                            if filter(path) {
-                                let path = path.to_path_buf();
-                                pending.insert(
-                                    path.clone(),
-                                    AssetEvent::FileChanged { path, kind, timestamp },
-                                );
-                            }
+                    // One event per matching path: a single notify callback may
+                    // describe several paths, and the consumer expects one
+                    // `FileChanged` per changed file (its filter already saw
+                    // those paths). The newest change for a path replaces the
+                    // pending one so repeated changes collapse.
+                    //
+                    // The classification is computed *per path*, not once for the
+                    // event: a deletion is recognized from the path's absence (see
+                    // `change_kind_of`), and one event may name several paths with
+                    // different outcomes.
+                    let timestamp = std::time::SystemTime::now();
+                    let mut inserted = false;
+                    for path in &event.paths {
+                        if !filter(path) {
+                            continue;
                         }
+                        if let Some(kind) = change_kind_of(&event.kind, path) {
+                            let path = path.to_path_buf();
+                            pending.insert(
+                                path.clone(),
+                                AssetEvent::FileChanged { path, kind, timestamp },
+                            );
+                            inserted = true;
+                        }
+                    }
+                    if inserted {
                         flush_pending(&sender, &mut pending);
                     }
                 }
@@ -310,16 +341,43 @@ mod tests {
     #[test]
     fn change_kind_projects_every_reported_change_and_drops_access() {
         use notify::event::{AccessKind, CreateKind, ModifyKind, RemoveKind, RenameMode};
-        assert_eq!(change_kind_of(&EventKind::Create(CreateKind::File)), Some(ChangeKind::Created));
-        assert_eq!(change_kind_of(&EventKind::Modify(ModifyKind::Any)), Some(ChangeKind::Modified));
+        // The `Modify` arm is path-dependent (see `change_kind_of`), so it is exercised against a
+        // path that exists and one that does not. Standard temporary directory rather than a
+        // hardcoded `/tmp` (principle #44).
+        let existing = std::env::temp_dir();
+        let missing = existing.join("rust_widgets_change_kind_definitely_absent");
+        let _ = std::fs::remove_file(&missing);
+        assert!(
+            !missing.exists(),
+            "the fixture path must not exist for this test to mean anything"
+        );
+
         assert_eq!(
-            change_kind_of(&EventKind::Modify(ModifyKind::Name(RenameMode::Any))),
+            change_kind_of(&EventKind::Create(CreateKind::File), &missing),
+            Some(ChangeKind::Created)
+        );
+        assert_eq!(
+            change_kind_of(&EventKind::Modify(ModifyKind::Any), &existing),
+            Some(ChangeKind::Modified)
+        );
+        // The macOS FSEvents shape: a `Modify` for a path that is already gone is a removal.
+        assert_eq!(
+            change_kind_of(&EventKind::Modify(ModifyKind::Any), &missing),
+            Some(ChangeKind::Removed)
+        );
+        // A rename stays a rename even though its old name is gone: the name-modify arm is
+        // checked before the path evidence, so this fact is not lost to the removal rule.
+        assert_eq!(
+            change_kind_of(&EventKind::Modify(ModifyKind::Name(RenameMode::Any)), &missing),
             Some(ChangeKind::Renamed)
         );
-        assert_eq!(change_kind_of(&EventKind::Remove(RemoveKind::File)), Some(ChangeKind::Removed));
+        assert_eq!(
+            change_kind_of(&EventKind::Remove(RemoveKind::File), &missing),
+            Some(ChangeKind::Removed)
+        );
         // An access notification is not a content change; it must not be reported as one.
-        assert_eq!(change_kind_of(&EventKind::Access(AccessKind::Read)), None);
-        assert_eq!(change_kind_of(&EventKind::Any), None);
+        assert_eq!(change_kind_of(&EventKind::Access(AccessKind::Read), &existing), None);
+        assert_eq!(change_kind_of(&EventKind::Any, &existing), None);
     }
 
     #[test]
@@ -559,6 +617,43 @@ mod tests {
             |e| matches!(e, AssetEvent::FileChanged { path, .. } if path.ends_with("test.txt")),
         );
         assert!(matched, "Expected FileChanged event for test.txt, got {events:?}");
+    }
+
+    /// Deleting a watched file must be observable as [`ChangeKind::Removed`].
+    ///
+    /// This is the one assertion that has to hold on **every** backend: Linux's inotify already
+    /// reports the deletion as `Remove`, and the path-evidence rule in `change_kind_of` makes
+    /// macOS's FSEvents — which reports it as `Modify` — agree. Before that rule the macOS answer
+    /// was `Modified` for a path that no longer existed, so a host's external-delete detection
+    /// could never see a removal. See `docs/issues/feedback-20261015.md` §十.3.
+    #[test]
+    fn a_deletion_is_classified_as_removed_not_modified() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut watcher = AssetWatcher::new();
+        watcher.watch(dir.path(), false, |p| p.extension().is_some_and(|e| e == "png")).unwrap();
+
+        let doomed = dir.path().join("doomed.png");
+        std::fs::write(&doomed, b"bytes").unwrap();
+        // Let the create settle first, so the deletion below is not coalesced with it.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let _ = watcher.drain();
+
+        std::fs::remove_file(&doomed).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let events = watcher.drain();
+        let removed = events.iter().any(|e| {
+            matches!(
+                e,
+                AssetEvent::FileChanged { path, kind, .. }
+                    if path.ends_with("doomed.png") && *kind == ChangeKind::Removed
+            )
+        });
+        assert!(
+            removed,
+            "a deleted watched file must be reported as Removed, not Modified; got {events:?}"
+        );
     }
 
     #[test]

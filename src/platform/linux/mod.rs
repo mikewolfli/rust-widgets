@@ -24,6 +24,13 @@ pub mod types;
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
 pub(crate) mod gdk_clipboard;
 
+/// Display (monitor) enumeration for the Linux/GTK backend, over GDK.
+///
+/// Gated with the rest of this backend's GTK code. See the module docs for what GDK3 can and
+/// cannot answer (it exposes monitors by index, not by a stable per-monitor id).
+#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+pub(crate) mod gdk_displays;
+
 /// Absolute child placement for the Linux/GTK backend, on a `gtk::Overlay`.
 ///
 /// Split out because the placement rule (position, size, no size-request propagation) is

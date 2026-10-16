@@ -198,17 +198,94 @@ pub(crate) fn has_format(content_type: &str) -> bool {
     match content_type {
         PLAIN_TEXT => text().is_some(),
         HTML => html().is_some(),
-        // Images, RTF and file lists have no representation here; see the backend's docs.
-        _ => false,
+        // Every other MIME type — an application-defined one, or a fixed kind this backend does
+        // not carry (`image/png`, `text/rtf`, `text/uri-list`) — is answered by asking the
+        // selection for that target directly. This is what makes `has_format` truthful for a
+        // custom type instead of only for the two the backend writes itself.
+        other => holds_target(other),
     }
+}
+
+/// Whether the display clipboard offers `content_type` as a selection target.
+///
+/// The read is the evidence: `wait_for_contents` returns `Some` exactly when the requested target
+/// is offered, so asking for the contents with an empty payload still answers "the target is
+/// there" rather than "the payload is non-empty".
+fn holds_target(content_type: &str) -> bool {
+    with_clipboard(|clipboard| {
+        clipboard.wait_for_contents(&gtk::gdk::Atom::intern(content_type)).is_some()
+    })
+    .unwrap_or(false)
+}
+
+/// Publishes `data` under the application-defined `content_type` and reports whether it was stored.
+///
+/// This is the generic form of [`set_html`]: the type is interned as its own selection target and
+/// served from an owner callback, which is the documented X11/XWayland mechanism for any MIME type.
+/// The write is confirmed by reading the target back (the same evidence rule `set_html` follows),
+/// because `set_with_data` only reports that the selection was *offered*.
+///
+/// # The verified boundary
+///
+/// The same one `set_html`'s markup arm records: the owner-provided-target mechanism is what X11
+/// and XWayland specify, and this crate has no X11 host in its gate suite, so a custom target is
+/// reported as *verified where a display serves it* (the `MockClipboard` round-trip) and otherwise
+/// as *unverified on this host* rather than claimed.
+pub(crate) fn set_typed(content_type: &str, data: &[u8]) -> bool {
+    let type_owned: String = content_type.into();
+    let data_owned = data.to_vec();
+    let offered = with_clipboard(|clipboard| {
+        // Interned inside the guard for the reason `set_html` records: `gdk_atom_intern` asserts
+        // main-thread initialisation, so interning before the guard turns a worker-thread call
+        // into a panic instead of the `false` the guard exists to return.
+        let atom = gtk::gdk::Atom::intern(content_type);
+        let targets = [gtk::TargetEntry::new(content_type, gtk::TargetFlags::empty(), 1)];
+        let offered = clipboard.set_with_data(&targets, move |_clipboard, selection, _info| {
+            selection.set(&atom, 8, &data_owned);
+        });
+        if offered {
+            // `store()` hands the selection to the clipboard manager so the payload survives this
+            // process; on a session with no manager it is a no-op, not a failure.
+            clipboard.store();
+        }
+        offered
+    })
+    .unwrap_or(false);
+
+    if !offered {
+        return false;
+    }
+    // The read-back is the evidence, exactly as `set_html` obtains it.
+    let stored = typed(content_type);
+    if stored.as_deref() != Some(data) {
+        log::warn!(
+            "[linux clipboard] the '{type_owned}' target did not come back from the display; the \
+             write is reported as refused rather than pretended"
+        );
+        return false;
+    }
+    true
+}
+
+/// The bytes the display clipboard holds under `content_type`, or `None` when it holds none.
+pub(crate) fn typed(content_type: &str) -> Option<Vec<u8>> {
+    with_clipboard(|clipboard| {
+        // Interned inside the guard for the reason `set_html` records.
+        let selection = clipboard.wait_for_contents(&gtk::gdk::Atom::intern(content_type))?;
+        Some(selection.data())
+    })
+    .flatten()
 }
 
 /// The Linux/GTK host clipboard.
 ///
 /// # What it carries, and what it does not
 ///
-/// Text and HTML — the pair the macOS, iOS, HarmonyOS and Android backends implement. The
-/// remaining kinds are refused (`false` / `None`) rather than silently dropped:
+/// Text, HTML, and any application-defined MIME type (an X11/Wayland selection target). Text and
+/// HTML have dedicated helpers above; a custom type goes through the generic owner-provided-target
+/// path in [`set_typed`]/[`typed`], which is the same mechanism the HTML markup arm uses.
+///
+/// The remaining *structured* kinds are refused (`false` / `None`) rather than silently dropped:
 ///
 /// * an image would have to become a `gdk_pixbuf::Pixbuf`, and the RGBA buffer this crate carries
 ///   is `&[u8]` with no guaranteed lifetime for a zero-copy wrapper — a copy would double the
@@ -216,6 +293,9 @@ pub(crate) fn has_format(content_type: &str) -> bool {
 /// * RTF has no GDK target of its own and no verifier in this crate's gate suite;
 /// * a file list would have to become `text/uri-list`, and a URI list is a set of *URIs*, not
 ///   paths, so a `PathBuf` cannot be published without a claim about how it should be encoded.
+///
+/// An application that wants to move any of those payloads by name can still do so through
+/// [`RichClipboardBackend::set_contents_with_type`], which publishes the bytes under its own type.
 ///
 /// # State
 ///
@@ -238,9 +318,13 @@ impl Default for GdkClipboard {
 
 impl RichClipboardBackend for GdkClipboard {
     fn set_contents(&self, content: ClipboardContent) -> bool {
-        match content {
-            ClipboardContent::Text(text) => set_text(&text),
-            ClipboardContent::Html { html, plain } => set_html(&html, &plain),
+        match &content {
+            ClipboardContent::Text(text) => set_text(text),
+            ClipboardContent::Html { html, plain } => set_html(html, plain),
+            // An application-defined type is published as its own selection target (see
+            // `set_typed`); the structured `Custom` variant and the byte-level
+            // `set_contents_with_type` entry therefore take the same path.
+            ClipboardContent::Custom { content_type, data } => set_typed(content_type, data),
             other => {
                 log::warn!(
                     "[linux clipboard] {} is not carried by this backend; the write is reported \
@@ -261,6 +345,19 @@ impl RichClipboardBackend for GdkClipboard {
 
     fn has_format(&self, content_type: &str) -> bool {
         has_format(content_type)
+    }
+
+    /// Reads by type directly from the display, rather than from [`Self::get_contents`].
+    ///
+    /// The structured accessor can only recognize the fixed kinds it knows; a custom type has to be
+    /// asked for by name, which is what this native typed channel does. The fixed byte-oriented
+    /// kinds are served too, so a caller that reads everything by type gets a uniform answer.
+    fn get_contents_for_type(&self, content_type: &str) -> Option<Vec<u8>> {
+        match content_type {
+            PLAIN_TEXT => text().map(String::into_bytes),
+            HTML => html().map(String::into_bytes),
+            other => typed(other),
+        }
     }
 }
 

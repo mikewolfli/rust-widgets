@@ -38,6 +38,13 @@ pub(crate) mod accelerator;
 #[cfg(feature = "cocoa-legacy")]
 pub(crate) mod file_picker;
 
+/// Display (monitor) enumeration over AppKit's `NSScreen`.
+///
+/// Gated with the rest of this backend's cocoa code: it messages `NSScreen`, which is an AppKit
+/// object and needs the `cocoa`/`objc` dependencies `cocoa-legacy` carries.
+#[cfg(feature = "cocoa-legacy")]
+pub(crate) mod displays;
+
 /// Cocoa 0.24 platform implementation (legacy, behind `cocoa-legacy` feature).
 #[cfg(feature = "cocoa-legacy")]
 mod platform_impl;

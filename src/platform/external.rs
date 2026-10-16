@@ -20,6 +20,77 @@
 //! rather than handed over.
 
 use crate::platform::types::OpenError;
+use std::path::Path;
+
+/// Whether `program` can be found on this process's `PATH`.
+///
+/// # Why a `PATH` scan rather than a spawn
+///
+/// The question this answers is "is the host handler installed", and it must be answerable
+/// **without side effects**. The spawn-based rule principle #38 prescribes for the print clients is
+/// right when the probe is a precondition of the operation itself; here the probe *would be* the
+/// operation — running `xdg-open`/`open` to see whether it exists hands a real target to a real
+/// application. Reading `PATH` touches no process, which is exactly the "ask without opening" the
+/// designer's request ([`Platform::has_external_handler`]) needs.
+///
+/// # Windows
+///
+/// `cmd` is `cmd.exe`, resolved through `PATHEXT`, so on Windows each directory is tried with the
+/// bare name first and then with each `PATHEXT` suffix. `std::env::split_paths` supplies the
+/// platform's own `PATH` separator, so no `:`/`;` assumption is made here (principle #36).
+///
+/// [`Platform::has_external_handler`]: crate::platform::Platform::has_external_handler
+pub(crate) fn program_is_on_path(program: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| {
+        if dir.as_os_str().is_empty() {
+            return false;
+        }
+        if is_executable_file(&dir.join(program)) {
+            return true;
+        }
+        #[cfg(windows)]
+        {
+            if let Some(exts) = std::env::var_os("PATHEXT") {
+                for ext in exts.to_string_lossy().split(';') {
+                    if ext.is_empty() {
+                        continue;
+                    }
+                    let mut name = std::string::String::from(program);
+                    name.push_str(ext);
+                    if is_executable_file(&dir.join(name)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    })
+}
+
+/// Whether `path` names an existing file the OS would consider runnable.
+///
+/// On Unix that means a regular file with an execute bit set; on Windows existence as a file is the
+/// whole test (there is no execute bit, and `PATHEXT` resolution is handled by the caller).
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
 
 /// Rejects targets the host handler would treat as its own option.
 pub(crate) fn validate_target(target: &str) -> Result<(), OpenError> {
@@ -88,6 +159,21 @@ mod tests {
     fn validation_precedes_the_spawn_attempt() {
         let missing = "/nonexistent/rw-open-handler-for-test";
         assert_eq!(spawn_handler(missing, &[], "--version"), Err(OpenError::InvalidTarget));
+    }
+
+    /// A program that is present on `PATH` is reported present, and one that is not is not.
+    ///
+    /// The "present" program is per-platform: `true` on Unix, `cmd` on Windows. The
+    /// `/nonexistent` name is deliberately absolute so it can never appear in any directory on
+    /// `PATH`.
+    #[test]
+    fn the_handler_existence_query_answers_without_running_anything() {
+        let present = if cfg!(windows) { "cmd" } else { "true" };
+        assert!(program_is_on_path(present), "`{present}` is a standard PATH member on this host");
+        assert!(
+            !program_is_on_path("/nonexistent/rw-open-handler-for-test"),
+            "an absolute path that does not exist must not be reported as a handler"
+        );
     }
 
     /// A real program with a valid target is started, and the call returns without waiting

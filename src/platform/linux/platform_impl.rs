@@ -27,6 +27,10 @@ use crate::platform::accessibility::linux::LinuxAccessibilityBridge;
 use crate::platform::accessibility::AccessibilityBridge;
 use crate::platform::Platform;
 use crate::platform::PlatformCapabilities;
+// Only the `gtk-native` display overrides name these; importing them unconditionally would make
+// them unused on every other build of this backend (principle #10 — no warnings).
+#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+use crate::platform::{Display, DisplayId};
 use crate::platform::{WidgetTriggerEvent, WidgetTriggerKind};
 #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
 use core::time::Duration;
@@ -230,6 +234,62 @@ impl Platform for LinuxPlatform {
     /// escaped: `xdg-open` parses its own arguments and rejects both `-` and `-- /path`.
     fn open_external(&self, target: &str) -> Result<(), crate::platform::types::OpenError> {
         crate::platform::external::spawn_handler("xdg-open", &[], target)
+    }
+
+    /// Whether `xdg-open` is on this host's `PATH`.
+    ///
+    /// The companion of [`Self::open_external`]: that method hands a target to `xdg-open`, so "is
+    /// the handler installed" is exactly "is `xdg-open` findable on `PATH`". See
+    /// [`Platform::has_external_handler`] for why this is a separate, side-effect-free query rather
+    /// than the capability flag (which reports only that the backend has the method).
+    fn has_external_handler(&self) -> bool {
+        crate::platform::external::program_is_on_path("xdg-open")
+    }
+
+    /// The displays GDK reports; see [`super::gdk_displays`].
+    ///
+    /// Gated with this backend's GTK code: without `gtk-native` there is no window and no display
+    /// to enumerate, so the trait default (an empty list) is the honest answer and stays in place.
+    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    fn displays(&self) -> Vec<Display> {
+        super::gdk_displays::displays()
+    }
+
+    /// The display the window currently occupies, from the window's own position.
+    ///
+    /// `gtk::Window::position()` gives the toplevel's screen-space origin, which is the same point
+    /// GDK uses to decide where a window at that location lands, and
+    /// [`super::gdk_displays::display_index_at`] resolves it to the index [`Self::displays`] hands
+    /// out. An id that names no GTK window (a control, or an unregistered window) answers `None`.
+    ///
+    /// # Why the id is translated first
+    ///
+    /// The id a host holds for a window is the registry id, while `native.windows` is keyed by the
+    /// platform's own window id; `host_window_for` is the association recorded at creation (the
+    /// same translation `set_widget_visible` and the paint path use). A caller that passes the
+    /// platform id directly is honoured too, because `contains_key` accepts it.
+    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    fn display_of_window(&self, window_id: crate::core::ObjectId) -> Option<DisplayId> {
+        if !gtk::is_initialized_main_thread() {
+            // GTK is main-thread-only; asking from anywhere else would abort the process.
+            return None;
+        }
+        let (x, y) = {
+            let native = self.native.lock_guard();
+            let host = if native.windows.contains_key(&window_id) {
+                Some(window_id)
+            } else {
+                crate::widget::runtime::host_window_for(window_id)
+            };
+            host.and_then(|host| native.windows.get(&host))?.position()
+        };
+        super::gdk_displays::display_index_at(x, y).map(DisplayId::new)
+    }
+
+    /// A revision of GDK's current display set; see [`super::gdk_displays::generation`].
+    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    fn display_generation(&self) -> u64 {
+        super::gdk_displays::generation()
     }
 
     /// Reads `MemTotal` from `/proc/meminfo` via [`crate::platform::os_probes`].

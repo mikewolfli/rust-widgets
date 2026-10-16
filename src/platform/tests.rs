@@ -201,6 +201,21 @@ fn battery_unknown_defaults_to_mains_power() {
     assert!(!platform.is_on_battery());
 }
 
+/// Display facts default to the honest absence on a backend that does not enumerate them.
+///
+/// `displays()` must not invent a screen to look helpful — a host that reconciles windows
+/// against a fabricated `1280x800` would "keep a window visible" on a display that does not
+/// exist (principle #37, and the request in `docs/issues/feedback-20261015.md` §十二 whose
+/// whole point is a *real* reading). `display_generation` returning `0` is the same statement:
+/// "this backend does not report display changes" rather than a value to compare.
+#[test]
+fn display_facts_default_to_the_honest_absence() {
+    let platform = StubPlatform::new("test-desktop", PlatformFamily::Desktop);
+    assert!(platform.displays().is_empty());
+    assert_eq!(platform.display_of_window(0), None);
+    assert_eq!(platform.display_generation(), 0);
+}
+
 /// A backend with no spooler must refuse the job rather than report success, so
 /// the caller can surface the failure instead of pretending it printed.
 #[test]

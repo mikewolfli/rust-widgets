@@ -729,6 +729,17 @@ impl Platform for WindowsPlatform {
     fn open_external(&self, target: &str) -> Result<(), crate::platform::types::OpenError> {
         crate::platform::external::spawn_handler("cmd", &["/C", "start", ""], target)
     }
+
+    /// Whether `cmd` is on this host's `PATH`.
+    ///
+    /// The companion of [`Self::open_external`]: that method opens through `cmd /C start`, so "is
+    /// the handler installed" is exactly "is `cmd` findable on `PATH`" (as `cmd.exe`, through
+    /// `PATHEXT`). See [`Platform::has_external_handler`] for why this is a separate,
+    /// side-effect-free query rather than the capability flag (which reports only that the backend
+    /// has the method).
+    fn has_external_handler(&self) -> bool {
+        crate::platform::external::program_is_on_path("cmd")
+    }
     fn dpi_scale_factor(&self) -> f32 {
         #[cfg(target_os = "windows")]
         {

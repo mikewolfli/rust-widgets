@@ -395,7 +395,31 @@ After all four restorations the gate exits 0.
 > never do. It now requires the refusal to *be* the line — `^[[:space:]]*(return[[:space:]]+)?Err\(CapabilityAccessError::IconSourceNotPersistable\)`
 > — a shape no `assert_eq!` line has, measured above: production arm deleted → `❌`, restored
 > byte-identically (`cmp`) → `✅`. The rule this yields: a text gate must anchor on the shape of the
-> code it is about, not on a token that appears anywhere in the file. The behavioural proof is still
+> the code it is about, not on a token that appears anywhere in the file. The behavioural proof is still
 > `tests/icon_record_roundtrip_test.rs::a_runtime_only_source_refuses_the_row_read_on_every_channel`
 > (entry level) and the per-control property tests (control level); A1 is the text-level smoke check
 > that the refusal has not been deleted outright.
+
+## macOS cross-target round (2026-10-16)
+
+`check_macos_cross.sh` landed with the macOS display module (`src/platform/macos/displays.rs`, the
+§十二 answer for this backend). It compiles every `cfg(target_os = "macos")` + `cocoa-legacy`/`macos`
+module for both darwin ABIs on a Linux host, which needs no Apple toolchain (`--all-targets` and the
+`desktop` set do: `alloca` and `minimp3-sys` compile C for the target — recorded in the gate's
+header, not a defect).
+
+| gate | injected | reported |
+|---|---|---|
+| `check_macos_cross.sh` | added `let _injection: u32 = "deliberate type error to prove the cross-check covers this module";` to `src/platform/macos/displays.rs` | `error[E0308]: mismatched types` / `--> src/platform/macos/displays.rs:106:31` / `expected \`u32\`, found \`&str\`` / `error: could not compile \`rust_widgets\` (lib)` (exit 1; restored byte-identically → exit 0) |
+| `check_macos_cross.sh` (a genuine defect it found on its first cold run, not an injection) | nothing — the gate was simply run for the first time | `error[E0054]: cannot cast \`i32\` as \`bool\`` / `--> src/platform/macos/file_picker.rs:65:71` and `:68:65` / `FAIL: \`aarch64-apple-darwin\` does not type-check with the macOS backend feature set` (exit 1 on aarch64 only) |
+
+> **The second row is the point of the gate, and it is a real finding.** `objc` 0.2 defines
+> `BOOL = c_schar` (`i8`) on **every arch except aarch64**, where it is `bool`
+> (`objc-0.2.7/src/runtime.rs`), so `1 as BOOL` compiles for `x86_64-apple-darwin` and fails for
+> `aarch64-apple-darwin`. `src/platform/macos/file_picker.rs` had exactly two such casts, and they
+> are the same lines `feedback-20261015.md` §十.1 quoted as *fixed* by `8178d048` — that fix was only
+> ever complete for the Intel slice, because `x86_64-apple-darwin` was the only one being checked.
+> Both now use `cocoa::base::YES` (the arch-correct constant). `grep -rn 'as BOOL' src/` is the
+> iceberg scan and returns nothing else. Which is the lesson worth keeping: a cross gate that checks
+> **one** ABI is a gate that can hide a break in the other, exactly as `check_ios_cross.sh` records
+> for the device/simulator split.

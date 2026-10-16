@@ -631,6 +631,32 @@ pub fn dpi_scale_factor() -> f32 {
     get_platform().dpi_scale_factor()
 }
 
+/// Returns the displays the active backend reports.
+///
+/// See [`Platform::displays`](crate::platform::Platform::displays) for what an empty list means.
+#[cfg(not(alloc_frugal))]
+pub fn displays() -> alloc::vec::Vec<crate::platform::types::Display> {
+    get_platform().displays()
+}
+
+/// Returns which display a window is on, when the active backend can answer.
+///
+/// See [`Platform::display_of_window`](crate::platform::Platform::display_of_window).
+#[cfg(not(alloc_frugal))]
+pub fn display_of_window(
+    window_id: crate::core::ObjectId,
+) -> Option<crate::platform::types::DisplayId> {
+    get_platform().display_of_window(window_id)
+}
+
+/// Returns a revision of the active backend's display set.
+///
+/// See [`Platform::display_generation`](crate::platform::Platform::display_generation).
+#[cfg(not(alloc_frugal))]
+pub fn display_generation() -> u64 {
+    get_platform().display_generation()
+}
+
 // ---------------------------------------------------------------------------
 // Mobile extension (not embedded)
 // ---------------------------------------------------------------------------

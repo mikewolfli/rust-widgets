@@ -202,9 +202,13 @@ pub use crate::platform::runtime::RuntimeGuiMode;
 #[cfg(not(alloc_frugal))]
 pub use crate::platform::runtime::{backend_name, capabilities, get_platform, init, quit, run};
 #[cfg(not(alloc_frugal))]
-pub use crate::platform::runtime::{dpi_scale_factor, runtime_gui_mode, runtime_gui_mode_for};
+pub use crate::platform::runtime::{
+    display_generation, display_of_window, displays, dpi_scale_factor,
+};
 #[cfg(feature = "mobile-api")]
 pub use crate::platform::runtime::{mobile_attach_to_native_view, mobile_backend_name};
+#[cfg(not(alloc_frugal))]
+pub use crate::platform::runtime::{runtime_gui_mode, runtime_gui_mode_for};
 /// The invalidation recorder and its override, for tests that need to observe what the
 /// runtime asked a backend to do. Public because the runtime's own tests live in
 /// another module; nothing outside tests installs an override.

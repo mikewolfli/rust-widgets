@@ -11,6 +11,7 @@ use crate::platform::accessibility::AccessibilityBridge;
 use crate::platform::clipboard::RichClipboardBackend;
 use crate::platform::ime::ImeBridge;
 use crate::platform::macos::types::*;
+use crate::platform::types::{Display, DisplayId};
 use crate::platform::Platform;
 use crate::platform::PlatformCapabilities;
 use cocoa::appkit::{
@@ -154,6 +155,50 @@ impl Platform for MacOSPlatform {
     /// spawn.
     fn open_external(&self, target: &str) -> Result<(), crate::platform::types::OpenError> {
         crate::platform::external::spawn_handler("open", &[], target)
+    }
+
+    /// Whether `open` is on this host's `PATH`.
+    ///
+    /// The companion of [`Self::open_external`]: that method hands a target to `open`, so "is the
+    /// handler installed" is exactly "is `open` findable on `PATH`". See
+    /// [`Platform::has_external_handler`] for why this is a separate, side-effect-free query rather
+    /// than the capability flag (which reports only that the backend has the method).
+    fn has_external_handler(&self) -> bool {
+        crate::platform::external::program_is_on_path("open")
+    }
+
+    /// The displays AppKit reports; see [`super::displays`].
+    fn displays(&self) -> Vec<Display> {
+        super::displays::displays()
+    }
+
+    /// The screen the window is on, asked of AppKit's `-[NSWindow screen]`.
+    ///
+    /// The id is translated through this backend's handle registry (the map `create_window` fills)
+    /// and the window's own `screen` is read, which is AppKit's answer to the question rather than a
+    /// re-match of the window frame against the screen list. An id that names no window, or a
+    /// `Canvas` handle rather than a `Window`, answers `None` instead of messaging an object that is
+    /// not an `NSWindow`.
+    fn display_of_window(&self, window_id: ObjectId) -> Option<DisplayId> {
+        if !super::types::is_main_thread() {
+            // AppKit is main-thread-only; messaging it from anywhere else would raise.
+            return None;
+        }
+        // Looked up directly rather than through `get_handle`, which logs an error for a miss:
+        // "which screen is *this* id on" is a question a host may ask of an id that is not a
+        // window, and that is a `None`, not a defect worth a log line.
+        let handle = crate::compat::lock(&self.handles).get(&window_id).copied()?;
+        if handle.kind != HandleKind::Window || handle.ptr == 0 {
+            return None;
+        }
+        // SAFETY: the registry only holds pointers this backend created, a `Window` handle is an
+        // `NSWindow`, and the main thread is established above.
+        unsafe { super::displays::window_display(handle.ptr as id) }
+    }
+
+    /// A revision of AppKit's current display set; see [`super::displays::generation`].
+    fn display_generation(&self) -> u64 {
+        super::displays::generation()
     }
 
     /// Reads installed physical memory via `sysconf` (`_SC_PHYS_PAGES` x `_SC_PAGESIZE`).

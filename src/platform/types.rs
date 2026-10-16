@@ -4,7 +4,7 @@
 //! Platform abstraction types and capability contracts.
 
 use crate::compat::{format, String, Vec};
-use crate::core::{ObjectId, Orientation, PlatformFamily};
+use crate::core::{ObjectId, Orientation, PlatformFamily, Rect};
 #[cfg(all(feature = "serde", widgets_unstripped))]
 use serde::{Deserialize, Serialize};
 
@@ -503,6 +503,51 @@ pub fn default_capabilities_for(_family: PlatformFamily) -> PlatformCapabilities
     }
 }
 
+/// Identifies one display in a backend's [`Platform::displays`] list.
+///
+/// A newtype rather than a bare `u64` so a display id cannot be confused with a widget id or a
+/// window id at a call site: they are all integers, and the mistake is silent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct DisplayId(u64);
+
+impl DisplayId {
+    /// Wraps a backend-defined raw identifier.
+    pub const fn new(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    /// The backend-defined raw identifier.
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// One display (monitor) the host can place windows on.
+///
+/// # Why this exists
+///
+/// A host that keeps a window visible across a monitor change — "the panel was on the display
+/// that just got unplugged; put it back on a display that remains" — needs two readings it could
+/// not get from this crate before: the current set of displays, and which one a window is on.
+/// [`Platform::dpi_scale_factor`] answers a single global scale for "the" display and
+/// [`PlatformCapabilities::dpi_scaling`] says whether that answer is measured, but neither can
+/// enumerate screens, so a host could neither compare a window's screen against the remaining
+/// ones nor read a per-display `scale` after a DPI change. See
+/// `docs/issues/feedback-20261015.md` §十二.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Display {
+    /// Identifies this display within the backend's list; stable while it stays attached.
+    pub id: DisplayId,
+    /// The display's full bounds in the desktop's logical pixel space.
+    pub bounds: Rect,
+    /// The part of [`Self::bounds`] a window may occupy — excludes taskbars, docks and panels.
+    pub work_area: Rect,
+    /// The scale factor for this display (`1.0` means unscaled).
+    pub scale: f32,
+    /// Whether this is the host's primary/reference display.
+    pub is_primary: bool,
+}
+
 /// Platform backend contract used by widget/runtime layers.
 ///
 /// Core lifecycle methods are required. Optional capabilities (IME,
@@ -588,6 +633,53 @@ pub trait Platform: Send + Sync {
     /// Logical DPI scale factor for coordinate transforms.
     fn dpi_scale_factor(&self) -> f32 {
         1.0
+    }
+    /// The displays this host can place windows on, in the backend's own order.
+    ///
+    /// # What an empty list means
+    ///
+    /// `Vec::new()` is the default, and it says "this backend reports no displays" — a state-only
+    /// backend genuinely has none, and a backend that does not enumerate them reports the same
+    /// honest absence rather than a made-up screen (principle #37; the same direction every default
+    /// on this trait errs). A host that needs to know the difference before it relies on the list
+    /// pairs it with [`PlatformCapabilities::dpi_scaling`], which is `false` on exactly the
+    /// backends whose display facts are not measured here.
+    ///
+    /// # What a backend that implements it must be able to answer
+    ///
+    /// At least one entry on a real desktop session, the entry's `scale` changing when the
+    /// display's DPI changes, and the list shrinking when a display is unplugged. The Linux/GTK
+    /// backend reads these from GDK's monitor list; see its override for the mechanics.
+    fn displays(&self) -> Vec<Display> {
+        Vec::new()
+    }
+    /// Identifies the display a window currently occupies, or `None` when that cannot be answered.
+    ///
+    /// `None` is the default for the same reason [`Self::displays`] is empty by default: a backend
+    /// that does not track window placement reports an honest absence. A backend that implements it
+    /// answers from the window's own position against [`Self::displays`].
+    fn display_of_window(&self, _window_id: ObjectId) -> Option<DisplayId> {
+        None
+    }
+    /// A value that changes when the set of displays changes (a display attached or removed, the
+    /// primary display changed, or a display's DPI changed).
+    ///
+    /// # Why a re-readable counter and not a callback
+    ///
+    /// The library cannot deliver a callback on a thread the host is not running, and a host that
+    /// does not own the loop cannot be *pushed* an event. What it can be given is a value it
+    /// compares against the one it saw last — the same shape [`crate::asset::AssetWatcher`] uses for
+    /// its change signal. `0` means "this backend does not report display changes", the honest
+    /// default; a host that reads a non-zero value must treat equality as "nothing changed" only
+    /// within one backend, so the two are compared with each other, never to `0`.
+    ///
+    /// A backend may derive this from the current configuration (so it is a *revision* rather than a
+    /// pushed notification) or bump it from a native signal; either way the contract is only that a
+    /// different value means ["re-read `displays()`"].
+    ///
+    /// ["re-read `displays()`"]: Platform::displays
+    fn display_generation(&self) -> u64 {
+        0
     }
     /// The host's text-size preference, as a multiplier on the nominal font size.
     ///
@@ -2315,6 +2407,30 @@ pub trait Platform: Send + Sync {
     /// [`PlatformCapabilities::open_external`].
     fn open_external(&self, _target: &str) -> Result<(), OpenError> {
         Err(OpenError::Unsupported)
+    }
+    /// Whether the host has a program installed that [`Platform::open_external`] can hand a target
+    /// to.
+    ///
+    /// # Why this exists beside the capability flag
+    ///
+    /// [`PlatformCapabilities::open_external`] answers "does this backend *implement*
+    /// [`Platform::open_external`]" — a fact about the backend, `true` on every desktop backend
+    /// whether or not the machine actually has the handler program (`xdg-open` / `open` / `cmd`)
+    /// installed. A caller that wants to attribute a failed "open this document" action — "this
+    /// machine has no handler" versus "this target is malformed" — needs the **host-configuration**
+    /// fact, and until this method existed the only way to learn it was [`OpenError::NoHandler`],
+    /// which comes back only after a target is really handed over (that is, really opened). This
+    /// query asks the same question without touching a target.
+    ///
+    /// # Why the default is `false`
+    ///
+    /// A backend that does not override this has no handler program to report, which is the honest
+    /// absence (principle #37) — the same direction every other default on this trait errs. It is
+    /// not a claim that the host has no handler in general; it is the backend saying "I do not know
+    /// of one from here", which pairs with [`PlatformCapabilities::open_external`] being `false` on
+    /// exactly the backends that reach this default.
+    fn has_external_handler(&self) -> bool {
+        false
     }
     /// Asks the host for a path, using the picker the user's own desktop provides.
     ///

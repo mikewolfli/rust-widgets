@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use super::super::{PathPickerError, PathPurpose};
-use cocoa::base::{id, nil, BOOL, NO};
+use cocoa::base::{id, nil, BOOL, NO, YES};
 // `NSAutoreleasePool` is the trait that provides `autorelease()`: without it the call below does
 // not resolve, which is how the first probe compile of this file failed.
 use cocoa::foundation::{NSAutoreleasePool, NSString};
@@ -62,10 +62,10 @@ pub(crate) fn choose_path(
         match purpose {
             PathPurpose::SelectDirectory => {
                 let _: () = msg_send![panel, setCanChooseFiles: NO];
-                let _: () = msg_send![panel, setCanChooseDirectories: 1 as BOOL];
+                let _: () = msg_send![panel, setCanChooseDirectories: YES];
             }
             PathPurpose::OpenFile => {
-                let _: () = msg_send![panel, setCanChooseFiles: 1 as BOOL];
+                let _: () = msg_send![panel, setCanChooseFiles: YES];
                 let _: () = msg_send![panel, setCanChooseDirectories: NO];
             }
             // A save panel chooses a file by definition; the two flags do not apply to it.
