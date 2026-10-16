@@ -585,7 +585,7 @@ fn forward_mouse(this: &Object, event: id, phase: MousePhase) {
                     position.x,
                     position.y,
                     1,
-                    super::types::map_modifiers(ns_event_modifier_flags(event)),
+                    super::accelerator::map_modifiers(ns_event_modifier_flags(event)),
                 ),
                 MousePhase::Release => Event::MouseRelease { pos: position, button: 1 },
                 MousePhase::Drag => Event::MouseMove { pos: position },
@@ -593,7 +593,7 @@ fn forward_mouse(this: &Object, event: id, phase: MousePhase) {
                     position.x,
                     position.y,
                     crate::event::mouse_button::SECONDARY,
-                    super::types::map_modifiers(ns_event_modifier_flags(event)),
+                    super::accelerator::map_modifiers(ns_event_modifier_flags(event)),
                 ),
                 MousePhase::SecondaryRelease => Event::MouseRelease {
                     pos: position,

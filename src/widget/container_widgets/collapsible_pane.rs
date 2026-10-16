@@ -569,7 +569,10 @@ impl Draw for CollapsiblePane {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{Point, Rect, Size};
+    #[cfg(full_widgets)]
+    use crate::core::Size;
+    use crate::core::{Point, Rect};
+    #[cfg(full_widgets)]
     use crate::render::{PaintBackend, RenderContext, SvgPaintBackend};
     use std::sync::Arc;
 

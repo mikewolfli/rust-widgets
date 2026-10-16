@@ -452,8 +452,10 @@ mod tests {
         assert_eq!(HolographicKeyboardDetector::compute_confidence(20.0, -1.0), 0.0);
         assert_eq!(HolographicKeyboardDetector::compute_confidence(20.0, f32::NAN), 0.0);
         assert_eq!(HolographicKeyboardDetector::compute_confidence(20.0, f32::INFINITY), 0.0);
-        // A valid threshold still scores by depth.
-        assert_eq!(HolographicKeyboardDetector::compute_confidence(20.0, 15.0), 1.0);
+        // A valid threshold still scores by depth: confidence reaches its maximum at twice the
+        // threshold (`compute_confidence` maps `depth / threshold` onto `0.0..=1.0` over
+        // `0.0..=2.0`).
+        assert_eq!(HolographicKeyboardDetector::compute_confidence(30.0, 15.0), 1.0);
         assert!(HolographicKeyboardDetector::compute_confidence(5.0, 15.0) < 1.0);
         assert_eq!(HolographicKeyboardDetector::compute_confidence(0.0, 15.0), 0.0);
     }

@@ -117,13 +117,15 @@ Client-verified facts for this revision:
 
 - The **host** test suite runs the state backend and is green on every host
   (`cargo test --no-default-features --features desktop --lib`).
-- The iOS-target compile checks and the Simulator probe outputs that earlier
-  revisions of this file recorded (`tools/run_ios_testapp.sh`) were taken
-  **before** the BLUE15 control deletion and have **not** been re-run: the
-  development host is macOS with no iOS SDK/toolchain in this workspace, so the
-  `ios-uikit-ffi` build and the Simulator probe are **unverified** for this
-  revision. Re-running `tools/run_ios_testapp.sh` on a Mac with Xcode is the
-  required next step.
+- The **Simulator probe** (`tools/run_ios_testapp.sh`) was re-run on a real Mac
+  host (macOS 15.7.3 / Apple M4, Xcode 26.2) against the iOS 26.2 (`iPhone 17
+  Pro`) simulator on 2026-10-15: the current check set — including
+  `destroy_unmounts`, `dpi_claim_matches_the_measurement` and `quit_is_clean` —
+  passes (`RESULT: PASS`, 12 checks). The `ios-uikit-ffi` build and the
+  `aarch64-apple-ios-sim` cross-compile are covered by that run; the raw output
+  is in `docs/platform/real-device-verification.md` §4.
+- **Physical device is still unverified**: every run is on the Simulator
+  (`aarch64-apple-ios-sim`), never a physical iPhone.
 - `create_ui_window` uses `initWithFrame:` (scene-less) because the library has
   no access to a `UIWindowScene` instance; `initWithWindowScene:` would be the
   modern path once a scene is threaded through by the host app.

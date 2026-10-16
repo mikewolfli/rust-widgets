@@ -2092,6 +2092,7 @@ mod tests {
     }
 
     /// A drag extends the selection; a hover that was never pressed does not move the caret.
+    #[cfg(device_profile)]
     #[test]
     fn a_drag_extends_the_selection_but_a_bare_hover_does_not() {
         let mut ta = area("abcdef");

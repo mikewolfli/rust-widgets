@@ -30,9 +30,9 @@
 | **Windows（Win32）** | 真 Windows 10.0.22621（MINGW64/MSVC，rustc 1.95.0） | ✅ **已确认（旧修订，需复跑）** | 2026-09-15 | `cargo test --no-default-features --features desktop --lib -q` → `4026 passed; 0 failed`；example + integration test 同机跑过。见 `docs/log/archive/log-20260915-1.md` |
 | **macOS / `cocoa`** | 真 Mac（macOS 15.7.3，Apple M4 / arm64） | ✅ **已确认** | 2026-09-11 与 2026-10-14（`c957fdec`，2.8.6） | AppKit 探针 12 项 PASS（2026-09-11）；契约探针 `backend_name()=cocoa`、`NativeInteractive`、真的进 `[NSApplication run]`（2026-10-14）。见 `docs/log/archive/log-20260911-2.md`、`docs/issues/feedback-20261013.md` |
 | **macOS / `macos-objc2-preview`** | 真 Mac | ⚠️ **部分（原生探针已删；post-BLUE15 仅剪贴板测试）** | 2026-09-11（原生，已过期）/ 2026-10-14 | `NSPasteboard` 往返：`cargo test … platform::macos_objc2` → 10 passed（`docs/log/log-20261014-1.md` 第 3 轮 §5）；`run()` 仍是轮询 loop（`src/platform/macos/status.md:127-129`） |
-| **iOS** | **iOS Simulator**（iPhone 17 Pro，iOS 26.2）——**非真机** | ⚠️ **已过期（模拟器；真机 ❌ 从未验证）** | 2026-09-30 最后一次跑 | `bash tools/run_ios_testapp.sh` → `RESULT: PASS`（`docs/log/archive/log-20260930-4.md`）。当前 `bindings/ios/main.m` 的检查项多于该次记录 → 需复跑 |
+| **iOS** | **iOS Simulator**（iPhone 17 Pro，iOS 26.2 / 23C54）——**非真机** | ✅ **已确认（模拟器；真机 ❌ 从未验证）** | 2026-10-15，`1f3a6fa8` | `bash tools/run_ios_testapp.sh` → 12 项全 `[PASS]`，`RESULT: PASS`（原始输出见本节 §4，宿主 macOS 15.7.3 / Apple M4 / Xcode 26.2） |
 | **Android** | **真机 Xiaomi M2102J2SC**（Android 13/API 33，arm64-v8a）**+ 模拟器**（API 34 x86_64 KVM） | ✅ **已确认（旧修订，需复跑）** | 2026-09-11 | `ANDROID_ABI=arm64-v8a ANDROID_SERIAL=65441025 bash tools/run_android_testapp.sh` → JNI 双向 `RESULT: PASS`，真 `ACTION_OPEN_DOCUMENT` 选择器弹出。见 `docs/log/archive/log-20260911-1.md`、`src/platform/android/status.md` |
-| **HarmonyOS / OpenHarmony** | 无设备、无模拟器（`hdc list targets` → `[Empty]`；SDK 不含 emulator） | ❌ **未验证（仅交叉编译 + 链接）** | 2026-09-16 → 2026-10-14 | `cargo ohos build -t {aarch64,armv7,x86_64}` 真产出 `librust_widgets.so`（ELF machine 校验）；`loongarch64` 为 Tier 3、无法构建。见 `tools/check_harmony_cross.sh`、`src/platform/harmony/status.md` |
+| **HarmonyOS / OpenHarmony** | **DevEco 模拟器** `Pura X View`（HarmonyOS 6.0.0(20)；guest `OpenHarmony-6.0.0.47` / API 20 / kernel 5.10.210 aarch64） | ✅ **库 core 已在真运行时验证（模拟器）；ArkUI/NAPI 面 ❌ 未验证** | 2026-10-15 | `bash tools/run_harmony_testapp.sh` → `examples/embedded_host` 在 guest 上跑完（rc=0）并打印 `DONE`。见 §6、`src/platform/harmony/status.md`；交叉编译 + 链接证据另由 `tools/check_harmony_cross.sh` 提供 |
 | **Wayland** | 真 **headless weston** 合成器（`wl_compositor`/`xdg_wm_base` 真绑定） | ✅ **已确认（协议绑定；非屏幕合成/输入）** | 2026-09-11 | `tools/run_wayland_compositor_tests.sh` → `bound live compositor … 14 passed`。见 `docs/log/archive/log-20260911-1.md` |
 | **WASM / Web** | **WASI 运行时（wasmtime）** 跑库代码；**浏览器 ❌ 未验证** | ✅ **已确认（仅库代码）** | 2026-09-02 | `cargo test --target wasm32-wasip1 --no-default-features --features wasm` → 2155 passed；浏览器 `wasm32-unknown-unknown` 只 `check`/`build`。见 `docs/log/archive/log-20260902-1.md` |
 | **Embedded / mini** | **宿主模拟**（内存 framebuffer / 内嵌引擎）——**无真实硬件** | ⚠️ **宿主模拟** | 2026-10-15 | `cargo test --lib --no-default-features --features mini -- render_engine::embedded` → 4 passed；生成器产物真编译（`tools/check_generator_output_compiles.sh`）。见 `docs/log/log-20261014-1.md` 第 4 轮 |
@@ -85,6 +85,8 @@ integration `--test widget_accessor_routing_test`（24 passed）、profile 门�
 | 2026-09-11 | `examples/apple_appkit_probe`（`--features desktop`） | `RESULT: PASS (12 named checks)`：主线程、`NSApplication`、真 `NSWindow` 注册、`NSMenu`、`NSPasteboard` 往返、四种对话框、几何/可见性从**原生对象**读回（`docs/log/archive/log-20260911-2.md`） |
 | 2026-10-14 / `c957fdec` | 契约探针（T01.01） | `backend_name()=cocoa`、`runtime_gui_mode()=NativeInteractive`、真的进 `[NSApplication run]`；**跨线程 `quit()` 不结束 loop**（即 feedback §6 的缺口，见 `docs/issues/feedback-20261013.md`） |
 
+> 上表 2026-09-11 行的 AppKit 探针（`examples/apple_appkit_probe*`）随 BLUE15 自绘改造**已删除**（`tools/check_apple_native.sh` 记录移除），该行是**历史记录**；当前修订的 cocoa 真机证据以 2026-10-14 契约探针与宿主测试套件（`cargo test --no-default-features --features desktop --lib`）为准。
+
 ### 3.2 `macos-objc2-preview` 后端 — ⚠️ 部分
 
 - 2026-09-11：AppKit 探针 `12 checks PASS`（**但该探针面向 BLUE15 之前的原生控件架构，现已删除**）。
@@ -96,23 +98,31 @@ integration `--test widget_accessor_routing_test`（24 passed）、profile 门�
 - `tools/check_apple_native.sh` 在非 macOS 宿主上**按设计** `exit 2`（`unsupported host`），故 Apple 运行时**不在** Linux 宿主覆盖范围内。
 - `docs/log/log-20261005-1.md:214` 有一行「真实 macOS 原生控件 ✅ 真实创建按钮 + 标签」，与 BLUE15 后「无 per-kind 原生控件」的现状**不符**，标为**可疑/需复核**。
 
-## 4. iOS — ⚠️ 模拟器已过期 / 真机 ❌ 未验证
+## 4. iOS — ✅ 模拟器已确认 / 真机 ❌ 未验证
 
-**宿主**：Mac + Xcode；运行时是 **iOS Simulator**（最后一次：iOS 26.2，`iPhone 17 Pro`）。
+**宿主**：Mac（macOS 15.7.3，Apple M4）+ Xcode **26.2**；运行时是 **iOS Simulator**（iOS 26.2 / 23C54，`iPhone 17 Pro`）。**非真机**。
 
 ```text
-$ bash tools/run_ios_testapp.sh
+$ bash tools/run_ios_testapp.sh          # 2026-10-15, HEAD 1f3a6fa8
     runtime=com.apple.CoreSimulator.SimRuntime.iOS-26-2 device='iPhone 17 Pro'
-    [PASS] ui_application / create_window_id / backend_window_is_a_painting_surface
-    [PASS] control_handles / self_painted_no_native_views / text_roundtrip / visibility_geometry
+    [PASS] ui_application: UIApplication.sharedApplication = 0x10ca05270
+    [PASS] create_window_id: rw_create_window = 6000285942072475648
+    [PASS] backend_window_is_a_painting_surface: before=1 after=2 library=0x10b7077b0 rootVC=0x10cc07340
+    [PASS] control_handles: button=6000285942072475649 label=6000285942072475650 line_edit=6000285942072475651
+    [PASS] self_painted_no_native_views: UIButton=0x0 UILabel=0x0 UITextField=0x0
+    [PASS] text_roundtrip: rw_get_widget_text = Tapped
+    [PASS] visibility_geometry: hidden_reported=1 shown_reported=1
+    [PASS] destroy_unmounts: rw_destroy_widget=1 text_after=(empty)
+    [PASS] backend_identified: rw_backend_name = custom-paint-control-backend
+    [PASS] dpi_claim_matches_the_measurement: caps=0x30 dpi_scaling=0 scale=1.000
+    [PASS] no_native_menu_claim: caps=0x30 native_menu=0
+    [PASS] quit_is_clean: rw_quit returned without aborting
     RESULT: PASS
 ```
-`docs/log/archive/log-20260930-4.md`。
 
 **边界与冲突**：
-- **真机（物理 iPhone）从未验证**——历史记录都是 `aarch64-apple-ios-sim`（模拟器），`docs/plans/FUTURE.md` 亦记「physical-device run not yet performed」。
-- ❓ **记录冲突**：`src/platform/ios/status.md:120-126` 称 BLUE15 后的模拟器探针「未复跑、对本修订未验证」；而日志显示 **2026-09-14** 与 **2026-09-30** 各复跑过一次且 PASS。同时，当前 `bindings/ios/main.m` 的检查项（`destroy_unmounts`、`dpi_claim_matches_the_measurement`、`quit_is_clean` …）**多于**最后一次记录。
-  → 结论：**架构在 BLUE15 后复跑过；但当前探针的完整检查集自 2026-09-30 起未复跑**。
+- **真机（物理 iPhone）从未验证**——本行是 `aarch64-apple-ios-sim`（模拟器），`docs/plans/FUTURE.md` 亦记「physical-device run not yet performed」。
+- ✅ **原记录冲突已消解**：本节此前记「当前 `bindings/ios/main.m` 的完整检查集自 2026-09-30 起未复跑」，`src/platform/ios/status.md` 亦称 BLUE15 后的模拟器探针「未复跑、对本修订未验证」。本次（2026-10-15）在**真机宿主**的模拟器上复跑，当前探针全集 **12 项全 PASS**，含 `destroy_unmounts` / `dpi_claim_matches_the_measurement` / `quit_is_clean`。
 - iOS `UIPasteboard` 剪贴板：**仅交叉编译**（`cargo check --target aarch64-apple-ios …`），无会话运行（`docs/log/log-20261014-1.md` 第 3 轮 §2/§10）。
 
 ## 5. Android — ✅ 已确认（旧修订，需复跑）
@@ -137,21 +147,46 @@ I RustWidgetsTest: RESULT: PASS
 - **MIUI/HyperOS 安装守卫**（真机发现）：普通 `adb install` 报 `INSTALL_FAILED_USER_RESTRICTED`，runner 自动回退到 `pm install-create/-write/-commit` 会话 API。
 - 无 `ANDROID_SERIAL`/无 AVD 时，`tools/check_android_runtime.sh` 前置探测后 `exit 2`（`unsupported host`），**不**靠超时收场。
 
-## 6. HarmonyOS / OpenHarmony — ❌ 未验证（仅交叉编译 + 链接）
+## 6. HarmonyOS / OpenHarmony — ✅ 库 core 已在真实运行时验证（模拟器）；ArkUI 面 ❌ 未验证
 
-**硬边界（不是遗漏）**：开发宿主从未连接过 HarmonyOS 设备或模拟器——
+**运行时（模拟器）**：**DevEco 模拟器实例 `Pura X View`**（HarmonyOS 6.0.0(20)）。
 
 ```text
-$ ~/Library/OpenHarmony/Sdk/20/toolchains/hdc list targets
-[Empty]                       ← 无设备、无模拟器
-$ ls ~/Library/OpenHarmony/Sdk/20/
-ets  js  native  previewer  toolchains   ← SDK 不含 emulator
+$ hdc list targets
+127.0.0.1:5555
+$ hdc shell param get const.ohos.fullname
+OpenHarmony-6.0.0.47
+$ hdc shell param get const.ohos.apiversion
+20
+$ hdc shell uname -a
+Linux localhost 5.10.210 #1 SMP Thu Sep 18 17:17:55 CST 2025 aarch64
+$ bash tools/run_harmony_testapp.sh
+      ok   DEMO_PROFILE=embedded
+      ok   SUPPORTS_SURFACES=true
+      ok   DONE
+✅ OpenHarmony runtime verification PASSED (embedded_host, target=127.0.0.1:5555)
 ```
-`docs/log/archive/log-20260930-4.md:595-609`；`docs/plans/harmony_integration.md` 亦把「真机/模拟器运行验证」标为 ⬜。
 
-**已确认的只是编译 + 链接**：`aarch64` / `armv7` / `x86_64` 各**产出并链接**真 `librust_widgets.so`（ELF machine 与 triple 一致），XComponent 桥链接 `libace_ndk.z.so`；`tools/check_harmony_cross.sh` 正向断言该状态（`src/platform/harmony/status.md:255-259`、`:272-288`）。
+宿主：macOS 15.7.3（24G419）/ Apple M4；DevEco SDK `hdc` 3.2.0f。runner 为 `tools/run_harmony_testapp.sh`。
+
+**判定口径**：`examples/embedded_host.rs`（`embedded` profile）在 guest 上**跑完**（rc=0），逐行断言其输出。覆盖构建身份查询、帧预算、帧调度任务队列、显式 stride 的表面分配、行拷贝、引擎登记表与能力契约。
+
+**未覆盖范围（为何不是「HarmonyOS 全绿」）**：
+- **ArkUI / `XComponent` / NAPI 完全未执行**——那需要一个带 ArkTS 宿主的 `.hap`，本仓库不构建（`docs/plans/harmony_integration.md` 仍标 ⬜）。
+- 故探针用 `embedded` 而非 `desktop`：本 triple 的 `desktop` 构建链接 `libace_napi.z.so`，其依赖 `libark_jsruntime.so` 在 `hdc shell` 进程里无法解析（沙箱之外无 ArkTS VM），加载即 `rc=127`。限制来自**执行上下文**，不是代码。
+- **模拟器 ≠ 真机**：本行全部是模拟器；无 HarmonyOS 真机证据。
+- 覆盖的**只有一个 ABI**（`aarch64`），即模拟器的 ABI。
+
+**编译 + 链接（独立于上面的运行，仍成立）**：`aarch64` / `armv7` / `x86_64` 各产出并链接真 `librust_widgets.so`（ELF machine 与 triple 一致），XComponent 桥链接 `libace_ndk.z.so`；`tools/check_harmony_cross.sh` 正向断言该状态（`src/platform/harmony/status.md:255-259`、`:272-288`）。
 
 **Tier 3 限制（如实记录）**：`loongarch64-unknown-linux-ohos` **无法构建**——rustup 无预编译 std（Tier 3）+ SDK 无 loongarch64 libc（`bits/alltypes.h` 缺失）。门禁把这一状态当作**正面断言**，而非假装通过。
+
+**复现前置与宿主事实（都实际踩过）**：
+- 模拟器必须**已在运行**（DevEco Device Manager，或 `DevEco-Studio.app/Contents/tools/emulator/Emulator -start '<instance>'`）；无目标时 runner 前置探测后 `exit 2` + `unsupported host (...)`（原则 #103），**不**靠超时收场。
+- 冷启动实例会被 DevEco 的 `emulator-crash-service` 看门狗在约 21s 后杀掉（`Emulator snapshot boot timeout, try to restart`），早于 guest 启动完成——故不能从脚本托管启动。
+- 模拟器自身日志里的 `hdc is not connected, hdc not init` **不代表传输不可用**：同一时刻 `hdc list targets` 正常返回目标。
+
+**边界订正（推翻本节此前结论）**：本节此前写「❌ 未验证（仅交叉编译 + 链接）」并断言「仓库缺少把它跑起来所需的 `.hap` 构建 + runner」。前半句已被本轮推翻——**不需要 `.hap` 即可执行**：OpenHarmony 的 `hdc shell` 直接运行 `/data/local/tmp` 下的 ELF（已用最小 aarch64-musl 探针实测）。后半句只对 **ArkUI 面**成立。历史记录（当时确实无模拟器）：`docs/log/archive/log-20260930-4.md:595-609`。
 
 ## 7. Wayland — ✅ 已确认（协议绑定）
 
@@ -205,7 +240,7 @@ test result: ok. 14 passed; 0 failed; 0 ignored
 
 | 项 | 冲突内容 | 处置 |
 |---|---|---|
-| iOS Simulator 是否复跑 | `src/platform/ios/status.md:120-126` 说"未复跑"；日志说 2026-09-14 / 2026-09-30 各跑过一次 | 标 ❓；以"日志是运行证据"为准，但**当前探针全集仍需复跑** |
+| iOS Simulator 是否复跑 | `src/platform/ios/status.md:120-126` 说"未复跑" | ✅ **已消解**：2026-10-15 在真机宿主的 iOS 26.2 模拟器上复跑，当前探针 12 项全 PASS（见 §4） |
 | macOS「两个后端都已原生验证」 | `src/platform/macos/status.md:6,22` 的"Last verified 2026-09-11"面向**已删除的原生控件架构**；而 2026-10-05 日志又出现一条与 BLUE15 后现状不符的"原生控件 ✅" | 标 ⚠️/❓；以 2026-10-14 `cocoa` 契约探针为当前修订的真机证据 |
 | 引用路径 | `src/platform/macos/status.md` 引用 `docs/log/log-20260911-2.md`，实际在 `docs/log/archive/` 下 | 待修正引用（文档漂移） |
 | Apple 宿主存在性 | `docs/reports/CHANGELOG.md`（2.8.3，2026-09-30）称"开发机上没有 Apple 宿主"；同日的 iOS Simulator 日志却在跑 | 标 ❓；可能是**两台不同开发机**，未采信任一方 |

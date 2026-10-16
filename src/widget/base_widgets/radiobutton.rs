@@ -1290,6 +1290,7 @@ mod tests {
     }
 
     /// `i` and `W` must not be measured as the same width, so the wider label gets a wider target.
+    #[cfg(device_profile)]
     #[test]
     fn narrow_and_wide_labels_are_measured_by_the_shared_ruler() {
         let mut narrow = RadioButton::new(Rect::new(0, 0, 400, 30));

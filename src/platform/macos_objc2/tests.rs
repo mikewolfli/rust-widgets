@@ -84,19 +84,21 @@ fn objc2_owns_no_control_state() {
 /// window is visible and stops being visible once hidden. The id contract is the
 /// other half this backend owes a caller.
 ///
-/// # Why the teardown half is host-dependent
+/// # Why teardown is a state round trip here
 ///
 /// `destroy_widget` performs the **native** teardown before dropping the record, and the AppKit
 /// path refuses to run off the main thread (`destroy_native_handle` →
-/// `NativeDestroyOutcome::RefusedOffMainThread`) — which is the thread libtest gives every test.
-/// That refusal is deliberate and load-bearing: it is what keeps a window on screen from being
-/// forgotten by the bookkeeping before a main-thread retry can close it. So on an Apple host with
-/// `macos` compiled, the assertion that can actually be made here is the refusal *plus* the
-/// retained record; where the native module is compiled out, the state round trip runs.
+/// `NativeDestroyOutcome::RefusedOffMainThread`) — that refusal is deliberate and load-bearing,
+/// because it is what keeps a window that is *on screen* from being forgotten by the bookkeeping
+/// before a main-thread retry can close it.
 ///
-/// Before this split the test asserted only the state round trip, so it passed on every host
-/// *except* the one whose target it exercises (`macos` on macOS failed at this line) — the
-/// host-invisible-test class in reverse. Both halves are now asserted where they hold.
+/// The refusal applies **only to a widget that actually has a native object**. This test runs on
+/// a libtest worker thread, off the AppKit main thread, so `create_window` never created one
+/// (`MainThreadMarker::new()` is `None` and the native bootstrap is skipped). A widget with no
+/// native object has nothing for AppKit to refuse, so its teardown is a pure state round trip —
+/// the same answer every other backend gives, and the contract the shared `teardown_tests` pin.
+/// (The refusal path itself needs a window created on the main thread, which libtest does not
+/// provide, so it is covered by `destroy_native_handle`'s own lookup rather than from here.)
 #[test]
 fn objc2_window_lifecycle_parity() {
     let backend = MacOSObjc2Platform::new();
@@ -109,27 +111,10 @@ fn objc2_window_lifecycle_parity() {
     backend.set_widget_visible(window, false);
     assert!(!backend.is_widget_visible(window), "a window hidden through state is not visible");
 
-    #[cfg(all(target_os = "macos", feature = "macos"))]
-    {
-        assert!(
-            !backend.destroy_widget(window),
-            "the native teardown must be refused on this thread rather than reported as done"
-        );
-        assert_eq!(
-            backend.get_widget_text(window),
-            "TestWindow",
-            "a refused teardown must keep the record, so a main-thread retry has an id to use"
-        );
-    }
-    #[cfg(not(all(target_os = "macos", feature = "macos")))]
-    {
-        // Teardown reports whether the widget existed, which is state this host owns.
-        assert!(backend.destroy_widget(window), "an existing window must be destroyable");
-        assert!(
-            !backend.destroy_widget(window),
-            "a destroyed window must not report existence twice"
-        );
-    }
+    // Teardown reports whether the widget existed, which is state this host owns — on every
+    // host, including the AppKit one, for a widget that was never natively created.
+    assert!(backend.destroy_widget(window), "an existing window must be destroyable");
+    assert!(!backend.destroy_widget(window), "a destroyed window must not report existence twice");
 }
 
 #[test]

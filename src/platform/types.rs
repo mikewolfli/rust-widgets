@@ -16,15 +16,19 @@ use serde::{Deserialize, Serialize};
 /// exactly the duplication rule #54 forbids: adding a variant would have had to be
 /// done twice, and nothing would have failed if only one was updated.
 ///
-/// Gated to exactly the builds where a consumer exists. A canvas backend is itself
-/// OS- and feature-gated (`platform/macos/canvas.rs` needs `cocoa-legacy`,
-/// `platform/windows/canvas.rs` needs Windows), so naming those same conditions
-/// here is what keeps this definition from becoming dead code on a build that
-/// merely *could* have a canvas. The condition mirrors the consumers rather than
-/// re-deriving a conjunction at each site.
+/// Gated to exactly the builds where a consumer exists. Every consumer is itself
+/// OS- and feature-gated — `platform/macos/canvas.rs` needs `cocoa-legacy`,
+/// `platform/macos_objc2/native.rs` needs `macos`, and `platform/windows/canvas.rs`
+/// needs Windows — so naming those same conditions here is what keeps this
+/// definition from becoming dead code on a build that merely *could* have a canvas.
+/// The condition mirrors the consumers rather than re-deriving a conjunction at each
+/// site.
 #[cfg(all(
     widgets_unstripped,
-    any(all(target_os = "macos", feature = "cocoa-legacy"), target_os = "windows")
+    any(
+        all(target_os = "macos", any(feature = "cocoa-legacy", feature = "macos")),
+        target_os = "windows"
+    )
 ))]
 #[derive(Clone, Copy)]
 pub(crate) enum MousePhase {

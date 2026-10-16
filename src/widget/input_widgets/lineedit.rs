@@ -2240,6 +2240,7 @@ mod tests {
     /// This bites the common case first: opening a form, clicking a prefilled field to correct one
     /// word, and finding every keystroke going to the end of the line.
     #[cfg(not(alloc_frugal))]
+    #[cfg(device_profile)]
     #[test]
     fn a_press_places_the_caret_where_the_pointer_landed() {
         let mut le = LineEdit::new(Rect::new(0, 0, 240, 120));
@@ -2266,6 +2267,7 @@ mod tests {
     /// pointer step over the control, so a field that acted on it unconditionally would have its
     /// caret follow the mouse whenever the pointer crossed it, with no button pressed at all.
     #[cfg(not(alloc_frugal))]
+    #[cfg(device_profile)]
     #[test]
     fn a_drag_extends_the_selection_but_a_bare_hover_does_not() {
         let mut le = LineEdit::new(Rect::new(0, 0, 240, 120));
@@ -2366,10 +2368,12 @@ mod tests {
     /// Kept in the test module rather than as a private method on the control: it is the fixture's
     /// model of the metrics, and a control method for it would be dead code the gate would flag.
     ///
-    /// Gated with its only consumers, which are all `#[cfg(not(alloc_frugal))]` because they drive
-    /// the pointer path: an ungated helper became dead code under `mini` (which *is* `alloc_frugal`),
-    /// where `clippy -D warnings` reported it while every other profile stayed green.
-    #[cfg(not(alloc_frugal))]
+    /// Gated with its only consumers: they drive the pointer path, so they are
+    /// `#[cfg(not(alloc_frugal))]`, and they need a device profile for the text metrics the
+    /// measurement rests on. An ungated helper became dead code under `mini` (which *is*
+    /// `alloc_frugal`) and again under a stripped-but-not-frugal profile (`embedded`), where
+    /// `clippy -D warnings` reported it while the device profiles stayed green.
+    #[cfg(all(not(alloc_frugal), device_profile))]
     fn cell_width() -> i32 {
         (crate::core::Font::default().size() * 0.6).round().max(1.0) as i32
     }

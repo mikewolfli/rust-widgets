@@ -851,9 +851,13 @@ jobs:
       - name: Apple native static gate (FFI thread-safety + selector guards)
         run: bash tools/check_apple_thread_safety.sh
 
-      # 2. macOS-lib regression with both Apple backends selected.
+      # 2. macOS-lib regression with the objc2 backend selected. The `macos` OS axis
+      #    alone selects no device profile, so the full widget suite (which these tests
+      #    exercise) is not compiled and dozens of tests cannot run; pairing it with
+      #    `desktop` selects the objc2 backend *and* the full widget set. The `desktop`
+      #    step below covers the cocoa-legacy backend, so both Apple backends are checked.
       - name: Cargo test (macos backend)
-        run: cargo test --lib --features macos
+        run: cargo test --lib --features "macos,desktop"
 
       - name: Cargo test (cocoa-legacy backend)
         run: cargo test --lib --features desktop

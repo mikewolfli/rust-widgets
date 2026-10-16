@@ -981,6 +981,7 @@ mod tests {
     /// `fill="rgba(` in the document is the **backdrop**, not the control. Reading it made this
     /// helper answer a constant white for every widget, which would have made the frame assertions
     /// compare a value against itself — the same trap the `group_box` tick test documents.
+    #[cfg(full_widgets)]
     fn rendered_fill(tb: &mut ToggleButton) -> (u8, u8, u8) {
         let svg = crate::widget::svg::render_widget_to_svg(tb, Rect::new(0, 0, 100, 30));
         let key = "fill=\"rgba(";
@@ -1032,6 +1033,7 @@ mod checked_visibility_tests {
     /// states rendered byte-identical, which the snapshot set showed as `toggle_button_checked.svg`
     /// differing from `toggle_button.svg` only in its provenance comment. Asserting
     /// `is_checked() == true` would have passed throughout; only the emitted geometry can catch it.
+    #[cfg(device_profile)]
     #[test]
     fn a_checked_toggle_looks_different_from_an_unchecked_one() {
         let bounds = Rect::new(0, 0, 120, 40);

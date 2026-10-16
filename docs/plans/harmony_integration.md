@@ -136,7 +136,7 @@ XComponent 桥接本身在 `feature = "xcomponent"` 下启用，需要
 | **无障碍桥**（`accessibility_bridge()`） | ✅ 通过 `ArkUI_AccessibilityProvider` 真实发送通知；**不**回答服务的查询回调（需 C-ABI 可见的树）|
 | **软键盘**（`SetNeedSoftKeyboard`） | ✅ 绑定组件时请求，文本框获焦时 ArkUI 唤起键盘 |
 | 在无 SDK 环境下开发 demo | ✅ 走 state-only 后端；`supports_surfaces()` 仍报 `true`（队列是真的），但只有启用 `xcomponent` 才可交互 |
-| 真机 / 模拟器运行验证 | ⬜ 需 HarmonyOS 设备（`cargo ohos build` 只证明编译与链接） |
+| 真机 / 模拟器运行验证 | ◐ 模拟器上已跑通**库 core**（`tools/run_harmony_testapp.sh`，2026-10-15；证据见 `docs/platform/real-device-verification.md` §6）。**ArkUI 面仍 ⬜**——需带 ArkTS 宿主的 `.hap`；无真机证据 |
 
 ## 5. 相关文件
 

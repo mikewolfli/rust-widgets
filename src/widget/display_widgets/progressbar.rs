@@ -1067,6 +1067,7 @@ mod tests {
     /// makes "every frame is a new position" a statement about the sweep rather than about
     /// rounding. The whole cycle is swept inside one 300 ms token at a 16 ms step, so the samples
     /// below are a small, fixed share of it.
+    #[cfg(device_profile)]
     #[test]
     fn the_indeterminate_band_sweeps_across_frames() {
         let mut bar = ProgressBar::new(Rect::new(0, 0, 120, 8));

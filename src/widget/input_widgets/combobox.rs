@@ -1485,6 +1485,7 @@ mod tests {
     /// requirements (the value's own floor, the gap, and the indicator with its trailing inset);
     /// a narrower one cannot be tiled and `a_band_too_narrow_for_the_indicator_overhangs` records
     /// what happens instead.
+    #[cfg(device_profile)]
     #[test]
     fn the_value_box_ends_where_the_indicator_begins() {
         let narrowest = dimensions::TEXT_FIELD_PADDING_H  // the value's own floor
@@ -1527,6 +1528,7 @@ mod tests {
     ///
     /// The field's own `size_hint` floor is wider than this, so the case is not reachable from a
     /// form.
+    #[cfg(device_profile)]
     #[test]
     fn a_band_too_narrow_for_the_indicator_keeps_both_inside_it() {
         let width = 20u32;
