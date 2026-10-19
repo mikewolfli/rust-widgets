@@ -82,7 +82,7 @@ impl IosRuntimeState {
 /// The widget state machine is platform-independent, so it compiles on every
 /// host and its unit tests stay executable there. The one UIKit touch point —
 /// the window the library paints into — lives in the `native` sub-module behind
-/// `#[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]`.
+/// `#[cfg(all(apple_uikit, feature = "ios-uikit-ffi"))]`.
 ///
 /// All host state is stored in `BackendState<IosHandleKind>`, and platform contract
 /// methods translate between the Rust API and state mutations. Per-control list and

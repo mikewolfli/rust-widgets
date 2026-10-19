@@ -162,7 +162,7 @@ pub(crate) fn host_process_memory_probe() -> Option<f32> {
 /// notation, keeping the `cfg!` out of `src/shortcut/` (principle #36). Backends
 /// may override it through `Platform::shortcut_style`.
 pub const fn compile_target_shortcut_style() -> crate::shortcut::PlatformShortcutStyle {
-    if cfg!(any(target_os = "macos", target_os = "ios")) {
+    if cfg!(any(target_os = "macos", apple_uikit)) {
         crate::shortcut::PlatformShortcutStyle::Mac
     } else {
         crate::shortcut::PlatformShortcutStyle::Desktop
@@ -552,6 +552,40 @@ pub struct Display {
     pub is_primary: bool,
 }
 
+/// The parts of a window's edges that system UI occupies, in logical pixels.
+///
+/// # What the four numbers mean
+///
+/// They are **edge distances**, not a rectangle: `top` is how much of the window's top edge is
+/// covered by system UI (a notch, a status bar, a camera housing), and content must start below
+/// it. `left`/`right` cover side obstructions (rounded corners, a landscape notch), and `bottom`
+/// covers the home indicator or a gesture bar.
+///
+/// # Why the default is not all zeros
+///
+/// It describes a portrait phone with a notch and a home indicator. It is the value the
+/// [`SafeArea`](crate::widget::SafeArea) widget paints with when the host supplies none, because
+/// on such a device zero insets place content under the status bar and the home indicator. It is
+/// **not** a platform answer: a backend that cannot read the real insets reports `None` from
+/// [`Platform::safe_area_insets`], which is a different fact from "the insets are zero".
+///
+/// # Why this type lives in the platform layer
+///
+/// [`Platform::safe_area_insets`] returns it, and the widget layer re-exports it. Defining the
+/// struct in the widget layer and translating in the platform layer would put two descriptions of
+/// one fact in the tree — the duplication principle #54 forbids.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SafeAreaInsets {
+    /// Space to reserve along the top edge, in logical pixels.
+    pub top: u32,
+    /// Space to reserve along the bottom edge, in logical pixels.
+    pub bottom: u32,
+    /// Space to reserve along the left edge, in logical pixels.
+    pub left: u32,
+    /// Space to reserve along the right edge, in logical pixels.
+    pub right: u32,
+}
+
 /// Platform backend contract used by widget/runtime layers.
 ///
 /// Core lifecycle methods are required. Optional capabilities (IME,
@@ -685,15 +719,41 @@ pub trait Platform: Send + Sync {
     fn display_generation(&self) -> u64 {
         0
     }
+    /// The safe-area insets of a window, in logical pixels.
+    ///
+    /// # What the three answers mean
+    ///
+    /// * `Some(insets)` — the host reported the window's actual insets. Zero values are a real
+    ///   measurement (a desktop window has no system UI over it).
+    /// * `None` — this backend cannot read them: no window exists, the call is made from a thread
+    ///   the toolkit does not allow, or the OS API is absent. The caller must **not** substitute
+    ///   [`SafeAreaInsets::default`] without saying so, because that value fabricates a notch.
+    ///
+    /// # Why this is on the platform trait
+    ///
+    /// The insets are OS knowledge (iOS `UIView.safeAreaInsets`, Android `WindowInsets`). A middle
+    /// layer that read them would have to know each platform's spelling, which is the layering
+    /// rule #36 keeps inside the backends. winit exposes the same fact as `Window::safe_area()`;
+    /// the widget-layer [`SafeArea`](crate::widget::SafeArea) is this crate's consumer.
+    ///
+    /// # Implemented so far
+    ///
+    /// The UIKit backend (iOS/tvOS/visionOS) reads the recorded `UIWindow`'s `safeAreaInsets` on the
+    /// main thread; both macOS backends read `NSView.safeAreaInsets` from the window's content view;
+    /// Android reads `WindowManager.getCurrentWindowMetrics().getWindowInsets()` (API 30+).
+    /// Windows, GTK/X11, Wayland and Orbital report `Some(zeros)` — their client area has no system
+    /// UI over it, which is a measurement rather than an absence. HarmonyOS and the state-only/Web
+    /// backends inherit `None`, the honest answer: they cannot name a window whose insets to read.
+    fn safe_area_insets(&self, _window_id: ObjectId) -> Option<SafeAreaInsets> {
+        None
+    }
     /// The host's text-size preference, as a multiplier on the nominal font size.
     ///
     /// A backend would answer this from its own platform's setting — Android's `fontScale`, iOS's
-    /// `UIContentSizeCategory`, Windows' text-scaling percentage. **None does yet**, so every
-    /// backend in this crate reports the default `1.0`; the paragraph below is what the method is
-    /// *for*, not a description of the current wiring. (This doc used to list the three platform
-    /// settings as though they were implemented, which is the "documentation describes behaviour
-    /// the code does not have" shape — a reader checking whether a backend honours a text-size
-    /// preference would have concluded three of them do.)
+    /// `UIContentSizeCategory`, Windows' text-scaling percentage. The paragraph below is what the
+    /// method is *for*; see "Implemented so far" for the backends that currently bind it. (This
+    /// doc used to list the three platform settings as though they were implemented, which is the
+    /// "documentation describes behaviour the code does not have" shape.)
     ///
     /// # Behaviour of the default
     ///
@@ -719,12 +779,42 @@ pub trait Platform: Send + Sync {
     ///
     /// `WindowsPlatform` reads
     /// `HKCU\Software\Microsoft\Accessibility\TextScaleFactor` and reports the user's chosen
-    /// percentage; the other ten backends report `1.0`, which says "no preference reported"
-    /// rather than "the user chose 100%". Those two facts are different and only the first is a
-    /// safe default — see the Windows override for why the DPI override is *not* the same
-    /// setting, and this method's sibling [`Self::dpi_scale_factor`] for the layout scale.
+    /// percentage; `AndroidPlatform` reads `Configuration.fontScale` through the JNI bridge. The
+    /// remaining backends report `1.0`, which says "no preference reported" rather than "the user
+    /// chose 100%". Those two facts are different and only the first is a safe default — see the
+    /// Windows override for why the DPI override is *not* the same setting, and this method's
+    /// sibling [`Self::dpi_scale_factor`] for the layout scale. iOS's `UIContentSizeCategory` is
+    /// deliberately not read: it is a *category* name rather than a multiplier, and mapping it
+    /// needs the app's preferred content size, which this backend cannot observe.
     fn text_scale(&self) -> f32 {
         1.0
+    }
+    /// Whether the host's system theme is currently dark.
+    ///
+    /// # Why `Option<bool>` rather than a theme enum
+    ///
+    /// The answer is one bit of OS state. [`ThemeMode`](crate::style::ThemeMode) is a *policy*
+    /// (`Light`, `Dark`, `Auto`) that lives in the style layer, and a platform that returned it
+    /// would be deciding policy from OS knowledge — the inversion rule #36 forbids. The style
+    /// layer's [`environment`](crate::style::environment) converts `Some(true)` to `Dark` and
+    /// `Some(false)` to `Light`.
+    ///
+    /// # What each answer means
+    ///
+    /// * `Some(true)` — the OS's app appearance is dark.
+    /// * `Some(false)` — the OS's app appearance is light.
+    /// * `None` — this backend cannot ask, or the call is made from a thread the toolkit does not
+    ///   allow. The caller keeps its neutral default; it must not treat `None` as "light".
+    ///
+    /// # Implemented so far
+    ///
+    /// Windows reads `HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize\
+    /// AppsUseLightTheme`, macOS reads `NSApplication.effectiveAppearance` on the main thread (both
+    /// the cocoa and objc2 backends), the UIKit backend reads
+    /// `UITraitCollection.currentTraitCollection().userInterfaceStyle`, and Android reads
+    /// `Configuration.uiMode`. GTK/X11, Wayland, Redox, HarmonyOS and the Web backend answer `None`.
+    fn system_theme(&self) -> Option<bool> {
+        None
     }
     /// Initialises the backend, acquiring whatever host resources it needs.
     ///

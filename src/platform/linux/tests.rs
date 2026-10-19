@@ -35,7 +35,7 @@ use crate::platform::Platform;
 /// case, and under the test harness (one worker thread per `#[test]`) that is a
 /// reachable state. Reporting `false` then selects the same honest fallback, so the
 /// test asserts the state-backend contract instead of crashing.
-#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
 fn ensure_gtk() -> bool {
     use std::sync::{Mutex, OnceLock};
 
@@ -56,7 +56,7 @@ fn ensure_gtk() -> bool {
 ///
 /// Without `gtk-native` it never opens a native window, so reporting "gtk" would
 /// be a lie; with it, the real toolkit is what drives the window.
-#[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
+#[cfg(not(all(unix_desktop, feature = "gtk-native")))]
 #[test]
 fn state_backend_reports_honest_name() {
     let backend = LinuxPlatform::new();
@@ -66,7 +66,7 @@ fn state_backend_reports_honest_name() {
 
 /// A window is the one thing this backend still constructs, and it must come back
 /// with an id that survives the lifecycle calls.
-#[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
+#[cfg(not(all(unix_desktop, feature = "gtk-native")))]
 #[test]
 fn state_backend_window_lifecycle() {
     let backend = LinuxPlatform::new();
@@ -83,7 +83,7 @@ fn state_backend_window_lifecycle() {
 ///
 /// Returning a non-zero id while creating nothing is the dishonesty the trait
 /// default removes; this pins the honest answer for the whole constructor family.
-#[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
+#[cfg(not(all(unix_desktop, feature = "gtk-native")))]
 #[test]
 fn state_backend_reports_no_native_controls() {
     let backend = LinuxPlatform::new();
@@ -118,7 +118,7 @@ fn state_backend_reports_no_native_controls() {
 
 /// Control state belongs to the widget, so the trait defaults report absence
 /// rather than a value invented by this backend.
-#[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
+#[cfg(not(all(unix_desktop, feature = "gtk-native")))]
 #[test]
 fn state_backend_owns_no_control_state() {
     let backend = LinuxPlatform::new();
@@ -132,7 +132,7 @@ fn state_backend_owns_no_control_state() {
 
 /// The AT-SPI, clipboard and drop plumbing stay behind this backend even without
 /// GTK, because those are Linux subsystems rather than GTK widgets.
-#[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
+#[cfg(not(all(unix_desktop, feature = "gtk-native")))]
 #[test]
 fn state_backend_linux_subsystems_still_forward() {
     let backend = LinuxPlatform::new();
@@ -150,7 +150,7 @@ fn state_backend_linux_subsystems_still_forward() {
     }
     assert_eq!(
         <LinuxPlatform as Platform>::accessibility_bridge(&backend).is_some(),
-        cfg!(target_os = "linux"),
+        cfg!(unix_desktop),
         "the AT-SPI bridge is available exactly on Linux"
     );
 }
@@ -160,7 +160,7 @@ fn state_backend_linux_subsystems_still_forward() {
 /// Covers: window creation and teardown, the honest control contract, clipboard
 /// round-trip through the real GDK display clipboard, and accessibility
 /// forwarding.
-#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
 #[test]
 fn gtk_native_backend_lifecycle() {
     if !ensure_gtk() {

@@ -818,6 +818,12 @@ winapi = { version = "0.3", features = [
     # `GetProcAddress("TF_GetThreadMgr")` symbol lookup that never called anything
     # and so reported an IME connection that did not exist (rule #26).
     "imm",
+    # `RegOpenKeyExW`/`RegQueryValueExW` back `Platform::text_scale` and
+    # `Platform::system_theme`. `winreg` was previously enabled only transitively, so a future
+    # dependency change could have removed it and broken the build of the very module that reads
+    # the user's settings; naming it here makes the dependency explicit.
+    "winreg",
+    "winnt",
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -832,7 +838,7 @@ cocoa = { version = "0.25", optional = true }
 # target, and an optional dep behind no feature is a compile error waiting to happen.
 libc = "0.2"
 
-[target.'cfg(target_os = "ios")'.dependencies]
+[target.'cfg(all(target_vendor = "apple", not(target_os = "macos")))'.dependencies]
 objc2 = { version = "0.6", optional = true }
 objc2-foundation = { version = "0.3", optional = true }
 objc2-core-foundation = { version = "0.3", optional = true }
@@ -841,7 +847,11 @@ objc2-ui-kit = { version = "0.3", optional = true }
 # Same probe as macOS: iOS does not mount `/proc/meminfo`.
 libc = "0.2"
 
-[target.'cfg(target_os = "linux")'.dependencies]
+# Unix desktop (Linux and the BSDs) — keep in sync with `build.rs`'s `unix_desktop`.
+# Cargo evaluates this table before the build script runs, so it cannot see the emitted
+# `cfg(unix_desktop)` and has to spell the same predicate out. The two are locked together by
+# `tools/check_bsd_cross.sh` (which type-checks the GTK/Wayland path on FreeBSD and NetBSD).
+[target.'cfg(all(target_family = "unix", not(target_arch = "wasm32"), not(target_env = "ohos"), not(any(target_os = "macos", target_os = "ios", target_os = "tvos", target_os = "visionos", target_os = "watchos", target_os = "android", target_os = "redox"))))'.dependencies]
 gtk = { version = "0.18", optional = true }
 # Used by the Wayland backend to poll() the compositor socket in the native
 # event loop (the crate is already in the dependency graph transitively).

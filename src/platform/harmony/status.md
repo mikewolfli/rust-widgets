@@ -58,6 +58,9 @@ for development and testing.
 | Show / hide / geometry / text / enabled | ✅ Implemented | logical state round-trips |
 | Clipboard | ✅ Implemented | the system `OH_Pasteboard` over UDMF, including **application-defined MIME types** through `OH_UdmfRecord_AddGeneralEntry`/`GetGeneralEntry` (with a UTD lookup fallback for MIME types the platform registers) |
 | Displays | ✅ Implemented | `OH_NativeDisplayManager_CreateAllDisplays` + `GetDisplayPosition` + `GetDefaultDisplayId`; empty on a host build, real metrics on a device target |
+| System appearance | ⛔ Not implemented | the native SDK exposes `OH_ArkUI_RegisterSystemColorModeChangeEvent` (a callback on an `ArkUI_NodeHandle`), not a synchronous query. Reporting `None` is the honest answer until the XComponent bridge caches the last callback value; inventing a light default would claim a preference the OS did not state |
+| Text scale | ⛔ Not implemented | the native surface exposes no `fontScale` equivalent without the ArkTS `Configuration`; the trait's `1.0` ("no preference reported") is kept |
+| Safe area | ⛔ Not implemented | `OH_WindowManager_GetWindowAvoidArea(windowId, …)` exists (API 15+), but it needs the ArkTS-created window id. The bridge holds an ArkUI `XComponent` (`OH_NativeWindow`), not a window-manager id, so `safe_area_insets()` answers `None` instead of guessing on-screen insets. Supplying the id is a host-contract extension, not a backend fix |
 | Drag & drop | ✅ Implemented | injectable drop-event queue |
 | IME / accessibility **metadata** (per-widget flags and names) | ✅ Implemented | `BackendState` fields that round-trip a boolean and a string |
 | Accessibility **bridge** | ✅ Implemented (`feature = "xcomponent"`) | `HarmonyAccessibilityBridge` over the XComponent's `ArkUI_AccessibilityProvider`; see below |

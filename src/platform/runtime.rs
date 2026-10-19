@@ -25,10 +25,10 @@ use crate::platform::android::AndroidPlatform;
     not(embedded_surface)
 ))]
 use crate::platform::harmony::HarmonyPlatform;
-#[cfg(all(not(alloc_frugal), target_os = "ios", not(embedded_surface)))]
+#[cfg(all(not(alloc_frugal), apple_uikit, not(embedded_surface)))]
 use crate::platform::ios::IosMobilePlatform;
 #[cfg(all(
-    target_os = "linux",
+    unix_desktop,
     not(target_env = "ohos"),
     not(alloc_frugal),
     not(embedded_surface),
@@ -51,7 +51,7 @@ use crate::platform::mobile;
 #[cfg(not(alloc_frugal))]
 pub use crate::platform::types::*;
 #[cfg(all(
-    target_os = "linux",
+    unix_desktop,
     not(target_env = "ohos"),
     not(embedded_surface),
     feature = "wayland-native",
@@ -80,7 +80,7 @@ use crate::platform::Platform;
 ///  2. `$XDG_SESSION_TYPE` equals `"wayland"` → Wayland
 ///  3. Otherwise → assume X11/"plain" Linux
 #[cfg(all(
-    target_os = "linux",
+    unix_desktop,
     not(target_env = "ohos"),
     not(embedded_surface),
     feature = "wayland-native",
@@ -159,7 +159,7 @@ fn create_native_platform() -> Box<dyn Platform> {
 /// `target_os = "linux"` and must select `HarmonyPlatform` instead (see below).
 #[cfg(all(
     not(alloc_frugal),
-    target_os = "linux",
+    unix_desktop,
     not(target_env = "ohos"),
     not(embedded_surface),
     feature = "wayland-native",
@@ -182,7 +182,7 @@ fn create_native_platform() -> Box<dyn Platform> {
 /// twice — a hard error, not a silent fallback.
 #[cfg(all(
     not(alloc_frugal),
-    target_os = "linux",
+    unix_desktop,
     not(target_env = "ohos"),
     not(embedded_surface),
     not(feature = "wayland-native"),
@@ -223,7 +223,7 @@ fn create_native_platform() -> Box<dyn Platform> {
 }
 
 /// iOS state-backed platform backend.
-#[cfg(all(not(alloc_frugal), target_os = "ios", not(embedded_surface), not(feature = "harmony")))]
+#[cfg(all(not(alloc_frugal), apple_uikit, not(embedded_surface), not(feature = "harmony")))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(IosMobilePlatform::new())
 }
@@ -260,8 +260,8 @@ fn create_native_platform() -> Box<dyn Platform> {
     not(any(
         target_os = "windows",
         target_os = "macos",
-        target_os = "linux",
-        target_os = "ios",
+        unix_desktop,
+        apple_uikit,
         target_os = "redox"
     ))
 ))]
@@ -629,8 +629,8 @@ pub fn runtime_gui_mode_for(platform: &dyn Platform) -> RuntimeGuiMode {
     // a preview, and the name is the honest statement of that.
     let native_capable = match platform.backend_name() {
         "cocoa" | "WindowsPlatform" => true,
-        "wayland" => cfg!(all(target_os = "linux", feature = "wayland-native")),
-        "gtk" => cfg!(all(target_os = "linux", feature = "gtk-native")),
+        "wayland" => cfg!(all(unix_desktop, feature = "wayland-native")),
+        "gtk" => cfg!(all(unix_desktop, feature = "gtk-native")),
         _ => false,
     };
     if native_capable {

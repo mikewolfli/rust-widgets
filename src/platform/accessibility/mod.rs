@@ -16,7 +16,7 @@ pub mod macos;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
-#[cfg(target_os = "linux")]
+#[cfg(unix_desktop)]
 pub mod linux;
 
 /// Platform-neutral accessibility node/role/state types shared by the

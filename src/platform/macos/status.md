@@ -53,6 +53,9 @@ per-kind native *control* probe no longer exists (see the note above the tables)
 | Menu bar (`NSMenu`) | ⛔ Removed | no `create_menu_bar`/`menu_add_item` override; `native_menu: false`, and `menu_item_shortcut()`/`poll_menu_triggered()` are the only menu-shaped methods left |
 | Dialogs (`NSAlert` / `NSOpenPanel`) | ⛔ Removed | no `create_message_box`/`create_file_dialog` override |
 | Widget surfaces (`mount_surface` + repaint queue) | ✅ Implemented | the library-painted path every `WidgetKind` now uses |
+| Displays / window's screen / generation | ✅ Implemented | `NSScreen` enumeration (`src/platform/macos/displays.rs`), `NSWindow.screen()` for `display_of_window`, and a derived revision |
+| System appearance | ✅ Implemented (2026-10-19) | `NSApplication.effectiveAppearance`'s name → `Some(true)` for Dark Aqua, `Some(false)` otherwise; main-thread-only |
+| Safe area | ✅ Implemented (2026-10-19) | `NSView.safeAreaInsets` on the window's content view (macOS 11+); `None` on older systems or off the main thread |
 | Clipboard (`NSPasteboard`) | ✅ Verified | round-trip on the main thread; also `clipboard_backend()` for rich content |
 | External open | ✅ Implemented | `open_external()` spawns the host's `open` handler; `capabilities().open_external` is `true` for that reason. Hand-off, not completion — see the method's doc. Not exercised on this host (the status table can only be filled where macOS runs) |
 | IME / accessibility bridges | ✅ Implemented | `ime_bridge()` and `accessibility_bridge()` both answer with real bridges, which is why `capabilities()` reports `ime`/`accessibility` as `true` |
@@ -68,6 +71,9 @@ per-kind native *control* probe no longer exists (see the note above the tables)
 | Native window registered with AppKit | ✅ Verified | `NSApplication.windows.count >= 1` |
 | Per-kind controls / menu bar / dialogs | ⛔ Not implemented | this backend overrides no `create_*` except `create_window`; `capabilities()` reports `ime`, `accessibility`, `native_menu` and `dpi_scaling` as `false` for exactly that reason, and `clipboard`/`open_external` as `true` because both have real bodies (`NSPasteboard`, and the `open` handler) |
 | Widget surfaces | ✅ Implemented | records displayed widgets and returns their frames |
+| Displays / window's screen / generation | ✅ Implemented (2026-10-19) | `+[NSScreen screens]`, `-[NSWindow screen]`, and a revision derived from the same fields — the parity the cocoa backend already had |
+| System appearance | ✅ Implemented (2026-10-19) | `NSApplication.effectiveAppearance`'s name, main-thread-only |
+| Safe area | ✅ Implemented (2026-10-19) | `NSView.safeAreaInsets` on the window's content view, with a `respondsToSelector:` check for pre-11 AppKit |
 | Clipboard | ✅ Verified | `NSPasteboard` |
 | Geometry / visibility / text | ✅ Verified | `setNative…` helpers |
 | Off-main-thread calls | ✅ Guarded | `objc2::MainThreadMarker::new()` before every `create_*` |

@@ -10,7 +10,7 @@
 //! its text, its enabled/visible state, its painting — is expressed in
 //! `BackendState<IosHandleKind>` and drawn by the library.
 //!
-//! All functions are gated behind `#[cfg(target_os = "ios")]` and the
+//! All functions are gated behind `#[cfg(apple_uikit)]` and the
 //! `ios-uikit-ffi` feature flag.
 //!
 //! # BLUE15: the wrapper no longer builds UIKit controls
@@ -40,7 +40,7 @@
 //! by reading the pasteboard back. That is the same rule the macOS backend follows by returning
 //! `writeObjects:`'s `BOOL`: a write that cannot be observed must not be reported as a success.
 
-#![cfg(target_os = "ios")]
+#![cfg(apple_uikit)]
 #![cfg(feature = "ios-uikit-ffi")]
 
 use crate::compat::{BTreeMap, String, Vec};
@@ -51,7 +51,8 @@ use objc2::MainThreadMarker;
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSData, NSString};
 use objc2_ui_kit::{
-    NSObjectUIAccessibility, UIColor, UIPasteboard, UIScreen, UIViewController, UIWindow,
+    NSObjectUIAccessibility, UIColor, UIPasteboard, UIScreen, UITraitCollection,
+    UIUserInterfaceStyle, UIView, UIViewController, UIWindow,
 };
 
 /// The `UIWindow` each platform window id owns.
@@ -154,6 +155,58 @@ pub(crate) fn screen_id_of_window(window_id: u64) -> Option<u64> {
             })
             .map(|index| index as u64)
     })
+}
+
+// ─── Window geometry and appearance ───
+
+/// The window's safe-area insets, in logical pixels.
+///
+/// `UIView.safeAreaInsets` is the same source winit's UIKit backend hands to
+/// `Window::safe_area()`. It reports the notch/status-bar/home-indicator distances for **this**
+/// window, which is why a recorded `UIWindow` is required: the primary screen's insets are wrong
+/// for a window on an external display, and a missing window is `None` rather than a guess.
+///
+/// UIKit is main-thread-only, so this answers `None` off the main thread.
+pub(crate) fn safe_area_insets(window_id: u64) -> Option<SafeAreaInsets> {
+    let _mtm = MainThreadMarker::new()?;
+    let insets = UI_WINDOWS.with(|windows| {
+        let windows = windows.borrow();
+        windows.get(&window_id).map(|window| window.safeAreaInsets())
+    })?;
+    // UIKit reports `CGFloat`; a negative or sub-pixel value is clamped rather than wrapped, and
+    // the four distances are edge lengths, so rounding to the nearest logical pixel is exact
+    // enough for layout (`0.4` must not become `0` via truncation, hence `round`).
+    Some(SafeAreaInsets {
+        top: logical_pixels(insets.top),
+        bottom: logical_pixels(insets.bottom),
+        left: logical_pixels(insets.left),
+        right: logical_pixels(insets.right),
+    })
+}
+
+fn logical_pixels(value: f64) -> u32 {
+    value.max(0.0).round() as u32
+}
+
+/// Whether the system appearance is dark, from the current trait collection.
+///
+/// `UITraitCollection.currentTraitCollection()` is the trait environment UIKit applies to the
+/// app; `userInterfaceStyle` is the light/dark bit. Both are main-thread-only (API 13+), so this
+/// answers `None` off the main thread. `Unspecified` also answers `None` — "the OS did not say" —
+/// rather than defaulting to light, because the two are different facts.
+pub(crate) fn system_theme() -> Option<bool> {
+    let _mtm = MainThreadMarker::new()?;
+    // SAFETY: both calls are documented as main-thread-only; `_mtm` proves this is the main
+    // thread, and `traits` is a live retained object for the duration of the second call.
+    let traits = unsafe { UITraitCollection::currentTraitCollection() };
+    let style = unsafe { traits.userInterfaceStyle() };
+    if style == UIUserInterfaceStyle::Dark {
+        Some(true)
+    } else if style == UIUserInterfaceStyle::Light {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 // ─── The system pasteboard ───

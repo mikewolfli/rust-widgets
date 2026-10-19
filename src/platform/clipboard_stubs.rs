@@ -1036,7 +1036,7 @@ pub mod objc2_macos {
 /// failure rules #41/#53 forbid. `set_contents` therefore stores the value (so a same-process
 /// `get_contents` works) and returns `false`, and no `Platform` backend returns this type from
 /// `clipboard_backend()`. A real GTK/Wayland path can replace it without changing the contract.
-#[cfg(target_os = "linux")]
+#[cfg(unix_desktop)]
 pub mod linux {
 
     use super::super::clipboard::{ClipboardContent, RichClipboardBackend};

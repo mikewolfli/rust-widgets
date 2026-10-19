@@ -14,7 +14,7 @@
 //! and published through the [`ImeBridge`](crate::platform::ime::ImeBridge) state, which the compositor or
 //! host toolkit layer consumes.
 
-#![cfg(target_os = "linux")]
+#![cfg(unix_desktop)]
 
 use crate::compat::{lock, Mutex, String, ToString};
 use crate::core::ObjectId;

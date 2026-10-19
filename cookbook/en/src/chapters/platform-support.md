@@ -76,9 +76,9 @@ backend running on an OS it was not compiled for reports `false`.
 |----|:-----------:|:---:|:-------------:|:-----------:|
 | Windows | ✅ | ✅ | ✅ | ❌ |
 | macOS | ❌ | ✅ | ✅ | ❌ |
-| Linux / GTK | ✅ ¹ | ✅ | ✅ | ❌ |
-| Linux / Wayland | ✅ | ❌ | ❌ | ❌ |
-| iOS | ✅ ³ | ❌ | ❌ | ❌ |
+| Linux / BSD (GTK) | ✅ ¹ | ✅ | ✅ | ❌ |
+| Linux / BSD (Wayland) | ✅ | ❌ | ❌ | ❌ |
+| iOS / tvOS / visionOS | ✅ ³ | ❌ | ❌ | ❌ |
 | Android | ✅ ³ | ✅ ⁴ | ❌ | ❌ |
 | HarmonyOS | ✅ ³ | ❌ | ✅ ² | ❌ |
 | WASM | ❌ | ❌ | ❌ | ❌ |
@@ -88,9 +88,10 @@ backend running on an OS it was not compiled for reports `false`.
 **runtime** answer about the display the process is on rather than a constant. On an
 unscaled host it reports `false` and is still a backend that can answer.
 
-³ iOS, Android and HarmonyOS derive `dpi_scaling` from their display service when the host
-binding is present (`UIScreen.scale`, `DisplayMetrics.densityDpi / 160`, and
-`OH_NativeDisplayManager`). A preview build without that binding reports `false`.
+³ iOS, tvOS, visionOS, Android and HarmonyOS derive `dpi_scaling` from their display service
+when the host binding is present (`UIScreen.scale`, `DisplayMetrics.densityDpi / 160`, and
+`OH_NativeDisplayManager`). A preview build without that binding reports `false`. The three
+UIKit platforms share one backend (`cfg(apple_uikit)`).
 
 ⁴ Android's IME column covers **soft-keyboard show/hide** through the `InputMethodManager`
 (the operation winit's Android backend performs). Composition text still comes from the host
@@ -98,6 +99,14 @@ Activity; this backend does not claim the `GameTextInput` protocol.
 
 ² HarmonyOS reports `accessibility` only when the `xcomponent` feature is on — which is
 exactly when `accessibility_bridge()` is compiled in. Both the flag and the method are
+
+Two further platform facts are **methods**, not capability flags, so they are not columns above:
+`Platform::system_theme()` (`Some(true)` = dark, `None` = the OS did not say) is implemented on
+Windows, macOS, iOS/tvOS/visionOS and Android; `Platform::safe_area_insets(window)` is implemented
+on iOS/tvOS/visionOS, macOS and Android, answers `Some(zero)` on Windows/GTK/Wayland/Orbital (a
+desktop client area has no system-UI overlay) and `None` on HarmonyOS/Web. `text_scale()` reads
+Windows' `TextScaleFactor` and Android's `Configuration.fontScale`; the other backends keep the
+honest `1.0`.
 produced from the same `cfg`, so they cannot disagree: with the feature off, neither
 exists. Its `ime` is `false` on purpose — the XComponent bridge delivers keys and asks
 ArkUI for the on-screen keyboard, but that is direct key input, not an input-method

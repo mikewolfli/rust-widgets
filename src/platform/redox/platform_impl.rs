@@ -43,7 +43,9 @@ use crate::compat::{String, Vec};
 use crate::core::{ObjectId, PlatformFamily, Point, Rect, Size};
 use crate::event::Event;
 use crate::platform::redox::types::{OrbitalPlatform, OrbitalWindow, RedoxHandleKind};
-use crate::platform::types::{Display, DisplayId, OpenError, Platform, PlatformCapabilities};
+use crate::platform::types::{
+    Display, DisplayId, OpenError, Platform, PlatformCapabilities, SafeAreaInsets,
+};
 use crate::widget::runtime;
 use core::time::Duration;
 use orbclient::{
@@ -224,6 +226,15 @@ impl Platform for OrbitalPlatform {
         } else {
             1
         }
+    }
+
+    /// Orbital gives a window the whole screen and has no system-UI overlay.
+    ///
+    /// There is no notch, status bar or gesture area on Redox, so all four distances are zero —
+    /// a measurement rather than a fallback. `Some(zeros)` keeps the widget layer from
+    /// substituting its portrait-phone default.
+    fn safe_area_insets(&self, _window_id: ObjectId) -> Option<SafeAreaInsets> {
+        Some(SafeAreaInsets { top: 0, bottom: 0, left: 0, right: 0 })
     }
 
     fn dpi_scale_factor(&self) -> f32 {

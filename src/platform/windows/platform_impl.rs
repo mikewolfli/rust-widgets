@@ -359,6 +359,76 @@ impl Platform for WindowsPlatform {
         1.0
     }
 
+    /// The system's app appearance, read from the Personalize registry key.
+    ///
+    /// # Why this key
+    ///
+    /// Windows stores the light/dark choice for *apps* (as distinct from the taskbar and the
+    /// window frame) at
+    /// `HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize\AppsUseLightTheme`.
+    /// The value is a `DWORD` where `0` means dark and `1` means light; this is the same key the
+    /// shell and winit's Win32 backend read.
+    ///
+    /// # Why `None` on failure
+    ///
+    /// A missing key (older builds), a wrong value type, or an unreadable key means the OS did not
+    /// tell us. Answering `Some(false)` would claim the user chose light, which the style layer
+    /// would then render — the fabricated-default shape principle #37 forbids. High-contrast mode
+    /// is deliberately not folded in: it is a separate accessibility setting, and a host that needs
+    /// it reads [`crate::style::environment::EnvironmentProvider::high_contrast`].
+    #[cfg(target_os = "windows")]
+    fn system_theme(&self) -> Option<bool> {
+        use winapi::um::winnt::{KEY_READ, REG_DWORD};
+        use winapi::um::winreg::{RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER};
+        // SAFETY: both names are NUL-terminated UTF-16 buffers that outlive the calls; `key` is
+        // written only on success and closed on every path; `data`/`size`/`kind` are local
+        // out-parameters sized before the query.
+        unsafe {
+            let subkey: Vec<u16> =
+                "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect();
+            let value_name: Vec<u16> =
+                "AppsUseLightTheme".encode_utf16().chain(std::iter::once(0)).collect();
+            let mut key = std::ptr::null_mut();
+            if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut key) != 0 {
+                return None;
+            }
+            let mut data: u32 = 0;
+            let mut size = std::mem::size_of::<u32>() as u32;
+            let mut kind: u32 = 0;
+            let status = RegQueryValueExW(
+                key,
+                value_name.as_ptr(),
+                std::ptr::null_mut(),
+                &mut kind,
+                &mut data as *mut u32 as *mut u8,
+                &mut size,
+            );
+            RegCloseKey(key);
+            if status != 0 || kind != REG_DWORD {
+                return None;
+            }
+            // `0` is dark, `1` is light. Any other value is not a state this setting defines, so
+            // it is treated as "cannot tell" rather than guessed.
+            match data {
+                0 => Some(true),
+                1 => Some(false),
+                _ => None,
+            }
+        }
+    }
+
+    /// The non-Windows arm inherits the trait's honest "cannot tell".
+    ///
+    /// Stated explicitly for the same reason as the `text_scale` pair above: one decision, both
+    /// arms visible together.
+    #[cfg(not(target_os = "windows"))]
+    fn system_theme(&self) -> Option<bool> {
+        None
+    }
+
     /// Reads installed physical memory via `GlobalMemoryStatusEx`.
     fn total_memory_mb(&self) -> Option<u64> {
         #[cfg(target_os = "windows")]
@@ -835,6 +905,19 @@ impl Platform for WindowsPlatform {
     /// A revision of Win32's current display set; see [`super::displays::generation`].
     fn display_generation(&self) -> u64 {
         super::displays::generation()
+    }
+
+    /// Windows does not lay system UI over a window's client area.
+    ///
+    /// The taskbar and the window chrome live outside it, so all four safe-area distances are
+    /// zero — a measurement, not a fallback. Returning `Some(zeros)` is what keeps the widget layer
+    /// from substituting its portrait-phone default (44/34) on a desktop window. This matches
+    /// winit's Win32 backend, which answers `PhysicalInsets::new(0, 0, 0, 0)`.
+    fn safe_area_insets(
+        &self,
+        _window_id: ObjectId,
+    ) -> Option<crate::platform::types::SafeAreaInsets> {
+        Some(crate::platform::types::SafeAreaInsets { top: 0, bottom: 0, left: 0, right: 0 })
     }
 
     fn init(&self) {

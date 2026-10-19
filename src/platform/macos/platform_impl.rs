@@ -12,7 +12,7 @@ use crate::platform::accessibility::AccessibilityBridge;
 use crate::platform::clipboard::RichClipboardBackend;
 use crate::platform::ime::ImeBridge;
 use crate::platform::macos::types::*;
-use crate::platform::types::{Display, DisplayId};
+use crate::platform::types::{Display, DisplayId, SafeAreaInsets};
 use crate::platform::Platform;
 use crate::platform::PlatformCapabilities;
 use cocoa::appkit::{
@@ -67,6 +67,55 @@ fn translate_widget_id(window_id: ObjectId) -> Option<ObjectId> {
 #[cfg(alloc_frugal)]
 fn translate_widget_id(_window_id: ObjectId) -> Option<ObjectId> {
     None
+}
+
+/// `NSEdgeInsets` in its Objective-C ABI form (four `CGFloat`s).
+///
+/// The cocoa backend is the legacy one and does not depend on `objc2`, so this small struct (and
+/// its `Encode` impl) is what lets `msg_send!` receive the 32-byte struct return from
+/// `-[NSView safeAreaInsets]`. The encoding string is the compiler's name for the type.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct NsEdgeInsets {
+    top: f64,
+    left: f64,
+    bottom: f64,
+    right: f64,
+}
+
+unsafe impl objc::Encode for NsEdgeInsets {
+    fn encode() -> objc::Encoding {
+        // SAFETY: the literal is exactly the encoding clang emits for `NSEdgeInsets` (four
+        // `CGFloat`s, which are `double` on every 64-bit Apple target).
+        unsafe { objc::Encoding::from_str("{NSEdgeInsets=dddd}") }
+    }
+}
+
+/// Rounds a `CGFloat` edge distance to logical pixels, clamping a negative value to zero rather
+/// than wrapping it into a huge `u32`.
+fn logical_pixels(value: f64) -> u32 {
+    value.max(0.0).round() as u32
+}
+
+/// Resolves a window id to the AppKit window it names, in either id space.
+///
+/// The id a host holds is the widget-registry id; this backend's handle table is keyed by the
+/// platform id `create_window` returned, and `translate_widget_id` bridges them. `None` for an
+/// unknown id, a non-window handle, or an uninitialised pointer.
+fn resolve_window_ptr(platform: &MacOSPlatform, window_id: ObjectId) -> Option<id> {
+    let host = {
+        let handles = crate::compat::lock(&platform.handles);
+        if handles.contains_key(&window_id) {
+            Some(window_id)
+        } else {
+            translate_widget_id(window_id)
+        }
+    }?;
+    let handle = crate::compat::lock(&platform.handles).get(&host).copied()?;
+    if handle.kind != HandleKind::Window || handle.ptr == 0 {
+        return None;
+    }
+    Some(handle.ptr as id)
 }
 
 impl Platform for MacOSPlatform {
@@ -219,29 +268,84 @@ impl Platform for MacOSPlatform {
             // AppKit is main-thread-only; messaging it from anywhere else would raise.
             return None;
         }
-        // Looked up directly rather than through `get_handle`, which logs an error for a miss:
-        // "which screen is *this* id on" is a question a host may ask of an id that is not a
-        // window, and that is a `None`, not a defect worth a log line.
-        let host = {
-            let handles = crate::compat::lock(&self.handles);
-            if handles.contains_key(&window_id) {
-                Some(window_id)
-            } else {
-                translate_widget_id(window_id)
-            }
-        }?;
-        let handle = crate::compat::lock(&self.handles).get(&host).copied()?;
-        if handle.kind != HandleKind::Window || handle.ptr == 0 {
-            return None;
-        }
         // SAFETY: the registry only holds pointers this backend created, a `Window` handle is an
         // `NSWindow`, and the main thread is established above.
-        unsafe { super::displays::window_display(handle.ptr as id) }
+        unsafe { super::displays::window_display(resolve_window_ptr(self, window_id)?) }
     }
 
     /// A revision of AppKit's current display set; see [`super::displays::generation`].
     fn display_generation(&self) -> u64 {
         super::displays::generation()
+    }
+
+    /// The window's safe-area insets, read from its content view's `safeAreaInsets`.
+    ///
+    /// AppKit introduced the selector in macOS 11; a pre-11 system answers `None` rather than
+    /// zero, which is the trait's "cannot tell" rule. `None` also covers an unknown id, a
+    /// non-window handle, and a call off the main thread. The cocoa backend is what the `desktop`
+    /// profile selects on macOS, so without this the widget-layer default (44/34) would be the
+    /// only answer a default build could get.
+    fn safe_area_insets(&self, window_id: ObjectId) -> Option<SafeAreaInsets> {
+        if !super::types::is_main_thread() {
+            return None;
+        }
+        let window = resolve_window_ptr(self, window_id)?;
+        // SAFETY: `window` is an `NSWindow` this backend created on the AppKit main thread. The
+        // selector check keeps a pre-11 AppKit from receiving a message it does not implement.
+        unsafe {
+            let content: id = msg_send![window, contentView];
+            if content == nil {
+                return None;
+            }
+            let responds: BOOL = msg_send![content, respondsToSelector: sel!(safeAreaInsets)];
+            if responds == NO {
+                return None;
+            }
+            let insets: NsEdgeInsets = msg_send![content, safeAreaInsets];
+            Some(SafeAreaInsets {
+                top: logical_pixels(insets.top),
+                bottom: logical_pixels(insets.bottom),
+                left: logical_pixels(insets.left),
+                right: logical_pixels(insets.right),
+            })
+        }
+    }
+
+    /// Whether the app's effective appearance is dark.
+    ///
+    /// `-[NSApplication effectiveAppearance]` resolves the appearance AppKit applies to the app,
+    /// including a user's per-app override. The name is compared to `NSAppearanceNameDarkAqua`
+    /// through its string value (`"NSAppearanceNameDarkAqua"`), which avoids declaring the
+    /// Objective-C constant as an `extern static` in this legacy backend. Main-thread-only, so
+    /// `None` off it.
+    fn system_theme(&self) -> Option<bool> {
+        if !super::types::is_main_thread() {
+            return None;
+        }
+        // SAFETY: every object messaged is a live AppKit singleton or a retained child, and the
+        // main thread is established above.
+        unsafe {
+            let app: id = msg_send![class!(NSApplication), sharedApplication];
+            if app == nil {
+                return None;
+            }
+            let appearance: id = msg_send![app, effectiveAppearance];
+            if appearance == nil {
+                return None;
+            }
+            let name: id = msg_send![appearance, name];
+            if name == nil {
+                return None;
+            }
+            let utf8: *const c_char = msg_send![name, UTF8String];
+            if utf8.is_null() {
+                return None;
+            }
+            // `name` is an autoreleased string owned by AppKit for the duration of the call; the
+            // `CStr` is read before returning, so the caller's pool safety is not affected.
+            let name = CStr::from_ptr(utf8).to_string_lossy();
+            Some(name.contains("Dark"))
+        }
     }
 
     /// Reads installed physical memory via `sysconf` (`_SC_PHYS_PAGES` x `_SC_PAGESIZE`).

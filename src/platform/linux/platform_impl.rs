@@ -10,7 +10,7 @@
 //!   thread aborts the process, so the surface methods check
 //!   `gtk::is_initialized_main_thread()` and refuse rather than crash. That refusal is
 //!   reported as `false`, which callers must read as "cannot display here".
-//! * **OpenHarmony also reports `target_os = "linux"`.** Every arm that selects this
+//! * **OpenHarmony also reports `unix_desktop`.** Every arm that selects this
 //!   backend therefore excludes `target_env = "ohos"`, or an OpenHarmony build would
 //!   pick a GTK host that cannot exist there.
 
@@ -18,31 +18,31 @@ use super::types::{LinuxHandleKind, LinuxPlatform};
 use crate::compat::atomic::Ordering;
 use crate::compat::OnceLock;
 use crate::compat::String;
-#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
 use crate::core::MutexExt;
 use crate::core::PlatformFamily;
-#[cfg(target_os = "linux")]
+#[cfg(unix_desktop)]
 use crate::platform::accessibility::linux::LinuxAccessibilityBridge;
-#[cfg(target_os = "linux")]
+#[cfg(unix_desktop)]
 use crate::platform::accessibility::AccessibilityBridge;
 use crate::platform::Platform;
 use crate::platform::PlatformCapabilities;
 // Only the `gtk-native` display overrides name these; importing them unconditionally would make
 // them unused on every other build of this backend (principle #10 — no warnings).
-#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
 use crate::platform::{Display, DisplayId};
 use crate::platform::{WidgetTriggerEvent, WidgetTriggerKind};
-#[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
+#[cfg(not(all(unix_desktop, feature = "gtk-native")))]
 use core::time::Duration;
-#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
 use gtk::prelude::*;
 // `glib` is a `gtk` re-export rather than a declared dependency of this crate, so it is
 // named through `gtk` instead of as a bare crate (the same reason `canvas.rs` aliases it).
 // Gated on `gtk-native`: without GTK there is nothing to re-export it from, and this
 // module compiles then too.
-#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
 use gtk::glib;
-#[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
+#[cfg(not(all(unix_desktop, feature = "gtk-native")))]
 use std::thread;
 
 /// The frame interval this backend's event loop runs at, in milliseconds.
@@ -65,7 +65,7 @@ const FRAME_INTERVAL_MS: u64 = 16;
 /// Gated on `gtk-native` because that is the only configuration whose
 /// `dpi_scale_factor` can answer at all: without GTK this backend opens no window, reports
 /// `1.0`, and [`Platform::capabilities`] says `dpi_scaling: false`.
-#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
 fn gdk_scale_override() -> f32 {
     match std::env::var("GDK_SCALE").ok().and_then(|value| value.trim().parse::<u32>().ok()) {
         Some(scale) if scale > 0 => scale as f32,
@@ -78,7 +78,7 @@ fn gdk_scale_override() -> f32 {
 /// The companion of [`gdk_scale_override`]: GDK multiplies the integer scale factor by this,
 /// which is how a host asks for 1.5x. A non-positive or unparsable value is ignored for the
 /// same reason as above, and it carries the same gate.
-#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
 fn gdk_dpi_scale_override() -> f32 {
     match std::env::var("GDK_DPI_SCALE").ok().and_then(|value| value.trim().parse::<f32>().ok()) {
         Some(scale) if scale > 0.0 => scale,
@@ -91,11 +91,11 @@ impl Platform for LinuxPlatform {
         self
     }
     fn backend_name(&self) -> &'static str {
-        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
         {
             "gtk"
         }
-        #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
+        #[cfg(not(all(unix_desktop, feature = "gtk-native")))]
         {
             // Honest name: without the `gtk-native` feature this backend keeps
             // widget state in-process and never opens native GTK windows.
@@ -125,7 +125,7 @@ impl Platform for LinuxPlatform {
     fn capabilities(&self) -> PlatformCapabilities {
         PlatformCapabilities {
             dpi_scaling: self.dpi_scale_factor() != 1.0
-                || cfg!(all(target_os = "linux", feature = "gtk-native")),
+                || cfg!(all(unix_desktop, feature = "gtk-native")),
             ime: true,
             accessibility: true,
             native_menu: false,
@@ -141,15 +141,15 @@ impl Platform for LinuxPlatform {
             //
             // `cfg!` is a runtime `bool`, so its right-hand operand is still *type-checked* in
             // every build. `gdk_clipboard` is compiled only with `gtk-native`, and this module is
-            // compiled for **OpenHarmony** targets too (`target_os = "linux"`, no `gtk-native`),
+            // compiled for **OpenHarmony** targets too (`unix_desktop`, no `gtk-native`),
             // so `cfg!(gtk-native) && super::gdk_clipboard::available()` failed to resolve there
             // — which is how `check_harmony_cross.sh` caught it.
             clipboard: {
-                #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+                #[cfg(all(unix_desktop, feature = "gtk-native"))]
                 {
                     super::gdk_clipboard::available()
                 }
-                #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
+                #[cfg(not(all(unix_desktop, feature = "gtk-native")))]
                 {
                     false
                 }
@@ -166,7 +166,7 @@ impl Platform for LinuxPlatform {
             // ("there is a GTK chooser here"), and *availability* is the method's own answer:
             // with no display session the call reports `PathPickerError::Unavailable`, which is
             // exactly the case that variant is documented for.
-            file_dialog: cfg!(all(target_os = "linux", feature = "gtk-native")),
+            file_dialog: cfg!(all(unix_desktop, feature = "gtk-native")),
         }
     }
 
@@ -193,7 +193,7 @@ impl Platform for LinuxPlatform {
     /// names a file that does not exist yet, and a toolkit filter cannot promise that what the
     /// user typed is something the process may open — the caller's own `open`/`create` reports
     /// that, with the error the OS actually produced.
-    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    #[cfg(all(unix_desktop, feature = "gtk-native"))]
     fn choose_path(
         &self,
         purpose: crate::platform::PathPurpose,
@@ -250,7 +250,7 @@ impl Platform for LinuxPlatform {
     ///
     /// Gated with this backend's GTK code: without `gtk-native` there is no window and no display
     /// to enumerate, so the trait default (an empty list) is the honest answer and stays in place.
-    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    #[cfg(all(unix_desktop, feature = "gtk-native"))]
     fn displays(&self) -> Vec<Display> {
         super::gdk_displays::displays()
     }
@@ -268,7 +268,7 @@ impl Platform for LinuxPlatform {
     /// platform's own window id; `host_window_for` is the association recorded at creation (the
     /// same translation `set_widget_visible` and the paint path use). A caller that passes the
     /// platform id directly is honoured too, because `contains_key` accepts it.
-    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    #[cfg(all(unix_desktop, feature = "gtk-native"))]
     fn display_of_window(&self, window_id: crate::core::ObjectId) -> Option<DisplayId> {
         if !gtk::is_initialized_main_thread() {
             // GTK is main-thread-only; asking from anywhere else would abort the process.
@@ -287,9 +287,22 @@ impl Platform for LinuxPlatform {
     }
 
     /// A revision of GDK's current display set; see [`super::gdk_displays::generation`].
-    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    #[cfg(all(unix_desktop, feature = "gtk-native"))]
     fn display_generation(&self) -> u64 {
         super::gdk_displays::generation()
+    }
+
+    /// X11 and Wayland do not lay system UI over a toplevel's client area.
+    ///
+    /// Panels, docks and the desktop's own chrome live outside the client area, so all four
+    /// distances are zero — a measurement, not a fallback. `Some(zeros)` keeps the widget layer
+    /// from substituting its portrait-phone default on a desktop window, and matches winit's X11
+    /// and Wayland backends (`PhysicalInsets::new(0, 0, 0, 0)`).
+    fn safe_area_insets(
+        &self,
+        _window_id: crate::core::ObjectId,
+    ) -> Option<crate::platform::types::SafeAreaInsets> {
+        Some(crate::platform::types::SafeAreaInsets { top: 0, bottom: 0, left: 0, right: 0 })
     }
 
     /// Reads `MemTotal` from `/proc/meminfo` via [`crate::platform::os_probes`].
@@ -317,7 +330,7 @@ impl Platform for LinuxPlatform {
     /// 3. **Neither**: `1.0`. This backend really is unscaled then — it opens no window at all
     ///    — and [`Self::capabilities`] reports `dpi_scaling: false` to match.
     fn dpi_scale_factor(&self) -> f32 {
-        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
         {
             // GTK is main-thread-only; asking from anywhere else would abort the process.
             if gtk::is_initialized_main_thread() {
@@ -337,7 +350,7 @@ impl Platform for LinuxPlatform {
             }
             gdk_scale_override() * gdk_dpi_scale_override()
         }
-        #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
+        #[cfg(not(all(unix_desktop, feature = "gtk-native")))]
         {
             1.0
         }
@@ -377,7 +390,7 @@ impl Platform for LinuxPlatform {
     /// `embedded` have no widget registry, and a build without `gtk-native` has
     /// no GTK toplevel to put a `DrawingArea` in. In both cases the trait
     /// defaults apply and `supports_surfaces()` honestly reports `false`.
-    #[cfg(all(target_os = "linux", feature = "gtk-native", widgets_unstripped))]
+    #[cfg(all(unix_desktop, feature = "gtk-native", widgets_unstripped))]
     fn mount_surface(
         &self,
         parent: crate::core::ObjectId,
@@ -387,18 +400,18 @@ impl Platform for LinuxPlatform {
         super::canvas::mount_canvas(self, parent, id, rect)
     }
 
-    #[cfg(all(target_os = "linux", feature = "gtk-native", widgets_unstripped))]
+    #[cfg(all(unix_desktop, feature = "gtk-native", widgets_unstripped))]
     fn resize_surface(&self, id: crate::core::ObjectId, rect: crate::core::Rect) -> bool {
         super::canvas::resize_canvas(self, id, rect)
     }
 
-    #[cfg(all(target_os = "linux", feature = "gtk-native", widgets_unstripped))]
+    #[cfg(all(unix_desktop, feature = "gtk-native", widgets_unstripped))]
     fn unmount_surface(&self, id: crate::core::ObjectId) -> bool {
         super::canvas::unmount_canvas(self, id)
     }
 
     /// `true` only when the widget surface exists for this profile.
-    #[cfg(all(target_os = "linux", feature = "gtk-native", widgets_unstripped))]
+    #[cfg(all(unix_desktop, feature = "gtk-native", widgets_unstripped))]
     fn supports_surfaces(&self) -> bool {
         true
     }
@@ -422,7 +435,7 @@ impl Platform for LinuxPlatform {
     /// The trait's signature returns `()`, so an id that names no GTK window is ignored
     /// rather than reported. That is the common case, not an error: most ids arriving here
     /// are ordinary controls, for which the model flag is the whole story.
-    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    #[cfg(all(unix_desktop, feature = "gtk-native"))]
     fn set_widget_visible(&self, widget_id: crate::core::ObjectId, visible: bool) {
         // GTK widgets are main-thread-only; driving them from anywhere else would abort.
         if !gtk::is_initialized_main_thread() {
@@ -448,7 +461,7 @@ impl Platform for LinuxPlatform {
     }
 
     /// Queue a redraw on the canvas's `DrawingArea`.
-    #[cfg(all(target_os = "linux", feature = "gtk-native", widgets_unstripped))]
+    #[cfg(all(unix_desktop, feature = "gtk-native", widgets_unstripped))]
     fn invalidate_surface(&self, id: crate::core::ObjectId) -> bool {
         super::canvas::repaint_canvas(self, id)
     }
@@ -457,13 +470,13 @@ impl Platform for LinuxPlatform {
     /// Gated exactly like [`Self::invalidate_surface`]: without `gtk-native` there are
     /// no canvases to invalidate, so the trait default (`false`) is the honest answer
     /// and the caller falls back to a whole-surface repaint.
-    #[cfg(all(target_os = "linux", feature = "gtk-native", widgets_unstripped))]
+    #[cfg(all(unix_desktop, feature = "gtk-native", widgets_unstripped))]
     fn invalidate_surface_rect(&self, id: crate::core::ObjectId, rect: crate::core::Rect) -> bool {
         super::canvas::repaint_canvas_rect(self, id, rect)
     }
     fn init(&self) {
         self.runtime.initialized.store(true, Ordering::SeqCst);
-        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
         {
             // GTK 3 permits `gtk::init()` on exactly one thread per process and
             // **aborts the process** if another thread calls it ("Attempted to
@@ -492,11 +505,11 @@ impl Platform for LinuxPlatform {
                 log::error!("[linux] gtk::init() failed: {:?}", e);
             }
         }
-        #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
+        #[cfg(not(all(unix_desktop, feature = "gtk-native")))]
         {}
     }
     fn run(&self) {
-        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
         {
             // One frame, on every tick of the GTK loop.
             //
@@ -529,7 +542,7 @@ impl Platform for LinuxPlatform {
             });
             gtk::main();
         }
-        #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
+        #[cfg(not(all(unix_desktop, feature = "gtk-native")))]
         {
             if !self.runtime.initialized.load(Ordering::SeqCst) {
                 self.init();
@@ -559,7 +572,7 @@ impl Platform for LinuxPlatform {
         // The exit condition of this backend's own frame loop is `runtime.running`, an atomic
         // any thread may store, so a request from anywhere ends the *state* loop.
         self.runtime.running.store(false, Ordering::SeqCst);
-        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
         {
             // GTK's stop is main-thread-only: `gtk_main_quit` walks the global main-loop stack
             // that `gtk::main()` installs, and GTK permits only the thread that owns the toolkit
@@ -624,7 +637,7 @@ impl Platform for LinuxPlatform {
     }
 
     fn destroy_widget(&self, widget_id: u64) -> bool {
-        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
         {
             let mut native = self.native.lock_guard();
             native.windows.remove(&widget_id);
@@ -657,7 +670,7 @@ impl Platform for LinuxPlatform {
         let id = self.insert_widget(LinuxHandleKind::Window, title, x, y, width, height);
         // A fresh GTK toplevel is restored, windowed, resizable and decorated.
         self.state.init_window_state(id, crate::platform::state::WindowStateRecord::new_window());
-        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
         {
             // Only the thread that owns GTK may build widgets on it.
             if !gtk::is_initialized_main_thread() {
@@ -1090,7 +1103,7 @@ impl Platform for LinuxPlatform {
         id
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix_desktop)]
     fn ime_bridge(&self) -> Option<&dyn crate::platform::ime::ImeBridge> {
         Some(&self.ime_bridge)
     }
@@ -1132,9 +1145,9 @@ impl Platform for LinuxPlatform {
     /// once the user has resized the window. Otherwise it falls back to the size recorded
     /// when the last resize was reported, and finally to the created geometry — each step
     /// answerable, so a caller always gets a real number rather than a guess.
-    #[cfg(target_os = "linux")]
+    #[cfg(unix_desktop)]
     fn window_client_size(&self, window_id: crate::core::ObjectId) -> Option<(u32, u32)> {
-        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
         {
             // GTK widgets are main-thread-only; asking from anywhere else would abort.
             if gtk::is_initialized_main_thread() {
@@ -1179,7 +1192,7 @@ impl Platform for LinuxPlatform {
     /// from a successful one — and `get_clipboard_text` below read only the record, so the two
     /// halves of one clipboard never met.
     fn set_clipboard_text(&self, text: &str) -> bool {
-        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
         if super::gdk_clipboard::available() {
             // The record is updated *as well*: a worker thread that reads back through
             // `get_clipboard_text` off the main thread has no GDK to ask, and the process-local
@@ -1197,7 +1210,7 @@ impl Platform for LinuxPlatform {
     /// the clipboard was invisible here, and the text this process published to GDK could not be
     /// read back — the write and the read answered from two different places.
     fn get_clipboard_text(&self) -> String {
-        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
         if let Some(text) = super::gdk_clipboard::text() {
             return text;
         }
@@ -1211,7 +1224,7 @@ impl Platform for LinuxPlatform {
     /// then report `None`, which is right for the record but wrong for a display clipboard that
     /// another application can fill.
     fn clipboard_text(&self) -> Option<String> {
-        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
         if super::gdk_clipboard::available() {
             return super::gdk_clipboard::text();
         }
@@ -1225,7 +1238,7 @@ impl Platform for LinuxPlatform {
 
     /// The host clipboard, or `None` when this build has no display clipboard.
     fn clipboard_backend(&self) -> Option<&dyn crate::platform::clipboard::RichClipboardBackend> {
-        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
         {
             if super::gdk_clipboard::available() {
                 // A unit struct, so no `OnceLock` is needed: the backend holds no GTK object (it
@@ -1237,13 +1250,13 @@ impl Platform for LinuxPlatform {
                 None
             }
         }
-        #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
+        #[cfg(not(all(unix_desktop, feature = "gtk-native")))]
         {
             None
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix_desktop)]
     fn accessibility_bridge(&self) -> Option<&dyn AccessibilityBridge> {
         static BRIDGE: OnceLock<LinuxAccessibilityBridge> = OnceLock::new();
         Some(BRIDGE.get_or_init(LinuxAccessibilityBridge::new))

@@ -28,8 +28,8 @@ use objc2::runtime::AnyObject;
 use objc2::sel;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEventMask, NSView,
-    NSWindow, NSWindowStyleMask,
+    NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType,
+    NSEventMask, NSScreen, NSView, NSWindow, NSWindowStyleMask,
 };
 // Named only by the input handlers and the blit, both of which are `widgets_unstripped` code.
 #[cfg(widgets_unstripped)]
@@ -37,7 +37,9 @@ use objc2_app_kit::{NSEvent, NSGraphicsContext};
 // The blit is the only CGContext consumer, and it is `widgets_unstripped` code.
 #[cfg(widgets_unstripped)]
 use objc2_core_graphics::CGContext;
-use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSNotification, NSRect, NSSize, NSString};
+use objc2_foundation::{
+    NSDate, NSDefaultRunLoopMode, NSEdgeInsets, NSNotification, NSRect, NSSize, NSString,
+};
 
 // `Vec` is not in the `core` prelude and this file is compiled on profiles that have no `std`
 // prelude either; the crate's own shim is the one place that decides where it comes from.
@@ -52,10 +54,177 @@ use crate::core::{ObjectId, Point};
 use crate::event::Event;
 #[cfg(widgets_unstripped)]
 use crate::platform::types::MousePhase;
+// Display enumeration and safe-area reads are `Platform` facts, not paint-path facts, so these are
+// used on every profile that compiles this backend.
+use crate::core::Rect;
+use crate::platform::types::{Display, DisplayId, SafeAreaInsets};
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
 use std::sync::Mutex;
+
+// ─── System appearance ───
+
+/// Whether the app's effective appearance is dark.
+///
+/// `NSApplication.effectiveAppearance` is the appearance AppKit resolved for the app (including a
+/// user's explicit per-app override), which is why it is read instead of the `AppleInterfaceStyle`
+/// default. It is main-thread-only, so this answers `None` off the main thread. Any name other
+/// than `NSAppearanceNameDarkAqua` is light: AppKit's only two base appearances are Aqua and Dark
+/// Aqua, and the high-contrast variants inherit from them.
+pub(crate) fn system_theme() -> Option<bool> {
+    let mtm = MainThreadMarker::new()?;
+    let app = NSApplication::sharedApplication(mtm);
+    let appearance = app.effectiveAppearance();
+    let name = appearance.name();
+    // SAFETY: `NSAppearanceNameDarkAqua` is a well-known, immutable AppKit constant.
+    let dark_name = unsafe { NSAppearanceNameDarkAqua };
+    Some(&*name == dark_name)
+}
+
+// ─── Displays and window geometry ───
+
+/// Converts an AppKit rectangle into this crate's [`Rect`].
+///
+/// `NSRect` holds `CGFloat` (`f64`) values, so each is rounded rather than truncated. A negative
+/// extent cannot occur for a real screen, but it is clamped so a `u32` width is never produced from
+/// one. The values are reported **unconverted** (AppKit's bottom-left origin), the same coordinate
+/// space `create_window` passes to `initWithContentRect:`, so a host comparing the two reads one
+/// space.
+fn rect_of(rect: NSRect) -> Rect {
+    Rect::new(
+        rect.origin.x.round() as i32,
+        rect.origin.y.round() as i32,
+        rect.size.width.max(0.0).round() as u32,
+        rect.size.height.max(0.0).round() as u32,
+    )
+}
+
+/// The `CGDirectDisplayID` AppKit carries for a screen, when it reports one.
+fn display_number(screen: &NSScreen) -> Option<u64> {
+    let description = screen.deviceDescription();
+    let key = NSString::from_str("NSScreenNumber");
+    let value = description.objectForKey(&key)?;
+    // SAFETY: AppKit documents `NSScreenNumber` as an `NSNumber`; `unsignedIntValue` is its
+    // integer accessor.
+    let number: u32 = unsafe { msg_send![&*value, unsignedIntValue] };
+    Some(u64::from(number))
+}
+
+/// The id [`displays`] gives a screen: its device number, or its enumeration index when AppKit
+/// reports no device description (a documented fallback for a key that should always be present).
+fn display_id_at(index: usize, screen: &NSScreen) -> u64 {
+    display_number(screen).unwrap_or(index as u64)
+}
+
+/// The displays AppKit reports, in `+[NSScreen screens]` order.
+///
+/// This is the objc2 counterpart of `src/platform/macos/displays.rs`, which the cocoa backend
+/// uses. An empty list is returned off the AppKit main thread: messaging `NSScreen` from another
+/// thread raises, and the trait's honest absence is what the caller can act on.
+pub(crate) fn displays() -> Vec<Display> {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return Vec::new();
+    };
+    let screens = NSScreen::screens(mtm);
+    let main_screen = NSScreen::mainScreen(mtm);
+    let mut out = Vec::new();
+    for (index, screen) in screens.iter().enumerate() {
+        let frame = screen.frame();
+        let visible = screen.visibleFrame();
+        let scale = screen.backingScaleFactor();
+        let is_primary = main_screen.as_ref().is_some_and(|main| {
+            core::ptr::eq(objc2::rc::Retained::as_ptr(main), objc2::rc::Retained::as_ptr(&screen))
+        });
+        out.push(Display {
+            id: DisplayId::new(display_id_at(index, &screen)),
+            bounds: rect_of(frame),
+            work_area: rect_of(visible),
+            // A non-positive scale would divide by zero downstream; AppKit reports >= 1.0, and the
+            // clamp keeps a bad value from becoming a divide-by-zero.
+            scale: if scale > 0.0 { scale as f32 } else { 1.0 },
+            is_primary,
+        });
+    }
+    out
+}
+
+/// The registry pointer for `window_id`, when it names a live native object.
+fn native_ptr(window_id: u64) -> Option<*mut AnyObject> {
+    NATIVE_VIEWS.lock().ok()?.get(&window_id).map(|ptr| ptr.0 as *mut AnyObject)
+}
+
+/// Whether `object` is an `NSWindow` rather than a plain view.
+///
+/// # Safety
+///
+/// `object` must be a live AppKit object on the main thread, as every registry entry is.
+unsafe fn is_window(object: *mut AnyObject) -> bool {
+    let window_class = <NSWindow as objc2::ClassType>::class();
+    let result: bool = msg_send![object, isKindOfClass: window_class];
+    result
+}
+
+/// The screen a window currently occupies, as the id [`displays`] hands out.
+///
+/// The lookup accepts both id spaces: the platform id `create_window` returned and the widget id a
+/// host may hold. An unknown id, a non-window handle, or a call off the main thread answers `None`
+/// rather than messaging an object that is not an `NSWindow`.
+pub(crate) fn screen_id_of_window(window_id: u64) -> Option<u64> {
+    let _mtm = MainThreadMarker::new()?;
+    let object = native_ptr(window_id)?;
+    // SAFETY: the registry only holds retained AppKit objects it created, and the main thread is
+    // established by the marker above.
+    if !unsafe { is_window(object) } {
+        return None;
+    }
+    let window: &NSWindow = unsafe { &*(object as *const NSWindow) };
+    let screen = window.screen()?;
+    let index = NSScreen::screens(_mtm).iter().position(|candidate| {
+        core::ptr::eq(objc2::rc::Retained::as_ptr(&candidate), objc2::rc::Retained::as_ptr(&screen))
+    })?;
+    Some(display_id_at(index, &screen))
+}
+
+/// The safe-area insets of a window (or of a view this backend owns), in logical pixels.
+///
+/// `NSView.safeAreaInsets` exists on macOS 11+; older systems answer `None` rather than zero, which
+/// is the same "cannot tell" rule the trait documents. For a window the insets are read from its
+/// content view, because that is the view the library paints into and the one AppKit lays out under
+/// the title bar / notch.
+pub(crate) fn safe_area_insets(window_id: u64) -> Option<SafeAreaInsets> {
+    let _mtm = MainThreadMarker::new()?;
+    let object = native_ptr(window_id)?;
+    // SAFETY: registry entries are retained AppKit objects and this is the main thread.
+    let view = unsafe {
+        if is_window(object) {
+            let window: &NSWindow = &*(object as *const NSWindow);
+            let content = window.contentView()?;
+            objc2::rc::Retained::as_ptr(&content) as *mut AnyObject
+        } else {
+            object
+        }
+    };
+    // SAFETY: `view` is a live `NSView` on the main thread; the selector check keeps a pre-11 AppKit
+    // from receiving a message it does not implement.
+    let responds: bool = unsafe { msg_send![view, respondsToSelector: sel!(safeAreaInsets)] };
+    if !responds {
+        return None;
+    }
+    let insets: NSEdgeInsets = unsafe { msg_send![view, safeAreaInsets] };
+    Some(SafeAreaInsets {
+        top: logical_pixels(insets.top),
+        bottom: logical_pixels(insets.bottom),
+        left: logical_pixels(insets.left),
+        right: logical_pixels(insets.right),
+    })
+}
+
+/// Rounds a `CGFloat` edge distance to logical pixels, clamping a negative value to zero rather
+/// than wrapping it into a huge `u32`.
+fn logical_pixels(value: f64) -> u32 {
+    value.max(0.0).round() as u32
+}
 
 /// Wrapper around `*mut c_void` that implements `Send`.
 ///

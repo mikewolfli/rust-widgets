@@ -216,6 +216,36 @@ fn display_facts_default_to_the_honest_absence() {
     assert_eq!(platform.display_generation(), 0);
 }
 
+/// Safe-area and system-appearance facts are also absent rather than fabricated.
+///
+/// `None` from `safe_area_insets` is *not* "the insets are zero": the caller that substitutes
+/// [`SafeAreaInsets::default`](crate::platform::SafeAreaInsets) would paint a 44/34 notch on a
+/// desktop window. The difference is only representable if the default stays `None`, so this pins
+/// it. `system_theme` follows the same rule — a fabricated `Some(false)` would make the style
+/// layer report a light preference the user never chose.
+#[test]
+fn window_insets_and_system_theme_default_to_unmeasured() {
+    let platform = StubPlatform::new("test-desktop", PlatformFamily::Desktop);
+    assert_eq!(platform.safe_area_insets(0), None);
+    assert_eq!(platform.system_theme(), None);
+}
+
+/// A desktop backend knows its safe area is zero, so it must say `Some(zeros)`.
+///
+/// `None` would make the widget layer fall back to the portrait-phone default (44/34) on a
+/// window that has no system UI over it. Windows, GTK/X11 and Wayland report zero for the same
+/// reason winit's backends do: panels and docks live outside the client area.
+#[cfg(unix_desktop)]
+#[test]
+fn a_desktop_backend_reports_zero_insets_rather_than_unknown() {
+    let platform = crate::platform::linux::LinuxPlatform::new();
+    assert_eq!(
+        platform.safe_area_insets(0),
+        Some(crate::platform::types::SafeAreaInsets { top: 0, bottom: 0, left: 0, right: 0 }),
+        "a desktop client area has no system-UI overlay; that is a measurement, not an absence"
+    );
+}
+
 /// A backend with no spooler must refuse the job rather than report success, so
 /// the caller can surface the failure instead of pretending it printed.
 #[test]
@@ -259,7 +289,7 @@ fn routing_resolves_every_kind_through_the_single_policy() {
 /// one. Presence is proven by the command being spawnable, and this test pins
 /// that `lp` (which ships on every macOS and most Linux installs) is detected
 /// when it exists on `PATH`.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", unix_desktop))]
 #[test]
 fn unix_print_probe_detects_cups_client_despite_nonzero_version_exit() {
     let lp_exists = std::process::Command::new("lp").arg("--help").output().is_ok();
@@ -296,7 +326,7 @@ fn stub_reports_no_web_engine_capability() {
 fn shortcut_style_follows_the_backend_not_a_middle_layer_cfg() {
     use crate::shortcut::PlatformShortcutStyle;
     let platform = StubPlatform::new("test-desktop", PlatformFamily::Desktop);
-    let expected = if cfg!(any(target_os = "macos", target_os = "ios")) {
+    let expected = if cfg!(any(target_os = "macos", apple_uikit)) {
         PlatformShortcutStyle::Mac
     } else {
         PlatformShortcutStyle::Desktop
@@ -386,13 +416,13 @@ fn every_backend_is_reported_at_the_mode_it_actually_has() {
     }
 
     // `gtk` and `wayland` are conditional on the build, so their expectation is too.
-    let expected_gtk = if cfg!(all(target_os = "linux", feature = "gtk-native")) {
+    let expected_gtk = if cfg!(all(unix_desktop, feature = "gtk-native")) {
         RuntimeGuiMode::NativeInteractive
     } else {
         RuntimeGuiMode::PreviewOrStub
     };
     assert_eq!(runtime_gui_mode_for(&Named("gtk")), expected_gtk);
-    let expected_wayland = if cfg!(all(target_os = "linux", feature = "wayland-native")) {
+    let expected_wayland = if cfg!(all(unix_desktop, feature = "wayland-native")) {
         RuntimeGuiMode::NativeInteractive
     } else {
         RuntimeGuiMode::PreviewOrStub
@@ -494,9 +524,9 @@ fn a_declared_typed_trigger_capability_is_backed_by_the_queue_that_delivers_it()
 
     // The real backend this host compiles in, if any. Each arm repeats the module's own gate,
     // because a backend that is not compiled in cannot be constructed and must not be pretended.
-    #[cfg(target_os = "linux")]
+    #[cfg(unix_desktop)]
     assert_delivers("linux", &crate::platform::linux::LinuxPlatform::new());
-    #[cfg(all(target_os = "linux", feature = "wayland-native"))]
+    #[cfg(all(unix_desktop, feature = "wayland-native"))]
     assert_delivers("wayland", &crate::platform::wayland::WaylandPlatform::new());
     #[cfg(all(target_os = "macos", feature = "cocoa-legacy"))]
     assert_delivers("cocoa", &crate::platform::macos::MacOSPlatform::default());
@@ -585,9 +615,9 @@ fn capability_flags_agree_with_the_methods_they_promise() {
 
     assert_agrees("stub", &StubPlatform::new("flags-stub", PlatformFamily::Desktop));
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix_desktop)]
     assert_agrees("linux", &crate::platform::linux::LinuxPlatform::new());
-    #[cfg(all(target_os = "linux", feature = "wayland-native"))]
+    #[cfg(all(unix_desktop, feature = "wayland-native"))]
     assert_agrees("wayland", &crate::platform::wayland::WaylandPlatform::new());
     #[cfg(all(target_os = "macos", feature = "cocoa-legacy"))]
     assert_agrees("cocoa", &crate::platform::macos::MacOSPlatform::default());
@@ -601,7 +631,7 @@ fn capability_flags_agree_with_the_methods_they_promise() {
     assert_agrees("harmony", &crate::platform::harmony::HarmonyPlatform::new());
     #[cfg(target_os = "android")]
     assert_agrees("android", &crate::platform::android::AndroidPlatform::new());
-    #[cfg(target_os = "ios")]
+    #[cfg(apple_uikit)]
     assert_agrees("ios", &crate::platform::ios::IosMobilePlatform::new());
 }
 

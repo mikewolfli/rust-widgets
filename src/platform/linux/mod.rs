@@ -21,14 +21,14 @@ pub mod types;
 /// Gated with the rest of this backend's GTK code: the module binds `gtk::Clipboard`, which only
 /// exists when `linux-gtk` pulled the crate in. Which host it was verified on, and the one arm of
 /// it that could not be verified there, are recorded in the module docs.
-#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
 pub(crate) mod gdk_clipboard;
 
 /// Display (monitor) enumeration for the Linux/GTK backend, over GDK.
 ///
 /// Gated with the rest of this backend's GTK code. See the module docs for what GDK3 can and
 /// cannot answer (it exposes monitors by index, not by a stable per-monitor id).
-#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
 pub(crate) mod gdk_displays;
 
 /// Absolute child placement for the Linux/GTK backend, on a `gtk::Overlay`.
@@ -36,14 +36,14 @@ pub(crate) mod gdk_displays;
 /// Split out because the placement rule (position, size, no size-request propagation) is
 /// shared by window creation, mounting and resizing, and having one implementation is what
 /// keeps those three from disagreeing.
-#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
 pub(crate) mod overlay_place;
 
 /// Native surface for self-drawn widgets (Linux/GTK).
 ///
 /// Compiled out for `mini`/`embedded`: those profiles have no `widget::runtime`,
 /// which this module is built on.
-#[cfg(all(target_os = "linux", feature = "gtk-native", widgets_unstripped))]
+#[cfg(all(unix_desktop, feature = "gtk-native", widgets_unstripped))]
 pub(crate) mod canvas;
 
 // The `webkit_engine` module lived here: 76 lines wrapping `webkit2gtk::WebView` behind

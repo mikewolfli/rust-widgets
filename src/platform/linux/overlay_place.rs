@@ -35,7 +35,7 @@
 //! control placed one way at mount and another after the first resize would jump. Keeping
 //! the rule in one place is what makes that impossible.
 
-#![cfg(all(target_os = "linux", feature = "gtk-native"))]
+#![cfg(all(unix_desktop, feature = "gtk-native"))]
 
 use gtk::prelude::*;
 

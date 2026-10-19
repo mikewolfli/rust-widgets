@@ -161,6 +161,10 @@ pub trait EnvironmentProvider {
 /// So the default provider **is** the platform, for the facts the platform can answer, and stays
 /// neutral for the rest — which are exactly the ones no `Platform` method covers.
 ///
+/// Two facts are forwarded today: [`EnvironmentProvider::text_scale`] and
+/// [`EnvironmentProvider::color_scheme`]. The latter used to be answered by the neutral default
+/// even on a backend that could read the system appearance, so a dark-mode user got a light UI.
+///
 /// A host that wants to supply its own answers (a settings screen, a test) calls
 /// [`install_environment`] and takes over completely.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -169,6 +173,24 @@ pub struct PlatformEnvironment;
 impl EnvironmentProvider for PlatformEnvironment {
     fn text_scale(&self) -> f32 {
         crate::platform::profile::text_scale()
+    }
+
+    /// The system appearance, when a backend can read it.
+    ///
+    /// `None` means the OS did not tell us (no backend for it, or a thread the toolkit does not
+    /// allow). In that case this answers the neutral [`ThemeMode::Light`] default rather than
+    /// pretending the user chose light — the same honest-absence rule as [`Self::text_scale`].
+    /// `Some(true)` is dark because that is the polarity [`Platform::system_theme`] documents.
+    ///
+    /// [`Platform::system_theme`]: crate::platform::Platform::system_theme
+    fn color_scheme(&self) -> ThemeMode {
+        match crate::platform::profile::system_theme() {
+            Some(true) => ThemeMode::Dark,
+            // `Some(false)`, and the "cannot tell" case, both render with the light theme. The
+            // difference is not lost to the caller: a host that needs it asks the platform, and
+            // `None` is not a claim that the user chose light.
+            _ => ThemeMode::Light,
+        }
     }
 }
 

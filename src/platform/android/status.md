@@ -101,6 +101,9 @@ use: the library paints every `WidgetKind` and the host supplies pixels.
 | Clipboard | ✅ Implemented (emulator-verified) | the system `ClipboardManager`, through the stored Activity `Context` (`android_jni::set_clipboard_text` / `clipboard_text`, text and HTML via `ClipData.newPlainText` / `newHtmlText`, and **application-defined MIME types** via `ClipDescription` + `ClipData.Item`). Needs the `JavaVM` **and** an attached `Context`, so `capabilities().clipboard` asks `android_jni::clipboard_ready()` at runtime rather than assuming it; writes are confirmed by reading the primary clip back, because the platform refuses background clipboard writes without an error. `nativePlatformProbe` passed on the x86_64 emulator (API 34), including a payload with non-UTF-8 bytes |
 | Displays | ✅ Implemented (emulator-verified) | `displays()` reads `WindowManager.getDefaultDisplay()` + `DisplayMetrics` through JNI; `display_of_window()` answers the default display for an owned window and `display_generation()` is derived from the same metrics. `None`/empty means no attached `Context`, not a fabricated screen. `nativePlatformProbe` passed the four display assertions on the x86_64 emulator |
 | DPI scaling | ✅ Implemented (emulator-verified) | `dpi_scale_factor()` returns `DisplayMetrics.densityDpi / 160` (the same derivation winit's Android backend uses). `capabilities().dpi_scaling` follows the runtime `JavaVM`+`Context` handshake, so it is `false` before there is a display to measure. The emulator probe exercised the display read that backs it |
+| System appearance | ✅ Implemented (emulator-verified) | `system_theme()` reads `Configuration.uiMode & UI_MODE_NIGHT_MASK` through the stored `Context` (`Resources.getConfiguration()`), the same fact winit's Android backend reads. `Some(true)` = night, `Some(false)` = day, `None` when no `Context` is attached or the mode is undefined. Probe bit 9 |
+| Text scale | ✅ Implemented (emulator-verified) | `text_scale()` reads `Configuration.fontScale` through the same JNI path (the accessibility "Font size" setting). A non-finite/non-positive value is refused rather than handed to layout. Probe bit 10 |
+| Safe area | ✅ Implemented (emulator-verified) | `safe_area_insets()` reads `WindowManager.getCurrentWindowMetrics().getWindowInsets()` (API 30+) for `systemBars() | displayCutout()`, then converts the pixel values with `densityDpi / 160`. No `View` is needed, which is what made this possible with the Activity `Context` alone. `None` before the `Context` handshake or on API < 30. Probe bit 11 |
 | IME (soft keyboard) | ✅ Implemented (emulator-verified) | `AndroidImeBridge` controls `InputMethodManager.showSoftInput` / `hideSoftInputFromWindow` on focus in/out (the operation winit's Android backend performs) and keeps composition state in process. `capabilities().ime` follows the `JavaVM`+`Context` handshake. Emulator log: `soft_keyboard=true` on focus-in, `soft_keyboard_hidden=true` on focus-out |
 | ColorDialog / FontDialog | 🔶 Logical only | no system picker on Android; emits an explicit diagnostic when the JNI bridge is ready |
 | Menu kind validation | ✅ Enforced | `MenuBar`←Window, `Menu`←MenuBar/Menu, `MenuItem`←Menu, trigger←MenuItem |
@@ -259,7 +262,8 @@ would be an architectural decision, not a backend fix.
 - An AndroidX `Toolbar` inside the library — the on-device constraint is now
   characterised rather than merely assumed (see "Toolbar investigation").
 - The JNI clipboard calls on a real device or emulator: **now verified** by
-  `nativePlatformProbe` on the x86_64 emulator (API 34), 9/9 steps.
+  `nativePlatformProbe` on the x86_64 emulator (API 34), 12/12 steps (custom MIME,
+  displays, DPI, IME, night mode, `fontScale`, `WindowMetrics` safe area).
 - Device coverage beyond one arm64 device.
 
 ## Device install note (MIUI/HyperOS)

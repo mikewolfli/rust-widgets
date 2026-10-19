@@ -3,6 +3,16 @@
 
 # iOS Backend Status
 
+## UIKit family
+
+This backend is the UIKit backend for **iOS, tvOS, visionOS and Mac Catalyst**, selected by the
+`apple_uikit` cfg alias (`build.rs`): `target_vendor = "apple"` and `target_os` in
+`{ios, tvos, visionos}`. It used to be selected by `target_os = "ios"`, which meant tvOS and
+visionOS compiled the module but `create_native_platform` never chose it — they silently fell
+through to `unknown-runtime-stub`. watchOS is excluded because `objc2-ui-kit` does not provide
+`UIWindow` there. All four targets (plus the two Simulator targets) are `cargo check`-clean;
+see `docs/log/log-20261019-1.md` §10.
+
 ## Current Status
 
 The iOS backend (`src/platform/ios/`) is a **state-driven** backend. It
@@ -13,7 +23,7 @@ and accessibility metadata — through `BackendState<IosHandleKind>`.
 The one thing the host owes the library is a **window** to paint into. That is
 the single UIKit object this backend creates (`native::create_ui_window` in
 `src/platform/ios/native.rs`), and it is gated behind
-`#[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]`. Elsewhere the
+`#[cfg(all(apple_uikit, feature = "ios-uikit-ffi"))]`. Elsewhere the
 backend runs in pure state mode.
 
 ## BLUE15: no per-kind UIKit controls
@@ -48,6 +58,8 @@ and widgets are then displayed through `Platform::mount_surface` — see below.
 | Show / hide / geometry / text / enabled | ✅ Implemented | logical state round-trips |
 | Clipboard | ✅ Implemented | system `UIPasteboard`: text, HTML, and **application-defined pasteboard types** (`setData:forPasteboardType:` with a read-back) |
 | Displays | ✅ Implemented | `UIScreen.screens()`/`mainScreen()` on the main thread; bounds, scale and primary flag; empty off the main thread or without the UIKit FFI. `display_of_window` reads the window's own `UIWindow.screen()` (winit's lookup) rather than guessing the primary screen |
+| Safe area | ✅ Implemented | `safe_area_insets(window_id)` reads the recorded `UIWindow`'s `UIView.safeAreaInsets` on the main thread. `None` when the window is unknown, the call is off the main thread, or the UIKit FFI is absent — never the widget's portrait-phone default, which would fabricate a notch |
+| System appearance | ✅ Implemented | `system_theme()` reads `UITraitCollection.currentTraitCollection().userInterfaceStyle`; `Some(true)` = dark, `Some(false)` = light, `None` for `Unspecified`, off-main-thread, or no FFI |
 | Drag & drop | ✅ Implemented | injectable drop-event queue |
 | IME / accessibility **metadata** (the per-widget flags and names) | ✅ Implemented | `BackendState` fields: `set_widget_ime_enabled` and `set_widget_accessibility_name` round-trip a boolean and a string |
 | IME / accessibility **bridges** (an input-method client, an accessibility tree) | ⛔ Not implemented | neither `ime_bridge()` nor `accessibility_bridge()` is overridden, so both inherit `None` — which is why `capabilities()` reports `ime: false` and `accessibility: false`. The row above is **not** a counter-argument: a flag store is not an input-method client |
@@ -87,7 +99,7 @@ entry points. Until that wiring exists in the host layer, this backend paints bu
 `IosMobilePlatform::capabilities()` declares the flags explicitly rather than
 inheriting desktop defaults:
 
-- `dpi_scaling: cfg!(all(target_os = "ios", feature = "ios-uikit-ffi"))` — `true` exactly
+- `dpi_scaling: cfg!(all(apple_uikit, feature = "ios-uikit-ffi"))` — `true` exactly
   when `dpi_scale_factor()` can read `UIScreen.scale` (2x/3x on real devices). A preview build
   without the UIKit FFI reports `false` rather than the fabricated `1.0`.
 - `ime: false`, `accessibility: false` — neither `ime_bridge()` nor `accessibility_bridge()` is
@@ -96,7 +108,7 @@ inheriting desktop defaults:
 - `native_menu: false` — the menu is an in-process tree served through an
   injectable queue, **not** an OS menu. This is asserted by
   `ios_platform_reports_explicit_mobile_capabilities`.
-- `clipboard: cfg!(all(target_os = "ios", feature = "ios-uikit-ffi"))`, `open_external: false` —
+- `clipboard: cfg!(all(apple_uikit, feature = "ios-uikit-ffi"))`, `open_external: false` —
   the two host services, now answered separately. The clipboard is `UIPasteboard`
   (`super::native`), reached through objc2-ui-kit; the flag and the trait method bodies are
   produced from the same `cfg`, so a build without the UIKit FFI reports `false` and keeps the
@@ -104,6 +116,9 @@ inheriting desktop defaults:
   `open_external` stays `false`: opening a URL needs the app's own `UIApplicationDelegate`.
   Asserted by `ios_platform_reports_explicit_mobile_capabilities` and
   `the_clipboard_flag_matches_its_backend`.
+- `text_scale: 1.0` — iOS's `UIContentSizeCategory` is a category name rather than a multiplier,
+  and mapping it needs the app's preferred content size, which this backend cannot observe. The
+  trait's honest default is kept rather than guessing a factor from the category.
 
 ## Build and test
 

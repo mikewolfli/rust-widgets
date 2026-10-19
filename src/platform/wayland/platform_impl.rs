@@ -68,10 +68,10 @@ use crate::platform::wayland::types::{WaylandHandleKind, WaylandPlatform};
 /// it must not differ between the loop and the pump callback — nor from the other hosts.
 const FRAME_INTERVAL_MS: u32 = 16;
 
-#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+#[cfg(all(feature = "wayland-native", unix_desktop))]
 use wayland_client as wl_client;
 
-#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+#[cfg(all(feature = "wayland-native", unix_desktop))]
 use wayland_protocols as wl_protocols;
 
 // ---------------------------------------------------------------------------
@@ -178,6 +178,19 @@ impl Platform for WaylandPlatform {
         }
     }
 
+    /// Wayland does not lay system UI over a toplevel's client area.
+    ///
+    /// The compositor's panels and the desktop's chrome live outside the client area, so all four
+    /// distances are zero — a measurement, not a fallback. `Some(zeros)` keeps the widget layer
+    /// from substituting its portrait-phone default, and matches winit's Wayland backend
+    /// (`PhysicalInsets::new(0, 0, 0, 0)`).
+    fn safe_area_insets(
+        &self,
+        _window_id: ObjectId,
+    ) -> Option<crate::platform::types::SafeAreaInsets> {
+        Some(crate::platform::types::SafeAreaInsets { top: 0, bottom: 0, left: 0, right: 0 })
+    }
+
     fn dpi_scale_factor(&self) -> f32 {
         // Attempt to detect DPI from environment when wayland-client is not wired.
         // Check common environment variables set by Wayland compositors.
@@ -205,7 +218,7 @@ impl Platform for WaylandPlatform {
         // Fallback: assume 96 DPI (1.0 scale factor).
         // When wayland-native feature is active, check the native session
         // for wl_output scale factor obtained from the compositor.
-        #[cfg(all(feature = "wayland-native", target_os = "linux"))]
+        #[cfg(all(feature = "wayland-native", unix_desktop))]
         {
             if let Ok(guard) = self.native_session.lock() {
                 if let Some(ref session) = *guard {
@@ -246,18 +259,18 @@ impl Platform for WaylandPlatform {
         // on each iteration to dispatch pending native Wayland events.
         // Meanwhile, this thread blocks waiting for the quit signal.
         let mut event_loop = EventLoop::new();
-        #[cfg(all(feature = "wayland-native", not(alloc_frugal), target_os = "linux"))]
+        #[cfg(all(feature = "wayland-native", not(alloc_frugal), unix_desktop))]
         if let Some(pump) = create_event_loop_pump() {
             event_loop.set_native_pump(pump);
         }
         event_loop.start();
 
-        #[cfg(all(feature = "wayland-native", not(alloc_frugal), target_os = "linux"))]
+        #[cfg(all(feature = "wayland-native", not(alloc_frugal), unix_desktop))]
         {
             self.run_native_event_loop();
         }
 
-        #[cfg(not(all(feature = "wayland-native", not(alloc_frugal), target_os = "linux")))]
+        #[cfg(not(all(feature = "wayland-native", not(alloc_frugal), unix_desktop)))]
         while self.runtime.running.load(std::sync::atomic::Ordering::SeqCst) {
             std::thread::sleep(std::time::Duration::from_millis(16));
         }
@@ -311,7 +324,7 @@ impl Platform for WaylandPlatform {
 
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
         // Try native Wayland surface creation when the wayland-native feature is active
-        #[cfg(all(feature = "wayland-native", target_os = "linux"))]
+        #[cfg(all(feature = "wayland-native", unix_desktop))]
         if let Some(id) = self.try_create_native_window(title, x, y, width, height) {
             return id;
         }
@@ -611,7 +624,7 @@ impl Platform for WaylandPlatform {
 // Native Wayland window creation (gated by "wayland-native" feature)
 // ---------------------------------------------------------------------------
 
-#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+#[cfg(all(feature = "wayland-native", unix_desktop))]
 impl WaylandPlatform {
     /// Run the real Wayland event loop.
     ///
@@ -623,7 +636,7 @@ impl WaylandPlatform {
     ///
     /// Falls back to the timed polling loop when no Wayland session exists
     /// (headless CI), which keeps `run()`/`quit()` semantics identical.
-    #[cfg(all(feature = "wayland-native", not(alloc_frugal), target_os = "linux"))]
+    #[cfg(all(feature = "wayland-native", not(alloc_frugal), unix_desktop))]
     fn run_native_event_loop(&self) {
         use std::os::fd::AsRawFd;
 
@@ -881,7 +894,7 @@ impl WaylandPlatform {
 //
 // A plain comment rather than a doc comment: rustdoc generates no documentation for a
 // macro invocation, so a `///` here is an unused doc comment (a denied warning).
-#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+#[cfg(all(feature = "wayland-native", unix_desktop))]
 thread_local! {
     static CONFIGURED_WINDOWS: core::cell::RefCell<crate::compat::HashMap<usize, ObjectId>> =
         core::cell::RefCell::new(crate::compat::HashMap::new());
@@ -898,7 +911,7 @@ thread_local! {
 // Written as `//` rather than `///`: a doc comment on a `thread_local!` invocation documents
 // nothing, and rustdoc says so (`unused_doc_comments`) — the note belongs in the source, not in a
 // doc block attached to a macro.
-#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+#[cfg(all(feature = "wayland-native", unix_desktop))]
 thread_local! {
     static DISPATCHING_SESSION: core::cell::RefCell<Option<*mut WaylandSession>> =
         core::cell::RefCell::new(None);
@@ -909,7 +922,7 @@ thread_local! {
 /// Called once per window at creation. The proxy is identified by its object address, which
 /// is stable for the life of the `wl_proxy`: `wayland-client` keeps the proxy alive in the
 /// connection's object map for as long as the compositor may send it events.
-#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+#[cfg(all(feature = "wayland-native", unix_desktop))]
 fn record_configured_window(proxy: &impl wl_client::Proxy, id: ObjectId) {
     let key = proxy.id().protocol_id() as usize;
     CONFIGURED_WINDOWS.with(|map| {
@@ -918,7 +931,7 @@ fn record_configured_window(proxy: &impl wl_client::Proxy, id: ObjectId) {
 }
 
 /// The window to report a configure event against, if one is known.
-#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+#[cfg(all(feature = "wayland-native", unix_desktop))]
 pub(crate) fn configured_window_id(proxy: &impl wl_client::Proxy) -> Option<ObjectId> {
     let key = proxy.id().protocol_id() as usize;
     CONFIGURED_WINDOWS.with(|map| map.borrow().get(&key).copied())
@@ -930,7 +943,7 @@ pub(crate) fn configured_window_id(proxy: &impl wl_client::Proxy) -> Option<Obje
 
 /// Dispatch state for the Wayland session.
 /// Holds the global proxies obtained from the registry.
-#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+#[cfg(all(feature = "wayland-native", unix_desktop))]
 pub(crate) struct WaylandSessionState {
     pub(crate) compositor: Option<wl_client::protocol::wl_compositor::WlCompositor>,
     pub(crate) xdg_wm_base: Option<wl_protocols::xdg::shell::client::xdg_wm_base::XdgWmBase>,
@@ -948,7 +961,7 @@ pub(crate) struct WaylandSessionState {
 /// This is one object per connection, shared by every window — not a per-widget
 /// registry — so no per-widget protocol object is kept here. Widgets other than the
 /// window are painted by the library, so the host has nothing to create for them.
-#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+#[cfg(all(feature = "wayland-native", unix_desktop))]
 pub(crate) struct WaylandSession {
     /// The Wayland connection. Must stay alive while `event_queue` is in use.
     #[allow(dead_code)]
@@ -968,7 +981,7 @@ pub(crate) struct WaylandSession {
 /// dispatches pending Wayland events through `dispatch_pending()`.
 ///
 /// Returns `None` if the active platform is not Wayland.
-#[cfg(all(feature = "wayland-native", not(alloc_frugal), target_os = "linux"))]
+#[cfg(all(feature = "wayland-native", not(alloc_frugal), unix_desktop))]
 pub fn create_event_loop_pump() -> Option<Box<dyn Fn() + Send + Sync>> {
     let platform = crate::platform::runtime::get_platform();
     let wayland = platform.as_any().downcast_ref::<WaylandPlatform>()?;
@@ -979,7 +992,7 @@ pub fn create_event_loop_pump() -> Option<Box<dyn Fn() + Send + Sync>> {
 
 // --- Registry global discovery ---
 
-#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+#[cfg(all(feature = "wayland-native", unix_desktop))]
 impl wl_client::Dispatch<wl_client::protocol::wl_registry::WlRegistry, ()> for WaylandSessionState {
     fn event(
         state: &mut Self,
@@ -1037,7 +1050,7 @@ impl wl_client::Dispatch<wl_client::protocol::wl_registry::WlRegistry, ()> for W
 
 // --- wl_compositor (no events) ---
 
-#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+#[cfg(all(feature = "wayland-native", unix_desktop))]
 impl wl_client::Dispatch<wl_client::protocol::wl_compositor::WlCompositor, ()>
     for WaylandSessionState
 {
@@ -1055,7 +1068,7 @@ impl wl_client::Dispatch<wl_client::protocol::wl_compositor::WlCompositor, ()>
 
 // --- wl_output (handle scale events for DPI detection) ---
 
-#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+#[cfg(all(feature = "wayland-native", unix_desktop))]
 impl wl_client::Dispatch<wl_client::protocol::wl_output::WlOutput, ()> for WaylandSessionState {
     fn event(
         state: &mut Self,
@@ -1089,7 +1102,7 @@ impl wl_client::Dispatch<wl_client::protocol::wl_output::WlOutput, ()> for Wayla
 
 // --- wl_surface (surface enter/leave events) ---
 
-#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+#[cfg(all(feature = "wayland-native", unix_desktop))]
 impl wl_client::Dispatch<wl_client::protocol::wl_surface::WlSurface, ()> for WaylandSessionState {
     fn event(
         _state: &mut Self,
@@ -1107,7 +1120,7 @@ impl wl_client::Dispatch<wl_client::protocol::wl_surface::WlSurface, ()> for Way
 
 // --- xdg_wm_base (handle ping events) ---
 
-#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+#[cfg(all(feature = "wayland-native", unix_desktop))]
 impl wl_client::Dispatch<wl_protocols::xdg::shell::client::xdg_wm_base::XdgWmBase, ()>
     for WaylandSessionState
 {
@@ -1129,7 +1142,7 @@ impl wl_client::Dispatch<wl_protocols::xdg::shell::client::xdg_wm_base::XdgWmBas
 
 // --- xdg_surface (acknowledge configure events) ---
 
-#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+#[cfg(all(feature = "wayland-native", unix_desktop))]
 impl wl_client::Dispatch<wl_protocols::xdg::shell::client::xdg_surface::XdgSurface, ()>
     for WaylandSessionState
 {
@@ -1151,7 +1164,7 @@ impl wl_client::Dispatch<wl_protocols::xdg::shell::client::xdg_surface::XdgSurfa
 
 // --- xdg_toplevel (handle configure / close) ---
 
-#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+#[cfg(all(feature = "wayland-native", unix_desktop))]
 impl wl_client::Dispatch<wl_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel, ()>
     for WaylandSessionState
 {

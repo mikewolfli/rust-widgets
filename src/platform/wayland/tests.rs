@@ -29,7 +29,7 @@ use crate::platform::Platform;
 /// so a headless CI runner without weston does not fail. To run it against a
 /// real compositor use `tools/run_wayland_compositor_tests.sh`, which fetches
 /// and/or installs weston and drives both this test and its negative control.
-#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+#[cfg(all(feature = "wayland-native", unix_desktop))]
 #[test]
 fn native_session_binds_live_compositor() {
     use crate::core::PlatformFamily;
@@ -76,14 +76,14 @@ fn native_session_binds_live_compositor() {
 /// An *empty* `WAYLAND_DISPLAY` does not name a socket, so it is treated the
 /// same as an unset one — this lets the negative control run under
 /// `WAYLAND_DISPLAY=` instead of being silently skipped.
-#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+#[cfg(all(feature = "wayland-native", unix_desktop))]
 fn compositor_advertised() -> bool {
     matches!(std::env::var("WAYLAND_DISPLAY"), Ok(v) if !v.is_empty())
 }
 
 /// Without a compositor the backend must degrade to state-only and leave
 /// `native_session` empty — this is the negative control for the test above.
-#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+#[cfg(all(feature = "wayland-native", unix_desktop))]
 #[test]
 fn native_session_stays_empty_without_compositor() {
     use crate::platform::Platform as _;

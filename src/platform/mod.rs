@@ -38,7 +38,7 @@ pub mod harmony;
 /// transitively requires the iOS target (`ios = ["dep:objc2", ...]`), so on other
 /// hosts the backend runs in pure state mode.
 pub mod ios;
-#[cfg(any(target_os = "linux", doc))]
+#[cfg(any(unix_desktop, doc))]
 pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
@@ -76,7 +76,7 @@ pub mod mobile;
     not(feature = "harmony")
 ))]
 pub mod redox;
-#[cfg(all(target_os = "linux", feature = "wayland-native"))]
+#[cfg(all(unix_desktop, feature = "wayland-native"))]
 pub mod wayland;
 #[cfg(target_os = "windows")]
 pub mod windows;
@@ -113,20 +113,22 @@ pub mod accessibility;
 pub mod darwin_probes;
 /// Shared host-handler spawn used by the desktop backends' `open_external`.
 ///
-/// Gated to the backends that call it — Windows, Linux (which also covers the
-/// OpenHarmony targets, since they report `target_os = "linux"`) and the
-/// cocoa-based macOS backend. Ungated, this module also compiled into every
-/// profile without a desktop backend (`tablet`/`mobile`/`mini`/`embedded` on a
-/// non-Linux host, the `android-jni` set), where nothing referenced it and the
-/// build reported it as dead code.
+/// Gated to the backends that call it — Windows, the X11/GTK and Wayland backends
+/// (Linux and the BSDs, via `unix_desktop`) and the cocoa-based macOS backend. Ungated, this
+/// module also compiled into every profile without a desktop backend
+/// (`tablet`/`mobile`/`mini`/`embedded` on a non-Unix host, the `android-jni` set), where nothing
+/// referenced it and the build reported it as dead code.
 #[cfg(any(
     target_os = "windows",
-    target_os = "linux",
+    unix_desktop,
     all(target_os = "macos", feature = "cocoa-legacy")
 ))]
 pub(crate) mod external;
 /// Linux-kernel system probes (`/proc`, `/sys`) shared by the backends that sit
 /// on a Linux kernel: Android, HarmonyOS, Linux/GTK, Wayland and mobile.
+///
+/// The BSDs also use these probes, but they do not mount `/proc` by default; every
+/// function returns its honest `None`/`false` there rather than inventing a figure.
 pub mod os_probes;
 /// The portable host backend — a drawing surface with no operating system behind it.
 ///
@@ -163,8 +165,8 @@ pub mod ime;
 /// stays false.
 #[cfg(feature = "android-jni")]
 pub mod ime_android;
-/// Real Linux IME bridge (IBus integration).
-#[cfg(target_os = "linux")]
+/// Real Linux/BSD IME bridge (IBus integration).
+#[cfg(unix_desktop)]
 pub mod ime_linux;
 /// Real macOS IME bridge (NSTextInputContext integration).
 ///

@@ -3,9 +3,9 @@
 
 //! Linux backend shell.
 use crate::compat::atomic::AtomicBool;
-#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
 use crate::compat::HashMap;
-#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
 use crate::compat::Mutex;
 use crate::platform::state::BackendState;
 /// Logical handle kinds that survive the self-drawn widget strategy.
@@ -37,13 +37,13 @@ impl LinuxRuntimeState {
 pub struct LinuxPlatform {
     pub(crate) state: BackendState<LinuxHandleKind>,
     pub(crate) runtime: LinuxRuntimeState,
-    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    #[cfg(all(unix_desktop, feature = "gtk-native"))]
     pub(crate) native: Mutex<LinuxNativeState>,
     /// Platform IME bridge for text input method integration (Linux only).
-    #[cfg(target_os = "linux")]
+    #[cfg(unix_desktop)]
     pub(crate) ime_bridge: crate::platform::ime_linux::LinuxImeBridge,
 }
-#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
 #[derive(Default)]
 pub(crate) struct LinuxNativeState {
     /// Native GTK windows indexed by logical widget id.
@@ -90,7 +90,7 @@ pub(crate) struct LinuxNativeState {
     pub(crate) canvases: HashMap<u64, gtk::DrawingArea>,
 }
 
-#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
 unsafe impl Send for LinuxNativeState {}
 
 // SAFETY: `LinuxPlatform` is only ever driven from the UI thread. The GTK
@@ -106,7 +106,7 @@ unsafe impl Send for LinuxNativeState {}
 // types are `!Sync`, so a hand-written `unsafe impl Sync` would be an
 // unnecessary promise that `&LinuxPlatform` is safe to share across threads.
 
-#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
 unsafe impl Send for LinuxPlatform {}
 
 impl LinuxPlatform {
@@ -115,9 +115,9 @@ impl LinuxPlatform {
         Self {
             state: BackendState::new(),
             runtime: LinuxRuntimeState::new(),
-            #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+            #[cfg(all(unix_desktop, feature = "gtk-native"))]
             native: Mutex::new(LinuxNativeState::default()),
-            #[cfg(target_os = "linux")]
+            #[cfg(unix_desktop)]
             ime_bridge: crate::platform::ime_linux::LinuxImeBridge::new(),
         }
     }

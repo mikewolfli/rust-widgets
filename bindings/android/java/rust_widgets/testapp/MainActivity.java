@@ -272,6 +272,9 @@ public class MainActivity extends Activity {
             "display_generation is non-zero and stable",
             "clipboard capability reported",
             "IME bridge (soft keyboard) available",
+            "system theme read from Configuration.uiMode",
+            "text scale read from Configuration.fontScale",
+            "safe-area insets read from WindowMetrics",
         };
         boolean ok = true;
         for (int i = 0; i < steps.length; i++) {

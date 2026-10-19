@@ -44,12 +44,19 @@ fn main() {
 ///   companion to `alloc_frugal` for the stripped case.
 ///
 /// Two further aliases are declared (and emitted) here for the same reason, but
-/// are gated by a *feature conjunction* rather than by the profile matrix:
+/// are gated by a *feature conjunction* rather than by the profile matrix. One
+/// more, `apple_uikit`, is a *target* alias rather than a profile or feature one:
 ///
 /// - `designer_tooling` — `full_widgets` and the `designer` feature. See its own
 ///   note below for why it is not folded into `full_widgets`.
 /// - `cjk_outline_face` — `fonts-cjk`, a single shard, or a `fonts-cjk-shard-*`
 ///   shard. See its own note below.
+/// - `apple_uikit` — an Apple target that uses UIKit (`ios`, `tvos`, `visionos`,
+///   including Mac Catalyst) but not `macos`. See its own note below for why
+///   watchOS is excluded.
+/// - `unix_desktop` — a Unix-family target with an X11/Wayland session: Linux and
+///   the BSDs, but not Apple, Android, Redox, OpenHarmony or wasm. This is winit's
+///   `free_unix`, named once so the X11/Wayland gates cannot drift.
 ///
 /// Before these aliases existed, `widget/mod.rs` used
 /// `not(any(mini, embedded)) + any(desktop, tablet, mobile)` while several
@@ -88,6 +95,50 @@ fn declare_cfg_aliases() {
     // here because the disjunction appears at 20+ sites and a hand-written copy would drift the
     // moment a shard is added (rule #47).
     println!("cargo:rustc-check-cfg=cfg(cjk_outline_face)");
+    // The Apple UIKit family: iOS, tvOS, visionOS and Mac Catalyst share one UIKit backend
+    // (`winit-uikit` uses the same `target_vendor = "apple" && !macos` gate). Before this alias
+    // every site spelled `target_os = "ios"`, so tvOS and visionOS silently fell through to the
+    // unknown-runtime stub even though `objc2-ui-kit` supports them. watchOS is deliberately
+    // excluded: `objc2-ui-kit` compiles `UIWindow` out there, so selecting this backend would
+    // produce a backend that cannot own the window it paints into.
+    //
+    // Mac Catalyst reports `target_os = "ios"` with `target_abi = "macabi"`, so it was already
+    // covered by the spelling this alias replaces; it is named here because the gate is about the
+    // toolkit, not the device family.
+    println!("cargo:rustc-check-cfg=cfg(apple_uikit)");
+    let target_vendor = std::env::var("CARGO_CFG_TARGET_VENDOR").unwrap_or_default();
+    let target_family = std::env::var("CARGO_CFG_TARGET_FAMILY").unwrap_or_default();
+    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let apple_uikit =
+        target_vendor == "apple" && matches!(target_os.as_str(), "ios" | "tvos" | "visionos");
+    if apple_uikit {
+        println!("cargo:rustc-cfg=apple_uikit");
+    }
+
+    // `unix_desktop` — every Unix-family host that runs the X11/GTK or Wayland backend.
+    //
+    // winit calls this `free_unix` (`all(unix, not(apple), not(android), not(emscripten))`) and
+    // uses it for X11 and Wayland. The previous spelling here was `target_os = "linux"`, which
+    // silently excluded the BSDs even though `gtk`, `gdk` and `wayland-client` all support them
+    // and winit ships there. Naming the predicate once keeps the module gates, the backend
+    // selection and the `runtime_gui_mode_for` answer from drifting apart as families are added.
+    //
+    // Redox is excluded because it has its own Orbital backend; OpenHarmony is excluded because
+    // it reports `target_os = "linux"` but has no X11/Wayland server; wasm is excluded because
+    // `target_family = "unix"` is true for WASI but there is no desktop session.
+    println!("cargo:rustc-check-cfg=cfg(unix_desktop)");
+    let unix_desktop = target_family == "unix"
+        && !target_arch.starts_with("wasm")
+        && target_env != "ohos"
+        && !matches!(
+            target_os.as_str(),
+            "macos" | "ios" | "tvos" | "visionos" | "watchos" | "android" | "redox"
+        );
+    if unix_desktop {
+        println!("cargo:rustc-cfg=unix_desktop");
+    }
 
     let has_profile =
         ["desktop", "tablet", "mobile"].iter().any(|feature| feature_enabled(feature));

@@ -426,6 +426,25 @@ pub fn text_scale() -> f32 {
     }
 }
 
+/// The host's system theme, or `None` when this profile cannot ask.
+///
+/// Mirrors [`text_scale`]'s contract: the OS knowledge stays in the backend
+/// ([`Platform::system_theme`]), and this function is the semantic accessor the style layer
+/// calls. The `mini` profile has no platform singleton, so it answers `None` — "cannot tell" —
+/// rather than a fabricated light appearance (principle #37).
+///
+/// [`Platform::system_theme`]: crate::platform::Platform::system_theme
+pub fn system_theme() -> Option<bool> {
+    #[cfg(feature = "mini")]
+    {
+        None
+    }
+    #[cfg(not(feature = "mini"))]
+    {
+        crate::platform::get_platform().system_theme()
+    }
+}
+
 /// The render engine this profile drives its loop with.
 ///
 /// This is the single selection point for the `embedded`-versus-native runtime

@@ -20,6 +20,7 @@ This file tracks items that are currently not feasible to complete in the presen
   - Status 2026-09-11: largely delivered, but not yet *compile-time*. `tools/generate_control_route_matrix.py` emits a per-`WidgetKind` route matrix and the gate in `tools/check_control_route_matrix.sh` passes `--fail-on-placeholder --fail-on-contract-miss`; measured results are 167 variants with 0 missing route mappings and 0 missing trait create-method contracts. What remains open is the *compile-time* half: the route is currently validated by a generated report + gate rather than enforced by the type system.
 
 - [ ] ITEM 1: Linux full native parity without `gtk-native` feature
+  - Tracked in [`blue28.md`](blue28.md) B28.15 (decision: GTK-mandatory desktop vs native X11).
   - Constraint: current non-`gtk-native` path is a preview/state loop and does not provide guaranteed visible native widgets.
   - Blocker: requires stable non-GTK native backend strategy (or mandatory GTK runtime dependency policy).
   - Target completion signal: native-interactive behavior parity with `gtk-native` path.
@@ -34,6 +35,7 @@ This file tracks items that are currently not feasible to complete in the presen
   - CI 2026-09-11: the `wayland-compositor` job in `.github/workflows/ci.yml` installs weston + libdav1d-dev and runs the same script in `system` mode, so the real-compositor path is now continuously verified rather than only verified once.
 
 - [ ] ITEM 2: Harmony desktop native window/render/event-loop integration
+  - Tracked in [`blue28.md`](blue28.md) B28.07 (theme/safe-area/text-scale host contract) and B28.02 (input forwarding).
   - Constraint: current Harmony desktop backend is preview/state-loop oriented.
   - Blocker: missing production Harmony desktop native bridge and event dispatch binding in this repo scope.
   - Progress 2026-09-11: `aarch64-unknown-linux-ohos` cross-compile verified (0 warnings); capability contract made honest (`native_menu: false`) instead of inheriting desktop defaults; module status documented in `src/platform/harmony/status.md`.
@@ -84,6 +86,7 @@ This file tracks items that are currently not feasible to complete in the presen
     `initWithWindowScene:` path (the library has no scene instance today).
 
 - [ ] ITEM 5: macOS objc2 preview backend graduation
+  - Tracked in [`blue28.md`](blue28.md) B28.03 (DPI), B28.08 (file/open), B28.12 (IME), B28.13 (accessibility).
   - Constraint: current `macos-objc2` path is intentionally preview/poll-loop mode.
   - Progress 2026-09-11 (native path proven on a real Mac):
     - Fixed a feature-gate bug: the `macos_objc2` native FFI was gated on the
@@ -146,6 +149,7 @@ This file tracks items that are currently not feasible to complete in the presen
   - **Update 2026-09-28 — the native-control layer described above no longer exists.** BLUE15's self-drawn refactor (2026-09-14/15) deleted every host-native control constructor: `src/platform/windows/helpers.rs` and its Win32 objects (`msctls_updown32`, `SysListView32`, `SysDateTimePick32`, `SysMonthCal32`, `SysTabControl32`, `msctls_trackbar32`, `BS_GROUPBOX`, `PBS_MARQUEE`, …), the Linux GTK widget constructions (`gtk::SpinButton`/`Calendar`/`Notebook`/`ToggleButton`/`ComboBoxText`/`Pane`/`FileChooserDialog`), and the macOS AppKit ones (`NSStepper`, `NSButton`, …). `src/control_backend/native.rs` no longer builds OS objects, `route_preference_for_widget_kind` returns `CustomRequired` unconditionally (`src/control_backend/routing.rs`), and the `native_widget_kinds` capability method was removed. Every widget is painted by the library on every platform; the remaining real OS-facing capabilities are windowing/mounting/clipboard/IME/a11y/dialogs as recorded in the capability matrix. Treat the Round 2-7 notes above as a record of that era, not as current behaviour.
 
 - [ ] ITEM 7: Host-invisible test coverage (tests excluded from the build by `#[cfg(target_os)]`)
+  - Tracked in [`blue28.md`](blue28.md) B28.16.
   - Constraint: a `#[cfg(target_os = "...")]`-gated module takes its `#[cfg(test)]` block with it, so those tests are neither run nor type-checked on any other host — a silent zero-coverage state distinct from a failing or `ignored` test.
   - Measured 2026-09-11 (Round 7): 26 tests were in this state (`src/platform/ime_windows.rs` 15, `src/platform/windows/notify.rs` 11). Both are now executable on the host: the `ime_windows` composition state machine is compiled unconditionally (TSF touch points stay internally gated), and the pure Win32 notification-code mapping was moved to the ungated `src/platform/windows_notify.rs` (which the Windows backend now calls, rather than keeping a duplicate copy).
   - What remains genuinely open: other backends have the same shape — `src/platform/ime_macos.rs` (19 tests, pure state machine), `src/platform/macos_objc2/tests.rs` (17), `src/platform/ios/platform_impl.rs` (6), `src/platform/android/platform_impl.rs` (7) + `types.rs` (3), `src/platform/macos/tests.rs` (4), `src/platform/accessibility/windows.rs` (2), and 2 `target_os`-gated tests in `src/control_backend/routing.rs`. These were not touched in Round 7 because reaching them requires the same refactor per module or an actual Apple/Android host.

@@ -63,9 +63,9 @@ rust-widgets 在九个支持的平台上提供了统一的 API。本章涵盖平
 |----|:-----------:|:---:|:-------------:|:-----------:|
 | Windows | ✅ | ✅ | ✅ | ❌ |
 | macOS | ❌ | ✅ | ✅ | ❌ |
-| Linux / GTK | ✅ ¹ | ✅ | ✅ | ❌ |
-| Linux / Wayland | ✅ | ❌ | ❌ | ❌ |
-| iOS | ✅ ³ | ❌ | ❌ | ❌ |
+| Linux / BSD（GTK） | ✅ ¹ | ✅ | ✅ | ❌ |
+| Linux / BSD（Wayland） | ✅ | ❌ | ❌ | ❌ |
+| iOS / tvOS / visionOS | ✅ ³ | ❌ | ❌ | ❌ |
 | Android | ✅ ³ | ✅ ⁴ | ❌ | ❌ |
 | HarmonyOS | ✅ ³ | ❌ | ✅ ² | ❌ |
 | WASM | ❌ | ❌ | ❌ | ❌ |
@@ -75,9 +75,9 @@ rust-widgets 在九个支持的平台上提供了统一的 API。本章涵盖平
 当前显示器的一个**运行时**答案，而非常量；在未缩放的机器上它报 `false`，但它仍是一个
 能够作答的后端。
 
-³ iOS、Android 与 HarmonyOS 在宿主绑定存在时从各自的显示服务取得 `dpi_scaling`
-（`UIScreen.scale`、`DisplayMetrics.densityDpi / 160`、`OH_NativeDisplayManager`）；
-没有该绑定的预览构建报 `false`。
+³ iOS、tvOS、visionOS、Android 与 HarmonyOS 在宿主绑定存在时从各自的显示服务取得 `dpi_scaling`
+（`UIScreen.scale`、`DisplayMetrics.densityDpi / 160`、`OH_NativeDisplayManager`）。没有该绑定的
+预览构建报 `false`。三个 UIKit 平台共用一个后端（`cfg(apple_uikit)`）。
 
 ⁴ Android 的 IME 列覆盖通过 `InputMethodManager` 进行的**软键盘显示/隐藏**
 （与 winit 的 Android 后端执行的操作相同）。合成文本仍由宿主 Activity 提供；
@@ -87,6 +87,14 @@ rust-widgets 在九个支持的平台上提供了统一的 API。本章涵盖平
 `accessibility_bridge()` 被编译进去的时候。标志与方法由同一个 `cfg` 产生，因此不可能不一致：
 feature 关闭时两者都不存在。它的 `ime` 故意为 `false` —— XComponent 桥确实投递按键并请求
 ArkUI 唤起软键盘，但那是直接的按键输入，不是一个输入法**客户端**。
+
+除了上面四个能力标志，还有两个**方法**事实：`Platform::system_theme()`（`Some(true)` = 深色，
+`None` = 系统没有告诉）在 Windows、macOS、iOS/tvOS/visionOS 与 Android 上实现；
+`Platform::safe_area_insets(window)` 在 iOS/tvOS/visionOS、macOS 与 Android 上读真实值，
+Windows/GTK/Wayland/Orbital 返回 `Some(0)`（桌面客户区不被系统 UI 遮挡，这是测量而不是“不知道”），
+HarmonyOS/Web 返回 `None`。`text_scale()` 读 Windows 的 `TextScaleFactor` 与 Android 的
+`Configuration.fontScale`，其余后端保持诚实的 `1.0`。BSD 家族（FreeBSD/NetBSD 已交叉检查）与
+Linux 共用 GTK/Wayland 后端。
 
 这张表只代表「上次有人对着 `Platform::capabilities` 核对过」的样子。上表的取值是从各后端
 的 `platform_impl.rs` 读出来的；有疑问时应直接调用 `capabilities()`，而不是相信一张表。

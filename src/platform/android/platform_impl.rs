@@ -136,6 +136,60 @@ impl Platform for AndroidPlatform {
         }
     }
 
+    /// The user's text-size multiplier (`Configuration.fontScale`).
+    ///
+    /// This is the setting Android's accessibility "Font size" control writes. The backend used to
+    /// inherit the trait's `1.0`, so a user who chose "Largest" got nominal text — the same defect
+    /// the Windows backend's `text_scale` override closed. `1.0` without the JNI bridge is the
+    /// honest "not measurable here" value, matching `dpi_scale_factor`.
+    fn text_scale(&self) -> f32 {
+        #[cfg(feature = "android-jni")]
+        {
+            crate::platform::android_jni::font_scale().unwrap_or(1.0)
+        }
+        #[cfg(not(feature = "android-jni"))]
+        {
+            1.0
+        }
+    }
+
+    /// Whether Android's night mode is on, from the current `Configuration`.
+    ///
+    /// `None` without an attached `Context`: the backend cannot ask the activity's configuration
+    /// until the host has handed it over.
+    fn system_theme(&self) -> Option<bool> {
+        #[cfg(feature = "android-jni")]
+        {
+            crate::platform::android_jni::system_theme()
+        }
+        #[cfg(not(feature = "android-jni"))]
+        {
+            None
+        }
+    }
+
+    /// The activity window's safe-area insets, from `WindowManager.getCurrentWindowMetrics()`.
+    ///
+    /// `WindowInsets` are pixels; the JNI bridge converts them to logical pixels with the same
+    /// `densityDpi / 160` scale `dpi_scale_factor()` reports. `None` without the JNI bridge, before
+    /// the host attaches its `Context`, or on an API below 30 (the metric API does not exist
+    /// there) — never the widget's portrait-phone default.
+    fn safe_area_insets(
+        &self,
+        _window_id: crate::core::ObjectId,
+    ) -> Option<crate::platform::types::SafeAreaInsets> {
+        #[cfg(feature = "android-jni")]
+        {
+            crate::platform::android_jni::window_insets().map(|(top, bottom, left, right)| {
+                crate::platform::types::SafeAreaInsets { top, bottom, left, right }
+            })
+        }
+        #[cfg(not(feature = "android-jni"))]
+        {
+            None
+        }
+    }
+
     /// The default display, when the JNI bridge can read its metrics.
     ///
     /// Android's window model places the host `Activity`'s window on the default display, so one

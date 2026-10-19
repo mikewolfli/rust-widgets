@@ -92,7 +92,7 @@ pub struct WaylandPlatform {
     pub(crate) runtime: WaylandRuntimeState,
     /// Persistent Wayland session (connection, event queue, and global proxies).
     /// Initialized on first `try_create_native_window` call; used by `run()` for event dispatch.
-    #[cfg(all(feature = "wayland-native", target_os = "linux"))]
+    #[cfg(all(feature = "wayland-native", unix_desktop))]
     pub(crate) native_session:
         Mutex<Option<crate::platform::wayland::platform_impl::WaylandSession>>,
 }
@@ -104,7 +104,7 @@ impl WaylandPlatform {
             state: BackendState::new(),
             menus: Mutex::new(WaylandMenuState::default()),
             runtime: WaylandRuntimeState::new(),
-            #[cfg(all(feature = "wayland-native", target_os = "linux"))]
+            #[cfg(all(feature = "wayland-native", unix_desktop))]
             native_session: Mutex::new(None),
         }
     }

@@ -55,9 +55,9 @@ rust-widgets 在九個支援的平台上提供統一的 API。本章涵蓋平台
 |----|:-----------:|:---:|:-------------:|:-----------:|
 | Windows | ✅ | ✅ | ✅ | ❌ |
 | macOS | ❌ | ✅ | ✅ | ❌ |
-| Linux / GTK | ✅ ¹ | ✅ | ✅ | ❌ |
-| Linux / Wayland | ✅ | ❌ | ❌ | ❌ |
-| iOS | ✅ ³ | ❌ | ❌ | ❌ |
+| Linux / BSD（GTK） | ✅ ¹ | ✅ | ✅ | ❌ |
+| Linux / BSD（Wayland） | ✅ | ❌ | ❌ | ❌ |
+| iOS / tvOS / visionOS | ✅ ³ | ❌ | ❌ | ❌ |
 | Android | ✅ ³ | ✅ ⁴ | ❌ | ❌ |
 | HarmonyOS | ✅ ³ | ❌ | ✅ ² | ❌ |
 | WASM | ❌ | ❌ | ❌ | ❌ |
@@ -67,9 +67,9 @@ rust-widgets 在九個支援的平台上提供統一的 API。本章涵蓋平台
 目前顯示器的一個**執行時**答案，而非固定值；在未縮放的機器上它會回報 `false`，但它仍是
 一個能夠作答的後端。
 
-³ iOS、Android 與 HarmonyOS 在宿主綁定存在時從各自的顯示服務取得 `dpi_scaling`
-（`UIScreen.scale`、`DisplayMetrics.densityDpi / 160`、`OH_NativeDisplayManager`）；
-沒有該綁定的預覽建置會回報 `false`。
+³ iOS、tvOS、visionOS、Android 與 HarmonyOS 在宿主綁定存在時從各自的顯示服務取得 `dpi_scaling`
+（`UIScreen.scale`、`DisplayMetrics.densityDpi / 160`、`OH_NativeDisplayManager`）。沒有該綁定的
+預覽建置回報 `false`。三個 UIKit 平台共用一個後端（`cfg(apple_uikit)`）。
 
 ⁴ Android 的 IME 欄覆蓋透過 `InputMethodManager` 進行的**軟鍵盤顯示/隱藏**
 （與 winit 的 Android 後端執行的操作相同）。合成文字仍由宿主 Activity 提供；
@@ -77,8 +77,16 @@ rust-widgets 在九個支援的平台上提供統一的 API。本章涵蓋平台
 
 ² HarmonyOS 只有在啟用 `xcomponent` feature 時才回報 `accessibility` —— 而那正是
 `accessibility_bridge()` 被編譯進去的時候。旗標與方法由同一個 `cfg` 產生，因此不可能不一致：
-feature 關閉時兩者皆不存在。它的 `ime` 刻意為 `false` —— XComponent 橋確實投遞按鍵並請求
+feature 關閉時兩者都不存在。它的 `ime` 故意為 `false` —— XComponent 橋確實投遞按鍵並請求
 ArkUI 喚起軟鍵盤，但那是直接的按鍵輸入，不是一個輸入法**客戶端**。
+
+除了上面四個能力旗標，還有兩個**方法**事實：`Platform::system_theme()`（`Some(true)` = 深色，
+`None` = 系統沒有告知）在 Windows、macOS、iOS/tvOS/visionOS 與 Android 上實作；
+`Platform::safe_area_insets(window)` 在 iOS/tvOS/visionOS、macOS 與 Android 上讀真實值，
+Windows/GTK/Wayland/Orbital 回傳 `Some(0)`（桌面客戶區不被系統 UI 遮擋，這是測量而不是「不知道」），
+HarmonyOS/Web 回傳 `None`。`text_scale()` 讀 Windows 的 `TextScaleFactor` 與 Android 的
+`Configuration.fontScale`，其餘後端保持誠實的 `1.0`。BSD 家族（FreeBSD/NetBSD 已交叉檢查）與
+Linux 共用 GTK/Wayland 後端。
 
 這張表只代表「上次有人對著 `Platform::capabilities` 核對過」的樣子。上表的取值是從各後端
 的 `platform_impl.rs` 讀出來的；有疑問時應直接呼叫 `capabilities()`，而不是相信一張表。

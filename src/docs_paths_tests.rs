@@ -344,7 +344,7 @@ fn documented_matrix_matches_real_backends() {
     // clipboard only exists with `gtk-native`, so the honest answer depends on the build.
     let expect_linux_clipboard = cfg!(feature = "gtk-native");
     let expect_linux_dpi = {
-        #[cfg(target_os = "linux")]
+        #[cfg(unix_desktop)]
         {
             crate::platform::linux::LinuxPlatform::new().dpi_scale_factor() != 1.0
                 || cfg!(feature = "gtk-native")
@@ -352,7 +352,7 @@ fn documented_matrix_matches_real_backends() {
         // The row is only ever compared on a host where `LinuxPlatform` is constructible, and the
         // `built` list below gates it the same way — so this value is unreachable elsewhere and
         // need not describe another host's answer.
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(unix_desktop))]
         {
             true
         }
@@ -363,7 +363,7 @@ fn documented_matrix_matches_real_backends() {
     let expect_objc2_clipboard = cfg!(all(target_os = "macos", feature = "macos"));
     // iOS reads `UIScreen.scale` through the UIKit FFI, so the flag follows that build fact —
     // the same shape as Linux's `expect_linux_dpi` above.
-    let expect_ios_dpi = cfg!(all(target_os = "ios", feature = "ios-uikit-ffi"));
+    let expect_ios_dpi = cfg!(all(apple_uikit, feature = "ios-uikit-ffi"));
     let published: &[Row] = &[
         // `native_menu: false` on all three desktop backends with an OS menu API: the flag records
         // an implementation, not an OS feature. See `PlatformCapabilities::native_menu` and each
@@ -396,7 +396,7 @@ fn documented_matrix_matches_real_backends() {
             // clipboard above follows it — and unlike the clipboard it is a pure build fact, since
             // a host asks this before it drives a loop (see the backend's `capabilities()` for the
             // probe that settled it).
-            cfg!(all(target_os = "linux", feature = "gtk-native")),
+            cfg!(all(unix_desktop, feature = "gtk-native")),
         ),
         // Wayland: `dpi_scaling` is true because `dpi_scale_factor()` really answers; `ime` and
         // `accessibility` are false because neither bridge method is overridden. See its
@@ -466,11 +466,11 @@ fn documented_matrix_matches_real_backends() {
         ));
         #[cfg(target_os = "windows")]
         built.push(("WindowsPlatform", Box::new(crate::platform::windows::WindowsPlatform::new())));
-        #[cfg(all(target_os = "linux", not(feature = "wayland-native")))]
+        #[cfg(all(unix_desktop, not(feature = "wayland-native")))]
         built.push(("linux-gtk", Box::new(crate::platform::linux::LinuxPlatform::new())));
-        #[cfg(all(target_os = "linux", feature = "wayland-native"))]
+        #[cfg(all(unix_desktop, feature = "wayland-native"))]
         built.push(("wayland", Box::new(crate::platform::wayland::WaylandPlatform::new())));
-        #[cfg(all(target_vendor = "apple", not(target_os = "macos")))]
+        #[cfg(apple_uikit)]
         built.push(("ios-state-backend", Box::new(crate::platform::ios::IosMobilePlatform::new())));
         #[cfg(feature = "wasm")]
         built.push(("wasm-state-backend", Box::<crate::platform::wasm::WasmPlatform>::default()));

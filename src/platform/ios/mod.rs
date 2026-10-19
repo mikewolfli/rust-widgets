@@ -3,7 +3,7 @@
 
 //! iOS mobile platform backend (state-driven).
 
-#[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
+#[cfg(all(apple_uikit, feature = "ios-uikit-ffi"))]
 pub mod native;
 /// The `Platform` implementation for iOS.
 ///

@@ -98,11 +98,11 @@ impl Platform for IosMobilePlatform {
     /// `1.0` off the main thread (UIKit is main-thread-only) or without the UIKit FFI, and
     /// [`Self::capabilities`] reports `dpi_scaling: false` on exactly the build that has no FFI.
     fn dpi_scale_factor(&self) -> f32 {
-        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
+        #[cfg(all(apple_uikit, feature = "ios-uikit-ffi"))]
         {
             super::native::main_screen_scale().unwrap_or(1.0)
         }
-        #[cfg(not(all(target_os = "ios", feature = "ios-uikit-ffi")))]
+        #[cfg(not(all(apple_uikit, feature = "ios-uikit-ffi")))]
         {
             1.0
         }
@@ -114,11 +114,11 @@ impl Platform for IosMobilePlatform {
     /// instead of touching UIKit. Without the UIKit FFI (`ios-uikit-ffi`) there is no `UIScreen`
     /// binding at all, so the trait's empty list is the truthful answer.
     fn displays(&self) -> Vec<Display> {
-        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
+        #[cfg(all(apple_uikit, feature = "ios-uikit-ffi"))]
         {
             super::native::displays()
         }
-        #[cfg(not(all(target_os = "ios", feature = "ios-uikit-ffi")))]
+        #[cfg(not(all(apple_uikit, feature = "ios-uikit-ffi")))]
         {
             Vec::new()
         }
@@ -133,28 +133,57 @@ impl Platform for IosMobilePlatform {
     /// the main thread, or for an id with no recorded window, the answer is `None` rather than a
     /// guessed primary screen.
     fn display_of_window(&self, window_id: u64) -> Option<DisplayId> {
-        let host = if self.state.kind_of(window_id).is_some() {
-            window_id
-        } else {
-            #[cfg(not(alloc_frugal))]
-            {
-                crate::widget::runtime::host_window_for(window_id).unwrap_or(window_id)
-            }
-            #[cfg(alloc_frugal)]
-            {
-                window_id
-            }
-        };
-        if !matches!(self.state.kind_of(host), Some(IosHandleKind::Window)) {
-            return None;
-        }
-        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
+        let host = host_window_of(self, window_id)?;
+        #[cfg(all(apple_uikit, feature = "ios-uikit-ffi"))]
         {
             if let Some(id) = super::native::screen_id_of_window(host) {
                 return Some(DisplayId::new(id));
             }
         }
+        // No UIKit FFI: `host` proved the id names a window, but there is no `UIWindow.screen()`
+        // to read, so the honest answer is still `None`.
+        #[cfg(not(all(apple_uikit, feature = "ios-uikit-ffi")))]
+        {
+            let _ = host;
+        }
         None
+    }
+
+    /// The window's own safe-area insets, read from the recorded `UIWindow`.
+    ///
+    /// `UIView.safeAreaInsets` is the authority UIKit gives an app for "how much of my window is
+    /// covered by the notch, the status bar and the home indicator" — the same fact winit exposes
+    /// as `Window::safe_area()`. It is main-thread-only and needs the recorded `UIWindow`, so a
+    /// window id that does not resolve, a non-window id, a call off the main thread, or a build
+    /// without the UIKit FFI all answer `None` ("cannot tell") rather than the widget's default
+    /// insets, which describe a portrait phone and would fabricate a notch on an iPad.
+    fn safe_area_insets(&self, window_id: u64) -> Option<crate::platform::types::SafeAreaInsets> {
+        let host = host_window_of(self, window_id)?;
+        #[cfg(all(apple_uikit, feature = "ios-uikit-ffi"))]
+        {
+            return super::native::safe_area_insets(host);
+        }
+        #[cfg(not(all(apple_uikit, feature = "ios-uikit-ffi")))]
+        {
+            let _ = host;
+            None
+        }
+    }
+
+    /// The system appearance UIKit reports for the current traits.
+    ///
+    /// Read from `UITraitCollection.currentTraitCollection().userInterfaceStyle`, which is the
+    /// same source winit's UIKit backend consults for `system_theme()` (it answers from the trait
+    /// environment). Main-thread-only; `None` off the main thread or without the UIKit FFI.
+    fn system_theme(&self) -> Option<bool> {
+        #[cfg(all(apple_uikit, feature = "ios-uikit-ffi"))]
+        {
+            super::native::system_theme()
+        }
+        #[cfg(not(all(apple_uikit, feature = "ios-uikit-ffi")))]
+        {
+            None
+        }
     }
 
     /// A revision of the current screen configuration.
@@ -259,7 +288,7 @@ impl Platform for IosMobilePlatform {
         PlatformCapabilities {
             // The UIKit FFI can read `UIScreen.scale`; without it (a host preview build, or an
             // iOS build that did not enable the FFI) there is no measurement to promise.
-            dpi_scaling: cfg!(all(target_os = "ios", feature = "ios-uikit-ffi")),
+            dpi_scaling: cfg!(all(apple_uikit, feature = "ios-uikit-ffi")),
             ime: false,
             accessibility: false,
             native_menu: false,
@@ -272,7 +301,7 @@ impl Platform for IosMobilePlatform {
             // The flag is a promise that escapes the process (`rw_platform_capabilities`), and
             // `set_clipboard_text`/`get_clipboard_text` are the methods behind it, so the pair
             // moves together: no path, no claim.
-            clipboard: cfg!(all(target_os = "ios", feature = "ios-uikit-ffi")),
+            clipboard: cfg!(all(apple_uikit, feature = "ios-uikit-ffi")),
             // No handler spawn on iOS: opening a URL goes through `UIApplication`, which needs
             // the app's own delegate, and this backend has no window scene to hang it on.
             open_external: false,
@@ -320,7 +349,7 @@ impl Platform for IosMobilePlatform {
 
         // Release the UIKit handle recorded for `display_of_window`. A destroyed window must
         // not stay reachable through this backend's registry.
-        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
+        #[cfg(all(apple_uikit, feature = "ios-uikit-ffi"))]
         super::native::forget_ui_window(widget_id);
 
         // Drop the per-widget list storage for both list-backed widgets. Each lock
@@ -367,7 +396,7 @@ impl Platform for IosMobilePlatform {
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         let id = self.insert_widget(IosHandleKind::Window, title, x, y, width, height);
 
-        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
+        #[cfg(all(apple_uikit, feature = "ios-uikit-ffi"))]
         if let Some(mtm) = objc2::MainThreadMarker::new() {
             // The window must exist for the surface to have a superview. `create_ui_window`
             // records the handle under the platform id so `display_of_window` can read the
@@ -386,7 +415,7 @@ impl Platform for IosMobilePlatform {
     // **one** signature for one capability, and the "which host is this" fact stays here rather
     // than in an `Option` the caller has to read.
     fn set_clipboard_text(&self, text: &str) -> bool {
-        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
+        #[cfg(all(apple_uikit, feature = "ios-uikit-ffi"))]
         {
             // The pasteboard's own answer: `setString:` reports nothing, so `native` confirms the
             // write by reading it back. A refused write is reported as refused rather than
@@ -394,20 +423,20 @@ impl Platform for IosMobilePlatform {
             // convincing imitation of one.
             super::native::pasteboard_set_text(text)
         }
-        #[cfg(not(all(target_os = "ios", feature = "ios-uikit-ffi")))]
+        #[cfg(not(all(apple_uikit, feature = "ios-uikit-ffi")))]
         {
             self.state.set_clipboard_text(text)
         }
     }
 
     fn get_clipboard_text(&self) -> String {
-        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
+        #[cfg(all(apple_uikit, feature = "ios-uikit-ffi"))]
         {
             // `""` for "the pasteboard holds no text": the `String` accessor's contract collapses
             // that with "holds an empty string" (see its own documentation).
             super::native::pasteboard_text().unwrap_or_default()
         }
-        #[cfg(not(all(target_os = "ios", feature = "ios-uikit-ffi")))]
+        #[cfg(not(all(apple_uikit, feature = "ios-uikit-ffi")))]
         {
             self.state.clipboard_text()
         }
@@ -420,11 +449,11 @@ impl Platform for IosMobilePlatform {
     /// default would then report as "no text". `Some("")` is a real answer here (`hasStrings()`
     /// is satisfied), and the paste-path caller branches on the difference.
     fn clipboard_text(&self) -> Option<String> {
-        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
+        #[cfg(all(apple_uikit, feature = "ios-uikit-ffi"))]
         {
             super::native::pasteboard_text()
         }
-        #[cfg(not(all(target_os = "ios", feature = "ios-uikit-ffi")))]
+        #[cfg(not(all(apple_uikit, feature = "ios-uikit-ffi")))]
         {
             // No host path: the in-process record is the only source, and an empty one is
             // indistinguishable from "no text" — the honest reading of that source.
@@ -442,13 +471,13 @@ impl Platform for IosMobilePlatform {
     /// Returning `None` is what the trait documents for a backend whose only clipboard is an
     /// in-process record: a host that asks before offering a paste action must be told the truth.
     fn clipboard_backend(&self) -> Option<&dyn RichClipboardBackend> {
-        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
+        #[cfg(all(apple_uikit, feature = "ios-uikit-ffi"))]
         {
             static CLIPBOARD: std::sync::OnceLock<super::native::IosClipboard> =
                 std::sync::OnceLock::new();
             Some(CLIPBOARD.get_or_init(super::native::IosClipboard::new))
         }
-        #[cfg(not(all(target_os = "ios", feature = "ios-uikit-ffi")))]
+        #[cfg(not(all(apple_uikit, feature = "ios-uikit-ffi")))]
         {
             None
         }
@@ -624,6 +653,28 @@ impl Platform for IosMobilePlatform {
     // ─── Enabled / Visible ───
 }
 
+/// Translates a widget-registry window id to the platform id `BackendState` records.
+///
+/// The id a host holds is the widget-registry id, while `BackendState` (and the UIKit registry)
+/// is keyed by the platform id. A caller that passes the platform id directly is honoured too.
+/// `None` when the resolved id is not a window — the same refusal `display_of_window` and
+/// `safe_area_insets` need, stated once so the two cannot disagree.
+fn host_window_of(platform: &IosMobilePlatform, window_id: u64) -> Option<u64> {
+    let host = if platform.state.kind_of(window_id).is_some() {
+        window_id
+    } else {
+        #[cfg(not(alloc_frugal))]
+        {
+            crate::widget::runtime::host_window_for(window_id).unwrap_or(window_id)
+        }
+        #[cfg(alloc_frugal)]
+        {
+            window_id
+        }
+    };
+    matches!(platform.state.kind_of(host), Some(IosHandleKind::Window)).then_some(host)
+}
+
 #[cfg(all(test, not(alloc_frugal)))]
 mod tests {
     use super::*;
@@ -716,7 +767,7 @@ mod tests {
         assert_eq!(platform.family(), PlatformFamily::Mobile);
         assert_eq!(
             caps.dpi_scaling,
-            cfg!(all(target_os = "ios", feature = "ios-uikit-ffi")),
+            cfg!(all(apple_uikit, feature = "ios-uikit-ffi")),
             "`dpi_scaling` must track whether `dpi_scale_factor()` can read `UIScreen.scale`; \
              without the UIKit FFI there is no measurement to promise"
         );
@@ -743,7 +794,7 @@ mod tests {
         let claimed = platform.capabilities().clipboard;
         assert_eq!(
             claimed,
-            cfg!(all(target_os = "ios", feature = "ios-uikit-ffi")),
+            cfg!(all(apple_uikit, feature = "ios-uikit-ffi")),
             "`clipboard` must track the UIKit FFI gate, not a literal"
         );
         assert_eq!(
@@ -819,5 +870,26 @@ mod tests {
         assert!(!platform.mount_surface(1, 9_999, crate::core::Rect::new(0, 0, 10, 10)));
         assert!(!platform.invalidate_surface(9_999));
         assert_eq!(platform.state.mounted_surface_count(), 0);
+    }
+
+    /// Without the UIKit FFI there is no window geometry and no trait collection to read, so both
+    /// facts are `None` — not zero insets and not a light appearance.
+    ///
+    /// Gated to the builds that genuinely have no UIKit: on an `apple_uikit` build with
+    /// `ios-uikit-ffi` the backend *can* read them, and this test would be asserting the opposite
+    /// of the contract it documents.
+    #[cfg(not(all(apple_uikit, feature = "ios-uikit-ffi")))]
+    #[test]
+    fn ios_reports_no_window_insets_or_theme_without_uikit() {
+        use crate::platform::Platform as _;
+
+        let platform = IosMobilePlatform::new();
+        let window = platform.create_window("insets", 0, 0, 390, 844);
+        assert_eq!(
+            platform.safe_area_insets(window),
+            None,
+            "no UIKit registry exists, so the honest answer is `cannot tell`, not zero"
+        );
+        assert_eq!(platform.system_theme(), None);
     }
 }

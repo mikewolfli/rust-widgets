@@ -1008,6 +1008,223 @@ pub fn display_info() -> Option<AndroidDisplayInfo> {
     .flatten()
 }
 
+/// The user-interface facts Android keeps in the current `Configuration`.
+struct AndroidUiConfiguration {
+    /// `Some(true)` when night mode is on, `Some(false)` when it is off, `None` for
+    /// `UI_MODE_NIGHT_UNDEFINED`.
+    night_mode: Option<bool>,
+    /// `Configuration.fontScale`: the user's text-size multiplier.
+    font_scale: f32,
+}
+
+/// Reads the `Configuration` the activity's `Resources` currently holds.
+///
+/// This is the per-process configuration Android updates on `Activity.onConfigurationChanged`, so
+/// it follows a live light/dark switch and a text-size change without caching either. `None` when
+/// no `Context` is attached or any JNI step fails; the pending exception is cleared so one failed
+/// call does not poison the thread.
+fn ui_configuration() -> Option<AndroidUiConfiguration> {
+    /// `Configuration.UI_MODE_NIGHT_MASK` and its two defined values.
+    const UI_MODE_NIGHT_MASK: i32 = 0x30;
+    const UI_MODE_NIGHT_NO: i32 = 0x10;
+    const UI_MODE_NIGHT_YES: i32 = 0x20;
+
+    with_jni_env(|env| {
+        let context = attached_context()?;
+        let read = (|| -> Option<AndroidUiConfiguration> {
+            let resources = env
+                .call_method(
+                    context.as_obj(),
+                    "getResources",
+                    "()Landroid/content/res/Resources;",
+                    &[],
+                )
+                .ok()?
+                .l()
+                .ok()?;
+            if resources.is_null() {
+                return None;
+            }
+            let configuration = env
+                .call_method(
+                    &resources,
+                    "getConfiguration",
+                    "()Landroid/content/res/Configuration;",
+                    &[],
+                )
+                .ok()?
+                .l()
+                .ok()?;
+            if configuration.is_null() {
+                return None;
+            }
+            let ui_mode = env.get_field(&configuration, "uiMode", "I").ok()?.i().ok()?;
+            let font_scale = env.get_field(&configuration, "fontScale", "F").ok()?.f().ok()?;
+            Some(AndroidUiConfiguration {
+                night_mode: match ui_mode & UI_MODE_NIGHT_MASK {
+                    UI_MODE_NIGHT_YES => Some(true),
+                    UI_MODE_NIGHT_NO => Some(false),
+                    _ => None,
+                },
+                font_scale,
+            })
+        })();
+        if read.is_none() {
+            let _ = env.exception_clear();
+        }
+        read
+    })
+    .flatten()
+}
+
+/// Whether the system is in night (dark) mode.
+///
+/// `Configuration.uiMode & UI_MODE_NIGHT_MASK` is Android's own answer to "should apps use the
+/// dark theme", which is the fact winit's Android backend reads from its `MainActivity`
+/// configuration. `None` when no `Context` is attached or the mode is undefined — never a
+/// fabricated light preference.
+pub fn system_theme() -> Option<bool> {
+    ui_configuration()?.night_mode
+}
+
+/// The user's text-size multiplier (`Configuration.fontScale`).
+///
+/// `1.0` is the platform default and values above it are the accessibility settings. A
+/// non-finite or non-positive reading is refused rather than handed to a layout that would divide
+/// by it.
+pub fn font_scale() -> Option<f32> {
+    let scale = ui_configuration()?.font_scale;
+    (scale.is_finite() && scale > 0.0).then_some(scale)
+}
+
+/// The activity window's safe-area insets, in **logical** pixels (top, bottom, left, right).
+///
+/// # Why `WindowMetrics` and not a `View`
+///
+/// `View.getRootWindowInsets()` needs a live `View`, and this bridge holds only the Activity
+/// `Context`. On API 30+ `WindowManager.getCurrentWindowMetrics().getWindowInsets()` answers the
+/// same question for the Activity's own window without one, which is the window every library
+/// widget is painted into. The mask combines the system bars (status bar, navigation bar, gesture
+/// bar) with the display cutout (a notch or camera housing).
+///
+/// # Honest absence
+///
+/// `None` when no `Context` is attached, on an API below 30 (the call does not exist), or when any
+/// JNI step fails. The pending exception is cleared so a refusal does not poison later calls. The
+/// pixels Android reports are divided by `DisplayMetrics.densityDpi / 160` to make them logical,
+/// because the trait's contract is logical pixels.
+pub fn window_insets() -> Option<(u32, u32, u32, u32)> {
+    let scale = display_info().map(|info| info.scale).unwrap_or(1.0);
+    let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+
+    let pixels = with_jni_env(|env| {
+        // Logs the failing step, clears the pending exception, and returns `None` from the
+        // enclosing closure. A bare `?` left "which of the nine calls failed" unanswerable, which
+        // is the same diagnosis gap `display_info` was given this macro for.
+        macro_rules! need {
+            ($expr:expr, $what:literal) => {
+                match $expr {
+                    Ok(value) => value,
+                    Err(error) => {
+                        log::warn!("[android-jni] window_insets: {} failed: {error}", $what);
+                        let _ = env.exception_clear();
+                        return None;
+                    }
+                }
+            };
+        }
+
+        let context = attached_context()?;
+        let read = (|| -> Option<(i32, i32, i32, i32)> {
+            let service = env.new_string("window").ok()?;
+            let manager = need!(
+                env.call_method(
+                    context.as_obj(),
+                    "getSystemService",
+                    "(Ljava/lang/String;)Ljava/lang/Object;",
+                    &[jni::objects::JValue::Object(&service)],
+                ),
+                "getSystemService(window)"
+            )
+            .l()
+            .ok()?;
+            if manager.is_null() {
+                log::warn!("[android-jni] window_insets: getSystemService(window) returned null");
+                return None;
+            }
+            let metrics = need!(
+                env.call_method(
+                    &manager,
+                    "getCurrentWindowMetrics",
+                    "()Landroid/view/WindowMetrics;",
+                    &[],
+                ),
+                "getCurrentWindowMetrics"
+            )
+            .l()
+            .ok()?;
+            if metrics.is_null() {
+                log::warn!("[android-jni] window_insets: getCurrentWindowMetrics returned null");
+                return None;
+            }
+            let insets = need!(
+                env.call_method(&metrics, "getWindowInsets", "()Landroid/view/WindowInsets;", &[],),
+                "getWindowInsets"
+            )
+            .l()
+            .ok()?;
+            if insets.is_null() {
+                log::warn!("[android-jni] window_insets: getWindowInsets returned null");
+                return None;
+            }
+            let type_class = need!(
+                env.find_class("android/view/WindowInsets$Type"),
+                "find_class(WindowInsets$Type)"
+            );
+            let system_bars = need!(
+                env.call_static_method(&type_class, "systemBars", "()I", &[]),
+                "WindowInsets.Type.systemBars"
+            )
+            .i()
+            .ok()?;
+            let cutout = need!(
+                env.call_static_method(&type_class, "displayCutout", "()I", &[]),
+                "WindowInsets.Type.displayCutout"
+            )
+            .i()
+            .ok()?;
+            let edges = need!(
+                env.call_method(
+                    &insets,
+                    "getInsets",
+                    "(I)Landroid/graphics/Insets;",
+                    &[jni::objects::JValue::Int(system_bars | cutout)],
+                ),
+                "getInsets(systemBars|displayCutout)"
+            )
+            .l()
+            .ok()?;
+            if edges.is_null() {
+                log::warn!("[android-jni] window_insets: getInsets returned null");
+                return None;
+            }
+            let top = need!(env.get_field(&edges, "top", "I"), "Insets.top").i().ok()?;
+            let bottom = need!(env.get_field(&edges, "bottom", "I"), "Insets.bottom").i().ok()?;
+            let left = need!(env.get_field(&edges, "left", "I"), "Insets.left").i().ok()?;
+            let right = need!(env.get_field(&edges, "right", "I"), "Insets.right").i().ok()?;
+            Some((top, bottom, left, right))
+        })();
+        if read.is_none() {
+            let _ = env.exception_clear();
+        }
+        read
+    })
+    .flatten()?;
+
+    let logical = |pixels: i32| (pixels.max(0) as f32 / scale).round() as u32;
+    Some((logical(pixels.0), logical(pixels.1), logical(pixels.2), logical(pixels.3)))
+}
+
 /// Publishes `clip` as the primary clip and reports whether the clipboard then holds `expect`.
 ///
 /// The read-back is the evidence: `setPrimaryClip` returns `void` and cannot fail loudly, and on
@@ -1488,8 +1705,11 @@ fn widget_self_test() -> jni::sys::jint {
 /// | 6 | `display_generation()` is non-zero and stable across two reads |
 /// | 7 | the backend reports clipboard capability while this probe runs |
 /// | 8 | the backend exposes an IME bridge (soft-keyboard control) |
+/// | 9 | `system_theme()` answers `Some(..)` from Android's `Configuration.uiMode` |
+/// | 10 | `text_scale()` answers a usable `Configuration.fontScale` |
+/// | 11 | `safe_area_insets()` answers from `WindowMetrics` |
 ///
-/// A return of `0b1_1111_1111` (511) is a full pass. `0` means the bridge had no clipboard
+/// A return of `0b1111_1111_1111` (4095) is a full pass. `0` means the bridge had no clipboard
 /// backend at all (no `JavaVM`/`Context`), which the caller reports separately.
 #[no_mangle]
 pub extern "system" fn Java_rust_1widgets_RustWidgets_nativePlatformProbe(
@@ -1633,6 +1853,41 @@ fn platform_services_probe() -> jni::sys::jint {
             "[android-jni] platform probe: display_generation read {first} then {second}; expected \
              the same non-zero value"
         );
+    }
+
+    // The two host facts added in this round: the night-mode bit and the user's text-size
+    // multiplier both come from the activity's `Configuration`. Asserting `is_some` is the
+    // meaningful check — the value itself depends on how the emulator/device is configured, and a
+    // probe that pinned `Some(false)` would fail on a phone set to dark mode.
+    if platform.system_theme().is_some() {
+        passed |= 1 << 9;
+    } else {
+        log::error!(
+            "[android-jni] platform probe: system_theme() returned None while a Context is attached"
+        );
+    }
+    let scale = platform.text_scale();
+    if scale.is_finite() && scale > 0.0 {
+        passed |= 1 << 10;
+    } else {
+        log::error!("[android-jni] platform probe: text_scale() returned {scale}");
+    }
+
+    // `WindowMetrics` is the API-30+ way to read the activity window's insets without a `View`.
+    // The value itself depends on the device (a status bar is usually non-zero), so `is_some` is
+    // the assertion; a build or device without the API reports `None` and this bit stays clear.
+    let inset_window = crate::create_window("Insets Probe", 0, 0, 320, 240);
+    if inset_window != 0 {
+        if platform.safe_area_insets(inset_window).is_some() {
+            passed |= 1 << 11;
+        } else {
+            log::error!(
+                "[android-jni] platform probe: safe_area_insets({inset_window}) returned None"
+            );
+        }
+        destroy(inset_window);
+    } else {
+        log::error!("[android-jni] platform probe: create_window for the insets check returned 0");
     }
 
     passed

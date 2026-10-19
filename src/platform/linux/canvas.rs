@@ -19,7 +19,7 @@
 //! `crate::widget::runtime`, which those profiles do not compile (see
 //! `src/widget/mod.rs`).
 
-#![cfg(all(target_os = "linux", feature = "gtk-native", widgets_unstripped))]
+#![cfg(all(unix_desktop, feature = "gtk-native", widgets_unstripped))]
 
 use super::types::LinuxPlatform;
 use crate::core::{Color, ObjectId, Point, Rect, Size};

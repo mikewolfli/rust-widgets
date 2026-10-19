@@ -86,9 +86,46 @@ three: Android reads `Display`/`DisplayMetrics` through JNI, OpenHarmony reads
 `OH_NativeDisplayManager_CreateAllDisplays`/`GetDisplayPosition`, and iOS reads `UIScreen`. They
 keep the honest absence (empty / `None` / `0`) when there is no context, no device binding, or the
 call is off the main thread. Android was verified on an x86_64 emulator (API 34):
-`nativePlatformProbe` returned `511`, with 9/9 steps passing, including a custom-MIME payload with
-non-UTF-8 bytes. HarmonyOS and iOS are cross-compile, link, or type-check only; no device or
+`nativePlatformProbe` returned `4095`, with 12/12 steps passing, including a custom-MIME payload
+with non-UTF-8 bytes. HarmonyOS and iOS are cross-compile, link, or type-check only; no device or
 simulator run was made for those two in this round.
+
+### 9. The UIKit family, safe area, and the system's appearance
+
+A comparison against the split winit workspace found three platform facts this crate had not
+wired. First, the UIKit backend was selected by `target_os = "ios"`, so tvOS and visionOS compiled
+`IosMobilePlatform` but never selected it and fell through to the unknown-runtime stub. A
+`build.rs` alias, `apple_uikit`, now names `target_vendor = "apple" && target_os in {ios, tvos,
+visionos}` once (watchOS is excluded because `objc2-ui-kit` has no `UIWindow` there), and every
+selection and FFI gate uses it. Both tvOS and visionOS are now `cargo check` targets.
+
+Second, `Platform::safe_area_insets(window)` returns `Option<SafeAreaInsets>`: `Some` is a
+measurement, `None` is "this backend cannot tell", and the two are deliberately different from the
+`SafeArea` widget's portrait-phone default. The UIKit backend reads the recorded window's
+`UIView.safeAreaInsets` on the main thread; both macOS backends read `NSView.safeAreaInsets` from
+the window's content view; Android reads `WindowManager.getCurrentWindowMetrics().getWindowInsets()`
+(API 30+) and converts the pixels to logical units; Windows, GTK/X11, Wayland and Orbital answer
+`Some(zeros)` because their client area has no system-UI overlay. HarmonyOS and the Web backend
+answer `None` rather than inventing an inset. `SafeAreaInsets` moved to `platform::types` and is
+re-exported by the widget layer, so the platform and the widget share one definition.
+
+Third, `Platform::system_theme() -> Option<bool>` exposes the OS appearance as one fact (`Some(true)`
+= dark, `None` = the OS did not say) rather than a `ThemeMode`, which is a policy the style layer
+owns. `PlatformEnvironment::color_scheme` forwards it. Implementations: Windows reads
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize\AppsUseLightTheme`; macOS reads
+`NSApplication.effectiveAppearance`; iOS/tvOS/visionOS read
+`UITraitCollection.currentTraitCollection().userInterfaceStyle`; Android reads
+`Configuration.uiMode`. Android also reads `Configuration.fontScale` for `text_scale`, which had
+been the trait's honest `1.0` until now. The Android probe covers all three new facts (bits 9, 10
+and 11).
+
+Fourth, `build.rs` gained `unix_desktop`, which names winit's `free_unix` once (`unix`, not Apple,
+Android, OpenHarmony, Redox or wasm). The GTK, Wayland, IBus and AT-SPI modules, the backend
+selection and the GTK/Wayland dependency table now use it, so FreeBSD, NetBSD and the other BSDs get
+the same backend winit gives them instead of the unknown-runtime stub. The macOS objc2 backend also
+gained `displays()`, `display_of_window()`, `display_generation()` and `safe_area_insets()`,
+closing its parity gap with the cocoa backend. FreeBSD and NetBSD both `cargo check` the GTK and
+Wayland paths; macOS objc2 is type-checked only (no Mac on this host).
 
 Referencing winit's split platform crates filled two more gaps. Mobile `dpi_scale_factor()` now
 reads the display service (`DisplayMetrics.densityDpi / 160` on Android, `UIScreen.scale` on iOS,
@@ -105,11 +142,14 @@ always returning the primary screen.
 * GTK/X11: `probe_keyboard_focus` (real XTEST click + keys) passes for `abc`, for fcitx5 `pinyin`
   (`你好`), and shows `on_value_changed` receiving `["a","ab","abc"]`; `probe_window_on_screen`
   passes with a viewable 480×320 window and 62 distinct colours.
-* Full `cargo test --no-default-features --features desktop`: 7363 lib tests and every integration
+* Full `cargo test --no-default-features --features desktop`: 7366 lib tests and every integration
   binary pass; `clippy -D warnings` is clean for the plain and `gtk-native` desktop builds.
-* Cross-target `cargo check` passes for Windows (msvc), macOS (x86_64/aarch64), iOS, Android (4
-  ABIs), HarmonyOS, wasm32 and Wayland. Redox is type-checked only (above); Orbital/Redox runtime
-  remains unverified.
+* Cross-target `cargo check` passes for Windows (msvc), macOS (x86_64/aarch64), iOS, tvOS, visionOS,
+  Android (4 ABIs), HarmonyOS, FreeBSD, NetBSD, wasm32 and Wayland. Redox is type-checked only
+  (above); Orbital/Redox runtime remains unverified.
+* The extended Android probe (12 bits) passes 12/12 on an x86_64/API 34 emulator, including the
+  custom MIME round-trip, display enumeration, night-mode read, `fontScale` and `WindowMetrics`
+  safe-area insets.
 * An opt-out (`set_widget_ime_enabled(false)`) is **not** honoured by a GTK toplevel: GTK owns the
   window input context and filters before any signal the library can connect. The Linux backend
   reports that refusal rather than pretending the switch took effect.

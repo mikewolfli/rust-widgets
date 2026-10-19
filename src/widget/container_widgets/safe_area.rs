@@ -14,24 +14,11 @@ use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Safe area insets for mobile devices.
 ///
-/// All four values are in logical pixels and describe how much of each edge is
-/// obstructed by system UI (notch, status bar, home indicator, rounded corners)
-/// and therefore must stay clear of content. They are edge distances, not a
-/// rectangle: the defaults describe a portrait phone with a notch and a home
-/// indicator, and are wrong for tablets, landscape, or desktop — set them from
-/// the platform's reported insets rather than relying on the default.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SafeAreaInsets {
-    /// Space to reserve along the top edge, in logical pixels.
-    pub top: u32,
-    /// Space to reserve along the bottom edge, in logical pixels.
-    pub bottom: u32,
-    /// Space to reserve along the left edge, in logical pixels. Zero in the
-    /// default, since portrait phones rarely obstruct the sides.
-    pub left: u32,
-    /// Space to reserve along the right edge, in logical pixels.
-    pub right: u32,
-}
+/// Re-exported from [`crate::platform::types`] rather than defined here: the platform trait
+/// returns this type, so one definition serves both layers (principle #54). The field
+/// documentation, and the reason the default is a portrait-phone shape rather than zero, live
+/// with that definition.
+pub use crate::platform::types::SafeAreaInsets;
 
 impl Default for SafeAreaInsets {
     fn default() -> Self {

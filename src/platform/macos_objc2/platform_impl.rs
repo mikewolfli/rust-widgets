@@ -13,9 +13,10 @@
 
 use super::types::{MacOSObjc2Platform, MacObjc2HandleKind};
 use crate::compat::atomic::Ordering;
-use crate::compat::String;
+use crate::compat::{String, Vec};
 use crate::core::ObjectId;
 use crate::core::PlatformFamily;
+use crate::platform::types::{Display, DisplayId, SafeAreaInsets};
 use crate::platform::{Platform, PlatformCapabilities};
 use core::time::Duration;
 use std::thread;
@@ -43,6 +44,120 @@ impl Platform for MacOSObjc2Platform {
     }
     fn family(&self) -> PlatformFamily {
         PlatformFamily::Desktop
+    }
+
+    /// The system appearance AppKit resolved for the app.
+    ///
+    /// Read from `NSApplication.effectiveAppearance` on the main thread through the `native`
+    /// module, which is the same source winit's AppKit backend uses. The legacy `cocoa` backend
+    /// and a build without the `macos` feature answer the trait's `None` rather than a guess.
+    fn system_theme(&self) -> Option<bool> {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            super::native::system_theme()
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        {
+            None
+        }
+    }
+
+    /// The displays AppKit reports, through `+[NSScreen screens]`.
+    ///
+    /// This is the same source the cocoa backend daemonises in `src/platform/macos/displays.rs`.
+    /// It was missing here, so a build that selected this backend (`--features macos`) could not
+    /// enumerate screens even though the cocoa backend could. The vector is empty without AppKit
+    /// (no `macos` feature) or off the main thread — the honest absence, not a made-up display.
+    fn displays(&self) -> Vec<Display> {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            super::native::displays()
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        {
+            Vec::new()
+        }
+    }
+
+    /// The screen the window is on, asked of AppKit's `-[NSWindow screen]`.
+    ///
+    /// Both id spaces are accepted: the platform id `create_window` returned and the widget id a
+    /// host may hold (translated through `host_window_for`). `None` for an unknown id, a non-window
+    /// handle, or a call off the main thread.
+    fn display_of_window(&self, window_id: u64) -> Option<DisplayId> {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            if let Some(id) = super::native::screen_id_of_window(window_id) {
+                return Some(DisplayId::new(id));
+            }
+            #[cfg(not(alloc_frugal))]
+            if let Some(host) = crate::widget::runtime::host_window_for(window_id) {
+                if let Some(id) = super::native::screen_id_of_window(host) {
+                    return Some(DisplayId::new(id));
+                }
+            }
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        {
+            let _ = window_id;
+        }
+        None
+    }
+
+    /// A revision of the current screen configuration.
+    ///
+    /// Derived from the same fields [`Self::displays`] returns, so a caller that compares two
+    /// readings re-reads the list exactly when a screen was added/removed or its bounds or scale
+    /// changed. `0` means AppKit could not be read (off the main thread, or no `macos` feature).
+    fn display_generation(&self) -> u64 {
+        const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+        const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+        let displays = self.displays();
+        if displays.is_empty() {
+            return 0;
+        }
+        let mut hash = FNV_OFFSET;
+        for display in displays {
+            for part in [
+                display.id.get(),
+                display.bounds.x as i64 as u64,
+                display.bounds.y as i64 as u64,
+                display.bounds.width as u64,
+                display.bounds.height as u64,
+                display.scale.to_bits() as u64,
+                display.is_primary as u64,
+            ] {
+                hash ^= part;
+                hash = hash.wrapping_mul(FNV_PRIME);
+            }
+        }
+        hash
+    }
+
+    /// The window's safe-area insets, read from AppKit's `NSView.safeAreaInsets`.
+    ///
+    /// For a window the value comes from its content view, which is what this backend paints into
+    /// and what AppKit lays out under the title bar or a notch. `None` off the main thread, without
+    /// the `macos` feature, for an unknown id, or on a pre-11 AppKit that does not implement the
+    /// selector — never the widget layer's portrait-phone default.
+    fn safe_area_insets(&self, window_id: u64) -> Option<SafeAreaInsets> {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            if let Some(insets) = super::native::safe_area_insets(window_id) {
+                return Some(insets);
+            }
+            #[cfg(not(alloc_frugal))]
+            if let Some(host) = crate::widget::runtime::host_window_for(window_id) {
+                if let Some(insets) = super::native::safe_area_insets(host) {
+                    return Some(insets);
+                }
+            }
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        {
+            let _ = window_id;
+        }
+        None
     }
 
     /// The host integrations this backend actually provides.

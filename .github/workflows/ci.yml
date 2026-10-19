@@ -790,6 +790,31 @@ jobs:
             --features "windows desktop-runtime wgpu touch i18n controls-native controls-custom serde serde_json advanced-widgets quality-management" \
             -- -D warnings
 
+  bsd-cross-check:
+    name: BSD backend cross-compile check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable with BSD targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-freebsd,x86_64-unknown-netbsd
+
+      - name: Install GTK headers, pkg-config and clang
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev pkg-config clang llvm
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # The same command a workstation runs. The script itself skips a target
+      # whose std or C headers are absent, so a runner without NetBSD's libc
+      # still checks FreeBSD instead of failing for the wrong reason.
+      - name: BSD cross-target gate
+        run: bash tools/check_bsd_cross.sh
+
   wayland-compositor:
     name: Wayland backend against a real compositor
     runs-on: ubuntu-latest
