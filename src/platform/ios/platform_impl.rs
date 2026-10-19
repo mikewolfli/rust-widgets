@@ -410,7 +410,7 @@ impl Platform for IosMobilePlatform {
             // No picker: `UIDocumentPickerViewController` needs the same window scene the handler
             // above lacks, and this backend presents no dialog of its own.
             file_dialog: false,
-            // `UIFont.familyNames` through the UIKit FFI (B28.39).
+            // CoreText through the UIKit FFI names each family's backing file (B28.39).
             system_fonts: cfg!(all(apple_uikit, feature = "ios-uikit-ffi")),
         }
     }

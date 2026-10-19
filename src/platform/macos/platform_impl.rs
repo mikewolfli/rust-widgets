@@ -212,7 +212,8 @@ impl Platform for MacOSPlatform {
             // `choose_path` presents `NSOpenPanel`/`NSSavePanel`, so the flag and the method are
             // one implementation.
             file_dialog: true,
-            // `NSFontManager.availableFontFamilies` lists installed families (B28.39).
+            // CoreText's font manager and `kCTFontURLAttribute` list families and name their
+            // backing files (B28.39).
             system_fonts: true,
         }
     }

@@ -907,9 +907,10 @@ FUTURE 记录，没有自动门禁。
 
 **落地状态（2026-10-19，2.8.9）**：
 
-- `Platform::system_fonts` 在 macOS/iOS/Catalyst（CoreText）、Windows（`EnumFontFamiliesExW`）、
-  Linux/BSD（`fc-list`）、Android（`/system/fonts`）有真实来源；Harmony 无 `OH_Drawing` 字体
-  管理器绑定，诚实返回空且 `system_fonts: false`。
+- `Platform::system_fonts` 在 macOS/iOS/Catalyst（CoreText `CTFontManagerCopyAvailableFontFamilyNames`
+  + `kCTFontURLAttribute`）、Windows（DirectWrite `IDWriteFontFile` +
+  `IDWriteLocalFontFileLoader`）、Linux/BSD（`fc-list`）、Android（`/system/fonts`）有真实来源；
+  Harmony 无 `OH_Drawing` 字体管理器绑定，诚实返回空且 `system_fonts: false`。
 - `crate::platform::fonts` 提供进程级快照（`system_fonts` / `refresh_system_fonts` / `families`），
   重复打开对话框不再重复查询 OS；`bundled_families` + `chooser_families` 在无系统字体时回退到
   本构建实际能渲染的 face。
@@ -918,11 +919,15 @@ FUTURE 记录，没有自动门禁。
   按钮也按绘制时同一矩形命中。
 - `FontComboBox::load_system_fonts()` 用同一快照填充 family 列表并同步当前选择。
 - 选中 family 时，`platform::fonts::register_family` 会在 `runtime-fonts` 开启且后端报告了
-  文件路径的情况下读取文件并 `register_face`（已注册则直接返回），让文本真的用该字体绘制。
+  文件路径的情况下读取文件并 `register_face`（已注册或注册表已满则直接返回），让文本真的用
+  该字体绘制。
+- 依赖只落在目标平台：Apple 的 `objc2-core-text`、Windows 的 `windows`
+  （`Win32_Graphics_DirectWrite` / `Win32_System_Com`）；核心渲染链路不依赖它们，未启用对应
+  目标时不会编译。
 - C ABI 新增 `rw_system_font_count` / `rw_system_font_family` / `rw_system_font_style` /
   `rw_refresh_system_fonts`，宿主可用同一份快照构建自己的字体面板。
-- 边界：WASM `queryLocalFonts()` 是异步 + 权限模型，本轮仍未接；Harmony 同上；AppKit/GDI
-  只报 family、不报文件路径，因此 macOS/Windows 在未注册文件时回退到已注册/内置 face。
+- 边界：WASM `queryLocalFonts()` 是异步 + 权限模型，本轮仍未接；Harmony 同上。字体集合
+  （`.ttc`）家族返回集合文件，渲染器打开 face 0；需要特定 face 的宿主应自行注册。
 
 ### B28.40 raw-window-handle 只读适配（winit 有，尽量有）
 

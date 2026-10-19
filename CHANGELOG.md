@@ -48,6 +48,10 @@ HarmonyOS.
   reports no installed fonts, both controls fall back to the families compiled into the build.
 - With `runtime-fonts`, selecting a family whose backend reports a file (Linux/BSD, Android)
   registers it through `register_face`, so the chosen font is what the renderer draws.
+- macOS/iOS/Mac Catalyst enumerate through CoreText and report each family's backing file
+  (`kCTFontURLAttribute`); Windows enumerates through DirectWrite (`IDWriteFontFile` +
+  `IDWriteLocalFontFileLoader`). Both dependencies are target-scoped and never part of the
+  rendering path.
 - New C ABI `rw_system_font_count`, `rw_system_font_family`, `rw_system_font_style` and
   `rw_refresh_system_fonts` (152 `rw_*` functions in total).
 

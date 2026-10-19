@@ -646,10 +646,11 @@ pub struct Display {
 /// # Why `source` is optional
 ///
 /// A host that wants the widget layer to paint with a system face must hand back its **bytes**
-/// through [`crate::render::text::register_face`], and that needs a readable file. Some platforms
-/// expose only family names (AppKit's `NSFontManager`, UIKit's `UIFont.familyNames`), so `source`
-/// is the path when the backend knows one and `None` otherwise. A caller that requires bytes must
-/// skip entries whose `source` is `None` rather than guessing a path.
+/// through [`crate::render::text::register_face`], and that needs a readable file. CoreText
+/// (`kCTFontURLAttribute`), DirectWrite (`IDWriteLocalFontFileLoader`) and fontconfig all name the
+/// file behind a family, so `source` is populated there. A backend that knows only names — Harmony's
+/// empty list, for example — reports `None`. A caller that requires bytes must skip entries whose
+/// `source` is `None` rather than guessing a path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemFont {
     /// The family name, e.g. `"Noto Sans"`.

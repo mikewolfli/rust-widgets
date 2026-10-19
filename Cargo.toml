@@ -668,7 +668,14 @@ objc2-macos = ["macos"]
 # Serialize/Deserialize and whose state snapshot returns `serde_json::Error`.
 # Only `macos` used to carry them, so `--features cocoa-legacy` alone failed with
 # `unresolved import serde` — the identical defect the `macos` line was patched for.
-cocoa-legacy = ["dep:cocoa", "dep:objc", "dep:objc2-core-foundation", "dep:objc2-core-text", "serde", "serde_json"]
+cocoa-legacy = [
+    "dep:cocoa",
+    "dep:objc",
+    "dep:objc2-core-foundation",
+    "dep:objc2-core-text",
+    "serde",
+    "serde_json",
+]
 ios-uikit-ffi = ["ios"]
 gtk-native = ["linux-gtk"]
 wayland-native = ["linux-wayland", "wayland-portal"]

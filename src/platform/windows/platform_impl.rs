@@ -1163,7 +1163,8 @@ impl Platform for WindowsPlatform {
             // `GetSaveFileNameW`, `SHBrowseForFolderW`), so the flag and the method are one
             // implementation.
             file_dialog: true,
-            // `EnumFontFamiliesExW` lists installed families (B28.39).
+            // DirectWrite's system collection names each family's backing file through
+            // `IDWriteFontFile` + `IDWriteLocalFontFileLoader` (B28.39).
             system_fonts: true,
         }
     }
