@@ -250,10 +250,12 @@ fn published_os_capability_matrix_matches_the_trait_default() {
             native_menu: *menu,
             typed_widget_trigger: true,
             // The host-service flags are not part of the README matrix this loop checks; they
-            // are pinned per backend by the backend-vs-row test below.
+            // are pinned per backend by the backend-vs-row test below. `system_fonts` is newer
+            // than the published rows, so it is not compared here either.
             clipboard: false,
             open_external: false,
             file_dialog: false,
+            system_fonts: false,
         };
         let default = default_capabilities_for(*family);
         assert!(
@@ -361,6 +363,9 @@ fn documented_matrix_matches_real_backends() {
     // wired only under `cfg!(all(target_os = "macos", feature = "macos"))`, so a build that
     // compiles the backend without that feature reports `false`. See its `capabilities()`.
     let expect_objc2_clipboard = cfg!(all(target_os = "macos", feature = "macos"));
+    // BLUE28 B28.03: both macOS backends now read `NSScreen.backingScaleFactor`, so the flag is
+    // true on cocoa (always) and on objc2 only in the AppKit-bound build.
+    let expect_objc2_dpi = cfg!(all(target_os = "macos", feature = "macos"));
     // iOS reads `UIScreen.scale` through the UIKit FFI, so the flag follows that build fact —
     // the same shape as Linux's `expect_linux_dpi` above.
     let expect_ios_dpi = cfg!(all(apple_uikit, feature = "ios-uikit-ffi"));
@@ -369,15 +374,17 @@ fn documented_matrix_matches_real_backends() {
         // an implementation, not an OS feature. See `PlatformCapabilities::native_menu` and each
         // backend's `capabilities()` for the per-flag evidence.
         ("WindowsPlatform", PlatformFamily::Desktop, true, true, true, false, true, true, true),
-        // macOS also reports `dpi_scaling: false`: AppKit supplies the screen scale, but this
-        // backend does not query it, so `dpi_scale_factor()` answers the trait default `1.0`.
-        ("cocoa", PlatformFamily::Desktop, false, true, true, false, true, true, true),
+        // macOS also reports `dpi_scaling: true`: BLUE28 B28.03 binds
+        // `NSScreen.backingScaleFactor` through `macos/displays.rs`.
+        ("cocoa", PlatformFamily::Desktop, true, true, true, false, true, true, true),
         (
             "macos-objc2-preview",
             PlatformFamily::Desktop,
-            false,
-            false,
-            false,
+            expect_objc2_dpi,
+            // `NSTextInputClient` on the canvas view (B28.12) and the `NSAccessibility`
+            // bridge (B28.13) are AppKit-bound, so both follow the `macos` feature.
+            cfg!(all(target_os = "macos", feature = "macos")),
+            cfg!(feature = "macos"),
             false,
             expect_objc2_clipboard,
             false,
@@ -402,13 +409,15 @@ fn documented_matrix_matches_real_backends() {
         // `accessibility` are false because neither bridge method is overridden. See its
         // `capabilities()` doc for the grep evidence.
         ("wayland", PlatformFamily::Desktop, true, false, false, false, false, false, false),
-        // iOS reports the honest absence of IME and accessibility; DPI is real when the UIKit
-        // FFI is compiled in (`UIScreen.scale`), and `expect_ios_dpi` follows that gate.
+        // iOS reports a real IME bridge over the shared marked-text state machine (B28.12);
+        // accessibility stays false because no UIAccessibility element is published. DPI is real
+        // when the UIKit FFI is compiled in (`UIScreen.scale`), and `expect_ios_dpi` follows that
+        // gate.
         (
             "ios-state-backend",
             PlatformFamily::Mobile,
             expect_ios_dpi,
-            false,
+            true,
             false,
             false,
             false,
@@ -503,6 +512,9 @@ fn documented_matrix_matches_real_backends() {
             clipboard: row.6,
             open_external: row.7,
             file_dialog: row.8,
+            // The README matrix predates the font-enumeration flag; the backend's own answer is
+            // the only source for it until the matrix gains a column.
+            system_fonts: actual.system_fonts,
         };
         assert_eq!(
             actual, expected,
@@ -535,10 +547,11 @@ fn documented_capability_fields_exist() {
         clipboard: true,
         open_external: true,
         file_dialog: true,
+        system_fonts: true,
     };
     assert!(caps.dpi_scaling && caps.ime && caps.accessibility && caps.typed_widget_trigger);
     assert!(!caps.native_menu);
-    assert!(caps.clipboard && caps.open_external && caps.file_dialog);
+    assert!(caps.clipboard && caps.open_external && caps.file_dialog && caps.system_fonts);
 
     // `NativeCapabilityContract` is documented as a type alias, so the two must be
     // interchangeable with no conversion.

@@ -28,8 +28,15 @@ use objc2::runtime::AnyObject;
 use objc2::sel;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
+    NSAccessibilityButtonRole, NSAccessibilityCheckBoxRole, NSAccessibilityComboBoxRole,
+    NSAccessibilityGroupRole, NSAccessibilityImageRole, NSAccessibilityIncrementorRole,
+    NSAccessibilityLinkRole, NSAccessibilityListRole, NSAccessibilityMenuItemRole,
+    NSAccessibilityMenuRole, NSAccessibilityOutlineRole, NSAccessibilityProgressIndicatorRole,
+    NSAccessibilityRadioButtonRole, NSAccessibilityRole, NSAccessibilitySliderRole,
+    NSAccessibilityStaticTextRole, NSAccessibilityTabGroupRole, NSAccessibilityTableRole,
+    NSAccessibilityTextFieldRole, NSAccessibilityUnknownRole, NSAccessibilityWindowRole,
     NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType,
-    NSEventMask, NSScreen, NSView, NSWindow, NSWindowStyleMask,
+    NSCursor, NSEventMask, NSScreen, NSView, NSWindow, NSWindowStyleMask, NSWorkspace,
 };
 // Named only by the input handlers and the blit, both of which are `widgets_unstripped` code.
 #[cfg(widgets_unstripped)]
@@ -38,12 +45,34 @@ use objc2_app_kit::{NSEvent, NSGraphicsContext};
 #[cfg(widgets_unstripped)]
 use objc2_core_graphics::CGContext;
 use objc2_foundation::{
-    NSDate, NSDefaultRunLoopMode, NSEdgeInsets, NSNotification, NSRect, NSSize, NSString,
+    NSArray, NSAttributedString, NSAttributedStringKey, NSDate, NSDefaultRunLoopMode, NSEdgeInsets,
+    NSLocale, NSNotification, NSRange, NSRect, NSSize, NSString,
 };
 
 // `Vec` is not in the `core` prelude and this file is compiled on profiles that have no `std`
 // prelude either; the crate's own shim is the one place that decides where it comes from.
 use crate::compat::Vec;
+
+/// The process-wide IME bridge shared by the canvas view and `Platform::ime_bridge` (B28.12).
+///
+/// One `NSTextInputContext` exists per application, and every canvas view reports into the same
+/// focused-widget state, so a single bridge is the accurate model. Keeping it here (rather than
+/// on `MacOSObjc2Platform`) is what lets the Objective-C callbacks reach it without carrying a
+/// pointer to a Rust struct through an ivar.
+static IME_BRIDGE: std::sync::OnceLock<crate::platform::ime_macos::MacOsImeBridge> =
+    std::sync::OnceLock::new();
+
+/// The bridge `Platform::ime_bridge` hands out and the view's callbacks drive.
+pub(crate) fn ime_bridge() -> &'static crate::platform::ime_macos::MacOsImeBridge {
+    IME_BRIDGE.get_or_init(crate::platform::ime_macos::MacOsImeBridge::new)
+}
+
+thread_local! {
+    /// True while `keyDown:` is inside `interpretKeyEvents:`.
+    static IME_INTERPRETING: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+    /// Set by an `NSTextInputClient` callback that consumed the event.
+    static IME_HANDLED: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+}
 // The tree-routing half of this file — the routes below and the mouse/key handlers that call them —
 // is gated on `widgets_unstripped`, so these three are gated with it: `mini`/`embedded` compile the
 // file but have no `widget::runtime` to route into, and an unused import is a build failure for a
@@ -80,6 +109,89 @@ pub(crate) fn system_theme() -> Option<bool> {
     // SAFETY: `NSAppearanceNameDarkAqua` is a well-known, immutable AppKit constant.
     let dark_name = unsafe { NSAppearanceNameDarkAqua };
     Some(&*name == dark_name)
+}
+
+// ─── Cursor (B28.09) ───
+
+/// Applies a cursor shape through `NSCursor.set`.
+///
+/// `None` off the main thread. Shapes without an exact AppKit cursor fall back to the closest
+/// one; the mapping is here so every caller gets the same fallback.
+#[allow(deprecated)] // Newer AppKit asks for a position/direction; the axis cursors are the portable pair.
+pub(crate) fn set_cursor(icon: crate::platform::CursorIcon) -> bool {
+    use crate::platform::CursorIcon;
+    if MainThreadMarker::new().is_none() {
+        return false;
+    }
+    let cursor = match icon {
+        CursorIcon::Default => NSCursor::arrowCursor(),
+        CursorIcon::Pointer | CursorIcon::Help => NSCursor::pointingHandCursor(),
+        CursorIcon::Text => NSCursor::IBeamCursor(),
+        CursorIcon::Crosshair | CursorIcon::ZoomIn | CursorIcon::ZoomOut => {
+            NSCursor::crosshairCursor()
+        }
+        CursorIcon::Move | CursorIcon::Grab => NSCursor::openHandCursor(),
+        CursorIcon::Grabbing => NSCursor::closedHandCursor(),
+        CursorIcon::NotAllowed => NSCursor::operationNotAllowedCursor(),
+        CursorIcon::ResizeHorizontal | CursorIcon::ResizeNwSe | CursorIcon::ResizeNeSw => {
+            NSCursor::resizeLeftRightCursor()
+        }
+        CursorIcon::ResizeVertical => NSCursor::resizeUpDownCursor(),
+        CursorIcon::Wait | CursorIcon::Progress => NSCursor::arrowCursor(),
+    };
+    cursor.set();
+    true
+}
+
+/// Hides or shows the pointer through the AppKit cursor singleton.
+pub(crate) fn set_cursor_visible(visible: bool) -> bool {
+    if MainThreadMarker::new().is_none() {
+        return false;
+    }
+    if visible {
+        NSCursor::arrowCursor().set();
+    } else {
+        NSCursor::hide();
+    }
+    true
+}
+
+// ─── System fonts (B28.39) ───
+
+/// The installed families, their style names and backing files, through CoreText.
+///
+/// `NSFontManager.availableFontFamilies` reports names only; CoreText's `kCTFontURLAttribute` is
+/// what supplies the file the renderer can register. The enumeration is not main-thread-only.
+pub(crate) fn system_fonts() -> Vec<crate::platform::types::SystemFont> {
+    crate::platform::fonts_apple::system_fonts()
+}
+
+// ─── Environment facts (B28.06) ───
+
+/// Whether the user asked for increased contrast.
+///
+/// `NSWorkspace.accessibilityDisplayShouldIncreaseContrast` is the AppKit answer to the system
+/// "Increase contrast" setting. `NSWorkspace` is thread-safe as a shared singleton, so this does
+/// not require a main-thread marker.
+pub(crate) fn high_contrast() -> bool {
+    NSWorkspace::sharedWorkspace().accessibilityDisplayShouldIncreaseContrast()
+}
+
+/// Whether the user asked for reduced motion.
+///
+/// `NSWorkspace.accessibilityDisplayShouldReduceMotion`, the macOS "Reduce motion" setting.
+pub(crate) fn reduce_motion() -> bool {
+    NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
+}
+
+/// The user's locale, from `NSLocale.currentLocale.localeIdentifier`.
+///
+/// AppKit spells the identifier with an underscore (`en_US`); this normalizes it to the BCP-47
+/// hyphenated form every other backend reports, then interns it for the style layer.
+pub(crate) fn system_locale() -> Option<&'static str> {
+    let identifier = NSLocale::currentLocale().localeIdentifier().to_string();
+    crate::platform::locale::intern(Some(identifier.replace('_', "-")))
+        .or_else(|| crate::platform::locale::intern(crate::platform::locale::from_environment()))
 }
 
 // ─── Displays and window geometry ───
@@ -149,6 +261,23 @@ pub(crate) fn displays() -> Vec<Display> {
     out
 }
 
+/// The scale factor of AppKit's main screen.
+///
+/// The per-screen `backingScaleFactor` [`displays`] reports, read once for the trait's global
+/// [`Platform::dpi_scale_factor`](crate::platform::Platform::dpi_scale_factor). `None` off the
+/// main thread, where messaging `NSScreen` would raise.
+pub(crate) fn main_scale() -> Option<f32> {
+    let mtm = MainThreadMarker::new()?;
+    let screen = NSScreen::mainScreen(mtm)?;
+    let scale = screen.backingScaleFactor();
+    // A non-positive scale would divide by zero downstream; AppKit reports >= 1.0.
+    if scale > 0.0 {
+        Some(scale as f32)
+    } else {
+        None
+    }
+}
+
 /// The registry pointer for `window_id`, when it names a live native object.
 fn native_ptr(window_id: u64) -> Option<*mut AnyObject> {
     NATIVE_VIEWS.lock().ok()?.get(&window_id).map(|ptr| ptr.0 as *mut AnyObject)
@@ -184,6 +313,149 @@ pub(crate) fn screen_id_of_window(window_id: u64) -> Option<u64> {
         core::ptr::eq(objc2::rc::Retained::as_ptr(&candidate), objc2::rc::Retained::as_ptr(&screen))
     })?;
     Some(display_id_at(index, &screen))
+}
+
+/// The live `NSWindow` a window id names, when it is one.
+fn window_ref(window_id: u64) -> Option<Retained<NSWindow>> {
+    let _mtm = MainThreadMarker::new()?;
+    let object = native_ptr(window_id)?;
+    // SAFETY: the registry holds retained AppKit objects created on the main thread, and the
+    // marker above proves this is that thread. `retain` takes its own +1 reference, so the
+    // returned object outlives any registry removal that happens during the call.
+    unsafe {
+        if !is_window(object) {
+            return None;
+        }
+        Retained::retain(object as *mut NSWindow)
+    }
+}
+
+/// Applies a window state through AppKit.
+///
+/// Returns `false` when the id is not a live `NSWindow` or the call is off the main thread; the
+/// caller then keeps the recorded state as its fallback.
+pub(crate) fn set_window_state(
+    window_id: u64,
+    flag: crate::platform::WindowStateFlag,
+    on: bool,
+) -> bool {
+    use crate::platform::WindowStateFlag;
+    let Some(window) = window_ref(window_id) else {
+        return false;
+    };
+    match flag {
+        WindowStateFlag::Maximized => {
+            if on != window.isZoomed() {
+                window.zoom(None);
+            }
+        }
+        WindowStateFlag::Minimized => {
+            if on && !window.isMiniaturized() {
+                window.performMiniaturize(None);
+            } else if !on && window.isMiniaturized() {
+                window.deminiaturize(None);
+            }
+        }
+        WindowStateFlag::Fullscreen => {
+            let fullscreen = window.styleMask().contains(NSWindowStyleMask::FullScreen);
+            if on != fullscreen {
+                window.toggleFullScreen(None);
+            }
+        }
+        WindowStateFlag::Resizable => {
+            let mask = window.styleMask();
+            let mut updated = mask;
+            updated.set(NSWindowStyleMask::Resizable, on);
+            if updated != mask {
+                window.setStyleMask(updated);
+            }
+        }
+        WindowStateFlag::Decorated => {
+            let mask = window.styleMask();
+            let mut updated = mask;
+            let chrome = NSWindowStyleMask::Titled
+                | NSWindowStyleMask::Closable
+                | NSWindowStyleMask::Miniaturizable
+                | NSWindowStyleMask::Resizable;
+            if on {
+                updated.insert(chrome);
+            } else {
+                updated.remove(chrome);
+            }
+            if updated != mask {
+                window.setStyleMask(updated);
+            }
+        }
+    }
+    true
+}
+
+/// Reads a window state from AppKit.
+///
+/// `None` when the id is not a live `NSWindow` or the call is off the main thread; the caller
+/// falls back to the recorded state.
+pub(crate) fn window_state(window_id: u64, flag: crate::platform::WindowStateFlag) -> Option<bool> {
+    use crate::platform::WindowStateFlag;
+    let window = window_ref(window_id)?;
+    let mask = window.styleMask();
+    Some(match flag {
+        WindowStateFlag::Maximized => window.isZoomed(),
+        WindowStateFlag::Minimized => window.isMiniaturized(),
+        WindowStateFlag::Fullscreen => mask.contains(NSWindowStyleMask::FullScreen),
+        WindowStateFlag::Resizable => mask.contains(NSWindowStyleMask::Resizable),
+        WindowStateFlag::Decorated => mask.contains(NSWindowStyleMask::Titled),
+    })
+}
+
+/// Applies a minimum content size through AppKit.
+pub(crate) fn set_window_min_size(window_id: u64, width: u32, height: u32) -> bool {
+    let Some(window) = window_ref(window_id) else {
+        return false;
+    };
+    window.setContentMinSize(NSSize::new(width as f64, height as f64));
+    true
+}
+
+/// Reads a window's minimum content size from AppKit.
+pub(crate) fn window_min_size(window_id: u64) -> Option<(u32, u32)> {
+    let window = window_ref(window_id)?;
+    let size = window.contentMinSize();
+    if size.width > 0.0 && size.height > 0.0 {
+        Some((size.width.round() as u32, size.height.round() as u32))
+    } else {
+        None
+    }
+}
+
+/// The window's content size in logical pixels, read from its content view.
+///
+/// `NSWindow.contentLayoutRect` is AppKit's own notion of the area available to content, but it
+/// excludes the title bar only when the window uses a full-size content view. The content view's
+/// frame is the rectangle the library paints into, which is the size a layout must use.
+pub(crate) fn window_client_size(window_id: u64) -> Option<(u32, u32)> {
+    let window = window_ref(window_id)?;
+    let view = window.contentView()?;
+    let frame = view.frame();
+    let width = frame.size.width.max(0.0).round() as u32;
+    let height = frame.size.height.max(0.0).round() as u32;
+    (width > 0 && height > 0).then_some((width, height))
+}
+
+/// The raw pointer of a native object this backend owns, for `Platform::get_native_handle`.
+pub(crate) fn native_handle(window_id: u64) -> Option<usize> {
+    native_ptr(window_id).map(|ptr| ptr as usize)
+}
+
+/// The raw `NSView` pointer a window's GPU surface is created from.
+///
+/// rwh's AppKit variant names an `NSView`; the window's content view is what the library paints
+/// into. The pointer stays valid while the window is in the registry, which is the lifetime the
+/// caller is documented to use it within.
+#[cfg(feature = "raw-window-handle")]
+pub(crate) fn raw_view_handle(window_id: u64) -> Option<*mut core::ffi::c_void> {
+    let window = window_ref(window_id)?;
+    let view = window.contentView()?;
+    Some(objc2::rc::Retained::as_ptr(&view) as *mut core::ffi::c_void)
 }
 
 /// The safe-area insets of a window (or of a view this backend owns), in logical pixels.
@@ -475,6 +747,153 @@ define_class!(
             true
         }
 
+        // ── NSAccessibility (BLUE28 B28.13) ──
+        //
+        // The view is the accessibility element for the widget it presents. VoiceOver reads the
+        // role and label below; the bridge in `platform/accessibility/macos_objc2.rs` posts the
+        // change notifications against this same view pointer.
+
+        #[unsafe(method(isAccessibilityElement))]
+        fn is_accessibility_element(&self) -> bool {
+            self.ivars().widget_id.get() != 0
+        }
+
+        #[unsafe(method(accessibilityRole))]
+        fn accessibility_role(&self) -> Option<&'static NSAccessibilityRole> {
+            Some(ns_accessibility_role_for(self.accessibility_role_of_widget()))
+        }
+
+        #[unsafe(method(accessibilityLabel))]
+        fn accessibility_label(&self) -> *mut NSString {
+            let label = self.accessibility_label_of_widget();
+            objc2::rc::Retained::autorelease_return(NSString::from_str(&label))
+        }
+
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame(&self) -> NSRect {
+            let bounds = self.bounds();
+            self.window().map(|window| window.convertRectToScreen(bounds)).unwrap_or(bounds)
+        }
+
+        // ── NSTextInputClient (BLUE28 B28.12) ──
+        //
+        // AppKit routes a key press through `interpretKeyEvents:` in `keyDown:` below. The
+        // input method calls these methods with marked text while composing and with
+        // `insertText:` when it commits; the same `MacOsImeBridge` state machine the cocoa
+        // backend uses tracks the ranges in UTF-16 units.
+
+        #[unsafe(method(hasMarkedText))]
+        fn has_marked_text(&self) -> bool {
+            ime_bridge().has_marked_text()
+        }
+
+        #[unsafe(method(markedRange))]
+        fn marked_range(&self) -> NSRange {
+            match ime_bridge().get_marked_text() {
+                Some(text) => NSRange::new(0, text.encode_utf16().count()),
+                None => NSRange::new(usize::MAX, 0),
+            }
+        }
+
+        #[unsafe(method(selectedRange))]
+        fn selected_range(&self) -> NSRange {
+            let length =
+                ime_bridge().get_marked_text().map_or(0, |text| text.encode_utf16().count());
+            NSRange::new(length, 0)
+        }
+
+        #[unsafe(method(validAttributesForMarkedText))]
+        fn valid_attributes_for_marked_text(&self) -> *mut NSArray<NSAttributedStringKey> {
+            // An empty set is correct for plain-text composition: no attributes are required.
+            objc2::rc::Retained::autorelease_return(NSArray::from_slice(&[]))
+        }
+
+        #[unsafe(method(attributedSubstringForProposedRange:actualRange:))]
+        fn attributed_substring(
+            &self,
+            _range: NSRange,
+            actual_range: *mut NSRange,
+        ) -> *mut NSAttributedString {
+            if !actual_range.is_null() {
+                // SAFETY: AppKit passes a writable out-parameter or null; the null case is
+                // checked, and on the non-null path the pointer names its own stack slot for
+                // the duration of this call.
+                unsafe { *actual_range = NSRange::new(0, 0) };
+            }
+            // The surface holds no attributed text of its own; the widget layer owns it.
+            core::ptr::null_mut()
+        }
+
+        #[unsafe(method(firstRectForCharacterRange:actualRange:))]
+        fn first_rect_for_character_range(
+            &self,
+            range: NSRange,
+            actual_range: *mut NSRange,
+        ) -> NSRect {
+            if !actual_range.is_null() {
+                // SAFETY: see `attributed_substring`; the caller owns the out-parameter.
+                unsafe { *actual_range = range };
+            }
+            // The candidate window is placed at the surface origin. AppKit wants screen
+            // coordinates, so the view rect is converted through the window.
+            let rect = NSRect::new(
+                objc2_foundation::NSPoint::new(0.0, 0.0),
+                NSSize::new(1.0, 1.0),
+            );
+            self.window().map(|window| window.convertRectToScreen(rect)).unwrap_or(rect)
+        }
+
+        #[unsafe(method(characterIndexForPoint:))]
+        fn character_index_for_point(&self, _point: objc2_foundation::NSPoint) -> usize {
+            0
+        }
+
+        #[unsafe(method(unmarkText))]
+        fn unmark_text(&self) {
+            ime_bridge().discard_marked_text();
+            self.setNeedsDisplay(true);
+        }
+
+        #[unsafe(method(setMarkedText:selectedRange:replacementRange:))]
+        fn set_marked_text(
+            &self,
+            string: &AnyObject,
+            selected_range: NSRange,
+            _replacement_range: NSRange,
+        ) {
+            let Some(text) = text_of(string) else { return };
+            if IME_INTERPRETING.get() {
+                IME_HANDLED.set(true);
+            }
+            ime_bridge().set_marked_text(
+                &text,
+                selected_range.location as i32,
+                selected_range.location.saturating_add(selected_range.length) as i32,
+            );
+            self.setNeedsDisplay(true);
+        }
+
+        #[unsafe(method(insertText:replacementRange:))]
+        fn insert_text(&self, string: &AnyObject, _replacement_range: NSRange) {
+            let Some(text) = text_of(string) else { return };
+            if IME_INTERPRETING.get() {
+                IME_HANDLED.set(true);
+            }
+            let bridge = ime_bridge();
+            if bridge.has_marked_text() {
+                // A commit at the end of a composition.
+                bridge.commit_text(&text);
+            } else {
+                // A plain key that AppKit translated into text. It travels as `TextInput` so a
+                // control's text path runs exactly as it does for `forward_key`.
+                #[cfg(widgets_unstripped)]
+                {
+                    let _ = self.forward_ime_text(&text);
+                }
+            }
+            self.setNeedsDisplay(true);
+        }
+
         #[cfg(widgets_unstripped)]
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
@@ -524,7 +943,19 @@ define_class!(
         #[cfg(widgets_unstripped)]
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
-            self.forward_key(event, false);
+            // Give an active input method first refusal. `interpretKeyEvents:` calls back into
+            // the `NSTextInputClient` methods above; a method that consumed the event sets
+            // `IME_HANDLED`, and an unhandled key (an arrow, Tab, a shortcut) still reaches the
+            // ordinary `forward_key` path below, so nothing is swallowed.
+            IME_INTERPRETING.set(true);
+            IME_HANDLED.set(false);
+            let events = NSArray::from_slice(&[event]);
+            self.interpretKeyEvents(&events);
+            let handled = IME_HANDLED.get();
+            IME_INTERPRETING.set(false);
+            if !handled {
+                self.forward_key(event, false);
+            }
         }
 
         #[cfg(widgets_unstripped)]
@@ -797,6 +1228,52 @@ impl RustWidgetsObjc2CanvasView {
 
     /// Translates an AppKit key event into a widget key/text event and routes it.
     #[cfg(widgets_unstripped)]
+    /// The accessibility role of the widget this canvas presents.
+    fn accessibility_role_of_widget(&self) -> crate::platform::accessibility::A11yRole {
+        #[cfg(widgets_unstripped)]
+        if let Some(id) = self.widget_target() {
+            if let Some(role) = crate::widget::runtime::with_widget(id, |widget| {
+                crate::platform::accessibility::A11yRole::from(widget.kind())
+            }) {
+                return role;
+            }
+        }
+        crate::platform::accessibility::A11yRole::Unknown
+    }
+
+    /// The label a screen reader announces for this canvas.
+    fn accessibility_label_of_widget(&self) -> crate::compat::String {
+        #[cfg(widgets_unstripped)]
+        if let Some(id) = self.widget_target() {
+            if let Some(name) =
+                crate::widget::runtime::with_widget(id, |widget| widget.accessible_name())
+            {
+                return name;
+            }
+        }
+        crate::compat::String::new()
+    }
+
+    /// Delivers text AppKit produced from a plain key press to the focused control.
+    ///
+    /// This is the non-composition half of `NSTextInputClient`: AppKit calls
+    /// `insertText:replacementRange:` for printable keys as well as for a commit, and a plain key
+    /// must reach the widget as `Event::TextInput` rather than as an IME commit.
+    #[cfg(widgets_unstripped)]
+    fn forward_ime_text(&self, text: &str) -> bool {
+        let Some(widget_id) = self.widget_target() else { return false };
+        let target = crate::widget::runtime::focused_widget().unwrap_or(widget_id);
+        if crate::widget::runtime::dispatch_event(
+            target,
+            &Event::TextInput { text: text.to_string() },
+        ) {
+            true
+        } else {
+            log::debug!("[macos-objc2] IME text dropped, id={target} is not mounted");
+            false
+        }
+    }
+
     fn forward_key(&self, event: &NSEvent, release: bool) {
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let Some(widget_id) = self.widget_target() else {
@@ -834,6 +1311,61 @@ impl RustWidgetsObjc2CanvasView {
             log::error!("[macos-objc2] canvas: panic while forwarding a key event");
         }
     }
+}
+
+/// Maps a widget role to the AppKit role constant a screen reader understands.
+///
+/// The constants are AppKit's own `NSAccessibilityRole` values, not display strings: VoiceOver
+/// resolves the role through them, so no localized copy passes through this crate.
+fn ns_accessibility_role_for(
+    role: crate::platform::accessibility::A11yRole,
+) -> &'static NSAccessibilityRole {
+    use crate::platform::accessibility::A11yRole;
+    // SAFETY: these are AppKit's immutable role constants; reading the extern statics is the
+    // documented way to obtain them and the values live for the process lifetime.
+    unsafe {
+        match role {
+            A11yRole::Button | A11yRole::Switch => NSAccessibilityButtonRole,
+            A11yRole::Label | A11yRole::Heading | A11yRole::Paragraph => {
+                NSAccessibilityStaticTextRole
+            }
+            A11yRole::TextField => NSAccessibilityTextFieldRole,
+            A11yRole::CheckBox => NSAccessibilityCheckBoxRole,
+            A11yRole::RadioButton => NSAccessibilityRadioButtonRole,
+            A11yRole::Slider => NSAccessibilitySliderRole,
+            A11yRole::ProgressBar => NSAccessibilityProgressIndicatorRole,
+            A11yRole::List => NSAccessibilityListRole,
+            A11yRole::Table => NSAccessibilityTableRole,
+            A11yRole::Image => NSAccessibilityImageRole,
+            A11yRole::Link => NSAccessibilityLinkRole,
+            A11yRole::Group => NSAccessibilityGroupRole,
+            A11yRole::Window => NSAccessibilityWindowRole,
+            A11yRole::Dialog | A11yRole::Alert => NSAccessibilityWindowRole,
+            A11yRole::Menu => NSAccessibilityMenuRole,
+            A11yRole::MenuItem => NSAccessibilityMenuItemRole,
+            A11yRole::Tab => NSAccessibilityTabGroupRole,
+            A11yRole::ComboBox => NSAccessibilityComboBoxRole,
+            A11yRole::SpinButton => NSAccessibilityIncrementorRole,
+            A11yRole::StatusBar => NSAccessibilityGroupRole,
+            A11yRole::ToolTip => NSAccessibilityGroupRole,
+            A11yRole::Tree => NSAccessibilityOutlineRole,
+            A11yRole::Unknown => NSAccessibilityUnknownRole,
+        }
+    }
+}
+
+/// Reads text from the `id` AppKit passes to `insertText:`/`setMarkedText:`.
+///
+/// The argument is documented as an `NSString` or an `NSAttributedString`; both are accepted,
+/// and anything else is ignored rather than transmuted.
+fn text_of(object: &AnyObject) -> Option<crate::compat::String> {
+    if let Some(text) = object.downcast_ref::<NSString>() {
+        return Some(text.to_string());
+    }
+    if let Some(text) = object.downcast_ref::<NSAttributedString>() {
+        return Some(text.string().to_string());
+    }
+    None
 }
 
 /// Reads the printable characters of a key event, or `None` when it has none.
@@ -1005,6 +1537,10 @@ pub(crate) fn create_ns_window(
     // window's own chrome plus every child that implements `Draw`.
     let canvas =
         RustWidgetsObjc2CanvasView::new(mtm, widget_id, true, make_rect(0, 0, width, height));
+    // The canvas is the accessibility element for this widget (B28.13). The pointer stays valid
+    // for the window's lifetime because `NSWindow` retains its content view.
+    crate::platform::accessibility::macos_objc2::bridge()
+        .register_handle(widget_id, Retained::as_ptr(&canvas) as *mut AnyObject as usize);
     window.setContentView(Some(&canvas));
     // The canvas doubles as the window's delegate so `windowShouldClose:` forwards the
     // close to the widget layer. NSWindow holds its delegate as a weak (assign)
@@ -1075,6 +1611,8 @@ pub(crate) fn mount_surface_native(
 
     let frame = make_rect(x, y, width, height);
     let canvas = RustWidgetsObjc2CanvasView::new(mtm, id, false, frame);
+    crate::platform::accessibility::macos_objc2::bridge()
+        .register_handle(id, Retained::as_ptr(&canvas) as *mut AnyObject as usize);
     content_view.addSubview(&canvas);
     canvas.setNeedsDisplay(true);
     // The view is being revealed, which is the platform repainting a surface the

@@ -34,7 +34,7 @@ pub use handle::{
     MenuItemHandle, MessageBoxHandle, PanelHandle, ProgressBarHandle, RadioButtonHandle,
     ScrollAreaHandle, ScrollBarHandle, SelectionMode, SliderHandle, SpinBoxHandle, StatusBarHandle,
     SurfaceHandle, SurfaceMountError, TabWidgetHandle, TextEditHandle, ToolBarHandle,
-    WebViewHandle, WidgetHandle, WindowHandle,
+    WebViewHandle, WidgetHandle, WindowHandle, WindowOptions,
 };
 pub use lifecycle::*;
 

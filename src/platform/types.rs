@@ -219,6 +219,15 @@ pub enum WidgetTriggerKind {
     /// A host that offers layout managers must re-run them when this arrives, or the
     /// controls keep the geometry they were given for the previous size.
     Resized = 5,
+    /// The window moved without changing size (BLUE28 B28.32).
+    ///
+    /// The event carries no coordinates: the trigger queue is a fixed `(id, kind)` pair, and a
+    /// host that needs the new position reads [`Platform::display_of_window`] and the window's own
+    /// geometry. The point of the signal is that a layout anchored to the screen must re-run, not
+    /// that the library mirrors the compositor's coordinates.
+    ///
+    /// [`Platform::display_of_window`]: crate::platform::Platform::display_of_window
+    Moved = 6,
 }
 /// Typed widget trigger event with source widget id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -229,6 +238,22 @@ pub struct WidgetTriggerEvent {
     /// Normalized trigger kind for cross-platform consumption.
     pub kind: WidgetTriggerKind,
 }
+/// What a drag operation does to the dropped item.
+///
+/// BLUE28 B28.23: the byte-only `DropEvent` could not express a file drop or the difference
+/// between copying and moving. This enum is the platform-neutral action a source proposes and a
+/// target accepts; it is `Copy` because it carries no payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(all(feature = "serde", widgets_unstripped), derive(Serialize, Deserialize))]
+pub enum DropAction {
+    /// Copy the item; the source keeps it.
+    Copy,
+    /// Move the item; the source relinquishes it.
+    Move,
+    /// Create a link to the item.
+    Link,
+}
+
 /// Drag-and-drop payload event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(all(feature = "serde", widgets_unstripped), derive(Serialize, Deserialize))]
@@ -241,6 +266,16 @@ pub struct DropEvent {
     pub mime: String,
     /// Opaque drag payload bytes.
     pub payload: Vec<u8>,
+    /// Files carried by the drag, when the source dropped files rather than bytes.
+    ///
+    /// `mime` is `text/uri-list` for such a drop; the paths are the decoded entries. Empty for a
+    /// byte-only drag, which is why it does not change the meaning of `payload`.
+    #[cfg(not(alloc_frugal))]
+    pub files: Vec<std::path::PathBuf>,
+    /// The action the source proposed and the target accepted.
+    pub action: DropAction,
+    /// Drop position in the target's logical coordinates, when the platform reports one.
+    pub position: Option<(i32, i32)>,
 }
 
 /// Controls how text is displayed in a text-entry control.
@@ -317,6 +352,34 @@ pub enum MobileBackend {
     /// Harmony mobile backend.
     HarmonyMobile,
 }
+
+/// The device's physical screen orientation (BLUE28 B28.24).
+///
+/// Distinct from [`Orientation`], which describes a layout axis. A phone can be landscape-left or
+/// landscape-right; a layout that only knows "horizontal" cannot tell them apart, and an app that
+/// aligns a control with a camera notch needs the difference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ScreenOrientation {
+    /// Home indicator at the bottom.
+    Portrait,
+    /// Home indicator at the top.
+    PortraitUpsideDown,
+    /// Home indicator on the right.
+    LandscapeLeft,
+    /// Home indicator on the left.
+    LandscapeRight,
+}
+
+/// The lifecycle phase a mobile host reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MobileLifecycleState {
+    /// Foreground and receiving frames.
+    Active,
+    /// Visible but not receiving input (a call, a sheet, an app switcher preview).
+    Inactive,
+    /// Backgrounded; animations must stop and state must be retained.
+    Background,
+}
 /// Cross-platform runtime capability flags.
 ///
 /// # Why the host-service flags are here and not inferred from a failed call
@@ -374,6 +437,13 @@ pub struct PlatformCapabilities {
     /// and reading the error — is the "learn it when the action fails" shape principle #37
     /// forbids.
     pub file_dialog: bool,
+    /// The backend can enumerate the host's installed font families
+    /// (see [`Platform::system_fonts`]).
+    ///
+    /// winit does not provide this; it is this crate's own gap, recorded as BLUE28 B28.39. A
+    /// `true` means [`Platform::system_fonts`] answers a real list; an empty list under a `true`
+    /// is possible on a minimal system and is not a promise violation.
+    pub system_fonts: bool,
 }
 
 /// What a host wants a path for.
@@ -413,6 +483,24 @@ pub enum PathPickerError {
     /// thread the toolkit does not allow a modal window on. Asking later from the right thread or
     /// session can succeed, which is why this is not folded into [`Self::Unsupported`].
     Unavailable,
+}
+
+/// The answer to an asynchronous path request (BLUE28 B28.08 decision A).
+///
+/// # Why a separate contract from `choose_path`
+///
+/// `choose_path` is synchronous: it blocks until the modal dialog closes. A mobile or Web host
+/// presents its picker as an Activity result / promise, so the library cannot block there. The
+/// asynchronous pair [`Platform::request_path`] + [`Platform::take_path_choice`] keeps one
+/// contract for those hosts; `choose_path` stays for the desktops that can block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathChoice {
+    /// The user chose this path.
+    Chosen(std::path::PathBuf),
+    /// The user dismissed the picker.
+    Cancelled,
+    /// The picker could not be shown or its result could not be read.
+    Failed,
 }
 
 /// Why handing a target to the host's default handler failed.
@@ -504,6 +592,7 @@ pub fn default_capabilities_for(_family: PlatformFamily) -> PlatformCapabilities
         // An undeclared capability, like the four above it: no backend gets a picker by
         // inference from its family (see this function's docs).
         file_dialog: false,
+        system_fonts: false,
     }
 }
 
@@ -550,6 +639,162 @@ pub struct Display {
     pub scale: f32,
     /// Whether this is the host's primary/reference display.
     pub is_primary: bool,
+}
+
+/// One installed font family the host can render with.
+///
+/// # Why `source` is optional
+///
+/// A host that wants the widget layer to paint with a system face must hand back its **bytes**
+/// through [`crate::render::text::register_face`], and that needs a readable file. Some platforms
+/// expose only family names (AppKit's `NSFontManager`, UIKit's `UIFont.familyNames`), so `source`
+/// is the path when the backend knows one and `None` otherwise. A caller that requires bytes must
+/// skip entries whose `source` is `None` rather than guessing a path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemFont {
+    /// The family name, e.g. `"Noto Sans"`.
+    pub family: String,
+    /// The style name when the backend reports one, e.g. `"Regular"`; empty when it does not.
+    pub style: String,
+    /// A readable font file for this family, when the backend knows one.
+    pub source: Option<std::path::PathBuf>,
+}
+
+/// A window state to apply at creation time, and the attributes that could not be applied.
+///
+/// BLUE28 B28.41: `create_window` takes only a title and geometry, so a host that needs a
+/// borderless/transparent/non-resizable window had no way to ask. Rather than add parameters to
+/// the one historical entry point, the attributes are a value type and the creation result says
+/// which ones the backend could not honour — silently dropping them is the failure mode this
+/// type exists to prevent.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WindowAttributes {
+    /// Window title. Empty keeps the backend's default (also empty).
+    pub title: String,
+    /// Top-left position; `None` lets the backend choose (the historical `create_window` uses 0,0).
+    pub position: Option<(i32, i32)>,
+    /// Client size in logical pixels. `None` uses 800×600, matching the documented default.
+    pub size: Option<(u32, u32)>,
+    /// Minimum client size, when the backend can constrain it.
+    pub min_size: Option<(u32, u32)>,
+    /// Maximum client size. No `Platform` method exists yet, so this is always reported unsupported.
+    pub max_size: Option<(u32, u32)>,
+    /// Whether the user may resize the window.
+    pub resizable: Option<bool>,
+    /// Whether the OS draws a title bar and border.
+    pub decorations: Option<bool>,
+    /// Whether the window content is transparent. Backend support is platform-specific.
+    pub transparent: Option<bool>,
+    /// Whether the window is shown at creation. `None` keeps the historical hidden-until-`show`
+    /// behaviour documented on [`crate::create_window`].
+    pub visible: Option<bool>,
+    /// Whether the window stays above other windows. Backend support is platform-specific.
+    pub always_on_top: Option<bool>,
+    /// Start fullscreen.
+    pub fullscreen: Option<bool>,
+    /// Start maximised.
+    pub maximized: Option<bool>,
+    /// Preferred light/dark appearance (`Some(true)` = dark), when the backend supports a
+    /// per-window override.
+    pub preferred_theme: Option<bool>,
+    /// Whether the OS may include the window in screenshots/recordings.
+    pub content_protected: Option<bool>,
+    /// Icon file path, when the backend has a per-window icon concept.
+    pub window_icon: Option<String>,
+}
+
+/// The result of [`Platform::create_window_with`](crate::platform::Platform::create_window_with).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowCreation {
+    /// The window id, or `0` when the backend could not create one.
+    pub window: ObjectId,
+    /// Attributes this backend could not apply, by field name. Empty means every requested
+    /// attribute was applied.
+    pub unsupported: Vec<&'static str>,
+}
+
+/// The colour space a display advertises, when the backend can read one.
+///
+/// # Why this is not the image layer's `ColorSpace`
+///
+/// `crate::image::format::ColorSpace` describes an **image file's** encoding. This type describes
+/// a **display transport's** colour space, which is the fact a renderer would need to decide how
+/// to encode its output. They overlap today only in `Srgb`; keeping them separate avoids making
+/// the platform layer depend on the image codecs module, and neither is an alias of the other
+/// because their remaining variants differ. BLUE28 B28.21 marks colour management as P3: the
+/// field is published so a backend can fill it, but no renderer consumes it yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayColorSpace {
+    /// Standard sRGB.
+    Srgb,
+    /// Display P3.
+    DisplayP3,
+    /// BT.2020 (HDR transports).
+    Bt2020,
+}
+
+/// Optional metadata about one display, beyond the geometry [`Display`] carries.
+///
+/// BLUE28 B28.21: `Display` keeps its existing fields (a non-breaking extension), and this type
+/// carries the facts that were missing. Every field is optional because a backend that cannot read
+/// one answers `None` rather than inventing a refresh rate or a colour space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisplayInfo {
+    /// Refresh rate in millihertz (`60_000` = 60 Hz).
+    pub refresh_rate_mhz: Option<u32>,
+    /// The display's physical orientation, as the core layer's axis vocabulary
+    /// (`Horizontal` = landscape, `Vertical` = portrait).
+    pub orientation: Option<Orientation>,
+    /// The transport's colour space, when the backend can read it.
+    pub color_space: Option<DisplayColorSpace>,
+    /// Whether the display reports HDR capability.
+    pub hdr: Option<bool>,
+}
+
+/// The cursor shape a control asks the pointer to take while it is hovered.
+///
+/// BLUE28 B28.09 separates the **widget intent** from the platform's cursor object: a control
+/// answers [`Widget::cursor_icon`](crate::widget::Widget::cursor_icon), the runtime dispatches it
+/// once per hover change through [`Platform::set_cursor`], and each backend maps it to its own
+/// cursor API. The variant set mirrors winit's `CursorIcon` minus the platform-only variants this
+/// library has no consumer for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(all(feature = "serde", widgets_unstripped), derive(Serialize, Deserialize))]
+pub enum CursorIcon {
+    /// The platform's default arrow.
+    Default,
+    /// A hand, for links and clickable non-buttons.
+    Pointer,
+    /// An I-beam, for text entry and selectable text.
+    Text,
+    /// A crosshair, for drawing surfaces.
+    Crosshair,
+    /// A four-way move cursor.
+    Move,
+    /// A "not allowed" cursor.
+    NotAllowed,
+    /// Horizontal resize.
+    ResizeHorizontal,
+    /// Vertical resize.
+    ResizeVertical,
+    /// Diagonal resize (top-left / bottom-right).
+    ResizeNwSe,
+    /// Diagonal resize (top-right / bottom-left).
+    ResizeNeSw,
+    /// An open hand, for a draggable surface that is not being dragged.
+    Grab,
+    /// A closed hand, while dragging.
+    Grabbing,
+    /// A busy/wait cursor.
+    Wait,
+    /// A progress cursor (busy but interactive).
+    Progress,
+    /// A help cursor.
+    Help,
+    /// Zoom in.
+    ZoomIn,
+    /// Zoom out.
+    ZoomOut,
 }
 
 /// The parts of a window's edges that system UI occupies, in logical pixels.
@@ -719,6 +964,23 @@ pub trait Platform: Send + Sync {
     fn display_generation(&self) -> u64 {
         0
     }
+
+    /// Metadata about one display, beyond [`Display`]'s geometry.
+    ///
+    /// `None` when the id does not name a display this backend enumerated, or when the backend has
+    /// no metadata source at all. A `Some` with every field `None` means the display exists but no
+    /// optional fact is readable; that distinction is why the outer `Option` is kept.
+    fn display_info(&self, _display: DisplayId) -> Option<DisplayInfo> {
+        None
+    }
+
+    /// Called immediately before the host presents a frame, so a compositor-backed backend can
+    /// align its frame callback with the presentation (BLUE28 B28.42).
+    ///
+    /// The default is a no-op: a backend whose presentation is synchronous (Win32, AppKit, GTK's
+    /// drawing area) already has nothing to wait for. The library never starts a frame loop of its
+    /// own from here; the host drives the loop and calls this at the point it is about to blit.
+    fn pre_present_notify(&self, _window: ObjectId) {}
     /// The safe-area insets of a window, in logical pixels.
     ///
     /// # What the three answers mean
@@ -788,6 +1050,81 @@ pub trait Platform: Send + Sync {
     /// needs the app's preferred content size, which this backend cannot observe.
     fn text_scale(&self) -> f32 {
         1.0
+    }
+
+    /// Whether the host asks for increased contrast.
+    ///
+    /// `None` is the honest answer for a backend with no such system setting, and is distinct from
+    /// `Some(false)`: the latter says the user has seen the setting and left it off. A widget that
+    /// prefers an outline over a shadow when this is `Some(true)` should keep its existing
+    /// appearance for `None` rather than assuming the user chose normal contrast.
+    ///
+    /// Sources: Windows `SPI_GETHIGHCONTRAST`, macOS
+    /// `NSWorkspace.accessibilityDisplayShouldIncreaseContrast`, iOS
+    /// `UIAccessibility.isDarkerSystemColorsEnabled`, Android
+    /// `AccessibilityManager.isHighTextContrastEnabled`, GTK's theme-name heuristic (documented
+    /// as a heuristic, not a measurement).
+    fn high_contrast(&self) -> Option<bool> {
+        None
+    }
+
+    /// Whether the host asks for reduced motion.
+    ///
+    /// The style layer collapses animation durations to zero when this is `Some(true)`; `None`
+    /// keeps the authored motion. Sources: Windows `SPI_GETCLIENTAREAANIMATION`, macOS
+    /// `NSWorkspace.accessibilityDisplayShouldReduceMotion`, iOS
+    /// `UIAccessibility.isReduceMotionEnabled`, Android `animator_duration_scale`, GTK's
+    /// `gtk-enable-animations`.
+    fn reduce_motion(&self) -> Option<bool> {
+        None
+    }
+
+    /// The interface locale as a BCP-47 tag, or `None` when this backend cannot read one.
+    ///
+    /// The value is interned once per distinct locale (see `platform::locale`), so the caller can
+    /// hold it as a `&'static str` in the style layer's environment snapshot without allocating on
+    /// every frame. A backend whose locale can change mid-session returns the new tag; the
+    /// interner replaces its single cached value rather than growing.
+    fn system_locale(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// A value that changes when the environment facts change (appearance, contrast, motion,
+    /// locale).
+    ///
+    /// Same polling contract as [`Self::display_generation`]: `0` means this backend does not
+    /// report changes. A host that reads a non-zero value compares consecutive readings; a
+    /// different value means "re-read the facts". Backends without a native change signal derive
+    /// it from the current values, which is a revision rather than a pushed notification.
+    fn environment_generation(&self) -> u64 {
+        0
+    }
+
+    /// Applies a cursor shape to a window.
+    ///
+    /// The runtime calls this once when the hovered control changes, not per motion event. A
+    /// backend that has no cursor API answers `false`, which is the same honest-absence rule as
+    /// the other optional methods. A window id that is not a live window also answers `false`.
+    fn set_cursor(&self, _window: ObjectId, _icon: CursorIcon) -> bool {
+        false
+    }
+
+    /// Shows or hides the pointer over a window, when the platform can.
+    ///
+    /// Kept separate from [`Self::set_cursor`] because hiding is not a shape: a host that hides
+    /// the pointer for a video surface still expects the shape to be restored when it returns.
+    fn set_cursor_visible(&self, _window: ObjectId, _visible: bool) -> bool {
+        false
+    }
+
+    /// The installed font families this host can render with.
+    ///
+    /// An empty list is the honest default: a backend that has not bound an enumeration API reports
+    /// "none known" rather than a made-up family. Pair it with
+    /// [`PlatformCapabilities::system_fonts`] to distinguish "no enumerator" from "an empty
+    /// system". A caller that needs bytes filters on [`SystemFont::source`].
+    fn system_fonts(&self) -> Vec<SystemFont> {
+        Vec::new()
     }
     /// Whether the host's system theme is currently dark.
     ///
@@ -1366,6 +1703,118 @@ pub trait Platform: Send + Sync {
     /// signature; it should log rather than return a fabricated id.
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId;
 
+    /// Whether this backend can own more than one top-level window at a time.
+    ///
+    /// The default is `true`: the desktop backends, iOS and Redox keep a window table. A backend
+    /// whose host model is one Activity/one canvas (Android, HarmonyOS, Web) overrides this to
+    /// `false` and makes a second [`Self::create_window`] return `0`, so a caller learns the limit
+    /// at creation instead of silently receiving a second handle that paints into the first
+    /// window's surface (BLUE28 B28.43).
+    fn supports_multiple_windows(&self) -> bool {
+        true
+    }
+
+    /// Creates a window with a set of attributes and reports what could not be applied.
+    ///
+    /// The default forwards to [`Self::create_window`] with the attributes' title/position/size,
+    /// then applies each attribute through the existing trait methods. That means a backend gets
+    /// the behaviour it already implements (min size, state, icon, visibility) for free, and every
+    /// attribute with no trait method behind it is named in [`WindowCreation::unsupported`] rather
+    /// than silently dropped. A backend that can apply transparent/always-on-top/theme at creation
+    /// time overrides this and calls the same `apply_window_attributes` for the rest.
+    fn create_window_with(&self, attributes: &WindowAttributes) -> WindowCreation {
+        let (x, y) = attributes.position.unwrap_or((0, 0));
+        let (width, height) = attributes.size.unwrap_or((800, 600));
+        let window = self.create_window(&attributes.title, x, y, width, height);
+        if window == 0 {
+            let mut unsupported = Vec::new();
+            if attributes.min_size.is_some() {
+                unsupported.push("min_size");
+            }
+            if attributes.max_size.is_some() {
+                unsupported.push("max_size");
+            }
+            for (value, name) in [
+                (attributes.resizable, "resizable"),
+                (attributes.decorations, "decorations"),
+                (attributes.transparent, "transparent"),
+                (attributes.visible, "visible"),
+                (attributes.always_on_top, "always_on_top"),
+                (attributes.fullscreen, "fullscreen"),
+                (attributes.maximized, "maximized"),
+                (attributes.preferred_theme, "preferred_theme"),
+                (attributes.content_protected, "content_protected"),
+            ] {
+                if value.is_some() {
+                    unsupported.push(name);
+                }
+            }
+            if attributes.window_icon.is_some() {
+                unsupported.push("window_icon");
+            }
+            return WindowCreation { window, unsupported };
+        }
+        let unsupported = self.apply_window_attributes(window, attributes);
+        WindowCreation { window, unsupported }
+    }
+
+    /// Applies the attributes to an existing window, returning the ones this backend refused.
+    ///
+    /// Every attribute goes through the trait method that already owns that fact, so there is one
+    /// implementation per attribute rather than a second one here. Attributes with no method —
+    /// maximum size, transparency, always-on-top, per-window theme, content protection — are named
+    /// as unsupported. That list is the honest answer until a backend adds a real method.
+    fn apply_window_attributes(
+        &self,
+        window: ObjectId,
+        attributes: &WindowAttributes,
+    ) -> Vec<&'static str> {
+        let mut unsupported = Vec::new();
+        if let Some((width, height)) = attributes.min_size {
+            if !self.set_window_min_size(window, width, height) {
+                unsupported.push("min_size");
+            }
+        }
+        if attributes.max_size.is_some() {
+            unsupported.push("max_size");
+        }
+        for (value, flag, name) in [
+            (attributes.resizable, WindowStateFlag::Resizable, "resizable"),
+            (attributes.decorations, WindowStateFlag::Decorated, "decorations"),
+            (attributes.fullscreen, WindowStateFlag::Fullscreen, "fullscreen"),
+            (attributes.maximized, WindowStateFlag::Maximized, "maximized"),
+        ] {
+            if let Some(on) = value {
+                if !self.set_window_state(window, flag, on) {
+                    unsupported.push(name);
+                }
+            }
+        }
+        if attributes.transparent.is_some() {
+            unsupported.push("transparent");
+        }
+        if attributes.always_on_top.is_some() {
+            unsupported.push("always_on_top");
+        }
+        if attributes.preferred_theme.is_some() {
+            unsupported.push("preferred_theme");
+        }
+        if attributes.content_protected.is_some() {
+            unsupported.push("content_protected");
+        }
+        if let Some(path) = attributes.window_icon.as_deref() {
+            if !self.set_window_icon(window, path) {
+                unsupported.push("window_icon");
+            }
+        }
+        if let Some(visible) = attributes.visible {
+            // `set_widget_visible` has no result channel; a failed call is visible to the caller
+            // by reading `is_widget_visible` afterwards.
+            self.set_widget_visible(window, visible);
+        }
+        unsupported
+    }
+
     // ── Control construction ────────────────────────────────────────────────
     //
     // Every method below has a default that reports "this host creates no such
@@ -1650,6 +2099,34 @@ pub trait Platform: Send + Sync {
     /// This is the escape hatch for host code and integration tests that need to
     /// reach the underlying control; it must not be used for routine widget work.
     fn get_native_handle(&self, _widget: ObjectId) -> Option<usize> {
+        None
+    }
+
+    /// The standard `raw-window-handle` 0.6 window handle for a window, when this backend owns a
+    /// native object it can name.
+    ///
+    /// # What this is and is not
+    ///
+    /// This is the **read-only** interop adapter winit's `window_handle()` provides: a host that
+    /// wants to create its own GPU surface with `wgpu` can pass it to `Surface::create`. It does
+    /// not transfer ownership, it does not change [`Self::mount_surface`], and acquiring a handle
+    /// does **not** entitle the host to bypass the library's painting — the same pixels are still
+    /// produced by the widget tree. `None` is the honest answer for a backend with no such object
+    /// (state-only, Redox, embedded).
+    ///
+    /// Gated on the `raw-window-handle` feature so the dependency stays opt-in (B28.40).
+    #[cfg(feature = "raw-window-handle")]
+    fn raw_window_handle(&self, _window: ObjectId) -> Option<raw_window_handle::RawWindowHandle> {
+        None
+    }
+
+    /// The standard `raw-window-handle` 0.6 display handle, paired with
+    /// [`Self::raw_window_handle`].
+    ///
+    /// `None` when the backend has no display object, or when the platform has no rwh variant
+    /// (a host-only backend). The handle borrows nothing, so it is `Copy` and needs no lifetime.
+    #[cfg(feature = "raw-window-handle")]
+    fn raw_display_handle(&self) -> Option<raw_window_handle::RawDisplayHandle> {
         None
     }
     /// Returns the next pending menu activation. Default: none are produced.
@@ -2253,6 +2730,14 @@ pub trait Platform: Send + Sync {
     /// `false` when the id is not a window, the state is not meaningful on this
     /// toolkit, or the window is state-only (created off the UI thread). The
     /// caller must treat `false` as "the window state did not change".
+    ///
+    /// Implemented natively by Win32 (`ShowWindow`, style masks), both macOS backends
+    /// (`zoom:`/`performMiniaturize:`/`toggleFullScreen:`/`setStyleMask:`) and GTK
+    /// (`maximize`/`iconify`/`fullscreen`/`set_resizable`/`set_decorated`). Wayland, Android,
+    /// iOS, HarmonyOS, Redox and Web go through the shared state macro: the flag is recorded and
+    /// the call reports whether the id names a window, but no OS window changes. A caller that
+    /// needs to know whether the OS applied it reads [`Self::is_window_in_state`], which those
+    /// backends answer from the record.
     fn set_window_state(&self, _widget_id: ObjectId, _flag: WindowStateFlag, _on: bool) -> bool {
         false
     }
@@ -2287,10 +2772,10 @@ pub trait Platform: Send + Sync {
 
     /// Set a window's icon from a file path.
     ///
-    /// AppKit loads an `NSImage` and assigns it with `setRepresentation:`, Win32
-    /// loads an `HICON` with `LoadImageW` and sends `WM_SETICON`, GTK uses
-    /// `set_icon_from_file`. Returns `false` when the id is not a window, the
-    /// path cannot be loaded, or the backend has no icon concept.
+    /// Win32 loads an `HICON` with `LoadImageW` and sends `WM_SETICON`; GTK uses
+    /// `set_icon_from_file`. The macOS backends answer `false`: an `NSWindow` has no icon, and the
+    /// Dock/window-switcher image is the application bundle's `CFBundleIconFile`. Returns `false`
+    /// when the id is not a window, the path cannot be loaded, or the backend has no icon concept.
     fn set_window_icon(&self, _widget_id: ObjectId, _path: &str) -> bool {
         false
     }
@@ -2451,6 +2936,16 @@ pub trait Platform: Send + Sync {
     fn clipboard_backend(&self) -> Option<&dyn crate::platform::clipboard::RichClipboardBackend> {
         None
     }
+
+    /// A value that changes when the system clipboard changes, or `0` when this backend cannot
+    /// report it.
+    ///
+    /// Same polling contract as [`Self::display_generation`]: a host compares consecutive values
+    /// and re-reads the clipboard when they differ. `0` is the honest "not reported" answer for a
+    /// backend whose clipboard is an in-process record.
+    fn clipboard_generation(&self) -> u64 {
+        0
+    }
     /// Set plain text clipboard content.
     fn set_clipboard_text(&self, _text: &str) -> bool {
         false
@@ -2559,6 +3054,27 @@ pub trait Platform: Send + Sync {
     ) -> Result<Option<std::path::PathBuf>, PathPickerError> {
         Err(PathPickerError::Unsupported)
     }
+
+    /// Starts an asynchronous path request, returning `false` when this backend has no picker.
+    ///
+    /// This is the non-blocking half of the BLUE28 B28.08 contract. A mobile/Web host presents
+    /// its picker from its own event loop; the answer is delivered later through the host's result
+    /// callback (Android `onActivityResult`, iOS document-picker delegate, Harmony ArkTS result,
+    /// Web promise) and retrieved through [`Self::take_path_choice`].
+    ///
+    /// `true` means the request was handed to the host, not that the user will choose a path. A
+    /// backend that can only present the synchronous [`Self::choose_path`] answers `false` here.
+    fn request_path(&self, _purpose: PathPurpose, _title: &str) -> bool {
+        false
+    }
+
+    /// Takes the next completed asynchronous path request, if one has arrived.
+    ///
+    /// `None` means "no answer yet" (or no request was made); [`PathChoice::Cancelled`] and
+    /// [`PathChoice::Failed`] are real answers and must not be collapsed into `None`.
+    fn take_path_choice(&self) -> Option<PathChoice> {
+        None
+    }
     /// Start a drag operation from source widget.
     fn begin_drag(&self, _source_widget_id: ObjectId, _mime: &str, _payload: &[u8]) -> bool {
         false
@@ -2578,4 +3094,27 @@ pub trait MobilePlatformExtension: Send + Sync {
     fn mobile_backend(&self) -> MobileBackend;
     /// Attaches runtime to an externally provided native view handle.
     fn attach_to_native_view(&self, _native_handle: usize) -> bool;
+    /// The device's current screen orientation, or `None` when the host has not reported one.
+    fn orientation(&self) -> Option<ScreenOrientation> {
+        None
+    }
+    /// A value that changes when the orientation changes.
+    fn orientation_generation(&self) -> u64 {
+        0
+    }
+    /// The host-reported lifecycle phase.
+    fn lifecycle_state(&self) -> Option<MobileLifecycleState> {
+        None
+    }
+    /// Tells the backend the app is entering the background.
+    ///
+    /// A backend that can stop its own frame loop does so and answers `true`; the default is the
+    /// honest `false` for a host that owns the loop itself.
+    fn suspend(&self) -> bool {
+        false
+    }
+    /// Tells the backend the app is active again.
+    fn resume(&self) -> bool {
+        false
+    }
 }

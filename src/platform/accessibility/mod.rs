@@ -13,7 +13,17 @@
 #[cfg(all(target_os = "macos", feature = "cocoa-legacy"))]
 pub mod macos;
 
-#[cfg(target_os = "windows")]
+/// The objc2 `NSAccessibility` bridge (BLUE28 B28.13).
+///
+/// Compiled with the `macos` feature on every host so its state tests run; the AppKit posting
+/// call inside is `target_os = "macos"`-gated.
+#[cfg(feature = "macos")]
+pub mod macos_objc2;
+
+/// The Win32 `NotifyWinEvent` bridge.
+///
+/// Compiled on every host: the state half is platform-neutral and its tests are part of the host
+/// suite (B28.16); only the `NotifyWinEvent` call is `target_os = "windows"`-gated.
 pub mod windows;
 
 #[cfg(unix_desktop)]

@@ -17,7 +17,7 @@ use crate::platform::{
 // String/Vec in this scope` errors. Every other backend already routes alloc
 // types through `compat` (see `platform/linux/types.rs`).
 use crate::compat::{String, Vec};
-use crate::platform::types::{windows_shell_spawnable, Display, DisplayId};
+use crate::platform::types::{windows_shell_spawnable, Display, DisplayId, SystemFont};
 use crate::platform::windows::notify;
 use crate::platform::windows::types::*;
 use crate::platform::DropEvent;
@@ -90,6 +90,155 @@ fn read_clipboard_text() -> Option<String> {
         CloseClipboard();
         Some(text)
     }
+}
+
+/// The localized string at `index`, or an empty string when it is absent.
+///
+/// # Safety
+///
+/// `strings` must be a live DirectWrite string collection.
+#[cfg(target_os = "windows")]
+unsafe fn dwrite_localized_string(
+    strings: &windows::Win32::Graphics::DirectWrite::IDWriteLocalizedStrings,
+    index: u32,
+) -> String {
+    if index >= strings.GetCount() {
+        return String::new();
+    }
+    let Ok(length) = strings.GetStringLength(index) else {
+        return String::new();
+    };
+    // The API writes `length` UTF-16 units plus a NUL, so the buffer is one unit longer.
+    let mut buffer = vec![0u16; length as usize + 1];
+    if strings.GetString(index, &mut buffer).is_err() {
+        return String::new();
+    }
+    String::from_utf16_lossy(&buffer[..length as usize])
+}
+
+/// The file behind one DirectWrite font, when the system loader can name it.
+///
+/// # Safety
+///
+/// `font` must be a live DirectWrite font object.
+#[cfg(target_os = "windows")]
+unsafe fn dwrite_font_path(
+    font: &windows::Win32::Graphics::DirectWrite::IDWriteFont,
+) -> Option<std::path::PathBuf> {
+    use windows::core::Interface;
+    use windows::Win32::Graphics::DirectWrite::{IDWriteFontFile, IDWriteLocalFontFileLoader};
+
+    let face = font.CreateFontFace().ok()?;
+    let mut count = 0u32;
+    face.GetFiles(&mut count, None).ok()?;
+    if count == 0 {
+        return None;
+    }
+    let mut files: Vec<Option<IDWriteFontFile>> = vec![None; count as usize];
+    face.GetFiles(&mut count, Some(files.as_mut_ptr())).ok()?;
+    files.truncate(count as usize);
+    for file in files.into_iter().flatten() {
+        let Ok(loader) = file.GetLoader() else {
+            continue;
+        };
+        let Ok(local) = loader.cast::<IDWriteLocalFontFileLoader>() else {
+            continue;
+        };
+        let mut key: *mut core::ffi::c_void = core::ptr::null_mut();
+        let mut key_size = 0u32;
+        if file.GetReferenceKey(&mut key, &mut key_size).is_err() || key.is_null() || key_size == 0
+        {
+            continue;
+        }
+        let Ok(length) = local.GetFilePathLengthFromKey(key, key_size) else {
+            continue;
+        };
+        let mut buffer = vec![0u16; length as usize + 1];
+        if local.GetFilePathFromKey(key, key_size, &mut buffer).is_err() {
+            continue;
+        }
+        let path = String::from_utf16_lossy(&buffer[..length as usize]);
+        if !path.is_empty() {
+            return Some(std::path::PathBuf::from(path));
+        }
+    }
+    None
+}
+
+/// The installed families from DirectWrite, one entry per family.
+#[cfg(target_os = "windows")]
+fn dwrite_system_fonts() -> Vec<SystemFont> {
+    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+
+    // SAFETY: the DirectWrite factory and every COM object reached from it are reference-counted by
+    // the `windows` crate, so no object can dangle. `CoInitializeEx` is paired with
+    // `CoUninitialize` only when it reported success (S_OK or S_FALSE); `RPC_E_CHANGED_MODE` means
+    // another component owns the apartment model and must not be uninitialised here.
+    unsafe {
+        let com_ready = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
+        let fonts = enumerate_directwrite();
+        if com_ready {
+            CoUninitialize();
+        }
+        fonts.unwrap_or_default()
+    }
+}
+
+/// Walks the system collection and picks one face per family.
+///
+/// # Safety
+///
+/// Called only by [`dwrite_system_fonts`], inside its COM initialisation scope.
+#[cfg(target_os = "windows")]
+unsafe fn enumerate_directwrite() -> Option<Vec<SystemFont>> {
+    use windows::Win32::Graphics::DirectWrite::{
+        DWriteCreateFactory, IDWriteFactory, DWRITE_FACTORY_TYPE_SHARED,
+        DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL,
+    };
+
+    let factory: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).ok()?;
+    let mut collection = None;
+    factory.GetSystemFontCollection(&mut collection, false).ok()?;
+    let collection = collection?;
+    let mut out = Vec::new();
+    for family_index in 0..collection.GetFontFamilyCount() {
+        let Ok(family) = collection.GetFontFamily(family_index) else {
+            continue;
+        };
+        let family_name = match family.GetFamilyNames() {
+            Ok(names) => dwrite_localized_string(&names, 0),
+            Err(_) => continue,
+        };
+        if family_name.trim().is_empty() {
+            continue;
+        }
+        let mut best: Option<(SystemFont, u8)> = None;
+        for font_index in 0..family.GetFontCount() {
+            let Ok(font) = family.GetFont(font_index) else {
+                continue;
+            };
+            let style = match font.GetFaceNames() {
+                Ok(names) => dwrite_localized_string(&names, 0),
+                Err(_) => String::new(),
+            };
+            let source = dwrite_font_path(&font);
+            let regular = font.GetWeight() == DWRITE_FONT_WEIGHT_NORMAL
+                && font.GetStyle() == DWRITE_FONT_STYLE_NORMAL
+                && font.GetStretch() == DWRITE_FONT_STRETCH_NORMAL;
+            // Prefer the regular face, and among equals prefer one with a readable file: the style
+            // column should describe the file the chooser would register.
+            let score = u8::from(regular) + u8::from(source.is_some()) * 2;
+            let candidate = SystemFont { family: family_name.clone(), style, source };
+            match &best {
+                Some((_, best_score)) if *best_score >= score => {}
+                _ => best = Some((candidate, score)),
+            }
+        }
+        if let Some((font, _)) = best {
+            out.push(font);
+        }
+    }
+    Some(out)
 }
 
 impl Platform for WindowsPlatform {
@@ -359,6 +508,22 @@ impl Platform for WindowsPlatform {
         1.0
     }
 
+    /// The Win32 clipboard sequence number, or `0` when the API reports none.
+    ///
+    /// `GetClipboardSequenceNumber` increments on every clipboard change system-wide; a host
+    /// compares readings instead of subscribing to `WM_CLIPBOARDUPDATE` (BLUE28 B28.22).
+    #[cfg(target_os = "windows")]
+    fn clipboard_generation(&self) -> u64 {
+        use winapi::um::winuser::GetClipboardSequenceNumber;
+        // SAFETY: the API takes no arguments and returns a plain sequence number.
+        u64::from(unsafe { GetClipboardSequenceNumber() })
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn clipboard_generation(&self) -> u64 {
+        0
+    }
+
     /// The system's app appearance, read from the Personalize registry key.
     ///
     /// # Why this key
@@ -427,6 +592,161 @@ impl Platform for WindowsPlatform {
     #[cfg(not(target_os = "windows"))]
     fn system_theme(&self) -> Option<bool> {
         None
+    }
+
+    /// Whether Windows' high-contrast mode is on, from `SPI_GETHIGHCONTRAST`.
+    ///
+    /// `HIGHCONTRASTW.dwFlags & HCF_HIGHCONTRASTON` is the OS's own answer, the same one
+    /// `SystemParametersInfoW` reports to every application. `None` when the call fails.
+    #[cfg(target_os = "windows")]
+    fn high_contrast(&self) -> Option<bool> {
+        use winapi::shared::minwindef::DWORD;
+        use winapi::um::winuser::{
+            SystemParametersInfoW, HCF_HIGHCONTRASTON, HIGHCONTRASTW, SPI_GETHIGHCONTRAST,
+        };
+        // SAFETY: `HIGHCONTRASTW` is a plain C struct sized by `cbSize`; the call writes only into
+        // the local value, and the string pointer is left null because this query does not use it.
+        unsafe {
+            let mut contrast: HIGHCONTRASTW = std::mem::zeroed();
+            contrast.cbSize = std::mem::size_of::<HIGHCONTRASTW>() as u32;
+            let ok = SystemParametersInfoW(
+                SPI_GETHIGHCONTRAST,
+                contrast.cbSize,
+                &mut contrast as *mut HIGHCONTRASTW as *mut _,
+                0,
+            );
+            if ok == 0 {
+                return None;
+            }
+            let flags: DWORD = contrast.dwFlags;
+            Some(flags & HCF_HIGHCONTRASTON != 0)
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn high_contrast(&self) -> Option<bool> {
+        None
+    }
+
+    /// Whether the client-area animation setting is off, from `SPI_GETCLIENTAREAANIMATION`.
+    ///
+    /// Windows stores this as a `BOOL`: `0` means animations are disabled, which is what the
+    /// accessibility "Show animations in Windows" switch writes. `None` when the query fails.
+    #[cfg(target_os = "windows")]
+    fn reduce_motion(&self) -> Option<bool> {
+        use winapi::shared::minwindef::BOOL;
+        use winapi::um::winuser::{SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION};
+        // SAFETY: the out-parameter is a local `BOOL`, which is exactly what this action writes.
+        unsafe {
+            let mut animations: BOOL = 1;
+            let ok = SystemParametersInfoW(
+                SPI_GETCLIENTAREAANIMATION,
+                0,
+                &mut animations as *mut BOOL as *mut _,
+                0,
+            );
+            if ok == 0 {
+                return None;
+            }
+            Some(animations == 0)
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn reduce_motion(&self) -> Option<bool> {
+        None
+    }
+
+    /// The user's locale, from `GetUserDefaultLocaleName`.
+    ///
+    /// The API writes a BCP-47-ish tag such as `en-US` into the caller's buffer. An empty answer or
+    /// a failure is `None`, never a fabricated `en-US`.
+    #[cfg(target_os = "windows")]
+    fn system_locale(&self) -> Option<&'static str> {
+        use winapi::um::winnls::GetUserDefaultLocaleName;
+        // `LOCALE_NAME_MAX_LENGTH` from `winnls.h`; the API documents this as the required size.
+        const LOCALE_NAME_MAX_LENGTH: usize = 85;
+        // SAFETY: the buffer is owned by this stack frame and is exactly the documented size. The
+        // returned length includes the NUL and is bounded by the buffer size.
+        unsafe {
+            let mut buffer = [0u16; LOCALE_NAME_MAX_LENGTH];
+            let written = GetUserDefaultLocaleName(buffer.as_mut_ptr(), buffer.len() as i32);
+            if written <= 0 {
+                return None;
+            }
+            let length = (written as usize - 1).min(buffer.len());
+            let tag = String::from_utf16_lossy(&buffer[..length]);
+            crate::platform::locale::intern(Some(tag))
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn system_locale(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// A revision of the environment facts, derived from their current values.
+    fn environment_generation(&self) -> u64 {
+        crate::platform::locale::generation_hash(
+            self.system_theme(),
+            self.high_contrast(),
+            self.reduce_motion(),
+            self.system_locale(),
+        )
+    }
+
+    /// The installed font families from DirectWrite, one entry per family.
+    ///
+    /// GDI's `EnumFontFamiliesExW` reports family names only. DirectWrite's
+    /// `IDWriteFontFile` + `IDWriteLocalFontFileLoader` pair names the file behind a face, which
+    /// is what lets a chosen system font actually render. The regular face is preferred, and
+    /// among equal styles the one with a readable file.
+    #[cfg(target_os = "windows")]
+    fn system_fonts(&self) -> Vec<SystemFont> {
+        dwrite_system_fonts()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn system_fonts(&self) -> Vec<SystemFont> {
+        Vec::new()
+    }
+
+    /// Applies a cursor shape through `LoadCursorW`/`SetCursor`.
+    ///
+    /// Win32 has no per-window cursor object; `SetCursor` changes the cursor for the current
+    /// message. `WM_SETCURSOR` can reset it on the next move, which is why the runtime re-applies
+    /// the intent on hover changes rather than per motion event.
+    #[cfg(target_os = "windows")]
+    fn set_cursor(&self, _window: ObjectId, icon: crate::platform::CursorIcon) -> bool {
+        use crate::platform::CursorIcon;
+        use winapi::um::winuser::{
+            LoadCursorW, SetCursor, IDC_ARROW, IDC_CROSS, IDC_HAND, IDC_HELP, IDC_IBEAM, IDC_NO,
+            IDC_SIZEALL, IDC_SIZENS, IDC_SIZEWE, IDC_WAIT,
+        };
+        let name = match icon {
+            CursorIcon::Default => IDC_ARROW,
+            CursorIcon::Pointer => IDC_HAND,
+            CursorIcon::Text => IDC_IBEAM,
+            CursorIcon::Crosshair | CursorIcon::ZoomIn | CursorIcon::ZoomOut => IDC_CROSS,
+            CursorIcon::Move | CursorIcon::Grab | CursorIcon::Grabbing => IDC_SIZEALL,
+            CursorIcon::NotAllowed => IDC_NO,
+            CursorIcon::ResizeHorizontal | CursorIcon::ResizeNwSe | CursorIcon::ResizeNeSw => {
+                IDC_SIZEWE
+            }
+            CursorIcon::ResizeVertical => IDC_SIZENS,
+            CursorIcon::Wait | CursorIcon::Progress => IDC_WAIT,
+            CursorIcon::Help => IDC_HELP,
+        };
+        // SAFETY: a shared system cursor is loaded by resource id and installed; neither call
+        // takes ownership of a pointer.
+        unsafe {
+            let cursor = LoadCursorW(std::ptr::null_mut(), name);
+            if cursor.is_null() {
+                return false;
+            }
+            let _ = SetCursor(cursor);
+        }
+        true
     }
 
     /// Reads installed physical memory via `GlobalMemoryStatusEx`.
@@ -768,6 +1088,32 @@ impl Platform for WindowsPlatform {
             None
         }
     }
+
+    /// The window's `HWND` as a `raw-window-handle` 0.6 Win32 handle.
+    #[cfg(feature = "raw-window-handle")]
+    fn raw_window_handle(&self, window: ObjectId) -> Option<raw_window_handle::RawWindowHandle> {
+        #[cfg(target_os = "windows")]
+        {
+            let hwnd = WindowsPlatform::get_native_handle(self, window)?;
+            let hwnd = core::num::NonZeroIsize::new(hwnd as isize)?;
+            Some(raw_window_handle::RawWindowHandle::Win32(
+                raw_window_handle::Win32WindowHandle::new(hwnd),
+            ))
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = window;
+            None
+        }
+    }
+
+    /// The process's Win32 display handle; rwh's variant carries no data.
+    #[cfg(all(feature = "raw-window-handle", target_os = "windows"))]
+    fn raw_display_handle(&self) -> Option<raw_window_handle::RawDisplayHandle> {
+        Some(raw_window_handle::RawDisplayHandle::Windows(
+            raw_window_handle::WindowsDisplayHandle::new(),
+        ))
+    }
     /// The host integrations this backend actually provides.
     ///
     /// # Why `native_menu` is `false`
@@ -817,6 +1163,8 @@ impl Platform for WindowsPlatform {
             // `GetSaveFileNameW`, `SHBrowseForFolderW`), so the flag and the method are one
             // implementation.
             file_dialog: true,
+            // `EnumFontFamiliesExW` lists installed families (B28.39).
+            system_fonts: true,
         }
     }
 

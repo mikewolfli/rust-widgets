@@ -36,6 +36,13 @@ pub mod pasteboard;
 /// module docs.
 pub mod displays;
 
+/// Host-reported environment facts (theme, font scale, safe area).
+///
+/// The ArkTS host calls the `rw_harmony_set_*` entry points from its own lifecycle; see the
+/// module docs for why these are host-pushed rather than synchronous SDK queries.
+#[cfg(not(alloc_frugal))]
+pub mod host_facts;
+
 pub use types::*;
 #[cfg(test)]
 pub mod tests;

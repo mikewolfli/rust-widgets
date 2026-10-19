@@ -299,9 +299,25 @@ pub use widget::*;
 /// the crate's single frame driver.
 #[cfg(not(alloc_frugal))]
 pub use widget::runtime::{
-    drive_frame, last_frame_stats, notify_native_redraw, report_state, request_repaint_because,
-    FrameOutcome, FrameStats, RepaintReason, StateFact,
+    animation_suspended, drive_frame, last_frame_stats, notify_native_redraw, report_state,
+    request_repaint_because, set_animation_suspended, FrameOutcome, FrameStats, RepaintReason,
+    StateFact,
 };
+
+/// Stops or restarts the animation clock in the allocation-frugal profile.
+///
+/// `mini`/`embedded` hold no animation bus (see the [`FrameOutcome`] note below), so there is
+/// nothing to stop; accepting the call keeps the mobile lifecycle code free of a profile `cfg`
+/// at every call site (principle #53).
+#[cfg(alloc_frugal)]
+pub fn set_animation_suspended(_suspended: bool) {}
+
+/// Whether the animation clock is stopped in the allocation-frugal profile; always `false`,
+/// because there is no clock to stop.
+#[cfg(alloc_frugal)]
+pub fn animation_suspended() -> bool {
+    false
+}
 
 /// What one frame did, in the profile that has no animation bus.
 ///

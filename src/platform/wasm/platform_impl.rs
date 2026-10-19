@@ -5,6 +5,8 @@
 
 use super::types::{WasmHandleKind, WasmPlatform};
 use crate::compat::atomic::Ordering;
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+use crate::compat::Vec;
 use crate::compat::{format, String};
 use crate::core::PlatformFamily;
 use crate::platform::{Platform, PlatformCapabilities};
@@ -26,6 +28,89 @@ use std::thread;
 /// there — and an ungated copy is the dead-code warning a build with `wasm` enabled produced.
 #[cfg(not(target_arch = "wasm32"))]
 const FRAME_INTERVAL_MS: u64 = 16;
+
+/// Evaluates a CSS media query in the browser, or `None` on a host build.
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+fn match_media(query: &str) -> Option<bool> {
+    web_sys::window()?.match_media(query).ok().flatten().map(|list| list.matches())
+}
+
+/// Forwards pointer and key events from the host canvas into the widget runtime.
+///
+/// BLUE28 B28.05/B28.26: a canvas that paints a widget tree without these listeners is a picture,
+/// not an interface. The closures are forgotten because each backend owns exactly one canvas for
+/// the life of the page; one leak per listener is the price of a `'static` listener the browser
+/// can call after `create_window` returns.
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+fn install_canvas_input(canvas: &web_sys::HtmlCanvasElement, window_id: u64) {
+    use wasm_bindgen::JsCast;
+
+    for (name, code) in [("pointerdown", 1_u32), ("pointerup", 2), ("pointermove", 3)] {
+        let listener_canvas = canvas.clone();
+        let handler = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::PointerEvent)>::new(
+            move |event: web_sys::PointerEvent| {
+                let rect = listener_canvas.get_bounding_client_rect();
+                let x = (event.client_x() as f64 - rect.left()).round() as i32;
+                let y = (event.client_y() as f64 - rect.top()).round() as i32;
+                let point = crate::core::Point::new(x, y);
+                let translated = match code {
+                    1 => {
+                        crate::event::Event::mouse_press(x, y, crate::event::mouse_button::PRIMARY)
+                    }
+                    2 => crate::event::Event::mouse_release(
+                        x,
+                        y,
+                        crate::event::mouse_button::PRIMARY,
+                    ),
+                    _ => crate::event::Event::mouse_move(x, y),
+                };
+                let _ =
+                    crate::widget::runtime::dispatch_pointer_event(window_id, &translated, point);
+                // A pointer event on the canvas should not also scroll/select the page.
+                event.prevent_default();
+            },
+        );
+        let _ = canvas.add_event_listener_with_callback(name, handler.as_ref().unchecked_ref());
+        handler.forget();
+    }
+
+    if let Some(window) = web_sys::window() {
+        let handler = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(
+            move |event: web_sys::KeyboardEvent| {
+                if event.ctrl_key() || event.meta_key() || event.alt_key() {
+                    return;
+                }
+                let key = event.key();
+                // A printable key is exactly one character after JS has applied the layout.
+                if key.chars().count() == 1 {
+                    let _ = crate::widget::runtime::dispatch_event(
+                        window_id,
+                        &crate::event::Event::text_input(key),
+                    );
+                    event.prevent_default();
+                }
+            },
+        );
+        let _ =
+            window.add_event_listener_with_callback("keydown", handler.as_ref().unchecked_ref());
+        handler.forget();
+
+        // BLUE28 B28.26: a background tab must not keep animating. The flag feeds the same
+        // animation clock the mobile lifecycle uses (B28.24), so `drive_frame` stops advancing
+        // and resumes with a zero delta when the tab becomes visible again.
+        if let Some(document) = window.document() {
+            let visibility_document = document.clone();
+            let handler = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || {
+                crate::set_animation_suspended(visibility_document.hidden());
+            });
+            let _ = document.add_event_listener_with_callback(
+                "visibilitychange",
+                handler.as_ref().unchecked_ref(),
+            );
+            handler.forget();
+        }
+    }
+}
 
 impl Platform for WasmPlatform {
     // The uniform widget-property methods are answered once, over `self.state`, by the
@@ -60,22 +145,321 @@ impl Platform for WasmPlatform {
     /// to `default_capabilities_for` cannot silently re-grant a capability the
     /// sandbox does not have.
     fn capabilities(&self) -> PlatformCapabilities {
+        // The browser answers `devicePixelRatio`, `matchMedia` and `window.open`, so those three
+        // are real in a browser build and absent on the host build that compiles this module for
+        // its tests. `clipboard`/`file_dialog`/`system_fonts` stay `false`: their web APIs are
+        // promise-based and the synchronous trait cannot await them (BLUE28 B28.11/B28.39).
+        let browser = cfg!(all(target_arch = "wasm32", not(target_os = "wasi")));
         PlatformCapabilities {
-            dpi_scaling: false,
+            dpi_scaling: browser,
             ime: false,
             accessibility: false,
             native_menu: false,
             typed_widget_trigger: true,
-            // Neither host service is reachable from this backend: the clipboard bodies write
-            // the in-process state record rather than a host clipboard, and there is no
-            // handler spawn.
             clipboard: false,
-            open_external: false,
-            // Web content cannot open a file picker synchronously: the browser's chooser is a
-            // promise-based API (`showOpenFilePicker`) and a `wasm32` build has no loop to await
-            // it in. A host runs its own `<input type=file>` instead, which is why this is a
-            // boundary rather than a missing binding.
+            open_external: browser,
             file_dialog: false,
+            system_fonts: false,
+        }
+    }
+
+    /// `window.devicePixelRatio` in a browser; `1.0` on the host build.
+    fn dpi_scale_factor(&self) -> f32 {
+        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+        {
+            web_sys::window()
+                .map(|window| window.device_pixel_ratio() as f32)
+                .filter(|scale| scale.is_finite() && *scale > 0.0)
+                .unwrap_or(1.0)
+        }
+        #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+        {
+            1.0
+        }
+    }
+
+    /// The browser screen as one primary display.
+    ///
+    /// `window.screen` reports CSS pixels; the trait's `Display` is in logical pixels, so the
+    /// numbers transfer unchanged. `scale` is the device pixel ratio.
+    fn displays(&self) -> Vec<crate::platform::Display> {
+        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+        {
+            let Some(window) = web_sys::window() else {
+                return Vec::new();
+            };
+            let Ok(screen) = window.screen() else {
+                return Vec::new();
+            };
+            let width = screen.width().unwrap_or(0).max(0) as u32;
+            let height = screen.height().unwrap_or(0).max(0) as u32;
+            let avail_width = screen.avail_width().unwrap_or(width as i32).max(0) as u32;
+            let avail_height = screen.avail_height().unwrap_or(height as i32).max(0) as u32;
+            if width == 0 || height == 0 {
+                return Vec::new();
+            }
+            let scale = self.dpi_scale_factor();
+            crate::compat::vec![crate::platform::Display {
+                id: crate::platform::DisplayId::new(0),
+                bounds: crate::core::Rect::new(0, 0, width, height),
+                work_area: crate::core::Rect::new(0, 0, avail_width, avail_height),
+                scale,
+                is_primary: true,
+            }]
+        }
+        #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+        {
+            Vec::new()
+        }
+    }
+
+    /// The one browser screen is the display for every window this backend owns.
+    fn display_of_window(&self, window_id: u64) -> Option<crate::platform::DisplayId> {
+        if !self.state.is_kind(window_id, WasmHandleKind::Window) {
+            return None;
+        }
+        self.displays().first().map(|display| display.id)
+    }
+
+    /// A revision derived from the screen fields and the pixel ratio.
+    fn display_generation(&self) -> u64 {
+        let displays = self.displays();
+        if displays.is_empty() {
+            return 0;
+        }
+        const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+        const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+        let mut hash = FNV_OFFSET;
+        for display in displays {
+            for part in [
+                display.bounds.width as u64,
+                display.bounds.height as u64,
+                display.work_area.width as u64,
+                display.work_area.height as u64,
+                display.scale.to_bits() as u64,
+            ] {
+                hash ^= part;
+                hash = hash.wrapping_mul(FNV_PRIME);
+            }
+        }
+        hash
+    }
+
+    /// Metadata derived from the browser screen.
+    fn display_info(
+        &self,
+        display: crate::platform::DisplayId,
+    ) -> Option<crate::platform::types::DisplayInfo> {
+        let item = self.displays().into_iter().find(|item| item.id == display)?;
+        Some(crate::platform::types::DisplayInfo {
+            refresh_rate_mhz: None,
+            orientation: Some(if item.bounds.width >= item.bounds.height {
+                crate::core::Orientation::Horizontal
+            } else {
+                crate::core::Orientation::Vertical
+            }),
+            color_space: None,
+            hdr: None,
+        })
+    }
+
+    /// `prefers-color-scheme: dark`.
+    fn system_theme(&self) -> Option<bool> {
+        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+        {
+            return match_media("(prefers-color-scheme: dark)");
+        }
+        #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+        {
+            None
+        }
+    }
+
+    /// `prefers-contrast: more`, with `forced-colors: active` as the same fact.
+    fn high_contrast(&self) -> Option<bool> {
+        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+        {
+            return match_media("(prefers-contrast: more)")
+                .or_else(|| match_media("(forced-colors: active)"));
+        }
+        #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+        {
+            None
+        }
+    }
+
+    /// `prefers-reduced-motion: reduce`.
+    fn reduce_motion(&self) -> Option<bool> {
+        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+        {
+            return match_media("(prefers-reduced-motion: reduce)");
+        }
+        #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+        {
+            None
+        }
+    }
+
+    /// `navigator.language`.
+    fn system_locale(&self) -> Option<&'static str> {
+        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+        {
+            let language = web_sys::window().map(|window| window.navigator().language());
+            return crate::platform::locale::intern(language.flatten());
+        }
+        #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+        {
+            None
+        }
+    }
+
+    /// A revision of the environment facts.
+    fn environment_generation(&self) -> u64 {
+        crate::platform::locale::generation_hash(
+            self.system_theme(),
+            self.high_contrast(),
+            self.reduce_motion(),
+            self.system_locale(),
+        )
+    }
+
+    /// Safe-area insets from a hidden element whose padding uses `env(safe-area-inset-*)`.
+    ///
+    /// The browser only resolves those variables for a laid-out element, so the probe is appended
+    /// to the document body, measured, and removed in the same call. `None` when there is no
+    /// document or the computed style cannot be read.
+    fn safe_area_insets(&self, _window_id: u64) -> Option<crate::platform::types::SafeAreaInsets> {
+        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+        {
+            use wasm_bindgen::JsCast;
+            let window = web_sys::window()?;
+            let document = window.document()?;
+            let body = document.body()?;
+            let element = document.create_element("div").ok()?;
+            let element = element.dyn_into::<web_sys::HtmlElement>().ok()?;
+            let style = element.style();
+            let _ = style.set_property("position", "fixed");
+            let _ = style.set_property("visibility", "hidden");
+            let _ = style.set_property("pointer-events", "none");
+            let _ = style.set_property("padding-top", "env(safe-area-inset-top, 0px)");
+            let _ = style.set_property("padding-right", "env(safe-area-inset-right, 0px)");
+            let _ = style.set_property("padding-bottom", "env(safe-area-inset-bottom, 0px)");
+            let _ = style.set_property("padding-left", "env(safe-area-inset-left, 0px)");
+            body.append_child(&element).ok()?;
+            let computed = window.get_computed_style(&element).ok().flatten();
+            let read = |name: &str| {
+                computed
+                    .as_ref()
+                    .and_then(|style| style.get_property_value(name).ok())
+                    .and_then(|value| value.trim_end_matches("px").parse::<f64>().ok())
+                    .map(|value| value.max(0.0).round() as u32)
+                    .unwrap_or(0)
+            };
+            let insets = crate::platform::types::SafeAreaInsets {
+                top: read("padding-top"),
+                bottom: read("padding-bottom"),
+                left: read("padding-left"),
+                right: read("padding-right"),
+            };
+            let _ = element.remove();
+            return Some(insets);
+        }
+        #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+        {
+            None
+        }
+    }
+
+    /// Opens an `http`/`https` URL in a new tab.
+    ///
+    /// Only those two schemes are accepted: `javascript:`/`data:` in `window.open` would execute
+    /// content, and a relative path is not something a host handler can be given. The validation
+    /// lives here, in the platform layer, so every caller gets the same rule.
+    fn open_external(&self, target: &str) -> Result<(), crate::platform::OpenError> {
+        let is_web = target.starts_with("http://") || target.starts_with("https://");
+        if target.is_empty() || !is_web {
+            return Err(crate::platform::OpenError::InvalidTarget);
+        }
+        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+        {
+            let window = web_sys::window().ok_or(crate::platform::OpenError::Unsupported)?;
+            window
+                .open_with_url_and_target(target, "_blank")
+                .map(|_| ())
+                .map_err(|_| crate::platform::OpenError::NoHandler)
+        }
+        #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+        {
+            Err(crate::platform::OpenError::Unsupported)
+        }
+    }
+
+    /// Whether `window.open` exists in this build.
+    fn has_external_handler(&self) -> bool {
+        cfg!(all(target_arch = "wasm32", not(target_os = "wasi")))
+    }
+
+    /// Sets the canvas's CSS `cursor` (BLUE28 B28.09).
+    fn set_cursor(&self, _window: u64, icon: crate::platform::CursorIcon) -> bool {
+        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+        {
+            use crate::platform::CursorIcon;
+            use wasm_bindgen::JsCast;
+            let Some(canvas) = web_sys::window()
+                .and_then(|window| window.document())
+                .and_then(|document| document.get_element_by_id(&self.canvas_id))
+                .and_then(|element| element.dyn_into::<web_sys::HtmlCanvasElement>().ok())
+            else {
+                return false;
+            };
+            let css = match icon {
+                CursorIcon::Default => "default",
+                CursorIcon::Pointer => "pointer",
+                CursorIcon::Text => "text",
+                CursorIcon::Crosshair => "crosshair",
+                CursorIcon::Move => "move",
+                CursorIcon::NotAllowed => "not-allowed",
+                CursorIcon::ResizeHorizontal => "ew-resize",
+                CursorIcon::ResizeVertical => "ns-resize",
+                CursorIcon::ResizeNwSe => "nwse-resize",
+                CursorIcon::ResizeNeSw => "nesw-resize",
+                CursorIcon::Grab => "grab",
+                CursorIcon::Grabbing => "grabbing",
+                CursorIcon::Wait => "wait",
+                CursorIcon::Progress => "progress",
+                CursorIcon::Help => "help",
+                CursorIcon::ZoomIn => "zoom-in",
+                CursorIcon::ZoomOut => "zoom-out",
+            };
+            let _ = canvas.style().set_property("cursor", css);
+            return true;
+        }
+        #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+        {
+            let _ = icon;
+            false
+        }
+    }
+
+    /// Shows or hides the canvas pointer.
+    fn set_cursor_visible(&self, _window: u64, visible: bool) -> bool {
+        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+        {
+            use wasm_bindgen::JsCast;
+            let Some(canvas) = web_sys::window()
+                .and_then(|window| window.document())
+                .and_then(|document| document.get_element_by_id(&self.canvas_id))
+                .and_then(|element| element.dyn_into::<web_sys::HtmlCanvasElement>().ok())
+            else {
+                return false;
+            };
+            let value = if visible { "default" } else { "none" };
+            let _ = canvas.style().set_property("cursor", value);
+            return true;
+        }
+        #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+        {
+            false
         }
     }
 
@@ -187,7 +571,19 @@ impl Platform for WasmPlatform {
     /// The canvas is not a widget: it is the drawing surface identified by the id
     /// this platform was constructed with. A missing element or a non-canvas
     /// element with that id is reported as an error rather than ignored.
+    /// The Web backend owns one canvas, so one window.
+    fn supports_multiple_windows(&self) -> bool {
+        false
+    }
+
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.state.count_kind(WasmHandleKind::Window) > 0 {
+            log::warn!(
+                "[wasm] create_window: this backend owns one canvas; the second request returns 0
+                 (BLUE28 B28.43)"
+            );
+            return 0;
+        }
         let id = self.insert_widget(WasmHandleKind::Window, title, x, y, width, height);
         #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
         {
@@ -205,6 +601,7 @@ impl Platform for WasmPlatform {
                     Ok(html_canvas) => {
                         html_canvas.set_width(width);
                         html_canvas.set_height(height);
+                        install_canvas_input(&html_canvas, id);
                     }
                     Err(_) => log::error!(
                         "[wasm] create_window: element '{}' is not a canvas",
@@ -482,8 +879,14 @@ mod tests {
 
         // A window id is accepted for the same reason a mounted surface is: the library
         // repaints a window to reveal the ordinary children drawn into its frame.
-        let other = p.create_window("other", 0, 0, 10, 10);
-        assert!(p.invalidate_surface(other), "a window the backend knows can be repainted");
+        //
+        // BLUE28 B28.43: this backend owns one canvas, so a second `create_window` must
+        // report 0 rather than hand back a handle that would paint into the same canvas.
+        assert_eq!(p.create_window("other", 0, 0, 10, 10), 0);
+        assert!(!p.supports_multiple_windows());
+        // A child of the real window is still a widget the backend knows and can repaint.
+        let child = p.create_button(window, "child", 0, 0, 10, 10);
+        assert!(p.invalidate_surface(child), "a child the backend knows can be repainted");
 
         // A widget this backend never made is refused rather than recorded.
         assert!(!p.mount_surface(window, 9_999, rect));

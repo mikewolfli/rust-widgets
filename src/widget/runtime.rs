@@ -1096,6 +1096,15 @@ fn dispatch_hover_transition(hovered: Option<ObjectId>, point: Point) {
         if let Some(hovered) = hovered {
             let _ = dispatch_event(hovered, &Event::MouseEnter { pos: point });
         }
+        // BLUE28 B28.09: the control's cursor intent is applied once per hover change, not per
+        // motion event. The window is the hovered control's top-level (or the one just left, so
+        // moving off a control restores the default).
+        let icon = hovered
+            .and_then(|id| with_widget(id, |widget| widget.cursor_icon()))
+            .unwrap_or(crate::platform::CursorIcon::Default);
+        if let Some(window) = hovered.or(previous).and_then(top_level_window_of) {
+            let _ = crate::platform::platform_facts().set_cursor(window, icon);
+        }
     });
 }
 
@@ -1472,6 +1481,13 @@ pub fn drive_frame(delta_ms: u32) -> FrameOutcome {
     crate::platform::main_thread::run_due_on_loop_thread();
     crate::platform::stop::honour_request_on_loop_thread();
 
+    // BLUE28 B28.24: a suspended app has no animation clock. Input is still drained (so state
+    // changes are not queued for the whole background period), but no control advances and no
+    // frame is owed. The frame after a resume uses a zero delta so the background gap is not
+    // replayed as one enormous step.
+    let suspended = animation_suspended();
+    let delta_ms = if take_resume_reset() { 0 } else { delta_ms };
+
     // The decode counters, read before anything else in the frame so this frame's share is exactly
     // the work done between here and the reading below -- and not whatever a previous frame left.
     //
@@ -1498,12 +1514,14 @@ pub fn drive_frame(delta_ms: u32) -> FrameOutcome {
     let events_dispatched = crate::drain_triggers();
 
     // Step 2 -- exactly one advance per animating control, before any paint.
-    tick_animations(delta_ms);
+    if !suspended {
+        tick_animations(delta_ms);
+    }
     let controls_ticked = count_animating_widgets();
 
     // Step 3 -- the bus answers for the *next* frame, so a settle is painted once more
     // and then scheduling stops.
-    let needs_another_frame = animation_bus_needs_another_frame();
+    let needs_another_frame = !suspended && animation_bus_needs_another_frame();
 
     // Step 4 -- translations that changed on disk, so an edited catalogue reaches the
     // screen without a restart. This runs *after* the animation step and before the
@@ -1645,6 +1663,48 @@ thread_local! {
     /// (BLUE24 §4's "no device fact from a wall clock" rule applies to the frame ledger too).
     #[allow(clippy::missing_const_for_thread_local)]
     static FRAME_INDEX: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
+/// Whether the animation clock is stopped because the host app is in the background.
+///
+/// A process-wide flag rather than a thread-local: the lifecycle callback that sets it arrives
+/// on the platform thread, while a frame loop may run on another thread (and `mini` has no
+/// thread-local frame ledger at all). Suspend/resume is a fact about the app, not about a thread.
+static ANIMATIONS_SUSPENDED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Set by [`set_animation_suspended(false)`](set_animation_suspended); the next frame advances by
+/// zero so a long background gap is not replayed as one huge delta.
+static ANIMATION_RESUME_RESET: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Stops or restarts the animation clock (BLUE28 B28.24).
+///
+/// `true` is what a host calls from `onPause`/`sceneWillResignActive`: no control advances while
+/// the app is in the background, so a transition that was in flight resumes from the phase it
+/// reached rather than jumping to its end. `false` is `onResume`/`didBecomeActive`: the next
+/// frame is advanced with a zero delta so the time spent in the background is not treated as one
+/// frame's worth of animation.
+///
+/// Calling either transition repeatedly is harmless; only the value matters.
+pub fn set_animation_suspended(suspended: bool) {
+    use core::sync::atomic::Ordering;
+    if suspended {
+        ANIMATIONS_SUSPENDED.store(true, Ordering::SeqCst);
+    } else {
+        ANIMATIONS_SUSPENDED.store(false, Ordering::SeqCst);
+        ANIMATION_RESUME_RESET.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Whether the animation clock is currently stopped.
+pub fn animation_suspended() -> bool {
+    ANIMATIONS_SUSPENDED.load(core::sync::atomic::Ordering::SeqCst)
+}
+
+/// Reads and clears the one-frame zero-delta request left by a resume.
+fn take_resume_reset() -> bool {
+    ANIMATION_RESUME_RESET.swap(false, core::sync::atomic::Ordering::SeqCst)
 }
 
 /// Why a surface was asked to repaint.

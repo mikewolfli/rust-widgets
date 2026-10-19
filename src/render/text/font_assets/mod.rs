@@ -708,6 +708,10 @@ mod tests {
     ))]
     #[test]
     fn the_cached_and_uncached_lookups_agree() {
+        // The registry is global: hold the tests' registry lock so a parallel registration cannot
+        // land between the cached and the un-cached lookup.
+        #[cfg(all(feature = "runtime-fonts", feature = "text-shaping"))]
+        let _guard = crate::render::text::runtime_fonts::test_lock();
         // A spread that exercises: a covered ASCII letter, an uncovered private-use codepoint
         // (cached as "no face"), whitespace, and — when the build carries them — CJK and an
         // emoji, so both the compiled-list and the shape of the answer are covered.
@@ -736,6 +740,8 @@ mod tests {
     ))]
     #[test]
     fn a_repeated_lookup_is_stable() {
+        #[cfg(all(feature = "runtime-fonts", feature = "text-shaping"))]
+        let _guard = crate::render::text::runtime_fonts::test_lock();
         let first = face_for_char('A');
         for _ in 0..100 {
             assert_eq!(

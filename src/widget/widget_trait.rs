@@ -34,6 +34,38 @@ pub trait Widget: EventHandler + Any {
             core::any::type_name::<Self>()
         );
     }
+    /// Get the cursor shape this control wants while hovered.
+    ///
+    /// BLUE28 B28.09: intent lives on the control; the runtime dispatches it once per hover
+    /// change through `Platform::set_cursor`. The single match here is the default policy for
+    /// every widget, so a new control inherits a sensible shape without a second table to sync.
+    fn cursor_icon(&self) -> crate::platform::CursorIcon {
+        use crate::platform::CursorIcon;
+        match self.kind() {
+            crate::widget::WidgetKind::Button
+            | crate::widget::WidgetKind::CheckBox
+            | crate::widget::WidgetKind::RadioButton
+            | crate::widget::WidgetKind::ComboBox
+            | crate::widget::WidgetKind::ListBox
+            | crate::widget::WidgetKind::ProgressBar
+            | crate::widget::WidgetKind::Slider => CursorIcon::Pointer,
+            crate::widget::WidgetKind::LineEdit | crate::widget::WidgetKind::SpinBox => {
+                CursorIcon::Text
+            }
+            #[cfg(widgets_unstripped)]
+            crate::widget::WidgetKind::TextEdit | crate::widget::WidgetKind::RichEdit => {
+                CursorIcon::Text
+            }
+            #[cfg(widgets_unstripped)]
+            crate::widget::WidgetKind::Splitter => CursorIcon::ResizeHorizontal,
+            crate::widget::WidgetKind::MiniCanvas => CursorIcon::Crosshair,
+            #[cfg(widgets_unstripped)]
+            crate::widget::WidgetKind::Canvas | crate::widget::WidgetKind::SignaturePad => {
+                CursorIcon::Crosshair
+            }
+            _ => CursorIcon::Default,
+        }
+    }
     /// Get stable widget id.
     fn id(&self) -> ObjectId {
         self.base().id()

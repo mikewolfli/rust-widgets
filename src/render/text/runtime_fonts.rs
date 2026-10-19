@@ -71,6 +71,18 @@ impl Registry {
 
 static REGISTRY: Mutex<Registry> = Mutex::new(Registry::new());
 
+/// Serialises the tests that read or mutate the process-wide face registry.
+///
+/// The registry is global while `cargo test` runs tests in parallel, so a face registered by
+/// `runtime_fonts`' own test is visible to a cache-consistency test in `font_assets` between its
+/// two lookups. One lock for both sides keeps those assertions independent of scheduling; it is
+/// test-only and changes no production behaviour.
+#[cfg(test)]
+pub(crate) fn test_lock() -> crate::compat::MutexGuard<'static, ()> {
+    static LOCK: crate::compat::OnceLock<Mutex<()>> = crate::compat::OnceLock::new();
+    crate::compat::lock(LOCK.get_or_init(|| Mutex::new(())))
+}
+
 /// Register `face` so it is consulted before every compiled face.
 ///
 /// Returns `true` when the face was accepted, `false` when the registry is full or the bytes are not
@@ -193,10 +205,10 @@ mod tests {
         crate::render::text::font_assets::active_faces().first().map(|face| face.bytes)
     }
 
-    /// The registry is process-global, so tests that touch it must not interleave. A single test
-    /// function owning the whole sequence is the lock-free way to guarantee that.
+    /// The registry is process-global, so this test holds [`test_lock`] for the whole sequence.
     #[test]
     fn registration_refuses_junk_and_honours_the_capacity_and_the_order() {
+        let _guard = test_lock();
         // Start from a known state whatever the process did before this test.
         clear_faces();
         assert_eq!(registered_face_count(), 0);

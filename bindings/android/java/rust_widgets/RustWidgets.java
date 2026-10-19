@@ -47,6 +47,91 @@ public final class RustWidgets {
     public static native void nativeInit();
 
     /**
+     * Print a file through the system {@code PrintManager} (BLUE28 B28.27).
+     *
+     * <p>Called from Rust's {@code Platform::spawn_print_job}. A
+     * {@code PrintDocumentAdapter} is a Java class and cannot be created from Rust, so the
+     * adapter lives here: it reports one page and streams the job file's bytes (the PDF or
+     * image the library produced) to the destination the print UI selected. The system print
+     * dialog is {@code PrintManager.print}, so a returned {@code 1} means the job really
+     * entered the platform queue.
+     *
+     * @return {@code 1} when the print UI was launched, {@code 0} when there is no print
+     *         service, no context, the file is missing, or the framework refused the job.
+     */
+    public static int printFile(android.content.Context context, String path) {
+        if (context == null || path == null) {
+            return 0;
+        }
+        final java.io.File file = new java.io.File(path);
+        if (!file.isFile()) {
+            return 0;
+        }
+        try {
+            android.print.PrintManager manager =
+                    (android.print.PrintManager) context.getSystemService(
+                            android.content.Context.PRINT_SERVICE);
+            if (manager == null) {
+                return 0;
+            }
+            android.print.PrintDocumentAdapter adapter =
+                    new android.print.PrintDocumentAdapter() {
+                        @Override
+                        public void onLayout(
+                                android.print.PrintAttributes oldAttributes,
+                                android.print.PrintAttributes newAttributes,
+                                android.os.CancellationSignal cancellationSignal,
+                                LayoutResultCallback callback,
+                                android.os.Bundle extras) {
+                            if (cancellationSignal != null && cancellationSignal.isCanceled()) {
+                                callback.onLayoutCancelled();
+                                return;
+                            }
+                            android.print.PrintDocumentInfo info =
+                                    new android.print.PrintDocumentInfo.Builder(file.getName())
+                                            .setContentType(
+                                                    android.print.PrintDocumentInfo
+                                                            .CONTENT_TYPE_DOCUMENT)
+                                            .setPageCount(1)
+                                            .build();
+                            callback.onLayoutFinished(info, true);
+                        }
+
+                        @Override
+                        public void onWrite(
+                                android.print.PageRange[] pages,
+                                android.os.ParcelFileDescriptor destination,
+                                android.os.CancellationSignal cancellationSignal,
+                                WriteResultCallback callback) {
+                            try (java.io.InputStream in = new java.io.FileInputStream(file);
+                                    java.io.OutputStream out =
+                                            new java.io.FileOutputStream(
+                                                    destination.getFileDescriptor())) {
+                                byte[] buffer = new byte[8192];
+                                int read;
+                                while ((read = in.read(buffer)) > 0) {
+                                    out.write(buffer, 0, read);
+                                }
+                                out.flush();
+                                callback.onWriteFinished(
+                                        new android.print.PageRange[] {
+                                            android.print.PageRange.ALL_PAGES
+                                        });
+                            } catch (java.io.IOException e) {
+                                callback.onWriteFailed(e.getMessage());
+                            }
+                        }
+                    };
+            android.print.PrintAttributes attributes =
+                    new android.print.PrintAttributes.Builder().build();
+            manager.print(file.getName(), adapter, attributes);
+            return 1;
+        } catch (RuntimeException e) {
+            return 0;
+        }
+    }
+
+    /**
      * Hand the host {@code Activity}'s {@code Context} to the bridge.
      *
      * <p>The bridge stores a global reference to it and drops the reference in
@@ -177,4 +262,40 @@ public final class RustWidgets {
      *         11 = {@code safe_area_insets()} answered from {@code WindowMetrics}
      */
     public static native int nativePlatformProbe();
+
+    /**
+     * Forward a touch/pointer event into the library's widget runtime (BLUE28 B28.02).
+     *
+     * @param code 1 press, 2 release, 3 move, 4 enter, 5 leave
+     * @param x view-local x in pixels
+     * @param y view-local y in pixels
+     * @param button 0 primary, 1 secondary
+     * @return 1 when a window accepted the event
+     */
+    public static native int nativeDispatchPointerEvent(int code, int x, int y, int button);
+
+    /** Commit text from the input method into the focused widget. */
+    public static native int nativeDispatchText(String text);
+
+    /** Forward a key event into the focused widget. */
+    public static native int nativeDispatchKeyEvent(int keyCode, int modifiers, int pressed);
+
+    /** Deliver a document-picker result to the asynchronous path request. */
+    public static native int nativeInjectPathChoice(String path, int cancelled);
+
+    /**
+     * Reports {@code Display.getRotation()} and {@code Configuration.orientation}.
+     *
+     * <p>Rotation is {@code Surface.ROTATION_*}; orientation is
+     * {@code Configuration.ORIENTATION_*} ({@code 1} portrait, {@code 2} landscape) or
+     * {@code 0}. The library uses it for the mobile orientation API and to re-run layout
+     * after a device rotation.
+     */
+    public static native int nativeOnConfigurationChanged(int rotation, int orientation);
+
+    /**
+     * Reports an Activity lifecycle transition: {@code 0} active, {@code 1} inactive,
+     * {@code 2} background. The library stops its animation clock for the last two.
+     */
+    public static native int nativeOnLifecycleChanged(int state);
 }

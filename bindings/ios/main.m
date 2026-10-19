@@ -37,6 +37,7 @@
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import <math.h>
 #import <stdio.h>
 #import <string.h>
 
@@ -55,12 +56,21 @@ extern void rw_show_widget(uint64_t widget);
 extern void rw_hide_widget(uint64_t widget);
 extern bool rw_is_widget_visible(uint64_t widget);
 extern bool rw_destroy_widget(uint64_t widget);
+// Lifecycle and orientation (BLUE28 B28.24). See `src/platform/ios/host_facts.rs` for the
+// status codes; an out-of-range code returns 0 and leaves the previous state untouched.
+extern int32_t rw_ios_set_lifecycle(int32_t state);
+extern int32_t rw_ios_set_orientation(int32_t orientation);
 // Platform facts. `rw_platform_capabilities` returns the negotiated bitmask the host reads to
 // decide which affordances to offer; see `rw_platform_capabilities` in `binding_impl.rs` for the
 // bit layout.
 extern const char *rw_backend_name(void);
 extern unsigned int rw_platform_capabilities(void);
 extern float rw_platform_dpi_scale_factor(void);
+// Host input forwarding (BLUE28 B28.02). The library owns the router; the host owns the
+// touch/key callbacks, and these two exports join them.
+extern bool rw_dispatch_pointer_event(uint64_t root, unsigned event_code, int x, int y, unsigned button);
+extern bool rw_dispatch_text_event(uint64_t widget_id, const char *text);
+extern uint64_t rw_platform_diagnostics(void);
 
 // ── Test bookkeeping ────────────────────────────────────────────────────────
 
@@ -124,11 +134,49 @@ static BOOL writeResultFile(NSString *text, NSString **errorOut) {
 
 // ── App delegate ────────────────────────────────────────────────────────────
 
-@interface RWAppDelegate : UIResponder <UIApplicationDelegate>
+@interface RWAppDelegate : UIResponder <UIApplicationDelegate, UITextFieldDelegate>
 @property(nonatomic, strong) UIWindow *window;
+/// The library window widget id, the root a pointer event addresses.
+@property(nonatomic) uint64_t rwWindow;
+/// The line-edit widget id that receives committed text in this probe.
+@property(nonatomic) uint64_t rwEdit;
 @end
 
 @implementation RWAppDelegate
+
+// ── Lifecycle ──────────────────────────────────────────────────────────────
+
+// The library stops its animation clock while the app is not active, so a transition that was
+// in flight resumes at the phase it reached instead of jumping to its end.
+
+- (void)applicationDidBecomeActive:(UIApplication *)application {
+    rw_ios_set_lifecycle(0);
+    [self reportOrientation];
+}
+
+- (void)applicationWillResignActive:(UIApplication *)application {
+    rw_ios_set_lifecycle(1);
+}
+
+- (void)applicationWillEnterForeground:(UIApplication *)application {
+    rw_ios_set_lifecycle(1);
+}
+
+- (void)reportOrientation {
+    UIInterfaceOrientation orientation = UIInterfaceOrientationUnknown;
+    if (@available(iOS 13.0, *)) {
+        orientation = self.window.windowScene.interfaceOrientation;
+    }
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    if (orientation == UIInterfaceOrientationUnknown) {
+        orientation = UIApplication.sharedApplication.statusBarOrientation;
+    }
+#pragma clang diagnostic pop
+    // `UIInterfaceOrientation` values are 1..4 (portrait, upside-down, landscape-left,
+    // landscape-right), which is exactly the contract `rw_ios_set_orientation` documents.
+    rw_ios_set_orientation((int32_t)orientation);
+}
 
 - (BOOL)application:(UIApplication *)application
     didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
@@ -208,6 +256,26 @@ static BOOL writeResultFile(NSString *text, NSString **errorOut) {
            button != 0 && label != 0 && edit != 0,
            [NSString stringWithFormat:@"button=%llu label=%llu line_edit=%llu",
                                       button, label, edit]);
+
+    // 3a. Host input forwarding: a zero-duration long-press recognizer reports Began/Changed/
+    //     Ended, which map to the library's press/move/release. Without this the painted
+    //     controls are visible but never receive a pointer event.
+    self.rwWindow = window;
+    self.rwEdit = edit;
+    UILongPressGestureRecognizer *hostPress =
+        [[UILongPressGestureRecognizer alloc] initWithTarget:self
+                                                      action:@selector(handleHostGesture:)];
+    hostPress.minimumPressDuration = 0;
+    hostPress.cancelsTouchesInView = NO;
+    [libraryWindow addGestureRecognizer:hostPress];
+
+    // A hidden text field is the UIKit `UIKeyInput` this probe forwards committed text from.
+    // A real host installs the same delegate on its own editor.
+    UITextField *textInput = [[UITextField alloc] initWithFrame:CGRectZero];
+    textInput.delegate = self;
+    [libraryWindow.rootViewController.view addSubview:textInput];
+    record(@"input_forwarding_installed", hostPress != nil && textInput.delegate == self,
+           [NSString stringWithFormat:@"gesture=%p textField=%p", hostPress, textInput]);
 
     // 3b. The positive assertion of self-painting: the backend must NOT have
     //     installed native UIKit controls into the host hierarchy. This is what
@@ -313,8 +381,42 @@ static BOOL writeResultFile(NSString *text, NSString **errorOut) {
 }
 
 - (void)applicationDidEnterBackground:(UIApplication *)application {
+    rw_ios_set_lifecycle(2);
     // The probe is single-shot; do not keep the process alive in the background.
     exit(gFailures.count == 0 ? 0 : 1);
+}
+
+/// Forwards the recognizer's press/move/release to the library's pointer router.
+- (void)handleHostGesture:(UILongPressGestureRecognizer *)gesture {
+    int code;
+    switch (gesture.state) {
+        case UIGestureRecognizerStateBegan:
+            code = 1;
+            break;
+        case UIGestureRecognizerStateChanged:
+            code = 3;
+            break;
+        case UIGestureRecognizerStateEnded:
+        case UIGestureRecognizerStateCancelled:
+            code = 2;
+            break;
+        default:
+            return;
+    }
+    CGPoint point = [gesture locationInView:gesture.view];
+    rw_dispatch_pointer_event(self.rwWindow, (unsigned)code, (int)lround(point.x),
+                              (int)lround(point.y), 0);
+}
+
+/// Forwards committed text from UIKit's `UIKeyInput` to the line edit.
+- (BOOL)textField:(UITextField *)textField
+    shouldChangeCharactersInRange:(NSRange)range
+                replacementString:(NSString *)string {
+    if (string.length > 0) {
+        rw_dispatch_text_event(self.rwEdit, string.UTF8String);
+    }
+    // The library owns the text; the hidden field must not accumulate a second copy.
+    return NO;
 }
 
 @end

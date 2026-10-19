@@ -260,7 +260,10 @@ fn drag_and_drop() {
             source_widget_id: window,
             target_widget_id: window,
             mime: "text/plain".into(),
-            payload: vec![]
+            payload: vec![],
+            files: Vec::new(),
+            action: crate::platform::DropAction::Copy,
+            position: None,
         }),
         "inject_drop_event should succeed for valid target widget"
     );
@@ -290,9 +293,9 @@ fn destroy_widget_reports_existence() {
 ///
 /// * `dpi_scaling` — always `false`: no `dpi_scale_factor()` override exists, and ArkUI
 ///   reports the component's size in pixels, not a density.
-/// * `ime` — always `false`: no `ime_bridge()` override exists. The XComponent bridge does
-///   deliver keys (with modifier state) and does ask ArkUI for the soft keyboard, but that
-///   is direct key input, not an input-method client.
+/// * `ime` — always `true`: `ime_bridge()` is implemented over the shared marked-text state
+///   machine, and the ArkTS host feeds composition/commit through
+///   `rw_harmony_ime_marked_text`/`rw_harmony_ime_commit` (BLUE28 B28.12).
 /// * `accessibility` — **tracks the `xcomponent` feature**, because that is exactly when
 ///   `accessibility_bridge()` is implemented. Asserting `false` unconditionally would be
 ///   wrong in one of the two configurations, so the expectation is written as the same
@@ -314,7 +317,7 @@ fn capabilities_are_explicit_and_honest() {
         "`dpi_scaling` must track whether the display-manager binding is compiled in; on a host \
          build the stand-in reports no display, so the flag is false"
     );
-    assert!(!caps.ime, "no `ime_bridge` override exists; key input is not an IME client");
+    assert!(caps.ime, "`ime_bridge()` is implemented over the shared state machine");
     assert_eq!(
         caps.accessibility,
         cfg!(all(feature = "xcomponent", not(alloc_frugal))),

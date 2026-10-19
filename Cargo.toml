@@ -1,6 +1,6 @@
 [package]
 name = "rust_widgets"
-version = "2.8.8"
+version = "2.8.9"
 edition = "2021"
 description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 180 widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"
@@ -99,6 +99,12 @@ default = ["desktop"]
 desktop = [
     "os-auto",
     "cocoa-legacy",
+    # BLUE28 B28.15 decision A: the Linux desktop default is the real GTK backend.
+    # The GTK code is gated on `all(unix_desktop, feature = "gtk-native")`, and the
+    # `gtk` dependency lives only in the Unix-target table, so naming the feature here
+    # does not compile GTK on Windows or macOS. A Linux build that disables it keeps the
+    # state-only preview, and `runtime_gui_mode_for("linux")` reports that honestly.
+    "gtk-native",
     "desktop-runtime",
     "wgpu",
     "touch",
@@ -291,6 +297,10 @@ macos = [
     "dep:objc2-foundation",
     "dep:objc2-app-kit",
     "dep:objc2-core-graphics",
+    # CoreText is the only source that pairs an installed family with the file that backs it
+    # (`kCTFontURLAttribute`), which is what makes a chosen system font render.
+    "dep:objc2-core-foundation",
+    "dep:objc2-core-text",
     # The objc2 backend's handle types derive Serialize/Deserialize and its state
     # snapshot returns `serde_json::Error`, so these are hard requirements rather
     # than optional extras. They were previously inherited from `desktop`, which
@@ -304,6 +314,7 @@ ios = [
     "dep:objc2-foundation",
     "dep:objc2-core-foundation",
     "dep:objc2-core-graphics",
+    "dep:objc2-core-text",
     "dep:objc2-ui-kit",
 ]
 windows = []
@@ -315,6 +326,8 @@ linux-wayland = [
     "dep:libc",
 ]
 linux-a11y = ["dep:zbus", "dep:pollster"]
+# XDG desktop portal appearance settings for the Wayland backend (B28.04).
+wayland-portal = ["dep:zbus"]
 android = ["dep:jni"]
 # Explicit `jni` feature name so `--features jni` (documented by
 # `src/bindings/java_jni.rs`) and `cfg(feature = "jni")` work; mirrors the
@@ -616,6 +629,10 @@ web-http = ["dep:ureq"]
 serde = ["dep:serde"]
 serde_json = ["dep:serde_json"]
 
+# BLUE28 B28.40: read-only `raw-window-handle` 0.6 adapters. Off by default so a host
+# that does not need GPU interop pays neither the dependency nor the trait surface.
+raw-window-handle = ["dep:raw-window-handle"]
+
 unstable-pipeline-routing = []
 unstable-special-widgets = []
 
@@ -651,10 +668,10 @@ objc2-macos = ["macos"]
 # Serialize/Deserialize and whose state snapshot returns `serde_json::Error`.
 # Only `macos` used to carry them, so `--features cocoa-legacy` alone failed with
 # `unresolved import serde` — the identical defect the `macos` line was patched for.
-cocoa-legacy = ["dep:cocoa", "dep:objc", "serde", "serde_json"]
+cocoa-legacy = ["dep:cocoa", "dep:objc", "dep:objc2-core-foundation", "dep:objc2-core-text", "serde", "serde_json"]
 ios-uikit-ffi = ["ios"]
 gtk-native = ["linux-gtk"]
-wayland-native = ["linux-wayland"]
+wayland-native = ["linux-wayland", "wayland-portal"]
 android-jni = ["android", "jni"]
 
 # Old capability names
@@ -694,6 +711,9 @@ full = [
 [dependencies]
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
+# BLUE28 B28.40: the standard host/GPU interop handle type. Optional because it is a
+# read-only adapter, not part of the widget contract.
+raw-window-handle = { version = "0.6", optional = true }
 crossbeam-channel = { version = "0.5", optional = true }
 font8x8 = "0.2.7"
 # Bidirectional text resolution (UAX #9). `default-features = false` drops `std` so the
@@ -768,7 +788,12 @@ web-sys = { version = "0.3", features = [
     "Event",
     "EventTarget",
     "MouseEvent",
+    "PointerEvent",
     "KeyboardEvent",
+    "MediaQueryList",
+    "Screen",
+    "CssStyleDeclaration",
+    "DomRect",
     "console",
     "HtmlCanvasElement",
     "CanvasRenderingContext2d",
@@ -798,6 +823,7 @@ winapi = { version = "0.3", features = [
     "winbase",
     "synchapi",
     "wingdi",
+    "winnls",
     "shellapi",
     "ole2",
     "combaseapi",
@@ -825,6 +851,14 @@ winapi = { version = "0.3", features = [
     "winreg",
     "winnt",
 ] }
+# DirectWrite is the Win32 API that pairs a family with the file backing it (`IDWriteFontFile`
+# + `IDWriteLocalFontFileLoader`); GDI's `EnumFontFamiliesExW` reports names only. It is a
+# Windows-only dependency and is not compiled on any other target.
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_DirectWrite",
+    "Win32_System_Com",
+] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = { version = "0.2", optional = true }
@@ -832,6 +866,8 @@ objc2 = { version = "0.6", optional = true }
 objc2-foundation = { version = "0.3", optional = true }
 objc2-app-kit = { version = "0.3", optional = true }
 objc2-core-graphics = { version = "0.3", optional = true }
+objc2-core-foundation = { version = "0.3", optional = true }
+objc2-core-text = { version = "0.3", optional = true }
 cocoa = { version = "0.25", optional = true }
 # Backs `Platform::total_memory_mb` in `src/platform/darwin_probes.rs`
 # (`sysconf(_SC_PHYS_PAGES)`). Not optional: the probe is always compiled on this
@@ -843,6 +879,7 @@ objc2 = { version = "0.6", optional = true }
 objc2-foundation = { version = "0.3", optional = true }
 objc2-core-foundation = { version = "0.3", optional = true }
 objc2-core-graphics = { version = "0.3", optional = true }
+objc2-core-text = { version = "0.3", optional = true }
 objc2-ui-kit = { version = "0.3", optional = true }
 # Same probe as macOS: iOS does not mount `/proc/meminfo`.
 libc = "0.2"
@@ -859,6 +896,7 @@ libc = { version = "0.2", optional = true }
 wayland-client = { version = "0.31", optional = true }
 wayland-protocols = { version = "0.32", features = [
     "staging",
+    "unstable",
     "client",
 ], optional = true }
 wayland-cursor = { version = "0.31", optional = true }

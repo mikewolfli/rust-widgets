@@ -45,6 +45,12 @@ pub(crate) mod file_picker;
 #[cfg(feature = "cocoa-legacy")]
 pub(crate) mod displays;
 
+/// AppKit environment facts (contrast, reduced motion, locale) for the style layer.
+///
+/// Gated with the rest of the cocoa code: it messages `NSWorkspace`/`NSLocale`.
+#[cfg(feature = "cocoa-legacy")]
+pub(crate) mod environment;
+
 /// Cocoa 0.24 platform implementation (legacy, behind `cocoa-legacy` feature).
 #[cfg(feature = "cocoa-legacy")]
 mod platform_impl;

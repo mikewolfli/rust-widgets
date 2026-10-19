@@ -1104,6 +1104,11 @@ mod tests {
     #[cfg(feature = "fonts-cjk")]
     #[test]
     fn the_scalable_cjk_face_draws_ideographs_and_kana() {
+        // Registered faces are consulted before the compiled ones, so hold the tests' registry
+        // lock: a parallel registration of a CJK-covering face would make this assert the wrong
+        // source.
+        #[cfg(all(feature = "runtime-fonts", feature = "text-shaping"))]
+        let _guard = crate::render::text::runtime_fonts::test_lock();
         let cell = Cell::new(32, 32);
         let mut out = vec![0u8; cell.area()];
         for (ch, label) in [

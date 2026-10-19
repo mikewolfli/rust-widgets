@@ -54,6 +54,33 @@ use std::thread;
 /// that later runs at the display's own rate changes exactly one value.
 const FRAME_INTERVAL_MS: u64 = 16;
 
+/// Resolves a window id to the GTK toplevel this backend owns for it.
+///
+/// A host holds the widget-registry id while [`LinuxNativeState::windows`] is keyed by the
+/// platform id `create_window` returned; `host_window_for` bridges the two. GTK widgets are
+/// main-thread-only, so any other thread answers `None` rather than aborting the process.
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
+fn native_window_for(
+    platform: &LinuxPlatform,
+    window_id: crate::core::ObjectId,
+) -> Option<gtk::Window> {
+    if !gtk::is_initialized_main_thread() {
+        return None;
+    }
+    let host = {
+        #[cfg(not(alloc_frugal))]
+        {
+            crate::widget::runtime::host_window_for(window_id).unwrap_or(window_id)
+        }
+        #[cfg(alloc_frugal)]
+        {
+            window_id
+        }
+    };
+    let native = platform.native.lock_guard();
+    native.windows.get(&host).cloned()
+}
+
 /// GDK's integer scale override (`GDK_SCALE`), or `1.0` when unset or unparsable.
 ///
 /// Split out because it is read on the path where no GTK display is available
@@ -167,6 +194,9 @@ impl Platform for LinuxPlatform {
             // with no display session the call reports `PathPickerError::Unavailable`, which is
             // exactly the case that variant is documented for.
             file_dialog: cfg!(all(unix_desktop, feature = "gtk-native")),
+            // `fc-list` is the fontconfig enumerator on X11/BSD sessions; a host without it
+            // answers an empty list (B28.39).
+            system_fonts: true,
         }
     }
 
@@ -290,6 +320,83 @@ impl Platform for LinuxPlatform {
     #[cfg(all(unix_desktop, feature = "gtk-native"))]
     fn display_generation(&self) -> u64 {
         super::gdk_displays::generation()
+    }
+
+    /// Metadata for one GDK monitor; see [`super::gdk_displays::info`].
+    #[cfg(all(unix_desktop, feature = "gtk-native"))]
+    fn display_info(&self, display: DisplayId) -> Option<crate::platform::types::DisplayInfo> {
+        super::gdk_displays::info(display)
+    }
+
+    /// Whether the GTK theme looks like a high-contrast theme.
+    ///
+    /// GTK does not expose an accessibility high-contrast flag the way macOS and Windows do. The
+    /// observable convention is the theme name: the Adwaita high-contrast themes are called
+    /// `HighContrast`/`HighContrastInverse`, and distributions ship names containing `Contrast`.
+    /// This is a **heuristic**, documented as such on the trait; `None` when GTK is not available
+    /// or no theme name is set. Not overridden without `gtk-native`: a state-only build has no
+    /// toolkit to ask.
+    #[cfg(all(unix_desktop, feature = "gtk-native"))]
+    fn high_contrast(&self) -> Option<bool> {
+        if !gtk::is_initialized_main_thread() {
+            return None;
+        }
+        let settings = gtk::Settings::default()?;
+        let name = settings.gtk_theme_name()?;
+        Some(name.contains("Contrast"))
+    }
+
+    #[cfg(not(all(unix_desktop, feature = "gtk-native")))]
+    fn high_contrast(&self) -> Option<bool> {
+        None
+    }
+
+    /// Whether animations are disabled in GTK's settings.
+    ///
+    /// `gtk-enable-animations` is the switch GTK itself honours; when it is off the user asked for
+    /// no transitions, which is exactly the reduced-motion fact. `None` without `gtk-native`.
+    #[cfg(all(unix_desktop, feature = "gtk-native"))]
+    fn reduce_motion(&self) -> Option<bool> {
+        if !gtk::is_initialized_main_thread() {
+            return None;
+        }
+        let settings = gtk::Settings::default()?;
+        Some(!settings.is_gtk_enable_animations())
+    }
+
+    #[cfg(not(all(unix_desktop, feature = "gtk-native")))]
+    fn reduce_motion(&self) -> Option<bool> {
+        None
+    }
+
+    /// The locale named by the process environment.
+    ///
+    /// GTK has no synchronous "current locale" API that does not duplicate the C library's
+    /// answer, so this reads the POSIX variables through
+    /// [`crate::platform::locale::from_environment`]. The value is interned for the style layer.
+    fn system_locale(&self) -> Option<&'static str> {
+        crate::platform::locale::intern(crate::platform::locale::from_environment())
+    }
+
+    /// A revision of the environment facts, derived from their current values.
+    fn environment_generation(&self) -> u64 {
+        crate::platform::locale::generation_hash(
+            self.system_theme(),
+            self.high_contrast(),
+            self.reduce_motion(),
+            self.system_locale(),
+        )
+    }
+
+    /// The installed families from fontconfig (`fc-list`); empty when it is absent.
+    #[cfg(all(unix_desktop, not(alloc_frugal)))]
+    fn system_fonts(&self) -> Vec<crate::platform::types::SystemFont> {
+        crate::platform::fonts_unix::system_fonts()
+    }
+
+    #[cfg(all(unix_desktop, alloc_frugal))]
+    fn system_fonts(&self) -> Vec<crate::platform::types::SystemFont> {
+        Vec::new()
     }
 
     /// X11 and Wayland do not lay system UI over a toplevel's client area.
@@ -1093,6 +1200,46 @@ impl Platform for LinuxPlatform {
                 }
             });
 
+            // BLUE28 B28.32: a configure event that moves the toplevel is a `Moved` trigger, and
+            // a delete event is `Closed`. Neither existed on GTK, so a host listening for
+            // `on_close` or re-anchoring a layout to the screen never heard anything.
+            //
+            // The first configure reports the initial placement; treating that as a move would
+            // fire a spurious event on every window creation. Only a change after the first one
+            // is a move the user or the window manager made.
+            let last_position = std::rc::Rc::new(core::cell::Cell::new(None::<(i32, i32)>));
+            let moved_window = window.clone();
+            moved_window.connect_configure_event(move |_, event| {
+                let (x, y) = event.position();
+                let position = (x.round() as i32, y.round() as i32);
+                if last_position.get() != Some(position) {
+                    let first = last_position.get().is_none();
+                    last_position.set(Some(position));
+                    if !first {
+                        if let Some(widget_id) =
+                            crate::widget::runtime::widget_id_for_host_window(id)
+                        {
+                            #[cfg(not(alloc_frugal))]
+                            crate::inject_widget_trigger_event(
+                                widget_id,
+                                crate::platform::WidgetTriggerKind::Moved,
+                            );
+                        }
+                    }
+                }
+                glib::Propagation::Proceed
+            });
+            window.connect_delete_event(move |_, _| {
+                if let Some(widget_id) = crate::widget::runtime::widget_id_for_host_window(id) {
+                    #[cfg(not(alloc_frugal))]
+                    crate::inject_widget_trigger_event(
+                        widget_id,
+                        crate::platform::WidgetTriggerKind::Closed,
+                    );
+                }
+                glib::Propagation::Proceed
+            });
+
             let mut native = self.native.lock_guard();
             native.windows.insert(id, window.clone());
             native.root_boxes.insert(id, root);
@@ -1135,6 +1282,207 @@ impl Platform for LinuxPlatform {
             // The allocation-frugal profile has no widget registry to classify, so there is no
             // input method to report either.
             let _ = widget_id;
+            false
+        }
+    }
+
+    /// Applies a window state through GTK, or records it when no toplevel exists.
+    ///
+    /// BLUE28 B28.19: this used to inherit the trait default (`false`), so
+    /// `WindowHandle::set_maximized` reported "not applied" on the desktop backend the `desktop`
+    /// profile selects on Linux. The native calls are GTK's own window operations; a state-only
+    /// build (no `gtk-native`) still records the value, which is the honest fallback.
+    fn set_window_state(
+        &self,
+        widget_id: crate::core::ObjectId,
+        flag: crate::platform::WindowStateFlag,
+        on: bool,
+    ) -> bool {
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
+        if let Some(window) = native_window_for(self, widget_id) {
+            use crate::platform::WindowStateFlag;
+            match flag {
+                WindowStateFlag::Maximized => {
+                    if on {
+                        window.maximize();
+                    } else {
+                        window.unmaximize();
+                    }
+                }
+                WindowStateFlag::Minimized => {
+                    if on {
+                        window.iconify();
+                    } else {
+                        window.deiconify();
+                    }
+                }
+                WindowStateFlag::Fullscreen => {
+                    if on {
+                        window.fullscreen();
+                    } else {
+                        window.unfullscreen();
+                    }
+                }
+                WindowStateFlag::Resizable => window.set_resizable(on),
+                WindowStateFlag::Decorated => window.set_decorated(on),
+            }
+            self.state.set_window_state(widget_id, flag, on);
+            return true;
+        }
+        self.state.set_window_state(widget_id, flag, on)
+    }
+
+    /// Reads a window state from GTK, falling back to the recorded value.
+    ///
+    /// GTK 3 has no getter for "minimised" or "fullscreen" on `gtk::Window`; those two answer
+    /// from the record rather than guessing from an unrelated property.
+    fn is_window_in_state(
+        &self,
+        widget_id: crate::core::ObjectId,
+        flag: crate::platform::WindowStateFlag,
+    ) -> Option<bool> {
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
+        if let Some(window) = native_window_for(self, widget_id) {
+            use crate::platform::WindowStateFlag;
+            match flag {
+                WindowStateFlag::Maximized => return Some(window.is_maximized()),
+                WindowStateFlag::Resizable => return Some(window.is_resizable()),
+                WindowStateFlag::Decorated => return Some(window.is_decorated()),
+                WindowStateFlag::Minimized | WindowStateFlag::Fullscreen => {}
+            }
+        }
+        self.state.window_state(widget_id, flag)
+    }
+
+    /// Applies a minimum size through `gtk::Window::set_geometry_hints`.
+    fn set_window_min_size(
+        &self,
+        widget_id: crate::core::ObjectId,
+        width: u32,
+        height: u32,
+    ) -> bool {
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
+        if let Some(window) = native_window_for(self, widget_id) {
+            let geometry = gtk::gdk::Geometry::new(
+                width as i32,
+                height as i32,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0.0,
+                0.0,
+                gtk::gdk::Gravity::NorthWest,
+            );
+            window.set_geometry_hints(
+                None::<&gtk::Widget>,
+                &geometry,
+                gtk::gdk::WindowHints::MIN_SIZE,
+            );
+            self.state.set_window_min_size(widget_id, width, height);
+            return true;
+        }
+        self.state.set_window_min_size(widget_id, width, height)
+    }
+
+    /// The minimum size recorded for a window; GTK exposes no getter for its geometry hints.
+    fn window_min_size(&self, widget_id: crate::core::ObjectId) -> Option<(u32, u32)> {
+        self.state.window_min_size(widget_id)
+    }
+
+    /// Loads a window icon from `path` through `gtk::Window::set_icon_from_file`.
+    fn set_window_icon(&self, widget_id: crate::core::ObjectId, path: &str) -> bool {
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
+        if let Some(window) = native_window_for(self, widget_id) {
+            match window.set_icon_from_file(path) {
+                Ok(()) => {
+                    self.state.set_window_icon(widget_id, path);
+                    return true;
+                }
+                Err(error) => {
+                    log::warn!("[linux] set_icon_from_file({path}) failed: {error}");
+                    return false;
+                }
+            }
+        }
+        self.state.set_window_icon(widget_id, path)
+    }
+
+    /// The icon path recorded by [`Self::set_window_icon`].
+    fn window_icon(&self, widget_id: crate::core::ObjectId) -> Option<String> {
+        self.state.window_icon(widget_id)
+    }
+
+    /// Applies a cursor shape through GDK.
+    ///
+    /// The runtime calls this on hover changes; `gdk::Window::set_cursor` is the toolkit's own
+    /// per-window cursor, so it survives motion until another control changes the intent.
+    #[cfg(all(unix_desktop, feature = "gtk-native"))]
+    fn set_cursor(
+        &self,
+        window_id: crate::core::ObjectId,
+        icon: crate::platform::CursorIcon,
+    ) -> bool {
+        use crate::platform::CursorIcon;
+        let Some(window) = native_window_for(self, window_id) else {
+            return false;
+        };
+        let Some(gdk_window) = window.window() else {
+            return false;
+        };
+        let Some(display) = gtk::gdk::Display::default() else {
+            return false;
+        };
+        let name = match icon {
+            CursorIcon::Default => "default",
+            CursorIcon::Pointer => "pointer",
+            CursorIcon::Text => "text",
+            CursorIcon::Crosshair => "crosshair",
+            CursorIcon::Move => "move",
+            CursorIcon::NotAllowed => "not-allowed",
+            CursorIcon::ResizeHorizontal => "ew-resize",
+            CursorIcon::ResizeVertical => "ns-resize",
+            CursorIcon::ResizeNwSe => "nwse-resize",
+            CursorIcon::ResizeNeSw => "nesw-resize",
+            CursorIcon::Grab => "grab",
+            CursorIcon::Grabbing => "grabbing",
+            CursorIcon::Wait => "wait",
+            CursorIcon::Progress => "progress",
+            CursorIcon::Help => "help",
+            CursorIcon::ZoomIn => "zoom-in",
+            CursorIcon::ZoomOut => "zoom-out",
+        };
+        let cursor = gtk::gdk::Cursor::from_name(&display, name)
+            .or_else(|| gtk::gdk::Cursor::from_name(&display, "default"));
+        let Some(cursor) = cursor else {
+            return false;
+        };
+        gdk_window.set_cursor(Some(&cursor));
+        true
+    }
+
+    /// Hides the pointer by clearing GDK's cursor; showing restores the default shape.
+    #[cfg(all(unix_desktop, feature = "gtk-native"))]
+    fn set_cursor_visible(&self, window_id: crate::core::ObjectId, visible: bool) -> bool {
+        let Some(window) = native_window_for(self, window_id) else {
+            return false;
+        };
+        let Some(gdk_window) = window.window() else {
+            return false;
+        };
+        if !visible {
+            gdk_window.set_cursor(None);
+            return true;
+        }
+        let Some(display) = gtk::gdk::Display::default() else {
+            return false;
+        };
+        if let Some(cursor) = gtk::gdk::Cursor::from_name(&display, "default") {
+            gdk_window.set_cursor(Some(&cursor));
+            true
+        } else {
             false
         }
     }

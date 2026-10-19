@@ -90,6 +90,10 @@ pub struct WaylandPlatform {
     pub(crate) state: BackendState<WaylandHandleKind>,
     pub(crate) menus: Mutex<WaylandMenuState>,
     pub(crate) runtime: WaylandRuntimeState,
+    /// `wl_data_device`-backed clipboard shared with the session's protocol dispatch (B28.04).
+    pub(crate) clipboard: crate::platform::wayland::clipboard::WaylandClipboard,
+    /// `text-input-v3` IME, shared with the session's protocol dispatch (B28.12).
+    pub(crate) ime: crate::platform::wayland::ime::WaylandIme,
     /// Persistent Wayland session (connection, event queue, and global proxies).
     /// Initialized on first `try_create_native_window` call; used by `run()` for event dispatch.
     #[cfg(all(feature = "wayland-native", unix_desktop))]
@@ -104,6 +108,8 @@ impl WaylandPlatform {
             state: BackendState::new(),
             menus: Mutex::new(WaylandMenuState::default()),
             runtime: WaylandRuntimeState::new(),
+            clipboard: crate::platform::wayland::clipboard::WaylandClipboard::new(),
+            ime: crate::platform::wayland::ime::WaylandIme::new(),
             #[cfg(all(feature = "wayland-native", unix_desktop))]
             native_session: Mutex::new(None),
         }

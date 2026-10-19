@@ -148,6 +148,25 @@ macro_rules! impl_helpers {
                          {LABEL_PROPERTY_NAMES:?}, so the label could not be set"
                     );
                 }
+                // A window's title is not only a painted caption: the OS draws it in the
+                // title bar, and only the platform can change that. BLUE28 B28.19 records
+                // that `WindowHandle::set_title` used to stop at the widget property, so
+                // the title bar kept the name the window was created with.
+                let is_window = crate::widget::runtime::with_widget(widget_id, |widget| {
+                    widget.kind() == crate::widget::WidgetKind::Window
+                })
+                .unwrap_or(false);
+                if is_window {
+                    if let Some(host) = crate::widget::runtime::host_window_for(widget_id) {
+                        // `Platform::set_widget_text` is one of the uniform state setters and
+                        // returns `()`; the backends that own a native window apply the title in
+                        // their own override (cocoa already does), so there is no result to read.
+                        crate::platform::get_platform().set_widget_text(host, text);
+                        // Keep assistive technology in step with the visible title, the same
+                        // rule the platform backends follow for their own window objects.
+                        let _ = crate::set_widget_accessibility_name(widget_id, text);
+                    }
+                }
                 // Repaint the widget **and its window**.
                 //
                 // A label is painted by the library, so a new caption reaches the screen

@@ -5,6 +5,64 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.8.9 (2026-10-19) — BLUE28 platform completeness and full mobile services
+
+This release closes the remaining BLUE28 platform-layer items and turns the optional
+`crates/mobile-services` crate into a complete implementation for Android, iOS/Mac Catalyst and
+HarmonyOS.
+
+### Wayland
+
+- `wl_data_device`/`wl_data_source` clipboard with text, HTML, RTF and application-defined MIME
+  types; the capability is true only while a data device exists.
+- XDG portal `org.freedesktop.appearance` for theme and contrast (no portal → `None`).
+- `text-input-v3` IME (preedit/commit) and `wl_surface.frame` through `pre_present_notify`.
+
+### IME and accessibility
+
+- objc2 canvas implements `NSTextInputClient`; `keyDown:` routes through `interpretKeyEvents:`.
+- iOS and HarmonyOS expose `rw_*_ime_marked_text`/`rw_*_ime_commit` over the shared state machine.
+- objc2 publishes `NSAccessibility` role/label/frame and posts change notifications; other
+  backends without a screen-reader tree keep `accessibility: false`.
+
+### Mobile lifecycle and input
+
+- Process-wide lifecycle/orientation state; suspend stops the animation clock, resume leaves a
+  one-frame zero-delta request. Wired to Android, iOS scenes and HarmonyOS callbacks.
+- Android rotation no longer recreates the Activity (`configChanges`).
+- WASM `document.visibilitychange` uses the same animation switch.
+
+### Platform fixes
+
+- Linux `desktop` now enables `gtk-native`; GTK code remains Unix-gated.
+- Android printing uses `PrintManager` with a Java `PrintDocumentAdapter`.
+- Windows accessibility bridge compiles on every host, so its state tests run in the host suite.
+- Mac Catalyst (`aarch64-apple-ios-macabi`), tvOS and visionOS are compile-checked in CI.
+
+### Fonts
+
+- `FontDialog` enumerates the host's installed families through a process-wide snapshot, paints
+  scrollable Family/Style/Size columns, applies a clicked or arrow-key selection, and its drawn
+  OK/Cancel buttons now respond to clicks.
+- `FontComboBox::load_system_fonts()` fills the family list from the same snapshot; when a backend
+  reports no installed fonts, both controls fall back to the families compiled into the build.
+- With `runtime-fonts`, selecting a family whose backend reports a file (Linux/BSD, Android)
+  registers it through `register_face`, so the chosen font is what the renderer draws.
+- New C ABI `rw_system_font_count`, `rw_system_font_family`, `rw_system_font_style` and
+  `rw_refresh_system_fonts` (152 `rw_*` functions in total).
+
+### Mobile services (optional crate, not part of the default build)
+
+- Android: keep-awake, haptics (permission-checked; `VibrationEffect` on API 26/29+), permission
+  query/request, notification channel + post, share, deep link.
+- iOS/Mac Catalyst: `AVCaptureDevice`, `PHPhotoLibrary`, `UNUserNotificationCenter` queries and
+  prompts; local notifications with the default sound; UIKit keep-awake/share/deep link, and
+  `UINotificationFeedbackGenerator` for success/warning/error haptics.
+- HarmonyOS: native `OH_WindowManager_SetWindowKeepScreenOn`, `OH_Vibrator_PlayVibration`,
+  `OH_AT_CheckSelfPermission`, `OH_Notification_IsNotificationEnabled`; ArkTS-only actions are
+  installed through `HarmonyHost` function pointers and otherwise answer `Unsupported`.
+- Sensors and location remain explicitly `Unsupported` by design.
+
 ## 2.8.8 (2026-10-19) — Keyboard focus and IME on the GTK host, and an Orbital backend for Redox
 
 This release closes the two open items in the 2026-10-15 designer feedback (§十六 and §十七) on the

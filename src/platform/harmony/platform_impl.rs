@@ -128,17 +128,13 @@ impl Platform for HarmonyPlatform {
     /// like the XComponent bind it depends on, because the `ArkUI_AccessibilityProvider`
     /// is only reachable through a bound `OH_NativeXComponent`.
     ///
-    /// # `dpi_scaling` and `ime` stay `false`
-    ///
-    /// Neither has a method behind it, and one of them is deliberate:
+    /// # `dpi_scaling` follows the device build; `ime` is a real bridge
     ///
     /// * `dpi_scaling` — no `dpi_scale_factor()` override exists. ArkUI reports the
     ///   component's size in pixels, not a density, so this backend genuinely cannot answer.
-    /// * `ime` — no `ime_bridge()` override exists. The XComponent bridge *does* now deliver
-    ///   keys (with their modifier state) and now asks ArkUI for the soft keyboard, but that
-    ///   is direct key input, not an input-method client: nothing here speaks a composition
-    ///   protocol, and `ime: true` would claim one. This is under-claiming, which is the
-    ///   honest direction.
+    /// * `ime` — `ime_bridge()` is implemented over the shared marked-text state machine, and the
+    ///   ArkTS host forwards composition/commit through `rw_harmony_ime_marked_text` /
+    ///   `rw_harmony_ime_commit` (B28.12).
     ///
     /// `typed_widget_trigger` is `true` and stays `true`: unlike the others it is implemented
     /// by this backend (`inject_widget_trigger_event`, `poll_widget_trigger_event`) over the
@@ -150,7 +146,9 @@ impl Platform for HarmonyPlatform {
             // the stand-in reports no displays, so the flag follows the build fact (the same
             // rule the pasteboard flag below uses).
             dpi_scaling: cfg!(target_env = "ohos"),
-            ime: false,
+            // ArkTS owns the soft keyboard and forwards composition/commit through
+            // `rw_harmony_ime_marked_text`/`rw_harmony_ime_commit` (B28.12).
+            ime: true,
             accessibility: cfg!(all(feature = "xcomponent", not(alloc_frugal))),
             native_menu: false,
             typed_widget_trigger: true,
@@ -165,7 +163,54 @@ impl Platform for HarmonyPlatform {
             // No picker: the ArkUI file dialog needs the same `AbilityContext` the handler above
             // lacks.
             file_dialog: false,
+            // No `OH_Drawing` font-manager binding in this backend yet; an empty list is the
+            // honest answer (B28.39 records the source to use when one is added).
+            system_fonts: false,
         }
+    }
+
+    /// The ArkTS host's marked-text/commit bridge (B28.12).
+    ///
+    /// The platform-independent state machine is shared with the iOS/macOS bridges; the ArkTS
+    /// host calls `rw_harmony_ime_marked_text` and `rw_harmony_ime_commit` from its input-method
+    /// callbacks. `focus_in`/`focus_out` come from the widget runtime.
+    fn ime_bridge(&self) -> Option<&dyn crate::platform::ime::ImeBridge> {
+        Some(super::host_facts::ime_bridge())
+    }
+
+    /// The system colour mode, when the ArkTS host has reported one.
+    ///
+    /// The SDK exposes it as a callback (`OH_ArkUI_RegisterSystemColorModeChangeEvent`), not a
+    /// synchronous query, so the host pushes it through `rw_harmony_set_theme`; `None` before that
+    /// is the honest "not told yet" answer.
+    fn system_theme(&self) -> Option<bool> {
+        super::host_facts::theme()
+    }
+
+    /// The ArkTS `Configuration.fontSizeScale`, when the host has reported it.
+    fn text_scale(&self) -> f32 {
+        super::host_facts::font_scale()
+    }
+
+    /// The merged avoid-area insets, when the host has reported them.
+    fn safe_area_insets(
+        &self,
+        _window_id: crate::core::ObjectId,
+    ) -> Option<crate::platform::types::SafeAreaInsets> {
+        super::host_facts::safe_area()
+    }
+
+    /// The environment revision, including the host-reported facts.
+    fn environment_generation(&self) -> u64 {
+        super::host_facts::generation()
+    }
+
+    /// The locale named by the process environment, when the host exposes one.
+    ///
+    /// OpenHarmony has no synchronous `NSLocale`-style API in this bridge; the POSIX variables
+    /// are the only source available, and an unset environment answers `None`.
+    fn system_locale(&self) -> Option<&'static str> {
+        crate::platform::locale::intern(crate::platform::locale::from_environment())
     }
 
     /// The displays the OpenHarmony display manager reports.
@@ -284,7 +329,19 @@ impl Platform for HarmonyPlatform {
         self.state.destroy_widget(widget_id)
     }
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.state.count_kind(HarmonyHandleKind::Window) > 0 {
+            log::warn!(
+                "[harmony] create_window: this backend hosts one XComponent window; the second
+                 request returns 0 (BLUE28 B28.43)"
+            );
+            return 0;
+        }
         self.insert_widget(HarmonyHandleKind::Window, title, x, y, width, height)
+    }
+
+    /// OpenHarmony's host model is one XComponent with one window.
+    fn supports_multiple_windows(&self) -> bool {
+        false
     }
     // ─── Clipboard ───
     //
@@ -520,5 +577,52 @@ impl Platform for HarmonyPlatform {
     /// included.
     fn supports_surfaces(&self) -> bool {
         true
+    }
+
+    /// This backend is a mobile target, so the mobile runtime helpers configure this instance
+    /// rather than a separate preview singleton (BLUE28 B28.24).
+    #[cfg(feature = "mobile-api")]
+    fn mobile_extension(&self) -> Option<&dyn crate::platform::MobilePlatformExtension> {
+        Some(self)
+    }
+}
+
+/// HarmonyOS' lifecycle/orientation contract (BLUE28 B28.24).
+///
+/// The orientation comes from `rw_harmony_set_orientation`; the ArkTS host reads
+/// `window.getWindowProperties().orientation` in its `onConfigurationUpdate` callback. Until it
+/// reports one, [`orientation`](crate::platform::MobilePlatformExtension::orientation) answers
+/// `None` rather than a guessed portrait.
+impl crate::platform::MobilePlatformExtension for HarmonyPlatform {
+    fn mobile_backend(&self) -> crate::platform::MobileBackend {
+        crate::platform::MobileBackend::HarmonyMobile
+    }
+
+    fn attach_to_native_view(&self, native_handle: usize) -> bool {
+        // This backend is a state model: it holds no ArkUI component, so accepting a handle
+        // would promise an attachment that does not exist. The `xcomponent` bridge owns the real
+        // surface and exposes its own attach path.
+        let _ = native_handle;
+        false
+    }
+
+    fn orientation(&self) -> Option<crate::platform::ScreenOrientation> {
+        crate::platform::lifecycle::orientation()
+    }
+
+    fn orientation_generation(&self) -> u64 {
+        crate::platform::lifecycle::rotation_generation()
+    }
+
+    fn lifecycle_state(&self) -> Option<crate::platform::MobileLifecycleState> {
+        crate::platform::lifecycle::lifecycle_state()
+    }
+
+    fn suspend(&self) -> bool {
+        crate::platform::lifecycle::set_state(crate::platform::MobileLifecycleState::Background)
+    }
+
+    fn resume(&self) -> bool {
+        crate::platform::lifecycle::set_state(crate::platform::MobileLifecycleState::Active)
     }
 }

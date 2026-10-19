@@ -170,4 +170,40 @@ impl crate::platform::types::MobilePlatformExtension for IosMobilePlatform {
         self.attached_native_view.store(native_handle, crate::compat::atomic::Ordering::SeqCst);
         true
     }
+
+    /// The interface orientation of a live window scene, or the orientation the host reported.
+    ///
+    /// `UIWindowScene.interfaceOrientation` distinguishes all four values. A state-only build (no
+    /// UIKit FFI) and a window created without a scene answer whatever the host last reported
+    /// through [`super::host_facts`], and `None` before that — never a guessed portrait.
+    fn orientation(&self) -> Option<crate::platform::ScreenOrientation> {
+        #[cfg(all(apple_uikit, feature = "ios-uikit-ffi"))]
+        {
+            if let Some(orientation) = super::native::interface_orientation() {
+                return Some(orientation);
+            }
+        }
+        crate::platform::lifecycle::orientation()
+    }
+
+    /// The display revision changes on rotation, and so does the host-reported rotation.
+    fn orientation_generation(&self) -> u64 {
+        crate::platform::Platform::display_generation(self)
+            .wrapping_add(crate::platform::lifecycle::rotation_generation())
+    }
+
+    /// The phase the host last reported through `rw_ios_set_lifecycle`.
+    fn lifecycle_state(&self) -> Option<crate::platform::MobileLifecycleState> {
+        crate::platform::lifecycle::lifecycle_state()
+    }
+
+    /// Stops the animation clock; the scene delegate calls this from `sceneWillResignActive`.
+    fn suspend(&self) -> bool {
+        crate::platform::lifecycle::set_state(crate::platform::MobileLifecycleState::Background)
+    }
+
+    /// Restarts the animation clock; the scene delegate calls this from `sceneDidBecomeActive`.
+    fn resume(&self) -> bool {
+        crate::platform::lifecycle::set_state(crate::platform::MobileLifecycleState::Active)
+    }
 }

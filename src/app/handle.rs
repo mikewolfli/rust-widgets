@@ -1228,6 +1228,13 @@ pub fn dispatch_trigger(widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
             }
             false
         }
+        WidgetTriggerKind::Moved => {
+            // The window moved without resizing. A layout anchored to the screen (a panel that
+            // tracks a display edge, a popup placed relative to the window) must re-run, but the
+            // window's own size is unchanged, so this does not touch the size record.
+            apply_window_layout(widget_id);
+            false
+        }
     }
 }
 
@@ -1269,6 +1276,100 @@ fn set_window_size(window_id: ObjectId, width: u32, height: u32) {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct WindowHandle {
     id: ObjectId,
+}
+
+/// Builder for a window created with attributes.
+///
+/// BLUE28 B28.41: `create_window` stays the five-argument historical entry point; a host that
+/// needs a borderless/transparent/non-resizable window builds one of these and reads the
+/// returned [`crate::platform::WindowCreation::unsupported`] list instead of guessing whether a
+/// request was honoured.
+#[derive(Debug, Clone, Default)]
+pub struct WindowOptions {
+    attributes: crate::platform::WindowAttributes,
+}
+
+impl WindowOptions {
+    /// A window with `title` and the historical defaults (hidden until shown, 800×600 at 0,0).
+    pub fn new(title: &str) -> Self {
+        Self {
+            attributes: crate::platform::WindowAttributes {
+                title: title.to_string(),
+                ..Default::default()
+            },
+        }
+    }
+
+    /// Sets the client size.
+    pub fn size(mut self, width: u32, height: u32) -> Self {
+        self.attributes.size = Some((width, height));
+        self
+    }
+
+    /// Sets the top-left position.
+    pub fn position(mut self, x: i32, y: i32) -> Self {
+        self.attributes.position = Some((x, y));
+        self
+    }
+
+    /// Sets the minimum client size.
+    pub fn min_size(mut self, width: u32, height: u32) -> Self {
+        self.attributes.min_size = Some((width, height));
+        self
+    }
+
+    /// Whether the user may resize the window.
+    pub fn resizable(mut self, resizable: bool) -> Self {
+        self.attributes.resizable = Some(resizable);
+        self
+    }
+
+    /// Whether the OS draws a title bar and border.
+    pub fn decorations(mut self, decorations: bool) -> Self {
+        self.attributes.decorations = Some(decorations);
+        self
+    }
+
+    /// Whether the window starts visible.
+    pub fn visible(mut self, visible: bool) -> Self {
+        self.attributes.visible = Some(visible);
+        self
+    }
+
+    /// Whether the window starts maximised.
+    pub fn maximized(mut self, maximized: bool) -> Self {
+        self.attributes.maximized = Some(maximized);
+        self
+    }
+
+    /// Whether the window starts fullscreen.
+    pub fn fullscreen(mut self, fullscreen: bool) -> Self {
+        self.attributes.fullscreen = Some(fullscreen);
+        self
+    }
+
+    /// The attributes built so far, for a caller that wants them directly.
+    pub fn attributes(&self) -> &crate::platform::WindowAttributes {
+        &self.attributes
+    }
+
+    /// Creates the window through the library's widget path and applies the attributes.
+    ///
+    /// The returned [`WindowCreation::window`] is the widget id (what every other API uses); the
+    /// attributes are applied to the **host** window that widget is attached to. Attributes a
+    /// backend cannot honour are returned in `unsupported`, never silently ignored.
+    pub fn create(self) -> crate::platform::WindowCreation {
+        let (x, y) = self.attributes.position.unwrap_or((0, 0));
+        let (width, height) = self.attributes.size.unwrap_or((800, 600));
+        let window = crate::create_window(&self.attributes.title, x, y, width, height);
+        if window == 0 {
+            return crate::platform::WindowCreation { window, unsupported: Vec::new() };
+        }
+        let host = crate::widget::runtime::host_window_for(window).unwrap_or(window);
+        let unsupported =
+            crate::platform::get_platform().apply_window_attributes(host, &self.attributes);
+        crate::platform::WindowCreation { window, unsupported }
+    }
 }
 
 impl WindowHandle {
@@ -3578,14 +3679,11 @@ impl WindowHandle {
 
     /// Set the window icon from a file path.
     ///
-    /// Pushed to the OS through [`crate::platform::Platform::set_window_icon`] (AppKit
-    /// `setRepresentation:`, Win32 `WM_SETICON`, GTK `set_icon_from_file`) as well
-    /// as into the in-process mirror. Returns `false` when the backend could not
-    /// load the file, so a bad path is visible instead of silently ignored.
-    ///
-    /// The mirror is written unconditionally, but [`WindowHandle::icon`] reports it **only**
-    /// as a fallback for a backend that has no icon concept at all — see that method for why
-    /// a failed load must stay unreadable.
+    /// Pushed to the OS where the backend has a per-window icon concept: Win32 `WM_SETICON`
+    /// (`LoadImageW`) and GTK `set_icon_from_file`. The macOS backends answer `false` — an
+    /// `NSWindow` has no icon; the Dock/window-switcher icon is the application bundle's
+    /// `CFBundleIconFile`. The value is mirrored only when the platform accepted it, so
+    /// [`WindowHandle::icon`] cannot report a path the OS rejected.
     pub fn set_icon(&self, path: &str) -> bool {
         let pushed = crate::platform::get_platform().set_window_icon(self.raw_id(), path);
         if pushed {
@@ -3599,9 +3697,12 @@ impl WindowHandle {
 
     /// Set the minimum window size.
     ///
-    /// Pushed to the OS through [`crate::platform::Platform::set_window_min_size`]
-    /// (`setContentMinSize:` on macOS, the `WM_GETMINMAXINFO` handler on Windows,
-    /// `set_geometry_hints` on GTK) as well as into the in-process mirror.
+    /// Pushed to the OS through [`crate::platform::Platform::set_window_min_size`]:
+    /// `setContentMinSize:` on both macOS backends, the `WM_GETMINMAXINFO` handler on Windows,
+    /// and `set_geometry_hints(GDK_HINT_MIN_SIZE)` on GTK. Wayland, Android, iOS, HarmonyOS,
+    /// Redox and Web record the value but return `false` from the platform setter (they have no
+    /// client-side min-size protocol in this backend), so the mirror is populated only when the
+    /// OS accepted the request.
     pub fn set_min_size(&self, w: u32, h: u32) -> bool {
         let pushed = crate::platform::get_platform().set_window_min_size(self.raw_id(), w, h);
         if pushed {
@@ -3675,10 +3776,10 @@ impl WindowHandle {
 
     /// Maximize or restore the window.
     ///
-    /// Pushed to the OS through [`crate::platform::Platform::set_window_state`]
-    /// (`zoom:` on macOS, `ShowWindow(SW_MAXIMIZE)` on Windows, `maximize()` on
-    /// GTK) as well as into the in-process mirror. `is_maximized` reports what
-    /// the OS window actually is when a native window exists.
+    /// Pushed to the OS through [`crate::platform::Platform::set_window_state`]: `zoom:` and
+    /// `isZoomed` on macOS, `ShowWindow(SW_MAXIMIZE/SW_RESTORE)` on Windows, and
+    /// `maximize()`/`unmaximize()` on GTK. Wayland and the state-only mobile backends record the
+    /// value but cannot change a native window here, and `is_maximized` falls back to that record.
     pub fn set_maximized(&self, maximized: bool) {
         // The mirror records only what the platform accepted, exactly as `set_min_size` and
         // `set_icon` do — otherwise a flag set on a window that does not exist is reported as

@@ -1,8 +1,12 @@
 package rust_widgets.testapp;
 
 import android.app.Activity;
+import android.content.Intent;
+import android.net.Uri;
 import android.os.Bundle;
 import android.util.Log;
+import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.widget.LinearLayout;
 
 import rust_widgets.RustWidgets;
@@ -45,6 +49,9 @@ import rust_widgets.RustWidgets;
 public class MainActivity extends Activity {
 
     private static final String TAG = "RustWidgetsTest";
+
+    /** Request code the Rust document picker uses (see `android_jni::PICK_REQUEST_CODE`). */
+    private static final int PICK_DOCUMENT_REQUEST = 21079;
 
     /** Whether the JNI plumbing and widget self-test passed in {@code onCreate}. */
     private boolean bridgeReady = false;
@@ -89,6 +96,64 @@ public class MainActivity extends Activity {
                 Log.i(TAG, ok ? "RESULT: PASS" : "RESULT: FAIL");
             }
         }, 300);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        reportLifecycle(0);
+        reportConfiguration(getResources().getConfiguration());
+    }
+
+    @Override
+    protected void onPause() {
+        reportLifecycle(1);
+        super.onPause();
+    }
+
+    @Override
+    protected void onStop() {
+        reportLifecycle(2);
+        super.onStop();
+    }
+
+    /**
+     * Reports a rotation to the library (BLUE28 B28.24).
+     *
+     * <p>{@code configChanges} in the manifest keeps the Activity alive across a rotation, which
+     * is what makes this callback the place the new orientation arrives. Without it Android
+     * would recreate the Activity and the library's state would start over instead of re-laying
+     * out the live tree.
+     */
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        reportConfiguration(newConfig);
+    }
+
+    private void reportConfiguration(android.content.res.Configuration config) {
+        int rotation = -1;
+        try {
+            // Deprecated on API 30 in favour of WindowMetrics, but this is the only call that
+            // returns the rotation value the library maps to the four orientations, and the
+            // minimum SDK here is 24.
+            rotation = getWindowManager().getDefaultDisplay().getRotation();
+        } catch (RuntimeException e) {
+            Log.w(TAG, "display rotation unavailable: " + e.getMessage());
+        }
+        try {
+            RustWidgets.nativeOnConfigurationChanged(rotation, config.orientation);
+        } catch (UnsatisfiedLinkError e) {
+            Log.e(TAG, "nativeOnConfigurationChanged not linked: " + e.getMessage());
+        }
+    }
+
+    private void reportLifecycle(int state) {
+        try {
+            RustWidgets.nativeOnLifecycleChanged(state);
+        } catch (UnsatisfiedLinkError e) {
+            Log.e(TAG, "nativeOnLifecycleChanged not linked: " + e.getMessage());
+        }
     }
 
     @Override
@@ -264,17 +329,17 @@ public class MainActivity extends Activity {
 
         final String[] steps = {
             "custom MIME write accepted",
-            "has_format sees the custom MIME",
-            "typed read returns the same bytes",
-            "get_contents reports Custom",
-            "at least one display with positive metrics and a readable DPI scale",
+            "at least one display with positive metrics",
             "a real window is placed on a display",
             "display_generation is non-zero and stable",
-            "clipboard capability reported",
-            "IME bridge (soft keyboard) available",
+            "DPI scale is measured",
             "system theme read from Configuration.uiMode",
             "text scale read from Configuration.fontScale",
             "safe-area insets read from WindowMetrics",
+            "IME bridge (soft keyboard) available",
+            "accessibility bridge available",
+            "host path picker declared",
+            "external opening declared",
         };
         boolean ok = true;
         for (int i = 0; i < steps.length; i++) {
@@ -285,5 +350,83 @@ public class MainActivity extends Activity {
             Log.i(TAG, (passed ? "  [PASS] " : "  [FAIL] ") + steps[i]);
         }
         return ok;
+    }
+
+    /**
+     * Forwards touches into the library's widget runtime (BLUE28 B28.02).
+     *
+     * <p>The Activity's content view is a plain layout that consumes nothing, so this callback
+     * receives the events the library's painted controls need. Coordinates are view-local; the
+     * native side converts them to the logical space the window was created in.
+     */
+    @Override
+    public boolean onTouchEvent(MotionEvent event) {
+        int code;
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                code = 1;
+                break;
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                code = 2;
+                break;
+            case MotionEvent.ACTION_MOVE:
+                code = 3;
+                break;
+            default:
+                return super.onTouchEvent(event);
+        }
+        try {
+            RustWidgets.nativeDispatchPointerEvent(
+                    code, Math.round(event.getX()), Math.round(event.getY()), 0);
+        } catch (UnsatisfiedLinkError e) {
+            Log.e(TAG, "nativeDispatchPointerEvent not linked: " + e.getMessage());
+        }
+        return true;
+    }
+
+    /** Forwards a hardware key press to the focused widget. */
+    @Override
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+        try {
+            RustWidgets.nativeDispatchKeyEvent(keyCode, event.getMetaState(), 1);
+        } catch (UnsatisfiedLinkError e) {
+            Log.e(TAG, "nativeDispatchKeyEvent not linked: " + e.getMessage());
+        }
+        return super.onKeyDown(keyCode, event);
+    }
+
+    /** Forwards a hardware key release to the focused widget. */
+    @Override
+    public boolean onKeyUp(int keyCode, KeyEvent event) {
+        try {
+            RustWidgets.nativeDispatchKeyEvent(keyCode, event.getMetaState(), 0);
+        } catch (UnsatisfiedLinkError e) {
+            Log.e(TAG, "nativeDispatchKeyEvent not linked: " + e.getMessage());
+        }
+        return super.onKeyUp(keyCode, event);
+    }
+
+    /** Delivers a document-picker result to the library's asynchronous path request. */
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode == PICK_DOCUMENT_REQUEST) {
+            String path = "";
+            int cancelled = 1;
+            if (resultCode == RESULT_OK && data != null) {
+                Uri uri = data.getData();
+                if (uri != null) {
+                    path = uri.getPath() != null ? uri.getPath() : uri.toString();
+                    cancelled = path.isEmpty() ? 1 : 0;
+                }
+            }
+            try {
+                RustWidgets.nativeInjectPathChoice(path, cancelled);
+            } catch (UnsatisfiedLinkError e) {
+                Log.e(TAG, "nativeInjectPathChoice not linked: " + e.getMessage());
+            }
+            return;
+        }
+        super.onActivityResult(requestCode, resultCode, data);
     }
 }

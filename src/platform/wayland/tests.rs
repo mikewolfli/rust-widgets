@@ -189,12 +189,15 @@ fn host_creates_no_controls() {
         "this backend overrides `dpi_scale_factor()`, so the flag reports a real query rather \
          than the trait's fabricated 1.0"
     );
-    assert_eq!(
-        caps.ime,
+    // The bridge exists on every build of this module, but the capability is true only when the
+    // compositor actually advertised `zwp_text_input_manager_v3` (a fresh platform has no
+    // session, so nothing is bound). The flag is the availability of the protocol, not the
+    // existence of the Rust object.
+    assert!(
         backend.ime_bridge().is_some(),
-        "`ime` must match whether `ime_bridge()` answers; this backend binds no Wayland \
-         `text-input` protocol, so there is no bridge to promise"
+        "the platform always offers an IME bridge object for the capability check"
     );
+    assert!(!caps.ime, "no text-input protocol is bound before a session exists");
     assert_eq!(
         caps.accessibility,
         backend.accessibility_bridge().is_some(),
@@ -213,6 +216,25 @@ fn host_creates_no_controls() {
     assert_eq!(backend.create_list_box(window, 10, 250, 140, 80), 0);
     assert_eq!(backend.create_spin_box(window, 10, 10, 80, 24), 0);
     assert_eq!(backend.create_message_box(window, "Title", "Body", 10, 10, 300, 150), 0);
+}
+
+#[test]
+fn clipboard_and_ime_capabilities_track_a_live_protocol() {
+    let backend = WaylandPlatform::new();
+    let caps = backend.capabilities();
+    // A fresh platform has no connection, so neither protocol object exists; the rich backend is
+    // still handed out so a host can use the in-process fallback.
+    assert!(!caps.clipboard, "no wl_data_device before a session exists");
+    assert!(backend.clipboard_backend().is_some(), "the rich backend object is always available");
+    assert!(!caps.ime, "no text-input object before a compositor advertises one");
+    assert!(backend.ime_bridge().is_some(), "the bridge object exists; its flag is protocol-bound");
+}
+
+#[test]
+fn pre_present_notify_for_an_unknown_window_is_a_no_op() {
+    // No session, no surface: the request must not panic or start a loop of its own.
+    let backend = WaylandPlatform::new();
+    backend.pre_present_notify(0xDEAD_BEEF);
 }
 
 /// The window is a real state record, so the ordinary widget operations still

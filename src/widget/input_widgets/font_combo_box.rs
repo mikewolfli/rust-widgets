@@ -319,6 +319,24 @@ impl FontComboBox {
         self.fonts.push(font_name);
         self.base.request_redraw();
     }
+    /// Replaces the family list with the host's installed families, or the families compiled
+    /// into this build when the backend reports none.
+    ///
+    /// Returns the number of entries now offered. The list comes from the process-wide snapshot
+    /// in [`crate::platform::fonts`], so opening several controls does not repeat the OS query;
+    /// a caller that has just installed a font refreshes that snapshot first. The selection
+    /// becomes the current font's family when the list contains it, and `-1` otherwise.
+    pub fn load_system_fonts(&mut self) -> usize {
+        self.fonts = crate::platform::fonts::chooser_families();
+        let family = self.current_font.family();
+        self.current_index = self
+            .fonts
+            .iter()
+            .position(|candidate| candidate.eq_ignore_ascii_case(family))
+            .map_or(-1, |index| index as i32);
+        self.base.request_redraw();
+        self.fonts.len()
+    }
     /// Removes the font at `index`; out-of-range indices are ignored.
     ///
     /// If the removed entry was selected, the selection is cleared to `-1`;
@@ -808,6 +826,18 @@ mod tests {
         assert_eq!(fcb.count(), 2);
         assert_eq!(fcb.fonts()[0], "Arial");
         assert_eq!(fcb.fonts()[1], "Helvetica");
+    }
+
+    #[test]
+    fn fontcombobox_load_system_fonts_fills_a_sorted_list() {
+        let mut fcb = FontComboBox::new(Rect::new(0, 0, 200, 24));
+        let count = fcb.load_system_fonts();
+        assert_eq!(fcb.count(), i32::try_from(count).expect("font count fits i32"));
+        assert_eq!(fcb.fonts().len(), count);
+        assert!(fcb
+            .fonts()
+            .windows(2)
+            .all(|pair| pair[0].to_lowercase() <= pair[1].to_lowercase()));
     }
 
     #[test]

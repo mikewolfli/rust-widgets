@@ -96,6 +96,15 @@ pub(crate) fn widget_is_checkable(_widget_id: ObjectId) -> bool {
 #[macro_export]
 macro_rules! impl_platform_state_properties {
     () => {
+        $crate::impl_platform_state_properties!(@inner window_state);
+    };
+    // A backend that applies window state natively (macOS objc2) still needs every other
+    // property method from this macro, but defines the six window-state methods itself.
+    // Without this arm the macro and the native override would be duplicate definitions.
+    (without_window_state) => {
+        $crate::impl_platform_state_properties!(@inner no_window_state);
+    };
+    (@inner $window_state:ident) => {
         // ── Text, geometry, enablement, visibility ──────────────────────────────
         //
         // These four already have hand-written implementations on the desktop backends (which
@@ -406,44 +415,9 @@ macro_rules! impl_platform_state_properties {
         //
         // Only a window has window state: the record is `None` for anything else, so an
         // ordinary control honestly reports refusal here rather than a fabricated answer.
-
-        fn set_window_state(
-            &self,
-            widget_id: $crate::core::ObjectId,
-            flag: $crate::platform::WindowStateFlag,
-            on: bool,
-        ) -> bool {
-            self.state.set_window_state(widget_id, flag, on)
-        }
-
-        fn is_window_in_state(
-            &self,
-            widget_id: $crate::core::ObjectId,
-            flag: $crate::platform::WindowStateFlag,
-        ) -> Option<bool> {
-            self.state.window_state(widget_id, flag)
-        }
-
-        fn set_window_min_size(
-            &self,
-            widget_id: $crate::core::ObjectId,
-            width: u32,
-            height: u32,
-        ) -> bool {
-            self.state.set_window_min_size(widget_id, width, height)
-        }
-
-        fn window_min_size(&self, widget_id: $crate::core::ObjectId) -> Option<(u32, u32)> {
-            self.state.window_min_size(widget_id)
-        }
-
-        fn set_window_icon(&self, widget_id: $crate::core::ObjectId, path: &str) -> bool {
-            self.state.set_window_icon(widget_id, path)
-        }
-
-        fn window_icon(&self, widget_id: $crate::core::ObjectId) -> Option<$crate::compat::String> {
-            self.state.window_icon(widget_id)
-        }
+        // A backend with a native window applies these itself and asks for the
+        // `without_window_state` arm instead.
+        $crate::impl_platform_state_properties!(@window_state $window_state);
 
         // ── IME / accessibility metadata, clipboard, drag-and-drop ──────────────
         //
@@ -491,4 +465,44 @@ macro_rules! impl_platform_state_properties {
             self.state.inject_drop_event(event)
         }
     };
+    (@window_state window_state) => {
+        fn set_window_state(
+            &self,
+            widget_id: $crate::core::ObjectId,
+            flag: $crate::platform::WindowStateFlag,
+            on: bool,
+        ) -> bool {
+            self.state.set_window_state(widget_id, flag, on)
+        }
+
+        fn is_window_in_state(
+            &self,
+            widget_id: $crate::core::ObjectId,
+            flag: $crate::platform::WindowStateFlag,
+        ) -> Option<bool> {
+            self.state.window_state(widget_id, flag)
+        }
+
+        fn set_window_min_size(
+            &self,
+            widget_id: $crate::core::ObjectId,
+            width: u32,
+            height: u32,
+        ) -> bool {
+            self.state.set_window_min_size(widget_id, width, height)
+        }
+
+        fn window_min_size(&self, widget_id: $crate::core::ObjectId) -> Option<(u32, u32)> {
+            self.state.window_min_size(widget_id)
+        }
+
+        fn set_window_icon(&self, widget_id: $crate::core::ObjectId, path: &str) -> bool {
+            self.state.set_window_icon(widget_id, path)
+        }
+
+        fn window_icon(&self, widget_id: $crate::core::ObjectId) -> Option<$crate::compat::String> {
+            self.state.window_icon(widget_id)
+        }
+    };
+    (@window_state no_window_state) => {};
 }

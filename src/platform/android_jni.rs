@@ -227,7 +227,13 @@ pub fn android_integration_ready() -> IntegrationStatus {
 /// Kept as a named constant next to the functions it counts, and asserted by a
 /// test, so adding an entry point without updating it fails the build rather than
 /// silently misreporting the integration's surface.
-pub const NATIVE_METHOD_COUNT: u32 = 10;
+pub const NATIVE_METHOD_COUNT: u32 = 13;
+
+/// The `startActivityForResult` request code the document picker uses.
+///
+/// The host's `onActivityResult` must compare against this constant; it is published here so the
+/// Rust launcher and the Java host cannot drift. `21079` is arbitrary but stable.
+pub const PICK_REQUEST_CODE: i32 = 21079;
 
 /// Runs `f` with a JNI environment, attaching the current thread if needed.
 ///
@@ -246,6 +252,63 @@ where
 // ---------------------------------------------------------------------------
 // Document picker
 // ---------------------------------------------------------------------------
+
+/// Prints `job_file` through Android's `PrintManager` (BLUE28 B28.27).
+///
+/// Android printing needs a `PrintDocumentAdapter`, which cannot be constructed from Rust without
+/// defining a Java class. The adapter lives in `rust_widgets.RustWidgets.printFile(Context,
+/// String)`: it streams the job file's bytes (a PDF or an image produced by the library) to the
+/// destination the print UI chose and reports completion through the adapter callbacks. The
+/// print UI itself is the system `PrintManager.print`, so this hands the file to the real queue
+/// rather than claiming a job that was never submitted.
+///
+/// Returns the failure reason when there is no attached `Context`, the file is not readable, or
+/// the Java helper refused the job.
+#[cfg(feature = "android-jni")]
+pub fn print_file(job_file: &std::path::Path) -> Result<(), String> {
+    if !job_file.is_file() {
+        return Err(format!("print job '{}' is not a readable file", job_file.display()));
+    }
+    let context = activity_context_slot()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+        .ok_or_else(|| "printing needs an attached Activity context".to_string())?;
+    let path = job_file.to_string_lossy().into_owned();
+    with_jni_env(|env| {
+        let class = env
+            .find_class("rust_widgets/RustWidgets")
+            .map_err(|e| format!("cannot resolve rust_widgets.RustWidgets: {e}"))?;
+        let path = env
+            .new_string(path)
+            .map_err(|e| format!("cannot create the print path string: {e}"))?;
+        let result = env
+            .call_static_method(
+                class,
+                "printFile",
+                "(Landroid/content/Context;Ljava/lang/String;)I",
+                &[
+                    jni::objects::JValue::Object(context.as_obj()),
+                    jni::objects::JValue::Object(&path),
+                ],
+            )
+            .map_err(|e| format!("printFile call failed: {e}"))?
+            .i()
+            .map_err(|e| format!("printFile returned a non-int: {e}"))?;
+        if result == 1 {
+            Ok(())
+        } else {
+            Err(format!("the system print manager refused '{}'", job_file.display()))
+        }
+    })
+    .unwrap_or_else(|| Err("no JavaVM is stored; nativeInit has not run".to_string()))
+}
+
+/// Whether the Android host can print: a JVM and an Activity context are attached.
+#[cfg(feature = "android-jni")]
+pub fn print_available() -> bool {
+    is_initialized() && has_activity_context()
+}
 
 /// Asks the host `Activity` to open a document picker.
 ///
@@ -317,7 +380,7 @@ fn launch_document_picker(env: &mut jni::JNIEnv<'_>, mime_type: &str) -> bool {
             context.as_obj(),
             "startActivityForResult",
             "(Landroid/content/Intent;I)V",
-            &[jni::objects::JValue::Object(&intent), jni::objects::JValue::Int(0)],
+            &[jni::objects::JValue::Object(&intent), jni::objects::JValue::Int(PICK_REQUEST_CODE)],
         )?;
         Ok(())
     })();
@@ -1097,6 +1160,106 @@ pub fn font_scale() -> Option<f32> {
     (scale.is_finite() && scale > 0.0).then_some(scale)
 }
 
+/// Whether Android's high-text-contrast accessibility setting is on.
+///
+/// `AccessibilityManager.isHighTextContrastEnabled()` is the API behind the accessibility
+/// "High contrast text" switch. `None` without an attached `Context` or when any JNI step fails.
+pub fn high_contrast() -> Option<bool> {
+    with_jni_env(|env| {
+        let context = attached_context()?;
+        let service = env.new_string("accessibility").ok()?;
+        let manager = env
+            .call_method(
+                context.as_obj(),
+                "getSystemService",
+                "(Ljava/lang/String;)Ljava/lang/Object;",
+                &[jni::objects::JValue::Object(&service)],
+            )
+            .ok()?
+            .l()
+            .ok()?;
+        if manager.is_null() {
+            log::warn!("[android-jni] getSystemService(\"accessibility\") returned null");
+            return None;
+        }
+        let answer =
+            env.call_method(&manager, "isHighTextContrastEnabled", "()Z", &[]).ok()?.z().ok()?;
+        Some(answer)
+    })
+    .flatten()
+}
+
+/// Whether Android's animator duration scale is zero, which is reduced motion.
+///
+/// `Settings.Global.ANIMATOR_DURATION_SCALE` is the developer setting every animation honours;
+/// `0.0` means "remove animations". The default is `1.0`, matching Android's own API default.
+/// `None` without a `Context` or when the setting cannot be read.
+pub fn reduce_motion() -> Option<bool> {
+    with_jni_env(|env| {
+        let context = attached_context()?;
+        let resolver = env
+            .call_method(
+                context.as_obj(),
+                "getContentResolver",
+                "()Landroid/content/ContentResolver;",
+                &[],
+            )
+            .ok()?
+            .l()
+            .ok()?;
+        if resolver.is_null() {
+            return None;
+        }
+        let settings = env.find_class("android/provider/Settings$Global").ok()?;
+        let key = env.new_string("animator_duration_scale").ok()?;
+        let scale = env
+            .call_static_method(
+                settings,
+                "getFloat",
+                "(Landroid/content/ContentResolver;Ljava/lang/String;F)F",
+                &[
+                    jni::objects::JValue::Object(&resolver),
+                    jni::objects::JValue::Object(&key),
+                    jni::objects::JValue::Float(1.0),
+                ],
+            )
+            .ok()?
+            .f()
+            .ok()?;
+        Some(scale == 0.0)
+    })
+    .flatten()
+}
+
+/// The user's locale, from `Locale.getDefault().toLanguageTag()`.
+///
+/// `None` when the JVM cannot be reached. The tag is returned as an owned `String`; the platform
+/// backend interns it for the style layer.
+pub fn system_locale() -> Option<String> {
+    with_jni_env(|env| {
+        let locale_class = env.find_class("java/util/Locale").ok()?;
+        let locale = env
+            .call_static_method(locale_class, "getDefault", "()Ljava/util/Locale;", &[])
+            .ok()?
+            .l()
+            .ok()?;
+        if locale.is_null() {
+            return None;
+        }
+        let tag = env
+            .call_method(&locale, "toLanguageTag", "()Ljava/lang/String;", &[])
+            .ok()?
+            .l()
+            .ok()?;
+        if tag.is_null() {
+            return None;
+        }
+        let tag: jni::objects::JString = tag.into();
+        env.get_string(&tag).ok().map(|value| value.into())
+    })
+    .flatten()
+}
+
 /// The activity window's safe-area insets, in **logical** pixels (top, bottom, left, right).
 ///
 /// # Why `WindowMetrics` and not a `View`
@@ -1684,33 +1847,130 @@ fn widget_self_test() -> jni::sys::jint {
     passed
 }
 
-/// Runs the on-device platform-services probe and returns a pass/fail bitmask.
+/// The result queue for asynchronous path requests (BLUE28 B28.08).
 ///
-/// # Why a separate entry point from `nativeWidgetSelfTest`
+/// The Activity result arrives on the JVM thread; `take_path_choice` is polled by the library's
+/// frame loop. A queue rather than a single slot so two requests cannot overwrite each other's
+/// answer before the host reads it.
+static PATH_CHOICES: std::sync::Mutex<std::collections::VecDeque<crate::platform::PathChoice>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+
+/// Pushes one completed picker answer for `take_path_choice` to read.
+pub fn push_path_choice(choice: crate::platform::PathChoice) {
+    let mut queue = PATH_CHOICES.lock().unwrap_or_else(|error| error.into_inner());
+    queue.push_back(choice);
+}
+
+/// Pops the next completed picker answer, or `None` when none has arrived.
+pub fn take_path_choice() -> Option<crate::platform::PathChoice> {
+    PATH_CHOICES.lock().unwrap_or_else(|error| error.into_inner()).pop_front()
+}
+
+/// Whether `launch_file_dialog` has the bridge state it needs (a VM and an Activity Context).
+pub fn picker_ready() -> bool {
+    JAVA_VM.get().is_some() && attached_context().is_some()
+}
+
+/// Host-side delivery of a document-picker result.
 ///
-/// The widget self-test proves the painted-control path. It says nothing about the two
-/// host services the 2026-10-15 feedback asks about: an application-defined MIME type on the
-/// system clipboard, and display enumeration. Both need the attached `Activity` `Context` and
-/// therefore cannot be exercised by a host test. This entry point drives the real
-/// `Platform::*` methods on the device and reports each step.
+/// The Java host calls this from `onActivityResult`: `path` is the selected document URI's
+/// filesystem path (or empty) and `cancelled` is non-zero when the user dismissed the picker.
+/// Returns `1` when the answer was queued.
+#[no_mangle]
+#[cfg(not(alloc_frugal))]
+pub extern "system" fn Java_rust_1widgets_RustWidgets_nativeInjectPathChoice(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    path: jni::objects::JString,
+    cancelled: jni::sys::jint,
+) -> jni::sys::jint {
+    if cancelled != 0 {
+        push_path_choice(crate::platform::PathChoice::Cancelled);
+        return 1;
+    }
+    let value: String = match env.get_string(&path) {
+        Ok(value) => value.into(),
+        Err(error) => {
+            log::warn!("[android-jni] nativeInjectPathChoice: get_string failed: {error}");
+            push_path_choice(crate::platform::PathChoice::Failed);
+            return 0;
+        }
+    };
+    if value.is_empty() {
+        push_path_choice(crate::platform::PathChoice::Failed);
+    } else {
+        push_path_choice(crate::platform::PathChoice::Chosen(std::path::PathBuf::from(value)));
+    }
+    1
+}
+
+/// Reports a configuration change: `Display.getRotation()` and `Configuration.orientation`.
 ///
-/// | bit | step |
-/// |---|---|
-/// | 0 | `set_contents_with_type` accepted the payload |
-/// | 1 | `has_format` reports the custom type |
-/// | 2 | `get_contents_for_type` returns the same bytes |
-/// | 3 | `get_contents` returns `ClipboardContent::Custom` with the same type and bytes |
-/// | 4 | `displays()` returns at least one display with positive bounds/work area/scale |
-/// | 5 | `display_of_window` places a real window on one of those displays |
-/// | 6 | `display_generation()` is non-zero and stable across two reads |
-/// | 7 | the backend reports clipboard capability while this probe runs |
-/// | 8 | the backend exposes an IME bridge (soft-keyboard control) |
-/// | 9 | `system_theme()` answers `Some(..)` from Android's `Configuration.uiMode` |
-/// | 10 | `text_scale()` answers a usable `Configuration.fontScale` |
-/// | 11 | `safe_area_insets()` answers from `WindowMetrics` |
+/// `rotation` is Android's `Surface.ROTATION_*` (`0..=3`) or `-1` when the host cannot read it;
+/// `axis` is `Configuration.ORIENTATION_*` (`1` portrait, `2` landscape) or `0`. When both are
+/// absent the previous answer is left untouched rather than replaced with a guess. Returns `1`
+/// when the report was accepted.
+#[no_mangle]
+pub extern "system" fn Java_rust_1widgets_RustWidgets_nativeOnConfigurationChanged(
+    _env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    rotation: jni::sys::jint,
+    axis: jni::sys::jint,
+) -> jni::sys::jint {
+    let accepted = if (-1..=3).contains(&rotation) && rotation >= 0 {
+        crate::platform::lifecycle::set_rotation(rotation)
+    } else {
+        crate::platform::lifecycle::set_axis_orientation(axis)
+    };
+    i32::from(accepted)
+}
+
+/// Reports an Activity lifecycle transition (BLUE28 B28.24).
 ///
-/// A return of `0b1111_1111_1111` (4095) is a full pass. `0` means the bridge had no clipboard
-/// backend at all (no `JavaVM`/`Context`), which the caller reports separately.
+/// `state` is `0` active (`onResume`), `1` inactive (`onPause` without losing visibility), or `2`
+/// background (`onStop`). The library stops the animation clock for the latter two and starts it
+/// again on `0`. Returns `1` when the code was understood.
+#[no_mangle]
+pub extern "system" fn Java_rust_1widgets_RustWidgets_nativeOnLifecycleChanged(
+    _env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    state: jni::sys::jint,
+) -> jni::sys::jint {
+    let phase = match state {
+        0 => crate::platform::MobileLifecycleState::Active,
+        1 => crate::platform::MobileLifecycleState::Inactive,
+        2 => crate::platform::MobileLifecycleState::Background,
+        _ => return 0,
+    };
+    i32::from(crate::platform::lifecycle::set_state(phase))
+}
+
+/// Runs the on-device platform-services probe and returns the mask of passed facts.
+///
+/// # Why this delegates to the shared probe
+///
+/// The bit layout belongs to [`crate::platform::diagnostics`], not to Android. Keeping a second,
+/// Android-only order here is exactly the drift principle #54 forbids: a host reading masks from
+/// two platforms could not compare them, and adding a fact would have to be done twice. The
+/// Android Java host still calls this entry point; it now returns the unified layout.
+///
+/// | bit | fact |
+/// |---:|---|
+/// | 0 | `clipboard_backend` carries an application-defined MIME type |
+/// | 1 | `displays()` returns at least one usable display |
+/// | 2 | `display_of_window()` places a real window |
+/// | 3 | `display_generation()` is non-zero and stable |
+/// | 4 | `dpi_scale_factor()` is measured |
+/// | 5 | `system_theme()` answers `Some(..)` |
+/// | 6 | `text_scale()` answers a usable multiplier |
+/// | 7 | `safe_area_insets()` answers `Some(..)` |
+/// | 8 | `ime_bridge()` is present |
+/// | 9 | `accessibility_bridge()` is present |
+/// | 10 | the host picker is declared |
+/// | 11 | external opening is declared |
+///
+/// A return of `0b1111_1111_1111` (4095) is a full pass. A clear bit with a `skip` entry in the
+/// JSON log means the fact does not apply here; only a `fail` entry is a defect.
 #[no_mangle]
 pub extern "system" fn Java_rust_1widgets_RustWidgets_nativePlatformProbe(
     _env: jni::JNIEnv,
@@ -1721,176 +1981,34 @@ pub extern "system" fn Java_rust_1widgets_RustWidgets_nativePlatformProbe(
 
 /// The body behind [`Java_rust_1widgets_RustWidgets_nativePlatformProbe`].
 ///
-/// Kept out of the JNI shim so the step order and the bit meanings live in one place; the
-/// service calls themselves are the same ones a host makes.
+/// Kept out of the JNI shim so the log line and the mask come from one probe run: a host reading
+/// the logcat sees the same twelve facts the mask counts.
 #[cfg(not(alloc_frugal))]
 fn platform_services_probe() -> jni::sys::jint {
-    use crate::platform::clipboard::ClipboardContent;
-
-    const PROBE_TYPE: &str = "application/vnd.rust-widgets.probe+json";
-    // Includes bytes that are not valid UTF-8, because the Android carrier is a text channel:
-    // a UTF-8 shortcut would corrupt these exact bytes while still passing an ASCII-only probe.
-    const PROBE_BYTES: &[u8] = b"{\"probe\":true,\"bytes\":\"\x00\xff\x80\"}";
-
-    let mut passed = 0;
-    let platform = crate::platform::get_platform();
-
-    // 7 first: a host reading the bitmask should be able to tell "the clipboard service is
-    // absent" (all bits clear) from "the clipboard service is present but a step failed".
-    if crate::platform::capabilities().clipboard {
-        passed |= 1 << 7;
-    } else {
-        log::error!(
-            "[android-jni] platform probe: capabilities().clipboard is false while a Context is \
-             attached; the system clipboard was not exercised"
-        );
-        return passed;
-    }
-
-    let Some(clipboard) = platform.clipboard_backend() else {
-        log::error!("[android-jni] platform probe: no rich clipboard backend despite the flag");
-        return passed;
-    };
-
-    // Keep whatever was on the clipboard so the emulator/device is not left with the probe
-    // payload. A failed restore is logged but is not a probe failure: the platform may refuse
-    // writes from a non-foreground process, and that is not what this test measures.
-    let previous = clipboard.get_contents();
-
-    if clipboard.set_contents_with_type(PROBE_TYPE, PROBE_BYTES) {
-        passed |= 1;
-    } else {
-        log::error!("[android-jni] platform probe: set_contents_with_type refused");
-    }
-
-    if clipboard.has_format(PROBE_TYPE) {
-        passed |= 1 << 1;
-    } else {
-        log::error!("[android-jni] platform probe: has_format({PROBE_TYPE}) is false after write");
-    }
-
-    match clipboard.get_contents_for_type(PROBE_TYPE) {
-        Some(bytes) if bytes == PROBE_BYTES => passed |= 1 << 2,
-        other => {
-            log::error!("[android-jni] platform probe: typed read returned {other:?}");
+    let diagnostics = crate::platform::diagnostics::run();
+    log::info!("[android-jni] platform diagnostics: {}", diagnostics.to_json());
+    for entry in &diagnostics.entries {
+        match entry.status {
+            crate::platform::diagnostics::DiagnosticStatus::Pass => {}
+            crate::platform::diagnostics::DiagnosticStatus::Skip => {
+                log::info!(
+                    "[android-jni] platform probe: bit {} ({}) skipped: {}",
+                    entry.bit,
+                    entry.name,
+                    entry.detail
+                );
+            }
+            crate::platform::diagnostics::DiagnosticStatus::Fail => {
+                log::error!(
+                    "[android-jni] platform probe: bit {} ({}) failed: {}",
+                    entry.bit,
+                    entry.name,
+                    entry.detail
+                );
+            }
         }
     }
-
-    match clipboard.get_contents() {
-        Some(ClipboardContent::Custom { content_type, data })
-            if content_type == PROBE_TYPE && data == PROBE_BYTES =>
-        {
-            passed |= 1 << 3;
-        }
-        other => {
-            log::error!("[android-jni] platform probe: get_contents returned {other:?}");
-        }
-    }
-
-    if let Some(previous) = previous {
-        if !clipboard.set_contents(previous) {
-            log::warn!("[android-jni] platform probe: could not restore the previous clipboard");
-        }
-    }
-
-    let displays = platform.displays();
-    if platform.capabilities().dpi_scaling
-        && platform.dpi_scale_factor() > 0.0
-        && displays.iter().any(|display| {
-            display.bounds.width > 0
-                && display.bounds.height > 0
-                && display.work_area.width > 0
-                && display.work_area.height > 0
-                && display.scale > 0.0
-        })
-    {
-        passed |= 1 << 4;
-    } else {
-        log::error!(
-            "[android-jni] platform probe: displays() returned {displays:?}, dpi_scale_factor()={}, \
-             dpi_scaling={}",
-            platform.dpi_scale_factor(),
-            platform.capabilities().dpi_scaling
-        );
-    }
-
-    // The IME bridge controls the Android soft keyboard (`InputMethodManager`), the platform
-    // operation winit's Android backend performs. Its presence is the capability assertion; the
-    // focus pair below exercises the JNI path without requiring the keyboard to be visible on a
-    // screen nobody is looking at.
-    if let Some(bridge) = platform.ime_bridge() {
-        passed |= 1 << 8;
-        let window = crate::create_window("IME Probe", 0, 0, 320, 240);
-        if window != 0 {
-            bridge.focus_in(window);
-            bridge.focus_out(window);
-            destroy(window);
-        }
-    } else {
-        log::error!("[android-jni] platform probe: ime_bridge() returned None");
-    }
-
-    // A real window is what `display_of_window` translates from; a made-up id would exercise
-    // only the refusal branch and pass with the success branch broken.
-    let window = crate::create_window("Platform Probe", 0, 0, 320, 240);
-    if window != 0 {
-        if platform.display_of_window(window).is_some() {
-            passed |= 1 << 5;
-        } else {
-            log::error!("[android-jni] platform probe: display_of_window({window}) returned None");
-        }
-        destroy(window);
-    } else {
-        log::error!("[android-jni] platform probe: create_window returned 0");
-    }
-
-    let first = platform.display_generation();
-    let second = platform.display_generation();
-    if first != 0 && first == second {
-        passed |= 1 << 6;
-    } else {
-        log::error!(
-            "[android-jni] platform probe: display_generation read {first} then {second}; expected \
-             the same non-zero value"
-        );
-    }
-
-    // The two host facts added in this round: the night-mode bit and the user's text-size
-    // multiplier both come from the activity's `Configuration`. Asserting `is_some` is the
-    // meaningful check — the value itself depends on how the emulator/device is configured, and a
-    // probe that pinned `Some(false)` would fail on a phone set to dark mode.
-    if platform.system_theme().is_some() {
-        passed |= 1 << 9;
-    } else {
-        log::error!(
-            "[android-jni] platform probe: system_theme() returned None while a Context is attached"
-        );
-    }
-    let scale = platform.text_scale();
-    if scale.is_finite() && scale > 0.0 {
-        passed |= 1 << 10;
-    } else {
-        log::error!("[android-jni] platform probe: text_scale() returned {scale}");
-    }
-
-    // `WindowMetrics` is the API-30+ way to read the activity window's insets without a `View`.
-    // The value itself depends on the device (a status bar is usually non-zero), so `is_some` is
-    // the assertion; a build or device without the API reports `None` and this bit stays clear.
-    let inset_window = crate::create_window("Insets Probe", 0, 0, 320, 240);
-    if inset_window != 0 {
-        if platform.safe_area_insets(inset_window).is_some() {
-            passed |= 1 << 11;
-        } else {
-            log::error!(
-                "[android-jni] platform probe: safe_area_insets({inset_window}) returned None"
-            );
-        }
-        destroy(inset_window);
-    } else {
-        log::error!("[android-jni] platform probe: create_window for the insets check returned 0");
-    }
-
-    passed
+    diagnostics.mask() as jni::sys::jint
 }
 
 /// `alloc_frugal` has no platform singleton to probe.
@@ -1901,12 +2019,125 @@ fn platform_services_probe() -> jni::sys::jint {
 
 /// Tears a control down through the same backend call the C ABI's `rw_destroy_widget` uses.
 ///
-/// Named locally rather than reaching for `crate::destroy_widget`, which does not exist: the
-/// crate's public surface creates controls and the backend destroys them, so calling the
-/// backend directly is what makes this the same path a host's teardown takes.
+/// Kept for the widget self-test above, which still owns its own window lifecycle.
 #[cfg(not(alloc_frugal))]
 fn destroy(widget_id: crate::core::ObjectId) {
     let _ = crate::control_backend::get_control_backend().destroy_widget(widget_id);
+}
+
+/// The first mounted top-level window, which is the root a host pointer event addresses.
+///
+/// The Android host model is one Activity window, so the first is the only one. A host event
+/// that arrives before any widget window exists answers `None` and is ignored rather than
+/// dispatched to an id that addresses nothing.
+#[cfg(not(alloc_frugal))]
+fn first_window() -> Option<crate::core::ObjectId> {
+    let found = core::cell::Cell::new(None);
+    crate::widget::runtime::for_each_mounted_widget(|id, widget| {
+        if found.get().is_none() && widget.kind() == crate::widget::WidgetKind::Window {
+            found.set(Some(id));
+        }
+    });
+    found.get()
+}
+
+/// Host-side pointer forwarding: `onTouchEvent` / `onGenericMotionEvent` call this.
+///
+/// `code` is the same stable vocabulary the C ABI uses: `1` press, `2` release, `3` move, `4`
+/// enter, `5` leave. Coordinates are **view pixels**; they are divided by the display density so
+/// the widget runtime sees the logical space its geometry was created in. Returns `1` when a
+/// window accepted the event, `0` otherwise (including an unknown code).
+#[no_mangle]
+#[cfg(not(alloc_frugal))]
+pub extern "system" fn Java_rust_1widgets_RustWidgets_nativeDispatchPointerEvent(
+    _env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    code: jni::sys::jint,
+    x: jni::sys::jint,
+    y: jni::sys::jint,
+    button: jni::sys::jint,
+) -> jni::sys::jint {
+    let Some(window) = first_window() else {
+        log::warn!("[android-jni] pointer event before a widget window exists; ignored");
+        return 0;
+    };
+    let scale = crate::platform::get_platform().dpi_scale_factor();
+    let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    let logical_x = (x as f32 / scale).round() as i32;
+    let logical_y = (y as f32 / scale).round() as i32;
+    let point = crate::core::Point::new(logical_x, logical_y);
+    let event = match code {
+        1 => crate::event::Event::mouse_press(logical_x, logical_y, button as u32),
+        2 => crate::event::Event::mouse_release(logical_x, logical_y, button as u32),
+        3 => crate::event::Event::mouse_move(logical_x, logical_y),
+        4 => crate::event::Event::MouseEnter { pos: point },
+        5 => crate::event::Event::MouseLeave { pos: point },
+        _ => {
+            log::warn!("[android-jni] unknown pointer event code {code}");
+            return 0;
+        }
+    };
+    if crate::widget::runtime::dispatch_pointer_event(window, &event, point) {
+        1
+    } else {
+        0
+    }
+}
+
+/// Host-side text commit: an IME's `commitText` reaches this entry point.
+///
+/// The text goes to the focused widget, which is the same target the library's IME bridge
+/// uses. Returns `1` when a focused widget accepted it.
+#[no_mangle]
+#[cfg(not(alloc_frugal))]
+pub extern "system" fn Java_rust_1widgets_RustWidgets_nativeDispatchText(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    text: jni::objects::JString,
+) -> jni::sys::jint {
+    let value: String = match env.get_string(&text) {
+        Ok(value) => value.into(),
+        Err(error) => {
+            log::warn!("[android-jni] nativeDispatchText: get_string failed: {error}");
+            return 0;
+        }
+    };
+    let Some(focused) = crate::widget::runtime::focused_widget() else {
+        return 0;
+    };
+    if crate::widget::runtime::dispatch_event(focused, &crate::event::Event::text_input(value)) {
+        1
+    } else {
+        0
+    }
+}
+
+/// Host-side key forwarding: `onKeyDown`/`onKeyUp` call this.
+///
+/// `key_code` is Android's `KeyEvent.getKeyCode()`; `pressed` is `1` for down and `0` for up.
+/// The focused widget receives the same `KeyPress`/`KeyRelease` the desktop backends dispatch.
+#[no_mangle]
+#[cfg(not(alloc_frugal))]
+pub extern "system" fn Java_rust_1widgets_RustWidgets_nativeDispatchKeyEvent(
+    _env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    key_code: jni::sys::jint,
+    modifiers: jni::sys::jint,
+    pressed: jni::sys::jint,
+) -> jni::sys::jint {
+    let Some(focused) = crate::widget::runtime::focused_widget() else {
+        return 0;
+    };
+    let event = if pressed != 0 {
+        crate::event::Event::key_press(key_code as u32, modifiers as u32)
+    } else {
+        crate::event::Event::key_release(key_code as u32, modifiers as u32)
+    };
+    if crate::widget::runtime::dispatch_event(focused, &event) {
+        1
+    } else {
+        0
+    }
 }
 
 /// `alloc_frugal` compiles `widget::runtime` out, so there is no registry to self-test.

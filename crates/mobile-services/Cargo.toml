@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+# SPDX-License-Identifier: MIT
+[package]
+name = "rust-widgets-mobile-services"
+version = "2.8.9"
+edition = "2021"
+license = "MIT"
+description = "Optional mobile application services for rust-widgets (BLUE28 B28.44): keep-awake, haptics, permissions, notifications, share, deep links"
+authors = ["Mike Li <mikewolfli@163.com>"]
+repository = "https://github.com/mikewolfli/rust-widgets"
+rust-version = "1.88"
+publish = false
+# This crate is deliberately **not** a member of the root package's build. The root
+# `Cargo.toml` has an `include` whitelist that does not name `crates/`, so `cargo package`
+# at the root neither ships nor compiles this directory. A host opts in with:
+#
+#     [dependencies]
+#     rust-widgets-mobile-services = { path = "../rust-widgets/crates/mobile-services" }
+#
+# B28.44 classifies these as application-shell services, not GUI core, so they must never
+# become an implicit dependency of the widget library.
+
+[dependencies]
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-ui-kit = "0.3"
+objc2-av-foundation = { version = "0.3", features = [
+    "AVCaptureDevice",
+    "AVMediaFormat",
+    "block2",
+] }
+objc2-photos = { version = "0.3", features = ["PHPhotoLibrary", "block2"] }
+objc2-user-notifications = { version = "0.3", features = [
+    "UNUserNotificationCenter",
+    "UNNotificationContent",
+    "UNNotificationRequest",
+    "UNNotificationSettings",
+    "UNNotificationSound",
+    "UNNotificationTrigger",
+    "block2",
+] }
+block2 = "0.6"

@@ -26,18 +26,18 @@
 
 ```toml
 [dependencies]
-rust_widgets = "2.8.8"
+rust_widgets = "2.8.9"
 ```
 
 **只能选一个**设备 profile。它们互斥：`mini` 与 `embedded` 会把 crate 的一部分**编译掉**，所以把它和 `desktop`
 凑在一起不是"取最小公共集"，而是一个根本跑不起来的构建。
 
 ```toml
-rust_widgets = { version = "2.8.8", features = ["desktop"] }                       # 默认
-rust_widgets = { version = "2.8.8", default-features = false, features = ["tablet"] }
-rust_widgets = { version = "2.8.8", default-features = false, features = ["mobile"] }
-rust_widgets = { version = "2.8.8", default-features = false, features = ["embedded"] }
-rust_widgets = { version = "2.8.8", default-features = false, features = ["mini"] }
+rust_widgets = { version = "2.8.9", features = ["desktop"] }                       # 默认
+rust_widgets = { version = "2.8.9", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "2.8.9", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "2.8.9", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "2.8.9", default-features = false, features = ["mini"] }
 ```
 
 > `cargo check --features embedded` 是**错的**，而且错得很安静：`desktop` 是默认特性，这条命令同时打开了两个
@@ -246,7 +246,7 @@ K 线、成交量、深度、指标、雷达、热力图、仪表盘、sparkline
 
 ## 语言绑定
 
-`src/bindings/` 里的 C ABI 用 **146 个 `rw_*` 函数**把每个控件暴露出去，配一套基于能力（capability）的属性与事件
+`src/bindings/` 里的 C ABI 用 **152 个 `rw_*` 函数**把每个控件暴露出去，配一套基于能力（capability）的属性与事件
 模型。C、C++、Python、Java（JNI）与 Node 绑定都在 CI 里跑过；生成的头文件由 `tools/check_abi.sh` 检查漂移。
 从 [`cookbook/zh-CN/src/chapters/language-bindings.md`](cookbook/zh-CN/src/chapters/language-bindings.md) 开始。
 
@@ -276,7 +276,7 @@ MIT —— 见 [LICENSE](LICENSE)。
 问题反馈：[GitHub Issues](https://github.com/mikewolfli/rust-widgets/issues)
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.8.8-blue)]()
+[![version](https://img.shields.io/badge/version-2.8.9-blue)]()
 [![tests](https://img.shields.io/badge/tests-7600%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 [![controls](https://img.shields.io/badge/controls-181-blue)]()

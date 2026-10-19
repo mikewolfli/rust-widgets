@@ -46,24 +46,34 @@
 use crate::compat::{BTreeMap, String, Vec};
 use crate::core::Rect;
 use crate::platform::clipboard::{ClipboardContent, RichClipboardBackend};
-use crate::platform::types::{Display, DisplayId};
+use crate::platform::types::{Display, DisplayId, SafeAreaInsets};
+use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
 use objc2::MainThreadMarker;
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
-use objc2_foundation::{NSData, NSString};
+use objc2_foundation::{NSData, NSLocale, NSString, NSURL};
 use objc2_ui_kit::{
-    NSObjectUIAccessibility, UIColor, UIPasteboard, UIScreen, UITraitCollection,
-    UIUserInterfaceStyle, UIView, UIViewController, UIWindow,
+    NSObjectUIAccessibility, UIAccessibilityDarkerSystemColorsEnabled,
+    UIAccessibilityIsReduceMotionEnabled, UIApplication, UIColor, UIContentSizeCategory,
+    UIContentSizeCategoryAccessibilityExtraExtraExtraLarge,
+    UIContentSizeCategoryAccessibilityExtraExtraLarge,
+    UIContentSizeCategoryAccessibilityExtraLarge, UIContentSizeCategoryAccessibilityLarge,
+    UIContentSizeCategoryAccessibilityMedium, UIContentSizeCategoryExtraExtraExtraLarge,
+    UIContentSizeCategoryExtraExtraLarge, UIContentSizeCategoryExtraLarge,
+    UIContentSizeCategoryExtraSmall, UIContentSizeCategoryLarge, UIContentSizeCategoryMedium,
+    UIContentSizeCategorySmall, UIPasteboard, UIPrintInfo, UIPrintInteractionController, UIScreen,
+    UITraitCollection, UIUserInterfaceStyle, UIViewController, UIWindow,
 };
 
-/// The `UIWindow` each platform window id owns.
-///
-/// # Why the backend now keeps the window
-///
-/// The platform window was deliberately dropped after `makeKeyAndVisible()`, because no
-/// control mutator needed it. `display_of_window` does: winit answers "which monitor is this
-/// window on?" from `UIWindow.screen()`, and returning the primary screen for every window is
-/// wrong on a device with an external display. `Retained<UIWindow>` is not `Send`, so the table
-/// is main-thread-local and every accessor answers `None` off the main thread.
+// The `UIWindow` each platform window id owns.
+//
+// # Why the backend now keeps the window
+//
+// The platform window was deliberately dropped after `makeKeyAndVisible()`, because no
+// control mutator needed it. `display_of_window` does: winit answers "which monitor is this
+// window on?" from `UIWindow.screen()`, and returning the primary screen for every window is
+// wrong on a device with an external display. `Retained<UIWindow>` is not `Send`, so the table
+// is main-thread-local and every accessor answers `None` off the main thread.
 thread_local! {
     static UI_WINDOWS: core::cell::RefCell<BTreeMap<u64, objc2::rc::Retained<UIWindow>>> =
         core::cell::RefCell::new(BTreeMap::new());
@@ -139,6 +149,7 @@ pub(crate) fn forget_ui_window(window_id: u64) {
 ///
 /// This is the same lookup winit's UIKit backend performs (`UIWindow.screen()`), and the index is
 /// the id [`displays`] hands out. `None` for an unknown window or off the main thread.
+#[allow(deprecated)] // UIScreen.screens is the only UIKit listing available without a scene.
 pub(crate) fn screen_id_of_window(window_id: u64) -> Option<u64> {
     let mtm = MainThreadMarker::new()?;
     UI_WINDOWS.with(|windows| {
@@ -149,7 +160,7 @@ pub(crate) fn screen_id_of_window(window_id: u64) -> Option<u64> {
             .iter()
             .position(|candidate| {
                 core::ptr::eq(
-                    objc2::rc::Retained::as_ptr(candidate),
+                    objc2::rc::Retained::as_ptr(&candidate),
                     objc2::rc::Retained::as_ptr(&screen),
                 )
             })
@@ -207,6 +218,116 @@ pub(crate) fn system_theme() -> Option<bool> {
     } else {
         None
     }
+}
+
+// ─── Environment facts and text size (B28.06 / B28.10) ───
+
+/// Whether the user asked for increased contrast.
+///
+/// `UIAccessibilityDarkerSystemColorsEnabled()` is UIKit's answer to the accessibility
+/// "Increase contrast" switch; it is thread-safe.
+pub(crate) fn high_contrast() -> bool {
+    UIAccessibilityDarkerSystemColorsEnabled()
+}
+
+/// Whether the user asked for reduced motion.
+///
+/// `UIAccessibilityIsReduceMotionEnabled()`, the "Reduce motion" accessibility switch.
+pub(crate) fn reduce_motion() -> bool {
+    UIAccessibilityIsReduceMotionEnabled()
+}
+
+/// The user's locale, from `NSLocale.currentLocale`.
+pub(crate) fn system_locale() -> Option<&'static str> {
+    let identifier = NSLocale::currentLocale().localeIdentifier().to_string();
+    crate::platform::locale::intern(Some(identifier.replace('_', "-")))
+        .or_else(|| crate::platform::locale::intern(crate::platform::locale::from_environment()))
+}
+
+/// The user's preferred text size, as a multiplier on the nominal body size.
+///
+/// `UIContentSizeCategory` is a **category name**, not a multiplier, so it needs the fixed
+/// mapping below. The ratios are Apple's body-text point sizes (17 pt at `.large`) divided by the
+/// nominal size, clamped to `1.0..=3.0` as BLUE28 B28.10 specifies: categories below `.large`
+/// still request smaller text, but the library does not shrink below the authored size (a UI that
+/// becomes unreadably small on "extra small" is worse than no scaling). `.unspecified` and an
+/// unknown category answer `None` — the OS did not tell us.
+pub(crate) fn text_scale() -> Option<f32> {
+    let mtm = MainThreadMarker::new()?;
+    let category = UIApplication::sharedApplication(mtm).preferredContentSizeCategory();
+    let current: &UIContentSizeCategory = &*category;
+    // SAFETY: each name is an immutable UIKit string constant, compared by value.
+    let table: [(&UIContentSizeCategory, f32); 12] = unsafe {
+        [
+            (UIContentSizeCategoryExtraSmall, 1.0),
+            (UIContentSizeCategorySmall, 1.0),
+            (UIContentSizeCategoryMedium, 1.0),
+            (UIContentSizeCategoryLarge, 1.0),
+            (UIContentSizeCategoryExtraLarge, 1.12),
+            (UIContentSizeCategoryExtraExtraLarge, 1.24),
+            (UIContentSizeCategoryExtraExtraExtraLarge, 1.35),
+            (UIContentSizeCategoryAccessibilityMedium, 1.65),
+            (UIContentSizeCategoryAccessibilityLarge, 1.94),
+            (UIContentSizeCategoryAccessibilityExtraLarge, 2.35),
+            (UIContentSizeCategoryAccessibilityExtraExtraLarge, 2.76),
+            (UIContentSizeCategoryAccessibilityExtraExtraExtraLarge, 3.0),
+        ]
+    };
+    for (name, scale) in table {
+        if current == name {
+            return Some(scale);
+        }
+    }
+    None
+}
+
+// ─── System fonts (B28.39) ───
+
+/// The installed families, their style names and backing files, through CoreText.
+///
+/// `UIFont.familyNames` reports names only; CoreText's `kCTFontURLAttribute` is what supplies the
+/// file the renderer can register. The enumeration is not main-thread-only.
+pub(crate) fn system_fonts() -> Vec<crate::platform::types::SystemFont> {
+    crate::platform::fonts_apple::system_fonts()
+}
+
+// ─── Printing (B28.27) ───
+
+/// Whether UIKit can print a file URL. `UIPrintInteractionController` is present on every iOS
+/// version this crate supports, so the capability is the build fact.
+pub(crate) fn has_print_support() -> bool {
+    true
+}
+
+/// Presents UIKit's print panel for `job_file`.
+///
+/// `UIPrintInteractionController` prints a file URL through the same system print queue every
+/// other app uses. The call is main-thread-only and returns as soon as the panel is presented;
+/// the user's confirmation is the print job, not this function's return.
+pub(crate) fn spawn_print_job(job_file: &std::path::Path) -> Result<(), String> {
+    let mtm = MainThreadMarker::new()
+        .ok_or_else(|| "printing must be requested from the main thread".to_string())?;
+    let path = job_file
+        .to_str()
+        .ok_or_else(|| format!("print job path is not UTF-8: {}", job_file.display()))?;
+    let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+    if !UIPrintInteractionController::canPrintURL(&url, mtm) {
+        return Err(format!("UIKit cannot print '{}'", job_file.display()));
+    }
+    let controller = UIPrintInteractionController::sharedPrintController(mtm);
+    let info = UIPrintInfo::printInfo(mtm);
+    info.setJobName(&NSString::from_str("rust-widgets"));
+    controller.setPrintInfo(Some(&info));
+    // SAFETY: `setPrintingItem:` accepts any NSObject; the retained URL outlives the call and the
+    // controller copies/retains what it needs for the presentation that follows.
+    unsafe {
+        let item: &AnyObject = &*(Retained::as_ptr(&url) as *const AnyObject);
+        controller.setPrintingItem(Some(item));
+    }
+    unsafe {
+        controller.presentAnimated_completionHandler(true, std::ptr::null_mut());
+    }
+    Ok(())
 }
 
 // ─── The system pasteboard ───
@@ -336,6 +457,38 @@ pub(crate) fn pasteboard_custom_type() -> Option<String> {
 /// handle reports `nativeScale`, because its monitor geometry is in **physical** pixels; this
 /// crate's [`Display`] contract is logical space plus a scale, so `scale` is the consistent
 /// choice here (on a downsampling device `nativeScale` would disagree with the logical bounds).
+#[allow(deprecated)] // UIScreen.mainScreen is the documented value for the primary screen.
+/// The interface orientation of the first recorded window's scene (BLUE28 B28.24).
+///
+/// `UIWindowScene.interfaceOrientation` is the only UIKit source that distinguishes all four
+/// orientations; `UIDevice.orientation` mixes device and interface orientation and needs
+/// notification generation. A window created through `initWithFrame:` has no scene, and off the
+/// main thread there is no UIKit at all, so both answer `None` rather than a fabricated portrait.
+pub(crate) fn interface_orientation() -> Option<crate::platform::ScreenOrientation> {
+    let _mtm = MainThreadMarker::new()?;
+    UI_WINDOWS.with(|windows| {
+        for window in windows.borrow().values() {
+            let Some(scene) = window.windowScene() else { continue };
+            return Some(match scene.interfaceOrientation() {
+                objc2_ui_kit::UIInterfaceOrientation::Portrait => {
+                    crate::platform::ScreenOrientation::Portrait
+                }
+                objc2_ui_kit::UIInterfaceOrientation::PortraitUpsideDown => {
+                    crate::platform::ScreenOrientation::PortraitUpsideDown
+                }
+                objc2_ui_kit::UIInterfaceOrientation::LandscapeLeft => {
+                    crate::platform::ScreenOrientation::LandscapeLeft
+                }
+                objc2_ui_kit::UIInterfaceOrientation::LandscapeRight => {
+                    crate::platform::ScreenOrientation::LandscapeRight
+                }
+                _ => return None,
+            });
+        }
+        None
+    })
+}
+
 pub(crate) fn main_screen_scale() -> Option<f32> {
     let mtm = MainThreadMarker::new()?;
     let screen = UIScreen::mainScreen(mtm);
@@ -349,6 +502,7 @@ pub(crate) fn main_screen_scale() -> Option<f32> {
 /// rather than touching UIKit. The work area is the screen's bounds: iOS has no API here that
 /// reports the safe area as a rectangle without a view, and returning a fabricated inset would be
 /// worse than returning the full extent.
+#[allow(deprecated)] // See `screen_id_of_window`.
 pub(crate) fn displays() -> Vec<Display> {
     let Some(mtm) = MainThreadMarker::new() else {
         return Vec::new();

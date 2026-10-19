@@ -192,6 +192,65 @@ impl EnvironmentProvider for PlatformEnvironment {
             _ => ThemeMode::Light,
         }
     }
+
+    /// The host's locale, when a backend can read one.
+    ///
+    /// BLUE28 B28.06: this used to answer `None` unconditionally, so every control saw the
+    /// neutral locale even on a host that could name one. The tag is interned by the platform
+    /// layer, so this returns a process-lifetime slice with no per-frame allocation.
+    fn locale(&self) -> Option<&'static str> {
+        crate::platform::platform_facts().system_locale()
+    }
+
+    /// The host's motion preference, when it has one.
+    ///
+    /// `None` from the platform means "no such setting here", which this layer maps to the
+    /// neutral [`MotionPreference::NoPreference`] — the same collapse the color scheme does.
+    fn motion_preference(&self) -> MotionPreference {
+        match crate::platform::platform_facts().reduce_motion() {
+            Some(true) => MotionPreference::ReduceMotion,
+            _ => MotionPreference::NoPreference,
+        }
+    }
+
+    /// The host's contrast preference, when it has one.
+    ///
+    /// `None` (no such setting) and `Some(false)` (setting observed and off) both render with the
+    /// normal appearance, but only the latter is a claim about the user.
+    fn high_contrast(&self) -> bool {
+        crate::platform::platform_facts().high_contrast().unwrap_or(false)
+    }
+
+    /// The base text direction, derived from the host locale.
+    ///
+    /// The direction is a property of the language, so it is derived from the same tag
+    /// [`Self::locale`] reports rather than asked separately. See [`text_direction_for_locale`]
+    /// for the fixed language list and why it is a prefix match.
+    fn text_direction(&self) -> TextDirection {
+        text_direction_for_locale(self.locale())
+    }
+}
+
+/// The text direction a BCP-47 tag implies, using a fixed right-to-left language list.
+///
+/// A prefix match is deliberate: the direction belongs to the language subtag (`ar`, `he`, `fa`,
+/// …), so `ar-EG`, `ar-SA` and `ar` all answer right-to-left without enumerating every region.
+/// Script subtags are not consulted (`az-Arab` is written right-to-left but `az` is Latin), which
+/// is a documented boundary: the library has no script-aware bidi resolver, and guessing from a
+/// script subtag would require one. `None` (unknown locale) is left-to-right, which is the neutral
+/// default every other fact in this module also uses.
+pub fn text_direction_for_locale(locale: Option<&str>) -> TextDirection {
+    const RTL_LANGUAGES: [&str; 13] =
+        ["ar", "arc", "ckb", "dv", "fa", "he", "iw", "ku", "ps", "sd", "ug", "ur", "yi"];
+    let Some(tag) = locale else {
+        return TextDirection::LeftToRight;
+    };
+    let language = tag.split(['-', '_']).next().unwrap_or(tag).to_ascii_lowercase();
+    if RTL_LANGUAGES.contains(&language.as_str()) {
+        TextDirection::RightToLeft
+    } else {
+        TextDirection::LeftToRight
+    }
 }
 
 /// A [`EnvironmentProvider`] that answers every question with its neutral default.
@@ -602,5 +661,44 @@ mod tests {
         assert_eq!(effective_duration(MotionSlot::Fast, &env), MotionSlot::Fast.duration_ms());
         assert_eq!(effective_duration(MotionSlot::Normal, &env), MotionSlot::Normal.duration_ms());
         assert_eq!(effective_duration(MotionSlot::Slow, &env), MotionSlot::Slow.duration_ms());
+    }
+
+    /// The bidi rule is fixed: the language subtag decides, and unknown input stays LTR.
+    ///
+    /// This is the "text_direction derived from locale" contract B28.06 asks for. The cases are
+    /// the ones a host can really report: a bare tag, a region tag, a legacy code (`iw`) and a
+    /// script-bearing tag (`az-Arab`) that the documented boundary deliberately leaves LTR.
+    #[test]
+    fn text_direction_follows_the_language_subtag() {
+        for rtl in ["ar", "ar-EG", "he", "he-IL", "fa", "ur-PK", "ckb", "iw"] {
+            assert_eq!(
+                text_direction_for_locale(Some(rtl)),
+                TextDirection::RightToLeft,
+                "{rtl} is written right-to-left"
+            );
+        }
+        for ltr in ["en", "en-US", "de-DE", "ja", "zh-Hant", "az-Arab"] {
+            assert_eq!(text_direction_for_locale(Some(ltr)), TextDirection::LeftToRight, "{ltr}");
+        }
+        assert_eq!(text_direction_for_locale(None), TextDirection::LeftToRight);
+    }
+
+    /// The platform provider forwards all four environment facts it can read.
+    ///
+    /// This cannot pin the host's actual values (they differ per machine), so it asserts the
+    /// relationship a forwarding bug would break: the provider's answers equal the platform's.
+    /// Run on a host where each platform method answers `None`, it still proves the provider did
+    /// not substitute a fabricated value.
+    #[test]
+    fn the_default_provider_forwards_the_platform_facts() {
+        let provider = PlatformEnvironment;
+        let platform = crate::platform::platform_facts();
+        assert_eq!(provider.locale(), platform.system_locale());
+        assert_eq!(provider.high_contrast(), platform.high_contrast().unwrap_or(false));
+        assert_eq!(
+            provider.motion_preference() == MotionPreference::ReduceMotion,
+            platform.reduce_motion() == Some(true)
+        );
+        assert_eq!(provider.text_direction(), text_direction_for_locale(platform.system_locale()));
     }
 }

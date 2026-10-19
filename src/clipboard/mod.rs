@@ -59,6 +59,9 @@ mod tests {
             target_widget_id: target,
             mime: "text/plain".to_string(),
             payload: b"payload".to_vec(),
+            files: Vec::new(),
+            action: crate::platform::DropAction::Copy,
+            position: None,
         };
         assert!(DragDropManager::inject_drop_event_with(&stub, event.clone()));
         let queued = DragDropManager::poll_drop_event_with(&stub);

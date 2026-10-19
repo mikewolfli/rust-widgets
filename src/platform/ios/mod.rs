@@ -3,6 +3,8 @@
 
 //! iOS mobile platform backend (state-driven).
 
+/// Host-reported lifecycle/orientation C entry points (BLUE28 B28.24).
+pub mod host_facts;
 #[cfg(all(apple_uikit, feature = "ios-uikit-ffi"))]
 pub mod native;
 /// The `Platform` implementation for iOS.

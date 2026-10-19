@@ -142,7 +142,10 @@ impl AccessibilityBridge for MacOSAccessibilityBridge {
     }
 
     fn notify_name_changed(&self, id: ObjectId) {
-        self.post_notification(id, "NSAccessibilityNameChangedNotification");
+        // AppKit's name for this notification is `NSAccessibilityTitleChangedNotification`;
+        // there is no `NameChanged` constant, and posting an invented string delivered no
+        // notification to VoiceOver at all.
+        self.post_notification(id, "NSAccessibilityTitleChangedNotification");
     }
 
     fn notify_value_changed(&self, id: ObjectId) {

@@ -862,7 +862,7 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-ios-sim,aarch64-apple-ios
+          targets: aarch64-apple-ios-sim,aarch64-apple-ios,aarch64-apple-tvos,aarch64-apple-visionos,aarch64-apple-ios-macabi
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -907,3 +907,43 @@ jobs:
 
       - name: iOS device-target compile check
         run: cargo check --target aarch64-apple-ios --features "desktop,ios-uikit-ffi"
+
+      # BLUE28 B28.14: tvOS and visionOS share the UIKit backend but have their own target
+      # triples. Compile-checking them keeps the `apple_uikit` arms from drifting to iOS-only
+      # API, which no host build can catch.
+      - name: tvOS / visionOS compile check
+        run: |
+          cargo check --target aarch64-apple-tvos --no-default-features \
+            --features "ios-uikit-ffi,mobile,controls-custom,controls-native"
+          cargo check --target aarch64-apple-visionos --no-default-features \
+            --features "ios-uikit-ffi,mobile,controls-custom,controls-native"
+
+      # BLUE28 B28.14: Mac Catalyst shares the UIKit backend. The target needs the Catalyst SDK
+      # (installed on the macOS runner), so the check is real rather than a documentation claim.
+      - name: Mac Catalyst compile check
+        run: |
+          cargo check --target aarch64-apple-ios-macabi --no-default-features \
+            --features "ios-uikit-ffi,mobile,controls-custom,controls-native"
+
+      # BLUE28 B28.44: the optional mobile-services crate is not a workspace member, so it is
+      # checked explicitly (host state tests + iOS/Catalyst type checks).
+      - name: Mobile services crate
+        run: |
+          cargo test --manifest-path crates/mobile-services/Cargo.toml
+          cargo check --manifest-path crates/mobile-services/Cargo.toml \
+            --target aarch64-apple-ios
+          cargo check --manifest-path crates/mobile-services/Cargo.toml \
+            --target aarch64-apple-ios-macabi
+
+      # BLUE28 B28.14: a Simulator *run* job is only meaningful when the runner image ships
+      # the runtime. The macOS runner currently has iOS only, so the step reports SKIP with
+      # the reason instead of claiming a run that did not happen.
+      - name: tvOS / visionOS Simulator availability
+        run: |
+          for OS in tvOS visionOS; do
+            if xcrun simctl list runtimes | grep -q "^$OS "; then
+              echo "::notice title=$OS runtime::$OS Simulator runtime present"
+            else
+              echo "::notice title=$OS runtime::SKIP — no $OS Simulator runtime on this runner"
+            fi
+          done

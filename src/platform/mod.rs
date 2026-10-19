@@ -88,6 +88,49 @@ pub mod wasm;
 /// Platform accessibility bridges (macOS, Windows, Linux).
 pub mod accessibility;
 
+/// Unified platform diagnostics probe with a stable bit order.
+///
+/// See the module documentation for the published bit table. The probe drives the real
+/// [`Platform`] methods, so a host can run the same twelve checks on every backend instead of
+/// relying on source inspection.
+#[cfg(not(alloc_frugal))]
+pub mod diagnostics;
+
+/// System-font enumeration snapshot shared by the C ABI and the font dialog (B28.39).
+pub mod fonts;
+/// CoreText-backed installed-font enumeration for the Apple backends (B28.39).
+#[cfg(all(
+    target_vendor = "apple",
+    any(feature = "macos", feature = "cocoa-legacy", feature = "ios")
+))]
+pub(crate) mod fonts_apple;
+/// Host-reported mobile lifecycle, orientation, and the animation-clock link (BLUE28 B28.24).
+pub mod lifecycle;
+
+/// Locale interning and the POSIX environment fallback shared by the desktop backends.
+///
+/// `intern`/`generation_hash` are available in every profile (the iOS/state backends call them
+/// even under `mini`); only the `std::env` half is gated on `not(alloc_frugal)`. A profile whose
+/// selected backend has no locale source compiles the module but cannot call it, which is why the
+/// dead-code lint is allowed in exactly those builds.
+#[cfg_attr(
+    not(any(
+        feature = "cocoa-legacy",
+        feature = "macos",
+        unix_desktop,
+        feature = "android-jni",
+        feature = "wasm",
+        target_env = "ohos",
+        feature = "harmony"
+    )),
+    allow(dead_code)
+)]
+pub(crate) mod locale;
+
+/// System font enumeration through `fc-list`, shared by the Unix desktop backends.
+#[cfg(all(unix_desktop, not(alloc_frugal)))]
+pub(crate) mod fonts_unix;
+
 /// Darwin-kernel system probes (`sysconf`, `pmset`, `ps`) shared by the backends
 /// that sit on the Apple family: macOS (cocoa and objc2) and iOS.
 ///

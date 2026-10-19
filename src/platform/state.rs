@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 //! Shared backend state model used by platform adapters.
-use super::{DropEvent, EchoMode, WidgetTriggerEvent, WidgetTriggerKind, WindowStateFlag};
+use super::{
+    DropAction, DropEvent, EchoMode, WidgetTriggerEvent, WidgetTriggerKind, WindowStateFlag,
+};
 use crate::compat::lock;
 use crate::compat::HashMap;
 use crate::compat::Mutex;
@@ -521,6 +523,13 @@ where
     pub fn widget_count(&self) -> usize {
         lock(&self.widgets).len()
     }
+    /// Number of live widget records of one kind.
+    ///
+    /// A single-window backend uses this to answer the multi-window contract without keeping a
+    /// second counter beside the widget registry.
+    pub fn count_kind(&self, kind: K) -> usize {
+        lock(&self.widgets).values().filter(|widget| widget.kind == kind).count()
+    }
     /// Return kind for an existing widget.
     pub fn kind_of(&self, widget_id: ObjectId) -> Option<K> {
         lock(&self.widgets).get(&widget_id).map(|widget| widget.kind)
@@ -949,6 +958,10 @@ where
             target_widget_id: 0, // Not yet known — target is determined at drop time
             mime: mime.to_string(),
             payload: payload.to_vec(),
+            #[cfg(not(alloc_frugal))]
+            files: Vec::new(),
+            action: DropAction::Copy,
+            position: None,
         });
         drop(widgets);
         true

@@ -1,0 +1,157 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
+//! Process-wide snapshot of the host's installed fonts.
+//!
+//! # Why a snapshot
+//!
+//! [`Platform::system_fonts`](crate::platform::Platform::system_fonts) asks the operating system:
+//! `NSFontManager`, `EnumFontFamiliesExW`, `fc-list`, `/system/fonts`. Those are not free, and a
+//! font chooser asks for the list every time it is opened — and, with the C ABI below, once per
+//! row when a host enumerates it. One process-wide snapshot makes an opened dialog and a host
+//! enumerator read the same list without repeating the OS query per call.
+//!
+//! The set of installed fonts changes only when the host installs one, which is not a state this
+//! library observes; a caller that has just installed a font can ask
+//! [`refresh_system_fonts`] to drop the snapshot.
+
+use crate::compat::{OnceLock, String, ToString, Vec};
+use crate::platform::SystemFont;
+use alloc::boxed::Box;
+
+static SNAPSHOT: OnceLock<Vec<SystemFont>> = OnceLock::new();
+
+/// The host's installed fonts, queried once per process.
+pub fn system_fonts() -> &'static [SystemFont] {
+    SNAPSHOT.get_or_init(|| crate::platform::platform_facts().system_fonts())
+}
+
+/// Drops the snapshot so the next [`system_fonts`] call queries the OS again.
+///
+/// `OnceLock` cannot be reset, so the replacement is a fresh cell; a caller holding the previous
+/// slice keeps a valid (if stale) value, which is the safe outcome for a reader.
+pub fn refresh_system_fonts() -> &'static [SystemFont] {
+    // Safe and race-free: replacing the whole cell means concurrent readers either finish with
+    // the old slice or start with the new one, and `&'static` from the old cell stays valid
+    // because the old `Vec` is leaked rather than dropped.
+    let fresh: &'static OnceLock<Vec<SystemFont>> = Box::leak(Box::new(OnceLock::new()));
+    fresh.get_or_init(|| crate::platform::platform_facts().system_fonts())
+}
+
+/// Sorted, de-duplicated family names from [`system_fonts`].
+pub fn families() -> Vec<String> {
+    let mut families: Vec<String> = system_fonts()
+        .iter()
+        .map(|font| font.family.trim().to_string())
+        .filter(|family| !family.is_empty())
+        .collect();
+    families.sort_unstable_by_key(|family| family.to_lowercase());
+    families.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    families
+}
+
+/// The families compiled into this build, in active-face order, sorted and de-duplicated.
+///
+/// This is the fallback for a backend that reports no installed fonts (Harmony, WASM,
+/// Redox) and for a host preview with no system font store: those families are exactly the
+/// ones [`face_for_family`](crate::render::text::font_assets::face_for_family) can draw.
+#[cfg(feature = "text-shaping")]
+pub fn bundled_families() -> Vec<String> {
+    let mut families: Vec<String> = crate::render::text::font_assets::active_faces()
+        .iter()
+        .map(|face| face.name.trim().to_string())
+        .filter(|family| !family.is_empty())
+        .collect();
+    families.sort_unstable_by_key(|family| family.to_lowercase());
+    families.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    families
+}
+
+/// The families a font chooser should offer.
+///
+/// Uses the host's installed families when the backend reports any, and the bundled families
+/// otherwise — an empty chooser on a backend with no system font store would hide the faces the
+/// build can still draw.
+pub fn chooser_families() -> Vec<String> {
+    let system = families();
+    if !system.is_empty() {
+        return system;
+    }
+    #[cfg(feature = "text-shaping")]
+    {
+        bundled_families()
+    }
+    #[cfg(not(feature = "text-shaping"))]
+    {
+        Vec::new()
+    }
+}
+
+/// Registers the readable font file backing `family`, when the host reported one.
+///
+/// [`register_face`](crate::render::text::register_face) needs `'static` bytes, so the file is
+/// read once and leaked: a registered face lives for the rest of the process by contract, and the
+/// registry holds a small fixed number of them. Returns `false` when the family is not in the
+/// snapshot, the backend reported no file (AppKit and GDI report families only), the file cannot
+/// be read, or the bytes do not parse.
+#[cfg(all(feature = "runtime-fonts", not(alloc_frugal)))]
+pub fn register_family(family: &str) -> bool {
+    // Re-registering would read and leak the file again, so an already-registered family is a
+    // success without touching the disk. `active_runtime_faces` is the registry's own view, which
+    // keeps this check from keeping a second list that could disagree with it.
+    let (faces, len) = crate::render::text::runtime_fonts::active_runtime_faces();
+    if faces[..len].iter().any(|face| face.name.eq_ignore_ascii_case(family.trim())) {
+        return true;
+    }
+    // The registry is fixed-capacity, so a full registry cannot accept another face. Checking
+    // before reading matters: the bytes are leaked on the success path, and a read that is
+    // guaranteed to be refused would cost a disk hit and permanent memory for nothing.
+    if crate::render::text::registered_face_count() >= crate::render::text::MAX_RUNTIME_FACES {
+        return false;
+    }
+    let Some(font) =
+        system_fonts().iter().find(|font| font.family.eq_ignore_ascii_case(family.trim()))
+    else {
+        return false;
+    };
+    let Some(path) = font.source.as_ref() else {
+        return false;
+    };
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    // `register_face` keys by the name it is given and keeps that name for the process lifetime,
+    // so the leaked spellings are the registry's own storage rather than a per-call copy.
+    let name: &'static str = Box::leak(font.family.clone().into_boxed_str());
+    let bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+    crate::render::text::register_face(name, bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn families_are_sorted_and_have_no_blank_or_duplicate_entries() {
+        let families = families();
+        assert!(families.windows(2).all(|pair| pair[0].to_lowercase() <= pair[1].to_lowercase()));
+        assert!(families.iter().all(|family| !family.trim().is_empty()));
+        let mut unique = families.clone();
+        unique.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+        assert_eq!(unique.len(), families.len());
+    }
+
+    #[cfg(all(feature = "runtime-fonts", not(alloc_frugal)))]
+    #[test]
+    fn an_unknown_family_is_not_registered() {
+        assert!(!register_family("This Family Does Not Exist 12345"));
+    }
+
+    #[cfg(feature = "text-shaping")]
+    #[test]
+    fn bundled_families_are_sorted_and_blank_free() {
+        let families = bundled_families();
+        assert!(families.windows(2).all(|pair| pair[0].to_lowercase() <= pair[1].to_lowercase()));
+        assert!(families.iter().all(|family| !family.trim().is_empty()));
+    }
+}

@@ -344,6 +344,10 @@ impl MacOsImeBridge {
                 );
             }
         }
+
+        // A composition becomes visible before it commits; deliver it to the focused control
+        // (BLUE28 B28.12). `deliver_preedit` is a no-op when nothing is focused.
+        let _ = self.deliver_preedit();
     }
 
     /// Get the current marked (preedit) text, if any.
@@ -353,6 +357,49 @@ impl MacOsImeBridge {
             None
         } else {
             Some(text.clone())
+        }
+    }
+
+    /// The widget this bridge last focused, if any.
+    ///
+    /// Used by the objc2 view to answer `NSTextInputClient` queries and to deliver a preedit
+    /// preview to the same control a commit would reach.
+    pub fn focused_widget_id(&self) -> Option<ObjectId> {
+        *lock(&self.focused_widget)
+    }
+
+    /// The current composition as the widget-layer type, or `None` when nothing is marked.
+    pub fn composition(&self) -> Option<ImeComposition> {
+        let text = lock(&self.marked_text).clone();
+        if text.is_empty() {
+            return None;
+        }
+        let (offset, length) = *lock(&self.selected_range);
+        Some(ImeComposition {
+            cursor_position: utf16_offset_to_byte(&text, offset),
+            text,
+            selection_length: length,
+        })
+    }
+
+    /// Delivers the current preedit to the focused widget as `Event::ImePreedit`.
+    ///
+    /// Returns `false` when nothing is marked or no widget is focused. This is the producer
+    /// `Event::ImePreedit` needed: before it, only [`commit_text`](Self::commit_text) reached a
+    /// widget, so a control that previewed a composition could never be reached outside a test.
+    pub fn deliver_preedit(&self) -> bool {
+        #[cfg(not(alloc_frugal))]
+        {
+            let (Some(widget_id), Some(composition)) =
+                (self.focused_widget_id(), self.composition())
+            else {
+                return false;
+            };
+            crate::platform::ime::deliver_composition(widget_id, &composition)
+        }
+        #[cfg(alloc_frugal)]
+        {
+            false
         }
     }
 
@@ -538,6 +585,27 @@ impl ImeBridge for MacOsImeBridge {
 /// Convert a Rust `&str` byte offset to the corresponding UTF-16 code unit
 /// offset.  If `byte_offset` points into the middle of a multi-byte sequence
 /// it is clamped to the nearest valid character boundary.
+/// Convert a UTF-16 code-unit offset to the nearest Rust byte offset.
+///
+/// The inverse of [`byte_offset_to_utf16`], used when the platform hands back an
+/// `NSRange`-based cursor that the widget layer stores as a byte offset. An offset past the end
+/// clamps to the end, and one in the middle of a surrogate pair clamps to that pair's start.
+fn utf16_offset_to_byte(s: &str, utf16_offset: usize) -> usize {
+    let mut units = 0usize;
+    for (byte_index, ch) in s.char_indices() {
+        if units >= utf16_offset {
+            return byte_index;
+        }
+        let next = units + ch.len_utf16();
+        if next > utf16_offset {
+            // The offset names the second half of a surrogate pair; clamp to its start.
+            return byte_index;
+        }
+        units = next;
+    }
+    s.len()
+}
+
 fn byte_offset_to_utf16(s: &str, byte_offset: usize) -> usize {
     // `s.len()` is a char boundary, so the initial clamp never splits a code point.
     // What the old `.min(s.len())` alone missed is an offset *inside* the string that
@@ -771,6 +839,20 @@ mod tests {
         // A four-byte code point (emoji) has three interior byte offsets.
         assert_eq!(byte_offset_to_utf16("a\u{1F600}b", 2), 1);
         assert_eq!(byte_offset_to_utf16("a\u{1F600}b", 5), 3);
+    }
+
+    /// The inverse conversion used when AppKit hands back a UTF-16 selection.
+    #[test]
+    fn test_utf16_offset_to_byte_is_the_inverse() {
+        assert_eq!(utf16_offset_to_byte("abc", 0), 0);
+        assert_eq!(utf16_offset_to_byte("abc", 2), 2);
+        assert_eq!(utf16_offset_to_byte("abc", 99), 3);
+        // CJK: one UTF-16 unit is three UTF-8 bytes.
+        assert_eq!(utf16_offset_to_byte("你好", 1), 3);
+        // An offset inside an emoji's surrogate pair clamps to the character start.
+        assert_eq!(utf16_offset_to_byte("a\u{1F600}b", 1), 1);
+        assert_eq!(utf16_offset_to_byte("a\u{1F600}b", 2), 1);
+        assert_eq!(utf16_offset_to_byte("a\u{1F600}b", 3), 5);
     }
 
     #[test]

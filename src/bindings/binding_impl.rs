@@ -919,6 +919,57 @@ pub extern "C" fn rw_theme_names(out: *mut c_char, cap: c_uint) -> c_uint {
         write_space_separated(&refs, out, cap)
     })
 }
+
+#[no_mangle]
+/// Number of entries in the host's installed-font snapshot.
+///
+/// The snapshot is process-wide: the first call queries the operating system and every later
+/// call reads the same list until [`rw_refresh_system_fonts`]. A target whose backend reports
+/// no fonts truthfully returns `0` rather than inventing a list.
+pub extern "C" fn rw_system_font_count() -> c_uint {
+    c_try!({ crate::platform::fonts::system_fonts().len() as c_uint })
+}
+
+#[no_mangle]
+/// The family name at `index`, or an empty string when `index` is out of range.
+///
+/// The result is freshly allocated and must be released with [`rw_free_string`]. Call
+/// [`rw_system_font_count`] first: an index past the end is not an error, it is answered with
+/// the empty string.
+pub extern "C" fn rw_system_font_family(index: c_uint) -> *const c_char {
+    c_try!({
+        let family = crate::platform::fonts::system_fonts()
+            .get(index as usize)
+            .map(|font| font.family.clone())
+            .unwrap_or_default();
+        to_c_string_or_empty(family)
+    })
+}
+
+#[no_mangle]
+/// The style name at `index` (for example `"Regular"`), or an empty string when the backend
+/// does not report one or `index` is out of range.
+///
+/// The result is freshly allocated and must be released with [`rw_free_string`].
+pub extern "C" fn rw_system_font_style(index: c_uint) -> *const c_char {
+    c_try!({
+        let style = crate::platform::fonts::system_fonts()
+            .get(index as usize)
+            .map(|font| font.style.clone())
+            .unwrap_or_default();
+        to_c_string_or_empty(style)
+    })
+}
+
+#[no_mangle]
+/// Re-queries the host's installed fonts and returns the new count.
+///
+/// For a host that has just installed a font. A reader still holding a slice from the previous
+/// query keeps a valid (stale) value, which is the safe outcome; see
+/// [`crate::platform::fonts::refresh_system_fonts`].
+pub extern "C" fn rw_refresh_system_fonts() -> c_uint {
+    c_try!({ crate::platform::fonts::refresh_system_fonts().len() as c_uint })
+}
 #[no_mangle]
 /// Sets the high-contrast override: `0` disables it, any non-zero value enables it.
 ///
@@ -2554,6 +2605,30 @@ pub extern "C" fn rw_get_widget_accessibility_name(widget_id: u64) -> *const c_c
     })
 }
 #[no_mangle]
+/// Runs the unified platform diagnostic probe and returns the mask of passed facts.
+///
+/// Bit order is published in `platform::diagnostics` and is stable across platforms. A fact the
+/// backend honestly does not have is skipped, not failed; the mask therefore answers "which facts
+/// are measured here", while [`rw_platform_diagnostics_json`] names every skip.
+///
+/// This is the C ABI half of the probe. Hosts that cannot call C but can read a string use the
+/// JSON entry point instead; both run the same probe.
+#[cfg(not(alloc_frugal))]
+pub extern "C" fn rw_platform_diagnostics() -> c_uint {
+    c_try!({ crate::platform::diagnostics::run().mask() })
+}
+
+#[no_mangle]
+/// Runs the unified platform diagnostic probe and returns its JSON form.
+///
+/// The returned string is freshly allocated and must be released with [`rw_free_string`]. The
+/// shape is documented on `platform::diagnostics::PlatformDiagnostics::to_json`.
+#[cfg(not(alloc_frugal))]
+pub extern "C" fn rw_platform_diagnostics_json() -> *const c_char {
+    c_try!({ to_c_string_or_empty(crate::platform::diagnostics::run().to_json()) })
+}
+
+#[no_mangle]
 /// The name of the control backend currently serving widget creation, such as
 /// `"native"` or `"custom"`.
 ///
@@ -3484,6 +3559,9 @@ mod tests {
             target_widget_id: target,
             mime: "application/x-rust-widgets-test".to_string(),
             payload: payload_bytes.clone(),
+            files: Vec::new(),
+            action: crate::platform::DropAction::Copy,
+            position: None,
         };
         assert!(
             crate::clipboard::DragDropManager::inject_drop_event_with(&stub, event),

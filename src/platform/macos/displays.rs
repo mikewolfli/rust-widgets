@@ -136,6 +136,33 @@ pub(crate) fn displays() -> Vec<Display> {
     }
 }
 
+/// The scale factor of the screen AppKit calls the main screen.
+///
+/// This is the same `backingScaleFactor` [`displays`] reports per screen. It exists as its own
+/// reading because [`Platform::dpi_scale_factor`](crate::platform::Platform::dpi_scale_factor)
+/// answers one global value: on a Retina Mac that value must be `2.0`, not the trait default `1.0`.
+/// `None` off the main thread, where messaging `NSScreen` would raise.
+pub(crate) fn main_scale() -> Option<f32> {
+    if !super::types::is_main_thread() {
+        return None;
+    }
+    // SAFETY: the main thread is established above and `NSScreen.mainScreen` is an AppKit-owned
+    // singleton for the duration of the call. `backingScaleFactor` is a scalar accessor.
+    unsafe {
+        let screen: id = msg_send![class!(NSScreen), mainScreen];
+        if screen == nil {
+            return None;
+        }
+        let scale: f64 = msg_send![screen, backingScaleFactor];
+        // A non-positive scale would divide by zero downstream; AppKit reports >= 1.0.
+        if scale > 0.0 {
+            Some(scale as f32)
+        } else {
+            None
+        }
+    }
+}
+
 /// The `DisplayId` of the screen a window is currently on, or `None` when AppKit reports none.
 ///
 /// `-[NSWindow screen]` is AppKit's own answer to "which screen is this window on", which is

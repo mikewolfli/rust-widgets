@@ -21,6 +21,21 @@ use crate::platform::{Platform, PlatformCapabilities};
 use core::time::Duration;
 use std::thread;
 
+/// Resolves the widget id a host holds to the platform window id this backend registers.
+///
+/// A profile with no widget runtime has only platform ids, so the id is returned unchanged.
+#[cfg(all(target_os = "macos", feature = "macos"))]
+fn resolve_host(window_id: u64) -> u64 {
+    #[cfg(not(alloc_frugal))]
+    {
+        crate::widget::runtime::host_window_for(window_id).unwrap_or(window_id)
+    }
+    #[cfg(alloc_frugal)]
+    {
+        window_id
+    }
+}
+
 /// The frame interval this backend's loop runs at, in milliseconds.
 ///
 /// The same value as every other backend's twin constant, and named here for the same
@@ -32,8 +47,10 @@ const FRAME_INTERVAL_MS: u64 = 16;
 
 impl Platform for MacOSObjc2Platform {
     // The uniform widget-property methods are answered once, over `self.state`, by the
-    // shared expansion in `platform::state_impl` rather than re-written per backend.
-    crate::impl_platform_state_properties!();
+    // shared expansion in `platform::state_impl` rather than re-written per backend. The
+    // window-state methods are excluded because this backend applies them through AppKit
+    // and falls back to the same record itself (BLUE28 B28.19).
+    crate::impl_platform_state_properties!(without_window_state);
 
     // ---- Lifecycle & identity ----
     fn as_any(&self) -> &dyn std::any::Any {
@@ -76,6 +93,56 @@ impl Platform for MacOSObjc2Platform {
         #[cfg(not(all(target_os = "macos", feature = "macos")))]
         {
             Vec::new()
+        }
+    }
+
+    /// The main screen's scale, read from `NSScreen.backingScaleFactor`.
+    ///
+    /// This is the per-screen `scale` [`Self::displays`] reports, read once for the trait's global
+    /// value. Without AppKit (no `macos` feature) or off the main thread the honest answer is the
+    /// trait default `1.0`; [`Self::capabilities`] reports `dpi_scaling: false` in exactly that
+    /// build, so a host is never told a fabricated scale is measured.
+    fn dpi_scale_factor(&self) -> f32 {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            super::native::main_scale().unwrap_or(1.0)
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        {
+            1.0
+        }
+    }
+
+    /// The IME bridge the canvas view's `NSTextInputClient` callbacks drive (B28.12).
+    ///
+    /// One bridge exists per process because one `NSTextInputContext` exists per application;
+    /// the view and this accessor share it through `native::ime_bridge`.
+    fn ime_bridge(&self) -> Option<&dyn crate::platform::ime::ImeBridge> {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            Some(super::native::ime_bridge())
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        {
+            None
+        }
+    }
+
+    /// The `NSAccessibility` bridge the canvas view feeds (B28.13).
+    ///
+    /// The view answers `accessibilityRole`/`accessibilityLabel`/`accessibilityFrame` from the
+    /// live widget registry; this bridge posts change notifications for the view registered
+    /// against each widget id.
+    fn accessibility_bridge(
+        &self,
+    ) -> Option<&dyn crate::platform::accessibility::AccessibilityBridge> {
+        #[cfg(feature = "macos")]
+        {
+            Some(crate::platform::accessibility::macos_objc2::bridge())
+        }
+        #[cfg(not(feature = "macos"))]
+        {
+            None
         }
     }
 
@@ -134,6 +201,258 @@ impl Platform for MacOSObjc2Platform {
         hash
     }
 
+    /// Metadata for one AppKit screen.
+    ///
+    /// The orientation is derived from the reported bounds; `NSScreen` exposes no synchronous
+    /// refresh-rate or colour-space accessor, so those answer `None`.
+    fn display_info(&self, id: DisplayId) -> Option<crate::platform::types::DisplayInfo> {
+        let display = self.displays().into_iter().find(|display| display.id == id)?;
+        Some(crate::platform::types::DisplayInfo {
+            refresh_rate_mhz: None,
+            orientation: Some(if display.bounds.width >= display.bounds.height {
+                crate::core::Orientation::Horizontal
+            } else {
+                crate::core::Orientation::Vertical
+            }),
+            color_space: None,
+            hdr: None,
+        })
+    }
+
+    /// Whether the user asked for increased contrast, from `NSWorkspace`.
+    ///
+    /// `None` without the AppKit-bound build. AppKit's shared workspace is thread-safe, so this is
+    /// answerable from any thread, unlike the screen enumeration above.
+    fn high_contrast(&self) -> Option<bool> {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            Some(super::native::high_contrast())
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        {
+            None
+        }
+    }
+
+    /// Whether the user asked for reduced motion, from `NSWorkspace`.
+    fn reduce_motion(&self) -> Option<bool> {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            Some(super::native::reduce_motion())
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        {
+            None
+        }
+    }
+
+    /// The user's locale, from `NSLocale.currentLocale`.
+    fn system_locale(&self) -> Option<&'static str> {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            super::native::system_locale()
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        {
+            None
+        }
+    }
+
+    /// A revision of the environment facts, derived from their current values.
+    fn environment_generation(&self) -> u64 {
+        crate::platform::locale::generation_hash(
+            self.system_theme(),
+            self.high_contrast(),
+            self.reduce_motion(),
+            self.system_locale(),
+        )
+    }
+
+    /// Applies a cursor shape through `NSCursor` (BLUE28 B28.09).
+    #[cfg(all(target_os = "macos", feature = "macos"))]
+    fn set_cursor(&self, _window: u64, icon: crate::platform::CursorIcon) -> bool {
+        super::native::set_cursor(icon)
+    }
+
+    /// Hides or shows the pointer through `NSCursor`.
+    #[cfg(all(target_os = "macos", feature = "macos"))]
+    fn set_cursor_visible(&self, _window: u64, visible: bool) -> bool {
+        super::native::set_cursor_visible(visible)
+    }
+
+    /// The font families AppKit reports; empty without the AppKit-bound build.
+    fn system_fonts(&self) -> Vec<crate::platform::types::SystemFont> {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            super::native::system_fonts()
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        {
+            Vec::new()
+        }
+    }
+
+    /// Applies a window state through AppKit, or records it when no native window exists.
+    ///
+    /// BLUE28 B28.19: this used to be only the state macro, so `WindowHandle::set_maximized`
+    /// reported success while the window never changed. The native calls are the same ones the
+    /// cocoa backend uses; a state-only handle (no `NSWindow`) still records the value, which is
+    /// what the off-main-thread window contract requires.
+    fn set_window_state(
+        &self,
+        window_id: u64,
+        flag: crate::platform::WindowStateFlag,
+        on: bool,
+    ) -> bool {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            let host = resolve_host(window_id);
+            if super::native::set_window_state(host, flag, on) {
+                self.state.set_window_state(window_id, flag, on);
+                return true;
+            }
+        }
+        self.state.set_window_state(window_id, flag, on)
+    }
+
+    /// Reads a window state from AppKit, falling back to the recorded value.
+    fn is_window_in_state(
+        &self,
+        window_id: u64,
+        flag: crate::platform::WindowStateFlag,
+    ) -> Option<bool> {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            let host = resolve_host(window_id);
+            if let Some(answer) = super::native::window_state(host, flag) {
+                return Some(answer);
+            }
+        }
+        self.state.window_state(window_id, flag)
+    }
+
+    /// Sets the content minimum size through `NSWindow.setContentMinSize:`.
+    fn set_window_min_size(&self, window_id: u64, width: u32, height: u32) -> bool {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            let host = resolve_host(window_id);
+            if super::native::set_window_min_size(host, width, height) {
+                self.state.set_window_min_size(window_id, width, height);
+                return true;
+            }
+        }
+        self.state.set_window_min_size(window_id, width, height)
+    }
+
+    /// Reads the content minimum size from AppKit, falling back to the recorded value.
+    fn window_min_size(&self, window_id: u64) -> Option<(u32, u32)> {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            let host = resolve_host(window_id);
+            if let Some(size) = super::native::window_min_size(host) {
+                return Some(size);
+            }
+        }
+        self.state.window_min_size(window_id)
+    }
+
+    /// AppKit window icons are a bundle-level fact, not a per-window one.
+    ///
+    /// `NSWindow` has no icon API; the Dock icon comes from `CFBundleIconFile`. Reporting `false`
+    /// is the honest answer and keeps `WindowHandle::icon` from mirroring a path the OS never
+    /// accepted.
+    fn set_window_icon(&self, _window_id: u64, _path: &str) -> bool {
+        false
+    }
+
+    /// The native `NSView` (canvas) or `NSWindow` pointer, when this backend owns one.
+    fn get_native_handle(&self, widget: u64) -> Option<usize> {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            let host = resolve_host(widget);
+            return super::native::native_handle(host);
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        {
+            let _ = widget;
+            None
+        }
+    }
+
+    /// The window's content view as a `raw-window-handle` 0.6 AppKit handle.
+    #[cfg(feature = "raw-window-handle")]
+    fn raw_window_handle(&self, window_id: u64) -> Option<raw_window_handle::RawWindowHandle> {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            let host = resolve_host(window_id);
+            let view = super::native::raw_view_handle(host)?;
+            let ns_view = core::ptr::NonNull::new(view)?;
+            return Some(raw_window_handle::RawWindowHandle::AppKit(
+                raw_window_handle::AppKitWindowHandle::new(ns_view),
+            ));
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        {
+            let _ = window_id;
+            None
+        }
+    }
+
+    /// The empty AppKit display handle, in the AppKit-bound build only.
+    #[cfg(feature = "raw-window-handle")]
+    fn raw_display_handle(&self) -> Option<raw_window_handle::RawDisplayHandle> {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            Some(raw_window_handle::RawDisplayHandle::AppKit(
+                raw_window_handle::AppKitDisplayHandle::new(),
+            ))
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        {
+            None
+        }
+    }
+
+    /// The window's content size, read from its content view.
+    fn window_client_size(&self, window_id: u64) -> Option<(u32, u32)> {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            let host = resolve_host(window_id);
+            if let Some(size) = super::native::window_client_size(host) {
+                return Some(size);
+            }
+        }
+        self.state.window_size(window_id)
+    }
+
+    /// Reports a container's new client size and queues a `Resized` trigger.
+    ///
+    /// Forwarded to the control backend, which owns the window and the queue the app polls;
+    /// writing to this backend's own state would land in a store the host never reads.
+    fn queue_resize_trigger(&self, window_id: u64, width: u32, height: u32) -> bool {
+        #[cfg(not(alloc_frugal))]
+        {
+            crate::queue_resize_trigger(window_id, width, height)
+        }
+        #[cfg(alloc_frugal)]
+        {
+            let _ = (window_id, width, height);
+            false
+        }
+    }
+
+    /// The pasteboard's change counter, from `NSPasteboard.changeCount`.
+    fn clipboard_generation(&self) -> u64 {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            crate::platform::clipboard_stubs::objc2_macos::generation()
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        {
+            0
+        }
+    }
+
     /// The window's safe-area insets, read from AppKit's `NSView.safeAreaInsets`.
     ///
     /// For a window the value comes from its content view, which is what this backend paints into
@@ -162,7 +481,7 @@ impl Platform for MacOSObjc2Platform {
 
     /// The host integrations this backend actually provides.
     ///
-    /// # Why all four are `false`, and not the four the legacy backend claims
+    /// # Why `native_menu`, `ime` and `accessibility` are `false`
     ///
     /// This used to answer the same all-`true` set as `cocoa`, on the reasoning that
     /// "the objc2 preview honours the same four host integrations as the legacy macOS
@@ -176,11 +495,13 @@ impl Platform for MacOSObjc2Platform {
     ///   `attach_menu_bar_to_window` and `poll_menu_triggered` all fall through to the
     ///   trait defaults, and its own test suite asserts
     ///   `create_menu_bar(window, ..) == 0` (`tests.rs`).
-    /// * `ime` — `ime_bridge()` is not overridden, so it inherits the `None` default.
+    /// * `ime` — `ime_bridge()` is now overridden on the AppKit-bound build
+    ///   (`all(target_os = "macos", feature = "macos")`). The canvas view implements
+    ///   `NSTextInputClient` and `keyDown:` routes through `interpretKeyEvents:`, so the flag
+    ///   has a real producer (BLUE28 B28.12).
     /// * `accessibility` — `accessibility_bridge()` is likewise not overridden.
-    /// * `dpi_scaling` — `dpi_scale_factor()` is not overridden, so it answers the
-    ///   trait default `1.0`. A backend that reports DPI awareness must be able to
-    ///   *ask* the display; there is no display behind this type.
+    /// * `dpi_scaling` — BLUE28 B28.03 added `dpi_scale_factor`, read from the main screen's
+    ///   `backingScaleFactor`, so this is `true` exactly on the AppKit-bound build (`macos`).
     ///
     /// What the backend genuinely does provide is the state model plus real AppKit
     /// objects where `native` is bound, and both of those are reachable without any of
@@ -194,9 +515,12 @@ impl Platform for MacOSObjc2Platform {
     /// (see [`Self::poll_widget_trigger_event`]).
     fn capabilities(&self) -> PlatformCapabilities {
         PlatformCapabilities {
-            dpi_scaling: false,
-            ime: false,
-            accessibility: false,
+            dpi_scaling: cfg!(all(target_os = "macos", feature = "macos")),
+            // `NSTextInputClient` on the canvas view, backed by the shared `ime_macos` state
+            // machine (B28.12). A build without AppKit has no view to be a client.
+            ime: cfg!(all(target_os = "macos", feature = "macos")),
+            // A real `NSAccessibility` element per canvas view (B28.13).
+            accessibility: cfg!(feature = "macos"),
             native_menu: false,
             typed_widget_trigger: true,
             // `NSPasteboard`, through the objc2 bindings — a build-time fact, so it is asked of
@@ -210,6 +534,8 @@ impl Platform for MacOSObjc2Platform {
             // [`Platform::choose_path`] for what the flag promises and what a `false` costs a
             // host (it draws its own list instead).
             file_dialog: false,
+            // `NSFontManager.availableFontFamilies` through the AppKit-bound build.
+            system_fonts: cfg!(all(target_os = "macos", feature = "macos")),
         }
     }
 

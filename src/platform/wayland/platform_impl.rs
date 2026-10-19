@@ -48,6 +48,7 @@
 use crate::core::ObjectId;
 use crate::core::PlatformFamily;
 use crate::event::EventLoop;
+use crate::platform::clipboard::RichClipboardBackend as _;
 use crate::platform::types::{
     Platform, PlatformCapabilities, WidgetTriggerEvent, WidgetTriggerKind,
 };
@@ -77,6 +78,34 @@ use wayland_protocols as wl_protocols;
 // ---------------------------------------------------------------------------
 // Platform trait implementation
 // ---------------------------------------------------------------------------
+
+/// The output the compositor reported, as a [`Display`](crate::platform::Display).
+///
+/// A Wayland client without `xdg-output` has no logical position separate from the output's
+/// `geometry` event and its current `mode`; `mode pixels / scale` is the logical size, and the
+/// geometry x/y is the compositor's own placement. This is a measured derivation, not a guess:
+/// `None` until a `Current` mode has been reported.
+#[cfg(all(feature = "wayland-native", unix_desktop))]
+fn session_output(platform: &WaylandPlatform) -> Option<crate::platform::Display> {
+    let guard = platform.native_session.lock().ok()?;
+    let session = guard.as_ref()?;
+    let state = &session.state;
+    if !state.output_ready || state.output_width == 0 || state.output_height == 0 {
+        return None;
+    }
+    let scale =
+        if state.dpi_scale.is_finite() && state.dpi_scale > 0.0 { state.dpi_scale } else { 1.0 };
+    let width = (state.output_width as f32 / scale).round() as u32;
+    let height = (state.output_height as f32 / scale).round() as u32;
+    Some(crate::platform::Display {
+        id: crate::platform::DisplayId::new(1),
+        bounds: crate::core::Rect::new(state.output_x, state.output_y, width, height),
+        // Wayland core has no work-area concept; the output's full mode is the only answer.
+        work_area: crate::core::Rect::new(state.output_x, state.output_y, width, height),
+        scale,
+        is_primary: true,
+    })
+}
 
 impl Platform for WaylandPlatform {
     // The uniform widget-property methods are answered once, over `self.state`, by the
@@ -129,21 +158,17 @@ impl Platform for WaylandPlatform {
 
     /// The host integrations this backend actually provides.
     ///
-    /// # Why `ime: false` and `accessibility: false`
+    /// # Why `ime` and `clipboard` track a live protocol
     ///
-    /// [`PlatformCapabilities::ime`] is a promise about [`Platform::ime_bridge`] and
-    /// `accessibility` about [`Platform::accessibility_bridge`]. This backend overrides
-    /// **neither**, so each inherits the trait default — `None` — and a `true` here told every
-    /// caller there was a bridge to ask for. `grep -rn "ime_bridge\|accessibility_bridge"
-    /// src/platform/wayland/` returns nothing: there is no Wayland IME integration and no
-    /// Wayland accessibility bridge in this crate, and unlike Linux/GTK there is not even a
-    /// candidate module to delegate to (`platform/ime_linux.rs` is IBus over D-Bus, which the
-    /// GTK backend owns; a Wayland client reaches the compositor's `text-input` protocol, which
-    /// is not bound here).
+    /// [`PlatformCapabilities::ime`] is a promise about [`Platform::ime_bridge`] **answering for
+    /// this compositor**: the object exists on every build, but the flag is true only when
+    /// `zwp_text_input_manager_v3` was actually bound (B28.12). `clipboard` follows a live
+    /// `wl_data_device` the same way (B28.04); without a session the backend still answers the
+    /// in-process record, which is not a host clipboard and is not advertised as one.
     ///
-    /// The flag escapes the process: `rw_platform_capabilities()` packs these flags into a C ABI
-    /// bitmask (`bindings/binding_impl.rs`), so a host application read the false `ime`/`access`
-    /// bits and would offer an input-method or screen-reader affordance that cannot answer.
+    /// `accessibility` stays `false`: this backend publishes no AT-SPI tree, so a `true` would
+    /// promise a screen-reader bridge that does not exist. The flag escapes the process through
+    /// `rw_platform_capabilities()`, so a host does not offer an affordance that cannot answer.
     ///
     /// # Why `dpi_scaling` stays `true`
     ///
@@ -164,17 +189,23 @@ impl Platform for WaylandPlatform {
     fn capabilities(&self) -> PlatformCapabilities {
         PlatformCapabilities {
             dpi_scaling: true,
-            ime: false,
+            // A live `zwp_text_input_v3` exists only when the compositor advertises the
+            // text-input manager (B28.12).
+            ime: self.ime.available(),
             accessibility: false,
             native_menu: false,
             typed_widget_trigger: true,
-            // No display clipboard (the `set/get_clipboard_text` bodies write the in-process
-            // `BackendState` record) and no handler spawn.
-            clipboard: false,
-            open_external: false,
+            // A live `wl_data_device` is created from the session's `wl_seat` and
+            // `wl_data_device_manager`; until that session exists there is no system clipboard and
+            // the backend still answers the in-process record (B28.04).
+            clipboard: self.clipboard.has_channel(),
+            // `open_external` spawns `xdg-open`, the same handler the GTK backend uses.
+            open_external: true,
             // No picker: this backend has no `xdg-desktop-portal` binding, and the portal is the
             // only way a Wayland client may present a file chooser.
             file_dialog: false,
+            // `fc-list` is the fontconfig enumerator on a Wayland session (B28.39).
+            system_fonts: true,
         }
     }
 
@@ -191,7 +222,165 @@ impl Platform for WaylandPlatform {
         Some(crate::platform::types::SafeAreaInsets { top: 0, bottom: 0, left: 0, right: 0 })
     }
 
+    /// Hand a URL or path to `xdg-open`, the desktop's handler.
+    ///
+    /// The validation is shared with the other Unix backends (`OpenError::InvalidTarget` for an
+    /// empty or option-shaped target), so Wayland does not grow a second rule.
+    fn open_external(&self, target: &str) -> Result<(), crate::platform::OpenError> {
+        crate::platform::external::spawn_handler("xdg-open", &[], target)
+    }
+
+    /// Whether `xdg-open` is on this host's `PATH`.
+    fn has_external_handler(&self) -> bool {
+        crate::platform::external::program_is_on_path("xdg-open")
+    }
+
+    /// No Wayland core protocol exposes a high-contrast preference.
+    ///
+    /// The XDG portal does (`org.freedesktop.appearance` key `contrast`), and that is what this
+    /// answers when the session has one. A headless compositor has no portal, so the accessor
+    /// honestly returns `None` rather than a fabricated `false`.
+    fn high_contrast(&self) -> Option<bool> {
+        #[cfg(all(feature = "wayland-portal", unix_desktop))]
+        {
+            crate::platform::wayland::portal::contrast()
+        }
+        #[cfg(not(all(feature = "wayland-portal", unix_desktop)))]
+        {
+            None
+        }
+    }
+
+    /// No Wayland core protocol exposes a reduced-motion preference.
+    ///
+    /// The portal has no standard key for it either, so this stays `None` rather than reading a
+    /// private desktop-specific name.
+    fn reduce_motion(&self) -> Option<bool> {
+        None
+    }
+
+    /// The desktop's colour scheme from the XDG portal (`org.freedesktop.appearance`).
+    ///
+    /// `Some(true)` is dark and `Some(false)` is light. A no-preference answer (`0`) and a
+    /// session with no portal both return `None`.
+    fn system_theme(&self) -> Option<bool> {
+        #[cfg(all(feature = "wayland-portal", unix_desktop))]
+        {
+            crate::platform::wayland::portal::color_scheme()
+        }
+        #[cfg(not(all(feature = "wayland-portal", unix_desktop)))]
+        {
+            None
+        }
+    }
+
+    /// The locale named by the process environment.
+    ///
+    /// Wayland has no locale protocol; the POSIX variables are the same source every other
+    /// process on the session reads. The value is interned for the style layer.
+    fn system_locale(&self) -> Option<&'static str> {
+        crate::platform::locale::intern(crate::platform::locale::from_environment())
+    }
+
+    /// A revision of the environment facts, derived from their current values.
+    fn environment_generation(&self) -> u64 {
+        crate::platform::locale::generation_hash(
+            self.system_theme(),
+            self.high_contrast(),
+            self.reduce_motion(),
+            self.system_locale(),
+        )
+    }
+
+    /// The installed families from fontconfig (`fc-list`); empty when it is absent.
+    #[cfg(not(alloc_frugal))]
+    fn system_fonts(&self) -> Vec<crate::platform::types::SystemFont> {
+        crate::platform::fonts_unix::system_fonts()
+    }
+
+    #[cfg(alloc_frugal)]
+    fn system_fonts(&self) -> Vec<crate::platform::types::SystemFont> {
+        Vec::new()
+    }
+
+    fn displays(&self) -> Vec<crate::platform::Display> {
+        #[cfg(all(feature = "wayland-native", unix_desktop))]
+        {
+            if let Some(display) = session_output(self) {
+                return crate::compat::vec![display];
+            }
+        }
+        Vec::new()
+    }
+
+    /// The one output this backend tracks is the display for every window it owns.
+    fn display_of_window(&self, window_id: ObjectId) -> Option<crate::platform::DisplayId> {
+        if !self.state.is_kind(window_id, WaylandHandleKind::Window) {
+            return None;
+        }
+        #[cfg(all(feature = "wayland-native", unix_desktop))]
+        {
+            if let Some(display) = session_output(self) {
+                return Some(display.id);
+            }
+        }
+        None
+    }
+
+    /// A revision bumped by `wl_output` geometry/mode/scale events.
+    fn display_generation(&self) -> u64 {
+        #[cfg(all(feature = "wayland-native", unix_desktop))]
+        {
+            if let Ok(guard) = self.native_session.lock() {
+                if let Some(session) = guard.as_ref() {
+                    return session.state.output_generation;
+                }
+            }
+        }
+        0
+    }
+
+    /// Metadata of the tracked output.
+    fn display_info(
+        &self,
+        display: crate::platform::DisplayId,
+    ) -> Option<crate::platform::types::DisplayInfo> {
+        #[cfg(all(feature = "wayland-native", unix_desktop))]
+        {
+            let item = session_output(self)?;
+            if item.id != display {
+                return None;
+            }
+            let refresh = {
+                let guard = self.native_session.lock().ok()?;
+                guard.as_ref()?.state.output_refresh_mhz
+            };
+            Some(crate::platform::types::DisplayInfo {
+                refresh_rate_mhz: refresh,
+                orientation: Some(if item.bounds.width >= item.bounds.height {
+                    crate::core::Orientation::Horizontal
+                } else {
+                    crate::core::Orientation::Vertical
+                }),
+                color_space: None,
+                hdr: None,
+            })
+        }
+        #[cfg(not(all(feature = "wayland-native", unix_desktop)))]
+        {
+            let _ = display;
+            None
+        }
+    }
+
+    /// The tracked output's scale, when a native session exists; environment fallback otherwise.
     fn dpi_scale_factor(&self) -> f32 {
+        #[cfg(all(feature = "wayland-native", unix_desktop))]
+        {
+            if let Some(display) = session_output(self) {
+                return display.scale;
+            }
+        }
         // Attempt to detect DPI from environment when wayland-client is not wired.
         // Check common environment variables set by Wayland compositors.
         if let Ok(scale_str) = std::env::var("GDK_SCALE") {
@@ -608,11 +797,59 @@ impl Platform for WaylandPlatform {
     // -----------------------------------------------------------------------
 
     fn set_clipboard_text(&self, text: &str) -> bool {
-        self.state.set_clipboard_text(text)
+        // The record keeps the last value this process wrote, so a read before the compositor
+        // hands the selection back still answers what was copied; the rich backend is what
+        // actually reaches the system clipboard.
+        let stored = self.state.set_clipboard_text(text);
+        let published = self
+            .clipboard
+            .set_contents(crate::platform::clipboard::ClipboardContent::Text(text.to_string()));
+        stored && published
     }
 
     fn get_clipboard_text(&self) -> String {
-        self.state.clipboard_text()
+        self.clipboard.text().unwrap_or_else(|| self.state.clipboard_text())
+    }
+
+    /// The `wl_data_device` clipboard backend (B28.04).
+    ///
+    /// Present in every build of this module; its writes fall back to the in-process record when
+    /// no live session exists, which is the `capabilities().clipboard == false` case.
+    fn clipboard_backend(&self) -> Option<&dyn crate::platform::clipboard::RichClipboardBackend> {
+        Some(&self.clipboard)
+    }
+
+    /// A revision bumped by selection changes and by writes through this backend.
+    fn clipboard_generation(&self) -> u64 {
+        self.clipboard.generation()
+    }
+
+    /// The `text-input-v3` IME bridge (B28.12).
+    ///
+    /// Present in every build of this module; `capabilities().ime` is true only when the
+    /// compositor actually advertised `zwp_text_input_manager_v3`.
+    fn ime_bridge(&self) -> Option<&dyn crate::platform::ime::ImeBridge> {
+        Some(&self.ime)
+    }
+
+    /// Asks the compositor for a frame callback for `window` (B28.42).
+    ///
+    /// The callback is delivered to [`WlCallback`]'s dispatch impl on the loop thread; this method
+    /// never starts a frame loop of its own. When the session is checked out for dispatch the
+    /// request is skipped — the loop is already servicing the compositor and will schedule the
+    /// next frame on its own tick.
+    fn pre_present_notify(&self, window: ObjectId) {
+        #[cfg(all(feature = "wayland-native", unix_desktop))]
+        {
+            let Ok(mut guard) = self.native_session.try_lock() else { return };
+            let Some(session) = guard.as_mut() else { return };
+            let Some(surface) = session.state.surfaces.get(&window).cloned() else { return };
+            let qh = session.event_queue.handle();
+            let _callback = surface.frame(&qh, ());
+            if let Err(e) = session.event_queue.flush() {
+                log::warn!("[wayland] frame request flush failed: {e}");
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -766,7 +1003,10 @@ impl WaylandPlatform {
     ) -> Option<ObjectId> {
         // Helper: connect to Wayland display and discover globals.
         // Returns `Some(WaylandSession)` on success or `None` on failure.
-        fn connect_wayland() -> Option<WaylandSession> {
+        fn connect_wayland(
+            clipboard: super::clipboard::WaylandClipboard,
+            ime: super::ime::WaylandIme,
+        ) -> Option<WaylandSession> {
             let conn = wl_client::Connection::connect_to_env()
                 .inspect_err(|e| {
                     log::error!("[wayland] Failed to connect to Wayland display: {}", e)
@@ -777,11 +1017,31 @@ impl WaylandPlatform {
             let qh = event_queue.handle();
             let _registry = display.get_registry(&qh, ());
 
+            clipboard.clear_channel();
+            ime.clear_channel();
             let mut state = WaylandSessionState {
                 compositor: None,
                 xdg_wm_base: None,
+                seat: None,
+                data_device_manager: None,
+                data_device: None,
+                keyboard: None,
+                pointer: None,
+                clipboard,
+                text_input_manager: None,
+                text_input: None,
+                ime,
+                surfaces: std::collections::HashMap::new(),
+                frame_done_generation: 0,
                 wl_output: None,
                 dpi_scale: 1.0,
+                output_x: 0,
+                output_y: 0,
+                output_width: 0,
+                output_height: 0,
+                output_refresh_mhz: None,
+                output_ready: false,
+                output_generation: 0,
             };
             event_queue
                 .roundtrip(&mut state)
@@ -817,7 +1077,7 @@ impl WaylandPlatform {
         // Obtain or create the persistent Wayland session.
         let mut guard = self.native_session.lock().unwrap();
         if guard.is_none() {
-            *guard = connect_wayland();
+            *guard = connect_wayland(self.clipboard.clone(), self.ime.clone());
         }
         let session = guard.as_mut()?;
         self.create_toplevel(session, title, x, y, width, height)
@@ -861,6 +1121,9 @@ impl WaylandPlatform {
         log::info!("[wayland] Created xdg_toplevel '{}' ({}x{})", title, width, height);
 
         let id = self.insert_widget(WaylandHandleKind::Window, title, x, y, width, height);
+        // Keep the surface so `pre_present_notify` can request a `wl_surface.frame` callback for
+        // this window (B28.42). A clone shares the same protocol object.
+        session.state.surfaces.insert(id, surface.clone());
         log::info!("[wayland] Window {} registered with state backend", id);
 
         // Record which window this `xdg_toplevel`'s configure events belong to. The
@@ -914,7 +1177,7 @@ thread_local! {
 #[cfg(all(feature = "wayland-native", unix_desktop))]
 thread_local! {
     static DISPATCHING_SESSION: core::cell::RefCell<Option<*mut WaylandSession>> =
-        core::cell::RefCell::new(None);
+        const { core::cell::RefCell::new(None) };
 }
 
 /// Records that `proxy`'s configure events describe the widget `id`.
@@ -947,12 +1210,54 @@ pub(crate) fn configured_window_id(proxy: &impl wl_client::Proxy) -> Option<Obje
 pub(crate) struct WaylandSessionState {
     pub(crate) compositor: Option<wl_client::protocol::wl_compositor::WlCompositor>,
     pub(crate) xdg_wm_base: Option<wl_protocols::xdg::shell::client::xdg_wm_base::XdgWmBase>,
+    /// The seat the data device (and the serials `set_selection` needs) come from.
+    pub(crate) seat: Option<wl_client::protocol::wl_seat::WlSeat>,
+    /// Creates data sources and the data device.
+    pub(crate) data_device_manager:
+        Option<wl_client::protocol::wl_data_device_manager::WlDataDeviceManager>,
+    /// The selection channel; only present when both globals above were bound.
+    pub(crate) data_device: Option<wl_client::protocol::wl_data_device::WlDataDevice>,
+    /// Bound to receive keyboard serials; the library does not route its events.
+    #[allow(dead_code)]
+    pub(crate) keyboard: Option<wl_client::protocol::wl_keyboard::WlKeyboard>,
+    /// Bound to receive pointer serials; the library does not route its events.
+    #[allow(dead_code)]
+    pub(crate) pointer: Option<wl_client::protocol::wl_pointer::WlPointer>,
+    /// The clipboard state shared with the platform and the data-device dispatch.
+    pub(crate) clipboard: super::clipboard::WaylandClipboard,
+    /// The text-input manager, when the compositor advertises `text-input-v3`.
+    pub(crate) text_input_manager: Option<
+        wl_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3,
+    >,
+    /// The seat's text-input object.
+    pub(crate) text_input:
+        Option<wl_protocols::wp::text_input::zv3::client::zwp_text_input_v3::ZwpTextInputV3>,
+    /// The IME state shared with the platform and the text-input dispatch.
+    pub(crate) ime: super::ime::WaylandIme,
+    /// The `wl_surface` of every window this session created, for `pre_present_notify`.
+    pub(crate) surfaces: std::collections::HashMap<u64, wl_client::protocol::wl_surface::WlSurface>,
+    /// Bumped by every `wl_callback.done`; a frame callback landed.
+    pub(crate) frame_done_generation: u64,
     /// wl_output proxy for DPI scale detection.
     pub(crate) wl_output: Option<wl_client::protocol::wl_output::WlOutput>,
     /// Logical-to-physical scale reported by the compositor. It scales the
     /// drawing surface and so the input-coordinate mapping, and is set by the
     /// `wl_output::scale` event; it stays 1.0 until then.
     pub(crate) dpi_scale: f32,
+    /// The output's desktop position from `wl_output.geometry`.
+    pub(crate) output_x: i32,
+    /// The output's desktop position from `wl_output.geometry`.
+    pub(crate) output_y: i32,
+    /// The current mode's pixel width (`wl_output.mode`).
+    pub(crate) output_width: u32,
+    /// The current mode's pixel height (`wl_output.mode`).
+    pub(crate) output_height: u32,
+    /// The current mode's refresh rate in millihertz.
+    pub(crate) output_refresh_mhz: Option<u32>,
+    /// Whether a current mode has been reported, so a zero size is not mistaken for a display.
+    pub(crate) output_ready: bool,
+    /// A revision bumped by every geometry/mode/scale change, for `display_generation`.
+    pub(crate) output_generation: u64,
 }
 
 /// A persistent Wayland session containing the connection, event queue,
@@ -968,6 +1273,71 @@ pub(crate) struct WaylandSession {
     pub(crate) conn: wl_client::Connection,
     pub(crate) event_queue: wl_client::EventQueue<WaylandSessionState>,
     pub(crate) state: WaylandSessionState,
+}
+
+#[cfg(all(feature = "wayland-native", unix_desktop))]
+impl WaylandSessionState {
+    /// Creates the `wl_data_device` once both the seat and the manager are known.
+    ///
+    /// The registry may deliver either global first, so both arms call this after binding; it is
+    /// idempotent and does nothing until the pair exists.
+    fn ensure_data_device(
+        &mut self,
+        qh: &wl_client::QueueHandle<WaylandSessionState>,
+        conn: &wl_client::Connection,
+    ) {
+        if self.data_device.is_some() {
+            return;
+        }
+        let (Some(manager), Some(seat)) = (self.data_device_manager.as_ref(), self.seat.as_ref())
+        else {
+            return;
+        };
+        let device = manager.get_data_device(seat, qh, ());
+        self.clipboard.attach_channel(manager.clone(), device.clone(), qh.clone(), conn.clone());
+        self.data_device = Some(device);
+        log::info!("[wayland] clipboard: wl_data_device created");
+    }
+
+    /// Binds the seat's input objects so their serials can gate `set_selection`.
+    fn bind_seat_input(
+        &mut self,
+        qh: &wl_client::QueueHandle<WaylandSessionState>,
+        capabilities: wl_client::WEnum<wl_client::protocol::wl_seat::Capability>,
+    ) {
+        let wl_client::WEnum::Value(capabilities) = capabilities else {
+            return;
+        };
+        let Some(seat) = self.seat.as_ref() else { return };
+        if capabilities.contains(wl_client::protocol::wl_seat::Capability::Keyboard)
+            && self.keyboard.is_none()
+        {
+            self.keyboard = Some(seat.get_keyboard(qh, ()));
+        }
+        if capabilities.contains(wl_client::protocol::wl_seat::Capability::Pointer)
+            && self.pointer.is_none()
+        {
+            self.pointer = Some(seat.get_pointer(qh, ()));
+        }
+    }
+
+    /// Creates the `zwp_text_input_v3` once the manager and seat are both known.
+    fn ensure_text_input(
+        &mut self,
+        qh: &wl_client::QueueHandle<WaylandSessionState>,
+        conn: &wl_client::Connection,
+    ) {
+        if self.text_input.is_some() {
+            return;
+        }
+        let (Some(manager), Some(seat)) = (self.text_input_manager.as_ref(), self.seat.as_ref())
+        else {
+            return;
+        };
+        let text_input = super::ime::create_text_input(&self.ime, manager, seat, qh, conn);
+        self.text_input = Some(text_input);
+        log::info!("[wayland] IME: text-input-v3 object created");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1042,6 +1412,40 @@ impl wl_client::Dispatch<wl_client::protocol::wl_registry::WlRegistry, ()> for W
                     state.wl_output = Some(output);
                     log::info!("[wayland] Bound wl_output (v{})", version);
                 }
+                "wl_seat" => {
+                    let seat = registry.bind::<wl_client::protocol::wl_seat::WlSeat, _, _>(
+                        name,
+                        version.min(7),
+                        _qh,
+                        (),
+                    );
+                    state.seat = Some(seat);
+                    state.ensure_data_device(_qh, _conn);
+                    state.ensure_text_input(_qh, _conn);
+                    log::info!("[wayland] Bound wl_seat (v{})", version);
+                }
+                "wl_data_device_manager" => {
+                    let manager = registry
+                        .bind::<wl_client::protocol::wl_data_device_manager::WlDataDeviceManager, _, _>(
+                            name,
+                            version.min(3),
+                            _qh,
+                            (),
+                        );
+                    state.data_device_manager = Some(manager);
+                    state.ensure_data_device(_qh, _conn);
+                    log::info!("[wayland] Bound wl_data_device_manager (v{})", version);
+                }
+                "zwp_text_input_manager_v3" => {
+                    let manager = registry.bind::<
+                        wl_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3,
+                        _,
+                        _,
+                    >(name, version.min(1), _qh, ());
+                    state.text_input_manager = Some(manager);
+                    state.ensure_text_input(_qh, _conn);
+                    log::info!("[wayland] Bound zwp_text_input_manager_v3 (v{})", version);
+                }
                 _ => { /* Other globals need no special handling */ }
             }
         }
@@ -1082,15 +1486,32 @@ impl wl_client::Dispatch<wl_client::protocol::wl_output::WlOutput, ()> for Wayla
         match event {
             Event::Scale { factor } => {
                 state.dpi_scale = factor as f32;
+                state.output_generation = state.output_generation.wrapping_add(1);
                 log::info!("[wayland] wl_output scale factor: {} (DPI: {})", factor, factor * 96);
+            }
+            Event::Geometry { x, y, .. } => {
+                state.output_x = x;
+                state.output_y = y;
+                state.output_generation = state.output_generation.wrapping_add(1);
+            }
+            Event::Mode { flags, width, height, refresh } => {
+                if matches!(
+                    flags,
+                    wayland_client::WEnum::Value(
+                        wayland_client::protocol::wl_output::Mode::Current
+                    )
+                ) {
+                    state.output_width = width.max(0) as u32;
+                    state.output_height = height.max(0) as u32;
+                    state.output_refresh_mhz = (refresh > 0).then_some(refresh as u32);
+                    state.output_ready = true;
+                    state.output_generation = state.output_generation.wrapping_add(1);
+                }
             }
             Event::Done => {
                 log::trace!("[wayland] wl_output done");
             }
-            Event::Geometry { .. }
-            | Event::Mode { .. }
-            | Event::Name { .. }
-            | Event::Description { .. } => {
+            Event::Name { .. } | Event::Description { .. } => {
                 log::trace!("[wayland] wl_output event: {:?}", event);
             }
             _ => {
@@ -1115,6 +1536,247 @@ impl wl_client::Dispatch<wl_client::protocol::wl_surface::WlSurface, ()> for Way
         // wl_surface events (enter/leave/frame/etc.) are logged but not acted upon:
         // the compositor side of a surface needs no bookkeeping here.
         log::trace!("[wayland] wl_surface event: {:?}", _event);
+    }
+}
+
+// --- wl_seat (bind keyboard/pointer for serials) ---
+
+#[cfg(all(feature = "wayland-native", unix_desktop))]
+impl wl_client::Dispatch<wl_client::protocol::wl_seat::WlSeat, ()> for WaylandSessionState {
+    fn event(
+        state: &mut Self,
+        _proxy: &wl_client::protocol::wl_seat::WlSeat,
+        event: wl_client::protocol::wl_seat::Event,
+        _data: &(),
+        _conn: &wl_client::Connection,
+        qh: &wl_client::QueueHandle<WaylandSessionState>,
+    ) {
+        use wl_client::protocol::wl_seat::Event;
+        match event {
+            Event::Capabilities { capabilities } => state.bind_seat_input(qh, capabilities),
+            Event::Name { name } => log::debug!("[wayland] seat name: {name}"),
+            _ => log::trace!("[wayland] wl_seat event: {:?}", event),
+        }
+    }
+}
+
+// --- wl_keyboard (serial only; the host owns input routing) ---
+
+#[cfg(all(feature = "wayland-native", unix_desktop))]
+impl wl_client::Dispatch<wl_client::protocol::wl_keyboard::WlKeyboard, ()> for WaylandSessionState {
+    fn event(
+        state: &mut Self,
+        _proxy: &wl_client::protocol::wl_keyboard::WlKeyboard,
+        event: wl_client::protocol::wl_keyboard::Event,
+        _data: &(),
+        _conn: &wl_client::Connection,
+        _qh: &wl_client::QueueHandle<WaylandSessionState>,
+    ) {
+        use wl_client::protocol::wl_keyboard::Event;
+        match event {
+            Event::Key { serial, .. } | Event::Enter { serial, .. } => {
+                state.clipboard.note_serial(serial);
+            }
+            _ => log::trace!("[wayland] wl_keyboard event: {:?}", event),
+        }
+    }
+}
+
+// --- wl_pointer (serial only; the host owns input routing) ---
+
+#[cfg(all(feature = "wayland-native", unix_desktop))]
+impl wl_client::Dispatch<wl_client::protocol::wl_pointer::WlPointer, ()> for WaylandSessionState {
+    fn event(
+        state: &mut Self,
+        _proxy: &wl_client::protocol::wl_pointer::WlPointer,
+        event: wl_client::protocol::wl_pointer::Event,
+        _data: &(),
+        _conn: &wl_client::Connection,
+        _qh: &wl_client::QueueHandle<WaylandSessionState>,
+    ) {
+        use wl_client::protocol::wl_pointer::Event;
+        match event {
+            Event::Enter { serial, .. } | Event::Button { serial, .. } => {
+                state.clipboard.note_serial(serial);
+            }
+            _ => log::trace!("[wayland] wl_pointer event: {:?}", event),
+        }
+    }
+}
+
+// --- wl_data_device_manager (no events) ---
+
+#[cfg(all(feature = "wayland-native", unix_desktop))]
+impl wl_client::Dispatch<wl_client::protocol::wl_data_device_manager::WlDataDeviceManager, ()>
+    for WaylandSessionState
+{
+    fn event(
+        _state: &mut Self,
+        _proxy: &wl_client::protocol::wl_data_device_manager::WlDataDeviceManager,
+        _event: wl_client::protocol::wl_data_device_manager::Event,
+        _data: &(),
+        _conn: &wl_client::Connection,
+        _qh: &wl_client::QueueHandle<WaylandSessionState>,
+    ) {
+        // `wl_data_device_manager` has no server-to-client events.
+    }
+}
+
+// --- wl_data_device (selection offers) ---
+
+#[cfg(all(feature = "wayland-native", unix_desktop))]
+impl wl_client::Dispatch<wl_client::protocol::wl_data_device::WlDataDevice, ()>
+    for WaylandSessionState
+{
+    fn event(
+        state: &mut Self,
+        _proxy: &wl_client::protocol::wl_data_device::WlDataDevice,
+        event: wl_client::protocol::wl_data_device::Event,
+        _data: &(),
+        _conn: &wl_client::Connection,
+        _qh: &wl_client::QueueHandle<WaylandSessionState>,
+    ) {
+        use wl_client::protocol::wl_data_device::Event;
+        match event {
+            Event::DataOffer { id } => state.clipboard.note_offer(id),
+            Event::Selection { id } => state.clipboard.note_selection(id),
+            // Drag-and-drop has its own host-supplied `DropEvent`; the pointer-focused offers are
+            // not selection changes and must not replace the clipboard.
+            Event::Enter { .. } | Event::Leave | Event::Motion { .. } | Event::Drop => {
+                log::trace!("[wayland] wl_data_device dnd event: {:?}", event)
+            }
+            _ => log::trace!("[wayland] wl_data_device event: {:?}", event),
+        }
+    }
+}
+
+// --- wl_data_offer (advertised MIME types) ---
+
+#[cfg(all(feature = "wayland-native", unix_desktop))]
+impl wl_client::Dispatch<wl_client::protocol::wl_data_offer::WlDataOffer, ()>
+    for WaylandSessionState
+{
+    fn event(
+        state: &mut Self,
+        _proxy: &wl_client::protocol::wl_data_offer::WlDataOffer,
+        event: wl_client::protocol::wl_data_offer::Event,
+        _data: &(),
+        _conn: &wl_client::Connection,
+        _qh: &wl_client::QueueHandle<WaylandSessionState>,
+    ) {
+        use wl_client::protocol::wl_data_offer::Event;
+        match event {
+            Event::Offer { mime_type } => state.clipboard.note_mime(&mime_type),
+            _ => log::trace!("[wayland] wl_data_offer event: {:?}", event),
+        }
+    }
+}
+
+// --- wl_data_source (serve the selection) ---
+
+#[cfg(all(feature = "wayland-native", unix_desktop))]
+impl wl_client::Dispatch<wl_client::protocol::wl_data_source::WlDataSource, ()>
+    for WaylandSessionState
+{
+    fn event(
+        state: &mut Self,
+        _proxy: &wl_client::protocol::wl_data_source::WlDataSource,
+        event: wl_client::protocol::wl_data_source::Event,
+        _data: &(),
+        _conn: &wl_client::Connection,
+        _qh: &wl_client::QueueHandle<WaylandSessionState>,
+    ) {
+        use wl_client::protocol::wl_data_source::Event;
+        match event {
+            Event::Send { mime_type, fd } => state.clipboard.serve(&mime_type, fd),
+            Event::Cancelled => {
+                log::debug!("[wayland] clipboard: selection was replaced");
+            }
+            Event::Target { mime_type } => {
+                log::trace!("[wayland] clipboard: target {mime_type:?}");
+            }
+            _ => log::trace!("[wayland] wl_data_source event: {:?}", event),
+        }
+    }
+}
+
+// --- zwp_text_input_manager_v3 (no events) ---
+
+#[cfg(all(feature = "wayland-native", unix_desktop))]
+impl
+    wl_client::Dispatch<
+        wl_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3,
+        (),
+    > for WaylandSessionState
+{
+    fn event(
+        _state: &mut Self,
+        _proxy: &wl_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::ZwpTextInputManagerV3,
+        _event: wl_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::Event,
+        _data: &(),
+        _conn: &wl_client::Connection,
+        _qh: &wl_client::QueueHandle<WaylandSessionState>,
+    ) {
+        // The manager has no server-to-client events.
+    }
+}
+
+// --- zwp_text_input_v3 (composition and commit) ---
+
+#[cfg(all(feature = "wayland-native", unix_desktop))]
+impl
+    wl_client::Dispatch<
+        wl_protocols::wp::text_input::zv3::client::zwp_text_input_v3::ZwpTextInputV3,
+        (),
+    > for WaylandSessionState
+{
+    fn event(
+        state: &mut Self,
+        _proxy: &wl_protocols::wp::text_input::zv3::client::zwp_text_input_v3::ZwpTextInputV3,
+        event: wl_protocols::wp::text_input::zv3::client::zwp_text_input_v3::Event,
+        _data: &(),
+        _conn: &wl_client::Connection,
+        _qh: &wl_client::QueueHandle<WaylandSessionState>,
+    ) {
+        use wl_protocols::wp::text_input::zv3::client::zwp_text_input_v3::Event;
+        match event {
+            Event::Enter { .. } => state.ime.set_active(true),
+            Event::Leave { .. } => state.ime.set_active(false),
+            Event::PreeditString { text, cursor_begin, cursor_end } => {
+                if let Some(text) = text {
+                    state.ime.preedit(&text, cursor_begin, cursor_end);
+                }
+            }
+            Event::CommitString { text } => {
+                if let Some(text) = text {
+                    state.ime.commit(&text);
+                }
+            }
+            Event::DeleteSurroundingText { .. } | Event::Done { .. } => {
+                log::trace!("[wayland] text-input event: {:?}", event);
+            }
+            _ => log::trace!("[wayland] text-input unhandled event: {:?}", event),
+        }
+    }
+}
+
+// --- wl_callback (frame presented) ---
+
+#[cfg(all(feature = "wayland-native", unix_desktop))]
+impl wl_client::Dispatch<wl_client::protocol::wl_callback::WlCallback, ()> for WaylandSessionState {
+    fn event(
+        state: &mut Self,
+        _proxy: &wl_client::protocol::wl_callback::WlCallback,
+        event: wl_client::protocol::wl_callback::Event,
+        _data: &(),
+        _conn: &wl_client::Connection,
+        _qh: &wl_client::QueueHandle<WaylandSessionState>,
+    ) {
+        use wl_client::protocol::wl_callback::Event;
+        if let Event::Done { callback_data } = event {
+            state.frame_done_generation = state.frame_done_generation.wrapping_add(1);
+            log::trace!("[wayland] frame presented (callback_data={callback_data})");
+        }
     }
 }
 

@@ -193,4 +193,55 @@ public final class RustWidgets {
      *         11 = {@code safe_area_insets()} answered from {@code WindowMetrics}
      */
     public static native int nativePlatformProbe();
+
+    // ---- Host input forwarding (BLUE28 B28.02) ----------------------------
+
+    /**
+     * Forward a touch/pointer event into the library's widget runtime.
+     *
+     * <p>Without this, a painted control is visible but never receives a press: the library has
+     * the router and the widgets, and the host has the touch events, but nothing joins them.
+     *
+     * @param code 1 press, 2 release, 3 move, 4 enter, 5 leave — the same vocabulary the C ABI's
+     *             {@code rw_dispatch_pointer_event} uses
+     * @param x view-local x in pixels (the native side converts to logical pixels)
+     * @param y view-local y in pixels
+     * @param button 0 primary, 1 secondary (the library's mouse-button convention)
+     * @return 1 when a window accepted the event, 0 otherwise
+     */
+    public static native int nativeDispatchPointerEvent(int code, int x, int y, int button);
+
+    /**
+     * Commit text from the input method into the focused widget.
+     *
+     * @param text the committed string
+     * @return 1 when a focused widget accepted the text
+     */
+    public static native int nativeDispatchText(String text);
+
+    /**
+     * Forward a key event into the focused widget.
+     *
+     * @param keyCode Android's {@code KeyEvent.getKeyCode()}
+     * @param modifiers Android's meta-state bitmask
+     * @param pressed 1 for down, 0 for up
+     * @return 1 when a focused widget accepted the event
+     */
+    public static native int nativeDispatchKeyEvent(int keyCode, int modifiers, int pressed);
+
+    /**
+     * Delivers a document-picker answer to the library's asynchronous path request.
+     *
+     * <p>The host calls this from {@code onActivityResult}: pass the resolved filesystem path, or
+     * an empty string with {@code cancelled != 0} when the user dismissed the picker.
+     *
+     * @return 1 when the answer was queued
+     */
+    public static native int nativeInjectPathChoice(String path, int cancelled);
+
+    /** Reports {@code Display.getRotation()} and {@code Configuration.orientation}. */
+    public static native int nativeOnConfigurationChanged(int rotation, int orientation);
+
+    /** Reports an Activity lifecycle transition: 0 active, 1 inactive, 2 background. */
+    public static native int nativeOnLifecycleChanged(int state);
 }

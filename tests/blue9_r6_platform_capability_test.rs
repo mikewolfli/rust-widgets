@@ -141,6 +141,7 @@ fn platform_capabilities_have_typed_widget_trigger() {
         clipboard: true,
         open_external: true,
         file_dialog: true,
+        system_fonts: true,
     };
     assert!(desktop_caps.typed_widget_trigger);
     assert!(desktop_caps.dpi_scaling);
@@ -155,6 +156,7 @@ fn platform_capabilities_have_typed_widget_trigger() {
         clipboard: false,
         open_external: false,
         file_dialog: false,
+        system_fonts: false,
     };
     assert!(embedded_caps.typed_widget_trigger);
 }

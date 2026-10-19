@@ -97,6 +97,29 @@ pub(crate) fn display_index_at(x: i32, y: i32) -> Option<u64> {
     .flatten()
 }
 
+/// Metadata for one monitor, from GDK's `GdkMonitor`.
+///
+/// GDK reports the refresh rate in millihertz and the geometry; the orientation is derived from
+/// the geometry. Colour space and HDR have no GDK3 accessor, so they answer `None`.
+pub(crate) fn info(id: DisplayId) -> Option<crate::platform::types::DisplayInfo> {
+    with_display(|display| {
+        let monitor = display.monitor(id.get() as i32)?;
+        let geometry = monitor.geometry();
+        let refresh = monitor.refresh_rate();
+        Some(crate::platform::types::DisplayInfo {
+            refresh_rate_mhz: (refresh > 0).then_some(refresh as u32),
+            orientation: Some(if geometry.width() >= geometry.height() {
+                crate::core::Orientation::Horizontal
+            } else {
+                crate::core::Orientation::Vertical
+            }),
+            color_space: None,
+            hdr: None,
+        })
+    })
+    .flatten()
+}
+
 /// A revision that changes when the display set (or a display's geometry/scale) changes.
 ///
 /// Derived from the current configuration with FNV-1a, so a host compares consecutive readings

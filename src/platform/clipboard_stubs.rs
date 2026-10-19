@@ -770,6 +770,23 @@ pub mod objc2_macos {
         objc2::MainThreadMarker::new().is_some()
     }
 
+    /// The general pasteboard's change counter, or `0` off the main thread.
+    ///
+    /// `NSPasteboard.changeCount` increments on every write by any process, which is the same
+    /// signal the clipboard-manager pattern polls (BLUE28 B28.22).
+    pub fn generation() -> u64 {
+        if !on_main_thread() {
+            return 0;
+        }
+        // SAFETY: the pasteboard is an AppKit singleton read from the main thread; `changeCount`
+        // is a scalar accessor.
+        unsafe {
+            let pb: *mut AnyObject = msg_send![class!(NSPasteboard), generalPasteboard];
+            let count: i64 = msg_send![pb, changeCount];
+            count.max(0) as u64
+        }
+    }
+
     /// Puts `text` on the general pasteboard as plain text, and reports the system write.
     ///
     /// A thin wrapper over [`RichClipboardBackend::set_contents`] so that the text path and the

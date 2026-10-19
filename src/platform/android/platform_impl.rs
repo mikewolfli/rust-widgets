@@ -110,6 +110,21 @@ impl Platform for AndroidPlatform {
                     false
                 }
             },
+            // Android's system fonts are files under `/system/fonts` on the target; the
+            // host-side preview has no such directory and reports the honest empty list.
+            system_fonts: cfg!(target_os = "android"),
+            // The document picker exists when the JNI bridge has a VM and an Activity Context
+            // (BLUE28 B28.08). It is the **asynchronous** contract, not `choose_path`.
+            file_dialog: {
+                #[cfg(feature = "android-jni")]
+                {
+                    crate::platform::android_jni::picker_ready()
+                }
+                #[cfg(not(feature = "android-jni"))]
+                {
+                    false
+                }
+            },
             ..crate::platform::types::default_capabilities_for(self.family())
         }
     }
@@ -168,6 +183,97 @@ impl Platform for AndroidPlatform {
         }
     }
 
+    /// Whether Android's high-text-contrast setting is on.
+    fn high_contrast(&self) -> Option<bool> {
+        #[cfg(feature = "android-jni")]
+        {
+            crate::platform::android_jni::high_contrast()
+        }
+        #[cfg(not(feature = "android-jni"))]
+        {
+            None
+        }
+    }
+
+    /// Whether the animator duration scale is zero.
+    fn reduce_motion(&self) -> Option<bool> {
+        #[cfg(feature = "android-jni")]
+        {
+            crate::platform::android_jni::reduce_motion()
+        }
+        #[cfg(not(feature = "android-jni"))]
+        {
+            None
+        }
+    }
+
+    /// The default locale, from `Locale.getDefault()`.
+    fn system_locale(&self) -> Option<&'static str> {
+        #[cfg(feature = "android-jni")]
+        {
+            crate::platform::locale::intern(crate::platform::android_jni::system_locale())
+        }
+        #[cfg(not(feature = "android-jni"))]
+        {
+            None
+        }
+    }
+
+    /// A revision of the environment facts, derived from their current values.
+    fn environment_generation(&self) -> u64 {
+        crate::platform::locale::generation_hash(
+            self.system_theme(),
+            self.high_contrast(),
+            self.reduce_motion(),
+            self.system_locale(),
+        )
+    }
+
+    /// The fonts installed under `/system/fonts` on the device.
+    ///
+    /// Android has no synchronous "list families" API reachable from the NDK; the files in
+    /// `/system/fonts` are the fonts `Typeface` resolves, and each file stem is a usable family
+    /// label. `source` is the file, so a caller can read it and register the bytes. A host build
+    /// (the Android module compiled elsewhere for its tests) has no such directory and answers an
+    /// empty list.
+    fn system_fonts(&self) -> Vec<crate::platform::types::SystemFont> {
+        #[cfg(target_os = "android")]
+        {
+            let mut fonts: Vec<crate::platform::types::SystemFont> = Vec::new();
+            let Ok(entries) = std::fs::read_dir("/system/fonts") else {
+                return fonts;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let extension = path.extension().and_then(|value| value.to_str()).unwrap_or("");
+                if !extension.eq_ignore_ascii_case("ttf")
+                    && !extension.eq_ignore_ascii_case("otf")
+                    && !extension.eq_ignore_ascii_case("ttc")
+                {
+                    continue;
+                }
+                let Some(family) = path.file_stem().and_then(|value| value.to_str()) else {
+                    continue;
+                };
+                if family.is_empty()
+                    || fonts.iter().any(|known| known.family.eq_ignore_ascii_case(family))
+                {
+                    continue;
+                }
+                fonts.push(crate::platform::types::SystemFont {
+                    family: family.to_string(),
+                    style: String::new(),
+                    source: Some(path),
+                });
+            }
+            fonts
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            Vec::new()
+        }
+    }
+
     /// The activity window's safe-area insets, from `WindowManager.getCurrentWindowMetrics()`.
     ///
     /// `WindowInsets` are pixels; the JNI bridge converts them to logical pixels with the same
@@ -215,6 +321,25 @@ impl Platform for AndroidPlatform {
         {
             Vec::new()
         }
+    }
+
+    /// Metadata for the default display.
+    ///
+    /// The orientation is derived from the reported pixel bounds; Android's refresh rate and HDR
+    /// capabilities need `Display.Mode` / `Display.HdrCapabilities` JNI calls this bridge does not
+    /// yet make, so those answer `None` rather than a fabricated value.
+    fn display_info(&self, display: DisplayId) -> Option<crate::platform::types::DisplayInfo> {
+        let display_item = self.displays().into_iter().find(|item| item.id == display)?;
+        Some(crate::platform::types::DisplayInfo {
+            refresh_rate_mhz: None,
+            orientation: Some(if display_item.bounds.width >= display_item.bounds.height {
+                crate::core::Orientation::Horizontal
+            } else {
+                crate::core::Orientation::Vertical
+            }),
+            color_space: None,
+            hdr: None,
+        })
     }
 
     /// The default display for a window this backend owns.
@@ -288,14 +413,39 @@ impl Platform for AndroidPlatform {
         crate::platform::os_probes::process_cpu_utilization()
     }
 
-    /// Android has no desktop print spooler; printing goes through the platform
-    /// print framework via JNI, which this state backend does not bind.
+    /// Hands `job_file` to Android's `PrintManager` through the host helper (B28.27).
+    ///
+    /// The adapter is Java-side (`rust_widgets.RustWidgets.printFile`), because a
+    /// `PrintDocumentAdapter` is a Java class this crate cannot define; the helper streams the
+    /// file to the destination the system print UI chose. Without `android-jni` there is no JNI
+    /// bridge to call, so the job is refused with the reason.
     fn spawn_print_job(&self, job_file: &std::path::Path) -> Result<(), String> {
-        Err(format!(
-            "Android printing requires the platform print framework, which is not bound in \
-             this build; job file '{}' was not printed",
-            job_file.display()
-        ))
+        #[cfg(feature = "android-jni")]
+        {
+            crate::platform::android_jni::print_file(job_file)
+        }
+        #[cfg(not(feature = "android-jni"))]
+        {
+            Err(format!(
+                "Android printing requires the JNI bridge (`android-jni`); job file '{}' was not \
+                 printed",
+                job_file.display()
+            ))
+        }
+    }
+
+    /// Printing is available when the JNI bridge holds the Activity context the print manager
+    /// needs. That is the same condition `spawn_print_job` depends on, so the flag and the method
+    /// cannot disagree.
+    fn has_print_support(&self) -> bool {
+        #[cfg(feature = "android-jni")]
+        {
+            crate::platform::android_jni::print_available()
+        }
+        #[cfg(not(feature = "android-jni"))]
+        {
+            false
+        }
     }
 
     #[cfg(feature = "mobile-api")]
@@ -362,7 +512,55 @@ impl Platform for AndroidPlatform {
     // ─── Widget creation ─────────────────────────────────────────────────
 
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        if self.state.count_kind(AndroidHandleKind::Window) > 0 {
+            log::warn!(
+                "[android] create_window: this backend hosts one Activity window; the second
+                 request returns 0 (BLUE28 B28.43)"
+            );
+            return 0;
+        }
         self.insert_widget(AndroidHandleKind::Window, title, x, y, width, height)
+    }
+
+    /// Android's host model is one Activity with one window.
+    fn supports_multiple_windows(&self) -> bool {
+        false
+    }
+
+    /// Starts the Android document picker for an existing file.
+    ///
+    /// `ACTION_OPEN_DOCUMENT` is the only picker this bridge launches, so `SaveFile` and
+    /// `SelectDirectory` answer `false` rather than presenting a dialog that cannot honour the
+    /// purpose. The result is delivered through [`Self::take_path_choice`].
+    fn request_path(&self, purpose: crate::platform::PathPurpose, _title: &str) -> bool {
+        #[cfg(feature = "android-jni")]
+        {
+            if !matches!(purpose, crate::platform::PathPurpose::OpenFile) {
+                log::warn!(
+                    "[android] request_path: only OpenFile is available; the document picker has
+                     no save/directory mode in this bridge"
+                );
+                return false;
+            }
+            crate::platform::android_jni::launch_file_dialog("*/*")
+        }
+        #[cfg(not(feature = "android-jni"))]
+        {
+            let _ = purpose;
+            false
+        }
+    }
+
+    /// Pops the next document-picker answer delivered by the host.
+    fn take_path_choice(&self) -> Option<crate::platform::PathChoice> {
+        #[cfg(feature = "android-jni")]
+        {
+            crate::platform::android_jni::take_path_choice()
+        }
+        #[cfg(not(feature = "android-jni"))]
+        {
+            None
+        }
     }
 
     // ─── Menu model ──────────────────────────────────────────────────────
@@ -656,6 +854,36 @@ impl crate::platform::contract::MobilePlatformExtension for AndroidPlatform {
             let _ = native_handle;
             false
         }
+    }
+
+    /// The orientation the host reported through `nativeOnConfigurationChanged`, or `None`
+    /// before it reports one.
+    ///
+    /// Deriving the axis from display bounds cannot distinguish landscape-left from
+    /// landscape-right, and a state-only host has no display at all; the host's
+    /// `Display.getRotation()` is the real source, so this does not guess.
+    fn orientation(&self) -> Option<crate::platform::ScreenOrientation> {
+        crate::platform::lifecycle::orientation()
+    }
+
+    /// The display revision also changes on rotation, and so does the reported rotation.
+    fn orientation_generation(&self) -> u64 {
+        self.display_generation().wrapping_add(crate::platform::lifecycle::rotation_generation())
+    }
+
+    /// The phase the host last reported through `nativeOnLifecycleChanged`.
+    fn lifecycle_state(&self) -> Option<crate::platform::MobileLifecycleState> {
+        crate::platform::lifecycle::lifecycle_state()
+    }
+
+    /// Stops the animation clock; the Activity calls this from `onPause`.
+    fn suspend(&self) -> bool {
+        crate::platform::lifecycle::set_state(crate::platform::MobileLifecycleState::Background)
+    }
+
+    /// Restarts the animation clock; the Activity calls this from `onResume`.
+    fn resume(&self) -> bool {
+        crate::platform::lifecycle::set_state(crate::platform::MobileLifecycleState::Active)
     }
 }
 

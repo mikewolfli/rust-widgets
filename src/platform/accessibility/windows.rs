@@ -20,6 +20,14 @@ use super::{A11yState, AccessibilityBridge};
 use crate::compat::{lock, HashMap, Mutex, String, ToString};
 use crate::core::ObjectId;
 
+// Win32 event constants, spelled locally so the module (and its state tests) compiles on every
+// host. `winapi` is a Windows-target dependency; naming its constants here made the whole module
+// Windows-only and hid its tests from the host suite (B28.16).
+const EVENT_OBJECT_NAMECHANGE: u32 = 0x800C;
+const EVENT_OBJECT_VALUECHANGE: u32 = 0x800E;
+const EVENT_OBJECT_STATECHANGE: u32 = 0x800A;
+const EVENT_OBJECT_FOCUS: u32 = 0x8005;
+
 /// Windows UIAutomation bridge using NotifyWinEvent.
 pub struct WindowsAccessibilityBridge {
     names: Mutex<HashMap<ObjectId, String>>,
@@ -68,7 +76,7 @@ impl WindowsAccessibilityBridge {
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = event;
+            let _ = (event, hwnd_val);
         }
         true
     }
@@ -108,19 +116,19 @@ impl AccessibilityBridge for WindowsAccessibilityBridge {
     }
 
     fn notify_name_changed(&self, id: ObjectId) {
-        self.post_event(id, winapi::um::winuser::EVENT_OBJECT_NAMECHANGE);
+        self.post_event(id, EVENT_OBJECT_NAMECHANGE);
     }
 
     fn notify_value_changed(&self, id: ObjectId) {
-        self.post_event(id, winapi::um::winuser::EVENT_OBJECT_VALUECHANGE);
+        self.post_event(id, EVENT_OBJECT_VALUECHANGE);
     }
 
     fn notify_state_changed(&self, id: ObjectId) {
-        self.post_event(id, winapi::um::winuser::EVENT_OBJECT_STATECHANGE);
+        self.post_event(id, EVENT_OBJECT_STATECHANGE);
     }
 
     fn notify_focus_changed(&self, id: ObjectId) {
-        self.post_event(id, winapi::um::winuser::EVENT_OBJECT_FOCUS);
+        self.post_event(id, EVENT_OBJECT_FOCUS);
     }
 }
 

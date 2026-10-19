@@ -34,7 +34,9 @@
 
 use super::types::{IosHandleKind, IosMobilePlatform};
 use crate::compat::atomic::Ordering;
-use crate::compat::{format, lock, String, Vec};
+#[cfg(not(all(apple_uikit, feature = "ios-uikit-ffi")))]
+use crate::compat::format;
+use crate::compat::{lock, String, Vec};
 use crate::core::PlatformFamily;
 use crate::platform::clipboard::RichClipboardBackend;
 use crate::platform::types::{Display, DisplayId};
@@ -186,6 +188,80 @@ impl Platform for IosMobilePlatform {
         }
     }
 
+    /// Whether the user asked for increased contrast, from UIKit.
+    fn high_contrast(&self) -> Option<bool> {
+        #[cfg(all(apple_uikit, feature = "ios-uikit-ffi"))]
+        {
+            Some(super::native::high_contrast())
+        }
+        #[cfg(not(all(apple_uikit, feature = "ios-uikit-ffi")))]
+        {
+            None
+        }
+    }
+
+    /// Whether the user asked for reduced motion, from UIKit.
+    fn reduce_motion(&self) -> Option<bool> {
+        #[cfg(all(apple_uikit, feature = "ios-uikit-ffi"))]
+        {
+            Some(super::native::reduce_motion())
+        }
+        #[cfg(not(all(apple_uikit, feature = "ios-uikit-ffi")))]
+        {
+            None
+        }
+    }
+
+    /// The user's locale, from `NSLocale.currentLocale`.
+    fn system_locale(&self) -> Option<&'static str> {
+        #[cfg(all(apple_uikit, feature = "ios-uikit-ffi"))]
+        {
+            super::native::system_locale()
+        }
+        #[cfg(not(all(apple_uikit, feature = "ios-uikit-ffi")))]
+        {
+            None
+        }
+    }
+
+    /// The user's preferred text size, mapped from `UIContentSizeCategory`.
+    ///
+    /// BLUE28 B28.10: the category is a name, not a multiplier, so the mapping lives in
+    /// [`super::native::text_scale`]. `None` off the main thread or without the UIKit FFI; the
+    /// trait's `1.0` is the honest absence in those builds.
+    fn text_scale(&self) -> f32 {
+        #[cfg(all(apple_uikit, feature = "ios-uikit-ffi"))]
+        {
+            super::native::text_scale().unwrap_or(1.0)
+        }
+        #[cfg(not(all(apple_uikit, feature = "ios-uikit-ffi")))]
+        {
+            1.0
+        }
+    }
+
+    /// A revision of the environment facts, derived from their current values.
+    fn environment_generation(&self) -> u64 {
+        crate::platform::locale::generation_hash(
+            self.system_theme(),
+            self.high_contrast(),
+            self.reduce_motion(),
+            self.system_locale(),
+        )
+    }
+
+    /// The font families UIKit reports; empty without the UIKit FFI.
+    fn system_fonts(&self) -> Vec<crate::platform::types::SystemFont> {
+        #[cfg(all(apple_uikit, feature = "ios-uikit-ffi"))]
+        {
+            super::native::system_fonts()
+        }
+        #[cfg(not(all(apple_uikit, feature = "ios-uikit-ffi")))]
+        {
+            Vec::new()
+        }
+    }
+
     /// A revision of the current screen configuration.
     ///
     /// Derived from the same fields [`Self::displays`] returns, so a host that compares two
@@ -250,11 +326,29 @@ impl Platform for IosMobilePlatform {
     /// iOS printing goes through `UIPrintInteractionController`, not a spooler
     /// command, so this state backend cannot submit a job file.
     fn spawn_print_job(&self, job_file: &std::path::Path) -> Result<(), String> {
-        Err(format!(
-            "iOS printing requires UIPrintInteractionController, which is not bound in this \
-             build; job file '{}' was not printed",
-            job_file.display()
-        ))
+        #[cfg(all(apple_uikit, feature = "ios-uikit-ffi"))]
+        {
+            super::native::spawn_print_job(job_file)
+        }
+        #[cfg(not(all(apple_uikit, feature = "ios-uikit-ffi")))]
+        {
+            Err(format!(
+                "iOS printing requires the UIKit FFI; job file '{}' was not printed",
+                job_file.display()
+            ))
+        }
+    }
+
+    /// `UIPrintInteractionController` is part of UIKit, so the capability follows the FFI build.
+    fn has_print_support(&self) -> bool {
+        #[cfg(all(apple_uikit, feature = "ios-uikit-ffi"))]
+        {
+            super::native::has_print_support()
+        }
+        #[cfg(not(all(apple_uikit, feature = "ios-uikit-ffi")))]
+        {
+            false
+        }
     }
 
     /// iOS uses the same AppKit-style accelerator symbols as macOS (`⌘⇧Z`).
@@ -267,29 +361,37 @@ impl Platform for IosMobilePlatform {
         Some(self)
     }
 
+    /// The iOS host's marked-text/commit bridge (B28.12).
+    ///
+    /// The platform-independent `ime_macos` state machine is reused; `focus_in`/`focus_out` come
+    /// from the widget runtime, and the host forwards composition and commit through
+    /// `rw_ios_ime_marked_text` / `rw_ios_ime_commit`.
+    fn ime_bridge(&self) -> Option<&dyn crate::platform::ime::ImeBridge> {
+        Some(super::host_facts::ime_bridge())
+    }
+
     /// Capabilities published by the iOS backend.
     ///
-    /// # Why `dpi_scaling`, `ime` and `accessibility` are `false`
+    /// # Why `accessibility` stays `false`
     ///
-    /// All three used to be `true` with nothing behind them: `grep` over `src/platform/ios/`
-    /// finds no `dpi_scale_factor()`, no `ime_bridge()` and no `accessibility_bridge()`, so
-    /// each flag promised a method that fell through to the trait default (`1.0`, `None`,
-    /// `None`). `dpi_scaling: true` was additionally a **fabricated value** — the constant
-    /// `1.0` reported for a platform whose screens are 2x and 3x (principle #37).
+    /// The backend publishes no `UIAccessibility` element for its painted surface, so a `true`
+    /// here would promise a screen-reader tree that does not exist. `set_widget_accessibility_name`
+    /// is not a counter-argument: it writes a per-widget field in `BackendState`, which is a flag
+    /// store, not an accessibility node. A flag names the capability, not the storage of a
+    /// boolean about it.
     ///
-    /// `set_widget_ime_enabled` and `set_widget_accessibility_name` are not a counter-argument:
-    /// they write per-widget fields in `BackendState`, which is a flag store, not an input
-    /// method client or an accessibility tree. A flag names the capability, not the storage of
-    /// a boolean about it.
-    ///
-    /// The honest values are `false`. `typed_widget_trigger` stays `true` — this backend
-    /// implements the queue (`poll_widget_trigger_event` et al.), so it cannot be absent.
+    /// `dpi_scaling` follows the UIKit FFI because `dpi_scale_factor()` reads `UIScreen.scale`;
+    /// `ime` is `true` because `ime_bridge()` is implemented over the shared marked-text state
+    /// machine and the host feeds it through the C entry points (B28.12). `typed_widget_trigger`
+    /// stays `true` — this backend implements the queue (`poll_widget_trigger_event` et al.).
     fn capabilities(&self) -> PlatformCapabilities {
         PlatformCapabilities {
             // The UIKit FFI can read `UIScreen.scale`; without it (a host preview build, or an
             // iOS build that did not enable the FFI) there is no measurement to promise.
             dpi_scaling: cfg!(all(apple_uikit, feature = "ios-uikit-ffi")),
-            ime: false,
+            // The state machine is always compiled; the host feeds it through
+            // `rw_ios_ime_marked_text`/`rw_ios_ime_commit` (B28.12).
+            ime: true,
             accessibility: false,
             native_menu: false,
             typed_widget_trigger: true,
@@ -308,6 +410,8 @@ impl Platform for IosMobilePlatform {
             // No picker: `UIDocumentPickerViewController` needs the same window scene the handler
             // above lacks, and this backend presents no dialog of its own.
             file_dialog: false,
+            // `UIFont.familyNames` through the UIKit FFI (B28.39).
+            system_fonts: cfg!(all(apple_uikit, feature = "ios-uikit-ffi")),
         }
     }
 
@@ -738,27 +842,14 @@ mod tests {
     /// The iOS state backend's published capability set, asserted against the two documents that
     /// publish it.
     ///
-    /// # Why the expectations are `false` for three of the five
+    /// # Why `accessibility` and `native_menu` are `false`
     ///
-    /// This test previously asserted `dpi_scaling`, `ime` and `accessibility` were all `true`, and
-    /// the backend's `capabilities()` agreed with it — so the pair was self-consistently wrong. The
-    /// flags are promises about methods, and `grep` over `src/platform/ios/` finds no
-    /// `dpi_scale_factor()`, no `ime_bridge()` and no `accessibility_bridge()`: each flag promised
-    /// one that fell through to the trait default (`1.0`, `None`, `None`).
-    ///
-    /// `dpi_scaling: true` was the worst of the three because the default it hid is a
-    /// **fabricated value** — the constant `1.0`, reported for a platform whose screens are 2x and
-    /// 3x (principle #37). A host that trusted it would lay out a phone UI at desktop scale and
-    /// see it half-size.
-    ///
-    /// `typed_widget_trigger` stays `true` and is the one with a real producer: the backend owns
-    /// the queue and forwards it (`poll_widget_trigger_event` and friends).
-    ///
-    /// The three documents that publish this row — this test, `docs_paths_tests.rs`'s two tables
-    /// and the cookbook matrix in three languages — now agree, because a capability table that
-    /// only *some* of its copies were corrected is how the previous round's macOS row went stale.
-    ///
-    /// `native_menu: false` is unchanged and correct: the backend keeps the menu tree in-process.
+    /// The flags are promises about methods. The backend overrides no
+    /// `accessibility_bridge()`, and its menu tree is in-process, so neither flag may claim a
+    /// bridge that does not exist. `dpi_scaling` follows the UIKit FFI gate because
+    /// `dpi_scale_factor()` reads `UIScreen.scale`; `ime` is now `true` because `ime_bridge()`
+    /// exists over the shared marked-text state machine (BLUE28 B28.12), fed by
+    /// `rw_ios_ime_marked_text`/`rw_ios_ime_commit`.
     #[test]
     fn ios_platform_reports_explicit_mobile_capabilities() {
         let platform = IosMobilePlatform::new();
@@ -771,7 +862,11 @@ mod tests {
             "`dpi_scaling` must track whether `dpi_scale_factor()` can read `UIScreen.scale`; \
              without the UIKit FFI there is no measurement to promise"
         );
-        assert!(!caps.ime, "no `ime_bridge()` override exists, so the flag would promise `None`");
+        assert!(
+            caps.ime,
+            "`ime_bridge()` is implemented over the shared state machine, and the host feeds it \
+             through `rw_ios_ime_marked_text`/`rw_ios_ime_commit`"
+        );
         assert!(
             !caps.accessibility,
             "no `accessibility_bridge()` override exists, so the flag would promise `None`"

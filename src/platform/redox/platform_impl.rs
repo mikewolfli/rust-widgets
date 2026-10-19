@@ -128,6 +128,8 @@ impl Platform for OrbitalPlatform {
             clipboard: true,
             open_external: false,
             file_dialog: false,
+            // Orbital exposes no font enumeration protocol.
+            system_fonts: false,
         }
     }
 

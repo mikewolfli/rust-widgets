@@ -17,14 +17,14 @@ use crate::platform::Platform;
 use crate::platform::PlatformCapabilities;
 use cocoa::appkit::{
     NSApp, NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicyRegular,
-    NSBackingStoreBuffered, NSRunningApplication, NSWindow,
+    NSBackingStoreBuffered, NSRunningApplication, NSWindow, NSWindowStyleMask,
 };
 // A plain content view is the `mini`/`embedded` fallback only; the canvas profile installs its own
 // drawing view, so the import is compiled out where it would otherwise be unused.
 #[cfg(not(widgets_unstripped))]
 use cocoa::appkit::NSView;
 use cocoa::base::{id, nil, BOOL, NO, YES};
-use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSRect, NSString};
+use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSRect, NSSize, NSString};
 use objc::{class, msg_send, sel, sel_impl};
 use std::ffi::CStr;
 use std::os::raw::c_char;
@@ -178,32 +178,28 @@ impl Platform for MacOSPlatform {
 
     /// The host integrations this backend actually provides.
     ///
-    /// # Why `native_menu` and `dpi_scaling` are `false`
+    /// # Why `native_menu` is `false` and `dpi_scaling` is `true`
     ///
-    /// The comment above used to claim "AppKit supplies the screen scale, the
-    /// input-method client, the accessibility tree and the application menu, so all
-    /// four are `true`". The premise is true about AppKit and false about this type:
-    /// `grep` over `src/platform/macos/` finds **no** `create_menu_bar`,
-    /// `menu_add_item` or `attach_menu_bar_to_window`, and no `dpi_scale_factor`
-    /// override — so both flags promised methods that are not there.
+    /// The comment above used to claim "AppKit supplies the screen scale, the input-method client,
+    /// the accessibility tree and the application menu, so all four are `true`". The premise is
+    /// true about AppKit and false about this type: `grep` over `src/platform/macos/` finds **no**
+    /// `create_menu_bar`, `menu_add_item` or `attach_menu_bar_to_window`, so `native_menu` promised
+    /// methods that are not there. It stays `false`.
     ///
-    /// The distinction matters because a flag is a promise the negotiation acts on: a
-    /// host that reads `native_menu: true` asks the backend for a menu bar and gets id
-    /// `0`, and a host that reads `dpi_scaling: true` lays out for a scale factor the
-    /// backend cannot report and silently gets `1.0`.
+    /// `dpi_scaling` used to be `false` for the same reason — there was no `dpi_scale_factor`
+    /// override. BLUE28 B28.03 added one, read from `NSScreen.backingScaleFactor`, so the flag is
+    /// now the same measured fact [`Self::dpi_scale_factor`] answers.
     ///
     /// `ime` and `accessibility` stay `true`: both have real implementations reachable
     /// from this backend (`ime_bridge()` → `ImeMacosBridge`, `accessibility_bridge()` →
-    /// the AppKit bridge), and `shortcut_style()` really is `Mac`. What is fixed here is
-    /// only the pair with no implementation behind it (principle #37 — an honest
-    /// absence, not a fabricated value).
+    /// the AppKit bridge), and `shortcut_style()` really is `Mac`.
     ///
     /// The two host-service flags follow the same rule: both are `true` because both
     /// methods have real bodies (`NSPasteboard`, and the `open` handler spawned by
     /// [`Self::open_external`]).
     fn capabilities(&self) -> PlatformCapabilities {
         PlatformCapabilities {
-            dpi_scaling: false,
+            dpi_scaling: true,
             ime: true,
             accessibility: true,
             native_menu: false,
@@ -216,6 +212,8 @@ impl Platform for MacOSPlatform {
             // `choose_path` presents `NSOpenPanel`/`NSSavePanel`, so the flag and the method are
             // one implementation.
             file_dialog: true,
+            // `NSFontManager.availableFontFamilies` lists installed families (B28.39).
+            system_fonts: true,
         }
     }
 
@@ -253,6 +251,16 @@ impl Platform for MacOSPlatform {
         super::displays::displays()
     }
 
+    /// The main screen's scale, read from `NSScreen.backingScaleFactor`.
+    ///
+    /// A Retina Mac answers `2.0`; an external 1x display answers `1.0`. `1.0` is also the answer
+    /// off the main thread, where AppKit cannot be asked — the honest fallback this trait's other
+    /// defaults use, and the one [`Self::capabilities`] pairs with `dpi_scaling: true` only because
+    /// the measured path exists on the main thread.
+    fn dpi_scale_factor(&self) -> f32 {
+        super::displays::main_scale().unwrap_or(1.0)
+    }
+
     /// The screen the window is on, asked of AppKit's `-[NSWindow screen]`.
     ///
     /// # Both id spaces
@@ -276,6 +284,25 @@ impl Platform for MacOSPlatform {
     /// A revision of AppKit's current display set; see [`super::displays::generation`].
     fn display_generation(&self) -> u64 {
         super::displays::generation()
+    }
+
+    /// Metadata for one AppKit display.
+    ///
+    /// AppKit exposes the frame (which gives the orientation) but no synchronous refresh-rate or
+    /// colour-space accessor through `NSScreen`; those answer `None` rather than a guess. The
+    /// orientation is derived from the bounds: a wider-than-tall screen is landscape.
+    fn display_info(&self, id: DisplayId) -> Option<crate::platform::types::DisplayInfo> {
+        let display = self.displays().into_iter().find(|display| display.id == id)?;
+        Some(crate::platform::types::DisplayInfo {
+            refresh_rate_mhz: None,
+            orientation: Some(if display.bounds.width >= display.bounds.height {
+                crate::core::Orientation::Horizontal
+            } else {
+                crate::core::Orientation::Vertical
+            }),
+            color_space: None,
+            hdr: None,
+        })
     }
 
     /// The window's safe-area insets, read from its content view's `safeAreaInsets`.
@@ -308,6 +335,62 @@ impl Platform for MacOSPlatform {
                 left: logical_pixels(insets.left),
                 right: logical_pixels(insets.right),
             })
+        }
+    }
+
+    /// Whether the user asked for increased contrast.
+    ///
+    /// `NSWorkspace.accessibilityDisplayShouldIncreaseContrast`; see [`super::environment`].
+    fn high_contrast(&self) -> Option<bool> {
+        super::environment::high_contrast()
+    }
+
+    /// Whether the user asked for reduced motion.
+    ///
+    /// `NSWorkspace.accessibilityDisplayShouldReduceMotion`; see [`super::environment`].
+    fn reduce_motion(&self) -> Option<bool> {
+        super::environment::reduce_motion()
+    }
+
+    /// The user's locale, from `NSLocale.currentLocale`.
+    fn system_locale(&self) -> Option<&'static str> {
+        super::environment::system_locale()
+    }
+
+    /// A revision of the environment facts, derived from their current values.
+    ///
+    /// macOS posts notifications for each of these; this backend is polled, so the revision is a
+    /// hash of the values a caller would read. `0` when AppKit cannot be asked (off-main).
+    fn environment_generation(&self) -> u64 {
+        crate::platform::locale::generation_hash(
+            self.system_theme(),
+            self.high_contrast(),
+            self.reduce_motion(),
+            self.system_locale(),
+        )
+    }
+
+    /// The font families AppKit reports; see [`super::environment::system_fonts`].
+    fn system_fonts(&self) -> Vec<crate::platform::types::SystemFont> {
+        super::environment::system_fonts()
+    }
+
+    /// The pasteboard's change counter, from `NSPasteboard.changeCount`.
+    ///
+    /// This is the polling signal a clipboard-manager host reads: every write by any process
+    /// increments it. `0` off the main thread, where AppKit cannot be asked.
+    fn clipboard_generation(&self) -> u64 {
+        if !super::types::is_main_thread() {
+            return 0;
+        }
+        // SAFETY: AppKit singleton on the main thread; `changeCount` is a scalar accessor.
+        unsafe {
+            let pasteboard: id = msg_send![class!(NSPasteboard), generalPasteboard];
+            if pasteboard == nil {
+                return 0;
+            }
+            let count: i64 = msg_send![pasteboard, changeCount];
+            count.max(0) as u64
         }
     }
 
@@ -702,6 +785,106 @@ impl Platform for MacOSPlatform {
         }
         Some(handle.ptr)
     }
+
+    /// Applies a cursor shape through `NSCursor`.
+    ///
+    /// AppKit's per-view cursor rects would keep the shape across motion, but they need a view
+    /// subclass hook; `-[NSCursor set]` is the immediate call AppKit documents for a cursor a
+    /// control sets while it is hovered. Shapes with no exact AppKit cursor fall back to the
+    /// closest one (diagonal resize → horizontal resize, zoom → crosshair).
+    fn set_cursor(&self, _window: ObjectId, icon: crate::platform::CursorIcon) -> bool {
+        use crate::platform::CursorIcon;
+        if !super::types::is_main_thread() {
+            return false;
+        }
+        // SAFETY: every cursor is an AppKit singleton; `set` is a main-thread UI call.
+        unsafe {
+            let cursor: id = match icon {
+                CursorIcon::Default => msg_send![class!(NSCursor), arrowCursor],
+                CursorIcon::Pointer => msg_send![class!(NSCursor), pointingHandCursor],
+                CursorIcon::Text => msg_send![class!(NSCursor), IBeamCursor],
+                CursorIcon::Crosshair | CursorIcon::ZoomIn | CursorIcon::ZoomOut => {
+                    msg_send![class!(NSCursor), crosshairCursor]
+                }
+                CursorIcon::Move => msg_send![class!(NSCursor), openHandCursor],
+                CursorIcon::NotAllowed => msg_send![class!(NSCursor), operationNotAllowedCursor],
+                CursorIcon::ResizeHorizontal | CursorIcon::ResizeNwSe | CursorIcon::ResizeNeSw => {
+                    msg_send![class!(NSCursor), resizeLeftRightCursor]
+                }
+                CursorIcon::ResizeVertical => msg_send![class!(NSCursor), resizeUpDownCursor],
+                CursorIcon::Grab => msg_send![class!(NSCursor), openHandCursor],
+                CursorIcon::Grabbing => msg_send![class!(NSCursor), closedHandCursor],
+                CursorIcon::Wait | CursorIcon::Progress => {
+                    msg_send![class!(NSCursor), arrowCursor]
+                }
+                CursorIcon::Help => msg_send![class!(NSCursor), pointingHandCursor],
+            };
+            if cursor == nil {
+                return false;
+            }
+            let _: () = msg_send![cursor, set];
+        }
+        true
+    }
+
+    /// Hides or shows the pointer through `NSCursor`.
+    fn set_cursor_visible(&self, _window: ObjectId, visible: bool) -> bool {
+        if !super::types::is_main_thread() {
+            return false;
+        }
+        // SAFETY: AppKit cursor class methods on the main thread.
+        unsafe {
+            if visible {
+                let cursor: id = msg_send![class!(NSCursor), arrowCursor];
+                let _: () = msg_send![cursor, set];
+            } else {
+                let _: () = msg_send![class!(NSCursor), hide];
+            }
+        }
+        true
+    }
+
+    /// The window's `NSView` as a `raw-window-handle` 0.6 AppKit handle.
+    ///
+    /// rwh names an `NSView`, not an `NSWindow`, because that is what a GPU surface is created
+    /// for. A window handle is therefore translated to its `contentView`; a canvas handle is
+    /// already the view. Off the main thread AppKit cannot be messaged, so the answer is `None`.
+    #[cfg(all(feature = "raw-window-handle", target_os = "macos"))]
+    fn raw_window_handle(&self, window: ObjectId) -> Option<raw_window_handle::RawWindowHandle> {
+        if !super::types::is_main_thread() {
+            return None;
+        }
+        let handle = self.get_handle(window)?;
+        if handle.ptr == 0 {
+            return None;
+        }
+        // SAFETY: the handle points at an AppKit object this backend created on the main thread.
+        let view = unsafe {
+            match handle.kind {
+                HandleKind::Window => {
+                    let content: id = msg_send![handle.ptr as id, contentView];
+                    if content == nil {
+                        return None;
+                    }
+                    content as *mut core::ffi::c_void
+                }
+                #[cfg(widgets_unstripped)]
+                HandleKind::Canvas => handle.ptr as *mut core::ffi::c_void,
+            }
+        };
+        let ns_view = core::ptr::NonNull::new(view)?;
+        Some(raw_window_handle::RawWindowHandle::AppKit(
+            raw_window_handle::AppKitWindowHandle::new(ns_view),
+        ))
+    }
+
+    /// AppKit needs no display object for a surface; the empty variant is the documented answer.
+    #[cfg(all(feature = "raw-window-handle", target_os = "macos"))]
+    fn raw_display_handle(&self) -> Option<raw_window_handle::RawDisplayHandle> {
+        Some(raw_window_handle::RawDisplayHandle::AppKit(
+            raw_window_handle::AppKitDisplayHandle::new(),
+        ))
+    }
     fn poll_menu_triggered(&self) -> Option<u64> {
         let mut events = crate::compat::lock(menu_events());
         if events.is_empty() {
@@ -870,7 +1053,68 @@ impl Platform for MacOSPlatform {
         flag: crate::platform::WindowStateFlag,
         on: bool,
     ) -> bool {
-        self.state.set_window_state(widget_id, flag, on)
+        use crate::platform::WindowStateFlag;
+        // Record first: the state is the fallback when no AppKit window exists (off-main, or a
+        // state-only handle), and it is what `is_window_in_state` reads in that case.
+        let recorded = self.state.set_window_state(widget_id, flag, on);
+        if !super::types::is_main_thread() {
+            return recorded;
+        }
+        let Some(window) = resolve_window_ptr(self, widget_id) else {
+            return recorded;
+        };
+        // SAFETY: `window` is an `NSWindow` this backend created on the AppKit main thread, and
+        // every message below is a documented `NSWindow` operation whose result is checked.
+        unsafe {
+            match flag {
+                WindowStateFlag::Maximized => {
+                    let zoomed: BOOL = msg_send![window, isZoomed];
+                    if on != (zoomed != NO) {
+                        NSWindow::zoom_(window, nil);
+                    }
+                }
+                WindowStateFlag::Minimized => {
+                    let minimized: BOOL = msg_send![window, isMiniaturized];
+                    if on && minimized == NO {
+                        NSWindow::performMiniaturize_(window, nil);
+                    } else if !on && minimized != NO {
+                        NSWindow::deminiaturize_(window, nil);
+                    }
+                }
+                WindowStateFlag::Fullscreen => {
+                    let mask: NSWindowStyleMask = msg_send![window, styleMask];
+                    let fullscreen = mask.contains(NSWindowStyleMask::NSFullScreenWindowMask);
+                    if on != fullscreen {
+                        NSWindow::toggleFullScreen_(window, nil);
+                    }
+                }
+                WindowStateFlag::Resizable => {
+                    let mask: NSWindowStyleMask = msg_send![window, styleMask];
+                    let mut updated = mask;
+                    updated.set(NSWindowStyleMask::NSResizableWindowMask, on);
+                    if updated != mask {
+                        window.setStyleMask_(updated);
+                    }
+                }
+                WindowStateFlag::Decorated => {
+                    let mask: NSWindowStyleMask = msg_send![window, styleMask];
+                    let mut updated = mask;
+                    let chrome = NSWindowStyleMask::NSTitledWindowMask
+                        | NSWindowStyleMask::NSClosableWindowMask
+                        | NSWindowStyleMask::NSMiniaturizableWindowMask
+                        | NSWindowStyleMask::NSResizableWindowMask;
+                    if on {
+                        updated.insert(chrome);
+                    } else {
+                        updated.remove(chrome);
+                    }
+                    if updated != mask {
+                        window.setStyleMask_(updated);
+                    }
+                }
+            }
+        }
+        true
     }
 
     fn is_window_in_state(
@@ -878,15 +1122,79 @@ impl Platform for MacOSPlatform {
         widget_id: ObjectId,
         flag: crate::platform::WindowStateFlag,
     ) -> Option<bool> {
+        use crate::platform::WindowStateFlag;
+        if super::types::is_main_thread() {
+            if let Some(window) = resolve_window_ptr(self, widget_id) {
+                // SAFETY: a live `NSWindow` on the AppKit main thread; every accessor is read-only.
+                unsafe {
+                    let mask: NSWindowStyleMask = msg_send![window, styleMask];
+                    return match flag {
+                        WindowStateFlag::Maximized => {
+                            let zoomed: BOOL = msg_send![window, isZoomed];
+                            Some(zoomed != NO)
+                        }
+                        WindowStateFlag::Minimized => {
+                            let minimized: BOOL = msg_send![window, isMiniaturized];
+                            Some(minimized != NO)
+                        }
+                        WindowStateFlag::Fullscreen => {
+                            Some(mask.contains(NSWindowStyleMask::NSFullScreenWindowMask))
+                        }
+                        WindowStateFlag::Resizable => {
+                            Some(mask.contains(NSWindowStyleMask::NSResizableWindowMask))
+                        }
+                        WindowStateFlag::Decorated => {
+                            Some(mask.contains(NSWindowStyleMask::NSTitledWindowMask))
+                        }
+                    };
+                }
+            }
+        }
+        // No native window (or not on the main thread): the recorded state is the fallback.
         self.state.window_state(widget_id, flag)
     }
 
     fn set_window_min_size(&self, widget_id: ObjectId, width: u32, height: u32) -> bool {
-        self.state.set_window_min_size(widget_id, width, height)
+        let recorded = self.state.set_window_min_size(widget_id, width, height);
+        if !super::types::is_main_thread() {
+            return recorded;
+        }
+        let Some(window) = resolve_window_ptr(self, widget_id) else {
+            return recorded;
+        };
+        // SAFETY: `window` is an `NSWindow` on the AppKit main thread; `setContentMinSize:`
+        // constrains the content view, which is what the library paints into.
+        unsafe {
+            let size = NSSize::new(width as f64, height as f64);
+            window.setContentMinSize_(size);
+        }
+        true
     }
 
     fn window_min_size(&self, widget_id: ObjectId) -> Option<(u32, u32)> {
+        if super::types::is_main_thread() {
+            if let Some(window) = resolve_window_ptr(self, widget_id) {
+                // SAFETY: a live `NSWindow` on the AppKit main thread; `contentMinSize` is a
+                // scalar struct accessor.
+                unsafe {
+                    let size: NSSize = msg_send![window, contentMinSize];
+                    if size.width > 0.0 && size.height > 0.0 {
+                        return Some((size.width.round() as u32, size.height.round() as u32));
+                    }
+                }
+            }
+        }
         self.state.window_min_size(widget_id)
+    }
+
+    /// AppKit window icons are a property of the application bundle, not of one window.
+    ///
+    /// `-[NSWindow setRepresentation:]` exists for document proxies but does not set the icon the
+    /// window manager displays; the Dock and window-switcher icon comes from `CFBundleIconFile`.
+    /// Reporting `false` is the honest answer (BLUE28 B28.19) and stops `WindowHandle::icon` from
+    /// mirroring a path the OS never accepted.
+    fn set_window_icon(&self, _widget_id: ObjectId, _path: &str) -> bool {
+        false
     }
 
     fn set_widget_ime_enabled(&self, widget_id: ObjectId, enabled: bool) -> bool {
