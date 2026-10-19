@@ -43,15 +43,37 @@
 #![cfg(target_os = "ios")]
 #![cfg(feature = "ios-uikit-ffi")]
 
-use crate::compat::String;
+use crate::compat::{BTreeMap, String, Vec};
+use crate::core::Rect;
 use crate::platform::clipboard::{ClipboardContent, RichClipboardBackend};
+use crate::platform::types::{Display, DisplayId};
 use objc2::MainThreadMarker;
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSData, NSString};
-use objc2_ui_kit::{NSObjectUIAccessibility, UIColor, UIPasteboard, UIViewController, UIWindow};
+use objc2_ui_kit::{
+    NSObjectUIAccessibility, UIColor, UIPasteboard, UIScreen, UIViewController, UIWindow,
+};
+
+/// The `UIWindow` each platform window id owns.
+///
+/// # Why the backend now keeps the window
+///
+/// The platform window was deliberately dropped after `makeKeyAndVisible()`, because no
+/// control mutator needed it. `display_of_window` does: winit answers "which monitor is this
+/// window on?" from `UIWindow.screen()`, and returning the primary screen for every window is
+/// wrong on a device with an external display. `Retained<UIWindow>` is not `Send`, so the table
+/// is main-thread-local and every accessor answers `None` off the main thread.
+thread_local! {
+    static UI_WINDOWS: core::cell::RefCell<BTreeMap<u64, objc2::rc::Retained<UIWindow>>> =
+        core::cell::RefCell::new(BTreeMap::new());
+}
 
 /// The UIKit pasteboard type (UTI) for HTML.
 const HTML_TYPE: &str = "public.html";
+/// The pasteboard type `setString:` writes.
+const PLAIN_TEXT_TYPE: &str = "public.utf8-plain-text";
+/// The general text types a receiver may see for plain text.
+const TEXT_TYPES: [&str; 2] = [PLAIN_TEXT_TYPE, "public.text"];
 
 // ─── Geometry helpers ───
 
@@ -64,8 +86,13 @@ fn make_rect(x: i32, y: i32, width: u32, height: u32) -> CGRect {
 
 // ─── Window creation ───
 
-/// Create the native `UIWindow` the library paints into.
+/// Create the native `UIWindow` the library paints into, and record it under `window_id`.
+///
+/// The returned handle is the same object the registry keeps. The caller may drop it; UIKit
+/// already owns the window after `makeKeyAndVisible()`, and the registry holds the handle needed
+/// for `display_of_window` / teardown.
 pub(crate) fn create_ui_window(
+    window_id: u64,
     mtm: MainThreadMarker,
     title: &str,
     _x: i32,
@@ -91,7 +118,42 @@ pub(crate) fn create_ui_window(
     // scope for the method to resolve. The marker is passed through rather than
     // re-derived: this function already proved main-thread context by taking one.
     window.setAccessibilityLabel(Some(&NSString::from_str(title)), mtm);
+    UI_WINDOWS.with(|windows| {
+        windows.borrow_mut().insert(window_id, window.clone());
+    });
     window
+}
+
+/// Drops the registry entry for a window this backend destroyed.
+///
+/// UIKit may keep the window alive through its own ownership; this only releases the handle the
+/// backend held for `display_of_window`. A stale id must not keep a window reachable forever.
+pub(crate) fn forget_ui_window(window_id: u64) {
+    UI_WINDOWS.with(|windows| {
+        windows.borrow_mut().remove(&window_id);
+    });
+}
+
+/// The index of the screen a window currently occupies, matching [`displays`].
+///
+/// This is the same lookup winit's UIKit backend performs (`UIWindow.screen()`), and the index is
+/// the id [`displays`] hands out. `None` for an unknown window or off the main thread.
+pub(crate) fn screen_id_of_window(window_id: u64) -> Option<u64> {
+    let mtm = MainThreadMarker::new()?;
+    UI_WINDOWS.with(|windows| {
+        let windows = windows.borrow();
+        let window = windows.get(&window_id)?;
+        let screen = window.screen();
+        UIScreen::screens(mtm)
+            .iter()
+            .position(|candidate| {
+                core::ptr::eq(
+                    objc2::rc::Retained::as_ptr(candidate),
+                    objc2::rc::Retained::as_ptr(&screen),
+                )
+            })
+            .map(|index| index as u64)
+    })
 }
 
 // ─── The system pasteboard ───
@@ -160,11 +222,108 @@ pub(crate) fn pasteboard_html() -> Option<String> {
 pub(crate) fn pasteboard_has_format(content_type: &str) -> bool {
     match content_type {
         "text/html" => pasteboard_html().is_some(),
-        // Every other type this crate can name is either text or something this FFI does not
-        // carry: `public.utf8-plain-text` is what `setString:` writes.
         "text/plain" => pasteboard_text().is_some(),
-        _ => false,
+        // Any other type is carried as `NSData` under the caller's own pasteboard type. Asking
+        // for the data is the only way to know whether a writer put it there, and it is
+        // side-effect free.
+        other => {
+            let board = pasteboard();
+            board.dataForPasteboardType(&NSString::from_str(other)).is_some()
+        }
     }
+}
+
+/// Writes `data` under an application-defined pasteboard type.
+///
+/// `setData:forPasteboardType:` accepts a caller-supplied type name, so the type is carried
+/// verbatim (the same rule the macOS backend implements through `NSPasteboard`'s own channel).
+/// The write is confirmed by reading it back: the method returns nothing.
+pub(crate) fn pasteboard_set_custom(content_type: &str, data: &[u8]) -> bool {
+    let board = pasteboard();
+    board.setData_forPasteboardType(&NSData::with_bytes(data), &NSString::from_str(content_type));
+    board
+        .dataForPasteboardType(&NSString::from_str(content_type))
+        .is_some_and(|stored| stored.to_vec() == data)
+}
+
+/// The bytes the pasteboard holds under `content_type`.
+pub(crate) fn pasteboard_custom(content_type: &str) -> Option<Vec<u8>> {
+    let board = pasteboard();
+    board.dataForPasteboardType(&NSString::from_str(content_type)).map(|data| data.to_vec())
+}
+
+/// The first pasteboard type that is not plain text or HTML.
+///
+/// The two fixed kinds have their own accessors; a caller asking for \"the custom payload\" must
+/// not receive their backing types as if they were application-defined.
+pub(crate) fn pasteboard_custom_type() -> Option<String> {
+    let board = pasteboard();
+    // SAFETY: `pasteboardTypes` is documented as \"might not be thread-safe\"; this is the same
+    // rule `pasteboard_set_text` records for the pasteboard singleton.
+    let types = unsafe { board.pasteboardTypes() };
+    for type_name in types.iter() {
+        let name = type_name.to_string();
+        if name == HTML_TYPE || TEXT_TYPES.contains(&name.as_str()) {
+            continue;
+        }
+        // The caller-facing `content_type` is a MIME name. A UTI (`public.png`, …) is the
+        // platform's own type spelling, not a MIME, and reporting it as `Custom` would give the
+        // caller a type it cannot use with `get_contents_for_type` on another backend.
+        if !name.contains('/') {
+            continue;
+        }
+        return Some(name);
+    }
+    None
+}
+
+/// The main screen's logical-to-pixel scale, or `None` off the main thread.
+///
+/// `UIScreen::scale` is the Points-to-pixels factor this crate's layout uses. winit's monitor
+/// handle reports `nativeScale`, because its monitor geometry is in **physical** pixels; this
+/// crate's [`Display`] contract is logical space plus a scale, so `scale` is the consistent
+/// choice here (on a downsampling device `nativeScale` would disagree with the logical bounds).
+pub(crate) fn main_screen_scale() -> Option<f32> {
+    let mtm = MainThreadMarker::new()?;
+    let screen = UIScreen::mainScreen(mtm);
+    let scale = screen.scale() as f32;
+    Some(if scale > 0.0 { scale } else { 1.0 })
+}
+
+/// The displays UIKit reports, in screen order.
+///
+/// `UIScreen` is main-thread-only, so a call from another thread answers the honest absence
+/// rather than touching UIKit. The work area is the screen's bounds: iOS has no API here that
+/// reports the safe area as a rectangle without a view, and returning a fabricated inset would be
+/// worse than returning the full extent.
+pub(crate) fn displays() -> Vec<Display> {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return Vec::new();
+    };
+    let screens = UIScreen::screens(mtm);
+    let main = UIScreen::mainScreen(mtm);
+    let mut out = Vec::new();
+    for (index, screen) in screens.iter().enumerate() {
+        let bounds = screen.bounds();
+        let scale = screen.scale() as f32;
+        let rect = Rect::new(
+            bounds.origin.x as i32,
+            bounds.origin.y as i32,
+            bounds.size.width.max(0.0) as u32,
+            bounds.size.height.max(0.0) as u32,
+        );
+        out.push(Display {
+            id: DisplayId::new(index as u64),
+            bounds: rect,
+            work_area: rect,
+            scale: if scale > 0.0 { scale } else { 1.0 },
+            is_primary: core::ptr::eq(
+                objc2::rc::Retained::as_ptr(&screen),
+                objc2::rc::Retained::as_ptr(&main),
+            ),
+        });
+    }
+    out
 }
 
 /// The iOS host clipboard.
@@ -189,6 +348,9 @@ impl RichClipboardBackend for IosClipboard {
         match content {
             ClipboardContent::Text(text) => pasteboard_set_text(&text),
             ClipboardContent::Html { html, plain } => pasteboard_set_html(&html, &plain),
+            ClipboardContent::Custom { content_type, data } => {
+                pasteboard_set_custom(&content_type, &data)
+            }
             other => {
                 log::warn!(
                     "[ios clipboard] {} is not carried by this backend; the write is reported \
@@ -201,6 +363,13 @@ impl RichClipboardBackend for IosClipboard {
     }
 
     fn get_contents(&self) -> Option<ClipboardContent> {
+        // A custom type is checked first: its payload is `NSData`, not text, so the text
+        // accessors cannot see it, and returning `None` would hide the type the writer named.
+        if let Some(content_type) = pasteboard_custom_type() {
+            if let Some(data) = pasteboard_custom(&content_type) {
+                return Some(ClipboardContent::Custom { content_type, data });
+            }
+        }
         if let Some(html) = pasteboard_html() {
             return Some(ClipboardContent::Html {
                 html,
@@ -212,5 +381,19 @@ impl RichClipboardBackend for IosClipboard {
 
     fn has_format(&self, content_type: &str) -> bool {
         pasteboard_has_format(content_type)
+    }
+
+    /// Stores bytes under an application-defined pasteboard type.
+    fn set_contents_with_type(&self, content_type: &str, data: &[u8]) -> bool {
+        pasteboard_set_custom(content_type, data)
+    }
+
+    /// Reads the bytes the pasteboard holds under `content_type`.
+    fn get_contents_for_type(&self, content_type: &str) -> Option<Vec<u8>> {
+        match content_type {
+            "text/plain" => pasteboard_text().map(String::into_bytes),
+            "text/html" => pasteboard_html().map(String::into_bytes),
+            other => pasteboard_custom(other),
+        }
     }
 }

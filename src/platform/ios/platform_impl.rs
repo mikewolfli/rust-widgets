@@ -34,9 +34,10 @@
 
 use super::types::{IosHandleKind, IosMobilePlatform};
 use crate::compat::atomic::Ordering;
-use crate::compat::{format, lock, String};
+use crate::compat::{format, lock, String, Vec};
 use crate::core::PlatformFamily;
 use crate::platform::clipboard::RichClipboardBackend;
+use crate::platform::types::{Display, DisplayId};
 use crate::platform::{Platform, PlatformCapabilities, WidgetTriggerEvent, WidgetTriggerKind};
 use core::time::Duration;
 use std::thread;
@@ -88,6 +89,102 @@ impl Platform for IosMobilePlatform {
         {
             None
         }
+    }
+
+    /// The main screen's logical-to-pixel scale, or `1.0` when UIKit cannot be asked.
+    ///
+    /// `UIScreen.scale` is the value UIKit uses for Points-to-pixels; on a 2x/3x device this is
+    /// 2.0/3.0 rather than the fabricated `1.0` the trait default used to report. The value is
+    /// `1.0` off the main thread (UIKit is main-thread-only) or without the UIKit FFI, and
+    /// [`Self::capabilities`] reports `dpi_scaling: false` on exactly the build that has no FFI.
+    fn dpi_scale_factor(&self) -> f32 {
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
+        {
+            super::native::main_screen_scale().unwrap_or(1.0)
+        }
+        #[cfg(not(all(target_os = "ios", feature = "ios-uikit-ffi")))]
+        {
+            1.0
+        }
+    }
+
+    /// The screens UIKit reports.
+    ///
+    /// `UIScreen` is main-thread-only: a call from another thread answers the honest absence
+    /// instead of touching UIKit. Without the UIKit FFI (`ios-uikit-ffi`) there is no `UIScreen`
+    /// binding at all, so the trait's empty list is the truthful answer.
+    fn displays(&self) -> Vec<Display> {
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
+        {
+            super::native::displays()
+        }
+        #[cfg(not(all(target_os = "ios", feature = "ios-uikit-ffi")))]
+        {
+            Vec::new()
+        }
+    }
+
+    /// The screen UIKit placed this window on.
+    ///
+    /// UIKit creates the app's window with a real `UIWindow`, and `UIWindow.screen()` is the
+    /// authority for which `UIScreen` it is on (winit's `current_monitor()` reads the same
+    /// property). The id a host holds is the widget-registry id, so it is translated first; a
+    /// caller that passes the platform id directly is honoured too. Without the UIKit FFI, off
+    /// the main thread, or for an id with no recorded window, the answer is `None` rather than a
+    /// guessed primary screen.
+    fn display_of_window(&self, window_id: u64) -> Option<DisplayId> {
+        let host = if self.state.kind_of(window_id).is_some() {
+            window_id
+        } else {
+            #[cfg(not(alloc_frugal))]
+            {
+                crate::widget::runtime::host_window_for(window_id).unwrap_or(window_id)
+            }
+            #[cfg(alloc_frugal)]
+            {
+                window_id
+            }
+        };
+        if !matches!(self.state.kind_of(host), Some(IosHandleKind::Window)) {
+            return None;
+        }
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
+        {
+            if let Some(id) = super::native::screen_id_of_window(host) {
+                return Some(DisplayId::new(id));
+            }
+        }
+        None
+    }
+
+    /// A revision of the current screen configuration.
+    ///
+    /// Derived from the same fields [`Self::displays`] returns, so a host that compares two
+    /// readings re-reads the list exactly when a screen was added/removed or its bounds or scale
+    /// changed. `0` means UIKit could not be read (off the main thread, or no UIKit FFI).
+    fn display_generation(&self) -> u64 {
+        const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+        const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+        let displays = self.displays();
+        if displays.is_empty() {
+            return 0;
+        }
+        let mut hash = FNV_OFFSET;
+        for display in displays {
+            for part in [
+                display.id.get(),
+                display.bounds.x as i64 as u64,
+                display.bounds.y as i64 as u64,
+                display.bounds.width as u64,
+                display.bounds.height as u64,
+                display.scale.to_bits() as u64,
+                display.is_primary as u64,
+            ] {
+                hash ^= part;
+                hash = hash.wrapping_mul(FNV_PRIME);
+            }
+        }
+        hash
     }
 
     /// Reports whether `pmset -g batt` says the device is drawing from its battery.
@@ -160,7 +257,9 @@ impl Platform for IosMobilePlatform {
     /// implements the queue (`poll_widget_trigger_event` et al.), so it cannot be absent.
     fn capabilities(&self) -> PlatformCapabilities {
         PlatformCapabilities {
-            dpi_scaling: false,
+            // The UIKit FFI can read `UIScreen.scale`; without it (a host preview build, or an
+            // iOS build that did not enable the FFI) there is no measurement to promise.
+            dpi_scaling: cfg!(all(target_os = "ios", feature = "ios-uikit-ffi")),
             ime: false,
             accessibility: false,
             native_menu: false,
@@ -219,6 +318,11 @@ impl Platform for IosMobilePlatform {
         // The state record is the authority on whether the widget existed.
         let existed = self.state.destroy_widget(widget_id);
 
+        // Release the UIKit handle recorded for `display_of_window`. A destroyed window must
+        // not stay reachable through this backend's registry.
+        #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
+        super::native::forget_ui_window(widget_id);
+
         // Drop the per-widget list storage for both list-backed widgets. Each lock
         // is released at the end of its statement so no two guards are held at once.
 
@@ -265,11 +369,10 @@ impl Platform for IosMobilePlatform {
 
         #[cfg(all(target_os = "ios", feature = "ios-uikit-ffi"))]
         if let Some(mtm) = objc2::MainThreadMarker::new() {
-            // The window must exist for the surface to have a superview. Dropping the
-            // `Retained<UIWindow>` is correct: UIKit owns it from
-            // `makeKeyAndVisible()`, and leaking the Rust handle would keep a
-            // reference past the app's lifetime.
-            let _window = super::native::create_ui_window(mtm, title, x, y, width, height);
+            // The window must exist for the surface to have a superview. `create_ui_window`
+            // records the handle under the platform id so `display_of_window` can read the
+            // screen UIKit actually placed it on (winit's `UIWindow.screen()` lookup).
+            let _window = super::native::create_ui_window(id, mtm, title, x, y, width, height);
         }
 
         id
@@ -611,10 +714,11 @@ mod tests {
         let caps = platform.capabilities();
 
         assert_eq!(platform.family(), PlatformFamily::Mobile);
-        assert!(
-            !caps.dpi_scaling,
-            "no `dpi_scale_factor()` override exists, so the flag would promise the trait's \
-             default `1.0` — a fabricated scale for a 2x/3x screen"
+        assert_eq!(
+            caps.dpi_scaling,
+            cfg!(all(target_os = "ios", feature = "ios-uikit-ffi")),
+            "`dpi_scaling` must track whether `dpi_scale_factor()` can read `UIScreen.scale`; \
+             without the UIKit FFI there is no measurement to promise"
         );
         assert!(!caps.ime, "no `ime_bridge()` override exists, so the flag would promise `None`");
         assert!(

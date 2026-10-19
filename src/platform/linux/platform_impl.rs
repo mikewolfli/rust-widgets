@@ -691,6 +691,98 @@ impl Platform for LinuxPlatform {
             paint_area.set_hexpand(true);
             paint_area.set_vexpand(true);
             paint_area.set_has_tooltip(false);
+            // The area takes the keyboard for the whole window's tree. This used to be set only
+            // inside the press and key handlers, which was too late for GTK: a widget that is not
+            // focusable at map time cannot be given focus by the window manager, and `grab_focus`
+            // therefore did nothing. Setting it at construction is what makes the grab below
+            // reachable.
+            paint_area.set_can_focus(true);
+            // Once the area is on screen it must own the keyboard, or key events go to the
+            // toplevel and never reach the library's focused control. `map` is the first moment
+            // `grab_focus` can succeed, because GTK only grants focus to a viewable widget.
+            paint_area.connect_map(|area| {
+                area.grab_focus();
+            });
+            // The input method must see keys before the widget layer does; see `ImeContext` for
+            // why the library owns it instead of the host.
+            let ime = super::canvas::ImeContext::new(&paint_area);
+
+            // Key input is owned by the **toplevel**, not by the area.
+            //
+            // # Why one dispatcher and not two
+            //
+            // GTK's toplevel has its own input context and can filter a key around the focused
+            // widget's handler. A second key path in the area could not know whether that context
+            // had already consumed the key: measured, a field that opted out of IME received
+            // nothing because the toplevel context consumed the keys before the area saw them.
+            // Handling keys here — before GTK's class closure runs — leaves exactly one decision:
+            // either our context consumes the key (a composition step or a commit) or the key is
+            // delivered to the focused control. Returning `Stop` every time is what keeps GTK's
+            // second context out of the path, so a composition cannot be delivered twice.
+            //
+            // The area still has its own handler for hosts that mount a surface into a window
+            // this backend did not create; for windows created here, this handler runs first and
+            // stops the event.
+            let key_area = paint_area.clone();
+            window.connect_key_press_event(move |_, event| {
+                let Some(window_widget) = crate::widget::runtime::widget_id_for_host_window(id)
+                else {
+                    return glib::Propagation::Stop;
+                };
+                // Tab is a library action, not content: it moves focus before the input method
+                // sees it. Shift reverses the direction, matching every other toolkit.
+                if super::canvas::gdk_keyval_is_tab(*event.keyval()) {
+                    const WIDGET_SHIFT: u32 = 1;
+                    let forward = super::canvas::modifier_bits(event) & WIDGET_SHIFT == 0;
+                    crate::widget::runtime::focus_next(forward);
+                    key_area.queue_draw();
+                    crate::platform::linux::canvas::note_canvas_redraw(window_widget);
+                    return glib::Propagation::Stop;
+                }
+                if ime.filter_keypress(event) {
+                    key_area.queue_draw();
+                    crate::platform::linux::canvas::note_canvas_redraw(window_widget);
+                    return glib::Propagation::Stop;
+                }
+                // A printable character is committed text; everything else keeps its key code
+                // so shortcuts and navigation reach the control unchanged. `printable_text`
+                // refuses a control chord, so Ctrl+C is a copy rather than a typed `c`.
+                let translated = if let Some(text) = super::canvas::printable_text(event) {
+                    crate::event::Event::TextInput { text }
+                } else {
+                    crate::event::Event::KeyPress {
+                        key: *event.keyval(),
+                        modifiers: super::canvas::modifier_bits(event),
+                    }
+                };
+                let target = crate::widget::runtime::focused_widget().unwrap_or(window_widget);
+                if crate::widget::runtime::dispatch_event(target, &translated) {
+                    key_area.queue_draw();
+                    crate::platform::linux::canvas::note_canvas_redraw(target);
+                }
+                glib::Propagation::Stop
+            });
+
+            // The release half. `Event::KeyRelease` is published and consumed (`base.rs` turns it
+            // into `key_up`), so a control tracking a held key learns it came up. It is routed to
+            // the same owner as the press and stops the toplevel's context for the same reason.
+            let release_area = paint_area.clone();
+            window.connect_key_release_event(move |_, event| {
+                let Some(window_widget) = crate::widget::runtime::widget_id_for_host_window(id)
+                else {
+                    return glib::Propagation::Stop;
+                };
+                let key_event = crate::event::Event::KeyRelease {
+                    key: *event.keyval(),
+                    modifiers: super::canvas::modifier_bits(event),
+                };
+                let target = crate::widget::runtime::focused_widget().unwrap_or(window_widget);
+                if crate::widget::runtime::dispatch_event(target, &key_event) {
+                    release_area.queue_draw();
+                    crate::platform::linux::canvas::note_canvas_redraw(target);
+                }
+                glib::Propagation::Stop
+            });
 
             // The container the window layout positions into; see `content_overlay`.
             let overlay = gtk::Overlay::new();
@@ -769,9 +861,12 @@ impl Platform for LinuxPlatform {
                     return glib::Propagation::Proceed;
                 };
                 // The area is focusable so a clicked control can take the keyboard
-                // afterwards; without the grab, keys would go to the window and typing
-                // into a `LineEdit` would do nothing.
+                // afterwards. The runtime router focuses the control the press landed on
+                // (`dispatch_pointer_event`); the grab below gives GTK the same answer, so keys
+                // are delivered to this area instead of the toplevel. Both halves are needed:
+                // the router decides *which* control, GTK decides *whether* the area sees keys.
                 widget.set_can_focus(true);
+                let _ = super::canvas::focus_area_if_enabled(widget);
                 if crate::widget::runtime::dispatch_pointer_event(
                     window_widget,
                     &crate::event::Event::mouse_press_with(
@@ -950,55 +1045,9 @@ impl Platform for LinuxPlatform {
                 });
             }
 
-            // Key events go to whatever the router focused, so typing reaches a field the
-            // user clicked rather than always the window. Tab is forwarded too, which is
-            // how focus moves between controls.
-            paint_area.set_can_focus(true);
-            paint_area.connect_key_press_event(move |widget, event| {
-                let Some(window_widget) = crate::widget::runtime::widget_id_for_host_window(id)
-                else {
-                    return glib::Propagation::Proceed;
-                };
-                // `keyval()` is a `gdk::keys::Key`, which derefs to its numeric GDK
-                // keyval — the value the widget layer's key handling expects.
-                let key = *event.keyval();
-                // The **real** modifier state, not `0`.
-                //
-                // This arm used to hard-code `modifiers: 0`, so every Ctrl/Shift/Alt chord on a
-                // GTK window arrived unmodified: shortcuts never fired and Shift-selection behaved
-                // as plain input. The canvas half (`linux::canvas`) already read the GDK mask;
-                // this is the same call, so the two surfaces of one window cannot disagree — the
-                // identical defect the HarmonyOS key callback fixed (`harmony/xcomponent.rs`).
-                let modifiers = crate::platform::linux::canvas::modifier_bits(event);
-                let key_event = crate::event::Event::KeyPress { key, modifiers };
-                let target = crate::widget::runtime::focused_widget().unwrap_or(window_widget);
-                if crate::widget::runtime::dispatch_event(target, &key_event) {
-                    widget.queue_draw();
-                    crate::platform::linux::canvas::note_canvas_redraw(target);
-                }
-                glib::Propagation::Proceed
-            });
-
-            // The release half. `Event::KeyRelease` is published and consumed (`base.rs` turns it
-            // into `key_up`) but had no producer in any backend, so a control tracking a held key
-            // could never learn it came up. GTK delivers this signal for every key up, and the
-            // canvas half forwards it identically (`linux::canvas`).
-            paint_area.connect_key_release_event(move |widget, event| {
-                let Some(window_widget) = crate::widget::runtime::widget_id_for_host_window(id)
-                else {
-                    return glib::Propagation::Proceed;
-                };
-                let key_event = crate::event::Event::KeyRelease {
-                    key: *event.keyval(),
-                    modifiers: crate::platform::linux::canvas::modifier_bits(event),
-                };
-                let target = crate::widget::runtime::focused_widget().unwrap_or(window_widget);
-                if crate::widget::runtime::dispatch_event(target, &key_event) {
-                    widget.queue_draw();
-                    crate::platform::linux::canvas::note_canvas_redraw(target);
-                }
-                glib::Propagation::Proceed
-            });
+            // Key input is handled by the toplevel handler above. The area stays focusable so GTK
+            // gives it the keyboard (and therefore emits key events to this window at all); it
+            // installs no key handler of its own, which keeps one dispatcher for one window.
 
             // Report every re-allocation of the toplevel as a `Resized` trigger.
             //
@@ -1044,6 +1093,37 @@ impl Platform for LinuxPlatform {
     #[cfg(target_os = "linux")]
     fn ime_bridge(&self) -> Option<&dyn crate::platform::ime::ImeBridge> {
         Some(&self.ime_bridge)
+    }
+
+    /// Reports that this backend cannot switch the input method off for one control.
+    ///
+    /// GTK owns a per-toplevel `GtkIMContext` and filters a key in the window's event handler
+    /// *before* any signal the library can connect. A custom-painted field therefore cannot opt
+    /// out of an active input method on this backend; claiming otherwise would make the call look
+    /// effective while the window context still composed. Text-entry controls join the input
+    /// method and other controls stay out of it (see `is_widget_ime_enabled`), which is the
+    /// behaviour the backend can actually honour. Winit can offer `set_ime_allowed` because its
+    /// X11/Wayland backends own the input context; a GTK host does not.
+    fn set_widget_ime_enabled(&self, _widget_id: crate::core::ObjectId, _enabled: bool) -> bool {
+        false
+    }
+
+    /// The control's effective IME policy: its kind decides.
+    ///
+    /// A text-entry control joins the input method and a button does not, so a host can ask this
+    /// question and get an answer that matches the GTK input path.
+    fn is_widget_ime_enabled(&self, widget_id: crate::core::ObjectId) -> bool {
+        #[cfg(not(alloc_frugal))]
+        {
+            crate::widget::runtime::accepts_ime_input(widget_id)
+        }
+        #[cfg(alloc_frugal)]
+        {
+            // The allocation-frugal profile has no widget registry to classify, so there is no
+            // input method to report either.
+            let _ = widget_id;
+            false
+        }
     }
 
     /// The window's current client size.

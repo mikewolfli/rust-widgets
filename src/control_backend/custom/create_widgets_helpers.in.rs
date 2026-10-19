@@ -521,8 +521,27 @@ macro_rules! impl_helpers {
             true
         }
 
+        /// The control's effective IME policy.
+        ///
+        /// With no explicit write, the control's kind answers: a text-entry control joins the
+        /// input method and a button does not. Answering a flat `false` for "never configured"
+        /// made the default state indistinguishable from "the host switched it off", so the GTK
+        /// input path could not use this query as its policy check.
         fn is_widget_ime_enabled(&self, widget_id: ObjectId) -> bool {
-            lock(&self.state).ime_enabled.get(&widget_id).copied().unwrap_or(false)
+            #[cfg(not(alloc_frugal))]
+            {
+                lock(&self.state)
+                    .ime_enabled
+                    .get(&widget_id)
+                    .copied()
+                    .unwrap_or_else(|| crate::widget::runtime::accepts_ime_input(widget_id))
+            }
+            #[cfg(alloc_frugal)]
+            {
+                // This profile has no widget registry to classify, so only an explicit write can
+                // answer; an unconfigured id is honestly "not an IME control here".
+                lock(&self.state).ime_enabled.get(&widget_id).copied().unwrap_or(false)
+            }
         }
 
         fn set_widget_accessibility_name(&self, widget_id: ObjectId, name: &str) -> bool {

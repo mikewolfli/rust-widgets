@@ -574,9 +574,15 @@ const NO_SUCH_CONTROL: crate::core::ObjectId = 0;
 
 /// Create a top-level window with specified title and geometry.
 ///
+/// The window is created **hidden**. [Show it](show_widget) after its children exist (or at any
+/// later time); creating it alone is not a request to map it, so a caller that never shows it
+/// gets no window on screen.
+///
 /// # Example
 /// ```
 /// let window_id = rust_widgets::create_window("My App", 100, 100, 800, 600);
+/// // Build the window's controls first, so the first frame includes them.
+/// rust_widgets::show_widget(window_id);
 /// ```
 #[cfg(not(alloc_frugal))]
 pub fn create_window(

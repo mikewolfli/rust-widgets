@@ -174,4 +174,21 @@ public final class RustWidgets {
      *         7 = the backend names itself
      */
     public static native int nativeWidgetSelfTest();
+
+    /**
+     * Run the on-device platform-services probe and return a pass/fail bit mask.
+     *
+     * <p>Drives the real {@code Platform} methods that need the attached {@code Activity}
+     * {@code Context}: an application-defined MIME type on the system clipboard, and display
+     * enumeration. A host test cannot exercise either, so this is the on-device evidence.
+     *
+     * @return a bit mask; {@code 511} ({@code 0b1_1111_1111}) is a full pass. Bit 0 = custom MIME
+     *         write accepted, 1 = {@code has_format} sees it, 2 = typed read returns the same
+     *         bytes, 3 = {@code get_contents} reports {@code Custom}, 4 = at least one display
+     *         with positive metrics and a readable DPI scale, 5 = a real window is placed on a
+     *         display, 6 = {@code display_generation} is non-zero and stable, 7 = the clipboard
+     *         capability is reported while the probe runs, 8 = an IME bridge (soft keyboard) is
+     *         available
+     */
+    public static native int nativePlatformProbe();
 }

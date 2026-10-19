@@ -1,6 +1,6 @@
 [package]
 name = "rust_widgets"
-version = "2.8.7"
+version = "2.8.8"
 edition = "2021"
 description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 180 widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"
@@ -877,6 +877,14 @@ zbus = { version = "5", optional = true }
 # This is a pure build-configuration fix — no source change — matching the
 # existing note above the `dev-dependencies` section, where the same constraint
 # is why criterion/tempfile/proptest are gated off wasm32.
+# Redox OS has no toolkit: its display server is Orbital, reached through the
+# `/scheme/orbital` scheme. `orbclient` is the protocol's client half (the same crate
+# winit's Orbital backend reads its event types from); the backend opens a real window
+# and paints the library's control tree into its pixel buffer. `std` is required for the
+# window type; the `sdl`/`unifont` defaults are not used and are kept off.
+[target.'cfg(target_os = "redox")'.dependencies]
+orbclient = { version = "0.4.3", default-features = false, features = ["std"] }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
 # `pdf-encryption` derives its salt/IV from `getrandom` (0.3), whose browser backend is opt-in

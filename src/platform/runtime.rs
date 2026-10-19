@@ -228,6 +228,21 @@ fn create_native_platform() -> Box<dyn Platform> {
     Box::new(IosMobilePlatform::new())
 }
 
+/// Redox OS backend over the Orbital display server.
+///
+/// Orbital is the only windowing protocol Redox has; the backend opens a real
+/// `orbclient::Window` and paints the library's control tree into it. Gated on the target (not a
+/// feature) because no other host can run Orbital.
+#[cfg(all(
+    not(alloc_frugal),
+    target_os = "redox",
+    not(embedded_surface),
+    not(feature = "harmony")
+))]
+fn create_native_platform() -> Box<dyn Platform> {
+    Box::new(crate::platform::redox::OrbitalPlatform::new())
+}
+
 /// WASM backend — used on `wasm32` targets when the `wasm` feature is enabled.
 /// On wasm32 the event loop is driven by `request_animation_frame`; elsewhere
 /// the same backend uses a polling fallback (used for development/testing).
@@ -242,7 +257,13 @@ fn create_native_platform() -> Box<dyn Platform> {
     not(all(feature = "wasm", target_arch = "wasm32")),
     not(target_os = "android"),
     not(any(target_env = "ohos", feature = "harmony")),
-    not(any(target_os = "windows", target_os = "macos", target_os = "linux", target_os = "ios"))
+    not(any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "ios",
+        target_os = "redox"
+    ))
 ))]
 fn create_native_platform() -> Box<dyn Platform> {
     Box::new(crate::platform::stub::StubPlatform::new(

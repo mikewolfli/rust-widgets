@@ -29,6 +29,13 @@ pub mod accessibility;
 /// failing to link a device library. See the module docs.
 pub mod pasteboard;
 
+/// Display enumeration (`OH_NativeDisplayManager`).
+///
+/// Compiled wherever this backend is; the FFI is `#[cfg(target_env = "ohos")]` inside, so a host
+/// build compiles the module with an inert stand-in instead of linking a device library. See the
+/// module docs.
+pub mod displays;
+
 pub use types::*;
 #[cfg(test)]
 pub mod tests;

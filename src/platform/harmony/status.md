@@ -56,7 +56,8 @@ for development and testing.
 | Menu tree (MenuBar/Menu/MenuItem) | ✅ Implemented | in-process tree + injectable trigger queue |
 | ComboBox / ListBox data paths | ✅ Implemented | shared list-data table |
 | Show / hide / geometry / text / enabled | ✅ Implemented | logical state round-trips |
-| Clipboard | ✅ Implemented | in-process store |
+| Clipboard | ✅ Implemented | the system `OH_Pasteboard` over UDMF, including **application-defined MIME types** through `OH_UdmfRecord_AddGeneralEntry`/`GetGeneralEntry` (with a UTD lookup fallback for MIME types the platform registers) |
+| Displays | ✅ Implemented | `OH_NativeDisplayManager_CreateAllDisplays` + `GetDisplayPosition` + `GetDefaultDisplayId`; empty on a host build, real metrics on a device target |
 | Drag & drop | ✅ Implemented | injectable drop-event queue |
 | IME / accessibility **metadata** (per-widget flags and names) | ✅ Implemented | `BackendState` fields that round-trip a boolean and a string |
 | Accessibility **bridge** | ✅ Implemented (`feature = "xcomponent"`) | `HarmonyAccessibilityBridge` over the XComponent's `ArkUI_AccessibilityProvider`; see below |
@@ -189,15 +190,16 @@ XComponent bridge is. Flag and method are produced from the **same** `cfg`, so t
 cannot drift; `the_accessibility_flag_matches_its_bridge` asserts the pair in both
 directions. The bridge posts real notifications through the component's
 `ArkUI_AccessibilityProvider` (`@since 13`).
-- `dpi_scaling: false`, `ime: false` — **not** because OpenHarmony lacks these, but
-because this backend implements none of the methods behind them. Each flag names a
-specific method (`dpi_scale_factor()`, `ime_bridge()`), so a `true` would promise a
-method that cannot answer and would fall through to the trait default (`1.0`,
-`None`). ArkUI *does* expose display density, and an input-method client is
-reachable in principle — each becomes honest when its method is implemented, not
-before. For `ime`, see the note in the table above: the bridge's key handling is not
-a composition client, so this is deliberate under-claiming, which is the direction a
-capability default must err.
+- `dpi_scaling: cfg!(target_env = "ohos")` — `true` exactly when the
+  `OH_NativeDisplayManager` binding is compiled in (an OpenHarmony target). The method behind
+  it, `dpi_scale_factor()`, reads the primary display's `densityPixels`; on a host preview build
+  the stand-in reports no display, so both the flag and the reading are honestly absent.
+- `ime: false` — **not** because OpenHarmony lacks an input method, but because this backend
+  implements no composition client. The flag names `ime_bridge()`, so a `true` would promise
+  `None`. ArkUI exposes display density, and that is now wired (`dpi_scaling` above); an
+  input-method client becomes honest when the bridge is implemented, not before. For `ime`, see
+  the note in the table above: the bridge's key handling is not a composition client, so this is
+  deliberate under-claiming, which is the direction a capability default must err.
 - `native_menu: false` — the menu is an in-process tree served through an injectable
   queue, **not** an OS menu. This is asserted by `capabilities_are_explicit_and_honest`.
 - `typed_widget_trigger: true` — implemented by this backend

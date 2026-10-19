@@ -274,6 +274,9 @@ fn check_system_dependencies() {
     // Unconditional on an OpenHarmony target: the harmony backend is selected by `target_env`,
     // not by a feature, and its pasteboard bodies call into the SDK.
     check_ohos_pasteboard();
+    // Same rule for the display manager: `Platform::displays` is compiled on every OpenHarmony
+    // target and calls into `libnative_display_manager`.
+    check_ohos_display_manager();
 }
 
 fn check_linux() {
@@ -453,6 +456,25 @@ fn check_ohos_pasteboard() {
     // `pasteboard` and `udmf` — no `.z` variant here, unlike `libace_ndk.z.so`.
     println!("cargo:rustc-link-lib=pasteboard");
     println!("cargo:rustc-link-lib=udmf");
+}
+
+/// Emits the link directive for the OpenHarmony display manager.
+///
+/// `Platform::displays` / `display_of_window` / `display_generation` call
+/// `OH_NativeDisplayManager_*` from `libnative_display_manager.so`. The library is present in
+/// every API level this crate targets (14+), and the sysroot helper supplies the arch-specific
+/// search path. On a host build nothing is emitted: the module's FFI is gated on
+/// `target_env == "ohos"` and the stand-in answers the honest absence.
+fn check_ohos_display_manager() {
+    let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    if target_env != "ohos" {
+        return;
+    }
+    println!("cargo:rerun-if-env-changed=OHOS_SDK_NATIVE");
+    if ohos_sysroot_lib_dir("display manager").is_none() {
+        return;
+    }
+    println!("cargo:rustc-link-lib=native_display_manager");
 }
 
 fn check_pkg(name: &str, dev_pkg: &str, install_cmd: &str) {

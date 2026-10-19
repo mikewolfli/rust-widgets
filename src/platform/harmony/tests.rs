@@ -308,10 +308,11 @@ fn capabilities_are_explicit_and_honest() {
     let caps = backend.capabilities();
 
     assert_eq!(backend.family(), crate::core::PlatformFamily::Desktop);
-    assert!(
-        !caps.dpi_scaling,
-        "no `dpi_scale_factor` override exists, so a `true` would promise a method that \
-         cannot answer"
+    assert_eq!(
+        caps.dpi_scaling,
+        cfg!(target_env = "ohos"),
+        "`dpi_scaling` must track whether the display-manager binding is compiled in; on a host \
+         build the stand-in reports no display, so the flag is false"
     );
     assert!(!caps.ime, "no `ime_bridge` override exists; key input is not an IME client");
     assert_eq!(

@@ -15,8 +15,9 @@
 use super::super::Platform;
 use super::types::*;
 use crate::compat::atomic::Ordering;
-use crate::compat::{format, String};
+use crate::compat::{format, String, Vec};
 use crate::core::{ObjectId, PlatformFamily};
+use crate::platform::types::{Display, DisplayId};
 use crate::{WidgetTriggerEvent, WidgetTriggerKind};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -145,7 +146,10 @@ impl Platform for HarmonyPlatform {
     /// The capabilities this backend can honour.
     fn capabilities(&self) -> crate::platform::types::PlatformCapabilities {
         crate::platform::types::PlatformCapabilities {
-            dpi_scaling: false,
+            // The display manager answers `densityPixels` on a device target; on a host build
+            // the stand-in reports no displays, so the flag follows the build fact (the same
+            // rule the pasteboard flag below uses).
+            dpi_scaling: cfg!(target_env = "ohos"),
             ime: false,
             accessibility: cfg!(all(feature = "xcomponent", not(alloc_frugal))),
             native_menu: false,
@@ -162,6 +166,68 @@ impl Platform for HarmonyPlatform {
             // lacks.
             file_dialog: false,
         }
+    }
+
+    /// The displays the OpenHarmony display manager reports.
+    ///
+    /// A host build (the `harmony` preview feature on a desktop target) has no display manager,
+    /// so the module's stand-in answers an empty list. On a device the list is the real one from
+    /// `OH_NativeDisplayManager_CreateAllDisplays`; see [`super::displays`].
+    fn displays(&self) -> Vec<Display> {
+        super::displays::displays()
+    }
+
+    /// The display's logical scale, from `densityPixels`.
+    ///
+    /// `1.0` when no display is readable (a host build, or the service refused the query).
+    /// [`Self::capabilities`] reports `dpi_scaling: false` on exactly the host build where the
+    /// stand-in produces no reading, so the constant is not a fabricated claim.
+    fn dpi_scale_factor(&self) -> f32 {
+        let displays = self.displays();
+        displays
+            .iter()
+            .find(|display| display.is_primary)
+            .or_else(|| displays.first())
+            .map(|display| display.scale)
+            .unwrap_or(1.0)
+    }
+
+    /// The display a window this backend owns is placed on.
+    ///
+    /// This backend's windows are state records: ArkUI owns the XComponent and places it, so
+    /// there is no per-window origin to compare against the display list. A window record is
+    /// answered with the primary display — the one the host application is shown on — and any
+    /// other id is answered `None`, so a control id cannot masquerade as a placed window.
+    fn display_of_window(&self, window_id: ObjectId) -> Option<DisplayId> {
+        // The id a host holds is the widget-registry id, while `state` is keyed by the
+        // platform's own handle id; `host_window_for` is the association recorded at creation.
+        // A caller that passes the platform id directly is honoured too.
+        let host = if self.state.kind_of(window_id).is_some() {
+            window_id
+        } else {
+            #[cfg(not(alloc_frugal))]
+            {
+                crate::widget::runtime::host_window_for(window_id).unwrap_or(window_id)
+            }
+            #[cfg(alloc_frugal)]
+            {
+                window_id
+            }
+        };
+        if !matches!(self.state.kind_of(host), Some(HarmonyHandleKind::Window)) {
+            return None;
+        }
+        let displays = self.displays();
+        displays
+            .iter()
+            .find(|display| display.is_primary)
+            .or_else(|| displays.first())
+            .map(|display| display.id)
+    }
+
+    /// A revision of the display configuration; see [`super::displays::generation`].
+    fn display_generation(&self) -> u64 {
+        super::displays::generation()
     }
 
     /// The ArkUI accessibility bridge, when the XComponent bridge is compiled in.

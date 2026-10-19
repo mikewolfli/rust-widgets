@@ -5,6 +5,115 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.8.8 (2026-10-19) — Keyboard focus and IME on the GTK host, and an Orbital backend for Redox
+
+This release closes the two open items in the 2026-10-15 designer feedback (§十六 and §十七) on the
+real GTK/X11 session used to verify them, fixes the window hit-test that made a non-origin window
+unclickable, and adds a Redox OS backend over Orbital. It also records what winit's platform set
+looks like against this crate's backends, without depending on winit.
+
+### 1. A pointer press moves keyboard focus
+
+`dispatch_pointer_event` now calls `focus_on_pointer_press` for an enabled, focusable control under
+the press. That entry point existed but had no production caller, so a click focused nothing: keys
+went to whichever control the host had focused programmatically, or to the window. The predicate is
+the same `Widget::is_focusable` the tab order uses, and its default is now derived from
+`WidgetKind::wants_keyboard_focus` — previously it answered `false` for **every** control, so Tab
+had an empty order to walk on every backend.
+
+### 2. One key dispatcher per GTK window
+
+The GTK window's `DrawingArea` used to own the key handler while the toplevel owned a second input
+context. Measured, the window context could consume a key before the area saw it, which made an
+IME opt-out impossible and duplicated the path. Keys are now dispatched at the **toplevel** (before
+GTK's class closure), the area's handler remains only for host-created windows, and Tab is handled
+in the same place. `printable_text` refuses a control chord, so `Ctrl+C` stays a copy instead of
+inserting `c`, and an area grabs GTK focus when mapped and on the first press.
+
+### 3. Edits notify the host without polling
+
+`LineEdit` queues a `ValueChanged` trigger after a user edit that actually changed the value (a
+navigation key queues nothing), addressed by the **registry** id rather than the widget's own id.
+`on_value_changed` therefore fires on the next frame drain instead of the host reading
+`get_widget_text` every 100 ms. `TextInput` and `ImeCommit` take the same path; programmatic
+`set_text` deliberately does not, because the caller already knows the value it wrote.
+
+### 4. Real input-method composition on GTK
+
+The GTK backend now owns a `gtk::IMMulticontext` per drawing surface: it is focused with the
+control, filters a key before the widget sees it, and delivers `ImePreedit` / `ImeCommit` through
+the existing `platform::ime` join. `LineEdit` handles `ImePreedit` (inline preedit at the caret) and
+clears the composition on `ImeCommit`. On the verification host, fcitx5 in `pinyin` produced
+`n → ni → … → ni hao` preedit and committed `你好`; `keyboard-us` typed `abc` exactly once, so the
+context and the ordinary key path never double-insert.
+
+### 5. Hit testing a window root uses client coordinates
+
+`widget_at` subtracted the root's `geometry()` unconditionally. A window's geometry holds the
+position it was opened at while its children are in client coordinates, so a window at `(140,140)`
+turned a press at client `(182,58)` into local `(42,-82)` and matched no control. It now uses
+`frame_origin`, the one predicate that knows a window's frame starts at `(0,0)`; measured, the same
+press reaches the field.
+
+### 6. `create_window` says what it does
+
+The doc example now calls `show_widget` after creating the window and states that a created window
+is hidden until shown. The behaviour was already correct on GTK (the platform toplevel is created
+on association); the documentation no longer implies that one call maps it.
+
+### 7. Redox OS over Orbital
+
+`src/platform/redox/` adds a real Orbital backend (reference: winit's `winit-orbital`, no winit
+dependency): an `orbclient::Window` per library window, the control tree painted into its buffer
+and presented with `sync`, pointer/key/text/wheel/resize/close records routed through the same
+widget entry points, text clipboard support, and monitor size/scale from the compositor. Orbital
+has no IME, accessibility, menu or file-picker protocol, so those capability bits are `false`.
+`tools/check_redox_cross.sh` type-checks x86_64 and aarch64 Redox with `-Z build-std`; runtime
+execution on a Redox host is **not** verified here and is recorded as an open item.
+
+### 8. Mobile custom clipboard types and display enumeration
+
+Android, OpenHarmony and iOS now carry an application-defined MIME type on their system clipboards
+and enumerate their displays. Android uses `ClipDescription` + `ClipData.Item` (the `ClipData.new*`
+factory methods hardcode a fixed type); the byte payload travels over the item's text channel with
+a one-to-one ISO-8859-1 mapping, because `ClipData.Item` has no byte field. OpenHarmony uses UDMF's
+general entry (`OH_UdmfRecord_AddGeneralEntry`/`GetGeneralEntry`), with a UTD lookup so a MIME the
+platform already registers is negotiated by its UTD id. iOS uses `UIPasteboard`'s own
+`setData:forPasteboardType:` channel. Every write is confirmed by a read-back.
+
+`Platform::displays()` / `display_of_window()` / `display_generation()` are now implemented on all
+three: Android reads `Display`/`DisplayMetrics` through JNI, OpenHarmony reads
+`OH_NativeDisplayManager_CreateAllDisplays`/`GetDisplayPosition`, and iOS reads `UIScreen`. They
+keep the honest absence (empty / `None` / `0`) when there is no context, no device binding, or the
+call is off the main thread. Android was verified on an x86_64 emulator (API 34):
+`nativePlatformProbe` returned `511`, with 9/9 steps passing, including a custom-MIME payload with
+non-UTF-8 bytes. HarmonyOS and iOS are cross-compile, link, or type-check only; no device or
+simulator run was made for those two in this round.
+
+Referencing winit's split platform crates filled two more gaps. Mobile `dpi_scale_factor()` now
+reads the display service (`DisplayMetrics.densityDpi / 160` on Android, `UIScreen.scale` on iOS,
+`OH_NativeDisplayManager` density on OpenHarmony) instead of inheriting the fabricated `1.0`, and
+`capabilities().dpi_scaling` follows the binding that can actually answer. Android also gained a
+soft-keyboard `ImeBridge` over `InputMethodManager.showSoftInput` /
+`hideSoftInputFromWindow` (the same operation winit's Android backend performs); the emulator
+logged `soft_keyboard=true` on focus-in and `soft_keyboard_hidden=true` on focus-out. On iOS,
+`display_of_window` now answers the screen from the window's own `UIWindow.screen()` instead of
+always returning the primary screen.
+
+### Evidence and boundaries
+
+* GTK/X11: `probe_keyboard_focus` (real XTEST click + keys) passes for `abc`, for fcitx5 `pinyin`
+  (`你好`), and shows `on_value_changed` receiving `["a","ab","abc"]`; `probe_window_on_screen`
+  passes with a viewable 480×320 window and 62 distinct colours.
+* Full `cargo test --no-default-features --features desktop`: 7363 lib tests and every integration
+  binary pass; `clippy -D warnings` is clean for the plain and `gtk-native` desktop builds.
+* Cross-target `cargo check` passes for Windows (msvc), macOS (x86_64/aarch64), iOS, Android (4
+  ABIs), HarmonyOS, wasm32 and Wayland. Redox is type-checked only (above); Orbital/Redox runtime
+  remains unverified.
+* An opt-out (`set_widget_ime_enabled(false)`) is **not** honoured by a GTK toplevel: GTK owns the
+  window input context and filters before any signal the library can connect. The Linux backend
+  reports that refusal rather than pretending the switch took effect.
+
 ## 2.8.7 (2026-10-16) — The macOS half of the platform contract, and a plan index that matches the tree again
 
 This release closes the **macOS** half of the cross-platform feedback round — host-set custom

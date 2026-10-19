@@ -69,6 +69,13 @@ pub mod macos;
 pub mod macos_objc2;
 #[cfg(feature = "mobile-api")]
 pub mod mobile;
+#[cfg(all(
+    target_os = "redox",
+    not(alloc_frugal),
+    not(embedded_surface),
+    not(feature = "harmony")
+))]
+pub mod redox;
 #[cfg(all(target_os = "linux", feature = "wayland-native"))]
 pub mod wayland;
 #[cfg(target_os = "windows")]
@@ -149,6 +156,13 @@ mod contract;
 pub mod holographic;
 /// IME bridge trait, types, and mock implementation.
 pub mod ime;
+/// Real Android IME bridge (soft keyboard over JNI).
+///
+/// Compiled only with the `android-jni` feature, because its focus/commit methods call the JNI
+/// bridge; without it the Android backend reports `ime_bridge() == None` and the capability bit
+/// stays false.
+#[cfg(feature = "android-jni")]
+pub mod ime_android;
 /// Real Linux IME bridge (IBus integration).
 #[cfg(target_os = "linux")]
 pub mod ime_linux;

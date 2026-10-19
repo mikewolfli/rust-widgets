@@ -288,7 +288,12 @@ fn widget_kind_variants_are_exhaustive() {
         .lines()
         .filter(|line| {
             let trimmed = line.trim();
-            trimmed.ends_with(',') && trimmed.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+            // A match arm inside an `impl WidgetKind` also starts with an uppercase name and ends
+            // with a comma (`Self::LineEdit => true,`); it is not a variant. Excluding the arm
+            // marker keeps the extraction about declarations without relaxing its exactness.
+            trimmed.ends_with(',')
+                && !trimmed.contains("=>")
+                && trimmed.chars().next().is_some_and(|c| c.is_ascii_uppercase())
         })
         .map(|line| line.trim().trim_end_matches(',').to_string())
         .collect();

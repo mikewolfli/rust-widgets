@@ -27,9 +27,10 @@
 
 use super::types::{AndroidHandleKind, AndroidPlatform};
 use crate::compat::atomic::Ordering;
-use crate::compat::{format, lock, String, ToString};
+use crate::compat::{format, lock, String, ToString, Vec};
 use crate::core::PlatformFamily;
 use crate::platform::clipboard::RichClipboardBackend;
+use crate::platform::types::{Display, DisplayId};
 use crate::platform::{Platform, PlatformCapabilities, WidgetTriggerEvent, WidgetTriggerKind};
 use core::time::Duration;
 use std::thread;
@@ -81,6 +82,34 @@ impl Platform for AndroidPlatform {
 
         PlatformCapabilities {
             clipboard,
+            // The display scale is read from `DisplayMetrics.densityDpi / 160` on the same
+            // `Context` the clipboard needs. Reporting `true` before the handshake would
+            // promise a measurement the backend cannot make, so this follows the runtime
+            // readiness fact rather than the build feature (the same rule the clipboard bit
+            // above follows).
+            dpi_scaling: {
+                #[cfg(feature = "android-jni")]
+                {
+                    crate::platform::android_jni::native_view_creation_ready()
+                }
+                #[cfg(not(feature = "android-jni"))]
+                {
+                    false
+                }
+            },
+            // The soft keyboard is controlled through the Android `InputMethodManager` (the
+            // same operation winit's Android backend performs). It needs the Activity Context,
+            // so the flag follows the runtime handshake rather than the build feature.
+            ime: {
+                #[cfg(feature = "android-jni")]
+                {
+                    crate::platform::android_jni::native_view_creation_ready()
+                }
+                #[cfg(not(feature = "android-jni"))]
+                {
+                    false
+                }
+            },
             ..crate::platform::types::default_capabilities_for(self.family())
         }
     }
@@ -88,6 +117,105 @@ impl Platform for AndroidPlatform {
     /// Reads `MemTotal` from `/proc/meminfo` via [`crate::platform::os_probes`].
     fn total_memory_mb(&self) -> Option<u64> {
         crate::platform::os_probes::total_memory_mb()
+    }
+
+    /// Reads the display density Android reports: `densityDpi / 160`.
+    ///
+    /// This is the same derivation winit's Android backend uses (`AndroidApp::config().density()
+    /// / 160`). It answers `1.0` when the JNI bridge has no attached `Context`, which is the
+    /// honest "not measurable here" value; [`Self::capabilities`] reports `dpi_scaling: false`
+    /// in exactly that state, so the constant is not a fabricated claim.
+    fn dpi_scale_factor(&self) -> f32 {
+        #[cfg(feature = "android-jni")]
+        {
+            crate::platform::android_jni::display_info().map(|info| info.scale).unwrap_or(1.0)
+        }
+        #[cfg(not(feature = "android-jni"))]
+        {
+            1.0
+        }
+    }
+
+    /// The default display, when the JNI bridge can read its metrics.
+    ///
+    /// Android's window model places the host `Activity`'s window on the default display, so one
+    /// entry is the complete answer for this backend. Without an attached `Context` there is no
+    /// `WindowManager` to ask, and an empty list is the honest "nothing is observable from here"
+    /// answer the trait documents.
+    fn displays(&self) -> Vec<Display> {
+        #[cfg(feature = "android-jni")]
+        {
+            crate::platform::android_jni::display_info()
+                .map(|info| {
+                    crate::compat::vec![Display {
+                        id: DisplayId::new(info.id),
+                        bounds: crate::core::Rect::new(0, 0, info.width, info.height),
+                        work_area: crate::core::Rect::new(0, 0, info.work_width, info.work_height),
+                        scale: info.scale,
+                        is_primary: info.is_primary,
+                    }]
+                })
+                .unwrap_or_default()
+        }
+        #[cfg(not(feature = "android-jni"))]
+        {
+            Vec::new()
+        }
+    }
+
+    /// The default display for a window this backend owns.
+    ///
+    /// There is no per-window display bookkeeping on Android: the host `Activity` owns the one
+    /// window and the system places it. An id that names no window is answered `None`, so a caller
+    /// cannot mistake a random control id for a placed window.
+    fn display_of_window(&self, window_id: crate::core::ObjectId) -> Option<DisplayId> {
+        // The id a host holds is the widget-registry id, while `state` is keyed by the
+        // platform's own handle id; `host_window_for` is the association recorded at creation.
+        // A caller that passes the platform id directly is honoured too.
+        let host = if self.kind_of(window_id).is_some() {
+            window_id
+        } else {
+            #[cfg(not(alloc_frugal))]
+            {
+                crate::widget::runtime::host_window_for(window_id).unwrap_or(window_id)
+            }
+            #[cfg(alloc_frugal)]
+            {
+                window_id
+            }
+        };
+        if !matches!(self.kind_of(host), Some(AndroidHandleKind::Window)) {
+            return None;
+        }
+        self.displays().first().map(|display| display.id)
+    }
+
+    /// A revision of the current display metrics.
+    ///
+    /// Derived from the same fields [`Self::displays`] returns, so a host that compares two
+    /// readings re-reads the list exactly when the metrics (size, work area, or density) changed.
+    /// `0` means the bridge could not read a display at all, which the trait contract reserves for
+    /// "not observable".
+    fn display_generation(&self) -> u64 {
+        const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+        const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+        let Some(display) = self.displays().first().copied() else {
+            return 0;
+        };
+        let mut hash = FNV_OFFSET;
+        for part in [
+            display.id.get(),
+            display.bounds.width as u64,
+            display.bounds.height as u64,
+            display.work_area.width as u64,
+            display.work_area.height as u64,
+            display.scale.to_bits() as u64,
+            display.is_primary as u64,
+        ] {
+            hash ^= part;
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        hash
     }
 
     /// Reports whether any battery in `/sys/class/power_supply` is discharging.
@@ -418,6 +546,20 @@ impl Platform for AndroidPlatform {
         }
         #[cfg(not(feature = "android-jni"))]
         {
+            None
+        }
+    }
+
+    /// The soft-keyboard bridge, when the JNI handshake has supplied a Context.
+    ///
+    /// The bridge controls the Android `InputMethodManager` and keeps the in-process composition
+    /// state; see [`crate::platform::ime_android`]. Without the feature or the Context it answers
+    /// `None`, matching the `ime: false` capability bit in exactly those states.
+    #[cfg(feature = "android-jni")]
+    fn ime_bridge(&self) -> Option<&dyn crate::platform::ime::ImeBridge> {
+        if crate::platform::android_jni::native_view_creation_ready() {
+            Some(crate::platform::ime_android::AndroidImeBridge::bridge())
+        } else {
             None
         }
     }

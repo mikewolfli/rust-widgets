@@ -615,6 +615,11 @@ pub(crate) fn register_library_window() {
 
 /// Records that one top-level window closed, returning how many remain.
 #[cfg(target_os = "windows")]
+#[allow(deprecated)]
+// `fetch_update` is deprecated as of Rust 1.99 in favour of `try_update`, but this crate's MSRV is
+// 1.88 and `try_update` does not exist there. The deprecation is a rename with identical
+// semantics, so allowing it is what keeps one source file compiling on both the MSRV and current
+// toolchains.
 pub(crate) fn release_library_window() -> usize {
     use core::sync::atomic::Ordering;
     // `fetch_update` with a floor at zero keeps a redundant `WM_DESTROY` (Win32 may deliver the

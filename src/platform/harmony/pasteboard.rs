@@ -42,7 +42,7 @@
 //! logic compilable (and unit-testable) anywhere while never pretending a host has an
 //! OpenHarmony pasteboard.
 
-use crate::compat::String;
+use crate::compat::{String, Vec};
 use crate::platform::clipboard::{ClipboardContent, RichClipboardBackend};
 
 /// The MIME type `OH_Pasteboard_HasType` is asked about for plain text.
@@ -58,7 +58,7 @@ mod sys {
     //! libraries only exist in the SDK's per-architecture `sysroot/usr/lib` directory, which
     //! `cargo ohos` passes with `-L`.
 
-    use crate::compat::{String, Vec};
+    use crate::compat::{MiniToString, String, Vec};
     use core::ffi::{c_char, CStr};
 
     /// The status code UDMF and the pasteboard return on success (`UDMF_E_OK`).
@@ -103,6 +103,13 @@ mod sys {
         _private: [u8; 0],
     }
 
+    /// Opaque `OH_Utd` (a unified type descriptor).
+    #[repr(C)]
+    #[allow(non_camel_case_types)]
+    pub(super) struct OhUtd {
+        _private: [u8; 0],
+    }
+
     extern "C" {
         fn OH_Pasteboard_Create() -> *mut OhPasteboard;
         fn OH_Pasteboard_Destroy(pasteboard: *mut OhPasteboard);
@@ -130,6 +137,41 @@ mod sys {
         ) -> i32;
         fn OH_UdmfRecord_AddHtml(record: *mut OhUdmfRecord, html: *mut OhUdsHtml) -> i32;
         fn OH_UdmfRecord_GetHtml(record: *mut OhUdmfRecord, html: *mut OhUdsHtml) -> i32;
+
+        /// Attaches one application-defined representation to a record.
+        ///
+        /// `type_id` is a UTD type identifier (`udmf_meta.h` names the built-in ones). UDMF's
+        /// general-entry channel is the only one that carries an opaque byte payload — the plain
+        /// text and HTML UDS types each impose their own encoding.
+        fn OH_UdmfRecord_AddGeneralEntry(
+            record: *mut OhUdmfRecord,
+            type_id: *const c_char,
+            entry: *mut u8,
+            count: u32,
+        ) -> i32;
+        fn OH_UdmfRecord_GetGeneralEntry(
+            record: *mut OhUdmfRecord,
+            type_id: *const c_char,
+            entry: *mut *mut u8,
+            count: *mut u32,
+        ) -> i32;
+        fn OH_UdmfRecord_GetTypes(record: *mut OhUdmfRecord, count: *mut u32) -> *mut *mut c_char;
+
+        /// Maps a MIME type to the UTD type identifiers the platform registers for it.
+        ///
+        /// An application-defined MIME has no UTD registration, so the list is empty and the
+        /// caller falls back to using the MIME name itself as the type identifier.
+        fn OH_Utd_GetTypesByMimeType(
+            mime_type: *const c_char,
+            count: *mut u32,
+        ) -> *const *const c_char;
+        fn OH_Utd_DestroyStringList(list: *const *const c_char, count: u32);
+
+        /// The reverse mapping, used when the pasteboard reports a registered type by its UTD id
+        /// rather than by the MIME name the caller wrote.
+        fn OH_Utd_Create(type_id: *const c_char) -> *mut OhUtd;
+        fn OH_Utd_Destroy(utd: *mut OhUtd);
+        fn OH_Utd_GetMimeTypes(utd: *mut OhUtd, count: *mut u32) -> *const *const c_char;
 
         fn OH_UdsPlainText_Create() -> *mut OhUdsPlainText;
         fn OH_UdsPlainText_Destroy(plain_text: *mut OhUdsPlainText);
@@ -356,6 +398,217 @@ mod sys {
         html
     }
 
+    /// The type identifiers that can name `content_type` on the pasteboard.
+    ///
+    /// The MIME name itself is tried first so an application-defined type is carried verbatim
+    /// when the platform accepts it. UTD's registered identifiers follow, which is what makes a
+    /// MIME the platform already knows (for example `text/uri-list`) interoperable with other
+    /// OpenHarmony applications.
+    fn type_ids_for_mime(content_type: &str) -> Vec<String> {
+        let mut ids = Vec::new();
+        ids.push(content_type.to_string());
+
+        let mime_buffer = c_string(content_type);
+        let mut count = 0u32;
+        let list = unsafe { OH_Utd_GetTypesByMimeType(mime_buffer.as_ptr().cast(), &mut count) };
+        if !list.is_null() {
+            for index in 0..count as usize {
+                let pointer = unsafe { *list.add(index) };
+                if let Some(id) = unsafe { read_c_string(pointer) } {
+                    if !ids.iter().any(|known| known == &id) {
+                        ids.push(id);
+                    }
+                }
+            }
+            unsafe { OH_Utd_DestroyStringList(list, count) };
+        }
+        ids
+    }
+
+    /// Publishes `data` under `content_type` through a UDMF general entry.
+    ///
+    /// The first type identifier the platform accepts is used; the read-back then asks for the
+    /// same set of identifiers, so a write that landed under a UTD id is still found by the MIME
+    /// the caller named.
+    pub(super) fn set_custom(content_type: &str, data: &[u8]) -> bool {
+        let Ok(count) = u32::try_from(data.len()) else {
+            log::warn!(
+                "[harmony pasteboard] {content_type}: payload is larger than UDMF's 32-bit entry \
+                 size and was refused"
+            );
+            return false;
+        };
+        let ids = type_ids_for_mime(content_type);
+        let payload = data.to_vec();
+        let data_handle = unsafe { OH_UdmfData_Create() };
+        let record = unsafe { OH_UdmfRecord_Create() };
+        if data_handle.is_null() || record.is_null() {
+            log::error!("[harmony pasteboard] UDMF create failed (data or record was null)");
+            if !data_handle.is_null() {
+                unsafe { OH_UdmfData_Destroy(data_handle) };
+            }
+            if !record.is_null() {
+                unsafe { OH_UdmfRecord_Destroy(record) };
+            }
+            return false;
+        }
+
+        let mut attached = false;
+        for id in &ids {
+            let type_buffer = c_string(id);
+            let status = unsafe {
+                OH_UdmfRecord_AddGeneralEntry(
+                    record,
+                    type_buffer.as_ptr().cast(),
+                    payload.as_ptr() as *mut u8,
+                    count,
+                )
+            };
+            if status == OHOS_OK {
+                attached = true;
+                break;
+            }
+        }
+
+        let status =
+            if attached { unsafe { OH_UdmfData_AddRecord(data_handle, record) } } else { -1 };
+        let written = status == OHOS_OK
+            && with_pasteboard(|pasteboard| unsafe {
+                OH_Pasteboard_SetData(pasteboard, data_handle)
+            })
+            .is_some_and(|set_status| set_status == OHOS_OK);
+
+        unsafe {
+            OH_UdmfData_Destroy(data_handle);
+            OH_UdmfRecord_Destroy(record);
+        }
+
+        if !written {
+            return false;
+        }
+        let confirmed = custom_for_type(content_type).is_some_and(|stored| stored == payload);
+        if !confirmed {
+            log::warn!(
+                "[harmony pasteboard] OH_Pasteboard_SetData answered OK but the custom type \
+                 {content_type} does not hold the bytes that were written"
+            );
+        }
+        confirmed
+    }
+
+    /// The bytes the pasteboard holds under `content_type`, or `None` when it holds none.
+    pub(super) fn custom_for_type(content_type: &str) -> Option<Vec<u8>> {
+        let ids = type_ids_for_mime(content_type);
+        let data = read_data()?;
+        let bytes = {
+            let record = unsafe { OH_UdmfData_GetRecord(data, 0) };
+            if record.is_null() {
+                None
+            } else {
+                ids.iter().find_map(|id| record_general_entry(record, id))
+            }
+        };
+        unsafe { OH_UdmfData_Destroy(data) };
+        bytes
+    }
+
+    /// Whether the pasteboard currently holds data under `content_type`.
+    pub(super) fn has_custom(content_type: &str) -> bool {
+        let ids = type_ids_for_mime(content_type);
+        with_pasteboard(|pasteboard| {
+            ids.iter().any(|id| {
+                let type_buffer = c_string(id);
+                unsafe { OH_Pasteboard_HasType(pasteboard, type_buffer.as_ptr().cast()) }
+            })
+        })
+        .unwrap_or(false)
+    }
+
+    /// The first application-defined entry on the pasteboard, as `(type, bytes)`.
+    ///
+    /// The two fixed UDS types are skipped: they have their own accessors, and a caller asking
+    /// for "the custom payload" must not receive the plain-text fallback of an HTML clip.
+    pub(super) fn first_custom() -> Option<(String, Vec<u8>)> {
+        let data = read_data()?;
+        let found = {
+            let record = unsafe { OH_UdmfData_GetRecord(data, 0) };
+            if record.is_null() {
+                None
+            } else {
+                first_general_entry(record)
+            }
+        };
+        unsafe { OH_UdmfData_Destroy(data) };
+        found
+    }
+
+    /// Reads one general entry from a record.
+    fn record_general_entry(record: *mut OhUdmfRecord, type_id: &str) -> Option<Vec<u8>> {
+        let type_buffer = c_string(type_id);
+        let mut entry: *mut u8 = core::ptr::null_mut();
+        let mut count = 0u32;
+        let status = unsafe {
+            OH_UdmfRecord_GetGeneralEntry(
+                record,
+                type_buffer.as_ptr().cast(),
+                &mut entry,
+                &mut count,
+            )
+        };
+        if status != OHOS_OK || entry.is_null() || count == 0 {
+            return None;
+        }
+        // The pointer addresses memory owned by the record; copying is the only safe use, and the
+        // record (and the data that owns it) is destroyed by the caller after this returns.
+        Some(unsafe { core::slice::from_raw_parts(entry, count as usize) }.to_vec())
+    }
+
+    /// Enumerates a record's types and returns the first general entry with bytes.
+    fn first_general_entry(record: *mut OhUdmfRecord) -> Option<(String, Vec<u8>)> {
+        let mut count = 0u32;
+        // The type list is borrowed from the record: the SDK declares no destructor for it (unlike
+        // `OH_Utd_DestroyStringList`), and the record is destroyed by the caller after this returns.
+        let types = unsafe { OH_UdmfRecord_GetTypes(record, &mut count) };
+        if types.is_null() {
+            return None;
+        }
+        for index in 0..count as usize {
+            let type_pointer = unsafe { *types.add(index) };
+            let Some(type_id) = (unsafe { read_c_string(type_pointer) }) else {
+                continue;
+            };
+            if type_id == "general.plain-text" || type_id == "general.html" {
+                continue;
+            }
+            if let Some(bytes) = record_general_entry(record, &type_id) {
+                // The pasteboard may report a registered type by its UTD id. Answering the MIME
+                // the type maps to keeps `ClipboardContent::content_type()`'s contract (a MIME)
+                // and lets the caller ask for the same name it wrote.
+                let content_type = mime_for_type_id(&type_id).unwrap_or(type_id);
+                return Some((content_type, bytes));
+            }
+        }
+        None
+    }
+
+    /// The first MIME type a UTD type id maps to, if any.
+    fn mime_for_type_id(type_id: &str) -> Option<String> {
+        let type_buffer = c_string(type_id);
+        let utd = unsafe { OH_Utd_Create(type_buffer.as_ptr().cast()) };
+        if utd.is_null() {
+            return None;
+        }
+        let mut count = 0u32;
+        let mimes = unsafe { OH_Utd_GetMimeTypes(utd, &mut count) };
+        let mime =
+            if !mimes.is_null() && count > 0 { unsafe { read_c_string(*mimes) } } else { None };
+        if !mimes.is_null() {
+            unsafe { OH_Utd_DestroyStringList(mimes, count) };
+        }
+        unsafe { OH_Utd_Destroy(utd) };
+        mime
+    }
+
     /// `OH_Pasteboard_GetData`, reporting the service's own status.
     fn read_data() -> Option<*mut OhUdmfData> {
         with_pasteboard(|pasteboard| {
@@ -385,7 +638,7 @@ mod sys {
     //! keeps the module compilable (and its non-FFI logic testable) without claiming a pasteboard
     //! that is not there: [`available`] is `false`, so no caller reaches the rest.
 
-    use crate::compat::String;
+    use crate::compat::{String, Vec};
 
     /// Always `false`: a host has no OpenHarmony pasteboard.
     pub(super) fn available() -> bool {
@@ -405,6 +658,26 @@ mod sys {
     /// Unreachable in practice.
     pub(super) fn set_html(_html: &str, _plain: &str) -> bool {
         false
+    }
+
+    /// Unreachable in practice.
+    pub(super) fn set_custom(_content_type: &str, _data: &[u8]) -> bool {
+        false
+    }
+
+    /// Unreachable in practice.
+    pub(super) fn custom_for_type(_content_type: &str) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// Unreachable in practice.
+    pub(super) fn has_custom(_content_type: &str) -> bool {
+        false
+    }
+
+    /// Unreachable in practice.
+    pub(super) fn first_custom() -> Option<(String, Vec<u8>)> {
+        None
     }
 
     /// Unreachable in practice.
@@ -472,11 +745,42 @@ pub(crate) fn has_format(content_type: &str) -> bool {
     }
     match content_type {
         PLAIN_TEXT_TYPE | HTML_TYPE => sys::has_type(content_type),
-        // Every other type this crate can name (RTF, images, file lists) has no UDMF
-        // representation here, and answering `true` for one would be a claim with nothing
-        // behind it.
-        _ => false,
+        // Every other type this crate can name (RTF, images, file lists) has no UDS
+        // representation here. Application-defined types go through UDMF's general entry, which
+        // is the one channel that carries opaque bytes.
+        _ => sys::has_custom(content_type),
     }
+}
+
+/// Publishes `data` under an application-defined MIME type.
+///
+/// `None` means this build has no OpenHarmony pasteboard; `Some(written)` is the pasteboard's
+/// answer, confirmed by a read-back.
+pub(crate) fn set_contents_with_type(content_type: &str, data: &[u8]) -> Option<bool> {
+    if !sys::available() {
+        return None;
+    }
+    Some(sys::set_custom(content_type, data))
+}
+
+/// The bytes the pasteboard holds under `content_type`, or `None` when it holds none.
+pub(crate) fn get_contents_for_type(content_type: &str) -> Option<Vec<u8>> {
+    if !sys::available() {
+        return None;
+    }
+    match content_type {
+        PLAIN_TEXT_TYPE => text().map(String::into_bytes),
+        HTML_TYPE => html().map(String::into_bytes),
+        _ => sys::custom_for_type(content_type),
+    }
+}
+
+/// The first application-defined payload on the pasteboard, if any.
+pub(crate) fn first_custom() -> Option<(String, Vec<u8>)> {
+    if !sys::available() {
+        return None;
+    }
+    sys::first_custom()
 }
 
 /// The OpenHarmony host clipboard.
@@ -509,6 +813,9 @@ impl RichClipboardBackend for HarmonyClipboard {
         let written = match content {
             ClipboardContent::Text(text) => set_text(&text),
             ClipboardContent::Html { html, plain } => set_html(&html, &plain),
+            ClipboardContent::Custom { content_type, data } => {
+                set_contents_with_type(&content_type, &data)
+            }
             other => {
                 log::warn!(
                     "[harmony pasteboard] {} is not carried by this backend ({}); the write is \
@@ -523,6 +830,11 @@ impl RichClipboardBackend for HarmonyClipboard {
     }
 
     fn get_contents(&self) -> Option<ClipboardContent> {
+        // Custom first: a general entry carries opaque bytes, and the text accessors cannot see
+        // it. The reverse order would report a custom clip as "nothing" and hide its type.
+        if let Some((content_type, data)) = first_custom() {
+            return Some(ClipboardContent::Custom { content_type, data });
+        }
         if let Some(html) = html() {
             return Some(ClipboardContent::Html { html, plain: text().unwrap_or_default() });
         }
@@ -531,6 +843,16 @@ impl RichClipboardBackend for HarmonyClipboard {
 
     fn has_format(&self, content_type: &str) -> bool {
         has_format(content_type)
+    }
+
+    /// Stores bytes under an application-defined MIME type.
+    fn set_contents_with_type(&self, content_type: &str, data: &[u8]) -> bool {
+        set_contents_with_type(content_type, data).unwrap_or(false)
+    }
+
+    /// Reads the bytes the pasteboard holds under `content_type`.
+    fn get_contents_for_type(&self, content_type: &str) -> Option<Vec<u8>> {
+        get_contents_for_type(content_type)
     }
 }
 

@@ -57,15 +57,23 @@ rust-widgets 在九個支援的平台上提供統一的 API。本章涵蓋平台
 | macOS | ❌ | ✅ | ✅ | ❌ |
 | Linux / GTK | ✅ ¹ | ✅ | ✅ | ❌ |
 | Linux / Wayland | ✅ | ❌ | ❌ | ❌ |
-| iOS | ❌ | ❌ | ❌ | ❌ |
-| Android | ❌ | ❌ | ❌ | ❌ |
-| HarmonyOS | ❌ | ❌ | ✅ ² | ❌ |
+| iOS | ✅ ³ | ❌ | ❌ | ❌ |
+| Android | ✅ ³ | ✅ ⁴ | ❌ | ❌ |
+| HarmonyOS | ✅ ³ | ❌ | ✅ ² | ❌ |
 | WASM | ❌ | ❌ | ❌ | ❌ |
 | Portable | ❌ | ❌ | ❌ | ❌ |
 
 ¹ Linux/GTK 的 `dpi_scaling` 由 `dpi_scale_factor() != 1.0` 得出，因此它是關於
-當前顯示器的一個**執行期**答案，而非常數；在未縮放的機器上它回報 `false`，但它仍是
+目前顯示器的一個**執行時**答案，而非固定值；在未縮放的機器上它會回報 `false`，但它仍是
 一個能夠作答的後端。
+
+³ iOS、Android 與 HarmonyOS 在宿主綁定存在時從各自的顯示服務取得 `dpi_scaling`
+（`UIScreen.scale`、`DisplayMetrics.densityDpi / 160`、`OH_NativeDisplayManager`）；
+沒有該綁定的預覽建置會回報 `false`。
+
+⁴ Android 的 IME 欄覆蓋透過 `InputMethodManager` 進行的**軟鍵盤顯示/隱藏**
+（與 winit 的 Android 後端執行的操作相同）。合成文字仍由宿主 Activity 提供；
+本後端不聲稱實作 `GameTextInput` 協定。
 
 ² HarmonyOS 只有在啟用 `xcomponent` feature 時才回報 `accessibility` —— 而那正是
 `accessibility_bridge()` 被編譯進去的時候。旗標與方法由同一個 `cfg` 產生，因此不可能不一致：

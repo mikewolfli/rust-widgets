@@ -31,13 +31,15 @@ cannot stage typed input", not as a failure.
 
 # Usage
 
-    x11_inject_keys.py <title-substring> <text> [--activate] [--key <keysym-name>]...
+    x11_inject_keys.py <title-substring> <text> [--activate] [--plain] [--key <keysym-name>]...
 
 `--activate` asks the window manager to focus the window first (and still runs the three checks
 above before typing). `--key` appends named keysym taps after the text, e.g. `--key Return`.
-`--ctrl-l` presses Ctrl+L first, to open GTK's location popup; it is **opt-in** because that popup
-can be slow to take focus and a key that arrives too early is dropped (see the probe for the
-default, which types into a save dialog's name entry instead).
+`--click x y` / `--click-relative x y` moves the pointer and clicks before typing (absolute root
+coordinates, or window-relative ones). `--ctrl-l` presses Ctrl+L first, to open GTK's location
+popup; it is **opt-in** because that popup can be slow to take focus and a key that arrives too
+early is dropped (see the probe for the default, which types into a save dialog's name entry
+instead). `--plain` skips that shortcut for an ordinary text entry.
 
 Exit codes: 0 = typed, 2 = refused by the safety rule (nothing sent), 3 = no matching window,
 4 = no X display, 5 = XTEST unavailable.
@@ -258,6 +260,20 @@ def main(argv: list[str]) -> int:
             click = (int(argv[index + 1]), int(argv[index + 2]))
         except (IndexError, ValueError):
             fail(64, "--click needs two integers, x and y")
+    click_relative: tuple[int, int] | None = None
+    if "--click-relative" in argv:
+        index = argv.index("--click-relative")
+        try:
+            click_relative = (int(argv[index + 1]), int(argv[index + 2]))
+        except (IndexError, ValueError):
+            fail(64, "--click-relative needs two integers, x and y")
+    # Plain typing skips the Ctrl+L that opens GTK's file-chooser location popup. A probe that
+    # types into an ordinary entry wants the toolkit's normal key path, not a dialog shortcut.
+    plain = "--plain" in argv
+    # Staging an input-method composition needs the input method *active* for the focused field.
+    # A desktop session may start with it inactive, and `-o` acts on the focused input context —
+    # which exists only after the toolkit called `focus_in`.
+    ime_activate = "--ime-activate" in argv
 
     x = X()
 
@@ -265,13 +281,16 @@ def main(argv: list[str]) -> int:
     if window is None:
         fail(3, f"no window manager window whose title contains {title!r}")
 
-    if click is not None:
+    if click is not None or click_relative is not None:
         # The pointer's own safety rule: the coordinates must be inside the window this tool was
         # pointed at, so a mistake here cannot click on somebody else's application.
         geometry = window_geometry(window)
         if geometry is None:
             fail(3, f"`xwininfo` could not report the geometry of {hex(window)}")
         left, top, width, height = geometry
+        if click_relative is not None:
+            click = (left + click_relative[0], top + click_relative[1])
+        assert click is not None
         inside = left <= click[0] < left + width and top <= click[1] < top + height
         if not inside:
             fail(2, f"refusing to click: {click} is outside {hex(window)} at {geometry}")
@@ -298,16 +317,23 @@ def main(argv: list[str]) -> int:
     # type-ahead search, and the dialog ended in whatever the list had selected.
     time.sleep(0.25)
 
+    if ime_activate:
+        switched = subprocess.run(["fcitx5-remote", "-o"], capture_output=True, text=True)
+        if switched.returncode != 0:
+            fail(2, f"could not activate the input method: {switched.stderr.strip()}")
+        time.sleep(0.3)
+
     # Ctrl+L opens GTK's location entry; the map is typed as plain characters, which the server
-    # turns into keysyms by its own layout.
-    control = x.keysym_to_keycode(KEYSYM["Control_L"])
-    x.xtst.XTestFakeKeyEvent(x.display, control, True, 0)
-    x.tap(ord("l"))
-    x.xtst.XTestFakeKeyEvent(x.display, control, False, 0)
-    x.x11.XFlush(x.display)
-    # The location entry needs a moment to appear and take focus; typing into the file list
-    # instead would be a type-ahead search, which is a different interaction.
-    time.sleep(0.6)
+    # turns into keysyms by its own layout. `--plain` skips it for an ordinary entry.
+    if not plain:
+        control = x.keysym_to_keycode(KEYSYM["Control_L"])
+        x.xtst.XTestFakeKeyEvent(x.display, control, True, 0)
+        x.tap(ord("l"))
+        x.xtst.XTestFakeKeyEvent(x.display, control, False, 0)
+        x.x11.XFlush(x.display)
+        # The location entry needs a moment to appear and take focus; typing into the file list
+        # instead would be a type-ahead search, which is a different interaction.
+        time.sleep(0.6)
 
     for character in text:
         keysym = ord(character)

@@ -140,6 +140,7 @@ BACKENDS: tuple[tuple[str, str], ...] = (
     ("android", "src/platform/android/platform_impl.rs"),
     ("ios", "src/platform/ios/platform_impl.rs"),
     ("harmony", "src/platform/harmony/platform_impl.rs"),
+    ("redox", "src/platform/redox/platform_impl.rs"),
     ("wasm", "src/platform/wasm/platform_impl.rs"),
     ("mobile", "src/platform/mobile.rs"),
     # # Why `stub.rs` is a backend and not an exemption

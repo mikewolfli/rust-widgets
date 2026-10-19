@@ -78,15 +78,23 @@ backend running on an OS it was not compiled for reports `false`.
 | macOS | ❌ | ✅ | ✅ | ❌ |
 | Linux / GTK | ✅ ¹ | ✅ | ✅ | ❌ |
 | Linux / Wayland | ✅ | ❌ | ❌ | ❌ |
-| iOS | ❌ | ❌ | ❌ | ❌ |
-| Android | ❌ | ❌ | ❌ | ❌ |
-| HarmonyOS | ❌ | ❌ | ✅ ² | ❌ |
+| iOS | ✅ ³ | ❌ | ❌ | ❌ |
+| Android | ✅ ³ | ✅ ⁴ | ❌ | ❌ |
+| HarmonyOS | ✅ ³ | ❌ | ✅ ² | ❌ |
 | WASM | ❌ | ❌ | ❌ | ❌ |
 | Portable | ❌ | ❌ | ❌ | ❌ |
 
 ¹ Linux/GTK derives `dpi_scaling` from `dpi_scale_factor() != 1.0`, so its value is a
 **runtime** answer about the display the process is on rather than a constant. On an
 unscaled host it reports `false` and is still a backend that can answer.
+
+³ iOS, Android and HarmonyOS derive `dpi_scaling` from their display service when the host
+binding is present (`UIScreen.scale`, `DisplayMetrics.densityDpi / 160`, and
+`OH_NativeDisplayManager`). A preview build without that binding reports `false`.
+
+⁴ Android's IME column covers **soft-keyboard show/hide** through the `InputMethodManager`
+(the operation winit's Android backend performs). Composition text still comes from the host
+Activity; this backend does not claim the `GameTextInput` protocol.
 
 ² HarmonyOS reports `accessibility` only when the `xcomponent` feature is on — which is
 exactly when `accessibility_bridge()` is compiled in. Both the flag and the method are

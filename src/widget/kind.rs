@@ -658,3 +658,119 @@ pub enum WidgetKind {
     #[cfg(widgets_unstripped)]
     SegmentedControl,
 }
+
+impl WidgetKind {
+    /// Whether a user can reach this control with the keyboard.
+    ///
+    /// # Why this lives on the kind instead of on every control
+    ///
+    /// [`Widget::is_focusable`](crate::widget::Widget::is_focusable) is what the registry asks
+    /// when a control mounts, and [the pointer router](crate::widget::runtime::dispatch_pointer_event)
+    /// asks the same question before moving focus on a press. Before this predicate existed the
+    /// trait's default answered `false` for **every** control, so no click could focus a field and
+    /// Tab had an empty order to walk. One predicate on the kind keeps the two readers agreeing and
+    /// lets a control override the trait when its kind is not enough.
+    ///
+    /// The positive list is deliberately about *interaction*: text entries, buttons and toggles,
+    /// value editors, item views and menu entries take keyboard input; containers, decorations and
+    /// read-only indicators do not. A kind that is not listed answers `false`, so a future control
+    /// that forgets to think about focus cannot silently swallow Tab.
+    pub const fn wants_keyboard_focus(self) -> bool {
+        match self {
+            Self::Button
+            | Self::CheckBox
+            | Self::RadioButton
+            | Self::LineEdit
+            | Self::ComboBox
+            | Self::SpinBox
+            | Self::ListBox
+            | Self::Slider
+            | Self::Dropdown
+            | Self::TextArea
+            | Self::Switch => true,
+            #[cfg(widgets_unstripped)]
+            Self::TextEdit
+            | Self::RichEdit
+            | Self::ListView
+            | Self::TreeView
+            | Self::MenuItem
+            | Self::Table
+            | Self::KanbanBoard
+            | Self::ToggleButton
+            | Self::CheckListBox
+            | Self::DoubleSpinBox
+            | Self::Dial
+            | Self::DatePicker
+            | Self::TimePicker
+            | Self::DateTimePicker
+            | Self::DataView
+            | Self::EmojiPicker
+            | Self::Mention
+            | Self::QueryBuilder
+            | Self::PropertyGrid
+            | Self::CollapsiblePane
+            | Self::Calendar
+            | Self::ColumnView
+            | Self::UndoView
+            | Self::CommandLink
+            | Self::FontComboBox
+            | Self::Action
+            | Self::ToolButton
+            | Self::Cascader
+            | Self::TabBar
+            | Self::MenuButton
+            | Self::MaskedEdit
+            | Self::AutoCompleteEdit
+            | Self::MultiSelectComboBox
+            | Self::RangeSlider
+            | Self::FloatingLabel
+            | Self::CupertinoSwitch
+            | Self::SegmentedButton
+            | Self::EditableComboBox
+            | Self::SearchBar
+            | Self::ShortcutEditor
+            | Self::Stepper
+            | Self::Rating
+            | Self::ColorWell
+            | Self::NumberPicker
+            | Self::OtpInput
+            | Self::GridTable
+            | Self::TreeTable
+            | Self::Breadcrumb
+            | Self::SegmentedControl
+            | Self::CupertinoSlider
+            | Self::MaterialNavigationRail
+            | Self::CupertinoSegmentedControl
+            | Self::DateRangePicker
+            | Self::CupertinoDatePicker => true,
+            _ => false,
+        }
+    }
+
+    /// Whether this control carries editable text and therefore joins the IME's focus.
+    ///
+    /// A toolkit input-method context must only consume keys while a control that accepts
+    /// committed text owns focus; filtering keys for a button would swallow its activation. The
+    /// list is the text-entry family, and a kind outside it answers `false` so a new entry control
+    /// must opt in deliberately.
+    pub const fn accepts_ime_input(self) -> bool {
+        match self {
+            Self::LineEdit => true,
+            Self::TextArea => true,
+            #[cfg(widgets_unstripped)]
+            Self::TextEdit
+            | Self::RichEdit
+            | Self::SearchBar
+            | Self::SearchBox
+            | Self::TagInput
+            | Self::MaskedEdit
+            | Self::FloatingLabel
+            | Self::AutoCompleteEdit
+            | Self::Mention
+            | Self::EditableComboBox
+            | Self::OtpInput
+            | Self::InplaceEditor => true,
+            _ => false,
+        }
+    }
+}

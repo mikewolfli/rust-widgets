@@ -526,6 +526,27 @@ pub fn has_focus(id: ObjectId) -> bool {
     FOCUS.try_with(|focus| focus.borrow().has_focus(id)).unwrap_or(false)
 }
 
+/// Whether `id` may take keyboard focus from a pointer press.
+///
+/// The widget must be a mounted, enabled control that reports
+/// [`Widget::is_focusable`](crate::widget::Widget::is_focusable). A disabled control stays in the
+/// tab order (so the user can move past it) but must not *receive* focus, which is why enabled
+/// state is checked here rather than in [`Widget::is_focusable`].
+pub fn widget_wants_keyboard_focus(id: ObjectId) -> bool {
+    with_widget(id, |widget| widget.is_enabled() && widget.is_focusable()).unwrap_or(false)
+}
+
+/// Whether `id` is a text-entry control that should own the input method's key stream.
+///
+/// A toolkit IM context must only consume keys while a control that accepts committed text owns
+/// focus; filtering keys for a button would swallow its activation. The decision is derived from
+/// the widget's kind, so every backend asks the same question and a new entry control opts in
+/// once (`WidgetKind::accepts_ime_input`).
+pub fn accepts_ime_input(id: ObjectId) -> bool {
+    with_widget(id, |widget| widget.is_enabled() && widget.kind().accepts_ime_input())
+        .unwrap_or(false)
+}
+
 /// Moves keyboard focus to `id`, telling the previously focused widget it lost it.
 ///
 /// Delivers the `FocusLost` / `FocusGained` pair itself rather than expecting each
@@ -796,9 +817,16 @@ pub fn set_focusable_position(id: ObjectId, x: i32, y: i32) -> bool {
 /// window it is containment in client coordinates — which is the space `point` is documented to be
 /// in above.
 pub fn widget_at(root: ObjectId, point: Point) -> Option<ObjectId> {
-    let origin = with_widget(root, |widget| widget.geometry())?;
-    let local = Point::new(point.x - origin.x, point.y - origin.y);
-    let root_rect = Rect::new(0, 0, origin.width, origin.height);
+    let bounds = with_widget(root, |widget| widget.geometry())?;
+    // A **window** root's geometry is written in the operating system's space (the position it was
+    // asked to open at), while its children are written in client coordinates. `frame_origin` is
+    // the one predicate that knows that difference, so the root bound is applied in the same space
+    // the children use. Subtracting `geometry()` directly rejected every click on a window opened
+    // away from the screen origin: measured, a press at client `(182, 58)` on a window at `(140,
+    // 140)` became local `(42, -82)` and no control was found.
+    let origin = frame_origin(root);
+    let local = Point::new(point.x - origin.0, point.y - origin.1);
+    let root_rect = Rect::new(0, 0, bounds.width, bounds.height);
     let mut current = root;
     loop {
         let children = with_widget(current, |widget| widget.children().to_vec())?;
@@ -898,6 +926,17 @@ pub fn dispatch_pointer_event(root: ObjectId, event: &Event, point: Point) -> bo
     }
     match target {
         Some(target) if !modal_blocks(target) => {
+            // A press on an interactive control makes it the keyboard's target.
+            //
+            // This is the production caller the focus entry point never had: the router moved
+            // pointer capture and delivered the press, but nothing told the focus manager, so a
+            // click on a text field left keys going to whichever control the host had focused
+            // programmatically (or to the window). The predicate is the same one the registry
+            // uses for the tab order, so a control that is reachable by Tab is also reachable by
+            // click and the two cannot drift.
+            if starts && widget_wants_keyboard_focus(target) {
+                let _ = focus_on_pointer_press(target);
+            }
             // The widget under a press becomes the gesture owner for its whole duration,
             // even if the pointer leaves before the release (D09-EVT-01). A control may also
             // call `capture_pointer` itself for a longer-lived drag; the router only needs to
@@ -5730,6 +5769,103 @@ mod tests {
         unregister(parent);
         unregister(first);
         unregister(second);
+    }
+
+    /// A window root's geometry is in screen space while its children are in client space.
+    ///
+    /// Hit testing used to subtract `geometry()` unconditionally, so a window opened away from
+    /// the screen origin rejected every click: measured, a press at client `(182, 58)` on a window
+    /// at `(140, 140)` became local `(42, -82)` and matched no control. `frame_origin` is the one
+    /// predicate that knows a window's frame starts at `(0, 0)`, so the root bound now uses it.
+    #[test]
+    fn a_window_root_is_hit_tested_in_client_coordinates() {
+        let mut window = crate::widget::Window::new(
+            "offscreen origin".to_string(),
+            Rect::new(140, 140, 520, 260),
+        );
+        let field = register(Box::new(crate::widget::input_widgets::lineedit::LineEdit::new(
+            Rect::new(32, 40, 300, 36),
+        )))
+        .expect("mount");
+        window.add_child(field);
+        let root = register(Box::new(window)).expect("mount");
+        let _root = MountGuard(root);
+        let _field = MountGuard(field);
+
+        assert_eq!(
+            widget_at(root, Point::new(182, 58)),
+            Some(field),
+            "client coordinates must reach a control on a window whose frame starts elsewhere"
+        );
+        assert_eq!(
+            widget_at(root, Point::new(500, 240)),
+            Some(root),
+            "and the window itself is still the answer on its own background"
+        );
+    }
+
+    /// A press on an interactive control makes it the keyboard's owner.
+    ///
+    /// `focus_on_pointer_press` was published with no production caller: the router moved capture
+    /// and delivered the press but never told the focus manager. This asserts the missing call,
+    /// through the same entry point a backend uses.
+    #[test]
+    fn a_pointer_press_focuses_the_control_it_lands_on() {
+        let mut window =
+            crate::widget::Window::new("focus on press".to_string(), Rect::new(140, 140, 520, 260));
+        let field = register(Box::new(crate::widget::input_widgets::lineedit::LineEdit::new(
+            Rect::new(32, 40, 300, 36),
+        )))
+        .expect("mount");
+        window.add_child(field);
+        let root = register(Box::new(window)).expect("mount");
+        let _root = MountGuard(root);
+        let _field = MountGuard(field);
+
+        assert_eq!(focused_widget(), None, "the tree starts with no keyboard owner");
+        assert!(
+            dispatch_pointer_event(root, &Event::mouse_press(182, 58, 1), Point::new(182, 58),)
+        );
+        assert_eq!(
+            focused_widget(),
+            Some(field),
+            "the field under the pointer must own the keyboard afterwards"
+        );
+
+        // Empty window background is not an interactive control, so it does not steal focus.
+        assert!(dispatch_pointer_event(
+            root,
+            &Event::mouse_press(500, 240, 1),
+            Point::new(500, 240),
+        ));
+        assert_eq!(focused_widget(), Some(field), "the window background must not take focus");
+        clear_focus();
+    }
+
+    /// The IME joins only text-entry controls; a button keeps its keys.
+    #[test]
+    fn only_text_controls_accept_ime_input() {
+        let field = register(Box::new(crate::widget::input_widgets::lineedit::LineEdit::new(
+            Rect::new(0, 0, 200, 24),
+        )))
+        .expect("mount");
+        let button = register(Box::new(crate::widget::Button::new(
+            "ok".to_string(),
+            Rect::new(0, 40, 80, 32),
+        )))
+        .expect("mount");
+        let label = register(Box::new(crate::widget::Label::new(
+            "text".to_string(),
+            Rect::new(0, 80, 80, 24),
+        )))
+        .expect("mount");
+        let _field = MountGuard(field);
+        let _button = MountGuard(button);
+        let _label = MountGuard(label);
+
+        assert!(accepts_ime_input(field), "a line edit carries committed text");
+        assert!(!accepts_ime_input(button), "a button must keep its activation keys");
+        assert!(!accepts_ime_input(label), "a label has no edit session");
     }
 
     // -----------------------------------------------------------------------

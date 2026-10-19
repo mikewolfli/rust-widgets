@@ -916,13 +916,18 @@ pub trait Widget: EventHandler + Any {
     /// rather than being looked up in a kind table — a third-party widget the
     /// library has never heard of joins the tab order by answering `true`.
     ///
-    /// The default is `false`: a control that has not thought about focus should not
-    /// silently swallow the Tab key. Enabled state is *not* consulted here — a
+    /// The default is derived from the kind: the interaction controls listed by
+    /// [`WidgetKind::wants_keyboard_focus`](crate::widget::WidgetKind::wants_keyboard_focus)
+    /// answer `true`, everything else `false`. Before this derivation the default was a flat
+    /// `false`, which made every control invisible to both the tab order and the pointer's
+    /// focus path — a field could be clicked and typed into by a test yet never became the
+    /// router's focus owner. A control whose kind is not enough still overrides this method.
+    /// Enabled state is *not* consulted here — a
     /// disabled-but-focusable control must stay in the tab order so a user can move
     /// past it (the router skips disabled controls when delivering, not when
     /// ordering).
     fn is_focusable(&self) -> bool {
-        false
+        self.kind().wants_keyboard_focus()
     }
 }
 

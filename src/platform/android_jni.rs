@@ -227,7 +227,7 @@ pub fn android_integration_ready() -> IntegrationStatus {
 /// Kept as a named constant next to the functions it counts, and asserted by a
 /// test, so adding an entry point without updating it fails the build rather than
 /// silently misreporting the integration's surface.
-pub const NATIVE_METHOD_COUNT: u32 = 9;
+pub const NATIVE_METHOD_COUNT: u32 = 10;
 
 /// Runs `f` with a JNI environment, attaching the current thread if needed.
 ///
@@ -493,6 +493,521 @@ fn read_primary_html(env: &mut jni::JNIEnv<'_>) -> Option<String> {
     item_text(env, &item, "getHtmlText")
 }
 
+/// The primary `ClipData`, or `None` when the clipboard holds no clip.
+fn primary_clip<'local>(
+    env: &mut jni::JNIEnv<'local>,
+    manager: &jni::objects::JObject<'local>,
+) -> Option<jni::objects::JObject<'local>> {
+    let has_clip = env.call_method(manager, "hasPrimaryClip", "()Z", &[]).ok()?.z().ok()?;
+    if !has_clip {
+        return None;
+    }
+    let clip = env
+        .call_method(manager, "getPrimaryClip", "()Landroid/content/ClipData;", &[])
+        .ok()?
+        .l()
+        .ok()?;
+    (!clip.is_null()).then_some(clip)
+}
+
+/// The MIME types the primary clip's description declares.
+///
+/// A custom type is negotiated through the **description**, not through the item: the item only
+/// holds text, a URI or an `Intent`. Reading the description is what lets a consumer ask "does
+/// the clipboard carry `application/vnd.example.payload+json`?" before touching the payload.
+fn primary_clip_types(env: &mut jni::JNIEnv<'_>) -> Option<Vec<String>> {
+    let manager = clipboard_manager(env)?;
+    let clip = primary_clip(env, &manager)?;
+    let description = env
+        .call_method(&clip, "getDescription", "()Landroid/content/ClipDescription;", &[])
+        .ok()?
+        .l()
+        .ok()?;
+    if description.is_null() {
+        return None;
+    }
+    let count = env.call_method(&description, "getMimeTypeCount", "()I", &[]).ok()?.i().ok()?;
+    let mut types = Vec::new();
+    for index in 0..count {
+        let mime = env
+            .call_method(
+                &description,
+                "getMimeType",
+                "(I)Ljava/lang/String;",
+                &[jni::objects::JValue::Int(index)],
+            )
+            .ok()?
+            .l()
+            .ok()?;
+        if mime.is_null() {
+            continue;
+        }
+        let text =
+            env.call_method(&mime, "toString", "()Ljava/lang/String;", &[]).ok()?.l().ok()?;
+        if let Ok(value) = env.get_string(&jni::objects::JString::from(text)) {
+            types.push(value.into());
+        }
+    }
+    Some(types)
+}
+
+/// Whether the primary clip declares `content_type`.
+fn primary_clip_has_type(env: &mut jni::JNIEnv<'_>, content_type: &str) -> bool {
+    primary_clip_types(env)
+        .is_some_and(|types| types.iter().any(|declared| declared == content_type))
+}
+
+/// The first custom MIME type on the primary clip, skipping the two fixed kinds this backend
+/// implements separately.
+fn primary_clip_custom_type(env: &mut jni::JNIEnv<'_>) -> Option<String> {
+    primary_clip_types(env)?
+        .into_iter()
+        .find(|declared| declared != "text/plain" && declared != "text/html")
+}
+
+/// Encodes bytes as a Java `String` without loss.
+///
+/// `ClipData.Item` has no byte payload: it holds a `CharSequence`, a `Uri` or an `Intent`. A
+/// `Uri` would need a `ContentProvider` the library does not own, and an `Intent` cannot carry
+/// arbitrary bytes. The text channel can, through a one-to-one byte-to-character mapping
+/// (ISO-8859-1): every byte becomes the character with the same code point, and decoding maps
+/// each character back. UTF-8 would not round-trip arbitrary bytes, because it is not defined
+/// for every byte sequence.
+fn bytes_to_latin1(data: &[u8]) -> String {
+    data.iter().map(|byte| char::from(*byte)).collect()
+}
+
+/// Decodes text written by [`bytes_to_latin1`].
+///
+/// `None` when a character is outside `0..=0xFF`: that text was not written by this encoding
+/// (ordinary user text, for example), and returning its low byte would corrupt it.
+fn latin1_to_bytes(text: &str) -> Option<Vec<u8>> {
+    text.chars().map(|character| u8::try_from(u32::from(character)).ok()).collect()
+}
+
+/// `new ClipData(new ClipDescription(label, [type]), new ClipData.Item(payload))`.
+///
+/// The constructor, rather than `ClipData.newPlainText`, is what puts a **custom MIME type** on
+/// the clipboard: the `new*` factories hardcode `text/plain`, `text/html` or `text/uri-list`.
+fn build_custom_clip<'local>(
+    env: &mut jni::JNIEnv<'local>,
+    content_type: &str,
+    data: &[u8],
+) -> Option<jni::objects::JObject<'local>> {
+    let label = env.new_string("rust-widgets").ok()?;
+    let mime = env.new_string(content_type).ok()?;
+    let string_class = env.find_class("java/lang/String").ok()?;
+    let types = env.new_object_array(1, string_class, &mime).ok()?;
+
+    let description_class = env.find_class("android/content/ClipDescription").ok()?;
+    let description = env
+        .new_object(
+            description_class,
+            "(Ljava/lang/CharSequence;[Ljava/lang/String;)V",
+            &[jni::objects::JValue::Object(&label), jni::objects::JValue::Object(&types)],
+        )
+        .ok()?;
+
+    let payload = env.new_string(bytes_to_latin1(data)).ok()?;
+    let item_class = env.find_class("android/content/ClipData$Item").ok()?;
+    let item = env
+        .new_object(
+            item_class,
+            "(Ljava/lang/CharSequence;)V",
+            &[jni::objects::JValue::Object(&payload)],
+        )
+        .ok()?;
+
+    let clip_class = env.find_class("android/content/ClipData").ok()?;
+    env.new_object(
+        clip_class,
+        "(Landroid/content/ClipDescription;Landroid/content/ClipData$Item;)V",
+        &[jni::objects::JValue::Object(&description), jni::objects::JValue::Object(&item)],
+    )
+    .ok()
+    .filter(|clip| !clip.is_null())
+}
+
+/// Reads the primary clip's payload for a custom MIME type.
+///
+/// `getText()` is read directly rather than `coerceToText`: a custom payload is our own text
+/// encoding, not a human-readable rendering of a URI or `Intent`.
+fn read_primary_custom(env: &mut jni::JNIEnv<'_>, content_type: &str) -> Option<Vec<u8>> {
+    if !primary_clip_has_type(env, content_type) {
+        log::warn!(
+            "[android-jni] custom read: the primary clip does not declare {content_type}; it \
+             declares {:?}",
+            primary_clip_types(env)
+        );
+        return None;
+    }
+    let manager = clipboard_manager(env)?;
+    let item = primary_clip_item(env, &manager)?;
+    let Some(text) = item_text(env, &item, "getText") else {
+        log::warn!("[android-jni] custom read: ClipData.Item.getText() returned null");
+        return None;
+    };
+    let bytes = latin1_to_bytes(&text);
+    if bytes.is_none() {
+        log::warn!(
+            "[android-jni] custom read: the item text is not in this crate's byte encoding \
+             ({} chars, first non-Latin-1 char at {:?})",
+            text.chars().count(),
+            text.chars().position(|character| u32::from(character) > 0xFF)
+        );
+    }
+    bytes
+}
+
+/// Publishes `clip` as the primary clip and confirms that `content_type` reads back as `data`.
+fn publish_primary_custom_clip(
+    env: &mut jni::JNIEnv<'_>,
+    clip: &jni::objects::JObject<'_>,
+    content_type: &str,
+    data: &[u8],
+) -> Option<bool> {
+    let manager = clipboard_manager(env)?;
+    if let Err(error) = env.call_method(
+        &manager,
+        "setPrimaryClip",
+        "(Landroid/content/ClipData;)V",
+        &[jni::objects::JValue::Object(clip)],
+    ) {
+        log::error!("[android-jni] setPrimaryClip (custom type) failed: {error}");
+        return Some(false);
+    }
+    let written = read_primary_custom(env, content_type).is_some_and(|stored| stored == data);
+    if !written {
+        log::warn!(
+            "[android-jni] setPrimaryClip returned without error but the custom type {content_type} \
+             does not hold the bytes that were written (the platform refuses background clipboard \
+             writes, or another app replaced the clip); the clip now declares {:?}",
+            primary_clip_types(env)
+        );
+    }
+    Some(written)
+}
+
+/// Writes `data` under an application-defined MIME type and confirms it by reading it back.
+fn write_primary_custom_clip(
+    env: &mut jni::JNIEnv<'_>,
+    content_type: &str,
+    data: &[u8],
+) -> Option<bool> {
+    let clip = build_custom_clip(env, content_type, data)?;
+    publish_primary_custom_clip(env, &clip, content_type, data)
+}
+
+/// Stores `data` on the system clipboard under `content_type`.
+///
+/// `None` means the bridge is not ready (no `JavaVM` or no attached `Activity` `Context`);
+/// `Some(written)` is the platform's answer, confirmed by a read-back.
+pub fn set_clipboard_type(content_type: &str, data: &[u8]) -> Option<bool> {
+    with_jni_env(|env| write_primary_custom_clip(env, content_type, data)).flatten()
+}
+
+/// The bytes the system clipboard holds under `content_type`, or `None` when it holds none.
+pub fn clipboard_type(content_type: &str) -> Option<Vec<u8>> {
+    with_jni_env(|env| read_primary_custom(env, content_type)).flatten()
+}
+
+/// Whether the system clipboard currently declares `content_type`.
+pub fn clipboard_has_type(content_type: &str) -> bool {
+    with_jni_env(|env| primary_clip_has_type(env, content_type)).unwrap_or(false)
+}
+
+/// The first custom MIME type the primary clip declares, if any.
+pub fn clipboard_custom_type() -> Option<String> {
+    with_jni_env(primary_clip_custom_type).flatten()
+}
+
+// ---------------------------------------------------------------------------
+// Soft keyboard
+// ---------------------------------------------------------------------------
+
+/// `Context.getSystemService(Context.INPUT_METHOD_SERVICE)`, or `None` when there is no context.
+fn input_method_manager<'local>(
+    env: &mut jni::JNIEnv<'local>,
+) -> Option<jni::objects::JObject<'local>> {
+    let context = attached_context()?;
+    let service = env.new_string("input_method").ok()?;
+    let manager = env
+        .call_method(
+            context.as_obj(),
+            "getSystemService",
+            "(Ljava/lang/String;)Ljava/lang/Object;",
+            &[jni::objects::JValue::Object(&service)],
+        )
+        .ok()?
+        .l()
+        .ok()?;
+    if manager.is_null() {
+        log::warn!("[android-jni] getSystemService(\"input_method\") returned null");
+        return None;
+    }
+    Some(manager)
+}
+
+/// The host `Activity`'s decor view, which is the view an input method attaches to.
+///
+/// `Context` has no `getWindow()`, so a non-Activity context (an application context, or a
+/// service) answers `None`. That is the honest answer for a process that cannot present a soft
+/// keyboard.
+fn activity_decor_view<'local>(
+    env: &mut jni::JNIEnv<'local>,
+) -> Option<jni::objects::JObject<'local>> {
+    let context = attached_context()?;
+    let window =
+        match env.call_method(context.as_obj(), "getWindow", "()Landroid/view/Window;", &[]) {
+            Ok(value) => value.l().ok()?,
+            Err(error) => {
+                log::debug!("[android-jni] Context.getWindow() is unavailable: {error}");
+                // A pending exception from a non-Activity context would poison later calls.
+                let _ = env.exception_clear();
+                return None;
+            }
+        };
+    if window.is_null() {
+        return None;
+    }
+    let view =
+        env.call_method(&window, "getDecorView", "()Landroid/view/View;", &[]).ok()?.l().ok()?;
+    (!view.is_null()).then_some(view)
+}
+
+/// Asks the `InputMethodManager` to show the soft keyboard for the host window.
+///
+/// This is the same platform operation winit's Android backend performs through
+/// `AndroidApp::show_soft_input`; the `InputMethodManager` needs the Activity's decor view, which
+/// is why this is not a context-only call. Returns `false` when no context/decor view is
+/// available, or when the manager refused the request (the platform may do so if the window is
+/// not focused yet).
+fn show_soft_input_env(env: &mut jni::JNIEnv<'_>) -> bool {
+    let Some(manager) = input_method_manager(env) else {
+        return false;
+    };
+    let Some(view) = activity_decor_view(env) else {
+        return false;
+    };
+    match env.call_method(
+        &manager,
+        "showSoftInput",
+        "(Landroid/view/View;I)Z",
+        &[jni::objects::JValue::Object(&view), jni::objects::JValue::Int(0)],
+    ) {
+        Ok(value) => value.z().unwrap_or(false),
+        Err(error) => {
+            log::warn!("[android-jni] showSoftInput failed: {error}");
+            let _ = env.exception_clear();
+            false
+        }
+    }
+}
+
+/// Asks the `InputMethodManager` to hide the soft keyboard for the host window.
+fn hide_soft_input_env(env: &mut jni::JNIEnv<'_>) -> bool {
+    let Some(manager) = input_method_manager(env) else {
+        return false;
+    };
+    let Some(view) = activity_decor_view(env) else {
+        return false;
+    };
+    let token = match env.call_method(&view, "getWindowToken", "()Landroid/os/IBinder;", &[]) {
+        Ok(value) => value.l().ok(),
+        Err(error) => {
+            log::warn!("[android-jni] View.getWindowToken failed: {error}");
+            let _ = env.exception_clear();
+            None
+        }
+    };
+    let Some(token) = token else {
+        return false;
+    };
+    match env.call_method(
+        &manager,
+        "hideSoftInputFromWindow",
+        "(Landroid/os/IBinder;I)Z",
+        &[jni::objects::JValue::Object(&token), jni::objects::JValue::Int(0)],
+    ) {
+        Ok(value) => value.z().unwrap_or(false),
+        Err(error) => {
+            log::warn!("[android-jni] hideSoftInputFromWindow failed: {error}");
+            let _ = env.exception_clear();
+            false
+        }
+    }
+}
+
+/// Shows the soft keyboard for the host `Activity`. `false` when there is nothing to show it on.
+pub fn show_soft_input() -> bool {
+    with_jni_env(show_soft_input_env).unwrap_or(false)
+}
+
+/// Hides the soft keyboard for the host `Activity`. `false` when there is nothing to hide it on.
+pub fn hide_soft_input() -> bool {
+    with_jni_env(hide_soft_input_env).unwrap_or(false)
+}
+
+// ---------------------------------------------------------------------------
+// Displays
+// ---------------------------------------------------------------------------
+
+/// One display as Android's `Display`/`DisplayMetrics` report it.
+///
+/// A small snapshot rather than the crate's [`Display`](crate::platform::types::Display): the JNI
+/// side must not depend on the platform types (it is also compiled on hosts), and the caller in
+/// `platform_impl` is the one that knows about `DisplayId`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AndroidDisplayInfo {
+    /// `Display.getDisplayId()`.
+    pub id: u64,
+    /// Full display width in pixels.
+    pub width: u32,
+    /// Full display height in pixels.
+    pub height: u32,
+    /// Width of the part an application window may occupy.
+    pub work_width: u32,
+    /// Height of the part an application window may occupy.
+    pub work_height: u32,
+    /// Logical density (`densityDpi / 160`).
+    pub scale: f32,
+    /// Whether this is the default display.
+    pub is_primary: bool,
+}
+
+/// Reads the default display's metrics.
+///
+/// # Why the default display
+///
+/// The library paints into the host `Activity`'s window, which Android always places on the
+/// default display. Enumerating every physical display would need `DisplayManager`, which is not
+/// bound here and has no consumer; the default display is the one fact the window-placement
+/// contract needs.
+///
+/// # Why only `getRealMetrics`
+///
+/// `getRealMetrics` reports the full display including system bars, which is what the feedback's
+/// `bounds` field means. `Display.getRectSize` looked like the natural source for the app-usable
+/// work area, but on API 34 it throws and leaves the JNI exception pending; the host Activity's
+/// window is full-screen, so the full bounds are the truthful work area for this backend.
+pub fn display_info() -> Option<AndroidDisplayInfo> {
+    /// Unwraps a JNI result, logging the failing step instead of returning silently.
+    ///
+    /// A `?` chain here used to turn any failing call into the same `None`, so the on-device
+    /// probe reported "displays() returned []" without saying which of the fifteen JNI steps
+    /// failed. The log line names the step and the JNI error.
+    macro_rules! need {
+        ($env:expr, $expr:expr, $what:literal) => {
+            match $expr {
+                Ok(value) => value,
+                Err(error) => {
+                    log::warn!("[android-jni] display_info: {} failed: {error}", $what);
+                    // A throwing JNI call leaves the exception pending, which makes every
+                    // later call on this thread fail with the same generic error. Clearing it
+                    // here keeps one failed step from poisoning the rest of the probe.
+                    let _ = $env.exception_clear();
+                    return None;
+                }
+            }
+        };
+    }
+
+    with_jni_env(|env| {
+        let Some(context) = attached_context() else {
+            log::warn!("[android-jni] display_info: no Activity Context is attached");
+            return None;
+        };
+        let service = need!(env, env.new_string("window"), "new_string(\"window\")");
+        let manager = need!(
+            env,
+            need!(
+                env,
+                env.call_method(
+                    context.as_obj(),
+                    "getSystemService",
+                    "(Ljava/lang/String;)Ljava/lang/Object;",
+                    &[jni::objects::JValue::Object(&service)],
+                ),
+                "getSystemService"
+            )
+            .l(),
+            "getSystemService -> object"
+        );
+        if manager.is_null() {
+            log::warn!("[android-jni] display_info: getSystemService(window) returned null");
+            return None;
+        }
+        let display = need!(
+            env,
+            need!(
+                env,
+                env.call_method(&manager, "getDefaultDisplay", "()Landroid/view/Display;", &[]),
+                "getDefaultDisplay"
+            )
+            .l(),
+            "getDefaultDisplay -> object"
+        );
+        if display.is_null() {
+            log::warn!("[android-jni] display_info: getDefaultDisplay returned null");
+            return None;
+        }
+        let id = need!(
+            env,
+            need!(env, env.call_method(&display, "getDisplayId", "()I", &[]), "getDisplayId").i(),
+            "getDisplayId -> int"
+        ) as u64;
+
+        let metrics_class =
+            need!(env, env.find_class("android/util/DisplayMetrics"), "find_class(DisplayMetrics)");
+        let metrics = need!(env, env.new_object(metrics_class, "()V", &[]), "new DisplayMetrics()");
+        need!(
+            env,
+            env.call_method(
+                &display,
+                "getRealMetrics",
+                "(Landroid/util/DisplayMetrics;)V",
+                &[jni::objects::JValue::Object(&metrics)],
+            ),
+            "getRealMetrics"
+        );
+        let width = need!(
+            env,
+            need!(env, env.get_field(&metrics, "widthPixels", "I"), "get widthPixels").i(),
+            "widthPixels -> int"
+        );
+        let height = need!(
+            env,
+            need!(env, env.get_field(&metrics, "heightPixels", "I"), "get heightPixels").i(),
+            "heightPixels -> int"
+        );
+        let density_dpi = need!(
+            env,
+            need!(env, env.get_field(&metrics, "densityDpi", "I"), "get densityDpi").i(),
+            "densityDpi -> int"
+        );
+
+        // The work area is the full display on this backend. `Display.getRectSize` was the
+        // obvious API for the app-usable part, but on API 34 it throws and leaves the exception
+        // pending, which then failed every later JNI call in the probe. The host's Activity
+        // window is full-screen, so bounds is the truthful work area here; a host that runs a
+        // split-screen session can still use the per-window surface metrics it owns.
+        let work_width = width.max(0) as u32;
+        let work_height = height.max(0) as u32;
+
+        Some(AndroidDisplayInfo {
+            id,
+            width: width.max(0) as u32,
+            height: height.max(0) as u32,
+            work_width,
+            work_height,
+            // Android's baseline density is 160 dpi; a non-positive reading is not a scale.
+            scale: if density_dpi > 0 { density_dpi as f32 / 160.0 } else { 1.0 },
+            is_primary: true,
+        })
+    })
+    .flatten()
+}
+
 /// Publishes `clip` as the primary clip and reports whether the clipboard then holds `expect`.
 ///
 /// The read-back is the evidence: `setPrimaryClip` returns `void` and cannot fail loudly, and on
@@ -599,10 +1114,14 @@ fn new_clip<'local>(
 /// # What it carries, and what it does not
 ///
 /// Text and HTML, through `ClipData.newPlainText` / `ClipData.newHtmlText` — the same pair the
-/// macOS and iOS backends implement. Images, RTF and file lists are refused (`false` / `None`)
-/// rather than silently dropped: a file list would need a `ContentResolver`-backed `Uri`, which
-/// the bridge has no handle on, and returning `true` for a conversion that did not happen is the
-/// fake-success shape this crate's principles forbid.
+/// macOS and iOS backends implement — **plus application-defined MIME types** through
+/// `ClipDescription` + `ClipData.Item`. An arbitrary byte payload travels over the item's text
+/// channel with a one-to-one byte-to-character mapping (see [`bytes_to_latin1`]); the MIME type is
+/// what the description negotiates, so a consumer asks for it by name rather than sniffing the
+/// body. Images, RTF and file lists are still refused (`false` / `None`) rather than silently
+/// dropped: a file list would need a `ContentResolver`-backed `Uri`, which the bridge has no handle
+/// on, and returning `true` for a conversion that did not happen is the fake-success shape this
+/// crate's principles forbid.
 pub struct AndroidClipboard;
 
 impl AndroidClipboard {
@@ -628,6 +1147,12 @@ impl crate::platform::clipboard::RichClipboardBackend for AndroidClipboard {
             ClipboardContent::Html { html, plain } => {
                 with_jni_env(|env| write_primary_html_clip(env, &html, &plain)).flatten()
             }
+            // An application-defined type goes through the `ClipDescription` + `ClipData.Item`
+            // constructor pair, which is the only Android channel that names a MIME type other
+            // than the three the `ClipData.new*` factories hardcode.
+            ClipboardContent::Custom { content_type, data } => {
+                with_jni_env(|env| write_primary_custom_clip(env, &content_type, &data)).flatten()
+            }
             other => {
                 log::warn!(
                     "[android-jni] {} is not carried by this backend; the write is reported as \
@@ -642,6 +1167,14 @@ impl crate::platform::clipboard::RichClipboardBackend for AndroidClipboard {
 
     fn get_contents(&self) -> Option<crate::platform::clipboard::ClipboardContent> {
         use crate::platform::clipboard::ClipboardContent;
+        // A custom clip is checked **before** the text channels: its payload is carried as a
+        // `CharSequence`, so a text-first read would return the payload as ordinary text and the
+        // type would be lost at the reader.
+        if let Some(content_type) = clipboard_custom_type() {
+            if let Some(data) = clipboard_type(&content_type) {
+                return Some(ClipboardContent::Custom { content_type, data });
+            }
+        }
         if let Some(html) = clipboard_text_of(read_primary_html) {
             let plain = clipboard_text_of(read_primary_clip).unwrap_or_default();
             return Some(ClipboardContent::Html { html, plain });
@@ -653,7 +1186,25 @@ impl crate::platform::clipboard::RichClipboardBackend for AndroidClipboard {
         match content_type {
             "text/html" => clipboard_text_of(read_primary_html).is_some(),
             "text/plain" => clipboard_text_of(read_primary_clip).is_some(),
-            _ => false,
+            other => clipboard_has_type(other),
+        }
+    }
+
+    /// Stores bytes under an application-defined MIME type.
+    ///
+    /// Overridden rather than inherited because the default would route through
+    /// [`Self::set_contents`] — which is the same path — but only this entry point documents and
+    /// checks the byte-level contract directly.
+    fn set_contents_with_type(&self, content_type: &str, data: &[u8]) -> bool {
+        set_clipboard_type(content_type, data).unwrap_or(false)
+    }
+
+    /// Reads the bytes the clipboard holds under `content_type`.
+    fn get_contents_for_type(&self, content_type: &str) -> Option<Vec<u8>> {
+        match content_type {
+            "text/plain" => clipboard_text_of(read_primary_clip).map(String::into_bytes),
+            "text/html" => clipboard_text_of(read_primary_html).map(String::into_bytes),
+            other => clipboard_type(other),
         }
     }
 }
@@ -916,6 +1467,183 @@ fn widget_self_test() -> jni::sys::jint {
     passed
 }
 
+/// Runs the on-device platform-services probe and returns a pass/fail bitmask.
+///
+/// # Why a separate entry point from `nativeWidgetSelfTest`
+///
+/// The widget self-test proves the painted-control path. It says nothing about the two
+/// host services the 2026-10-15 feedback asks about: an application-defined MIME type on the
+/// system clipboard, and display enumeration. Both need the attached `Activity` `Context` and
+/// therefore cannot be exercised by a host test. This entry point drives the real
+/// `Platform::*` methods on the device and reports each step.
+///
+/// | bit | step |
+/// |---|---|
+/// | 0 | `set_contents_with_type` accepted the payload |
+/// | 1 | `has_format` reports the custom type |
+/// | 2 | `get_contents_for_type` returns the same bytes |
+/// | 3 | `get_contents` returns `ClipboardContent::Custom` with the same type and bytes |
+/// | 4 | `displays()` returns at least one display with positive bounds/work area/scale |
+/// | 5 | `display_of_window` places a real window on one of those displays |
+/// | 6 | `display_generation()` is non-zero and stable across two reads |
+/// | 7 | the backend reports clipboard capability while this probe runs |
+/// | 8 | the backend exposes an IME bridge (soft-keyboard control) |
+///
+/// A return of `0b1_1111_1111` (511) is a full pass. `0` means the bridge had no clipboard
+/// backend at all (no `JavaVM`/`Context`), which the caller reports separately.
+#[no_mangle]
+pub extern "system" fn Java_rust_1widgets_RustWidgets_nativePlatformProbe(
+    _env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+) -> jni::sys::jint {
+    platform_services_probe()
+}
+
+/// The body behind [`Java_rust_1widgets_RustWidgets_nativePlatformProbe`].
+///
+/// Kept out of the JNI shim so the step order and the bit meanings live in one place; the
+/// service calls themselves are the same ones a host makes.
+#[cfg(not(alloc_frugal))]
+fn platform_services_probe() -> jni::sys::jint {
+    use crate::platform::clipboard::ClipboardContent;
+
+    const PROBE_TYPE: &str = "application/vnd.rust-widgets.probe+json";
+    // Includes bytes that are not valid UTF-8, because the Android carrier is a text channel:
+    // a UTF-8 shortcut would corrupt these exact bytes while still passing an ASCII-only probe.
+    const PROBE_BYTES: &[u8] = b"{\"probe\":true,\"bytes\":\"\x00\xff\x80\"}";
+
+    let mut passed = 0;
+    let platform = crate::platform::get_platform();
+
+    // 7 first: a host reading the bitmask should be able to tell "the clipboard service is
+    // absent" (all bits clear) from "the clipboard service is present but a step failed".
+    if crate::platform::capabilities().clipboard {
+        passed |= 1 << 7;
+    } else {
+        log::error!(
+            "[android-jni] platform probe: capabilities().clipboard is false while a Context is \
+             attached; the system clipboard was not exercised"
+        );
+        return passed;
+    }
+
+    let Some(clipboard) = platform.clipboard_backend() else {
+        log::error!("[android-jni] platform probe: no rich clipboard backend despite the flag");
+        return passed;
+    };
+
+    // Keep whatever was on the clipboard so the emulator/device is not left with the probe
+    // payload. A failed restore is logged but is not a probe failure: the platform may refuse
+    // writes from a non-foreground process, and that is not what this test measures.
+    let previous = clipboard.get_contents();
+
+    if clipboard.set_contents_with_type(PROBE_TYPE, PROBE_BYTES) {
+        passed |= 1;
+    } else {
+        log::error!("[android-jni] platform probe: set_contents_with_type refused");
+    }
+
+    if clipboard.has_format(PROBE_TYPE) {
+        passed |= 1 << 1;
+    } else {
+        log::error!("[android-jni] platform probe: has_format({PROBE_TYPE}) is false after write");
+    }
+
+    match clipboard.get_contents_for_type(PROBE_TYPE) {
+        Some(bytes) if bytes == PROBE_BYTES => passed |= 1 << 2,
+        other => {
+            log::error!("[android-jni] platform probe: typed read returned {other:?}");
+        }
+    }
+
+    match clipboard.get_contents() {
+        Some(ClipboardContent::Custom { content_type, data })
+            if content_type == PROBE_TYPE && data == PROBE_BYTES =>
+        {
+            passed |= 1 << 3;
+        }
+        other => {
+            log::error!("[android-jni] platform probe: get_contents returned {other:?}");
+        }
+    }
+
+    if let Some(previous) = previous {
+        if !clipboard.set_contents(previous) {
+            log::warn!("[android-jni] platform probe: could not restore the previous clipboard");
+        }
+    }
+
+    let displays = platform.displays();
+    if platform.capabilities().dpi_scaling
+        && platform.dpi_scale_factor() > 0.0
+        && displays.iter().any(|display| {
+            display.bounds.width > 0
+                && display.bounds.height > 0
+                && display.work_area.width > 0
+                && display.work_area.height > 0
+                && display.scale > 0.0
+        })
+    {
+        passed |= 1 << 4;
+    } else {
+        log::error!(
+            "[android-jni] platform probe: displays() returned {displays:?}, dpi_scale_factor()={}, \
+             dpi_scaling={}",
+            platform.dpi_scale_factor(),
+            platform.capabilities().dpi_scaling
+        );
+    }
+
+    // The IME bridge controls the Android soft keyboard (`InputMethodManager`), the platform
+    // operation winit's Android backend performs. Its presence is the capability assertion; the
+    // focus pair below exercises the JNI path without requiring the keyboard to be visible on a
+    // screen nobody is looking at.
+    if let Some(bridge) = platform.ime_bridge() {
+        passed |= 1 << 8;
+        let window = crate::create_window("IME Probe", 0, 0, 320, 240);
+        if window != 0 {
+            bridge.focus_in(window);
+            bridge.focus_out(window);
+            destroy(window);
+        }
+    } else {
+        log::error!("[android-jni] platform probe: ime_bridge() returned None");
+    }
+
+    // A real window is what `display_of_window` translates from; a made-up id would exercise
+    // only the refusal branch and pass with the success branch broken.
+    let window = crate::create_window("Platform Probe", 0, 0, 320, 240);
+    if window != 0 {
+        if platform.display_of_window(window).is_some() {
+            passed |= 1 << 5;
+        } else {
+            log::error!("[android-jni] platform probe: display_of_window({window}) returned None");
+        }
+        destroy(window);
+    } else {
+        log::error!("[android-jni] platform probe: create_window returned 0");
+    }
+
+    let first = platform.display_generation();
+    let second = platform.display_generation();
+    if first != 0 && first == second {
+        passed |= 1 << 6;
+    } else {
+        log::error!(
+            "[android-jni] platform probe: display_generation read {first} then {second}; expected \
+             the same non-zero value"
+        );
+    }
+
+    passed
+}
+
+/// `alloc_frugal` has no platform singleton to probe.
+#[cfg(alloc_frugal)]
+fn platform_services_probe() -> jni::sys::jint {
+    0
+}
+
 /// Tears a control down through the same backend call the C ABI's `rw_destroy_widget` uses.
 ///
 /// Named locally rather than reaching for `crate::destroy_widget`, which does not exist: the
@@ -1068,6 +1796,30 @@ mod tests {
         assert_eq!(logcat_priority(log::Level::Info), 4);
         assert_eq!(logcat_priority(log::Level::Debug), 3);
         assert_eq!(logcat_priority(log::Level::Trace), 2);
+    }
+
+    /// Every byte value survives the text-channel encoding used for a custom MIME payload.
+    ///
+    /// `ClipData.Item` has no byte field, so the payload travels as a `CharSequence`. The
+    /// byte-to-character mapping must be total and reversible for **all** 256 values; a UTF-8
+    /// shortcut would fail for byte sequences that are not valid UTF-8.
+    #[test]
+    fn a_custom_payload_round_trips_through_the_text_channel() {
+        let data: Vec<u8> = (0..=255).collect();
+        let text = bytes_to_latin1(&data);
+        assert_eq!(text.chars().count(), data.len(), "one character per byte");
+        assert_eq!(latin1_to_bytes(&text), Some(data));
+    }
+
+    /// Text outside the byte range is not mistaken for a payload.
+    ///
+    /// Ordinary user text can be on the clipboard under a custom MIME only if another
+    /// application put it there; decoding it by taking each character's low byte would corrupt
+    /// it. `None` is the honest "this is not our encoding" answer.
+    #[test]
+    fn text_outside_the_byte_range_is_not_decoded_as_a_payload() {
+        assert_eq!(latin1_to_bytes("你好"), None);
+        assert_eq!(latin1_to_bytes("abc"), Some(b"abc".to_vec()));
     }
 
     /// A resize for a window this library never created must be refused.

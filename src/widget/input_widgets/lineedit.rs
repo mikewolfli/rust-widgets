@@ -1428,6 +1428,40 @@ impl LineEdit {
     }
 }
 
+impl LineEdit {
+    /// Tells the host that the value changed during this event.
+    ///
+    /// The queue is only touched for a **mounted** field: a value callback is registered through
+    /// the widget registry, so an unmounted `LineEdit` (the shape most unit tests use) has no
+    /// reader, and injecting there would put an event into a process-wide queue that no frame will
+    /// drain. The trigger carries no text — [`crate::app::dispatch_trigger`] reads the live value —
+    /// so a later edit cannot make an earlier notification describe the wrong string.
+    #[cfg(not(alloc_frugal))]
+    fn announce_value_changed_if_text_moved(&self, before: &str) {
+        if self.text == before {
+            return;
+        }
+        // A widget's own `base().id()` is not the id the registry mounted it under, and the
+        // trigger queue and callback table are keyed by the **registry** id. Resolving the
+        // translation here is what makes the notification address the control the host holds;
+        // injecting with the own id would queue an event no callback could ever match.
+        let Some(id) = crate::widget::runtime::registry_id_of(self.base.id()) else {
+            return;
+        };
+        if !crate::widget::runtime::is_mounted(id) {
+            return;
+        }
+        let _ = crate::inject_widget_trigger_event(
+            id,
+            crate::platform::WidgetTriggerKind::ValueChanged,
+        );
+    }
+
+    /// The allocation-frugal build has no trigger queue and no host callbacks.
+    #[cfg(alloc_frugal)]
+    fn announce_value_changed_if_text_moved(&self, _before: &str) {}
+}
+
 impl EventHandler for LineEdit {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -1444,7 +1478,16 @@ impl EventHandler for LineEdit {
         }
         match event {
             Event::KeyPress { key, modifiers } => {
+                // A user edit has to reach `on_value_changed` without the host polling the text.
+                //
+                // The trigger is queued only when the value actually moved: every navigation key
+                // (`Left`, `Home`, a shortcut chord) also arrives here, and announcing those would
+                // make a form validate on a keystroke that changed nothing. `set_text` is
+                // deliberately not the injection point because a host calling it already knows the
+                // value it just wrote.
+                let before = self.text.clone();
                 self.handle_key(*key, crate::shortcut::Modifiers::from_event_bits(*modifiers));
+                self.announce_value_changed_if_text_moved(&before);
             }
             // Platform-committed text (D09-INPUT-01).
             //
@@ -1455,8 +1498,27 @@ impl EventHandler for LineEdit {
             // field's focus, read-only, selection-replacement, `max_length`, undo and
             // `text_changed` contract in one place rather than duplicating it here. The
             // `read_only`/`is_enabled` early returns above already gate this branch.
-            Event::TextInput { text } | Event::ImeCommit { text } => {
+            Event::TextInput { text } => {
+                let before = self.text.clone();
                 self.insert_text(text);
+                self.announce_value_changed_if_text_moved(&before);
+            }
+            // A commit ends the composition as well as inserting its text. Clearing the preedit
+            // first is what keeps the underlined preview from surviving the string it previewed:
+            // an input method may deliver the commit before its `preedit_end`, and the field would
+            // otherwise paint both the committed text and a stale composition.
+            Event::ImeCommit { text } => {
+                let before = self.text.clone();
+                self.composition = None;
+                self.insert_text(text);
+                self.announce_value_changed_if_text_moved(&before);
+            }
+            // The uncommitted composition belongs to the field while the user is building it: the
+            // value does not change, but the inline preedit at the caret does. Without this arm an
+            // input method's preview reached no text model at all, because `set_composition` had
+            // no event producer inside the widget layer.
+            Event::ImePreedit { text, .. } => {
+                self.set_composition(text);
             }
             Event::FocusLost => {
                 self.set_focused(false);
@@ -2900,6 +2962,20 @@ mod tests {
         clipped.set_max_length(Some(4));
         clipped.insert_text("wxyz");
         assert_eq!(clipped.text(), "ééwx");
+    }
+
+    /// The widget layer's half of IME: a preedit updates the preview without touching the value,
+    /// and a commit replaces the preview with text through the ordinary edit path.
+    #[test]
+    fn ime_preedit_and_commit_update_the_model() {
+        let mut field = LineEdit::new(Rect::new(0, 0, 200, 24));
+        field.handle_event(&Event::ime_preedit("に", 1));
+        assert_eq!(field.text(), "", "an uncommitted composition is not the value");
+        assert_eq!(field.composition(), Some("に"));
+
+        field.handle_event(&Event::ime_commit("你好"));
+        assert_eq!(field.text(), "你好", "the commit enters the model");
+        assert!(!field.has_composition(), "and ends the composition");
     }
 
     /// The caret and the edit keys step by **character**, not by byte.

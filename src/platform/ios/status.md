@@ -46,7 +46,8 @@ and widgets are then displayed through `Platform::mount_surface` — see below.
 | Menu tree (MenuBar/Menu/MenuItem) | ✅ Implemented | in-process tree + injectable trigger queue |
 | ComboBox / ListBox data paths | ✅ Implemented | shared list-data tables |
 | Show / hide / geometry / text / enabled | ✅ Implemented | logical state round-trips |
-| Clipboard | ✅ Implemented | in-process store |
+| Clipboard | ✅ Implemented | system `UIPasteboard`: text, HTML, and **application-defined pasteboard types** (`setData:forPasteboardType:` with a read-back) |
+| Displays | ✅ Implemented | `UIScreen.screens()`/`mainScreen()` on the main thread; bounds, scale and primary flag; empty off the main thread or without the UIKit FFI. `display_of_window` reads the window's own `UIWindow.screen()` (winit's lookup) rather than guessing the primary screen |
 | Drag & drop | ✅ Implemented | injectable drop-event queue |
 | IME / accessibility **metadata** (the per-widget flags and names) | ✅ Implemented | `BackendState` fields: `set_widget_ime_enabled` and `set_widget_accessibility_name` round-trip a boolean and a string |
 | IME / accessibility **bridges** (an input-method client, an accessibility tree) | ⛔ Not implemented | neither `ime_bridge()` nor `accessibility_bridge()` is overridden, so both inherit `None` — which is why `capabilities()` reports `ime: false` and `accessibility: false`. The row above is **not** a counter-argument: a flag store is not an input-method client |
@@ -86,8 +87,12 @@ entry points. Until that wiring exists in the host layer, this backend paints bu
 `IosMobilePlatform::capabilities()` declares the flags explicitly rather than
 inheriting desktop defaults:
 
-- `dpi_scaling: true`, `ime: true`, `accessibility: true` — the state model
-  tracks these.
+- `dpi_scaling: cfg!(all(target_os = "ios", feature = "ios-uikit-ffi"))` — `true` exactly
+  when `dpi_scale_factor()` can read `UIScreen.scale` (2x/3x on real devices). A preview build
+  without the UIKit FFI reports `false` rather than the fabricated `1.0`.
+- `ime: false`, `accessibility: false` — neither `ime_bridge()` nor `accessibility_bridge()` is
+  implemented, so both flags would promise `None`. The per-widget IME/accessibility metadata
+  fields are a flag store, not a bridge.
 - `native_menu: false` — the menu is an in-process tree served through an
   injectable queue, **not** an OS menu. This is asserted by
   `ios_platform_reports_explicit_mobile_capabilities`.

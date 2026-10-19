@@ -231,7 +231,7 @@ fn published_os_capability_matrix_matches_the_trait_default() {
         // Wayland `text-input` binding and no Wayland a11y bridge in this crate, so both flags would
         // promise a method that answers `None`.
         ("wayland", PlatformFamily::Desktop, true, false, false, false),
-        ("ios", PlatformFamily::Mobile, false, false, false, false),
+        ("ios", PlatformFamily::Mobile, true, false, false, false),
         ("android", PlatformFamily::Mobile, true, true, true, false),
         ("harmony", PlatformFamily::Desktop, true, true, true, false),
         ("wasm", PlatformFamily::Embedded, false, false, false, false),
@@ -361,6 +361,9 @@ fn documented_matrix_matches_real_backends() {
     // wired only under `cfg!(all(target_os = "macos", feature = "macos"))`, so a build that
     // compiles the backend without that feature reports `false`. See its `capabilities()`.
     let expect_objc2_clipboard = cfg!(all(target_os = "macos", feature = "macos"));
+    // iOS reads `UIScreen.scale` through the UIKit FFI, so the flag follows that build fact —
+    // the same shape as Linux's `expect_linux_dpi` above.
+    let expect_ios_dpi = cfg!(all(target_os = "ios", feature = "ios-uikit-ffi"));
     let published: &[Row] = &[
         // `native_menu: false` on all three desktop backends with an OS menu API: the flag records
         // an implementation, not an OS feature. See `PlatformCapabilities::native_menu` and each
@@ -399,13 +402,12 @@ fn documented_matrix_matches_real_backends() {
         // `accessibility` are false because neither bridge method is overridden. See its
         // `capabilities()` doc for the grep evidence.
         ("wayland", PlatformFamily::Desktop, true, false, false, false, false, false, false),
-        // iOS reports the honest absence of all three: no `dpi_scale_factor()` (so the flag would
-        // promise the fabricated `1.0` on a 2x/3x screen), no `ime_bridge()`, no
-        // `accessibility_bridge()`. See its `capabilities()` doc for the grep evidence.
+        // iOS reports the honest absence of IME and accessibility; DPI is real when the UIKit
+        // FFI is compiled in (`UIScreen.scale`), and `expect_ios_dpi` follows that gate.
         (
             "ios-state-backend",
             PlatformFamily::Mobile,
-            false,
+            expect_ios_dpi,
             false,
             false,
             false,

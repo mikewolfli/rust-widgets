@@ -20,6 +20,11 @@ import rust_widgets.RustWidgets;
  *   <li>Reports a window resize, the one fact only the host observes.</li>
  * </ol>
  *
+ * <p>It then runs two on-device probes: {@code nativeWidgetSelfTest} for the painted-control
+ * path, and {@code nativePlatformProbe} for the two host services that need this Activity's
+ * {@code Context} — an application-defined MIME type on the system clipboard and display
+ * enumeration.
+ *
  * <p>Results are written to logcat under the {@code RustWidgetsTest} tag so a CI
  * job can assert on them without a UI harness. The widget-level half of the probe
  * runs through {@code nativeWidgetSelfTest}, which creates a real window and
@@ -41,6 +46,12 @@ public class MainActivity extends Activity {
 
     private static final String TAG = "RustWidgetsTest";
 
+    /** Whether the JNI plumbing and widget self-test passed in {@code onCreate}. */
+    private boolean bridgeReady = false;
+
+    /** Whether the platform-services probe has run; it must wait for window focus. */
+    private boolean platformProbeRan = false;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -49,8 +60,35 @@ public class MainActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         setContentView(root);
 
-        boolean ok = runBridgeSmokeTest();
-        Log.i(TAG, ok ? "RESULT: PASS" : "RESULT: FAIL");
+        bridgeReady = runBridgeSmokeTest();
+        if (!bridgeReady) {
+            Log.e(TAG, "the JNI plumbing or widget self-test failed");
+            Log.i(TAG, "RESULT: FAIL");
+        }
+    }
+
+    /**
+     * Runs the platform-services probe once the window has focus.
+     *
+     * <p>Android 10+ silently refuses a clipboard write from a process that is not in the
+     * foreground, and a write issued from {@code onCreate} races window focus. Deferring the
+     * probe to this callback is what makes the on-device result about the custom-MIME
+     * implementation rather than about when the Activity happened to call it.
+     */
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (!hasFocus || !bridgeReady || platformProbeRan) {
+            return;
+        }
+        platformProbeRan = true;
+        getWindow().getDecorView().postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                boolean ok = runPlatformProbe();
+                Log.i(TAG, ok ? "RESULT: PASS" : "RESULT: FAIL");
+            }
+        }, 300);
     }
 
     @Override
@@ -196,6 +234,44 @@ public class MainActivity extends Activity {
             "both destroyed",
             "no native-menu over-claim",
             "backend names itself",
+        };
+        boolean ok = true;
+        for (int i = 0; i < steps.length; i++) {
+            boolean passed = (bits & (1 << i)) != 0;
+            if (!passed) {
+                ok = false;
+            }
+            Log.i(TAG, (passed ? "  [PASS] " : "  [FAIL] ") + steps[i]);
+        }
+        return ok;
+    }
+
+    /**
+     * Drive the platform-services probe and report each bit, so a failure names its step.
+     *
+     * <p>The bit meanings are documented on the Rust entry point; logging them individually
+     * is what turns "platform probe failed" into "the typed read returned different bytes".
+     */
+    private boolean runPlatformProbe() {
+        int bits;
+        try {
+            bits = RustWidgets.nativePlatformProbe();
+        } catch (UnsatisfiedLinkError e) {
+            Log.e(TAG, "nativePlatformProbe not linked: " + e.getMessage());
+            return false;
+        }
+        Log.i(TAG, "nativePlatformProbe -> " + bits + " (0b" + Integer.toBinaryString(bits) + ")");
+
+        final String[] steps = {
+            "custom MIME write accepted",
+            "has_format sees the custom MIME",
+            "typed read returns the same bytes",
+            "get_contents reports Custom",
+            "at least one display with positive metrics and a readable DPI scale",
+            "a real window is placed on a display",
+            "display_generation is non-zero and stable",
+            "clipboard capability reported",
+            "IME bridge (soft keyboard) available",
         };
         boolean ok = true;
         for (int i = 0; i < steps.length; i++) {

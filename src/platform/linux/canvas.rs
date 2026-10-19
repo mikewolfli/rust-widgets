@@ -112,6 +112,7 @@ pub(crate) fn mount_canvas(
     );
     // The area must be able to take keyboard focus for the editor to be usable.
     area.set_can_focus(true);
+    let ime = ImeContext::new(&area);
 
     // GTK reports pointer positions in this area's local space, but widget geometry
     // is absolute, so each event is offset by where this surface was placed. Without
@@ -235,6 +236,16 @@ pub(crate) fn mount_canvas(
             const WIDGET_SHIFT: u32 = 1;
             let forward = modifier_bits(event) & WIDGET_SHIFT == 0;
             crate::widget::runtime::focus_next(forward);
+            widget.queue_draw();
+            note_canvas_redraw(id);
+            return glib::Propagation::Stop;
+        }
+        // The input method sees the key before the widget does. A composition is built from
+        // several keystrokes; if they were also delivered as text the field would receive the
+        // preedit characters **and** the committed string. `filter_keypress` answers whether the
+        // context consumed the key, so a consumed key stops here and an unconsumed one follows
+        // the ordinary path (which is what keeps a keyboard-us IME typing normally).
+        if ime.filter_keypress(event) {
             widget.queue_draw();
             note_canvas_redraw(id);
             return glib::Propagation::Stop;
@@ -491,7 +502,18 @@ pub(crate) fn blit_rgba(context: &cairo::Context, width: u32, height: u32, frame
 ///
 /// Control characters are excluded: Enter, Tab and Escape are meaningful as
 /// `KeyPress` and the widget maps them to editing commands there.
-fn printable_text(event: &gdk::EventKey) -> Option<String> {
+pub(crate) fn printable_text(event: &gdk::EventKey) -> Option<String> {
+    // A control chord is a command, not content. Without this test `Ctrl+C` produced the
+    // printable `c` and a field inserted it instead of copying: the keyval is `c` whether or not
+    // Control is held, so the modifier state is the only thing that can tell the two apart.
+    let state = event.state();
+    if state.intersects(
+        gdk::ModifierType::CONTROL_MASK
+            | gdk::ModifierType::MOD1_MASK
+            | gdk::ModifierType::SUPER_MASK,
+    ) {
+        return None;
+    }
     let ch = event.keyval().to_unicode()?;
     if ch.is_control() {
         return None;
@@ -539,7 +561,7 @@ pub(crate) fn modifier_state_bits(state: gdk::ModifierType) -> u32 {
 ///
 /// Kept as a named predicate because the raw keyval (`0xFF09`) is otherwise an
 /// unexplained magic number at the call site.
-fn gdk_keyval_is_tab(keyval: u32) -> bool {
+pub(crate) fn gdk_keyval_is_tab(keyval: u32) -> bool {
     keyval == KEY_TAB
 }
 
@@ -595,12 +617,197 @@ fn forward_key_to_platform(id: ObjectId, event: &Event) -> bool {
 /// A disabled widget must not take the keyboard: GTK would then swallow the key
 /// before the library could honour Tab, and the user would be stuck. Returns whether
 /// the grab was requested.
-fn focus_area_if_enabled(area: &gtk::DrawingArea) -> bool {
+pub(crate) fn focus_area_if_enabled(area: &gtk::DrawingArea) -> bool {
     if !area.is_sensitive() {
         return false;
     }
     area.grab_focus();
     true
+}
+
+/// The toolkit input-method context attached to one drawing surface.
+///
+/// # Why the library owns this rather than the host
+///
+/// On GTK the input method is reached through `GtkIMContext`: the context filters a key **before**
+/// the control does and reports the composition as `preedit_changed` / `commit`. Without a context
+/// a Linux host can type ASCII, but a real input method never sees a keystroke, so CJK composition
+/// is impossible. The host used to create its own `IMMulticontext`, block the library's handler and
+/// forward the result — a workaround that requires knowing which `DrawingArea` is the canvas and
+/// does not scale to several windows. Owning it here makes the ordinary key path the IME path.
+///
+/// # Which control joins the input method
+///
+/// Only a focused control that accepts committed text
+/// ([`crate::widget::runtime::accepts_ime_input`]); a context that filtered keys for a button would
+/// swallow its activation. The context is focused and unfocused with the widget, so composition
+/// state cannot leak from one field to the next.
+///
+/// # What the context delivers
+///
+/// The preedit and the commit go through `crate::platform::ime::deliver_composition` /
+/// `deliver_commit`, the same join every backend uses, so a control sees `ImePreedit` /
+/// `ImeCommit` and no second insertion path exists. When a key is consumed,
+/// [`filter_keypress`](Self::filter_keypress) answers `true` and the caller stops; an un-consumed
+/// key follows the ordinary key/text translation, which is what makes a `keyboard-us` IME behave
+/// like plain typing.
+pub(crate) struct ImeContext {
+    context: gtk::IMMulticontext,
+    /// The widget this context was last focused for, so focus_in/out pairs are not repeated.
+    last_focused: std::rc::Rc<std::cell::RefCell<Option<ObjectId>>>,
+}
+
+impl ImeContext {
+    /// Creates a context for `area` and attaches it when the area is mapped.
+    ///
+    /// The client window is set on `map` rather than at construction because a `DrawingArea` has
+    /// no `GdkWindow` until it is realized; setting it early would leave the input method with no
+    /// surface to place its candidate window against.
+    pub(crate) fn new(area: &gtk::DrawingArea) -> Self {
+        let context = gtk::IMMulticontext::new();
+        context.set_use_preedit(true);
+
+        let mapped = context.clone();
+        area.connect_map(move |area| {
+            if let Some(window) = area.window() {
+                mapped.set_client_window(Some(&window));
+            }
+        });
+        if let Some(window) = area.window() {
+            context.set_client_window(Some(&window));
+        }
+
+        // Focus is a toolkit fact as well as a library one. The input method learns that an edit
+        // session may begin when the area takes keyboard focus, **not** when the first key arrives:
+        // an inactive input method cannot be switched on for the field if it has not seen the
+        // field focus yet. Keeping these two signals is what makes "click, then choose an input
+        // method, then type" work rather than forcing the user to type once first.
+        let focus_context = context.clone();
+        area.connect_focus_in_event(move |_, _| {
+            focus_context.focus_in();
+            glib::Propagation::Proceed
+        });
+        let blur_context = context.clone();
+        area.connect_focus_out_event(move |_, _| {
+            blur_context.focus_out();
+            glib::Propagation::Proceed
+        });
+
+        // The composition is the field's preview, not its value: delivering it as `ImePreedit`
+        // lets `LineEdit` paint the preedit at the caret without firing `text_changed`.
+        context.connect_preedit_changed(|context| {
+            let (text, _, cursor) = context.preedit_string();
+            let Some(widget) = crate::widget::runtime::focused_widget() else {
+                return;
+            };
+            if !control_accepts_ime(widget) {
+                return;
+            }
+            let composition = crate::platform::ime::ImeComposition {
+                text: text.to_string(),
+                cursor_position: cursor.max(0) as usize,
+                selection_length: 0,
+            };
+            let _ = crate::platform::ime::deliver_composition(widget, &composition);
+        });
+        // A withdrawn composition clears the preview; without this an input method that ends a
+        // session without committing would leave the underlined text painted forever.
+        context.connect_preedit_end(|_| {
+            let Some(widget) = crate::widget::runtime::focused_widget() else {
+                return;
+            };
+            if !control_accepts_ime(widget) {
+                return;
+            }
+            let _ = crate::platform::ime::deliver_composition(
+                widget,
+                &crate::platform::ime::ImeComposition::default(),
+            );
+        });
+        context.connect_commit(|_, text| {
+            let Some(widget) = crate::widget::runtime::focused_widget() else {
+                return;
+            };
+            if !control_accepts_ime(widget) {
+                return;
+            }
+            // Clear the preview before the text arrives, so a field that paints both cannot show
+            // the committed string and its own stale composition at the same time.
+            let _ = crate::platform::ime::deliver_composition(
+                widget,
+                &crate::platform::ime::ImeComposition::default(),
+            );
+            let _ = crate::platform::ime::deliver_commit(widget, text);
+        });
+
+        Self { context, last_focused: std::rc::Rc::new(std::cell::RefCell::new(None)) }
+    }
+
+    /// Aligns the context's focus with the library's focused widget and returns that widget.
+    ///
+    /// The context is focused for **any** focused control, not only a text entry. That is
+    /// deliberate: GTK's toplevel owns a second input context and filters a key before the widget
+    /// sees it, so if ours stayed unfocused the toplevel context would consume the composition and
+    /// this one could never decide **not** to. Keeping ours focused makes the policy below the
+    /// single decision — a text entry offers its keys to the input method, anything else does not.
+    /// Focus is transferred rather than merely switched on, so a composition cannot leak from one
+    /// control to the next.
+    fn sync_focus(&self) -> Option<ObjectId> {
+        let focused = crate::widget::runtime::focused_widget();
+        let mut last = self.last_focused.borrow_mut();
+        match focused {
+            Some(id) => {
+                if *last != Some(id) {
+                    if last.is_some() {
+                        self.context.focus_out();
+                    }
+                    self.context.focus_in();
+                    *last = Some(id);
+                }
+                Some(id)
+            }
+            None => {
+                if last.is_some() {
+                    self.context.focus_out();
+                    *last = None;
+                }
+                None
+            }
+        }
+    }
+
+    /// Offers `event` to the input method first and reports whether it consumed the key.
+    pub(crate) fn filter_keypress(&self, event: &gdk::EventKey) -> bool {
+        let Some(id) = self.sync_focus() else {
+            return false;
+        };
+        // An opted-out (or non-text) control keeps its keys: the context stays focused so the
+        // toplevel context defers, but nothing is filtered and no preedit/commit is delivered.
+        if !control_accepts_ime(id) {
+            return false;
+        }
+        // The candidate window is placed against the control's own box. Widget geometry is
+        // absolute in the window's content space, which is the space GDK expects here.
+        if let Some(rect) = crate::widget::runtime::geometry_of(id) {
+            self.context.set_cursor_location(&gdk::Rectangle::new(
+                rect.x,
+                rect.y,
+                rect.width as i32,
+                rect.height as i32,
+            ));
+        }
+        self.context.filter_keypress(event)
+    }
+}
+
+/// Whether `id` may take part in an input-method session.
+///
+/// Two layers must allow it: the control's kind (does it carry committed text?) and the host's
+/// per-control switch. The Rust setter writes the control backend's policy and the C ABI setter
+/// writes the platform's, so both are consulted; each defaults to the kind's answer, which makes
+/// an ordinary text field usable without configuration.
+pub(crate) fn control_accepts_ime(id: ObjectId) -> bool {
+    crate::widget::runtime::accepts_ime_input(id)
 }
 
 #[cfg(test)]
