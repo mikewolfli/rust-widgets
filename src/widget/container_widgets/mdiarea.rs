@@ -287,6 +287,9 @@ impl MdiArea {
     pub fn remove_sub_window(&mut self, widget: ObjectId) {
         if let Some(index) = self.subwindows.iter().position(|sw| sw.widget == widget) {
             self.base.remove_child_linked(widget);
+            // A closed sub-window is no longer part of the area; clear its visibility so it
+            // cannot paint over the remaining frames.
+            crate::set_widget_visible(widget, false);
             self.subwindows.remove(index);
             if self.active_subwindow == Some(index) {
                 self.active_subwindow = None;

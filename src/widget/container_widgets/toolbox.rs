@@ -218,6 +218,8 @@ impl ToolBox {
         if index < self.items.len() {
             if let Some(widget_id) = self.items[index].widget {
                 self.base.remove_child_linked(widget_id);
+                // See `StackedWidget::remove_widget`: a removed page must not stay visible.
+                crate::set_widget_visible(widget_id, false);
             }
             self.items.remove(index);
             if self.current_index >= index && self.current_index > 0 {
@@ -331,6 +333,7 @@ impl ToolBox {
         for item in self.items.drain(..) {
             if let Some(widget_id) = item.widget {
                 self.base.remove_child_linked(widget_id);
+                crate::set_widget_visible(widget_id, false);
             }
         }
         self.current_index = 0;

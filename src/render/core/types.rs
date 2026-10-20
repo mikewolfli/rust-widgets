@@ -9,6 +9,11 @@ use crate::compat::{String, Vec};
 ///
 /// Every field is a whole number of pixels rounded by the measuring backend,
 /// so `ascent + descent` may differ from `height` by a rounding remainder.
+///
+/// `Copy` because the four fields are integers and the value is returned by
+/// value from every measuring entry point; a cache of them therefore costs no
+/// allocation either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TextMetrics {
     /// Measured text width in logical pixels.
     pub width: u32,

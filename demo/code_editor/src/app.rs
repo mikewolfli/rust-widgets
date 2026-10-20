@@ -702,6 +702,7 @@ pub fn run() {
     apply_layout(&win, tool_bar_id, status.raw_id(), &tree, &editor, initial_client(), &log);
 
     win.show();
+    eprintln!("PROBE after show");
     log.append("[Window] shown");
 
     print_usage();
@@ -732,11 +733,13 @@ fn apply_layout(
         client.width, client.height
     ));
     win.set_layout(layout);
+    eprintln!("PROBE after set_layout");
 
     // 内层：用**真实客户区**算出的分栏行矩形把两栏切开，而不是挂载时那份常量。
     let row = split_row_rect_in_for(client, tool_bar_id, SPLIT_ROW_ID, status_bar_id);
     let split = build_split_layout(tree.raw_id(), editor.raw_id());
     apply_split(&split, row, tree, editor);
+    eprintln!("PROBE after apply_split");
     log.append(format!(
         "[Layout] split BoxLayout(Horizontal): tree:editor = {}:{} \
          (min {TREE_MIN_W}px / {EDITOR_MIN_W}px) in row ({},{}, {}, {})",

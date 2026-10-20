@@ -9,7 +9,6 @@ use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::tr;
 use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -722,7 +721,10 @@ impl Draw for InputDialog {
         // edge. Taking the row from `bottom_band` is what stops the buttons floating up at a
         // tall frame (the old `rect.height - 40`) or clipping at a short one.
         let button_band = ControlMetrics::bottom_band(rect, dimensions::DIALOG_BUTTON_HEIGHT);
-        let labels = vec![tr!("common.button.ok"), tr!("common.button.cancel")];
+        let labels = vec![
+            super::localized_label("common.button.ok", "OK"),
+            super::localized_label("common.button.cancel", "Cancel"),
+        ];
         let row =
             super::message_box::action_row_geometry(context, font, &labels, button_band, true);
         let ok_rect = row.buttons[0];

@@ -771,8 +771,9 @@ macro_rules! impl_properties_other {
             // about the control rather than a designer's preference: a property editor shows a 0–1
             // slider, and every write path refuses a value outside it with the property named,
             // rather than storing one the control would move (BLUE26 B26.02).
-            PropertySchema::new("value", PropertyValueKind::Float, true, true)
-                .constrained(&[Constraint::Range(RangeSpec { minimum: 0.0, maximum: 1.0, step: None })]),
+            PropertySchema::new("value", PropertyValueKind::Float, true, true).constrained(&[
+                Constraint::Range(RangeSpec { minimum: 0.0, maximum: 1.0, step: None }),
+            ]),
             PropertySchema::new("thickness", PropertyValueKind::Float, true, true),
             PropertySchema::new("indeterminate", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
@@ -848,6 +849,9 @@ macro_rules! impl_properties_other {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const TAB_VIEW_PROPERTIES: &[PropertySchema] = &[
+            // The widget has answered `tab_count()` since it existed; without the schema row a
+            // host could call it in Rust but could not read it through the property contract.
+            PropertySchema::new("tab_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),

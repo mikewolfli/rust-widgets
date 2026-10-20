@@ -451,6 +451,7 @@ impl Widget for TabView {
 impl WidgetProperties for TabView {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            "tab_count" => Ok(CapabilityValue::UInt(self.tab_count() as u64)),
             "selected_index" => Ok(CapabilityValue::UInt(self.current_index() as u64)),
             _ => base_property_get(self, name),
         }
@@ -462,12 +463,14 @@ impl WidgetProperties for TabView {
                 self.set_current_index(expect_usize(value)?);
                 Ok(())
             }
+            // Derived from the tab list.
+            "tab_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["selected_index", BASE_PROPERTY_NAMES]
+        property_names_of!["tab_count", "selected_index", BASE_PROPERTY_NAMES]
     }
 }
 

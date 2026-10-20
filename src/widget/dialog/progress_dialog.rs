@@ -9,7 +9,6 @@ use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
-use crate::tr;
 use crate::widget::capability::coercion::{expect_i64, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -60,7 +59,7 @@ impl ProgressDialog {
             value: 0,
             minimum: 0,
             maximum: 100,
-            cancel_button_text: tr!("common.button.cancel"),
+            cancel_button_text: super::localized_label("common.button.cancel", "Cancel"),
             was_canceled: false,
             auto_close: true,
             auto_reset: true,

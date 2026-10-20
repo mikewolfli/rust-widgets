@@ -243,6 +243,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _guard = theme_test_guard();
     install_preset_appearances();
 
+    // The snapshots are user-facing pictures, so the widget layer must see the same catalogue a
+    // running application has. Without this the action buttons drew their catalogue **keys**
+    // (`common.button.ok`), and the 80 px row elided that to `common....` — the defect a reviewer
+    // sees immediately in `message_box.svg`. `App::init` does this in an application; the exporter
+    // has no `App`, so it does it here, before any control is constructed.
+    #[cfg(feature = "i18n")]
+    rust_widgets::i18n::init();
+
     let dir = Path::new(OUTPUT_DIR);
     fs::create_dir_all(dir)?;
 

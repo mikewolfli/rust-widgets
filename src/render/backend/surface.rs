@@ -120,6 +120,14 @@ pub struct SoftwareSurface {
     pub(crate) clip_stack: Vec<(i32, i32, u32, u32)>,
     /// Scratch space reused by compound-path scan conversion.
     pub(crate) nonzero_intersections: Vec<(f32, i32)>,
+    /// Scratch coverage buffer reused by the text raster path.
+    ///
+    /// `draw_text` needs `cell.width * cell.height` bytes per glyph to hold the rasterised
+    /// coverage before blending. Allocating that inside the loop allocated once per glyph —
+    /// tens of thousands of allocations a second on a text-heavy window — while the buffer is
+    /// discarded immediately after. Keeping it on the surface makes the allocation per line at
+    /// worst, and usually per surface.
+    pub(crate) text_coverage_scratch: Vec<u8>,
     /// The blend mode the next pixel write composites through.
     ///
     /// Set by [`SoftwareSurface::set_blend_mode`] (driven by
@@ -919,13 +927,7 @@ impl<'a> RenderContext<'a> {
         alignment: HorizontalAlignment,
     ) {
         let origin = self.offset_point(origin);
-        self.backend.execute_command(&RenderCommand::DrawText {
-            origin,
-            text: text.to_string(),
-            font: font.clone(),
-            color,
-            alignment,
-        });
+        self.backend.draw_text(origin, text, font, color, alignment);
     }
     /// Returns the measured bounds of `text` in `font` under the backend's DPI
     /// scale.

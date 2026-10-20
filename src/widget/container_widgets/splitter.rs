@@ -130,6 +130,7 @@ impl Splitter {
         // A pane is an ordinary tree child: the tree painter draws it after the splitter's
         // track and the hit test reaches it directly, so no draw-closure registry is needed.
         self.base.add_child_linked(pane_id);
+        crate::set_widget_visible(pane_id, true);
         self.place_panes();
         if self.pane_layout_changed.slot_count() > 0 {
             self.pane_layout_changed.emit(self.layout.ratios().to_vec());
@@ -142,6 +143,9 @@ impl Splitter {
             return false;
         }
         self.base.remove_child_linked(pane_id);
+        // A removed pane is no longer part of the split; leaving it visible would let a host that
+        // renders by id paint it over the remaining panes.
+        crate::set_widget_visible(pane_id, false);
         self.place_panes();
         if self.pane_layout_changed.slot_count() > 0 {
             self.pane_layout_changed.emit(self.layout.ratios().to_vec());

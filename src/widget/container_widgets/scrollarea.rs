@@ -319,11 +319,16 @@ impl ScrollArea {
         if let Some(previous) = self.widget {
             if Some(previous) != widget {
                 self.base.remove_child_linked(previous);
+                // See `Frame::set_widget`: detached content must stop claiming to be visible.
+                #[cfg(not(alloc_frugal))]
+                crate::set_widget_visible(previous, false);
             }
         }
         self.widget = widget;
         if let Some(widget_id) = widget {
             self.base.add_child_linked(widget_id);
+            #[cfg(not(alloc_frugal))]
+            crate::set_widget_visible(widget_id, true);
         }
         // The child has never been placed: it keeps whatever rectangle it was constructed with
         // until the scroll area hands it the viewport.

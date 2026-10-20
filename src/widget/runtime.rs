@@ -2884,6 +2884,7 @@ pub fn request_repaint_subtree(id: ObjectId) {
 /// A request for a surface already repainted this frame is folded into it and counted as
 /// coalesced; see [`note_frame_repaint_reason`].
 pub fn request_repaint_because(id: ObjectId, reason: RepaintReason) {
+    note_renderable_change();
     if crate::invalidate_surface(id) {
         note_frame_repaint_reason(id, reason);
     }
@@ -3161,6 +3162,10 @@ pub fn enable_damage_tracking_if_useful(id: ObjectId) -> bool {
     set_repaint_mode_adaptive(id)
 }
 
+/// One cached window-tree frame: the size it was rendered at, its pixels, and the content epoch
+/// they describe.
+type CachedTreeFrame = (Size, Rc<Vec<u8>>, u64);
+
 thread_local! {
     /// The widget registry id for a widget's own `BaseWidget::id()`.
     ///
@@ -3207,6 +3212,48 @@ thread_local! {
     #[allow(clippy::missing_const_for_thread_local)]
     static LAST_FRAME: RefCell<HashMap<ObjectId, (Size, Rc<Vec<u8>>)>> =
         RefCell::new(HashMap::new());
+
+    /// The most recently rendered **window tree** frame per window, with the content epoch it
+    /// was rendered at.
+    ///
+    /// A separate cell from [`LAST_FRAME`]: a window id and a mounted-surface id are different
+    /// kinds of id, and a window is rendered by walking its children rather than by drawing one
+    /// widget. Sharing the map would make the two entry points able to answer each other's
+    /// lookups with a frame of the wrong shape.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static LAST_TREE_FRAME: RefCell<HashMap<ObjectId, CachedTreeFrame>> =
+        RefCell::new(HashMap::new());
+
+    /// Counts "something that affects a rendered frame changed" for this thread.
+    ///
+    /// # Why an epoch rather than per-region damage for a window
+    ///
+    /// A window frame is produced by walking the whole child tree. The per-widget damage tracker
+    /// answers "which rectangle of *this* widget changed", which is the right question for a
+    /// mounted surface but not for a window: the window's children each have their own trackers,
+    /// and a correct union would require either every child to opt into tracking or a second
+    /// bookkeeping path. The epoch answers the question the platform actually asks — "does the
+    /// frame I already have still describe the tree?" — with one thread-local counter. A changed
+    /// frame is repainted whole; an exposure or an occlusion with no change returns the cached
+    /// bytes without walking or rasterising anything.
+    ///
+    /// Per-thread rather than process-wide: a window frame cache is thread-local, so another
+    /// thread's edit cannot make this thread's cached frame stale, and invalidating it anyway
+    /// would turn unrelated work on another window into a lost cache hit. It is also the hot
+    /// path (`request_redraw` reaches it), where an atomic read-modify-write is pure cost for a
+    /// value only this thread reads.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static TREE_FRAME_EPOCH: core::cell::Cell<u64> = const { core::cell::Cell::new(1) };
+}
+
+/// Records that a rendered frame's content may have changed. See `TREE_FRAME_EPOCH`.
+fn note_renderable_change() {
+    let _ = TREE_FRAME_EPOCH.try_with(|epoch| epoch.set(epoch.get().wrapping_add(1)));
+}
+
+/// The current content epoch for this thread.
+fn renderable_epoch() -> u64 {
+    TREE_FRAME_EPOCH.try_with(|epoch| epoch.get()).unwrap_or(1)
 }
 
 // Counts full-frame buffer copies performed by the incremental frame cache. Test-only.
@@ -3312,6 +3359,10 @@ pub fn repaint_mode(id: ObjectId) -> RepaintMode {
 /// The fold happens rather than an early return because dropping damage would be a wrong
 /// picture — see [`crate::performance::DirtyRegionTracker::add_coalescing_beyond_capacity`].
 pub fn mark_dirty_rect(id: ObjectId, rect: Rect) -> bool {
+    // Any damage submission is evidence that some surface's content changed, which is what the
+    // tree-frame cache compares against (see `render_frame_tree_cached`). Bumped even when this
+    // widget has no tracker, because a window-level cache is not the per-widget policy.
+    note_renderable_change();
     let recorded = REPAINT
         .try_with(|map| {
             let mut map = map.borrow_mut();
@@ -3534,7 +3585,54 @@ pub fn render_frame_incremental(
     Some(backend.into_frame_rgba())
 }
 
-/// Renders the next frame of a mounted widget, reusing the previous one when the
+/// Renders a widget tree, reusing the previous frame when nothing that affects it has changed.
+///
+/// This is [`render_frame_tree`] with the one piece of memory a window painter should have: the
+/// frame it produced last time. AppKit, Win32 and GTK all call their paint callback for reasons
+/// that are not always a content change — an expose after another window moved away, an
+/// occlusion change, a live-resize notification — and re-rasterising a whole tree for those is
+/// pure cost. When the content epoch is unchanged the previous bytes are returned as they are;
+/// when it moved, the frame is painted whole.
+///
+/// # Why the epoch is captured before painting
+///
+/// A control that animates requests its next frame *while it draws*. Storing the epoch read at
+/// the end of the paint would record that request as already satisfied, and the animation would
+/// advance once and then stop. Capturing it first means a request made during the paint belongs
+/// to the next frame, which is what the control meant.
+///
+/// Returns `None` under the same conditions as [`render_frame_tree`].
+pub fn render_frame_tree_cached(
+    id: ObjectId,
+    size: Size,
+    clear: crate::core::Color,
+) -> Option<Vec<u8>> {
+    if size.width == 0 || size.height == 0 {
+        return None;
+    }
+    let epoch = renderable_epoch();
+    let previous = LAST_TREE_FRAME
+        .try_with(|map| {
+            map.borrow()
+                .get(&id)
+                .filter(|(stored, _, stored_epoch)| *stored == size && *stored_epoch == epoch)
+                .map(|(_, frame, _)| Rc::clone(frame))
+        })
+        .ok()
+        .flatten();
+    if let Some(previous) = previous {
+        return Some(previous.as_ref().clone());
+    }
+
+    let frame = render_frame_tree(id, size, clear)?;
+    let shared = Rc::new(frame);
+    let _ = LAST_TREE_FRAME.try_with(|map| {
+        map.borrow_mut().insert(id, (size, Rc::clone(&shared), epoch));
+    });
+    Some(shared.as_ref().clone())
+}
+
+/// Renders one frame of a mounted widget, reusing the previous one when the
 /// repaint policy allows.
 ///
 /// This is the entry point a backend's paint callback should call, and it is the one
@@ -3615,6 +3713,7 @@ pub fn render_frame_cached(id: ObjectId, size: Size, clear: crate::core::Color) 
 /// describes — and so its id, if reused, does not start from someone else's pixels.
 pub fn forget_cached_frame(id: ObjectId) {
     let _ = LAST_FRAME.try_with(|map| map.borrow_mut().remove(&id));
+    let _ = LAST_TREE_FRAME.try_with(|map| map.borrow_mut().remove(&id));
 }
 
 /// The size of the cached frame for `id`, if one is held.
@@ -8025,6 +8124,71 @@ mod tests {
 
         unregister(child);
         unregister(root);
+    }
+
+    /// A window-tree frame is reused while nothing that affects it has changed.
+    ///
+    /// # What this pins
+    ///
+    /// Backends call their paint callback for exposures and occlusion changes as well as for
+    /// content changes. Re-rasterising a whole tree for an expose is work whose result is already
+    /// on screen. The counter makes the difference observable: two calls with no change must draw
+    /// **once**, and a submitted change (here `mark_widget_damage`, the path every
+    /// `request_redraw` takes) must make the next call draw again.
+    #[test]
+    fn the_cached_tree_frame_is_reused_until_content_changes() {
+        use crate::core::Color;
+        use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        struct Counter {
+            base: BaseWidget,
+            draws: Rc<Cell<usize>>,
+        }
+        impl Widget for Counter {
+            fn base(&self) -> &BaseWidget {
+                &self.base
+            }
+            fn base_mut(&mut self) -> &mut BaseWidget {
+                &mut self.base
+            }
+            fn as_draw_mut(&mut self) -> Option<&mut dyn Draw> {
+                Some(self)
+            }
+        }
+        impl crate::event::EventHandler for Counter {
+            fn handle_event(&mut self, _event: &crate::event::Event) {}
+        }
+        impl Draw for Counter {
+            fn draw(&mut self, context: &mut RenderContext) {
+                self.draws.set(self.draws.get() + 1);
+                context.fill_rect(self.base.geometry(), Color::rgb(20, 40, 60));
+            }
+        }
+
+        let draws = Rc::new(Cell::new(0));
+        let id = register(Box::new(Counter {
+            base: BaseWidget::new(WidgetKind::Panel, Rect::new(0, 0, 40, 30), "counter"),
+            draws: Rc::clone(&draws),
+        }))
+        .expect("mount");
+        let size = Size::new(40, 30);
+
+        let first = render_frame_tree_cached(id, size, Color::WHITE).expect("first frame");
+        assert_eq!(draws.get(), 1, "the first call has no frame to reuse");
+
+        let second = render_frame_tree_cached(id, size, Color::WHITE).expect("cached frame");
+        assert_eq!(draws.get(), 1, "an unchanged tree must not be drawn again");
+        assert_eq!(first, second, "the reused frame must be the one that was drawn");
+
+        // A control's own `request_redraw` reaches `mark_dirty_rect` through the own-id map.
+        let _ = mark_dirty_rect(id, Rect::new(0, 0, 40, 30));
+        let third = render_frame_tree_cached(id, size, Color::WHITE).expect("repainted frame");
+        assert_eq!(draws.get(), 2, "a submitted change must repaint the tree");
+        assert_eq!(first, third, "the same content paints the same bytes");
+
+        unregister(id);
     }
 
     /// Two clips compose to their overlap, and a disjoint pair is a zero-area answer rather

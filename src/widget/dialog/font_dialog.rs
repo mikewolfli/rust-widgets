@@ -826,7 +826,10 @@ impl Draw for FontDialog {
         // [`action_row_geometry`] derivation, so this dialog and the five others that draw the
         // same pair cannot disagree about the button width, the gap between them or where the
         // row's left edge falls. The labels are centred in their buttons and fitted to them.
-        let labels = vec![tr!("dialog.ok"), tr!("dialog.cancel")];
+        let labels = vec![
+            super::localized_label("dialog.ok", "OK"),
+            super::localized_label("dialog.cancel", "Cancel"),
+        ];
         let row =
             super::message_box::action_row_geometry(context, font, &labels, button_band, true);
         let ok_rect = row.buttons[0];

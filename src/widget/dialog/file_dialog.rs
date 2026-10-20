@@ -811,11 +811,11 @@ impl Draw for FileDialog {
         // in their buttons and fitted to them, so a truncating locale cannot spill out of the
         // button it belongs to.
         let ok_label = if self.mode == FileDialogMode::SaveFile {
-            tr!("common.button.save")
+            super::localized_label("common.button.save", "Save")
         } else {
-            tr!("common.button.open")
+            super::localized_label("common.button.open", "Open")
         };
-        let labels = vec![ok_label, tr!("common.button.cancel")];
+        let labels = vec![ok_label, super::localized_label("common.button.cancel", "Cancel")];
         let row =
             super::message_box::action_row_geometry(context, font, &labels, button_band, true);
         // The accept button is the dialog's call to action: the theme's accent, with its

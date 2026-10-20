@@ -12,7 +12,6 @@ use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::style::{EdgeOffsets, MotionSlot, PropertyDriver, SemanticColor};
-use crate::tr;
 use crate::widget::capability::coercion::{
     expect_bool, expect_message_box_icon, expect_string, message_box_icon_to_str,
 };
@@ -97,6 +96,14 @@ impl StandardButton {
 
     /// Returns the translated label for this button using the i18n system.
     ///
+    /// # The fallback is the English label, not the catalogue key
+    ///
+    /// `tr!`/`translate_key` answer with the key itself when no catalogue is initialised (or when
+    /// the key is absent). That value is not user-facing copy: an 80 px action button elided
+    /// `common.button.ok` to `common....`, which is how the raw key reached the screen. The
+    /// display fallback is therefore [`Self::label`], resolved through the dialog module's one
+    /// `localized_label` helper so every dialog that draws a standard button shares the rule.
+    ///
     /// # Why there is no `cfg` split here
     ///
     /// `crate::tr!` compiles to a real catalogue lookup when the `i18n` capability is
@@ -105,21 +112,30 @@ impl StandardButton {
     /// own"). Splitting on `desktop` instead meant `tablet`/`mobile` — which enable
     /// `i18n` without `desktop` — silently took the untranslated branch.
     pub fn translated_label(&self) -> String {
+        super::localized_label(self.translation_key(), self.label())
+    }
+
+    /// The catalogue key this button's label comes from.
+    ///
+    /// Exposed so [`Self::translated_label`] can compare the resolved text against the key it
+    /// asked for — the comparison that decides whether the English fallback is needed. It is also
+    /// the key a host should pass to its own translation lookup if it draws the button itself.
+    pub fn translation_key(&self) -> &'static str {
         match self {
-            StandardButton::Ok => tr!("common.button.ok"),
-            StandardButton::Cancel => tr!("common.button.cancel"),
-            StandardButton::Yes => tr!("common.button.yes"),
-            StandardButton::No => tr!("common.button.no"),
-            StandardButton::YesAll => tr!("common.button.yes_all"),
-            StandardButton::NoAll => tr!("common.button.no_all"),
-            StandardButton::Save => tr!("common.button.save"),
-            StandardButton::Discard => tr!("common.button.discard"),
-            StandardButton::Apply => tr!("common.button.apply"),
-            StandardButton::Close => tr!("common.button.close"),
-            StandardButton::Abort => tr!("common.button.abort"),
-            StandardButton::Retry => tr!("common.button.retry"),
-            StandardButton::Ignore => tr!("common.button.ignore"),
-            StandardButton::Help => tr!("common.button.help"),
+            StandardButton::Ok => "common.button.ok",
+            StandardButton::Cancel => "common.button.cancel",
+            StandardButton::Yes => "common.button.yes",
+            StandardButton::No => "common.button.no",
+            StandardButton::YesAll => "common.button.yes_all",
+            StandardButton::NoAll => "common.button.no_all",
+            StandardButton::Save => "common.button.save",
+            StandardButton::Discard => "common.button.discard",
+            StandardButton::Apply => "common.button.apply",
+            StandardButton::Close => "common.button.close",
+            StandardButton::Abort => "common.button.abort",
+            StandardButton::Retry => "common.button.retry",
+            StandardButton::Ignore => "common.button.ignore",
+            StandardButton::Help => "common.button.help",
         }
     }
 }
@@ -1172,8 +1188,8 @@ mod tests {
     /// The catalogue is a process-global, so this initialises it explicitly rather
     /// than relying on some other test having done so.
     ///
-    /// Gated on `i18n`: without the catalogue the key *is* the correct answer, and
-    /// that behaviour is asserted separately below so it is pinned in every profile.
+    /// Gated on `i18n`: without the capability the English label is the whole answer,
+    /// and that behaviour is asserted separately below so it is pinned in every profile.
     ///
     /// This is the assertion that the `desktop`-gated copy of `translated_label`
     /// would have failed on a `tablet`/`mobile` build: there the function was compiled
@@ -1182,6 +1198,7 @@ mod tests {
     #[cfg(feature = "i18n")]
     #[test]
     fn translated_label_resolves_through_the_catalogue() {
+        let _lock = crate::i18n::global_i18n_test_lock();
         crate::i18n::init();
         assert_eq!(
             StandardButton::Ok.translated_label(),
@@ -1198,20 +1215,36 @@ mod tests {
     #[cfg(feature = "i18n")]
     #[test]
     fn translated_label_is_not_the_catalogue_key() {
+        let _lock = crate::i18n::global_i18n_test_lock();
         crate::i18n::init();
         let translated = StandardButton::Yes.translated_label();
         assert_ne!(translated, "common.button.yes");
         assert!(!translated.is_empty(), "an unknown key still yields the key itself");
     }
 
-    /// Without the catalogue the key is the honest answer, and must not be empty.
+    /// A build with `i18n` but **no initialised catalogue** must still show English.
     ///
-    /// This is the other half of the contract: a build that cannot translate has to say
-    /// so (the `tr!` stub logs a warning) rather than render nothing.
+    /// This is the defect the snapshot exposed: the exporter never called
+    /// `i18n::init`, so `translate` returned `common.button.ok` and the 80 px button
+    /// elided it to `common....`. The display fallback is the English label, not the
+    /// key; `translated_label` is what every dialog draws.
+    #[cfg(feature = "i18n")]
+    #[test]
+    fn translated_label_falls_back_to_english_without_a_catalogue() {
+        let _lock = crate::i18n::global_i18n_test_lock();
+        *crate::compat::lock(&crate::i18n::GLOBAL_I18N) = None;
+        assert_eq!(StandardButton::Ok.translated_label(), "OK");
+        assert_eq!(StandardButton::YesAll.translated_label(), "Yes to All");
+        // Restore a catalogue so this test cannot change what a later one sees.
+        crate::i18n::init();
+    }
+
+    /// Without the `i18n` capability the English label is the whole answer.
     #[cfg(not(feature = "i18n"))]
     #[test]
-    fn translated_label_without_i18n_returns_the_key() {
-        assert_eq!(StandardButton::Ok.translated_label(), "common.button.ok");
+    fn translated_label_without_i18n_returns_the_english_label() {
+        assert_eq!(StandardButton::Ok.translated_label(), "OK");
+        assert_eq!(StandardButton::Cancel.translated_label(), "Cancel");
     }
 
     /// The action row is right-anchored to the content box's trailing edge, and every button

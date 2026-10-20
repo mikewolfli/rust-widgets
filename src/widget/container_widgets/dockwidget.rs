@@ -307,11 +307,15 @@ impl DockWidget {
         if let Some(previous) = self.widget {
             if Some(previous) != widget {
                 self.base.remove_child_linked(previous);
+                // Detached content must not keep painting; see `Frame::set_widget` for why the
+                // visibility flag, not only the parent link, has to be cleared.
+                crate::set_widget_visible(previous, false);
             }
         }
         self.widget = widget;
         if let Some(widget_id) = widget {
             self.base.add_child_linked(widget_id);
+            crate::set_widget_visible(widget_id, true);
         }
         self.place_content();
         self.base.request_redraw();

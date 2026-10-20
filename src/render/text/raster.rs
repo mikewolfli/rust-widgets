@@ -678,6 +678,104 @@ pub const OUTLINE_MAX_CONTOURS: usize = MAX_CONTOURS;
 /// Rasterises `ch` through the build's vector faces into coverage.
 pub struct VectorSource;
 
+/// One cached rasterisation: which face, which character, which device cell.
+///
+/// # Why the face is identified by its bytes' address
+///
+/// The face is a `&'static [u8]` shipped in the binary, so its address is stable for the
+/// life of the process and is the same for two lookups that resolved the same face. Using
+/// the address rather than the family name also keeps two shards with the same friendly
+/// name from sharing an entry that was rasterised from different outlines.
+type CoverageKey = (usize, char, u32, u32);
+
+/// How many rasterised glyph cells are kept per thread.
+///
+/// A UI repaint draws the same few hundred characters over and over; at a 17px cell a
+/// coverage entry is a few hundred bytes, so 512 entries is a bounded working set rather
+/// than an unbounded font cache. Eviction is FIFO — a glyph that falls out is rasterised
+/// again on its next use, which is the correct trade for a cache this small (no LRU
+/// bookkeeping on the per-glyph path).
+const COVERAGE_CACHE_ENTRIES: usize = 512;
+
+/// The per-thread glyph coverage cache.
+///
+/// # Why this exists
+///
+/// Rasterising an outline is the expensive half of `draw_text`: it allocates a subsample
+/// winding grid (`cell * SUBSAMPLES` on each axis), walks every outline edge into it and
+/// resolves the sub-samples into coverage. Measured on this crate's own 100-widget bench, a
+/// single two-character caption cost ~79µs, of which the rasteriser was almost all of it,
+/// because every frame rasterised every glyph again. Coverage depends only on the face,
+/// the character and the device cell — not on the colour or the position — so it is
+/// exactly the value a cache can answer.
+///
+/// Thread-local rather than shared: the paint path is per-thread, the entries are small,
+/// and a lock on every glyph would give back the saving it exists to create.
+struct CoverageCache {
+    entries: crate::compat::HashMap<CoverageKey, crate::compat::Rc<[u8]>>,
+    order: crate::compat::VecDeque<CoverageKey>,
+}
+
+impl CoverageCache {
+    fn new() -> Self {
+        Self { entries: crate::compat::HashMap::new(), order: crate::compat::VecDeque::new() }
+    }
+
+    fn get(&self, key: &CoverageKey) -> Option<crate::compat::Rc<[u8]>> {
+        self.entries.get(key).cloned()
+    }
+
+    fn insert(&mut self, key: CoverageKey, coverage: crate::compat::Rc<[u8]>) {
+        if self.entries.insert(key, coverage).is_none() {
+            self.order.push_back(key);
+        }
+        while self.order.len() > COVERAGE_CACHE_ENTRIES {
+            if let Some(oldest) = self.order.pop_front() {
+                // `remove` only removes the entry this key owns; a re-inserted key is never
+                // pushed twice, so no live entry can be evicted by a stale queue item.
+                self.entries.remove(&oldest);
+            }
+        }
+    }
+}
+
+thread_local! {
+    static COVERAGE_CACHE: crate::compat::RefCell<CoverageCache> =
+        crate::compat::RefCell::new(CoverageCache::new());
+}
+
+impl CoverageCache {
+    /// Returns the cached coverage for `key`, when it is present.
+    ///
+    /// Split from the thread-local access so the lookup cannot hold the borrow while the
+    /// rasteriser runs (the rasteriser may itself resolve a different face).
+    fn lookup(key: CoverageKey) -> Option<crate::compat::Rc<[u8]>> {
+        COVERAGE_CACHE.with(|cache| cache.borrow().get(&key))
+    }
+}
+
+/// Stores `coverage` under `key` for the next paint of the same glyph.
+fn cache_coverage(key: CoverageKey, coverage: crate::compat::Vec<u8>) {
+    let coverage: crate::compat::Rc<[u8]> = crate::compat::Rc::from(coverage);
+    COVERAGE_CACHE.with(|cache| cache.borrow_mut().insert(key, coverage));
+}
+
+// Counts cache hits and misses for tests, so a test can prove the cache is on the path.
+#[cfg(test)]
+thread_local! {
+    static COVERAGE_CACHE_HITS: crate::compat::Cell<usize> =
+        const { crate::compat::Cell::new(0) };
+    static COVERAGE_CACHE_MISSES: crate::compat::Cell<usize> =
+        const { crate::compat::Cell::new(0) };
+}
+
+/// Returns `(hits, misses)` since the last call, and resets both counters.
+#[cfg(test)]
+pub(crate) fn take_coverage_cache_stats() -> (usize, usize) {
+    COVERAGE_CACHE_HITS
+        .with(|hits| COVERAGE_CACHE_MISSES.with(|misses| (hits.replace(0), misses.replace(0))))
+}
+
 impl VectorSource {
     /// The one shared instance.
     pub const INSTANCE: Self = Self;
@@ -738,6 +836,27 @@ impl VectorSource {
         face_bytes: super::font_assets::FaceBytes,
         face: &ttf_parser::Face<'_>,
     ) -> Option<Painted> {
+        let area = cell.area();
+        let key: CoverageKey = (face_bytes.bytes.as_ptr() as usize, ch, cell.width, cell.height);
+        // # Why the cache is consulted before anything else
+        //
+        // Coverage is a function of (face, character, device cell) alone. A repaint draws the
+        // same captions again and again, and rasterising them again was the dominant per-widget
+        // cost in a frame (see `CoverageCache`). A hit is one hash lookup plus one memcpy of a
+        // few hundred bytes.
+        if let Some(cached) = CoverageCache::lookup(key) {
+            #[cfg(test)]
+            COVERAGE_CACHE_HITS.with(|hits| hits.set(hits.get() + 1));
+            out[..area].copy_from_slice(&cached);
+            return Some(Painted {
+                source: face_bytes.name,
+                source_cell: None,
+                ink: InkKind::Coverage,
+            });
+        }
+        #[cfg(test)]
+        COVERAGE_CACHE_MISSES.with(|misses| misses.set(misses.get() + 1));
+
         let glyph = face.glyph_index(ch)?;
 
         // The em the caller wants: the cell's height is the line box, and the glyph is scaled to fit
@@ -790,6 +909,8 @@ impl VectorSource {
         }
         out[..cell.area()].fill(0);
         resolve_coverage(&rows, sub_width, cell, out);
+        // Stored after the pixels are final, so a later hit answers exactly what this miss did.
+        cache_coverage(key, crate::compat::Vec::from(&out[..area]));
 
         Some(Painted { source: face_bytes.name, source_cell: None, ink: InkKind::Coverage })
     }
@@ -1264,5 +1385,36 @@ mod tests {
         let mut small_contours = [(0usize, 0usize); OUTLINE_MAX_CONTOURS - 1];
         assert!(outline('A', Cell::new(32, 32), latin_family(), &mut points, &mut small_contours)
             .is_none());
+    }
+
+    /// The second paint of the same glyph must not rasterise the outline again.
+    ///
+    /// This is the reverse-injection evidence for the coverage cache: the counters are read
+    /// around the two calls, so a regression that removes the cache reads as `(0 hit, 1 miss)`
+    /// on the second paint instead of `(1 hit, 0 miss)`. The pixels are compared as well, because
+    /// a cache that returned the wrong cell's coverage would still look like a hit.
+    #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-cjk"))]
+    #[test]
+    fn a_repeated_glyph_is_served_from_the_coverage_cache() {
+        let cell = Cell::new(16, 16);
+        let area = cell.area();
+        let mut out = crate::compat::vec![0u8; area];
+
+        let _ = take_coverage_cache_stats();
+        let first = VectorSource::INSTANCE.paint('A', cell, &mut out);
+        let (first_hits, first_misses) = take_coverage_cache_stats();
+        assert!(first.is_some(), "the shipped Latin face covers 'A'");
+        assert_eq!((first_hits, first_misses), (0, 1), "the first paint rasterises");
+        let expected = out.clone();
+
+        let second = VectorSource::INSTANCE.paint('A', cell, &mut out);
+        let (second_hits, second_misses) = take_coverage_cache_stats();
+        assert!(second.is_some());
+        assert_eq!(
+            (second_hits, second_misses),
+            (1, 0),
+            "the second paint must answer from the cache, not rasterise again"
+        );
+        assert_eq!(out, expected, "a cached cell must have the pixels the miss produced");
     }
 }

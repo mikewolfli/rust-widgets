@@ -126,11 +126,14 @@ impl Dialog {
         if let Some(old) = self.content_widget {
             if Some(old) != widget {
                 self.base.remove_child_linked(old);
+                // See `Frame::set_widget`: a replaced content child must not stay visible.
+                crate::set_widget_visible(old, false);
             }
         }
         self.content_widget = widget;
         if let Some(id) = widget {
             self.base.add_child_linked(id);
+            crate::set_widget_visible(id, true);
         }
         // The new child has never been placed: a control is constructed at a caller-chosen
         // rectangle (usually `0x0`) and the dialog is the only thing that knows the box it

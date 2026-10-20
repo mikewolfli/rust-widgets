@@ -840,15 +840,17 @@ extern "C" fn draw_rect(this: &Object, _cmd: Sel, _rect: NSRect) {
             let size = Size::new(width, height);
 
             // A window's content view paints the window's own chrome **and every child**
-            // (`render_frame_tree`), whereas a mounted surface is one widget in its own box
+            // (`render_frame_tree_cached`), whereas a mounted surface is one widget in its own box
             // (`render_frame_cached`). Without this branch the client area of every cocoa window
             // stayed blank: `create_window` installed a plain `NSView` and ordinary controls are
             // never mounted surfaces, so nothing ever drew them. This is the cocoa spelling of
             // the window painter Linux, Windows and the objc2 backend each already have
-            // (`render_frame_tree`); see `docs/log/log-20261016-3.md` §11.
+            // (`render_frame_tree`); the cached form reuses the previous frame for an exposure
+            // that follows no content change, rather than re-rasterising the whole tree.
+            // See `docs/log/log-20261016-3.md` §11.
             let frame = if is_window_canvas(view) {
                 // The view stores the **host** id `create_window` returned, while
-                // `render_frame_tree` looks the widget up by its **registry** id; translate here
+                // `render_frame_tree_cached` looks the widget up by its **registry** id; translate here
                 // (the same boundary the objc2 backend translates at). No association yet means
                 // the window has not been adopted by a widget — a normal transient just after
                 // `create_window`, so it is a debug note, not an error.
@@ -860,7 +862,7 @@ extern "C" fn draw_rect(this: &Object, _cmd: Sel, _rect: NSRect) {
                     );
                     return;
                 };
-                crate::widget::runtime::render_frame_tree(widget, size, Color::WHITE)
+                crate::widget::runtime::render_frame_tree_cached(widget, size, Color::WHITE)
             } else {
                 crate::widget::runtime::render_frame_cached(widget_id, size, Color::WHITE)
             };
@@ -1136,21 +1138,32 @@ impl MacOSPlatform {
         // SAFETY: `view` was produced by mount_surface_impl and is only
         // removed by unmount_surface_impl.
         unsafe {
-            // `setFrame:display:` rather than a bare `setFrame:`. A view has to be
-            // told to redraw: AppKit does not schedule a display pass for a frame
-            // change on its own, so a bare `setFrame:` leaves the old pixels on
-            // screen until some unrelated invalidation happens to arrive. That
-            // asymmetry is BLUE14 F-5, and it is why this gate checks the two-
-            // argument selector by name.
+            // Two messages, not `setFrame:display:`.
+            //
+            // `setFrame:` alone is not enough: AppKit does not schedule a display pass for
+            // a frame change on its own, so a moved or resized surface keeps its old pixels
+            // until some unrelated invalidation happens to arrive (BLUE14 F-5). The
+            // historical spelling of that fix was the two-argument `setFrame:display:`,
+            // but **`NSView` on macOS does not respond to it** — neither the SDK's own
+            // `NSView` nor this subclass does (`swift -e` probe:
+            // `NSView().responds(to: Selector(("setFrame:display:"))) == false`). Sending it
+            // raised `unrecognized selector sent to instance`, and because a foreign
+            // exception cannot unwind through Rust, the process aborted — the code-editor
+            // demo died on its first layout pass. `setFrame:` plus an explicit
+            // `setNeedsDisplay:` expresses the same intent with messages AppKit does
+            // implement, and coalesces the redraw into the next display cycle.
             let _: () = msg_send![
                 view,
                 setFrame: NSRect::new(
                     NSPoint::new(rect.x as f64, rect.y as f64),
                     NSSize::new(rect.width as f64, rect.height as f64),
                 )
-                display: YES
             ];
+            let _: () = msg_send![view, setNeedsDisplay: YES];
         }
+        // The platform is now going to repaint this surface at its new geometry; announce it
+        // exactly as `mount_surface_impl` does, so the frame account stays complete.
+        note_native_redraw(id);
         crate::widget::runtime::set_geometry(id, rect);
         true
     }

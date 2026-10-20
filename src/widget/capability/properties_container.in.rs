@@ -125,6 +125,14 @@ macro_rules! impl_properties_container {
                 true,
                 &["north", "south", "west", "east"],
             ),
+            // Served by `TabWidget::get`/`set` since the shape setter existed; declaring it keeps
+            // the schema and the contract from disagreeing about which properties exist.
+            PropertySchema::enumerated(
+                "tab_shape",
+                true,
+                true,
+                &["rounded", "triangular", "rectangular"],
+            ),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

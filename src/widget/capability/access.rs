@@ -1162,6 +1162,8 @@ pub fn default_widget_property_default_value(
             "closable" => CapabilityValue::Bool(false),
             "movable" => CapabilityValue::Bool(false),
             "tab_position" => CapabilityValue::String("north".to_string()),
+            // `TabShape::default()` is `Rounded`.
+            "tab_shape" => CapabilityValue::String("rounded".to_string()),
             _ => return None,
         },
         WidgetKind::StackedWidget => match property_name {
@@ -1565,6 +1567,7 @@ pub fn default_widget_property_default_value(
 
         // ── New widgets (navigation) ───────────────────────────────
         WidgetKind::TabView => match property_name {
+            "tab_count" => CapabilityValue::UInt(0),
             "selected_index" => CapabilityValue::UInt(0),
             _ => return None,
         },

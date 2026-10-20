@@ -21,6 +21,10 @@ pub use pixel_ops::{blend_pixel, blend_pixel_with_mode, fill_pixels};
 // Re-export internal helper used by surface.rs
 pub(crate) use pixel_ops::pixel_bytes_len;
 
+// Invalidates cached text measurements when the faces a family resolves to change.
+#[cfg(feature = "runtime-fonts")]
+pub(crate) use containers::invalidate_text_measurements;
+
 // Bounded coordinate arithmetic shared by the software and SVG backends.
 pub(crate) use pixel_ops::{sat_add_i32, sat_mul_i32, sat_neg_i32, u32_to_i32_saturating};
 

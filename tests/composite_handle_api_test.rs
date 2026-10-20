@@ -563,3 +563,85 @@ fn a_tool_box_shows_only_the_selected_page_in_the_remaining_band() {
         "the newly selected page takes the same band"
     );
 }
+
+/// A `tabwidget` declared in JSON hosts its children as **pages**.
+///
+/// # What this pins
+///
+/// The loader used to mount each child with the tab widget as its parent and stop there: the
+/// strip had no tabs, and every page painted at its declared rectangle, so the control looked
+/// like one panel holding all of its sub-panels at once. A tab widget's contract is the
+/// opposite — one page visible, the rest inactive — so the children have to become tabs, and
+/// the document's `current_index` has to be applied **after** they exist.
+#[test]
+fn a_json_tab_widget_hosts_its_children_as_pages() {
+    let json = r#"{
+      "window": {
+        "id": "w", "title": "Tabs", "width": 400, "height": 300,
+        "children": [
+          { "tabwidget": {
+              "id": "tabs", "x": 0, "y": 0, "width": 400, "height": 300,
+              "current_index": 1,
+              "children": [
+                { "panel": { "id": "page_one", "title": "One", "x": 0, "y": 0, "width": 400, "height": 300 } },
+                { "panel": { "id": "page_two", "title": "Two", "x": 0, "y": 0, "width": 400, "height": 300 } }
+              ]
+          } }
+        ]
+      }
+    }"#;
+    let layout = rust_widgets::json::load_layout_from_str(json).expect("the document loads");
+    let tabs = layout.tab_widget("tabs").expect("the tab widget is bound");
+    assert_eq!(tabs.tab_count(), 2, "each child became a page");
+    assert_eq!(
+        tabs.current_index(),
+        Some(1),
+        "the declared index is applied after the pages exist"
+    );
+
+    let first =
+        layout.widget_by_name::<rust_widgets::app::PanelHandle>("page_one").expect("first page");
+    let second =
+        layout.widget_by_name::<rust_widgets::app::PanelHandle>("page_two").expect("second page");
+    assert!(!rust_widgets::is_widget_visible(first.raw_id()), "an inactive page is hidden");
+    assert!(rust_widgets::is_widget_visible(second.raw_id()), "only the selected page is active");
+    assert_eq!(
+        rust_widgets::widget::runtime::geometry_of(second.raw_id()),
+        Some(Rect::new(0, 24, 400, 276)),
+        "the selected page fills the content box below the strip"
+    );
+}
+
+/// Replacing a tab's page through the container keeps link, placement and visibility in step.
+#[test]
+fn a_tab_widget_replaces_a_page_without_leaving_the_old_one_visible() {
+    let mut app = App::new();
+    app.init();
+    let win = app.new_window("tab swap", 0, 0, 800, 600);
+    let first = win.new_panel(0, 0, 0, 0);
+    let second = win.new_panel(0, 0, 0, 0);
+    let replacement = win.new_panel(0, 0, 0, 0);
+    let tabs = win.new_tab_widget(0, 0, 400, 300);
+    assert_eq!(tabs.add_tab("One", Some(first.raw_id())), Some(2));
+    assert_eq!(tabs.add_tab("Two", Some(second.raw_id())), Some(3));
+    assert!(tabs.set_current_index(2));
+    assert!(rust_widgets::is_widget_visible(first.raw_id()));
+
+    let swapped = rust_widgets::widget::runtime::with_widget_mut(tabs.raw_id(), |widget| {
+        rust_widgets::widget::capability::coercion::widget_as_mut::<
+            rust_widgets::widget::TabWidget,
+        >(widget)
+        .map(|tabs| tabs.set_tab_widget(2, Some(replacement.raw_id())))
+    })
+    .flatten()
+    .unwrap_or(false);
+    assert!(swapped, "the page slot accepts the replacement");
+
+    assert!(!rust_widgets::is_widget_visible(first.raw_id()), "the old page is hidden");
+    assert!(rust_widgets::is_widget_visible(replacement.raw_id()), "the new page is active");
+    assert_eq!(
+        rust_widgets::widget::runtime::geometry_of(replacement.raw_id()),
+        Some(Rect::new(0, 24, 400, 276)),
+        "the replacement fills the content box"
+    );
+}

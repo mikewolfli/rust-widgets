@@ -551,7 +551,10 @@ impl Draw for ColorDialog {
         // disagree about the button width, the gap between them, or where the row's left edge
         // falls. The labels are centred in their buttons and fitted to them.
         let band = Rect::new(rect.x, self.button_row_top(), rect.width, Self::BUTTON_HEIGHT as u32);
-        let labels = vec![tr!("common.button.ok"), tr!("common.button.cancel")];
+        let labels = vec![
+            super::localized_label("common.button.ok", "OK"),
+            super::localized_label("common.button.cancel", "Cancel"),
+        ];
         let row = super::message_box::action_row_geometry(context, font, &labels, band, true);
         let ok_rect = row.buttons[0];
         context.fill_rect(ok_rect, accent);

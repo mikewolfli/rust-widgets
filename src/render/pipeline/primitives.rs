@@ -792,11 +792,20 @@ impl SoftwareSurface {
         color: Color,
         alignment: HorizontalAlignment,
     ) {
-        let metrics = self.measure_text(text, font);
-        if metrics.width == 0 || metrics.height == 0 {
+        // # One shaping pass, not two
+        //
+        // This used to call `measure_text` (which shapes the line) and then `shape_text` again,
+        // so every label shaped its clusters twice per frame. The line box below comes from the
+        // same `TextMetrics::for_font` `measure_text` uses, and the width is the shaped advance
+        // rounded the same way, so the numbers are identical to the previous form.
+        let shaped = self.shape_text(text, font);
+        let scale = self.dpi_scale();
+        let line = crate::render::TextMetrics::for_font(font, scale);
+        let width = shaped.advance().round() as u32;
+        if width == 0 || line.height == 0 {
             return;
         }
-        let shaped = self.shape_text(text, font);
+        let metrics = crate::render::TextMetrics { width, ..line };
         let adjusted_origin_x = match alignment {
             HorizontalAlignment::Left => origin.x,
             HorizontalAlignment::Center => origin.x - (metrics.width / 2) as i32,
@@ -810,16 +819,12 @@ impl SoftwareSurface {
         // cluster would make a centred label sit left of centre and a right-aligned one fall short of
         // its box. `shape_text` counts `clusters.len() - 1` gaps for the same reason, so the two
         // readings of one run agree.
-        //
-        // Read before the frame borrow below, because `dpi_scale` borrows `self` immutably.
-        let scale = self.dpi_scale();
         let tracking = font.letter_spacing() * scale;
         let last_index = shaped.clusters().len().saturating_sub(1);
-        let frame = self.buffer.back_mut();
         // One scratch for the whole line, sized for the tallest and widest cell it needs: a glyph
         // is rasterised into it, blended, and overwritten by the next — so no glyph is ever
-        // resident, and a line allocates at most once (and never for the 8x8 face, whose cells fit
-        // a small const buffer).
+        // resident. The buffer is owned by the surface and reused across lines and frames; a
+        // per-glyph `vec![0u8; ..]` was one allocation per character per frame.
         let max_cell = shaped
             .clusters()
             .iter()
@@ -829,7 +834,11 @@ impl SoftwareSurface {
             })
             .max()
             .unwrap_or(0);
-        let mut coverage: crate::compat::Vec<u8> = crate::compat::vec![0u8; max_cell];
+        let mut coverage = core::mem::take(&mut self.text_coverage_scratch);
+        if coverage.len() < max_cell {
+            coverage.resize(max_cell, 0);
+        }
+        let frame = self.buffer.back_mut();
         // A **second** scratch, four bytes per pixel, used only when the active stack resolves a
         // cluster through a colour face. It is allocated once per line and only when the build has
         // such a face, so a build without one pays nothing. Keeping it separate from `coverage`
@@ -883,6 +892,9 @@ impl SoftwareSurface {
                 pen_x += tracking;
             }
         }
+        // Give the scratch back for the next line. Held across the loop above so a glyph can
+        // overwrite it in place without reallocating.
+        self.text_coverage_scratch = coverage;
     }
     /// Draws an RGBA image at the specified position and size.
     /// Pixels are copied directly from the source data, performing alpha blending.

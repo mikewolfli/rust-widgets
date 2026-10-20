@@ -703,11 +703,18 @@ impl JsonLoader {
 
         // Handle children (for container widgets)
         if let Some(children) = obj.get("children").and_then(|v| v.as_array()) {
+            // A `tabwidget`'s children are its **pages**, not a stack of siblings. A document
+            // that nests panels under a tab widget means "one page each", and the container's
+            // whole contract is that exactly one of them is visible. Without this branch the
+            // loader merely mounted each child with the tab widget as parent: the tab strip had
+            // no tabs and every page painted at its declared rectangle, so the control looked
+            // like one panel holding all of its sub-panels at once.
+            let tab_widget_children = widget_type.eq_ignore_ascii_case("tabwidget");
             for child_value in children {
                 if let Some(child_obj) = child_value.as_object() {
                     if child_obj.len() == 1 {
                         let (child_type, child_val) = child_obj.iter().next().unwrap();
-                        Self::instantiate_node(
+                        let child_id = Self::instantiate_node(
                             child_type,
                             child_val,
                             Some(widget_id),
@@ -716,7 +723,38 @@ impl JsonLoader {
                             depth + 1,
                             resolver,
                         )?;
+                        if tab_widget_children && child_id != 0 {
+                            let title = child_val
+                                .get("title")
+                                .and_then(|v| v.as_str())
+                                .or_else(|| child_val.get("text").and_then(|v| v.as_str()))
+                                .or_else(|| child_val.get("id").and_then(|v| v.as_str()))
+                                .unwrap_or(child_type);
+                            crate::widget::runtime::with_widget_mut(widget_id, |widget| {
+                                if let Some(tabs) =
+                                    crate::widget::capability::coercion::widget_as_mut::<TabWidget>(
+                                        widget,
+                                    )
+                                {
+                                    tabs.add_tab(title.to_string(), Some(child_id));
+                                }
+                            });
+                        }
                     }
+                }
+            }
+            // `current_index` was applied when the control was constructed, before the pages
+            // existed, so `set_current_index` had nothing to select. Apply it now that the tab
+            // list is complete; the last write wins, which is what the document asked for.
+            if tab_widget_children {
+                if let Some(index) = json_usize_at(obj, "current_index") {
+                    crate::widget::runtime::with_widget_mut(widget_id, |widget| {
+                        if let Some(tabs) =
+                            crate::widget::capability::coercion::widget_as_mut::<TabWidget>(widget)
+                        {
+                            tabs.set_current_index(index);
+                        }
+                    });
                 }
             }
         }

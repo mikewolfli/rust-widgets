@@ -74,6 +74,9 @@ impl StackedWidget {
     pub fn remove_widget(&mut self, widget: ObjectId) {
         if let Some(index) = self.widgets.iter().position(|&id| id == widget) {
             self.base.remove_child_linked(widget);
+            // A removed page is no longer part of the stack; clear its visibility too, so a host
+            // that renders by id cannot paint it over the selected one.
+            crate::set_widget_visible(widget, false);
             self.widgets.remove(index);
             if self.current_index >= index && self.current_index > 0 {
                 self.current_index -= 1;
@@ -144,13 +147,10 @@ impl StackedWidget {
     /// The write goes through the public visibility entry (the same one `TabWidget`
     /// uses), so the flag the painter reads and the one a host reads cannot disagree.
     fn sync_pages(&self) {
-        #[cfg(not(alloc_frugal))]
-        {
-            for (index, widget_id) in self.widgets.iter().enumerate() {
-                crate::set_widget_visible(*widget_id, index == self.current_index);
-            }
-            self.place_current_page();
+        for (index, widget_id) in self.widgets.iter().enumerate() {
+            crate::set_widget_visible(*widget_id, index == self.current_index);
         }
+        self.place_current_page();
     }
 
     /// Places the current page in the stack's own rectangle.
@@ -159,12 +159,9 @@ impl StackedWidget {
     /// so "placing" is moving the selected child onto the control's geometry. Without it
     /// a page created at `0x0` stayed at `0x0` and painted nothing.
     fn place_current_page(&self) {
-        #[cfg(not(alloc_frugal))]
-        {
-            if let Some(widget_id) = self.current_widget() {
-                let rect = self.geometry();
-                crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
-            }
+        if let Some(widget_id) = self.current_widget() {
+            let rect = self.geometry();
+            crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
         }
     }
 

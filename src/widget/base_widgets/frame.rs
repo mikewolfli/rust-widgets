@@ -170,10 +170,19 @@ impl Frame {
         if let Some(old) = self.widget {
             self.base.request_redraw();
             self.base.remove_child_linked(old);
+            if Some(old) != widget {
+                // The old content is no longer this frame's content; leaving its visibility flag
+                // set would let a host that renders by id draw it where the new content belongs.
+                // Only a build with the widget runtime has that flag to clear.
+                #[cfg(not(alloc_frugal))]
+                crate::set_widget_visible(old, false);
+            }
         }
         self.widget = widget;
         if let Some(widget_id) = widget {
             self.base.add_child_linked(widget_id);
+            #[cfg(not(alloc_frugal))]
+            crate::set_widget_visible(widget_id, true);
         }
         self.base.request_redraw();
     }

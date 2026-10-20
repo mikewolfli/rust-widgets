@@ -111,12 +111,22 @@ ENUMERATED_ENTRY_POINTS=$(( $(grep -cE "^pub\\(crate\\) fn ($GUARDED_FNS)\\b" "$
     + $(grep -cE "^pub\\(crate\\) fn ($GUARDED_FNS)\\b" "$IOS_NATIVE") ))
 
 # ---------------------------------------------------------------------------
-# B. The macOS window path must use the display-batching `setFrame:display:`
-#    variant rather than a bare `setFrame:`.
+# B. The macOS surface resize must move the view **and** invalidate it.
 #
-#    `NSView` implements `setFrame:display:`. Sending it the one-argument
-#    `setFrame:` is the BLUE14 F-5 defect: AppKit does not redraw, so a moved
-#    window keeps its old pixels until something else forces a display pass.
+#    Two separate defects live here, in opposite directions:
+#
+#    * A bare `setFrame:` is the BLUE14 F-5 defect: AppKit does not schedule a
+#      display pass for a frame change, so a moved/resized surface keeps its old
+#      pixels until something unrelated forces a redraw.
+#    * The historical fix for F-5 was `setFrame:display:`, which **NSView does not
+#      implement** on modern macOS. A Swift probe on macOS 15.7.3 shows
+#      `NSView().responds(to: Selector(("setFrame:display:"))) == false`, so the
+#      message raises `unrecognized selector sent to instance`. A foreign exception
+#      cannot unwind through Rust, so the process aborts — that is exactly how the
+#      code-editor demo died on its first layout pass.
+#
+#    The correct shape is `setFrame:` followed by `setNeedsDisplay: YES`, so this
+#    section now requires both and rejects the two-argument selector.
 #
 #    This section used to also require `orderOut:` for the window hide path. That
 #    check was removed after investigation showed no `orderOut:` call has ever
@@ -126,13 +136,16 @@ ENUMERATED_ENTRY_POINTS=$(( $(grep -cE "^pub\\(crate\\) fn ($GUARDED_FNS)\\b" "$
 #    check for absent code fails on every correct tree and trains people to ignore
 #    this script — the opposite of its purpose.
 # ---------------------------------------------------------------------------
-echo "--- [B] macOS canvas uses the display-batching setFrame: variant ---"
+echo "--- [B] macOS surface resize moves then invalidates the view ---"
 if [[ -f "$MACOS_CANVAS" ]]; then
   grep -q 'setFrame:' "$MACOS_CANVAS" \
     || error "$MACOS_CANVAS: expected a setFrame: call for the surface view"
+  if grep -vE '^\s*(//|\*|/\*)' "$MACOS_CANVAS" | grep -qE 'setFrame:display:'; then
+    error "$MACOS_CANVAS: setFrame:display: is not an NSView selector on macOS and aborts the process"
+  fi
   if grep -q 'setFrame: NSRect::new' "$MACOS_CANVAS" \
-     && ! grep -qE 'setFrame:display:|setFrame:displayViews:' "$MACOS_CANVAS"; then
-    error "$MACOS_CANVAS: setFrame without a display flag does not redraw (BLUE14 F-5)"
+     && ! grep -qE 'setNeedsDisplay: YES' "$MACOS_CANVAS"; then
+    error "$MACOS_CANVAS: setFrame without setNeedsDisplay does not redraw (BLUE14 F-5)"
   fi
 fi
 

@@ -139,6 +139,28 @@ pub enum TabShape {
     /// Rectangular tabs
     Rectangular,
 }
+
+impl TabShape {
+    /// Parses a property token, accepting exactly the spellings
+    /// [`tab_shape_token`] publishes.
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "rounded" => Some(TabShape::Rounded),
+            "triangular" => Some(TabShape::Triangular),
+            "rectangular" => Some(TabShape::Rectangular),
+            _ => None,
+        }
+    }
+}
+
+/// The token `tab_shape` is carried as, matching the schema row's accepted spellings.
+fn tab_shape_token(shape: TabShape) -> &'static str {
+    match shape {
+        TabShape::Rounded => "rounded",
+        TabShape::Triangular => "triangular",
+        TabShape::Rectangular => "rectangular",
+    }
+}
 impl Tab {
     /// Creates a new tab.
     pub fn new(title: String) -> Self {
@@ -290,6 +312,7 @@ impl TabWidget {
     /// `pie_menu` clamp the same way).
     pub fn insert_tab(&mut self, index: usize, title: String, widget: Option<ObjectId>) {
         let was_empty = self.tabs.is_empty();
+        let before = self.current_index;
         let index = index.min(self.tabs.len());
         let mut tab = Tab::new(title);
         tab.widget = widget;
@@ -301,12 +324,30 @@ impl TabWidget {
             self.current_index += 1;
         }
         self.sync_pages();
+        self.base.request_redraw();
+        // The page is the same one, but its index is not: a subscriber holding an index has to
+        // hear about the shift or it will address the neighbouring tab.
+        if before != self.current_index {
+            self.current_changed.emit(self.current_index);
+        }
     }
     /// Removes a tab.
+    ///
+    /// The selection follows the tab it named: removing an earlier tab shifts the rest left, so
+    /// the index is decremented to keep pointing at the same page; removing the selected tab
+    /// clamps to the last remaining one. A change of index is announced through
+    /// `current_changed`, because a subscriber keyed by index would otherwise be looking at a
+    /// different page under the same number.
     pub fn remove_tab(&mut self, index: usize) {
         if index < self.tabs.len() {
+            let before = self.current_index;
             if let Some(widget_id) = self.tabs[index].widget {
                 self.base.remove_child_linked(widget_id);
+                // The page is no longer this container's content, so it must stop painting where
+                // the tab used to be. Removing it from the child list is not enough: a detached
+                // control keeps its own visibility flag, and a host that renders by id would
+                // still draw it over whatever the tab shows now.
+                crate::set_widget_visible(widget_id, false);
             }
             self.tabs.remove(index);
             if self.current_index >= index && self.current_index > 0 {
@@ -316,6 +357,10 @@ impl TabWidget {
                 self.current_index = 0;
             }
             self.sync_pages();
+            self.base.request_redraw();
+            if before != self.current_index {
+                self.current_changed.emit(self.current_index);
+            }
         }
     }
     /// Returns number of tabs.
@@ -358,12 +403,9 @@ impl TabWidget {
     /// closures, because the tree painter already draws mounted children: this is the
     /// placement half, not a second drawing path (rule #101).
     fn place_current_page(&self) {
-        #[cfg(not(alloc_frugal))]
-        {
-            if let Some(widget_id) = self.current_widget() {
-                let rect = self.content_rect();
-                crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
-            }
+        if let Some(widget_id) = self.current_widget() {
+            let rect = self.content_rect();
+            crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
         }
     }
 
@@ -379,19 +421,51 @@ impl TabWidget {
     /// that deliberately hides a page still wins: the next selection change re-derives the
     /// flag from the model, exactly as a tab container must.
     fn sync_pages(&self) {
-        #[cfg(not(alloc_frugal))]
-        {
-            for (index, tab) in self.tabs.iter().enumerate() {
-                if let Some(widget_id) = tab.widget {
-                    crate::set_widget_visible(widget_id, index == self.current_index);
-                }
+        for (index, tab) in self.tabs.iter().enumerate() {
+            if let Some(widget_id) = tab.widget {
+                crate::set_widget_visible(widget_id, index == self.current_index);
             }
-            self.place_current_page();
         }
+        self.place_current_page();
     }
     /// Returns mutable tab at index.
     pub fn tab_mut(&mut self, index: usize) -> Option<&mut Tab> {
         self.tabs.get_mut(index)
+    }
+
+    /// Replaces the page widget of the tab at `index`, keeping the container's model in step.
+    ///
+    /// # Why this exists beside [`Tab::set_widget`]
+    ///
+    /// A page is not only a field: it is linked into the container's child list, placed in the
+    /// content box when selected, and hidden when not. A caller that reaches a `Tab` through
+    /// [`Self::tab_mut`] and assigns `widget` changes the field and none of those three facts, so
+    /// the new page is neither shown nor hidden and the old one keeps painting. This method is
+    /// the container-level entry that performs all four steps; `Tab::set_widget` remains for
+    /// callers that are about to call `add_tab` (which links) and for tests that drive the raw
+    /// field deliberately.
+    ///
+    /// Returns `false` for an out-of-range index, so a caller cannot mistake a dropped write for
+    /// success.
+    pub fn set_tab_widget(&mut self, index: usize, widget: Option<ObjectId>) -> bool {
+        if index >= self.tabs.len() {
+            return false;
+        }
+        let previous = self.tabs[index].widget;
+        if previous == widget {
+            return true;
+        }
+        if let Some(widget_id) = previous {
+            self.base.remove_child_linked(widget_id);
+            crate::set_widget_visible(widget_id, false);
+        }
+        self.tabs[index].widget = widget;
+        if let Some(widget_id) = widget {
+            self.base.add_child_linked(widget_id);
+        }
+        self.sync_pages();
+        self.base.request_redraw();
+        true
     }
     /// Assigns typed icon content to the tab at `index`.
     ///
@@ -831,40 +905,47 @@ impl TabWidget {
     }
 
     fn tab_rect(&self, index: usize) -> Option<Rect> {
-        if index >= self.tabs.len() {
-            return None;
-        }
+        self.tab_rects().get(index).copied()
+    }
+
+    /// Every tab's rectangle, in strip order, derived **once**.
+    ///
+    /// # Why this exists
+    ///
+    /// [`Self::tab_rect`] used to call [`Self::tab_run`] on every invocation, and the draw pass
+    /// asks for every tab (and the hit test asks for every tab on a press). Each `tab_run` builds
+    /// a `CompositeBuilder`, measures every caption and runs a `FlexLayout`, so a strip of `n`
+    /// tabs paid `n` full layout passes **per frame** — quadratic in the tab count for a value
+    /// whose inputs did not change between the calls. This method is the single derivation the
+    /// callers that need more than one box should use.
+    fn tab_rects(&self) -> Vec<Rect> {
         let rect = self.geometry();
-        // The run is in strip coordinates; each position translates it to where the strip lives.
-        let run = self.tab_run();
-        let tab = *run.get(index)?;
-        let tab_width = tab.width as i32;
-        let tab_height = TAB_HEIGHT;
-        let along = if matches!(self.tab_position, TabPosition::North | TabPosition::South) {
-            tab.x
-        } else {
-            tab.y
-        };
-        match self.tab_position {
-            TabPosition::North => {
-                Some(Rect::new(rect.x + along, rect.y, tab_width as u32, tab_height as u32))
-            }
-            TabPosition::South => Some(Rect::new(
-                rect.x + along,
-                rect.y + rect.height as i32 - tab_height,
-                tab_width as u32,
-                tab_height as u32,
-            )),
-            TabPosition::West => {
-                Some(Rect::new(rect.x, rect.y + along, tab_width as u32, tab_height as u32))
-            }
-            TabPosition::East => Some(Rect::new(
-                rect.x + rect.width as i32 - tab_width,
-                rect.y + along,
-                tab_width as u32,
-                tab_height as u32,
-            )),
-        }
+        let tab_height = TAB_HEIGHT as u32;
+        self.tab_run()
+            .into_iter()
+            .map(|tab| {
+                let tab_width = tab.width;
+                match self.tab_position {
+                    TabPosition::North => Rect::new(rect.x + tab.x, rect.y, tab_width, tab_height),
+                    TabPosition::South => Rect::new(
+                        rect.x + tab.x,
+                        rect.y + rect.height as i32 - TAB_HEIGHT,
+                        tab_width,
+                        tab_height,
+                    ),
+                    // A vertical strip runs **down** the control: the layout's horizontal answer
+                    // is the position along the strip, and the caption's width becomes the box
+                    // width (the label stays horizontal, as every shipped tab strip draws it).
+                    TabPosition::West => Rect::new(rect.x, rect.y + tab.y, tab_width, tab_height),
+                    TabPosition::East => Rect::new(
+                        rect.x + rect.width as i32 - tab_width as i32,
+                        rect.y + tab.y,
+                        tab_width,
+                        tab_height,
+                    ),
+                }
+            })
+            .collect()
     }
     /// Returns content rectangle.
     fn content_rect(&self) -> Rect {
@@ -893,14 +974,7 @@ impl TabWidget {
     }
     /// Returns index of tab at position.
     fn tab_at_position(&self, pos: Point) -> Option<usize> {
-        for i in 0..self.tabs.len() {
-            if let Some(tab_rect) = self.tab_rect(i) {
-                if tab_rect.contains(pos) {
-                    return Some(i);
-                }
-            }
-        }
-        None
+        self.tab_rects().into_iter().position(|tab_rect| tab_rect.contains(pos))
     }
 }
 /// Height of the tab strip, in logical pixels.
@@ -1056,6 +1130,11 @@ impl WidgetProperties for TabWidget {
             "tab_position" => {
                 Ok(CapabilityValue::String(tab_position_token(self.tab_position).to_string()))
             }
+            // `set_tab_shape` was a served method with no property arm, so a host could call it
+            // directly but could neither read the shape back nor set it through the property
+            // contract. Both directions are here, over the same token vocabulary the schema row
+            // declares.
+            "tab_shape" => Ok(CapabilityValue::String(tab_shape_token(self.tab_shape).to_string())),
             _ => base_property_get(self, name),
         }
     }
@@ -1101,6 +1180,13 @@ impl WidgetProperties for TabWidget {
                 self.set_tab_position(position);
                 Ok(())
             }
+            "tab_shape" => {
+                let token = expect_string(value)?;
+                let shape =
+                    TabShape::from_token(&token).ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_tab_shape(shape);
+                Ok(())
+            }
             // Derived from the tab list; the old writer had no arm for it either.
             "tab_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
@@ -1116,6 +1202,7 @@ impl WidgetProperties for TabWidget {
             "closable",
             "movable",
             "tab_position",
+            "tab_shape",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1246,8 +1333,11 @@ impl Draw for TabWidget {
         // Draw content border
         context.draw_rect(content_rect, border);
         // Draw tabs
-        for i in 0..self.tabs.len() {
-            if let Some(tab_rect) = self.tab_rect(i) {
+        //
+        // One `tab_rects()` call for the whole strip: asking `tab_rect(i)` in a loop rebuilt the
+        // flex layout once per tab (see `tab_rects`).
+        for (i, tab_rect) in self.tab_rects().into_iter().enumerate() {
+            if i < self.tabs.len() {
                 let tab = &self.tabs[i];
                 let is_current = i == self.current_index;
                 let is_enabled = tab.enabled;
@@ -2521,5 +2611,69 @@ mod tests {
         )
         .is_err());
         assert_eq!(tw.tab_position(), TabPosition::South);
+    }
+
+    /// `tab_shape` is served in both directions, over the schema's own token vocabulary.
+    ///
+    /// Before this, `set_tab_shape` existed and the JSON loader read a `tab_shape` key, but the
+    /// property contract had no arm for it: a host could not read the shape back or set it
+    /// through the property route, and the schema did not declare it either.
+    #[test]
+    fn tabwidget_shape_round_trips_through_the_property_contract() {
+        use crate::widget::capability::properties_trait::{
+            widget_property_get, widget_property_set,
+        };
+        use crate::widget::capability::CapabilityValue;
+
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        assert!(crate::widget::capability::widget_property_names(&tw)
+            .expect("a tab widget declares properties")
+            .contains(&"tab_shape"));
+
+        widget_property_set(
+            &mut tw,
+            "tab_shape",
+            CapabilityValue::String("triangular".to_string()),
+        )
+        .unwrap();
+        assert_eq!(tw.tab_shape(), TabShape::Triangular);
+        assert_eq!(
+            widget_property_get(&tw, "tab_shape"),
+            Ok(CapabilityValue::String("triangular".to_string()))
+        );
+
+        // An unknown token is a refused write, not a silent fallback to the current shape.
+        assert!(widget_property_set(
+            &mut tw,
+            "tab_shape",
+            CapabilityValue::String("Rounded".to_string())
+        )
+        .is_err());
+        assert_eq!(tw.tab_shape(), TabShape::Triangular);
+    }
+
+    /// Removing a tab before the selection renumbers it, and the shift is announced.
+    ///
+    /// A subscriber keyed by index would otherwise keep the old number and address the
+    /// neighbouring tab after the removal.
+    #[test]
+    fn tabwidget_remove_tab_announces_the_index_shift() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        for title in ["A", "B", "C"] {
+            tw.add_tab(title.to_string(), None);
+        }
+        tw.set_current_index(2);
+
+        let emitted = Arc::new(std::sync::Mutex::new(None));
+        tw.current_changed.connect({
+            let emitted = Arc::clone(&emitted);
+            move |idx: Arc<usize>| {
+                *emitted.lock().unwrap() = Some(*idx);
+            }
+        });
+
+        tw.remove_tab(0);
+        assert_eq!(tw.current_index(), 1, "the selected tab keeps its identity");
+        assert_eq!(*emitted.lock().unwrap(), Some(1), "the new index is announced");
     }
 }

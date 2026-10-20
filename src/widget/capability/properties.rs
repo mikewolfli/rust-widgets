@@ -1146,6 +1146,7 @@ pub(crate) fn tab_widget_capability() -> WidgetCapability {
             "set_closable",
             "set_movable",
             "set_tab_position",
+            "set_tab_shape",
         ],
     }
 }

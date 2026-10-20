@@ -35,6 +35,43 @@ pub use progress_dialog::ProgressDialog;
 pub use tooltip::Tooltip;
 pub use wizard::{WizardDialog, WizardStep};
 
+/// Resolves a dialog label for **display**: the catalogue's translation when it has one, the
+/// English label otherwise.
+///
+/// # Why the key is not an acceptable fallback
+///
+/// `translate_key` returns the key itself when no catalogue is initialised (or the key is
+/// absent). Drawing that value is how a message box's OK button came to read `common....`: the
+/// row reserved 80px for "OK", and the raw key `common.button.ok` was elided to fit. A dialog's
+/// buttons are user-facing copy, so the fallback is the English label the enum already carries —
+/// never the catalogue key.
+///
+/// # Why this is one function rather than each dialog's own check
+///
+/// Six dialogs build their action row from `tr!` sites, and a per-site `== key` comparison is a
+/// rule that has to be repeated exactly. One helper means a new dialog inherits the fallback, and
+/// a catalogue that is initialised later still resolves correctly because the lookup happens when
+/// the label is drawn.
+pub(crate) fn localized_label(key: &str, english: &str) -> crate::compat::String {
+    #[cfg(feature = "i18n")]
+    {
+        let translated = crate::i18n::translate(key);
+        if translated.is_empty() || translated == key {
+            crate::compat::String::from(english)
+        } else {
+            translated
+        }
+    }
+    #[cfg(not(feature = "i18n"))]
+    {
+        // No catalogue exists in this build, so the English label is the whole answer. Going
+        // through `translate` here would log a warning on every frame for a case that is not a
+        // failure.
+        let _ = key;
+        crate::compat::String::from(english)
+    }
+}
+
 /// Paints the modal scrim over the control's whole rectangle.
 ///
 /// # Why this is one function and not six copies

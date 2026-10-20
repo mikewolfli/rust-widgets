@@ -80,6 +80,32 @@ pub trait PaintBackend {
         self.execute_command(&RenderCommand::FillPathNonZero { path, color });
         Ok(())
     }
+    /// Draws `text` with its origin at `origin` in `font` and `color`.
+    ///
+    /// # Why this is a trait method and not only a command
+    ///
+    /// [`RenderCommand::DrawText`] owns its `String` and `Font`, so routing every label through
+    /// the command forces two heap copies per text draw even when the backend rasterises it
+    /// immediately and retains nothing. A window with a few hundred labels paid that on every
+    /// frame. This entry point hands the text over by reference; the **default implementation**
+    /// is exactly the old behaviour (build the owning command, execute it), so a recording or
+    /// deferred backend is unchanged. Only an immediate backend should override it.
+    fn draw_text(
+        &mut self,
+        origin: crate::core::Point,
+        text: &str,
+        font: &Font,
+        color: Color,
+        alignment: crate::core::HorizontalAlignment,
+    ) {
+        self.execute_command(&RenderCommand::DrawText {
+            origin,
+            text: crate::compat::String::from(text),
+            font: font.clone(),
+            color,
+            alignment,
+        });
+    }
     /// Returns the size of the target surface in logical (DPI-independent)
     /// units.
     fn size(&self) -> Size;
@@ -213,6 +239,20 @@ impl PaintBackend for SoftwarePaintBackend {
         #[cfg(test)]
         note_image_bytes_drawn_without_copy(data.len());
         self.surface.draw_image(x, y, width, height, data);
+    }
+    /// Draws text straight from the caller's `&str` and `&Font`.
+    ///
+    /// The software backend rasterises immediately, so the owning `DrawText` command would be
+    /// two allocations (text and font family) per label per frame for bytes it never keeps.
+    fn draw_text(
+        &mut self,
+        origin: crate::core::Point,
+        text: &str,
+        font: &Font,
+        color: Color,
+        alignment: crate::core::HorizontalAlignment,
+    ) {
+        self.surface.draw_text(origin, text, font, color, alignment);
     }
     fn fill_path_non_zero(
         &mut self,

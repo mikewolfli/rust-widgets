@@ -133,6 +133,9 @@ pub fn register_face(name: &'static str, bytes: &'static [u8]) -> bool {
                 // A replacement changes which face answers a character, so the coverage cache's
                 // entries for this family are now stale. Bump the generation; the next lookup misses.
                 crate::render::text::font_assets::invalidate_face_cache();
+                // A different face also gives different advances, so cached text measurements for
+                // this family are stale too (they are keyed by the `Font`, which did not change).
+                crate::render::pipeline::invalidate_text_measurements();
                 return true;
             }
         }
@@ -162,6 +165,7 @@ pub fn clear_faces() -> usize {
     drop(registry);
     // Every entry may now name a face that is no longer registered, so the whole cache is stale.
     crate::render::text::font_assets::invalidate_face_cache();
+    crate::render::pipeline::invalidate_text_measurements();
     removed
 }
 

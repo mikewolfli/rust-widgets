@@ -70,11 +70,14 @@ impl PopupWindow {
         if let Some(old) = self.content_widget {
             if Some(old) != widget {
                 self.base.remove_child_linked(old);
+                // See `Frame::set_widget`: a replaced child must stop claiming to be visible.
+                crate::set_widget_visible(old, false);
             }
         }
         self.content_widget = widget;
         if let Some(id) = widget {
             self.base.add_child_linked(id);
+            crate::set_widget_visible(id, true);
         }
         self.base.request_redraw();
     }
