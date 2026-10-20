@@ -132,6 +132,11 @@ impl Dialog {
         if let Some(id) = widget {
             self.base.add_child_linked(id);
         }
+        // The new child has never been placed: a control is constructed at a caller-chosen
+        // rectangle (usually `0x0`) and the dialog is the only thing that knows the box it
+        // should occupy. Without this write the content is a mounted child with a rectangle
+        // of its own choosing, which is not the dialog's content box.
+        self.place_content_in(self.frame_rect());
         self.base.request_redraw();
     }
 
@@ -235,12 +240,43 @@ impl Dialog {
     /// Insets the top by the title bar **only when a title is set**, so a titleless
     /// dialog gives its child the full rect.
     pub fn content_rect(&self) -> Rect {
-        let rect = self.frame_rect();
+        self.content_rect_of(self.frame_rect())
+    }
+
+    /// The content rectangle for a frame the dialog paints at `frame`.
+    ///
+    /// `frame` is the **painted** frame, which during the reveal is smaller than the resting
+    /// one. Deriving the content box from the same rectangle the chrome is drawn from keeps the
+    /// child inside the frame on every frame of the animation instead of snapping into place
+    /// when the animation settles.
+    fn content_rect_of(&self, frame: Rect) -> Rect {
         if self.title.is_empty() {
-            return rect;
+            return frame;
         }
-        let inset = DIALOG_TITLE_BAR_HEIGHT.min(rect.height);
-        Rect::new(rect.x, rect.y + inset as i32, rect.width, rect.height - inset)
+        let inset = DIALOG_TITLE_BAR_HEIGHT.min(frame.height);
+        Rect::new(frame.x, frame.y + inset as i32, frame.width, frame.height - inset)
+    }
+
+    /// Places the content child inside the frame the dialog paints at `frame`.
+    ///
+    /// # Why placement is a geometry write and not a layout
+    ///
+    /// A dialog's content model is **one child in one rectangle**, not a list of tracks. Giving
+    /// it a `Layout` would let a caller describe a second, competing placement for the same
+    /// child, which is the second-layout-path defect rule #101 names. The child keeps whatever
+    /// layout it uses for *its* children; the dialog owns only the box it hands over.
+    ///
+    /// The write goes through the public geometry entry point rather than through a registry of
+    /// draw closures: the content is an ordinary child in the widget tree, so the tree painter
+    /// draws it after the dialog's chrome and the hit test reaches it without forwarding. An
+    /// unmounted id is reported by that entry point as nothing to do, which is the honest answer
+    /// for a document whose content was declared but never created.
+    fn place_content_in(&self, frame: Rect) {
+        let Some(content) = self.content_widget else {
+            return;
+        };
+        let rect = self.content_rect_of(frame);
+        crate::set_widget_geometry(content, rect.x, rect.y, rect.width, rect.height);
     }
 }
 
@@ -261,6 +297,16 @@ impl Widget for Dialog {
             crate::widget::metrics::dimensions::DIALOG_WIDGET_DEFAULT_WIDTH,
             dimensions::DIALOG_MIN_HEIGHT,
         )
+    }
+
+    /// Moves the dialog and re-places its content child.
+    ///
+    /// A layout positions the dialog through the same geometry entry point, so this is where a
+    /// window or panel resize reaches the content. The child is placed from the dialog's own
+    /// painted frame, so the two cannot disagree about where the content begins.
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        self.place_content_in(self.frame_rect());
     }
 
     // The reveal is the control's own animation; the trait spelling is what the frame bus reaches
@@ -444,6 +490,11 @@ impl Draw for Dialog {
         if rect.width == 0 || rect.height == 0 {
             return;
         }
+        // The child follows the frame as it grows, so a half-revealed dialog holds its content
+        // inside the chrome rather than showing a full-size child around a small frame. The
+        // tree painter draws the content after this function returns, so the placement made
+        // here is the rectangle that very frame is drawn into.
+        self.place_content_in(rect);
 
         let radius = dimensions::DIALOG_RADIUS.min(rect.width / 2).min(rect.height / 2);
         if radius > 0 {
@@ -758,5 +809,93 @@ mod tests {
             big_ink > base_ink,
             "a larger font must widen the painted title ink: {big_ink} vs {base_ink}"
         );
+    }
+
+    // ── the dialog places the content child it hosts ──
+
+    /// A dialog hands its content child the box the child is supposed to fill.
+    ///
+    /// # The defect this pins
+    ///
+    /// The content id was linked in both directions, so a tree walk found it and hit-tested
+    /// it — but nothing ever wrote its geometry. The child therefore kept whatever rectangle it
+    /// was constructed with (normally `0x0`), which meant a dialog with a form in it painted
+    /// **chrome over nothing**: the model said `has_content = true`, the tree contained the
+    /// child, and the pixels contained no content. Both ends are mounted here because the
+    /// placement is a geometry write addressed to the runtime registry; an unregistered id
+    /// would make the test pass without proving the write lands.
+    #[test]
+    fn the_dialog_places_its_content_inside_its_frame() {
+        use crate::widget::runtime;
+
+        let dialog_id = runtime::register(Box::new(dialog())).expect("mount dialog");
+        let content_id = runtime::register(Box::new(crate::widget::Label::new(
+            "body".to_string(),
+            Rect::new(0, 0, 10, 10),
+        )))
+        .expect("mount content");
+
+        runtime::with_widget_mut(dialog_id, |widget| {
+            crate::widget::capability::coercion::widget_as_mut::<Dialog>(widget)
+                .expect("the mounted widget is a dialog")
+                .set_content_widget(Some(content_id));
+        })
+        .expect("the dialog is mounted");
+
+        // `painted_box` centres the intrinsic 280x240 frame in the 400x300 offered, and the
+        // content box is that frame below its 28px title strip.
+        assert!(runtime::set_geometry(dialog_id, Rect::new(20, 30, 400, 300)));
+        assert_eq!(
+            runtime::geometry_of(content_id),
+            Some(Rect::new(80, 88, 280, 212)),
+            "the dialog's own frame decides where its content begins"
+        );
+
+        runtime::unregister(content_id);
+        runtime::unregister(dialog_id);
+    }
+
+    /// The content follows the frame while the dialog reveals, instead of appearing at its
+    /// settled size around a smaller frame.
+    #[test]
+    fn a_revealing_dialog_keeps_its_content_inside_the_growing_frame() {
+        use crate::widget::runtime;
+
+        let content_id = runtime::register(Box::new(crate::widget::Label::new(
+            "body".to_string(),
+            Rect::new(0, 0, 10, 10),
+        )))
+        .expect("mount content");
+
+        // The dialog itself is owned here rather than mounted: placement addresses the child,
+        // and `render_to_svg` calls `Draw` directly, which is the path a caller-held control
+        // uses.
+        let mut widget = Dialog::with_title("Settings", Rect::new(0, 0, 400, 300));
+        widget.set_content_widget(Some(content_id));
+        widget.open();
+        assert!(widget.tick(30), "still growing after one step");
+        let _ = crate::widget::svg::render_to_svg(&mut widget);
+        let mid = runtime::geometry_of(content_id).expect("the content is mounted");
+
+        while widget.tick(1000) {}
+        let _ = crate::widget::svg::render_to_svg(&mut widget);
+        let settled = runtime::geometry_of(content_id).expect("the content is mounted");
+
+        // The resting box is 280x212 at (60, 58); a mid-reveal frame is scaled by less than
+        // one about its centre, so the content box is strictly smaller and still inside it.
+        assert_eq!(settled, Rect::new(60, 58, 280, 212));
+        assert!(
+            mid.width < settled.width && mid.height < settled.height,
+            "a revealing dialog must place its content in the smaller frame: {mid:?} vs {settled:?}"
+        );
+        assert!(
+            mid.x >= settled.x
+                && mid.y >= settled.y
+                && mid.x + mid.width as i32 <= settled.x + settled.width as i32
+                && mid.y + mid.height as i32 <= settled.y + settled.height as i32,
+            "the content must stay inside the frame: {mid:?} vs {settled:?}"
+        );
+
+        runtime::unregister(content_id);
     }
 }

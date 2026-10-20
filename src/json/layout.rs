@@ -10,7 +10,10 @@ use serde_json::Value;
 use crate::core::Orientation;
 #[cfg(test)]
 use crate::core::Rect;
-use crate::layout::{BoxLayout, FormLayout, GridLayout, Layout, SplitterLayout, StackLayout};
+use crate::layout::{
+    BorderLayout, BorderRegion, BoxLayout, FormLayout, GridLayout, Layout, SplitterLayout,
+    StackLayout,
+};
 
 // ── Layout kind enum ─────────────────────────────────────────
 
@@ -96,6 +99,13 @@ pub enum DeclarativeLayoutKind {
         /// Gap in logical pixels between adjacent children.
         gap: u32,
     },
+    /// Border layout: fixed edge tracks around an elastic center.
+    Border {
+        /// Gap in logical pixels between tracks inside one region.
+        spacing: u32,
+        /// Outer inset in logical pixels on all four sides.
+        margin: u32,
+    },
 }
 
 impl DeclarativeLayoutKind {
@@ -117,6 +127,7 @@ impl DeclarativeLayoutKind {
         "flow",
         "wrap",
         "flex",
+        "border",
     ];
 }
 
@@ -130,7 +141,8 @@ impl DeclarativeLayoutKind {
 
 pub use crate::layout::declarative::{
     add_spacer_to_layout, add_widget_to_layout, apply_layout, forget_layout,
-    place_widget_in_layout, preview_layout, store_layout, ChildPlacement,
+    place_widget_in_layout, place_widget_in_region_layout, preview_layout, store_layout,
+    ChildPlacement,
 };
 
 // ── Parsing ─────────────────────────────────────────────────
@@ -209,6 +221,7 @@ pub fn parse_layout_kind(value: &Value) -> Result<DeclarativeLayoutKind, String>
             let gap = json_u32(obj.get("gap"), 0);
             Ok(DeclarativeLayoutKind::Flex { gap })
         }
+        "border" | "Border" => Ok(DeclarativeLayoutKind::Border { spacing, margin }),
         _ => Err(format!(
             "unknown layout type '{type_str}'; supported types are {}",
             DeclarativeLayoutKind::SUPPORTED_TYPES.join(", ")
@@ -345,6 +358,9 @@ pub fn create_layout_from_kind(kind: &DeclarativeLayoutKind) -> Box<dyn Layout> 
                 0,
             ))
         }
+        DeclarativeLayoutKind::Border { spacing, margin } => {
+            Box::new(BorderLayout::new(spacing, margin))
+        }
     }
 }
 
@@ -366,6 +382,10 @@ pub struct ChildLayoutAttrs {
     pub col_span: Option<u32>,
     /// For grid layouts: row span.
     pub row_span: Option<u32>,
+    /// For border layouts: the region the child belongs to.
+    pub region: Option<BorderRegion>,
+    /// For border layouts: the fixed major-axis extent of an edge track.
+    pub extent: Option<u32>,
 }
 
 impl ChildLayoutAttrs {
@@ -374,7 +394,8 @@ impl ChildLayoutAttrs {
     /// A non-object value, or an object without `stretch`, yields a stretch of
     /// `1`. `col`, `row`, `col_span`, and `row_span` stay `None` unless present
     /// as non-negative integers, so a caller must distinguish "unset" from
-    /// "explicitly 0".
+    /// "explicitly 0". `region` stays `None` unless it names a known
+    /// [`BorderRegion`], and `extent` is a clamped non-negative integer.
     pub fn from_value(value: &serde_json::Value) -> Self {
         let obj = value.as_object();
         Self {
@@ -390,6 +411,14 @@ impl ChildLayoutAttrs {
                 .and_then(|o| o.get("row_span"))
                 .and_then(|v| v.as_u64())
                 .map(|v| v as u32),
+            region: obj
+                .and_then(|o| o.get("region"))
+                .and_then(|v| v.as_str())
+                .and_then(BorderRegion::from_token),
+            extent: obj
+                .and_then(|o| o.get("extent"))
+                .and_then(|v| v.as_u64())
+                .map(|v| u32::try_from(v).unwrap_or(u32::MAX)),
         }
     }
 }
@@ -776,10 +805,31 @@ mod tests {
         assert_eq!(kind, DeclarativeLayoutKind::Flex { gap: 5 });
     }
 
+    #[test]
+    fn parse_border_layout() {
+        let json: Value =
+            serde_json::from_str(r#"{"type": "border", "spacing": 4, "margin": 2}"#).unwrap();
+        let kind = parse_layout_kind(&json).unwrap();
+        assert_eq!(kind, DeclarativeLayoutKind::Border { spacing: 4, margin: 2 });
+    }
+
+    #[test]
+    fn child_layout_attrs_parses_border_region_and_extent() {
+        let json: Value = serde_json::from_str(r#"{"region": "north", "extent": 48}"#).unwrap();
+        let attrs = ChildLayoutAttrs::from_value(&json);
+        assert_eq!(attrs.region, Some(BorderRegion::North));
+        assert_eq!(attrs.extent, Some(48));
+
+        // An unknown token is `None`, not a silent centre placement: the loader reports
+        // the mismatch instead of guessing that the document meant "center".
+        let unknown: Value = serde_json::from_str(r#"{"region": "middle"}"#).unwrap();
+        assert_eq!(ChildLayoutAttrs::from_value(&unknown).region, None);
+    }
+
     /// Every newly accepted kind also builds a real layout object.
     #[test]
     fn the_added_kinds_build_a_layout() {
-        for type_str in ["flow", "wrap", "flex", "uniform_grid"] {
+        for type_str in ["flow", "wrap", "flex", "uniform_grid", "border"] {
             let json: Value =
                 serde_json::from_str(&format!(r#"{{"type": "{type_str}"}}"#)).unwrap();
             let kind = parse_layout_kind(&json)

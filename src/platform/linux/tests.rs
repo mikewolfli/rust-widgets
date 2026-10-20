@@ -195,6 +195,53 @@ fn gtk_native_backend_lifecycle() {
     let window = backend.create_window("TestWindow", 50, 50, 400, 300);
     assert!(window > 0, "Window should be created");
 
+    // ── Invalidation ──
+    //
+    // A window's ordinary children have no GTK widget of their own; the window's tree
+    // painter draws them. `invalidate_surface` must therefore resolve the window id to
+    // that paint area. Before this was fixed it only consulted `canvases`, so it answered
+    // `false` for a window it plainly owned and a resize left the old frame on screen.
+    assert!(
+        backend.invalidate_surface(window),
+        "a window id must resolve to the area that paints its tree"
+    );
+    // The rectangle path converts into widget-local coordinates and therefore needs a
+    // realised allocation. Show the window and let GTK allocate it before asking.
+    backend.set_widget_visible(window, true);
+    while gtk::events_pending() {
+        gtk::main_iteration_do(false);
+    }
+    assert!(
+        backend.invalidate_surface_rect(window, crate::core::Rect::new(0, 0, 10, 10)),
+        "a rectangle inside the window must be invalidated"
+    );
+    assert!(
+        !backend.invalidate_surface(0xDEAD_BEEF),
+        "an id this backend never created must be refused"
+    );
+
+    // The app layer holds the **widget-registry** id while the paint areas are keyed by
+    // the platform id; the association is what makes a library repaint request reach the
+    // window. Exercise that translation directly, without depending on which control
+    // backend the rest of the test process happens to install.
+    #[cfg(widgets_unstripped)]
+    {
+        let widget_id = crate::widget::runtime::register(Box::new(crate::widget::Window::new(
+            crate::compat::String::from("probe"),
+            crate::core::Rect::new(0, 0, 400, 300),
+        )))
+        .expect("the widget registry must accept a window on this thread");
+        assert!(
+            crate::widget::runtime::set_host_window(widget_id, window),
+            "a mounted window can be associated with the platform object that hosts it"
+        );
+        assert!(
+            backend.invalidate_surface(widget_id),
+            "the registry id must translate to the host window's paint area"
+        );
+        crate::widget::runtime::unregister(widget_id);
+    }
+
     // ── Honest control contract ──
     // The library paints every control itself, so this host must report that it
     // creates none rather than handing back a state-only id that nothing backs.

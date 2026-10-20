@@ -11,6 +11,8 @@
 pub mod absolute;
 /// Derives a child's missing dimension from a fixed width:height ratio.
 pub mod aspect_ratio;
+/// Fixed edge tracks around an elastic center, for workbench-shaped windows.
+pub mod border;
 /// Single-axis linear layout with per-child stretch factors, spacing, and
 /// margins; also exposed as `HBox` / `VBox`.
 pub mod box_layout;
@@ -50,6 +52,7 @@ pub mod wrap;
 pub use crate::core::Orientation;
 pub use absolute::*;
 pub use aspect_ratio::*;
+pub use border::*;
 pub use box_layout::*;
 pub use center::*;
 pub use constraint::*;

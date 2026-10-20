@@ -32,10 +32,15 @@ pub use handle::{
     CustomWidgetMountError, DialogHandle, EchoMode, FrameHandle, GridWidgetHandle, LabelHandle,
     LineEditHandle, ListBoxHandle, ListModel, ListViewHandle, MenuBarHandle, MenuHandle,
     MenuItemHandle, MessageBoxHandle, PanelHandle, ProgressBarHandle, RadioButtonHandle,
-    ScrollAreaHandle, ScrollBarHandle, SelectionMode, SliderHandle, SpinBoxHandle, StatusBarHandle,
-    SurfaceHandle, SurfaceMountError, TabWidgetHandle, TextEditHandle, ToolBarHandle,
-    WebViewHandle, WidgetHandle, WindowHandle, WindowOptions,
+    ScrollAreaHandle, ScrollBarHandle, SelectionMode, SliderHandle, SpinBoxHandle, SplitterHandle,
+    StatusBarHandle, SurfaceHandle, SurfaceMountError, TabWidgetHandle, TextEditHandle,
+    ToolBarHandle, WebViewHandle, WidgetHandle, WindowHandle, WindowOptions,
 };
+
+// The tab widget's own enums are part of its typed handle surface: a caller passes
+// `TabPosition`/`TabShape` rather than a string token, so the compiler rejects a
+// misspelling instead of the control silently keeping its previous value.
+pub use crate::widget::container_widgets::tabwidget::{TabPosition, TabShape};
 pub use lifecycle::*;
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
 
 本章提供整个 `rust_widgets` 公共 API 的逐模块完整参考。当你需要为任务查找正确的类型、函数或 trait 时，可将其作为快速查阅手册。
 
-本文档所描述的库版本为 **2.8.10**。代码示例假定已使用 `use rust_widgets::*;` 或按所示使用显式路径。
+本文档所描述的库版本为 **2.8.11**。代码示例假定已使用 `use rust_widgets::*;` 或按所示使用显式路径。
 
 ---
 
@@ -937,6 +937,7 @@ pub trait Layout {
 | `HBoxLayout` | `box_layout` | `BoxLayout` 使用 `Orientation::Horizontal`（命名便利） |
 | `VBoxLayout` | `box_layout` | `BoxLayout` 使用 `Orientation::Vertical`（命名便利） |
 | `GridLayout` | `grid` | 行/列网格，使用 `set_widget(row, col, id)` |
+| `BorderLayout` | `border` | 固定边缘轨道（`north`/`south`/`west`/`east`）加弹性中心区 |
 | `StackLayout` | `stack` | 一次只显示一个子项（卡片堆叠），使用 `set_current_index()` |
 | `FlowLayout` | `flow` | 自动换行流动（类似 CSS flex-wrap） |
 | `FlexLayout` | `flex` | CSS flexbox 风格布局 |

@@ -1267,14 +1267,14 @@ fn placeholder_id(node: &ProjectNode) -> crate::core::ObjectId {
 
 /// The layout attributes a node declares, for the generation-time solve.
 ///
-/// # Why only `stretch` is carried
+/// # What is carried and why
 ///
-/// `Layout::add_widget` takes `(id, stretch)` — that is the whole contract the layout trait exposes
-/// for a child. The JSON layer's `ChildLayoutAttrs` adds grid `col`/`row`/span, and those reach the
-/// engine through `add_widget_to_layout`, which needs a live layout handle this function does not
-/// have. Carrying a field the engine cannot receive would suggest the solve accounts for grid
-/// placement when it does not; a grid document is instead reported through the placement mismatch
-/// check, which surfaces as an unplaced child rather than a silently wrong coordinate.
+/// `Layout::add_widget` takes `(id, stretch)` — the generic contract. The JSON layer's
+/// `ChildLayoutAttrs` additionally carries grid cells and border regions, which have no
+/// place in that signature. [`child_region`]/[`child_extent`] and [`child_cell`] read those
+/// attributes here so the generation solve can call the same concrete entry points the
+/// runtime loader calls; the alternative was a generated program whose grid ignored every
+/// declared cell and auto-filled instead.
 fn child_stretch(node: &ProjectNode) -> u32 {
     // `as u32` on a `u64` wrapped an over-large stretch to a small one (`2^32` became `0`),
     // which silently collapsed a flexible child to zero weight. Clamping keeps the weight the
@@ -1284,6 +1284,47 @@ fn child_stretch(node: &ProjectNode) -> u32 {
         .and_then(|v| v.as_u64())
         .map(|raw| u32::try_from(raw).unwrap_or(u32::MAX))
         .unwrap_or(1)
+}
+
+/// The border region a node declares, defaulting to the elastic center.
+///
+/// The runtime reads the same token through `ChildLayoutAttrs`, so the generated coordinates and
+/// the interpreted ones stay the same fact rather than two spellings of it.
+fn child_region(node: &ProjectNode) -> crate::layout::BorderRegion {
+    node.property("region")
+        .and_then(|v| v.as_str())
+        .and_then(crate::layout::BorderRegion::from_token)
+        .unwrap_or(crate::layout::BorderRegion::Center)
+}
+
+/// The fixed extent a node declares for an edge track (0 when absent).
+fn child_extent(node: &ProjectNode) -> u32 {
+    node.property("extent")
+        .and_then(|v| v.as_u64())
+        .map(|raw| u32::try_from(raw).unwrap_or(u32::MAX))
+        .unwrap_or(0)
+}
+
+/// The cell a node declares, or `None` when it declares no cell key.
+///
+/// `None` is deliberately distinct from "cell (0,0), span 1×1": the first means
+/// "auto-place me", the second means "the document named this exact cell". Folding them
+/// together would turn every unannotated child into an explicit placement at the origin.
+fn child_cell(node: &ProjectNode) -> Option<crate::json::ChildPlacement> {
+    let col = node.property("col").and_then(|v| v.as_u64());
+    let row = node.property("row").and_then(|v| v.as_u64());
+    let col_span = node.property("col_span").and_then(|v| v.as_u64());
+    let row_span = node.property("row_span").and_then(|v| v.as_u64());
+    if col.is_none() && row.is_none() && col_span.is_none() && row_span.is_none() {
+        return None;
+    }
+    let clamp = |value: Option<u64>| value.map(|raw| u32::try_from(raw).unwrap_or(u32::MAX));
+    Some(crate::json::ChildPlacement {
+        col: clamp(col).unwrap_or(0),
+        row: clamp(row).unwrap_or(0),
+        col_span: clamp(col_span).unwrap_or(1),
+        row_span: clamp(row_span).unwrap_or(1),
+    })
 }
 
 /// The Rust **type** name a document's widget name maps to, or `"UnsupportedControl"`.
@@ -1529,6 +1570,7 @@ fn plan_geometry(
 
     let mut engine = crate::json::create_layout_from_kind(&kind);
     let mut solved: Vec<crate::core::Rect> = Vec::new();
+    let border_layout = matches!(kind, crate::json::DeclarativeLayoutKind::Border { .. });
 
     // # The layout engine needs the children before it can place them
     //
@@ -1543,7 +1585,45 @@ fn plan_geometry(
             // The id is a placeholder: the solver only needs identity to report a rect per slot, and
             // the caller pairs placements with children by position.
             let placeholder = placeholder_id(node);
+            if border_layout {
+                if let Some(border) =
+                    engine.as_any_mut().downcast_mut::<crate::layout::BorderLayout>()
+                {
+                    border.add_with_stretch(
+                        child_region(node),
+                        placeholder,
+                        child_extent(node),
+                        child_stretch(node),
+                    );
+                    continue;
+                }
+            }
             engine.add_widget(placeholder, child_stretch(node));
+            // A declared cell is a **move** from the auto-placement above. Both grid
+            // implementations clear the widget's previous cells, so the generated solve
+            // matches the loader's `add_widget_to_layout` + `place_widget_in_layout` pair.
+            if let Some(cell) = child_cell(node) {
+                if let Some(grid) = engine.as_any_mut().downcast_mut::<crate::layout::GridLayout>()
+                {
+                    grid.set_widget_spanning(
+                        cell.row,
+                        cell.col,
+                        cell.col_span,
+                        cell.row_span,
+                        placeholder,
+                    );
+                } else if let Some(grid) =
+                    engine.as_any_mut().downcast_mut::<crate::layout::UniformGridLayout>()
+                {
+                    let _ = grid.set_widget_spanning(
+                        cell.row,
+                        cell.col,
+                        cell.col_span,
+                        cell.row_span,
+                        placeholder,
+                    );
+                }
+            }
         }
     }
     engine.update(container_rect, &mut |_id, rect| {
@@ -2246,6 +2326,195 @@ mod tests {
                 node.key
             );
         }
+    }
+
+    /// The same agreement, for the fixed-track `border` layout.
+    ///
+    /// A border layout gives a child's `region`/`extent` a meaning that `Layout::add_widget`
+    /// cannot express, so the generation path and the loader path each have to take the
+    /// border-specific entry point. This test is what keeps those two entry points from
+    /// drifting: both solve the same document and must produce the same rectangles.
+    #[test]
+    fn the_generated_border_geometry_matches_the_runtime_geometry() {
+        const DOCUMENT: &str = r#"{
+          "window": {
+            "id": "root",
+            "width": 400,
+            "height": 300,
+            "layout": {
+              "type": "border",
+              "spacing": 0,
+              "margin": 0,
+              "children": [
+                { "label": { "id": "top", "text": "T", "region": "north", "extent": 40 } },
+                { "label": { "id": "left", "text": "L", "region": "west", "extent": 80 } },
+                { "label": { "id": "body", "text": "B", "region": "center" } }
+              ]
+            }
+          }
+        }"#;
+
+        let request = GenerationRequest {
+            json: String::from(DOCUMENT),
+            target: TargetProfile::Stripped,
+            width: 400,
+            height: 300,
+            function_name: String::from("build_border_geometry"),
+        };
+        let project = JsonProject::parse(&request.json).expect("the document parses");
+        let (kind, children) =
+            project.layout_declaration().expect("the document declares a layout");
+
+        let mut report = GenerationReport::default();
+        let planned = plan_geometry(&request, &project, &mut report);
+
+        const PARENT: crate::core::ObjectId = 0x5EED_0006;
+        crate::json::store_layout(PARENT, crate::json::create_layout_from_kind(&kind));
+        for (index, child) in children.iter().enumerate() {
+            let node = project.node(child).expect("every declared child resolves");
+            let attrs = crate::json::ChildLayoutAttrs::from_value(&serde_json::json!({
+                "stretch": node.property("stretch").cloned().unwrap_or_else(|| serde_json::json!(1)),
+                "region": node.property("region").cloned(),
+                "extent": node.property("extent").cloned(),
+            }));
+            assert!(
+                crate::json::add_widget_to_layout(index as u64 + 1, attrs.stretch, PARENT),
+                "child {index} must reach the layout"
+            );
+            if let Some(region) = attrs.region {
+                assert!(
+                    crate::json::place_widget_in_region_layout(
+                        index as u64 + 1,
+                        region,
+                        attrs.extent.unwrap_or(0),
+                        PARENT
+                    ),
+                    "the runtime must place child {index} in its declared region"
+                );
+            }
+        }
+        let ui = crate::json::preview_layout(
+            PARENT,
+            crate::core::Rect::new(0, 0, request.width, request.height),
+        );
+        crate::json::forget_layout(PARENT);
+
+        assert_eq!(ui.len(), children.len(), "one rect per child: {ui:?}");
+        for (index, child) in children.iter().enumerate() {
+            let planned_rect = planned
+                .rects
+                .iter()
+                .find(|(path, _)| path == child)
+                .unwrap_or_else(|| panic!("no planned rect for {child:?}"))
+                .1;
+            let ui_rect = ui[index].1;
+            assert_eq!(
+                planned_rect,
+                (ui_rect.x, ui_rect.y, ui_rect.width, ui_rect.height),
+                "child {index}: the generated geometry must be the runtime geometry"
+            );
+        }
+    }
+
+    /// The generation solve must honour a grid document's declared cells.
+    ///
+    /// # The defect this pins
+    ///
+    /// `plan_geometry` added every child with `add_widget`, which auto-fills cells in
+    /// declaration order. A document that declared `col`/`row` therefore generated
+    /// coordinates for an arrangement nobody asked for, while the interpreter placed the
+    /// declared cells. The two children are declared **out of cell order** on purpose: that
+    /// is the case where an explicit placement has to replace the auto-placement instead of
+    /// leaving the widget in two cells.
+    #[test]
+    fn the_generated_grid_geometry_matches_the_runtime_geometry() {
+        const DOCUMENT: &str = r#"{
+          "window": {
+            "id": "root",
+            "width": 200,
+            "height": 200,
+            "layout": {
+              "type": "grid",
+              "columns": 2,
+              "spacing": 0,
+              "margin": 0,
+              "children": [
+                { "label": { "id": "late", "text": "L", "col": 1, "row": 1 } },
+                { "label": { "id": "origin", "text": "O", "col": 0, "row": 0 } }
+              ]
+            }
+          }
+        }"#;
+
+        let request = GenerationRequest {
+            json: String::from(DOCUMENT),
+            target: TargetProfile::Stripped,
+            width: 200,
+            height: 200,
+            function_name: String::from("build_grid_geometry"),
+        };
+        let project = JsonProject::parse(&request.json).expect("the document parses");
+        let (kind, children) =
+            project.layout_declaration().expect("the document declares a layout");
+
+        let mut report = GenerationReport::default();
+        let planned = plan_geometry(&request, &project, &mut report);
+
+        const PARENT: crate::core::ObjectId = 0x5EED_0007;
+        crate::json::store_layout(PARENT, crate::json::create_layout_from_kind(&kind));
+        for (index, child) in children.iter().enumerate() {
+            let node = project.node(child).expect("every declared child resolves");
+            let attrs = crate::json::ChildLayoutAttrs::from_value(&serde_json::json!({
+                "stretch": node.property("stretch").cloned().unwrap_or_else(|| serde_json::json!(1)),
+                "col": node.property("col").cloned(),
+                "row": node.property("row").cloned(),
+                "col_span": node.property("col_span").cloned(),
+                "row_span": node.property("row_span").cloned(),
+            }));
+            let id = index as u64 + 1;
+            assert!(
+                crate::json::add_widget_to_layout(id, attrs.stretch, PARENT),
+                "child {index} must reach the layout"
+            );
+            let placement = crate::json::ChildPlacement {
+                col: attrs.col.unwrap_or(0),
+                row: attrs.row.unwrap_or(0),
+                col_span: attrs.col_span.unwrap_or(1),
+                row_span: attrs.row_span.unwrap_or(1),
+            };
+            assert!(
+                crate::json::place_widget_in_layout(id, placement, PARENT),
+                "the runtime must place child {index} at its declared cell"
+            );
+        }
+        let ui = crate::json::preview_layout(
+            PARENT,
+            crate::core::Rect::new(0, 0, request.width, request.height),
+        );
+        crate::json::forget_layout(PARENT);
+
+        assert_eq!(ui.len(), children.len(), "one rect per child: {ui:?}");
+        for (index, child) in children.iter().enumerate() {
+            let planned_rect = planned
+                .rects
+                .iter()
+                .find(|(path, _)| path == child)
+                .unwrap_or_else(|| panic!("no planned rect for {child:?}"))
+                .1;
+            let ui_rect = ui[index].1;
+            assert_eq!(
+                planned_rect,
+                (ui_rect.x, ui_rect.y, ui_rect.width, ui_rect.height),
+                "child {index}: the generated geometry must be the runtime geometry"
+            );
+        }
+
+        // The declared cells are distinct quadrants, not declaration-order cells: this is
+        // what separates "the solver read the document" from "the solver auto-filled".
+        let late = ui.iter().find(|(id, _)| *id == 1).expect("late child").1;
+        let origin = ui.iter().find(|(id, _)| *id == 2).expect("origin child").1;
+        assert_eq!(origin, crate::core::Rect::new(0, 0, 100, 100));
+        assert_eq!(late, crate::core::Rect::new(100, 100, 100, 100));
     }
 
     /// B26.06: a probe must name its target and never claim `BuiltVerified` from a collapsed

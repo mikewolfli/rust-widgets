@@ -2097,11 +2097,22 @@ fn frame_origin(id: ObjectId) -> (i32, i32) {
 }
 
 /// Updates the geometry of a mounted widget. Returns whether it was found.
+///
+/// # Why this detaches the widget before calling `set_geometry`
+///
+/// A container with a content model places its own children when its box changes: a dialog
+/// writes its content child's rectangle, a tab widget its current page, a splitter its panes.
+/// Those writes go through the public geometry entry point, which is this function. Holding
+/// the registry borrow across the widget call (the previous form) made the first such control
+/// panic with `RefCell already mutably borrowed` — the borrow was held for the parent while
+/// the child write asked for it again.
+///
+/// [`with_widget_mut`] is the discipline every other drive of a widget already uses: the entry
+/// is taken out of the map for the duration, so a `set_geometry` that re-enters the registry
+/// (to place children, or from a host callback) sees a free map. It also brings the same
+/// nested-mutation refusal as `dispatch_event`, rather than aliasing a live `&mut`.
 pub fn set_geometry(id: ObjectId, geometry: Rect) -> bool {
-    let updated = MOUNTED.try_with(|map| {
-        map.borrow_mut().get_mut(&id).map(|entry| entry.widget.set_geometry(geometry)).is_some()
-    });
-    updated.unwrap_or(false)
+    with_widget_mut(id, |widget| widget.set_geometry(geometry)).is_some()
 }
 
 /// Runs `f` with mutable access to a mounted widget.
@@ -3708,31 +3719,54 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
     if painted {
         // Children are drawn into the same frame, so the traversal only issues draw calls;
         // the frame was begun above and is ended once below.
-        let mut stack: Vec<ObjectId> = direct_children_of(id);
+        //
+        // Each entry carries the clip **its ancestors** impose on it. A control answers
+        // `children_clip` for its descendants (a scroll area's viewport, for example), and the
+        // painter intersects that with the clip its own ancestors already imposed. Without the
+        // carried rectangle a container could only draw and place its content; the content
+        // would then escape the viewport as soon as it was scrolled, which is exactly the
+        // half-fix `ScrollArea` used to be.
+        let root_clip = with_widget(id, |widget| widget.children_clip()).flatten();
+        let mut stack: Vec<(ObjectId, Option<Rect>)> =
+            direct_children_of(id).into_iter().map(|child| (child, root_clip)).collect();
         // Reversed so the traversal visits children in declaration order: `pop` takes the
         // last element, so pushing the children reversed makes the first one first.
         stack.reverse();
-        while let Some(current) = stack.pop() {
+        while let Some((current, clip)) = stack.pop() {
             if !is_visible(current) {
                 continue;
             }
-            let drew = with_widget_mut(current, |widget| {
+            // A node whose clip has no area cannot paint anything, and neither can its
+            // descendants. Skipping the node skips the subtree, the same rule hiding uses.
+            if clip.is_some_and(|rect| rect.width == 0 || rect.height == 0) {
+                continue;
+            }
+            let (drew, own_clip) = with_widget_mut(current, |widget| {
+                // Read before the draw: `as_draw_mut` needs the exclusive borrow.
+                let child_clip = widget.children_clip();
                 let Some(drawable) = widget.as_draw_mut() else {
-                    return false;
+                    return (false, child_clip);
                 };
                 let mut context = RenderContext::new(&mut backend);
                 context.push_offset(-origin.0, -origin.1);
+                if let Some(rect) = clip {
+                    context.push_clip(rect.x, rect.y, rect.width, rect.height);
+                }
                 drawable.draw(&mut context);
+                if clip.is_some() {
+                    context.pop_clip();
+                }
                 context.pop_offset();
-                true
+                (true, child_clip)
             })
-            .unwrap_or(false);
+            .unwrap_or((false, None));
             if drew {
                 painted = true;
             }
+            let child_clip = intersect_clip(clip, own_clip);
             let mut nested = direct_children_of(current);
             nested.reverse();
-            stack.extend(nested);
+            stack.extend(nested.into_iter().map(|child| (child, child_clip)));
         }
     }
 
@@ -3741,6 +3775,30 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
     }
     backend.end_frame();
     Some(backend.frame_rgba().to_vec())
+}
+
+/// The overlap of two clip rectangles, or a zero-area rectangle when they do not overlap.
+///
+/// A zero area is a real answer ("nothing is visible"), not an absence of clipping: the painter
+/// skips such a subtree. Returning `None` would widen the clip back to the parent's, which is the
+/// one wrong direction.
+fn intersect_clip(outer: Option<Rect>, inner: Option<Rect>) -> Option<Rect> {
+    match (outer, inner) {
+        (Some(a), Some(b)) => Some(Rect::new(
+            a.x.max(b.x),
+            a.y.max(b.y),
+            (a.x.saturating_add(a.width as i32))
+                .min(b.x.saturating_add(b.width as i32))
+                .saturating_sub(a.x.max(b.x))
+                .max(0) as u32,
+            (a.y.saturating_add(a.height as i32))
+                .min(b.y.saturating_add(b.height as i32))
+                .saturating_sub(a.y.max(b.y))
+                .max(0) as u32,
+        )),
+        (Some(rect), None) | (None, Some(rect)) => Some(rect),
+        (None, None) => None,
+    }
 }
 
 /// The direct children of `id`, or an empty list when it is not mounted.
@@ -7844,5 +7902,100 @@ mod tests {
         let ghost: ObjectId = 0x5345_4C46_DEAD_BEEF;
         assert!(!set_host_window(ghost, 1), "only a mounted window may carry a host id");
         assert_eq!(host_window_for(ghost), None);
+    }
+
+    // ── clipping a container's descendants ─────────────────────────────────────
+
+    /// A container's `children_clip` really narrows what its descendants paint.
+    ///
+    /// # The defect this pins
+    ///
+    /// A scroll area places its content with the scroll offset in the child's geometry —
+    /// without a clip the content then paints outside the viewport, over the scroll bars and
+    /// over whatever lies beyond the control. The container is the only layer that knows the
+    /// viewport (`geometry` is not it: the bars are inside the rectangle), so the painter has
+    /// to ask it. The root fills white, the child fills red, and the clip decides which half
+    /// of the frame each one wins.
+    #[test]
+    fn the_tree_painter_clips_descendants_to_the_container_content_box() {
+        use crate::core::Color;
+        use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+
+        struct Surface {
+            base: BaseWidget,
+            clip: Option<Rect>,
+            color: Color,
+        }
+        impl Widget for Surface {
+            fn base(&self) -> &BaseWidget {
+                &self.base
+            }
+            fn base_mut(&mut self) -> &mut BaseWidget {
+                &mut self.base
+            }
+            fn children_clip(&self) -> Option<Rect> {
+                self.clip
+            }
+            fn as_draw_mut(&mut self) -> Option<&mut dyn Draw> {
+                Some(self)
+            }
+        }
+        impl crate::event::EventHandler for Surface {
+            fn handle_event(&mut self, _event: &crate::event::Event) {}
+        }
+        impl Draw for Surface {
+            fn draw(&mut self, context: &mut RenderContext) {
+                context.fill_rect(self.base.geometry(), self.color);
+            }
+        }
+
+        let root = register(Box::new(Surface {
+            base: BaseWidget::new(WidgetKind::Panel, Rect::new(0, 0, 60, 60), "root"),
+            clip: Some(Rect::new(10, 10, 20, 20)),
+            color: Color::WHITE,
+        }))
+        .expect("mount root");
+        let child = register(Box::new(Surface {
+            base: BaseWidget::new(WidgetKind::Panel, Rect::new(0, 0, 60, 60), "child"),
+            clip: None,
+            color: Color::RED,
+        }))
+        .expect("mount child");
+        with_widget_mut(root, |widget| {
+            widget.base_mut().add_child_linked(child);
+        })
+        .expect("the root is mounted");
+
+        let frame = render_frame_tree(root, Size::new(60, 60), Color::WHITE).expect("frame");
+        let pixel = |x: usize, y: usize| {
+            let index = (y * 60 + x) * 4;
+            (frame[index], frame[index + 1], frame[index + 2])
+        };
+        assert_eq!(pixel(15, 15), (255, 0, 0), "inside the clip the child paints");
+        assert_eq!(pixel(5, 5), (255, 255, 255), "outside it the root still wins");
+        assert_eq!(pixel(40, 40), (255, 255, 255), "and the clip has a far edge too");
+
+        unregister(child);
+        unregister(root);
+    }
+
+    /// Two clips compose to their overlap, and a disjoint pair is a zero-area answer rather
+    /// than "no clip" (which would widen the subtree back to its parent).
+    #[test]
+    fn intersecting_two_clips_keeps_only_the_overlap() {
+        assert_eq!(
+            intersect_clip(Some(Rect::new(0, 0, 10, 10)), Some(Rect::new(5, 5, 10, 10))),
+            Some(Rect::new(5, 5, 5, 5))
+        );
+        assert_eq!(
+            intersect_clip(Some(Rect::new(0, 0, 10, 10)), Some(Rect::new(20, 20, 5, 5)))
+                .map(|r| r.width),
+            Some(0)
+        );
+        assert_eq!(
+            intersect_clip(Some(Rect::new(0, 0, 10, 10)), None),
+            Some(Rect::new(0, 0, 10, 10))
+        );
+        assert_eq!(intersect_clip(None, None), None);
     }
 }

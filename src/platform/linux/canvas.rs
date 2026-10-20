@@ -21,7 +21,7 @@
 
 #![cfg(all(unix_desktop, feature = "gtk-native", widgets_unstripped))]
 
-use super::types::LinuxPlatform;
+use super::types::{LinuxNativeState, LinuxPlatform};
 use crate::core::{Color, ObjectId, Point, Rect, Size};
 // `cairo`, `gdk` and `glib` are re-exported by `gtk`, which is the only
 // GTK-family crate this project declares. Referring to them as bare crates made
@@ -333,6 +333,27 @@ pub(crate) fn mount_canvas(
     placed
 }
 
+/// Resolves the drawing area that paints `id`, whether it is a mounted surface or a
+/// window's tree.
+///
+/// # Why the window lookup needs a translation
+///
+/// A host holds the **widget-registry** id while [`LinuxNativeState`] keys both
+/// `canvases` and `window_painters` by the **platform** ids it created. A mounted
+/// surface's id is the registry id it was mounted under, so the first lookup is direct;
+/// a window's paint area is keyed by the id `create_window` returned, which is reached
+/// through `host_window_for`. Without the translation, invalidating a window answered
+/// `false` for a window this backend plainly owned, so every repaint request for the
+/// window's tree was a silent no-op: after a user resize the window kept the frame it
+/// drew at the previous size until an unrelated expose arrived.
+fn paint_area_for(native: &LinuxNativeState, id: ObjectId) -> Option<&gtk::DrawingArea> {
+    if let Some(area) = native.canvases.get(&id) {
+        return Some(area);
+    }
+    let host = crate::widget::runtime::host_window_for(id).unwrap_or(id);
+    native.window_painters.get(&host)
+}
+
 /// Queues a redraw on a mounted canvas, for the **library's** invalidation path.
 ///
 /// # Why this does not tell the library
@@ -343,7 +364,7 @@ pub(crate) fn mount_canvas(
 /// event handler asks for -- go through [`note_canvas_redraw`], which does tell the library.
 pub(crate) fn repaint_canvas(platform: &LinuxPlatform, id: ObjectId) -> bool {
     let native = platform.native.lock_guard();
-    let Some(area) = native.canvases.get(&id) else {
+    let Some(area) = paint_area_for(&native, id) else {
         return false;
     };
     area.queue_draw();
@@ -384,7 +405,7 @@ pub(crate) fn note_canvas_redraw(id: ObjectId) {
 /// coordinate space and this widget's disagree, which is worth surfacing.
 pub(crate) fn repaint_canvas_rect(platform: &LinuxPlatform, id: ObjectId, rect: Rect) -> bool {
     let native = platform.native.lock_guard();
-    let Some(area) = native.canvases.get(&id) else {
+    let Some(area) = paint_area_for(&native, id) else {
         return false;
     };
 

@@ -201,6 +201,22 @@ grid.set_column_stretch(2);  // 列获得 2 倍拉伸因子
 grid.set_row_stretch(1);     // 行获得 1 倍拉伸因子
 ```
 
+### BorderLayout — 弹性中心区与固定边缘轨道
+
+用于工作台形状的窗口：固定高度的顶部/底部区域、固定宽度的侧栏，以及占据剩余空间的中心区。`spacing` 只分隔同一区域内的轨道；`margin` 为整个布局留出外边距。边缘尺寸会随 `LayoutContext` 缩放，但**不会**被放大到最小触摸尺寸——显式尺寸就是调用方的意图。
+
+```rust
+use rust_widgets::layout::{BorderLayout, BorderRegion};
+
+let mut layout = BorderLayout::new(0, 0);
+layout.add(BorderRegion::North, toolbar_id, 48);   // 固定 48px 高度
+layout.add(BorderRegion::West, sidebar_id, 240);   // 固定 240px 宽度
+layout.add(BorderRegion::Center, editor_id, 0);    // 占据剩余空间
+win.set_layout(layout);
+```
+
+同一区域可以放多个轨道，它们按插入顺序排列。中心区轨道按拉伸因子分配剩余宽度。
+
 ### UniformGridLayout — 等大单元格网格
 
 与 `GridLayout` 类似，但保证所有单元格具有相同的尺寸。

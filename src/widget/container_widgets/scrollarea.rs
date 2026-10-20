@@ -252,6 +252,9 @@ impl ScrollArea {
             return;
         }
         self.widget_resizable = resizable;
+        // The frame is the viewport for a resizable child and the declared extent for a fixed
+        // one, so this flag decides the child's rectangle.
+        self.place_content();
         // `draw` decides whether to paint the corner grip from this, so the control's own ink
         // depends on it.
         self.base.request_redraw();
@@ -270,6 +273,9 @@ impl ScrollArea {
             return;
         }
         self.alignment = alignment;
+        // Alignment places a fixed-size child inside the viewport, so it changes the child's
+        // rectangle rather than only the picture.
+        self.place_content();
         self.base.request_redraw();
     }
     /// Returns horizontal scroll bar policy.
@@ -279,6 +285,8 @@ impl ScrollArea {
     /// Sets horizontal scroll bar policy.
     pub fn set_horizontal_scroll_bar_policy(&mut self, policy: ScrollBarPolicy) {
         self.horizontal_scroll_bar_policy = policy;
+        // A bar changes the viewport's extent, and the child is placed in that extent.
+        self.place_content();
     }
     /// Returns vertical scroll bar policy.
     pub fn vertical_scroll_bar_policy(&self) -> ScrollBarPolicy {
@@ -287,6 +295,7 @@ impl ScrollArea {
     /// Sets vertical scroll bar policy.
     pub fn set_vertical_scroll_bar_policy(&mut self, policy: ScrollBarPolicy) {
         self.vertical_scroll_bar_policy = policy;
+        self.place_content();
     }
     /// Sets widget.
     ///
@@ -316,6 +325,9 @@ impl ScrollArea {
         if let Some(widget_id) = widget {
             self.base.add_child_linked(widget_id);
         }
+        // The child has never been placed: it keeps whatever rectangle it was constructed with
+        // until the scroll area hands it the viewport.
+        self.place_content();
         self.base.request_redraw();
     }
     /// Returns widget.
@@ -401,6 +413,8 @@ impl ScrollArea {
         }
         self.scroll_position = clamped;
         self.scroll_position_changed.emit(self.scroll_position);
+        // The offset is part of the child's geometry, not an offset applied by its painter.
+        self.place_content();
         self.base.request_redraw();
     }
 
@@ -408,6 +422,9 @@ impl ScrollArea {
     pub fn set_content_size(&mut self, size: Size) {
         self.content_size = size;
         self.set_scroll_position(self.scroll_position.0, self.scroll_position.1);
+        // `set_scroll_position` is a no-op when the clamped offset did not change, so the
+        // placement cannot rely on it: a fixed-size child's frame is the declared extent.
+        self.place_content();
     }
 
     /// Returns the total content size.
@@ -500,6 +517,46 @@ impl ScrollArea {
     /// and is not yet implemented. Visual scroll bar drawing is handled in `Draw`.
     fn update_scroll_bars(&mut self) {
         self.base.request_redraw();
+    }
+
+    /// The rectangle the content child occupies, **including** the scroll offset.
+    ///
+    /// `content_frame` answers the unscrolled box inside the viewport; the scroll position
+    /// moves that box. The offset belongs in the geometry here because the tree painter draws
+    /// a child at its own rectangle — an offset applied only while drawing would move the
+    /// pixels but leave the hit test, the accessible frame and every geometry query behind.
+    fn content_child_rect(&self) -> Option<Rect> {
+        self.widget?;
+        let chrome = self.assemble_chrome(self.base.geometry());
+        let frame =
+            content_frame(chrome.content, self.content_size, self.widget_resizable, self.alignment);
+        Some(Rect::new(
+            frame.x.saturating_sub(self.scroll_position.0),
+            frame.y.saturating_sub(self.scroll_position.1),
+            frame.width,
+            frame.height,
+        ))
+    }
+
+    /// Places the content child in the viewport, translated by the scroll offset.
+    ///
+    /// Every state that changes the box calls this: geometry, content extent, scroll offset,
+    /// resizability, alignment and scroll-bar policy. Keeping the list complete is what makes
+    /// the placement observable without a draw — a caller that asks the child's geometry after
+    /// a scroll gets the rectangle the next frame will use.
+    fn place_content(&self) {
+        let Some(rect) = self.content_child_rect() else {
+            return;
+        };
+        // A sized profile has no mounted surfaces and no platform geometry entry, but the
+        // rectangle derivation is still the control's model, so it is computed and not
+        // discarded with a `cfg` on the helper (which would make the helper dead there).
+        #[cfg(not(alloc_frugal))]
+        if let Some(widget_id) = self.widget {
+            crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
+        }
+        #[cfg(alloc_frugal)]
+        let _ = rect;
     }
 
     /// Paints one pinned band.
@@ -826,6 +883,19 @@ impl Widget for ScrollArea {
         self.viewport.width = geometry.width;
         self.viewport.height = geometry.height;
         self.update_scroll_bars();
+        // A layout positions the scroll area through this entry point. The content lives in
+        // the new viewport, so it has to be placed again here rather than only on a scroll.
+        self.place_content();
+    }
+
+    /// The content box descendants are clipped to.
+    ///
+    /// The *content* box, not the control's whole rectangle: the scroll-bar bands sit inside
+    /// the rectangle and would be painted over by content that reached their side. This is
+    /// also the box the scroll offset is measured against, so a scrolled child cannot draw
+    /// outside the viewport it is scrolling in.
+    fn children_clip(&self) -> Option<Rect> {
+        Some(self.assemble_chrome(self.base.geometry()).content)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -877,6 +947,8 @@ impl WidgetProperties for ScrollArea {
             )),
             "scroll_position_x" => Ok(CapabilityValue::Int(self.scroll_position().0 as i64)),
             "scroll_position_y" => Ok(CapabilityValue::Int(self.scroll_position().1 as i64)),
+            "content_width" => Ok(CapabilityValue::UInt(self.content_size().width as u64)),
+            "content_height" => Ok(CapabilityValue::UInt(self.content_size().height as u64)),
             "sticky_region_count" => Ok(CapabilityValue::UInt(self.sticky_regions().len() as u64)),
             _ => base_property_get(self, name),
         }
@@ -915,6 +987,17 @@ impl WidgetProperties for ScrollArea {
                 self.set_scroll_position(x, y);
                 Ok(())
             }
+            "content_width" | "content_height" => {
+                let extent = u32::try_from(expect_i64(value)?)
+                    .map_err(|_| CapabilityAccessError::OutOfRange)?;
+                let current = self.content_size();
+                self.set_content_size(if name == "content_width" {
+                    crate::core::Size::new(extent, current.height)
+                } else {
+                    crate::core::Size::new(current.width, extent)
+                });
+                Ok(())
+            }
             // Derived from the registered bands, which are written through
             // `add_sticky_region` / `clear_sticky_regions`.
             "sticky_region_count" => Err(CapabilityAccessError::ReadOnlyProperty),
@@ -930,6 +1013,8 @@ impl WidgetProperties for ScrollArea {
             "vertical_scroll_bar_policy",
             "scroll_position_x",
             "scroll_position_y",
+            "content_width",
+            "content_height",
             "sticky_region_count",
             BASE_PROPERTY_NAMES
         ]
@@ -1688,5 +1773,36 @@ mod tests {
             !fired.load(std::sync::atomic::Ordering::SeqCst),
             "setting the same value must not repaint"
         );
+    }
+
+    #[test]
+    fn children_are_clipped_to_the_content_box_not_the_bars() {
+        let mut sa = ScrollArea::new(Rect::new(10, 20, 200, 150));
+        sa.set_content_size(Size::new(1000, 1000));
+        // The content overflows both axes, so both bars are owed and the viewport the
+        // descendants are clipped to is smaller than the control on both axes.
+        let chrome = sa.assemble_chrome(sa.geometry());
+        assert_eq!(sa.children_clip(), Some(chrome.content));
+        assert!(chrome.content.width < sa.geometry().width);
+        assert!(chrome.content.height < sa.geometry().height);
+        assert!(chrome.vertical.is_some());
+        assert!(chrome.horizontal.is_some());
+    }
+
+    /// The scroll offset is part of the child's rectangle, not an offset applied only while
+    /// painting: the hit test and every geometry query have to see the same box.
+    #[test]
+    fn the_content_rect_follows_the_scroll_offset() {
+        let mut sa = ScrollArea::new(Rect::new(10, 20, 200, 150));
+        sa.set_content_size(Size::new(1000, 1000));
+        sa.set_widget(Some(4242));
+        let unscrolled = sa.content_child_rect().expect("a content child is set");
+
+        sa.set_scroll_position(30, 40);
+        let scrolled = sa.content_child_rect().expect("still set");
+        assert_eq!(scrolled.x, unscrolled.x - 30);
+        assert_eq!(scrolled.y, unscrolled.y - 40);
+        assert_eq!(scrolled.width, unscrolled.width);
+        assert_eq!(scrolled.height, unscrolled.height);
     }
 }

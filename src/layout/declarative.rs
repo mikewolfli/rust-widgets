@@ -147,17 +147,60 @@ pub fn place_widget_in_layout(
         let Some(layout) = map.get_mut(&parent_id) else {
             return false;
         };
-        match layout.as_any_mut().downcast_mut::<crate::layout::GridLayout>() {
-            Some(grid) => {
-                grid.set_widget_spanning(
-                    placement.row,
-                    placement.col,
-                    placement.col_span,
-                    placement.row_span,
-                    child_id,
-                );
-                true
-            }
+        if let Some(grid) = layout.as_any_mut().downcast_mut::<crate::layout::GridLayout>() {
+            grid.set_widget_spanning(
+                placement.row,
+                placement.col,
+                placement.col_span,
+                placement.row_span,
+                child_id,
+            );
+            // `set_widget_spanning` logs a refusal past the cell cap but has no return
+            // value (it is a public placement API whose signature predates this door).
+            // Asking the layout whether the child is now placed is the honest answer the
+            // caller needs; reporting `true` unconditionally would turn a refused
+            // placement into a silent success.
+            return grid.has_child(child_id);
+        }
+        if let Some(grid) = layout.as_any_mut().downcast_mut::<crate::layout::UniformGridLayout>() {
+            return grid.set_widget_spanning(
+                placement.row,
+                placement.col,
+                placement.col_span,
+                placement.row_span,
+                child_id,
+            );
+        }
+        false
+    })
+}
+
+/// Places `child_id` in a named region of a [`BorderLayout`](crate::layout::BorderLayout).
+///
+/// # Why this is a separate entry point from [`place_widget_in_layout`]
+///
+/// The two layouts accept different placement facts: a grid takes a cell and a span, a
+/// border layout takes a region and a fixed extent. Widening [`ChildPlacement`] would make
+/// every caller of the cell path supply fields that mean nothing to it. The declarative
+/// loader calls whichever entry point the child's attributes name.
+///
+/// Returns `true` when the stored layout is a border layout and the child was a member of
+/// it. A child that was never added is **not** silently inserted: the caller's registration
+/// step is what made it a child, and inventing a second registration here would make the
+/// generic `add_widget` and this call disagree about ownership.
+pub fn place_widget_in_region_layout(
+    child_id: ObjectId,
+    region: crate::layout::BorderRegion,
+    extent: u32,
+    parent_id: ObjectId,
+) -> bool {
+    LAYOUT_MAP.with(|map| {
+        let mut map = map.borrow_mut();
+        let Some(layout) = map.get_mut(&parent_id) else {
+            return false;
+        };
+        match layout.as_any_mut().downcast_mut::<crate::layout::BorderLayout>() {
+            Some(border) => border.set_region(child_id, region, extent),
             None => false,
         }
     })
@@ -204,6 +247,26 @@ pub fn add_spacer_to_layout(stretch: u32, parent_id: ObjectId) -> bool {
 /// runtime later issues. It is filtered here, at the one place geometries become
 /// widget state.
 pub fn apply_layout(parent_id: ObjectId, rect: Rect) -> Vec<(ObjectId, Rect)> {
+    // A declarative layout can be nested inside another container whose layout places it.
+    // When the outer layout moves the inner container, the inner layout has to be asked
+    // again against its new rectangle; otherwise its children keep the boxes they were
+    // given at load time. The bound is the same one the widget runtime uses for parent
+    // walks, and it keeps a corrupted/self-referential document from recursing forever.
+    const MAX_LAYOUT_DEPTH: u32 = 64;
+    apply_layout_bounded(parent_id, rect, 0, MAX_LAYOUT_DEPTH)
+}
+
+fn apply_layout_bounded(
+    parent_id: ObjectId,
+    rect: Rect,
+    depth: u32,
+    max_depth: u32,
+) -> Vec<(ObjectId, Rect)> {
+    // The recursion below is compiled out with `set_widget_geometry` on alloc-frugal
+    // builds (there is no registry to move), so the two traversal parameters have no
+    // reader there. Naming them as intentionally unused keeps `mini` warning-free.
+    #[cfg(alloc_frugal)]
+    let _ = (depth, max_depth);
     let geometries = LAYOUT_MAP.with(|map| {
         let map = map.borrow();
         let Some(layout) = map.get(&parent_id) else {
@@ -231,6 +294,14 @@ pub fn apply_layout(parent_id: ObjectId, rect: Rect) -> Vec<(ObjectId, Rect)> {
             child_rect.width,
             child_rect.height,
         );
+        if depth < max_depth && has_layout(*child_id) {
+            apply_layout_bounded(*child_id, *child_rect, depth + 1, max_depth);
+        } else if depth >= max_depth && has_layout(*child_id) {
+            log::warn!(
+                "declarative layout for widget {parent_id} exceeded the {max_depth}-level nesting \
+                 bound; child {child_id}'s layout was not applied"
+            );
+        }
     }
 
     geometries
@@ -266,6 +337,7 @@ pub fn layout_kind_name(kind: LayoutKindName) -> &'static str {
         LayoutKindName::HorizontalBox => "hbox",
         LayoutKindName::VerticalBox => "vbox",
         LayoutKindName::Grid => "grid",
+        LayoutKindName::Border => "border",
         LayoutKindName::Form => "form",
         LayoutKindName::Stack => "stack",
         LayoutKindName::HBox => "hbox",
@@ -284,6 +356,8 @@ pub enum LayoutKindName {
     VerticalBox,
     /// A row/column grid.
     Grid,
+    /// Fixed edge tracks around an elastic center.
+    Border,
     /// Two-column label/field rows.
     Form,
     /// One visible child at a time.

@@ -874,6 +874,64 @@ pub fn create_scroll_area(
 ) -> crate::core::ObjectId {
     backend_for_kind(widget::WidgetKind::ScrollArea).create_scroll_area(parent, x, y, width, height)
 }
+
+/// Creates a tab widget. The backend chooses how it is hosted.
+///
+/// A tab widget's pages are child ids declared with
+/// [`app::TabWidgetHandle::add_tab`](crate::app::TabWidgetHandle::add_tab), not the
+/// generic `Layout` machinery: a page is selected, not placed in a track.
+#[cfg(not(alloc_frugal))]
+pub fn create_tab_widget(
+    parent: crate::core::ObjectId,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> crate::core::ObjectId {
+    backend_for_kind(widget::WidgetKind::TabWidget).create_tab_widget(parent, x, y, width, height)
+}
+
+/// Creates a splitter. Its panes are child ids added through
+/// [`app::SplitterHandle::add_pane`](crate::app::SplitterHandle::add_pane); ratios are the
+/// splitter's own content model, not a generic layout.
+#[cfg(not(alloc_frugal))]
+pub fn create_splitter(
+    parent: crate::core::ObjectId,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> crate::core::ObjectId {
+    backend_for_kind(widget::WidgetKind::Splitter).create_splitter(parent, x, y, width, height)
+}
+
+/// Creates a grid widget — a visual row/column matrix, distinct from the generic
+/// [`layout::GridLayout`](crate::layout::GridLayout) placement engine.
+#[cfg(not(alloc_frugal))]
+pub fn create_grid_widget(
+    parent: crate::core::ObjectId,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> crate::core::ObjectId {
+    backend_for_kind(widget::WidgetKind::Grid).create_grid(parent, x, y, width, height)
+}
+
+/// Creates a generic dialog. Its content child is set with
+/// [`app::DialogHandle::set_content_widget`](crate::app::DialogHandle::set_content_widget);
+/// the dialog owns the chrome and the content owns its own layout.
+#[cfg(not(alloc_frugal))]
+pub fn create_dialog(
+    parent: crate::core::ObjectId,
+    title: &str,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> crate::core::ObjectId {
+    backend_for_kind(widget::WidgetKind::Dialog).create_dialog(parent, title, x, y, width, height)
+}
 /// Mounts a widget onto a surface supplied by the host.
 ///
 /// The host platform supplies a window and a drawing surface; the library paints

@@ -306,6 +306,15 @@ impl BaseWidget {
     /// capacity), and in that case it does **not** set the parent: a child whose parent claims it
     /// but whose name is in no list is the same orphan from the other side.
     ///
+    /// # Why the child's previous parent is unlinked
+    ///
+    /// A child has exactly one parent, and adoption is ordinary: a control created under a window
+    /// is then given to a dialog's content box, a tab page, a scroll area's viewport or a
+    /// splitter's pane. Leaving it in the window's child list made the tree painter visit it
+    /// twice — once under the window without the new container's clip, once in its container —
+    /// and the unclipped copy is the one the user sees. The removal happens here, in the one
+    /// primitive every container already calls, rather than in each of the eleven call sites.
+    ///
     /// # Why the child is reached through the runtime
     ///
     /// `BaseWidget` holds only an `ObjectId`, so the parent half lives on the *child's own* base.
@@ -333,10 +342,32 @@ impl BaseWidget {
         }
         #[cfg(not(alloc_frugal))]
         {
+            // The parent link is written in the **registry** id space. A mounted widget has two
+            // ids — the object's own and the registry's — and every tree walk (draw, hit test,
+            // focus, accessibility) descends from the registry id. Writing the object id here
+            // made `parent()` name an id the walk never visits.
+            let parent =
+                crate::widget::runtime::registry_id_of(self.id()).unwrap_or_else(|| self.id());
+            if child == parent {
+                return false;
+            }
+            // A child has exactly one parent. A control created under a window is in the
+            // window's child list; adopting it into a dialog's content box, a tab page, a
+            // scroll area's viewport or a splitter's pane has to take it out of that list.
+            // Without the removal the tree painter draws it twice — once unclipped under the
+            // window, once in its real container — and the unclipped copy is the one seen.
+            let previous =
+                crate::widget::runtime::with_widget(child, |child| child.parent()).flatten();
+            if let Some(previous) = previous {
+                if previous != parent {
+                    crate::widget::runtime::with_widget_mut(previous, |old_parent| {
+                        old_parent.base_mut().remove_child(child);
+                    });
+                }
+            }
             if !self.try_add_child(child) {
                 return false;
             }
-            let parent = self.id();
             crate::widget::runtime::with_widget_mut(child, |child| {
                 child.set_parent(Some(parent));
             });
@@ -1310,6 +1341,53 @@ mod tests {
 
         let _ = crate::widget::runtime::unregister(parent_id);
         let _ = crate::widget::runtime::unregister(child_id);
+    }
+
+    /// Adoption removes the child from its previous parent's list.
+    ///
+    /// # The defect this pins
+    ///
+    /// A control created under a window is in the window's child list. Adopting it into a
+    /// dialog's content box (or a tab page, a scroll area's viewport, a splitter's pane) used
+    /// to add the new link while leaving the old one: the tree painter then drew the child
+    /// twice, and the copy under the window was **unclipped** — it escaped the viewport the
+    /// new container was supposed to impose. One parent is the rule the painter relies on.
+    #[test]
+    #[cfg(not(alloc_frugal))]
+    fn adopting_a_child_removes_it_from_its_previous_parent() {
+        let panel = || {
+            crate::compat::Box::new(crate::widget::Panel::new(crate::core::Rect::new(0, 0, 40, 30)))
+        };
+        let window = crate::widget::runtime::register(panel()).expect("mount the old parent");
+        let first = crate::widget::runtime::register(panel()).expect("mount the child");
+        let second = crate::widget::runtime::register(panel()).expect("mount the new parent");
+
+        // A host links a new control under its window through this primitive.
+        crate::widget::runtime::with_widget_mut(window, |host| {
+            host.base_mut().add_child_linked(first);
+        })
+        .expect("the window is mounted");
+        assert_eq!(crate::widget::runtime::children_of(window), vec![first]);
+
+        crate::widget::runtime::with_widget_mut(second, |host| {
+            host.base_mut().add_child_linked(first);
+        })
+        .expect("the new parent is mounted");
+
+        assert!(
+            crate::widget::runtime::children_of(window).is_empty(),
+            "the old parent must stop listing an adopted child"
+        );
+        assert_eq!(crate::widget::runtime::children_of(second), vec![first]);
+        assert_eq!(
+            crate::widget::runtime::with_widget(first, |child| child.parent()).flatten(),
+            Some(second),
+            "the parent link names the registry id the tree walks use"
+        );
+
+        crate::widget::runtime::unregister(first);
+        crate::widget::runtime::unregister(second);
+        crate::widget::runtime::unregister(window);
     }
 
     /// A self-parent and the `0` sentinel are refused, so a link cannot make a cycle root.

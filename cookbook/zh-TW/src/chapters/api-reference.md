@@ -2,7 +2,7 @@
 
 本章提供完整的、按模組劃分的 `rust_widgets` 公開 API 參考文件。當您需要為任務查找正確的型別、函式或特徵時，可將其用作快速查閱手冊。
 
-此處記載的函式庫版本為 **2.8.10**。程式碼範例假設使用 `use rust_widgets::*;` 或如所示使用顯式路徑。
+此處記載的函式庫版本為 **2.8.11**。程式碼範例假設使用 `use rust_widgets::*;` 或如所示使用顯式路徑。
 
 ---
 
@@ -937,6 +937,7 @@ pub trait Layout {
 | `HBoxLayout` | `box_layout` | `Orientation::Horizontal` 的 `BoxLayout`（命名便利） |
 | `VBoxLayout` | `box_layout` | `Orientation::Vertical` 的 `BoxLayout`（命名便利） |
 | `GridLayout` | `grid` | 行/列網格，使用 `set_widget(row, col, id)` |
+| `BorderLayout` | `border` | 固定邊緣軌道（`north`/`south`/`west`/`east`）加彈性中心區 |
 | `StackLayout` | `stack` | 一次只顯示一個子控制項（卡片堆疊），使用 `set_current_index()` |
 | `FlowLayout` | `flow` | 自動換行（類似 CSS flex-wrap） |
 | `FlexLayout` | `flex` | CSS flexbox 風格佈局 |

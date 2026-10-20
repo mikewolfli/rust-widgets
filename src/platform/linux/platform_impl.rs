@@ -570,12 +570,17 @@ impl Platform for LinuxPlatform {
         }
     }
 
-    /// Queue a redraw on the canvas's `DrawingArea`.
+    /// Queue a redraw on the surface that paints this id.
+    ///
+    /// `id` may name a mounted surface or a window. A window's ordinary children have
+    /// no GTK widget of their own — the window's tree painter draws them — so resolving
+    /// only `canvases` answered `false` for the one id whose repaint the app layer asks
+    /// for most often. See `canvas::paint_area_for` for the registry-id → host-id hop.
     #[cfg(all(unix_desktop, feature = "gtk-native", widgets_unstripped))]
     fn invalidate_surface(&self, id: crate::core::ObjectId) -> bool {
         super::canvas::repaint_canvas(self, id)
     }
-    /// Queue a redraw of one rectangle of the canvas's `DrawingArea`.
+    /// Queue a redraw of one rectangle of the surface that paints this id.
     ///
     /// Gated exactly like [`Self::invalidate_surface`]: without `gtk-native` there are
     /// no canvases to invalidate, so the trait default (`false`) is the honest answer

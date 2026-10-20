@@ -5,6 +5,112 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.8.11 (2026-10-20) — workbench layout, panel factories, composite content, GTK resize repaint
+
+This release closes the three optional/defect items in `docs/issues/feedback-20261020.md` and
+adds the declarative and designer paths that keep the new layout usable outside Rust.
+
+### Layout
+
+- New `BorderLayout` (`layout::border`) with `BorderRegion::{North,South,West,East,Center}`:
+  fixed pixel tracks on the edges, an elastic center, per-track extents, and overflow clamping so
+  no track escapes the parent. `update_with_context` scales extents, spacing and margin by the
+  larger of the layout/text scale. Edge extents are deliberately not grown to the minimum touch
+  target: an explicit extent is caller intent.
+- Declarative `"type": "border"` (spacing/margin) plus per-child `region` and `extent`. The loader
+  places through `place_widget_in_region_layout`, and the generation-time solver takes the same
+  border entry point, so mode 1 and mode 2 produce identical geometry for one document.
+- Declarative grid cells now participate in the generation-time solve: `col`/`row`/`col_span`/
+  `row_span` are applied to the concrete `GridLayout`/`UniformGridLayout`, so generated programs no
+  longer auto-fill cells the document placed explicitly. Explicit placement also clears the prior
+  `add_widget` placement, fixing documents whose declaration order differs from cell order (a
+  widget could otherwise occupy two cells and be reported at the stale one).
+- The layout schema describes `border`, adds `ParamKind::Region`, and reports `region`/`extent` as
+  honoured child attributes for a border and dropped for every other kind.
+
+### Panels
+
+- `PanelHandle` gains child factories: `new_button`, `new_label`, `new_checkbox`,
+  `new_radio_button`, `new_line_edit`, `new_combo_box`, `new_list_box`, `new_slider`,
+  `new_progress_bar`, `new_spin_box`, `new_list_view`, `new_scroll_area`, `new_tool_bar`,
+  `new_status_bar`, `new_panel` and `new_frame`. A child created this way is parented to the
+  **panel**, not to the enclosing window.
+- Panel layouts now recurse into nested panels after placing them (bounded to 64 levels), and the
+  `set_layout` contract documents that a panel can still position a window-created child for
+  backwards compatibility.
+- `FrameHandle` (the panel-backed group box) now exposes the panel operations: `as_panel`,
+  `set_layout`, `set_geometry`, `set_title`, and the common child factories. `new_frame` records the
+  frame's geometry like `new_panel`, so a frame hosts and re-lays out children instead of silently
+  behaving differently from a panel.
+- Declarative (JSON / C ABI) layouts now re-run when an outer window or panel places their
+  container, and recursively for nested declarative containers (bounded to 64 levels).
+
+### Composite controls
+
+The six controls with their own content models — pages, cells, viewport, panes, dialog content,
+form fields — stay out of the generic `Layout` trait. A tab page is not a track, and admitting one
+would let a caller describe a second, competing placement for the same child (rule #101). Their
+handles now expose the model they actually own:
+
+- New `WindowHandle` factories `new_tab_widget`, `new_grid_widget`, `new_splitter`,
+  `new_dialog` and `new_group_box`, and matching root constructors `create_tab_widget`,
+  `create_grid_widget`, `create_splitter` and `create_dialog`.
+- `TabWidgetHandle`: `add_tab`/`remove_tab`/`tab_count`/`current_index`/`set_current_index`,
+  `set_tab_text`, `set_closable`, `set_movable`, `set_tab_position`, `set_tab_shape`.
+- `GridWidgetHandle`: `rows`/`columns`/`spacing` and their setters (clamped to at least one row
+  or column).
+- `SplitterHandle`: `add_pane`/`remove_pane`/`pane_count`, `orientation`/`set_orientation`,
+  `set_ratio`/`ratio`.
+- `DialogHandle`: `set_title`, `set_content_widget`/`content_widget`, `set_modal`, `open`,
+  `close`, `content_rect`.
+- `ScrollAreaHandle`: `content_width`/`content_height` are now real properties on the control,
+  `set_content_size` writes them, and the handle reads back the **accepted** scroll offset rather
+  than the requested one.
+- `PanelHandle`/`FrameHandle`: `set_alignment`/`alignment`, `set_checkable`/`is_checkable` and
+  `toggle`, so the panel-backed group box exposes the same fields as `GroupBox`.
+
+Placement and painting:
+
+- `Dialog` places its content child in the frame it actually paints: the resting box, inset by
+  the title strip when there is a title, and the scaled box during the reveal animation. The child
+  is an ordinary tree child, so the tree painter draws it after the chrome and the hit test reaches
+  it without a forwarding registry.
+- `TabWidget` places the selected page in its content box and hides the other pages. Previously
+  every page was drawn at its construction rectangle, so switching tabs changed the strip and
+  nothing else. The strip height now reads the shared `dimensions::TAB_HEIGHT` rather than a
+  second literal.
+- `Widget::children_clip` states the box a container's descendants are clipped to. The tree
+  painter carries that rectangle per node and intersects it down the tree, so a scrolled child
+  cannot paint outside its viewport. `ScrollArea` answers with its content box, excluding the
+  scroll-bar bands.
+- `ScrollArea` now places its content child in the viewport with the scroll offset in the
+  child's **geometry** (not only in the paint call), so hit-testing and geometry queries see
+  the scrolled box too. The content follows `set_geometry`, content extent, alignment,
+  resizability, scroll-bar policy and every scroll position.
+- `Splitter` reserves the divider's 5 px in its layout (`HANDLE_WIDTH` now feeds the layout,
+  the paint and the drag threshold) and links its panes as ordinary tree children. Panes are
+  placed from the same ratios the divider and drag use, and the gap remains the divider's grab
+  area, so the pointer capture starts on the splitter rather than on a pane.
+- `BaseWidget::add_child_linked` now removes the child from its **previous** parent's list and
+  writes the parent link in the registry id space. Adopting a window-created control into a
+  dialog's content box, a tab page, a scroll area's viewport or a splitter's pane therefore no
+  longer paints it twice — the copy under the window was unclipped — and `parent()` names the
+  id the tree walks actually use.
+- `widget::runtime::set_geometry` takes the widget out of the registry for the duration of the
+  call, the same discipline as `dispatch_event`. A container that places its children from
+  `set_geometry` therefore no longer panics with `RefCell already mutably borrowed`.
+
+### Linux / GTK
+
+- `invalidate_surface` and `invalidate_surface_rect` resolve a **window** id to the `DrawingArea`
+  that paints its tree, not only to mounted-surface canvases. This fixes the defect where a user
+  resize re-ran the layout but left the old frame on screen until an unrelated expose arrived.
+- The `Resized` trigger now explicitly requests a window repaint after the layout pass, so a
+  layout whose children keep their geometry still updates the background around them.
+- `examples/probe_resize_repaint` proves the end-to-end behaviour on real X11: `wmctrl` resizes
+  480x320 to 760x320 with no input events, and `xwd` shows the progress-bar track reaching the new
+  right edge (`OK`, 4/4 checks).
+
 ## 2.8.10 (2026-10-20) — host-feedback closure, GTK teardown, mini hygiene
 
 This release closes the Linux `mini` build request from

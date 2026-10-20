@@ -211,6 +211,15 @@ impl GridLayout {
         row_span: u32,
         widget_id: ObjectId,
     ) {
+        // Explicit placement is a **move**, not an addition: the loader adds every child
+        // through `add_widget` (which auto-places it) before it knows the cell the document
+        // declared. Leaving the auto-placement in place meant a widget declared out of
+        // declaration order occupied two cells, and `cell_of` — which reports the first
+        // scan hit — could return the stale auto cell and place the widget in the wrong
+        // column. Clearing the widget's own cells after the target cell is proven
+        // addressable makes the declared cell the only one it occupies; cells owned by
+        // another widget are untouched, and a placement that cannot be stored leaves the
+        // widget where it was rather than deleting it.
         self.grow_to_fit(row, col);
         if !self.has_storage_slot(row, col) {
             // `grow_to_fit` failed to cover the cell because the requested extent's product
@@ -223,6 +232,7 @@ impl GridLayout {
             );
             return;
         }
+        self.remove_widget(widget_id);
         let col_span = col_span.max(1).min(self.cols - col);
         let row_span = row_span.max(1).min(self.rows - row);
         let placement = GridPlacement { widget_id, col_span, row_span };
@@ -276,6 +286,9 @@ impl GridLayout {
         if !self.has_storage_slot(row, col) {
             return false;
         }
+        // See `set_widget_spanning`: an explicit placement replaces the auto-placement
+        // `add_widget` may already have made, so one widget occupies one rectangle.
+        self.remove_widget(widget_id);
         let col_span = col_span.max(1).min(self.cols - col);
         let row_span = row_span.max(1).min(self.rows - row);
         let placement = GridPlacement { widget_id, col_span, row_span };
@@ -735,6 +748,43 @@ mod tests {
     #[test]
     fn the_default_row_sizing_is_fill() {
         assert_eq!(GridLayout::new(2, 2, 0, 0).row_sizing(), RowSizing::Fill);
+    }
+
+    /// An explicit cell must move the widget, not add a second placement.
+    #[test]
+    fn explicit_placement_moves_a_widget_instead_of_duplicating_it() {
+        // The loader registers every child with `add_widget` (auto-placement) before it
+        // learns the declared cell. A declared cell must therefore replace that
+        // auto-placement, not add a second one: a widget present in two cells makes
+        // `cell_of` return whichever cell is scanned first, which can be the stale one.
+        let mut grid = GridLayout::new(1, 2, 0, 0);
+        grid.add_widget(7, 1);
+        assert_eq!(grid.cell_of(7), Some((0, 0)), "auto-placement starts at the origin");
+
+        grid.set_widget(1, 1, 7);
+        assert_eq!(grid.cell_of(7), Some((1, 1)), "the declared cell wins");
+        assert_eq!(grid.cell_count(), 1, "the widget occupies exactly one cell");
+
+        // The stale cell is free: a second widget may take it.
+        grid.set_widget(0, 0, 8);
+        assert_eq!(grid.cell_of(8), Some((0, 0)));
+        assert_eq!(grid.cell_count(), 2);
+    }
+
+    #[test]
+    fn a_declared_cell_out_of_declaration_order_lands_in_the_declared_cell() {
+        // Regression: the second child declared (0,0) after the first declared (1,1).
+        // Without clearing the auto-placement, the first child remained at (0,0) too and
+        // the second over-inherited it; `cell_of` reported the stale cell.
+        let mut grid = GridLayout::new(1, 2, 0, 0);
+        grid.add_widget(1, 1);
+        grid.add_widget(2, 1);
+        grid.set_widget(1, 1, 1);
+        grid.set_widget(0, 0, 2);
+
+        assert_eq!(grid.cell_of(1), Some((1, 1)));
+        assert_eq!(grid.cell_of(2), Some((0, 0)));
+        assert_eq!(grid.cell_count(), 2);
     }
 
     /// **The defect this pins.** A widget placed with `col_span` must be as wide as the

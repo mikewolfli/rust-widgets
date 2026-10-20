@@ -40,6 +40,14 @@ const SPLITTER_DRAG_TYPE: &str = "splitter_handle";
 /// first few pixels of every drag feel unresponsive.
 const SPLITTER_DRAG_THRESHOLD: i32 = 2;
 
+/// The width of the divider between adjacent panes, in logical pixels.
+///
+/// This is **one** number with three consumers: the layout reserves it between panes, the
+/// painter fills it, and the press hit test accepts a grab inside it. They used to disagree —
+/// the layout reserved nothing and the draw and drag each restated `5` — which is why the
+/// panes' rectangles met edge to edge and the divider was painted over them.
+const HANDLE_WIDTH: u32 = 5;
+
 /// The pane ratios captured when a handle drag began, plus the handle index.
 ///
 /// Kept beside the session rather than inside the payload because it is the
@@ -77,7 +85,10 @@ impl Splitter {
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::Splitter, geometry, "Splitter"),
-            layout: SplitterLayout::new(Orientation::Horizontal, 0),
+            // The gap is not decoration: it is the divider's grab area. With no gap the panes
+            // meet at the boundary and a press on the visible handle lands on a pane instead
+            // of the splitter, so the drag can never start.
+            layout: SplitterLayout::new(Orientation::Horizontal, HANDLE_WIDTH),
             pane_layout_changed: Signal1::new(),
             orientation_changed: Signal1::new(),
             registry: None,
@@ -97,6 +108,8 @@ impl Splitter {
         }
         self.layout.set_orientation(orientation);
         self.orientation_changed.emit(orientation);
+        // Every pane rectangle is recomputed along the other axis.
+        self.place_panes();
         self.base.request_redraw();
     }
     /// Returns pane count.
@@ -114,6 +127,10 @@ impl Splitter {
     /// Adds one pane and returns assigned index.
     pub fn add_pane(&mut self, pane_id: ObjectId, stretch: u32) -> usize {
         let index = self.layout.add_pane(pane_id, stretch);
+        // A pane is an ordinary tree child: the tree painter draws it after the splitter's
+        // track and the hit test reaches it directly, so no draw-closure registry is needed.
+        self.base.add_child_linked(pane_id);
+        self.place_panes();
         if self.pane_layout_changed.slot_count() > 0 {
             self.pane_layout_changed.emit(self.layout.ratios().to_vec());
         }
@@ -124,6 +141,8 @@ impl Splitter {
         if !self.layout.remove_pane(pane_id) {
             return false;
         }
+        self.base.remove_child_linked(pane_id);
+        self.place_panes();
         if self.pane_layout_changed.slot_count() > 0 {
             self.pane_layout_changed.emit(self.layout.ratios().to_vec());
         }
@@ -137,6 +156,7 @@ impl Splitter {
         if self.pane_layout_changed.slot_count() > 0 {
             self.pane_layout_changed.emit(self.layout.ratios().to_vec());
         }
+        self.place_panes();
         self.base.request_redraw();
         true
     }
@@ -148,6 +168,7 @@ impl Splitter {
         if self.pane_layout_changed.slot_count() > 0 {
             self.pane_layout_changed.emit(self.layout.ratios().to_vec());
         }
+        self.place_panes();
         self.base.request_redraw();
         true
     }
@@ -166,6 +187,20 @@ impl Splitter {
         let mut rects = Vec::new();
         self.layout.update(self.base.geometry(), &mut |id, rect| rects.push((id, rect)));
         rects
+    }
+
+    /// Places every pane in the rectangle the layout gives it.
+    ///
+    /// The panes are ordinary tree children, so the tree painter draws them and the hit test
+    /// reaches them directly; this is the placement half of that model, not a second drawing
+    /// path. The layout reserves [`HANDLE_WIDTH`] between adjacent panes, which is what keeps
+    /// the divider's grab area free of pane rectangles — a press there therefore lands on the
+    /// splitter and can begin a drag.
+    fn place_panes(&self) {
+        #[cfg(not(alloc_frugal))]
+        for (pane_id, rect) in self.pane_rects() {
+            crate::set_widget_geometry(pane_id, rect.x, rect.y, rect.width, rect.height);
+        }
     }
 
     /// The centre of the divider that follows pane `index`, in widget coordinates.
@@ -234,6 +269,15 @@ impl Widget for Splitter {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(300, 200)
+    }
+
+    /// Moves the splitter and re-places every pane.
+    ///
+    /// A layout positions the splitter through the same geometry entry point, so this is where
+    /// a window or panel resize reaches the panes rather than leaving them in the old box.
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        self.place_panes();
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -393,7 +437,7 @@ impl Draw for Splitter {
         // boundaries are. Deriving them here from raw ratios was a defect: the layout reads a
         // ratio as a relative weight (`weight / sum`), so two equal panes put the boundary at
         // the middle while the raw-weight accumulation put the handle at the right edge.
-        let handle_width = 5;
+        let handle_width = HANDLE_WIDTH as i32;
         match self.orientation() {
             Orientation::Horizontal => {
                 // Draw vertical splitter handles, one in each gap between panes.
@@ -493,8 +537,6 @@ impl Splitter {
     /// The hit test uses the same [`Self::divider_centers`] derivation the fill uses, so
     /// the grab area is exactly the handle the user can see.
     fn begin_handle_drag(&mut self, pos: crate::core::Point) {
-        const HANDLE_WIDTH: f32 = 5.0;
-
         if let Some(index) = self.pane_rects().iter().position(|(_, pane)| {
             pos.x >= pane.x
                 && pos.x < pane.x + pane.width as i32
@@ -510,7 +552,7 @@ impl Splitter {
                 Orientation::Horizontal => center as f32 - self.base.geometry().x as f32,
                 Orientation::Vertical => center as f32 - self.base.geometry().y as f32,
             };
-            if (pos_primary - center).abs() <= HANDLE_WIDTH / 2.0 {
+            if (pos_primary - center).abs() <= HANDLE_WIDTH as f32 / 2.0 {
                 // The payload names the handle, so a future drop target can tell
                 // which divider the drag came from.
                 let payload =
@@ -583,6 +625,8 @@ impl Splitter {
         let scale = pair_sum / new_pair_sum;
         self.layout.set_ratio(index, new_left * scale);
         self.layout.set_ratio(index + 1, new_right * scale);
+        // The panes follow the ratios while the handle is moving, not only on release.
+        self.place_panes();
         if self.pane_layout_changed.slot_count() > 0 {
             self.pane_layout_changed.emit(self.layout.ratios().to_vec());
         }
@@ -599,6 +643,7 @@ impl Splitter {
         }
         self.drag_state = None;
         self.layout.normalize_ratios();
+        self.place_panes();
         if self.pane_layout_changed.slot_count() > 0 {
             self.pane_layout_changed.emit(self.layout.ratios().to_vec());
         }
@@ -669,12 +714,14 @@ mod tests {
         sp.divider_centers().first().copied().unwrap_or(sp.geometry().x)
     }
 
-    /// The divider is painted and grabbed at the boundary between the panes.
+    /// The divider is painted and grabbed in the gap between the panes.
     ///
     /// `add_pane` stores its `stretch` as a **relative weight**, and the layout divides
-    /// by the sum, so two equal panes on a 300px splitter meet at 150. The control used
-    /// to accumulate the raw weights instead, which put the handle at 300 — off the
-    /// right edge and nowhere near the panes it separates.
+    /// by the sum, so two equal panes split the pane budget evenly. The control used to
+    /// accumulate the raw weights instead, which put the handle at 300 — off the right
+    /// edge and nowhere near the panes it separates. The gap is the handle's own width:
+    /// with no gap the panes met edge to edge and covered the grab area, so a press on
+    /// the visible divider landed on a pane instead of the splitter.
     #[test]
     fn the_divider_sits_between_the_panes() {
         let sp = two_pane_splitter();
@@ -682,9 +729,36 @@ mod tests {
         let mut rects = crate::compat::Vec::new();
         sp.layout.update(sp.geometry(), &mut |id, rect| rects.push((id, rect)));
         let (first, second) = (rects[0].1, rects[1].1);
-        assert_eq!(first.x + first.width as i32, 150, "first pane ends at the middle");
-        assert_eq!(second.x, 150, "second pane starts there too");
-        assert_eq!(divider_x(&sp), 150, "and the divider is drawn in that gap");
+        let first_end = first.x + first.width as i32;
+
+        assert_eq!(
+            second.x - first_end,
+            HANDLE_WIDTH as i32,
+            "the layout must reserve the handle's grab area between panes"
+        );
+        assert_eq!(
+            first.width + second.width + HANDLE_WIDTH,
+            sp.geometry().width,
+            "the panes and the handle tile the splitter exactly"
+        );
+
+        let divider = divider_x(&sp);
+        assert!(divider > first_end, "the divider starts after the first pane");
+        assert!(divider < second.x, "and ends before the second");
+        // The painted handle is `center - width/2 .. center - width/2 + width`, which has to
+        // be exactly the gap the hit test accepts.
+        assert_eq!(divider - HANDLE_WIDTH as i32 / 2, first_end);
+        assert_eq!(divider + HANDLE_WIDTH as i32 / 2 + 1, second.x);
+    }
+
+    /// A pane is part of the splitter's tree, so the tree painter draws it and the hit test
+    /// can reach it without a draw-closure registry.
+    #[test]
+    fn panes_are_linked_as_children() {
+        let mut sp = two_pane_splitter();
+        assert_eq!(sp.children(), &[1, 2]);
+        assert!(sp.remove_pane(1));
+        assert_eq!(sp.children(), &[2]);
     }
 
     #[test]

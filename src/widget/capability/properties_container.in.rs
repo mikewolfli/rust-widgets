@@ -85,6 +85,11 @@ macro_rules! impl_properties_container {
             ),
             PropertySchema::new("scroll_position_x", PropertyValueKind::Int, true, true),
             PropertySchema::new("scroll_position_y", PropertyValueKind::Int, true, true),
+            // The viewport content extent. Without these the scroll position is clamped
+            // against the control's own content size, but nothing could set that size
+            // through the property/handle route.
+            PropertySchema::new("content_width", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("content_height", PropertyValueKind::UInt, true, true),
             // The sticky list is written through `add_sticky_region` /
             // `clear_sticky_regions`; the count is what the property layer reports,
             // following the same convention as `Meter`'s threshold bands.

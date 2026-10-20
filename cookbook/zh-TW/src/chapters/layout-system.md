@@ -203,6 +203,22 @@ grid.set_column_stretch(2);  // columns get 2× stretch factor
 grid.set_row_stretch(1);     // rows get 1× stretch factor
 ```
 
+### BorderLayout——彈性中心區與固定邊緣軌道
+
+用於工作台形狀的視窗：固定高度的頂部/底部區域、固定寬度的側欄，以及佔據剩餘空間的中心區。`spacing` 只分隔同一區域內的軌道；`margin` 為整個版面配置留出外邊距。邊緣尺寸會隨 `LayoutContext` 縮放，但**不會**被放大到最小觸控尺寸——明確的尺寸就是呼叫方的意圖。
+
+```rust
+use rust_widgets::layout::{BorderLayout, BorderRegion};
+
+let mut layout = BorderLayout::new(0, 0);
+layout.add(BorderRegion::North, toolbar_id, 48);   // 固定 48px 高度
+layout.add(BorderRegion::West, sidebar_id, 240);   // 固定 240px 寬度
+layout.add(BorderRegion::Center, editor_id, 0);    // 佔據剩餘空間
+win.set_layout(layout);
+```
+
+同一區域可以放多個軌道，它們按插入順序排列。中心區軌道按伸縮因子分配剩餘寬度。
+
 ### UniformGridLayout——等尺寸網格儲存格
 
 類似 `GridLayout`，但保證所有儲存格具有完全相同的尺寸。

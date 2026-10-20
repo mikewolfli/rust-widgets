@@ -201,6 +201,22 @@ grid.set_column_stretch(2);  // columns get 2× stretch factor
 grid.set_row_stretch(1);     // rows get 1× stretch factor
 ```
 
+### BorderLayout — Fixed Edge Tracks Around an Elastic Center
+
+A workbench-shaped window: fixed-height top/bottom bands, fixed-width sidebars, and a center that takes what remains. `spacing` separates tracks **within** one region; `margin` insets the whole layout. Edge extents are scaled by `LayoutContext`, but are never enlarged to the minimum touch target — an explicit extent is the caller's intent.
+
+```rust
+use rust_widgets::layout::{BorderLayout, BorderRegion};
+
+let mut layout = BorderLayout::new(0, 0);
+layout.add(BorderRegion::North, toolbar_id, 48);   // fixed 48px height
+layout.add(BorderRegion::West, sidebar_id, 240);   // fixed 240px width
+layout.add(BorderRegion::Center, editor_id, 0);    // takes the rest
+win.set_layout(layout);
+```
+
+Several tracks can share a region; they stack in insertion order. Center tracks share the remaining width by stretch factor.
+
 ### UniformGridLayout — Equal-Size Grid Cells
 
 Similar to `GridLayout` but guarantees all cells have identical dimensions.

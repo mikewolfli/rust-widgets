@@ -165,6 +165,27 @@ pub trait Widget: EventHandler + Any {
     fn children(&self) -> &[ObjectId] {
         self.base().children()
     }
+
+    /// The rectangle this control clips its **descendants** to, if any.
+    ///
+    /// # Why this lives on the control and not on the painter
+    ///
+    /// A viewport is a property of the container's content model, not of a particular draw
+    /// call: a scroll area shows a window onto content that is larger than the window, and a
+    /// page remains clipped by its tab body. The painter cannot infer the box from geometry —
+    /// the scroll-bar bands are inside the control's rectangle and must not be covered — so the
+    /// container is the only place that knows it.
+    ///
+    /// The rectangle is in the same absolute coordinate space as [`Widget::geometry`] and the
+    /// children's rectangles. `None` means "do not clip", which is the right answer for every
+    /// control that does not own a viewport; returning an empty rectangle is a real answer
+    /// (nothing of the subtree is visible) and the painter skips it.
+    ///
+    /// The tree painter applies this to a node's children, never to the node itself: a control
+    /// whose content box sits inside its own rectangle would otherwise clip its own chrome.
+    fn children_clip(&self) -> Option<Rect> {
+        None
+    }
     /// Show widget.
     fn show(&mut self) {
         self.base_mut().show();

@@ -43,7 +43,26 @@ impl UniformGridLayout {
         // the caller asked for, so an out-of-range cell is refused rather than grown up to.
         // Growing here would silently rewrite the row and column counts the caller chose, which
         // is the one thing this type exists to keep fixed.
-        self.inner.place_within_extent(row, col, 1, 1, widget_id);
+        let _ = self.inner.place_within_extent(row, col, 1, 1, widget_id);
+    }
+
+    /// Assigns a widget to an explicit cell, returning whether the cell existed.
+    ///
+    /// # Why a span and a return value
+    ///
+    /// The declarative engine exposes one placement door for every cell-based layout. A
+    /// uniform grid is cell-based, so it has to answer the same call as a plain grid — its
+    /// dimensions stay fixed, but a cell that exists accepts the placement. Returning the
+    /// answer lets the loader report a refused cell instead of claiming it placed a child.
+    pub fn set_widget_spanning(
+        &mut self,
+        row: u32,
+        col: u32,
+        col_span: u32,
+        row_span: u32,
+        widget_id: ObjectId,
+    ) -> bool {
+        self.inner.place_within_extent(row, col, col_span, row_span, widget_id)
     }
 
     /// Returns the number of occupied cells (widgets placed in the grid).
@@ -202,6 +221,18 @@ mod tests {
         assert_eq!(ids.len(), 2);
         assert!(ids.contains(&10));
         assert!(ids.contains(&20));
+    }
+
+    #[test]
+    fn uniform_grid_explicit_placement_is_supported_and_stays_inside_the_extent() {
+        let mut grid = UniformGridLayout::new(2, 2, 0, 0);
+        // The declarative engine's one placement door works for a uniform grid too; a cell
+        // that exists is accepted, a cell outside the fixed extent is refused.
+        assert!(grid.set_widget_spanning(1, 1, 1, 1, 7));
+        assert_eq!(grid.inner.cell_of(7), Some((1, 1)));
+        assert!(!grid.set_widget_spanning(9, 9, 1, 1, 8), "a fixed grid does not grow");
+        assert_eq!(grid.rows(), 2);
+        assert_eq!(grid.cols(), 2);
     }
 
     #[test]

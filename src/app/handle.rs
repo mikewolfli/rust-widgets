@@ -1240,6 +1240,14 @@ pub fn dispatch_trigger(widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
             if let Some((width, height)) = crate::window_client_size(widget_id) {
                 set_window_size(widget_id, width, height);
                 apply_window_layout(widget_id);
+                // The layout pass moves children, but it cannot *guarantee* a paint:
+                // a layout whose children keep their geometry (a fixed-size control
+                // centered in a larger window) changes only the background around
+                // them. Asking for the window explicitly is what makes a backend
+                // that paints the whole tree (GTK, Win32) redraw after the OS
+                // resized it, instead of keeping the old frame until an unrelated
+                // expose happens to arrive.
+                crate::widget::runtime::request_repaint(widget_id);
                 // Re-running the layout is only half the contract the event type
                 // documents. `Event::Resize` existed, was published, and had a
                 // constructor — but nothing ever produced it, so a control that handled
@@ -1586,6 +1594,31 @@ impl WindowHandle {
         ProgressBarHandle::from_raw(crate::create_progress_bar(self.id, x, y, w, h))
     }
 
+    /// Creates a tab widget as a child of this window.
+    ///
+    /// Pages are child ids added with [`TabWidgetHandle::add_tab`]; the selected page is
+    /// laid out to the content rect by the tab widget itself.
+    pub fn new_tab_widget(&self, x: i32, y: i32, w: u32, h: u32) -> TabWidgetHandle {
+        TabWidgetHandle::from_raw(crate::create_tab_widget(self.id, x, y, w, h))
+    }
+
+    /// Creates a grid widget as a child of this window.
+    ///
+    /// This is the **visual** row/column matrix, distinct from `GridLayout` placement.
+    pub fn new_grid_widget(&self, x: i32, y: i32, w: u32, h: u32) -> GridWidgetHandle {
+        GridWidgetHandle::from_raw(crate::create_grid_widget(self.id, x, y, w, h))
+    }
+
+    /// Creates a splitter as a child of this window.
+    pub fn new_splitter(&self, x: i32, y: i32, w: u32, h: u32) -> SplitterHandle {
+        SplitterHandle::from_raw(crate::create_splitter(self.id, x, y, w, h))
+    }
+
+    /// Creates a generic dialog as a child of this window.
+    pub fn new_dialog(&self, title: &str, x: i32, y: i32, w: u32, h: u32) -> DialogHandle {
+        DialogHandle::from_raw(crate::create_dialog(self.id, title, x, y, w, h))
+    }
+
     /// Mount a widget onto a surface in this window.
     ///
     /// # What this is for
@@ -1691,7 +1724,22 @@ impl WindowHandle {
     /// The terminology difference is cosmetic — `new_frame` exists for API
     /// clarity when the widget is used as a visual frame/group box.
     pub fn new_frame(&self, x: i32, y: i32, w: u32, h: u32) -> FrameHandle {
-        FrameHandle::from_raw(crate::create_panel(self.id, x, y, w, h))
+        let frame = FrameHandle::from_raw(crate::create_panel(self.id, x, y, w, h));
+        PANEL_STATES.with(|map| {
+            map.borrow_mut().insert(frame.raw_id(), PanelState::with_geometry(x, y, w, h));
+        });
+        frame
+    }
+
+    /// Creates a group box as a child of this window.
+    ///
+    /// A group box is a panel with a title, so it is the same widget as
+    /// [`WindowHandle::new_frame`] with the title already set. Use this spelling when the
+    /// control's grouping role is what matters; use `new_frame` when its border is.
+    pub fn new_group_box(&self, title: &str, x: i32, y: i32, w: u32, h: u32) -> FrameHandle {
+        let frame = self.new_frame(x, y, w, h);
+        frame.set_title(title);
+        frame
     }
 
     /// Creates a spin box as a child of this window: a numeric field with an
@@ -2001,6 +2049,11 @@ fn apply_window_layout(window_id: ObjectId) {
         // (usually zero-area) rect — the children exist but are never placed.
         if widget_hosts_a_layout(widget_id) {
             apply_panel_geometry(widget_id, geometry);
+        } else if crate::layout::declarative::has_layout(widget_id) {
+            // The declarative (JSON / C ABI) registry is a second layout store. A
+            // container loaded from a document is placed by the window just like a
+            // panel, so its own layout must be asked against the new rectangle too.
+            crate::layout::declarative::apply_layout(widget_id, geometry);
         }
     }
 }
@@ -2106,6 +2159,7 @@ impl_handle!(ComboBoxHandle, "Type-safe handle for a ComboBox widget.");
 impl_handle!(ListBoxHandle, "Type-safe handle for a ListBox widget.");
 impl_handle!(SliderHandle, "Type-safe handle for a Slider widget.");
 impl_handle!(ProgressBarHandle, "Type-safe handle for a ProgressBar widget.");
+impl_handle!(SplitterHandle, "Type-safe handle for a Splitter (pane container) widget.");
 impl_handle!(PanelHandle, "Type-safe handle for a Panel widget.");
 impl_handle!(SpinBoxHandle, "Type-safe handle for a SpinBox widget.");
 impl_handle!(ListViewHandle, "Type-safe handle for a ListView widget.");
@@ -3038,12 +3092,6 @@ impl ScrollAreaHandle {
     /// through [`crate::platform::Platform::set_widget_scroll_position`] (`SetScrollPos` on
     /// Windows, the GTK adjustments, the AppKit clip view).
     pub fn set_scroll_position(&self, x: i32, y: i32) {
-        SCROLL_AREA_STATES.with(|map| {
-            let mut map = map.borrow_mut();
-            let state = map.entry(self.raw_id()).or_default();
-            state.scroll_x = x;
-            state.scroll_y = y;
-        });
         {
             let wrote_x = write_control_property(
                 self.raw_id(),
@@ -3057,6 +3105,21 @@ impl ScrollAreaHandle {
             );
             let _ = wrote_x && wrote_y;
         };
+        // The control clamps the offset against its own content/viewport, so the mirror
+        // records what the control **accepted**, not what the caller asked for. Reading it
+        // back is what makes `scroll_position()` a fact rather than a request.
+        let actual = |name, fallback| match read_control_property(self.raw_id(), name) {
+            Some(crate::widget::capability::CapabilityValue::Int(value)) => value as i32,
+            _ => fallback,
+        };
+        let actual_x = actual("scroll_position_x", x);
+        let actual_y = actual("scroll_position_y", y);
+        SCROLL_AREA_STATES.with(|map| {
+            let mut map = map.borrow_mut();
+            let state = map.entry(self.raw_id()).or_default();
+            state.scroll_x = actual_x;
+            state.scroll_y = actual_y;
+        });
     }
 
     /// Return the current scroll offset.
@@ -3069,10 +3132,11 @@ impl ScrollAreaHandle {
 
     /// Set the content size (in virtual pixels).
     ///
-    /// The height is what [`Self::scroll_to_bottom`] uses to compute the bottom
-    /// offset. The width is retained for callers that mirror the geometry
-    /// themselves, but has no consumer in the library's own scroll path (no
-    /// horizontal-scrollbar extent is derived from it).
+    /// Written to the control through the `content_width`/`content_height` properties as
+    /// well as recorded in the in-process mirror, so the control's own scroll clamp — and
+    /// therefore [`Self::scroll_to_bottom`] — uses the size the caller declared. A previous
+    /// version wrote only the mirror, which meant the control clamped every offset against
+    /// its own (zero) content size and the scroll never moved.
     pub fn set_content_size(&self, w: u32, h: u32) {
         SCROLL_AREA_STATES.with(|map| {
             let mut map = map.borrow_mut();
@@ -3080,15 +3144,71 @@ impl ScrollAreaHandle {
             state.content_w = w;
             state.content_h = h;
         });
+        let wrote_w = write_control_property(
+            self.raw_id(),
+            "content_width",
+            crate::widget::capability::CapabilityValue::UInt(u64::from(w)),
+        );
+        let wrote_h = write_control_property(
+            self.raw_id(),
+            "content_height",
+            crate::widget::capability::CapabilityValue::UInt(u64::from(h)),
+        );
+        let _ = wrote_w && wrote_h;
+        // The control clamps its current offset against the new extent. Refresh the mirror
+        // through the same read-back path so a shrunken content size cannot leave a stale
+        // scroll position reported to the caller.
+        let (x, y) = self.scroll_position();
+        self.set_scroll_position(x, y);
+    }
+
+    /// Returns the content size recorded for this scroll area.
+    pub fn content_size(&self) -> (u32, u32) {
+        SCROLL_AREA_STATES.with(|map| {
+            let map = map.borrow();
+            map.get(&self.raw_id()).map(|s| (s.content_w, s.content_h)).unwrap_or((0, 0))
+        })
+    }
+
+    /// Sets or clears the scroll area's single content child.
+    ///
+    /// Returns `false` when the id is not a scroll area, or when a proposed child is not
+    /// mounted. The control links both sides of the parent/child relation; a stale id would
+    /// otherwise be visited by every tree walk with no widget behind it.
+    pub fn set_content_widget(&self, content: Option<ObjectId>) -> bool {
+        if let Some(id) = content {
+            if !crate::widget::runtime::is_mounted(id) {
+                return false;
+            }
+        }
+        let changed = crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as_mut::<crate::widget::ScrollArea>(widget)
+                .map(|area| area.set_widget(content))
+        })
+        .flatten()
+        .is_some();
+        if changed {
+            crate::widget::runtime::request_repaint_subtree(self.raw_id());
+        }
+        changed
+    }
+
+    /// Returns the scroll area's content child, if any.
+    pub fn content_widget(&self) -> Option<ObjectId> {
+        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as::<crate::widget::ScrollArea>(widget)
+                .and_then(|area| area.widget())
+        })
+        .flatten()
     }
 
     /// Scroll to the bottom of the content.
     ///
     /// Computes the bottom offset from the last `set_content_size` height and pushes it through
     /// [`Self::set_scroll_position`], so the control scrolls rather than only the in-process
-    /// mirror moving. The control clamps the offset against **its own** content size, which
-    /// [`ScrollAreaHandle::set_content_size`] cannot set (the control publishes no such
-    /// property), so on a control with no content this lands at 0.
+    /// mirror moving. The control clamps the offset against its own content size, which
+    /// [`ScrollAreaHandle::set_content_size`] now writes through `content_width`/`content_height`;
+    /// on a control that has no content the clamp still lands at 0.
     pub fn scroll_to_bottom(&self) {
         let bottom = SCROLL_AREA_STATES
             .with(|map| map.borrow().get(&self.raw_id()).map(|s| s.content_h).unwrap_or(0));
@@ -3098,6 +3218,449 @@ impl ScrollAreaHandle {
     /// Scroll to the top of the content.
     pub fn scroll_to_top(&self) {
         self.set_scroll_position(0, 0);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TabWidgetHandle – content operations
+// ═══════════════════════════════════════════════════════════════
+
+/// # Tab-widget specific operations
+///
+/// A tab widget's pages are child ids, not layout tracks: one page is selected and drawn in
+/// the content rect, so the operations here are content/selection operations rather than
+/// `Layout` registrations. Every method answers honestly when the id is not a mounted
+/// `TabWidget`.
+impl TabWidgetHandle {
+    /// Appends a tab titled `title`, hosting `page` (or no page).
+    ///
+    /// Returns the new index, or `None` when the id is not a mounted tab widget.
+    pub fn add_tab(&self, title: &str, page: Option<ObjectId>) -> Option<usize> {
+        let added = crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as_mut::<crate::widget::TabWidget>(widget)
+                .map(|tabs| tabs.add_tab(title.to_owned(), page))
+        })
+        .flatten();
+        if added.is_some() {
+            crate::widget::runtime::request_repaint_subtree(self.raw_id());
+        }
+        added
+    }
+
+    /// Removes the tab at `index`.
+    ///
+    /// Returns `false` when the id is not a tab widget or the index is out of range.
+    pub fn remove_tab(&self, index: usize) -> bool {
+        let removed = crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as_mut::<crate::widget::TabWidget>(widget)
+                .map(|tabs| {
+                    let valid = index < tabs.count();
+                    if valid {
+                        tabs.remove_tab(index);
+                    }
+                    valid
+                })
+        })
+        .flatten()
+        .unwrap_or(false);
+        if removed {
+            crate::widget::runtime::request_repaint_subtree(self.raw_id());
+        }
+        removed
+    }
+
+    /// Returns the number of tabs, or `0` when the id is not a tab widget.
+    pub fn tab_count(&self) -> usize {
+        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as::<crate::widget::TabWidget>(widget)
+                .map(|tabs| tabs.count())
+                .unwrap_or(0)
+        })
+        .unwrap_or(0)
+    }
+
+    /// Returns the selected tab index, or `None` when the id is not a tab widget.
+    pub fn current_index(&self) -> Option<usize> {
+        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as::<crate::widget::TabWidget>(widget)
+                .map(|tabs| tabs.current_index())
+        })
+        .flatten()
+    }
+
+    /// Selects the tab at `index`.
+    ///
+    /// Returns `false` when the id is not a tab widget or the index is out of range; an
+    /// out-of-range index is not silently clamped to the last tab.
+    pub fn set_current_index(&self, index: usize) -> bool {
+        let selected = crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as_mut::<crate::widget::TabWidget>(widget)
+                .map(|tabs| {
+                    let valid = index < tabs.count();
+                    if valid {
+                        tabs.set_current_index(index);
+                    }
+                    valid
+                })
+        })
+        .flatten()
+        .unwrap_or(false);
+        if selected {
+            crate::widget::runtime::request_repaint_subtree(self.raw_id());
+        }
+        selected
+    }
+
+    /// Replaces the title of the tab at `index`.
+    pub fn set_tab_text(&self, index: usize, text: &str) -> bool {
+        let changed = crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as_mut::<crate::widget::TabWidget>(widget)
+                .map(|tabs| {
+                    let valid = index < tabs.count();
+                    if valid {
+                        tabs.set_tab_text(index, text.to_owned());
+                    }
+                    valid
+                })
+        })
+        .flatten()
+        .unwrap_or(false);
+        if changed {
+            crate::widget::runtime::request_repaint_subtree(self.raw_id());
+        }
+        changed
+    }
+
+    /// Shows or hides close buttons on the tabs.
+    pub fn set_closable(&self, closable: bool) -> bool {
+        let changed = crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as_mut::<crate::widget::TabWidget>(widget)
+                .map(|tabs| tabs.set_closable(closable))
+        })
+        .flatten()
+        .is_some();
+        if changed {
+            crate::widget::runtime::request_repaint_subtree(self.raw_id());
+        }
+        changed
+    }
+
+    /// Enables or disables drag-to-reorder on the tab strip.
+    pub fn set_movable(&self, movable: bool) -> bool {
+        let changed = crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as_mut::<crate::widget::TabWidget>(widget)
+                .map(|tabs| tabs.set_movable(movable))
+        })
+        .flatten()
+        .is_some();
+        if changed {
+            crate::widget::runtime::request_repaint_subtree(self.raw_id());
+        }
+        changed
+    }
+
+    /// Moves the tab strip to one of the four sides.
+    pub fn set_tab_position(&self, position: crate::app::TabPosition) -> bool {
+        let changed = crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as_mut::<crate::widget::TabWidget>(widget)
+                .map(|tabs| tabs.set_tab_position(position))
+        })
+        .flatten()
+        .is_some();
+        if changed {
+            crate::widget::runtime::request_repaint_subtree(self.raw_id());
+        }
+        changed
+    }
+
+    /// Selects the tab corner shape.
+    pub fn set_tab_shape(&self, shape: crate::app::TabShape) -> bool {
+        let changed = crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as_mut::<crate::widget::TabWidget>(widget)
+                .map(|tabs| tabs.set_tab_shape(shape))
+        })
+        .flatten()
+        .is_some();
+        if changed {
+            crate::widget::runtime::request_repaint_subtree(self.raw_id());
+        }
+        changed
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// GridWidgetHandle – cell matrix properties
+// ═══════════════════════════════════════════════════════════════
+
+/// # Grid-widget specific operations
+///
+/// This is the **visual** row/column matrix. A child is placed into a cell by a
+/// [`crate::layout::GridLayout`] on the grid's parent; the methods here shape the matrix
+/// (rows, columns, spacing), not the child placement.
+impl GridWidgetHandle {
+    /// Returns the row count, or `None` when the id is not a grid widget.
+    pub fn rows(&self) -> Option<u32> {
+        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as::<crate::widget::GridWidget>(widget)
+                .map(|grid| grid.rows())
+        })
+        .flatten()
+    }
+
+    /// Returns the column count, or `None` when the id is not a grid widget.
+    pub fn columns(&self) -> Option<u32> {
+        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as::<crate::widget::GridWidget>(widget)
+                .map(|grid| grid.columns())
+        })
+        .flatten()
+    }
+
+    /// Returns the inter-cell spacing, or `None` when the id is not a grid widget.
+    pub fn spacing(&self) -> Option<u32> {
+        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as::<crate::widget::GridWidget>(widget)
+                .map(|grid| grid.spacing())
+        })
+        .flatten()
+    }
+
+    /// Sets the row count (clamped to at least 1).
+    pub fn set_rows(&self, rows: u32) -> bool {
+        self.mutate(|grid| grid.set_rows(rows))
+    }
+
+    /// Sets the column count (clamped to at least 1).
+    pub fn set_columns(&self, columns: u32) -> bool {
+        self.mutate(|grid| grid.set_columns(columns))
+    }
+
+    /// Sets the inter-cell spacing.
+    pub fn set_spacing(&self, spacing: u32) -> bool {
+        self.mutate(|grid| grid.set_spacing(spacing))
+    }
+
+    fn mutate(&self, f: impl FnOnce(&mut crate::widget::GridWidget)) -> bool {
+        let changed = crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as_mut::<crate::widget::GridWidget>(widget)
+                .map(f)
+        })
+        .flatten()
+        .is_some();
+        if changed {
+            crate::widget::runtime::request_repaint_subtree(self.raw_id());
+        }
+        changed
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SplitterHandle – pane operations
+// ═══════════════════════════════════════════════════════════════
+
+/// # Splitter-specific operations
+///
+/// A splitter's panes are child ids with relative weights. The panes are its content model;
+/// the splitter itself computes the rectangles from the ratios.
+impl SplitterHandle {
+    /// Adds a pane with `stretch` relative weight and returns its index.
+    pub fn add_pane(&self, pane: ObjectId, stretch: u32) -> Option<usize> {
+        let added = crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as_mut::<crate::widget::Splitter>(widget)
+                .map(|splitter| splitter.add_pane(pane, stretch))
+        })
+        .flatten();
+        if added.is_some() {
+            crate::widget::runtime::request_repaint_subtree(self.raw_id());
+        }
+        added
+    }
+
+    /// Removes a pane by id.
+    pub fn remove_pane(&self, pane: ObjectId) -> bool {
+        let removed = crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as_mut::<crate::widget::Splitter>(widget)
+                .map(|splitter| splitter.remove_pane(pane))
+        })
+        .flatten()
+        .unwrap_or(false);
+        if removed {
+            crate::widget::runtime::request_repaint_subtree(self.raw_id());
+        }
+        removed
+    }
+
+    /// Returns the pane count, or `0` when the id is not a splitter.
+    pub fn pane_count(&self) -> usize {
+        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as::<crate::widget::Splitter>(widget)
+                .map(|splitter| splitter.pane_count())
+                .unwrap_or(0)
+        })
+        .unwrap_or(0)
+    }
+
+    /// Returns the splitter orientation, or `None` when the id is not a splitter.
+    pub fn orientation(&self) -> Option<Orientation> {
+        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as::<crate::widget::Splitter>(widget)
+                .map(|splitter| splitter.orientation())
+        })
+        .flatten()
+    }
+
+    /// Sets the splitter orientation.
+    pub fn set_orientation(&self, orientation: Orientation) -> bool {
+        let changed = crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as_mut::<crate::widget::Splitter>(widget)
+                .map(|splitter| splitter.set_orientation(orientation))
+        })
+        .flatten()
+        .is_some();
+        if changed {
+            crate::widget::runtime::request_repaint_subtree(self.raw_id());
+        }
+        changed
+    }
+
+    /// Sets one pane's relative ratio.
+    pub fn set_ratio(&self, index: usize, ratio: f32) -> bool {
+        let changed = crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as_mut::<crate::widget::Splitter>(widget)
+                .map(|splitter| splitter.set_ratio(index, ratio))
+        })
+        .flatten()
+        .unwrap_or(false);
+        if changed {
+            crate::widget::runtime::request_repaint_subtree(self.raw_id());
+        }
+        changed
+    }
+
+    /// Returns one pane's relative ratio, or `None` when the index is out of range or the id
+    /// is not a splitter.
+    pub fn ratio(&self, index: usize) -> Option<f32> {
+        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as::<crate::widget::Splitter>(widget)
+                .and_then(|splitter| splitter.ratio(index))
+        })
+        .flatten()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// DialogHandle – content and lifecycle operations
+// ═══════════════════════════════════════════════════════════════
+
+/// # Dialog-specific operations
+///
+/// A dialog owns its chrome and exactly one content child. Content placement is the content
+/// widget's own layout; the dialog only gives it [`Dialog::content_rect`](crate::widget::dialog::dialog_widget::Dialog::content_rect).
+impl DialogHandle {
+    /// Sets the dialog title.
+    pub fn set_title(&self, title: &str) -> bool {
+        let changed = crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as_mut::<crate::widget::dialog::Dialog>(
+                widget,
+            )
+            .map(|dialog| dialog.set_title(title))
+        })
+        .flatten()
+        .is_some();
+        if changed {
+            crate::widget::runtime::request_repaint_subtree(self.raw_id());
+        }
+        changed
+    }
+
+    /// Sets or clears the dialog's content child.
+    ///
+    /// Returns `false` when the id is not a dialog, or when a proposed child is not mounted.
+    /// Clearing (`None`) is always accepted for a mounted dialog.
+    pub fn set_content_widget(&self, content: Option<ObjectId>) -> bool {
+        if let Some(id) = content {
+            if !crate::widget::runtime::is_mounted(id) {
+                return false;
+            }
+        }
+        let changed = crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as_mut::<crate::widget::dialog::Dialog>(
+                widget,
+            )
+            .map(|dialog| dialog.set_content_widget(content))
+        })
+        .flatten()
+        .is_some();
+        if changed {
+            crate::widget::runtime::request_repaint_subtree(self.raw_id());
+        }
+        changed
+    }
+
+    /// Returns the dialog's content child, or `None` when it has none / is not a dialog.
+    pub fn content_widget(&self) -> Option<ObjectId> {
+        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as::<crate::widget::dialog::Dialog>(widget)
+                .and_then(|dialog| dialog.content_widget())
+        })
+        .flatten()
+    }
+
+    /// Sets the modality intent.
+    pub fn set_modal(&self, modal: bool) -> bool {
+        let changed = crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as_mut::<crate::widget::dialog::Dialog>(
+                widget,
+            )
+            .map(|dialog| dialog.set_modal(modal))
+        })
+        .flatten()
+        .is_some();
+        if changed {
+            crate::widget::runtime::request_repaint_subtree(self.raw_id());
+        }
+        changed
+    }
+
+    /// Opens the dialog (shows it and enters the modal stack when modal).
+    pub fn open(&self) -> bool {
+        let opened = crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as_mut::<crate::widget::dialog::Dialog>(
+                widget,
+            )
+            .map(|dialog| dialog.open())
+        })
+        .flatten()
+        .is_some();
+        if opened {
+            crate::widget::runtime::request_repaint_subtree(self.raw_id());
+        }
+        opened
+    }
+
+    /// Closes the dialog (hides it and leaves the modal stack).
+    pub fn close(&self) -> bool {
+        let closed = crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as_mut::<crate::widget::dialog::Dialog>(
+                widget,
+            )
+            .map(|dialog| dialog.close())
+        })
+        .flatten()
+        .is_some();
+        if closed {
+            crate::widget::runtime::request_repaint_subtree(self.raw_id());
+        }
+        closed
+    }
+
+    /// Returns the rectangle the content child is placed in.
+    pub fn content_rect(&self) -> Option<Rect> {
+        crate::widget::runtime::with_widget(self.raw_id(), |widget| {
+            crate::widget::capability::coercion::widget_as::<crate::widget::dialog::Dialog>(widget)
+                .map(|dialog| dialog.content_rect())
+        })
+        .flatten()
     }
 }
 
@@ -3527,6 +4090,16 @@ impl PanelHandle {
     /// The layout is stored internally and used to reposition children.
     /// Only one layout can be active at a time.
     ///
+    /// # Which children it positions
+    ///
+    /// Children created with this panel's own factories ([`PanelHandle::new_label`],
+    /// [`PanelHandle::new_list_box`], …) are parented to the panel and are the normal
+    /// input. A control created by the enclosing window is **also** positioned, for
+    /// backwards compatibility: a panel layout can place any child whose id it is
+    /// given. That is an implicit contract (the widget's parent is then the window,
+    /// not the panel), so new code should prefer the panel factories, which keep the
+    /// parent, clipping and layout in one container.
+    ///
     /// # Applying a layout before the panel has a size
     ///
     /// A panel is usually created with a placeholder rect (`new_panel(0, 0, 0, 0)`) and
@@ -3550,6 +4123,171 @@ impl PanelHandle {
                 title.to_owned();
         });
         crate::set_widget_text(self.raw_id(), title);
+    }
+
+    /// Set the title alignment.
+    ///
+    /// The panel is the `GroupBox` control under another name, so it publishes the same
+    /// `alignment` property; writing through that contract keeps a panel and a group box
+    /// behaving the same instead of giving the panel a second, private field.
+    pub fn set_alignment(&self, alignment: crate::core::Alignment) -> bool {
+        write_control_property(
+            self.raw_id(),
+            "alignment",
+            crate::widget::capability::CapabilityValue::String(
+                crate::widget::capability::coercion::alignment_to_str(alignment).to_string(),
+            ),
+        )
+    }
+
+    /// Read the title alignment, or `None` when the control does not publish it.
+    pub fn alignment(&self) -> Option<crate::core::Alignment> {
+        read_control_property(self.raw_id(), "alignment")
+            .and_then(|value| crate::widget::capability::coercion::expect_alignment(value).ok())
+    }
+
+    /// Make the panel's title checkable (a checkbox on the title row).
+    pub fn set_checkable(&self, checkable: bool) -> bool {
+        write_control_property(
+            self.raw_id(),
+            "checkable",
+            crate::widget::capability::CapabilityValue::Bool(checkable),
+        )
+    }
+
+    /// Read whether the panel title is checkable.
+    pub fn is_checkable(&self) -> Option<bool> {
+        match read_control_property(self.raw_id(), "checkable") {
+            Some(crate::widget::capability::CapabilityValue::Bool(checkable)) => Some(checkable),
+            _ => None,
+        }
+    }
+
+    /// Toggle the panel's checked state.
+    ///
+    /// Returns `false` when the control publishes no `checked` property. The write goes
+    /// through the same property the generic [`WidgetHandle::set_checked`] uses, so the
+    /// emitted `toggled` signal and a programmatic write cannot disagree.
+    pub fn toggle(&self) -> bool {
+        let checked = match read_control_property(self.raw_id(), "checked") {
+            Some(crate::widget::capability::CapabilityValue::Bool(checked)) => checked,
+            _ => return false,
+        };
+        self.set_checked(!checked)
+    }
+
+    // ── Child-widget factory methods ──────────────────────
+    //
+    // A panel is a container, so a control created for it must be parented to the
+    // **panel**, not to the window that happens to contain the panel. Once the parent
+    // is the panel, the panel's own layout owns the child, clipping and layout
+    // semantics stay inside one container, and the caller no longer has to know that
+    // `set_layout` can position a widget created by the parent window.
+    //
+    // The window factories remain for callers that want window-level placement;
+    // these are the panel-level spellings of the same constructors.
+
+    /// Creates a push button as a child of this panel.
+    pub fn new_button(&self, text: &str, x: i32, y: i32, w: u32, h: u32) -> ButtonHandle {
+        ButtonHandle::from_raw(crate::create_button(self.raw_id(), text, x, y, w, h))
+    }
+
+    /// Creates a static text label as a child of this panel.
+    pub fn new_label(&self, text: &str, x: i32, y: i32, w: u32, h: u32) -> LabelHandle {
+        LabelHandle::from_raw(crate::create_label(self.raw_id(), text, x, y, w, h))
+    }
+
+    /// Creates a check box as a child of this panel.
+    pub fn new_checkbox(&self, text: &str, x: i32, y: i32, w: u32, h: u32) -> CheckBoxHandle {
+        CheckBoxHandle::from_raw(crate::create_checkbox(self.raw_id(), text, x, y, w, h))
+    }
+
+    /// Creates a radio button as a child of this panel.
+    pub fn new_radio_button(
+        &self,
+        text: &str,
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+    ) -> RadioButtonHandle {
+        RadioButtonHandle::from_raw(crate::create_radio_button(self.raw_id(), text, x, y, w, h))
+    }
+
+    /// Creates a single-line text entry as a child of this panel.
+    pub fn new_line_edit(&self, text: &str, x: i32, y: i32, w: u32, h: u32) -> LineEditHandle {
+        LineEditHandle::from_raw(crate::create_line_edit(self.raw_id(), text, x, y, w, h))
+    }
+
+    /// Creates an empty drop-down list as a child of this panel.
+    pub fn new_combo_box(&self, x: i32, y: i32, w: u32, h: u32) -> ComboBoxHandle {
+        ComboBoxHandle::from_raw(crate::create_combo_box(self.raw_id(), x, y, w, h))
+    }
+
+    /// Creates an empty single-selection list box as a child of this panel.
+    pub fn new_list_box(&self, x: i32, y: i32, w: u32, h: u32) -> ListBoxHandle {
+        ListBoxHandle::from_raw(crate::create_list_box(self.raw_id(), x, y, w, h))
+    }
+
+    /// Creates a horizontal slider as a child of this panel.
+    pub fn new_slider(&self, x: i32, y: i32, w: u32, h: u32) -> SliderHandle {
+        SliderHandle::from_raw(crate::create_slider(self.raw_id(), x, y, w, h))
+    }
+
+    /// Creates a progress bar as a child of this panel.
+    pub fn new_progress_bar(&self, x: i32, y: i32, w: u32, h: u32) -> ProgressBarHandle {
+        ProgressBarHandle::from_raw(crate::create_progress_bar(self.raw_id(), x, y, w, h))
+    }
+
+    /// Creates a spin box as a child of this panel.
+    pub fn new_spin_box(&self, x: i32, y: i32, w: u32, h: u32) -> SpinBoxHandle {
+        SpinBoxHandle::from_raw(crate::create_spin_box(self.raw_id(), x, y, w, h))
+    }
+
+    /// Creates a list view as a child of this panel.
+    pub fn new_list_view(&self, x: i32, y: i32, w: u32, h: u32) -> ListViewHandle {
+        ListViewHandle::from_raw(crate::create_list_view(self.raw_id(), x, y, w, h))
+    }
+
+    /// Creates a scrollable viewport as a child of this panel.
+    pub fn new_scroll_area(&self, x: i32, y: i32, w: u32, h: u32) -> ScrollAreaHandle {
+        ScrollAreaHandle::from_raw(crate::create_scroll_area(self.raw_id(), x, y, w, h))
+    }
+
+    /// Creates a tool bar strip as a child of this panel.
+    pub fn new_tool_bar(&self, x: i32, y: i32, w: u32, h: u32) -> ToolBarHandle {
+        ToolBarHandle::from_raw(crate::create_tool_bar(self.raw_id(), x, y, w, h))
+    }
+
+    /// Creates a status bar as a child of this panel.
+    pub fn new_status_bar(&self, text: &str, x: i32, y: i32, w: u32, h: u32) -> StatusBarHandle {
+        StatusBarHandle::from_raw(crate::create_status_bar(self.raw_id(), text, x, y, w, h))
+    }
+
+    /// Creates a nested panel as a child of this panel.
+    ///
+    /// The nested panel's geometry is recorded here as well, so its own
+    /// [`PanelHandle::set_layout`] follows the box this panel gives it. See
+    /// [`apply_panel_geometry`], which re-runs a child panel's layout after the
+    /// parent places it.
+    pub fn new_panel(&self, x: i32, y: i32, w: u32, h: u32) -> PanelHandle {
+        let panel = PanelHandle::from_raw(crate::create_panel(self.raw_id(), x, y, w, h));
+        PANEL_STATES.with(|map| {
+            map.borrow_mut().insert(panel.raw_id(), PanelState::with_geometry(x, y, w, h));
+        });
+        panel
+    }
+
+    /// Creates a frame (group box) as a child of this panel.
+    ///
+    /// A frame is the same widget as this panel with a different spelling; the
+    /// returned handle's [`FrameHandle::as_panel`] reaches the full panel API.
+    pub fn new_frame(&self, x: i32, y: i32, w: u32, h: u32) -> FrameHandle {
+        let frame = FrameHandle::from_raw(crate::create_panel(self.raw_id(), x, y, w, h));
+        PANEL_STATES.with(|map| {
+            map.borrow_mut().insert(frame.raw_id(), PanelState::with_geometry(x, y, w, h));
+        });
+        frame
     }
 }
 
@@ -3578,6 +4316,16 @@ impl PanelHandle {
 /// would overwrite every child's geometry with zeros, which is precisely the invisible-grid
 /// failure this replaces.
 fn apply_panel_geometry(panel_id: ObjectId, rect: Rect) {
+    // A panel layout is recursive: a nested panel is a child like any other, and the
+    // box this pass gives it has to become the rect its own layout is asked about.
+    // The depth bound is what keeps a corrupted parent/child chain (a panel that
+    // ended up as its own descendant) from turning a layout pass into an unbounded
+    // recursion; the same bound the widget runtime uses for its parent walks.
+    const MAX_PANEL_DEPTH: u32 = 64;
+    apply_panel_geometry_bounded(panel_id, rect, 0, MAX_PANEL_DEPTH);
+}
+
+fn apply_panel_geometry_bounded(panel_id: ObjectId, rect: Rect, depth: u32, max_depth: u32) {
     PANEL_STATES.with(|map| {
         let mut map = map.borrow_mut();
         let state = map.entry(panel_id).or_default();
@@ -3588,6 +4336,13 @@ fn apply_panel_geometry(panel_id: ObjectId, rect: Rect) {
     });
 
     if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+    if depth >= max_depth {
+        log::warn!(
+            "panel {panel_id} exceeded the {max_depth}-level nesting bound; its layout was not \
+             applied"
+        );
         return;
     }
 
@@ -3612,6 +4367,14 @@ fn apply_panel_geometry(panel_id: ObjectId, rect: Rect) {
             geometry.width,
             geometry.height,
         );
+        if widget_hosts_a_layout(widget_id) {
+            apply_panel_geometry_bounded(widget_id, geometry, depth + 1, max_depth);
+        } else if crate::layout::declarative::has_layout(widget_id) {
+            // See `apply_window_layout`: a container loaded from a document can sit
+            // inside a panel, and moving the panel must re-run the document's layout
+            // for that container's children.
+            crate::layout::declarative::apply_layout(widget_id, geometry);
+        }
     }
 }
 
@@ -3626,6 +4389,129 @@ fn apply_panel_layout(panel_id: ObjectId) {
         return;
     };
     apply_panel_geometry(panel_id, rect);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// FrameHandle – the panel-backed group box
+// ═══════════════════════════════════════════════════════════════
+
+/// # Frame-specific operations
+///
+/// `FrameHandle` and `PanelHandle` name the **same** underlying widget: both
+/// `WindowHandle::new_frame` and `WindowHandle::new_panel` call `create_panel`, and a
+/// frame's only difference is the spelling a caller reads. The layout machinery is
+/// therefore shared rather than reimplemented, and [`FrameHandle::as_panel`] exposes
+/// the complete panel API to a frame owner.
+impl FrameHandle {
+    /// Returns the panel view of this frame.
+    ///
+    /// Use this for child factories and any panel operation not repeated below. One
+    /// implementation means a future panel feature cannot exist for panels and silently
+    /// be missing for frames.
+    pub fn as_panel(&self) -> PanelHandle {
+        PanelHandle::from_raw(self.raw_id())
+    }
+
+    /// Set the frame's geometry and re-run its child layout.
+    ///
+    /// # Why this overrides the handle default
+    ///
+    /// [`WidgetHandle::set_geometry`] only moves the widget. A frame that hosts a layout
+    /// has children, and moving the frame without re-running the layout would leave them
+    /// at the old box — the same defect the panel's recursive layout exists to remove.
+    pub fn set_geometry(&self, x: i32, y: i32, w: u32, h: u32) {
+        self.as_panel().set_geometry(x, y, w, h);
+    }
+
+    /// Set the frame's layout manager; see [`PanelHandle::set_layout`].
+    pub fn set_layout(&self, layout: Box<dyn crate::layout::Layout>) {
+        self.as_panel().set_layout(layout);
+    }
+
+    /// Set the frame's title text.
+    pub fn set_title(&self, title: &str) {
+        self.as_panel().set_title(title);
+    }
+
+    /// Set the title alignment; see [`PanelHandle::set_alignment`].
+    pub fn set_alignment(&self, alignment: crate::core::Alignment) -> bool {
+        self.as_panel().set_alignment(alignment)
+    }
+
+    /// Read the title alignment; see [`PanelHandle::alignment`].
+    pub fn alignment(&self) -> Option<crate::core::Alignment> {
+        self.as_panel().alignment()
+    }
+
+    /// Make the frame's title checkable; see [`PanelHandle::set_checkable`].
+    pub fn set_checkable(&self, checkable: bool) -> bool {
+        self.as_panel().set_checkable(checkable)
+    }
+
+    /// Read whether the frame title is checkable; see [`PanelHandle::is_checkable`].
+    pub fn is_checkable(&self) -> Option<bool> {
+        self.as_panel().is_checkable()
+    }
+
+    /// Toggle the frame's checked state; see [`PanelHandle::toggle`].
+    pub fn toggle(&self) -> bool {
+        self.as_panel().toggle()
+    }
+
+    /// Creates a push button as a child of this frame.
+    pub fn new_button(&self, text: &str, x: i32, y: i32, w: u32, h: u32) -> ButtonHandle {
+        self.as_panel().new_button(text, x, y, w, h)
+    }
+
+    /// Creates a static text label as a child of this frame.
+    pub fn new_label(&self, text: &str, x: i32, y: i32, w: u32, h: u32) -> LabelHandle {
+        self.as_panel().new_label(text, x, y, w, h)
+    }
+
+    /// Creates a check box as a child of this frame.
+    pub fn new_checkbox(&self, text: &str, x: i32, y: i32, w: u32, h: u32) -> CheckBoxHandle {
+        self.as_panel().new_checkbox(text, x, y, w, h)
+    }
+
+    /// Creates a single-line text entry as a child of this frame.
+    pub fn new_line_edit(&self, text: &str, x: i32, y: i32, w: u32, h: u32) -> LineEditHandle {
+        self.as_panel().new_line_edit(text, x, y, w, h)
+    }
+
+    /// Creates an empty drop-down list as a child of this frame.
+    pub fn new_combo_box(&self, x: i32, y: i32, w: u32, h: u32) -> ComboBoxHandle {
+        self.as_panel().new_combo_box(x, y, w, h)
+    }
+
+    /// Creates an empty single-selection list box as a child of this frame.
+    pub fn new_list_box(&self, x: i32, y: i32, w: u32, h: u32) -> ListBoxHandle {
+        self.as_panel().new_list_box(x, y, w, h)
+    }
+
+    /// Creates a horizontal slider as a child of this frame.
+    pub fn new_slider(&self, x: i32, y: i32, w: u32, h: u32) -> SliderHandle {
+        self.as_panel().new_slider(x, y, w, h)
+    }
+
+    /// Creates a progress bar as a child of this frame.
+    pub fn new_progress_bar(&self, x: i32, y: i32, w: u32, h: u32) -> ProgressBarHandle {
+        self.as_panel().new_progress_bar(x, y, w, h)
+    }
+
+    /// Creates a spin box as a child of this frame.
+    pub fn new_spin_box(&self, x: i32, y: i32, w: u32, h: u32) -> SpinBoxHandle {
+        self.as_panel().new_spin_box(x, y, w, h)
+    }
+
+    /// Creates a nested panel as a child of this frame.
+    pub fn new_panel(&self, x: i32, y: i32, w: u32, h: u32) -> PanelHandle {
+        self.as_panel().new_panel(x, y, w, h)
+    }
+
+    /// Creates a nested frame as a child of this frame.
+    pub fn new_frame(&self, x: i32, y: i32, w: u32, h: u32) -> FrameHandle {
+        self.as_panel().new_frame(x, y, w, h)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════

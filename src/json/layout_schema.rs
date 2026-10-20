@@ -40,6 +40,8 @@ pub enum ParamKind {
     Int,
     /// An axis token (`"horizontal"`/`"vertical"`).
     Axis,
+    /// A border region token (`"north"`, `"south"`, `"west"`, `"east"`, `"center"`).
+    Region,
 }
 
 impl ParamKind {
@@ -49,6 +51,7 @@ impl ParamKind {
             Self::UInt => "uint",
             Self::Int => "int",
             Self::Axis => "axis",
+            Self::Region => "region",
         }
     }
 }
@@ -207,6 +210,14 @@ pub static LAYOUT_KIND_SCHEMAS: &[LayoutKindSchema] = &[
         aliases: &["Flex"],
         params: &[param("gap", ParamKind::UInt, false, true)],
     },
+    LayoutKindSchema {
+        type_token: "border",
+        aliases: &["Border"],
+        params: &[
+            param("spacing", ParamKind::UInt, false, true),
+            param("margin", ParamKind::UInt, false, true),
+        ],
+    },
 ];
 
 /// The child-side parameters a declarative layout accepts on a child entry.
@@ -227,6 +238,8 @@ pub static CHILD_ATTR_SCHEMA: &[LayoutParam] = &[
     param("row", ParamKind::UInt, false, false),
     param("col_span", ParamKind::UInt, false, false),
     param("row_span", ParamKind::UInt, false, false),
+    param("region", ParamKind::Region, false, false),
+    param("extent", ParamKind::UInt, false, false),
 ];
 
 /// The child-placement keys a layout **kind** actually honours.
@@ -236,9 +249,14 @@ pub static CHILD_ATTR_SCHEMA: &[LayoutParam] = &[
 pub fn child_attrs_honoured_by(type_token: &str) -> Vec<&'static str> {
     let grid =
         matches!(type_token, "grid" | "Grid" | "uniform_grid" | "uniformGrid" | "uniform-grid");
+    let border = matches!(type_token, "border" | "Border");
     CHILD_ATTR_SCHEMA
         .iter()
-        .filter(|attr| attr.honoured || (grid && attr.key != "stretch"))
+        .filter(|attr| {
+            attr.honoured
+                || (grid && matches!(attr.key, "col" | "row" | "col_span" | "row_span"))
+                || (border && matches!(attr.key, "region" | "extent"))
+        })
         .map(|attr| attr.key)
         .collect()
 }
@@ -453,6 +471,7 @@ fn value_matches_kind(value: &str, kind: ParamKind) -> bool {
             !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
         }
         ParamKind::Axis => is_axis_token(value),
+        ParamKind::Region => crate::layout::BorderRegion::from_token(value).is_some(),
     }
 }
 
@@ -574,8 +593,13 @@ mod tests {
 
         for attr in CHILD_ATTR_SCHEMA {
             // A JSON *number*, because that is what `from_value` reads (the validator's own input
-            // is the document's text, which is a different entry point).
-            let json = serde_json::json!({ attr.key: if attr.key == "stretch" { 7 } else { 3 } });
+            // is the document's text, which is a different entry point) — except for the two
+            // token-valued keys, which are strings.
+            let json = match attr.key {
+                "stretch" => serde_json::json!({ "stretch": 7 }),
+                "region" => serde_json::json!({ "region": "north" }),
+                key => serde_json::json!({ key: 3 }),
+            };
             let attrs = ChildLayoutAttrs::from_value(&json);
             let read = match attr.key {
                 "stretch" => attrs.stretch == 7,
@@ -583,6 +607,8 @@ mod tests {
                 "row" => attrs.row == Some(3),
                 "col_span" => attrs.col_span == Some(3),
                 "row_span" => attrs.row_span == Some(3),
+                "region" => attrs.region == Some(crate::layout::BorderRegion::North),
+                "extent" => attrs.extent == Some(3),
                 other => panic!("`{other}` is declared by the schema but this test cannot read it"),
             };
             assert!(read, "the schema declares `{}` but the parser did not read it", attr.key);
@@ -604,6 +630,17 @@ mod tests {
         assert_eq!(issues.len(), 1, "{issues:?}");
         assert!(matches!(issues[0].diagnostic, LayoutDiagnostic::DroppedField { .. }));
         assert_eq!(issues[0].path, vec![0usize]);
+
+        // A border layout honours the region keys and reports the cell keys as dropped.
+        let border = child_attrs_honoured_by("border");
+        assert!(border.contains(&"region"), "{border:?}");
+        assert!(border.contains(&"extent"), "{border:?}");
+        let mut region = HashMap::new();
+        region.insert(String::from("region"), String::from("north"));
+        region.insert(String::from("extent"), String::from("48"));
+        assert!(validate_child_attrs(&region, "border", &[0]).is_empty());
+        let cell = validate_child_attrs(&region, "grid", &[0]);
+        assert_eq!(cell.len(), 2, "a grid does not place by region: {cell:?}");
     }
 
     /// B26.05: an unknown or malformed child key is named rather than ignored.

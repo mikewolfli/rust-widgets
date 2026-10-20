@@ -1146,6 +1146,9 @@ pub fn default_widget_property_default_value(
             "vertical_scroll_bar_policy" => CapabilityValue::String("as_needed".to_string()),
             "scroll_position_x" => CapabilityValue::Int(0),
             "scroll_position_y" => CapabilityValue::Int(0),
+            // The content extent is unknown until a caller states it; `ScrollArea::new`
+            // starts at zero, so the schema's default is the control's own answer.
+            "content_width" | "content_height" => CapabilityValue::UInt(0),
             "sticky_region_count" => CapabilityValue::UInt(0),
             _ => return None,
         },

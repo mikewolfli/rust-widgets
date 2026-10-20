@@ -190,7 +190,14 @@ mod tests {
     fn suspension_follows_the_phase() {
         let _guard = crate::compat::lock(&TEST_LOCK);
         set_state(MobileLifecycleState::Inactive);
+        // The animation clock only exists in a profile that has the animation bus. A sized
+        // profile (`mini`/`embedded`) has no clock to stop, and its `animation_suspended`
+        // documents that answer — so the phase is still recorded, but the query is `false`
+        // there by contract rather than because the transition failed.
+        #[cfg(not(alloc_frugal))]
         assert!(crate::animation_suspended());
+        #[cfg(alloc_frugal)]
+        assert!(!crate::animation_suspended(), "a sized profile has no animation clock to suspend");
         set_state(MobileLifecycleState::Active);
         assert!(!crate::animation_suspended());
     }

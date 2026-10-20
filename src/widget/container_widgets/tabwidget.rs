@@ -278,7 +278,9 @@ impl TabWidget {
             self.base.add_child_linked(widget_id);
         }
         self.tabs.push(tab);
-        self.tabs.len().saturating_sub(1)
+        let index = self.tabs.len().saturating_sub(1);
+        self.sync_pages();
+        index
     }
     /// Inserts a tab at position.
     /// Inserts a tab before the given index.
@@ -298,6 +300,7 @@ impl TabWidget {
         if !was_empty && self.current_index >= index {
             self.current_index += 1;
         }
+        self.sync_pages();
     }
     /// Removes a tab.
     pub fn remove_tab(&mut self, index: usize) {
@@ -312,6 +315,7 @@ impl TabWidget {
             if self.tabs.is_empty() {
                 self.current_index = 0;
             }
+            self.sync_pages();
         }
     }
     /// Returns number of tabs.
@@ -326,6 +330,7 @@ impl TabWidget {
     pub fn set_current_index(&mut self, index: usize) {
         if index < self.tabs.len() && self.current_index != index {
             self.current_index = index;
+            self.sync_pages();
             self.current_changed.emit(index);
             self.base.request_redraw();
         }
@@ -337,6 +342,52 @@ impl TabWidget {
     /// Returns tab at index.
     pub fn tab(&self, index: usize) -> Option<&Tab> {
         self.tabs.get(index)
+    }
+
+    /// Places the current page in the content box.
+    ///
+    /// # Why the tab widget places its own page
+    ///
+    /// A tab page is a child of the tab widget, not a track in a layout: the widget owns
+    /// exactly one visible rectangle (its content box) and one selection. The page is
+    /// therefore placed from that model — the current page fills the content box. Without it
+    /// the tree painter drew every page at whatever rectangle it was constructed with
+    /// (normally `0x0`), so switching tabs changed the strip and nothing else.
+    ///
+    /// The write goes through the public geometry entry rather than a registry of draw
+    /// closures, because the tree painter already draws mounted children: this is the
+    /// placement half, not a second drawing path (rule #101).
+    fn place_current_page(&self) {
+        #[cfg(not(alloc_frugal))]
+        {
+            if let Some(widget_id) = self.current_widget() {
+                let rect = self.content_rect();
+                crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
+            }
+        }
+    }
+
+    /// Applies the page model to the mounted pages: the current page is shown and fills the
+    /// content box, every other page is hidden.
+    ///
+    /// # Why visibility is part of the model
+    ///
+    /// The page list is the control's content model, and only one page is on screen at a
+    /// time. The tree painter skips a hidden node **and its whole subtree**, so hiding the
+    /// inactive pages is what keeps them from painting over the current one. It is also what
+    /// keeps a click on the content area from reaching a page the user cannot see. A caller
+    /// that deliberately hides a page still wins: the next selection change re-derives the
+    /// flag from the model, exactly as a tab container must.
+    fn sync_pages(&self) {
+        #[cfg(not(alloc_frugal))]
+        {
+            for (index, tab) in self.tabs.iter().enumerate() {
+                if let Some(widget_id) = tab.widget {
+                    crate::set_widget_visible(widget_id, index == self.current_index);
+                }
+            }
+            self.place_current_page();
+        }
     }
     /// Returns mutable tab at index.
     pub fn tab_mut(&mut self, index: usize) -> Option<&mut Tab> {
@@ -383,6 +434,9 @@ impl TabWidget {
     /// Sets tab position.
     pub fn set_tab_position(&mut self, position: TabPosition) {
         self.tab_position = position;
+        // The strip moved, so the content box moved with it: the selected page has to follow,
+        // or it keeps the rectangle the previous side implied until something else resizes it.
+        self.place_current_page();
         self.base.request_redraw();
     }
     /// Returns tab shape.
@@ -850,7 +904,10 @@ impl TabWidget {
     }
 }
 /// Height of the tab strip, in logical pixels.
-const TAB_HEIGHT: i32 = 24;
+///
+/// Read from the shared metric rather than restated as a literal: the strip height is one
+/// number across the control family, and a second copy is how siblings drift (rule #101).
+const TAB_HEIGHT: i32 = crate::widget::metrics::dimensions::TAB_HEIGHT as i32;
 
 /// Horizontal gap between adjacent tabs.
 const TAB_SPACING: i32 = 2;
@@ -927,6 +984,15 @@ impl Widget for TabWidget {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(300, 200)
+    }
+
+    /// Moves the tab widget and re-places the current page.
+    ///
+    /// A layout positions the tab widget through the same geometry entry point, so this is
+    /// where a window or panel resize reaches the visible page.
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        self.place_current_page();
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

@@ -4,7 +4,7 @@ This chapter provides a comprehensive, module-by-module reference for the
 entire `rust_widgets` public API. Use this as a quick lookup when you need to
 find the right type, function, or trait for your task.
 
-The library version documented here is **2.8.10**. Code examples assume
+The library version documented here is **2.8.11**. Code examples assume
 `use rust_widgets::*;` or explicit paths as shown.
 
 ---
@@ -955,6 +955,7 @@ pub trait Layout {
 | `HBoxLayout` | `box_layout` | `BoxLayout` with `Orientation::Horizontal` (named convenience) |
 | `VBoxLayout` | `box_layout` | `BoxLayout` with `Orientation::Vertical` (named convenience) |
 | `GridLayout` | `grid` | Row/column grid with `set_widget(row, col, id)` |
+| `BorderLayout` | `border` | Fixed edge tracks (`north`/`south`/`west`/`east`) around an elastic center |
 | `StackLayout` | `stack` | Only shows one child at a time (card stack) with `set_current_index()` |
 | `FlowLayout` | `flow` | Wrapping flow (like CSS flex-wrap) |
 | `FlexLayout` | `flex` | CSS flexbox-style layout |

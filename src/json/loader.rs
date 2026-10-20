@@ -30,8 +30,8 @@ use crate::core::{Alignment, Color, ObjectId, Orientation, Rect};
 use crate::json::properties::ApplyOutcome;
 use crate::json::{
     add_spacer_to_layout, add_widget_to_layout, apply_layout, create_layout_from_kind,
-    parse_layout_kind, place_widget_in_layout, store_layout, BoundJsonLayout, ChildLayoutAttrs,
-    ChildPlacement,
+    parse_layout_kind, place_widget_in_layout, place_widget_in_region_layout, store_layout,
+    BoundJsonLayout, ChildLayoutAttrs, ChildPlacement,
 };
 use crate::layout::inspector::LayoutInspector;
 use crate::widget::{
@@ -383,7 +383,7 @@ impl JsonLoader {
         Some(crate::json::DynamicBinding::new(release))
     }
 
-    /// Places a child at the cell it declared, when it declared one and the parent can honour it.
+    /// Places a child in the region it declared, or at the cell it declared.
     ///
     /// # Why this exists at all
     ///
@@ -402,12 +402,31 @@ impl JsonLoader {
     /// cell. The child is still placed (by the parent's own rule) rather than dropped, but the
     /// mismatch is logged, because a document that wrote a cell on a non-grid parent asked for
     /// something the parent cannot do and would otherwise read as "the grid ignored my column".
+    ///
+    /// A declared `region` takes precedence over a declared cell: a child cannot be in two
+    /// placement systems at once, and the region names a stronger constraint (a fixed track) than
+    /// a cell does.
     fn apply_child_placement(
         child_id: ObjectId,
         attrs: &ChildLayoutAttrs,
         child_type: &str,
         parent_id: ObjectId,
     ) {
+        if let Some(region) = attrs.region {
+            if !place_widget_in_region_layout(
+                child_id,
+                region,
+                attrs.extent.unwrap_or(0),
+                parent_id,
+            ) {
+                log::warn!(
+                    "JSON layout: '{child_type}' declares region '{}' but its parent has no \
+                     border layout; the child was placed by the parent's own rule instead",
+                    region.token()
+                );
+            }
+            return;
+        }
         if attrs.col.is_none() && attrs.row.is_none() {
             return;
         }
@@ -1664,6 +1683,9 @@ pub fn is_loader_owned_key(key: &str) -> bool {
         // they name no scalar property on any control, so the name-driven pass would
         // otherwise warn that a value the loader just applied "was ignored".
         | "col" | "row" | "col_span" | "row_span"
+        // Per-child region placement for `border` layouts, consumed by
+        // `apply_child_placement` through `place_widget_in_region_layout`.
+        | "region" | "extent"
         // Construction-time scalar keys a `create_widget` arm reads directly, under
         // a spelling that is deliberately *not* the control's property name (an arm
         // may need to translate a JSON word into an enum, or set two fields from
@@ -2407,6 +2429,86 @@ mod tests {
             c.x + c.width as i32,
             "the span must reach the right edge of the third column"
         );
+    }
+
+    /// A `border` layout must place a child in the region and track the document declared.
+    ///
+    /// The test asserts geometry, not just that loading succeeded: a `region` that was parsed and
+    /// then ignored would leave every child in the default center region, which is a different
+    /// arrangement from the one the document described.
+    #[test]
+    fn a_border_places_a_child_in_the_region_the_document_declared() {
+        let json = r#"{
+            "window": {
+                "title": "T",
+                "children": [
+                    { "layout": {
+                        "type": "border",
+                        "spacing": 0,
+                        "margin": 0,
+                        "children": [
+                            { "label": { "id": "top", "text": "T",
+                                          "region": "north", "extent": 40 } },
+                            { "label": { "id": "left", "text": "L",
+                                          "region": "west", "extent": 80 } },
+                            { "label": { "id": "body", "text": "B",
+                                          "region": "center" } }
+                        ]
+                    } }
+                ]
+            }
+        }"#;
+
+        let binding = JsonLoader::load(json).expect("the border document must load");
+        let window = binding.root().expect("the window is the root");
+        let geometries = crate::json::preview_layout(window, Rect::new(0, 0, 400, 300));
+        let rect_of = |name: &str| {
+            let declared = binding.id(name).expect("the node is bound by its declared id");
+            let mounted = crate::widget::runtime::registry_id_of(declared).unwrap_or(declared);
+            geometries
+                .iter()
+                .find(|(placed, _)| *placed == mounted)
+                .map(|(_, rect)| *rect)
+                .unwrap_or_else(|| {
+                    panic!("'{name}' was not placed by the layout; placed: {geometries:?}")
+                })
+        };
+
+        assert_eq!(rect_of("top"), Rect::new(0, 0, 400, 40), "north is a fixed 40px track");
+        assert_eq!(
+            rect_of("left"),
+            Rect::new(0, 40, 80, 260),
+            "west is an 80px track below the north band"
+        );
+        assert_eq!(rect_of("body"), Rect::new(80, 40, 320, 260), "center takes the remaining area");
+    }
+
+    /// A `region` declared on a parent that has no border layout is reported, not silently claimed.
+    #[test]
+    fn declaring_a_region_on_a_parent_without_a_border_is_reported() {
+        /// A parent id no other test uses, so the thread-local layout map cannot collide.
+        const BOX_PARENT: crate::core::ObjectId = 0x5EED_0004;
+        const MISSING_PARENT: crate::core::ObjectId = 0x5EED_0005;
+
+        assert!(
+            !place_widget_in_region_layout(
+                1,
+                crate::layout::BorderRegion::North,
+                40,
+                MISSING_PARENT
+            ),
+            "an unknown parent must report the miss"
+        );
+
+        crate::json::store_layout(
+            BOX_PARENT,
+            Box::new(crate::layout::BoxLayout::new(crate::core::Orientation::Vertical, 0, 0)),
+        );
+        assert!(
+            !place_widget_in_region_layout(1, crate::layout::BorderRegion::North, 40, BOX_PARENT),
+            "a box layout has no regions to place a child in"
+        );
+        crate::json::forget_layout(BOX_PARENT);
     }
 
     /// A cell declared on a parent that has no cells is reported, not silently claimed.

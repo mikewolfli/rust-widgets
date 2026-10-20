@@ -25,7 +25,7 @@
 
 use rust_widgets::app::{App, WidgetHandle, WindowHandle};
 use rust_widgets::core::{Orientation, Rect};
-use rust_widgets::layout::{BoxLayout, GridLayout, Layout};
+use rust_widgets::layout::{BorderLayout, BorderRegion, BoxLayout, GridLayout, Layout};
 
 /// Builds a window with a panel hosting a grid, plus the panel host in a vertical layout.
 ///
@@ -113,4 +113,165 @@ fn resizing_the_window_re_lays_out_the_panels_children() {
     for (index, width) in after.iter().enumerate() {
         assert!(*width > 0, "cell {index} lost its width after the resize: {after:?}");
     }
+}
+
+/// A frame is a panel under another name, so it must host a layout the same way.
+///
+/// # Why this is a separate test
+///
+/// `WindowHandle::new_frame` also calls `create_panel`, but before this test the frame
+/// handle had no `set_layout`/`set_geometry` of its own: a caller could create a frame and
+/// children, and the frame would never lay them out or re-lay them after a move. A frame
+/// that silently behaves differently from a panel is the same implicit-contract defect the
+/// panel factories remove, one spelling over.
+#[test]
+fn a_frame_hosts_a_layout_and_re_lays_it_out_when_moved() {
+    let mut app = App::new();
+    app.init();
+    let win = app.new_window("frame layout", 0, 0, 800, 600);
+
+    let frame = win.new_frame(0, 0, 0, 0);
+    frame.set_title("Group");
+    let label = frame.new_label("inside", 0, 0, 0, 0);
+
+    let mut frame_layout = BoxLayout::new(Orientation::Vertical, 0, 0);
+    frame_layout.add_widget(label.raw_id(), 1);
+    frame.set_layout(Box::new(frame_layout));
+
+    let mut window_layout = BoxLayout::new(Orientation::Vertical, 0, 0);
+    window_layout.add_widget(frame.raw_id(), 1);
+    win.set_layout(window_layout);
+
+    assert_eq!(
+        rust_widgets::widget::runtime::with_widget(label.raw_id(), |widget| widget.parent())
+            .flatten(),
+        Some(frame.raw_id()),
+        "a frame factory must parent the child to the frame"
+    );
+    assert_eq!(
+        rust_widgets::widget::runtime::geometry_of(label.raw_id()),
+        Some(Rect::new(0, 0, 800, 600)),
+        "the frame's layout must run after the window places it"
+    );
+
+    frame.set_geometry(0, 0, 400, 300);
+    assert_eq!(
+        rust_widgets::widget::runtime::geometry_of(label.raw_id()),
+        Some(Rect::new(0, 0, 400, 300)),
+        "moving the frame must re-run its child layout"
+    );
+    assert_eq!(frame.as_panel().raw_id(), frame.raw_id());
+}
+
+/// A declarative container nested in a panel must follow the panel when it moves.
+///
+/// # Why this is a separate registry test
+///
+/// JSON documents and the C ABI store their layouts in `layout::declarative`, while a
+/// `PanelHandle` stores its layout in the app layer. Both are "a container with a layout",
+/// and the nested-panel rule is about the container being placed, not about which store
+/// owns its layout. Before the cross-registry hook, a JSON-loaded container placed by a
+/// panel was moved and never asked to lay its own children out again.
+#[test]
+fn a_declarative_container_inside_a_panel_re_lays_out_when_the_panel_moves() {
+    let mut app = App::new();
+    app.init();
+    let win = app.new_window("declarative nested", 0, 0, 800, 600);
+
+    let panel = win.new_panel(0, 0, 0, 0);
+    let inner = panel.new_panel(0, 0, 0, 0);
+    let child = inner.new_label("nested", 0, 0, 0, 0);
+
+    // The document/C-ABI path registers its layout here.
+    let mut inner_layout = BoxLayout::new(Orientation::Vertical, 0, 0);
+    inner_layout.add_widget(child.raw_id(), 1);
+    rust_widgets::json::store_layout(inner.raw_id(), Box::new(inner_layout));
+
+    let mut panel_layout = BoxLayout::new(Orientation::Vertical, 0, 0);
+    panel_layout.add_widget(inner.raw_id(), 1);
+    panel.set_layout(Box::new(panel_layout));
+
+    let mut window_layout = BoxLayout::new(Orientation::Vertical, 0, 0);
+    window_layout.add_widget(panel.raw_id(), 1);
+    win.set_layout(window_layout);
+
+    assert_eq!(
+        rust_widgets::widget::runtime::geometry_of(child.raw_id()),
+        Some(Rect::new(0, 0, 800, 600)),
+        "the declarative child layout must run when the panel is first placed"
+    );
+
+    panel.set_geometry(0, 0, 400, 300);
+    assert_eq!(
+        rust_widgets::widget::runtime::geometry_of(child.raw_id()),
+        Some(Rect::new(0, 0, 400, 300)),
+        "moving the panel must re-run the nested declarative layout"
+    );
+    rust_widgets::json::forget_layout(inner.raw_id());
+}
+
+/// A panel's own factories must parent the child to the **panel**, and a panel that is
+/// itself a layout child must have its layout re-run when the parent places it.
+///
+/// # Why this is a separate test from the placement one
+///
+/// The placement test used `WindowHandle::new_label`, which works through the documented
+/// backwards-compatible path (a panel layout may position a control created by the
+/// enclosing window). That path leaves the widget's parent pointing at the window, so it
+/// says nothing about whether the panel factories exist or whether nesting recurses. This
+/// test exercises the two facts a workbench layout needs: the child is created *for* the
+/// panel, and a panel nested inside another panel is laid out after its parent sizes it.
+#[test]
+fn a_panel_factory_parents_its_children_and_nested_panels_re_layout() {
+    let mut app = App::new();
+    app.init();
+    let win = app.new_window("panel factories", 0, 0, 800, 600);
+
+    let panel = win.new_panel(0, 0, 0, 0);
+    let header = panel.new_label("header", 0, 0, 0, 0);
+    let body = panel.new_panel(0, 0, 0, 0);
+    let body_text = body.new_label("body", 0, 0, 0, 0);
+
+    let mut body_layout = BoxLayout::new(Orientation::Vertical, 0, 0);
+    body_layout.add_widget(body_text.raw_id(), 1);
+    body.set_layout(Box::new(body_layout));
+
+    let mut panel_layout = BorderLayout::new(0, 0);
+    panel_layout.add(BorderRegion::North, header.raw_id(), 30);
+    panel_layout.add(BorderRegion::Center, body.raw_id(), 0);
+    panel.set_layout(Box::new(panel_layout));
+
+    let mut window_layout = BoxLayout::new(Orientation::Vertical, 0, 0);
+    window_layout.add_widget(panel.raw_id(), 1);
+    win.set_layout(window_layout);
+
+    let header_rect =
+        rust_widgets::widget::runtime::geometry_of(header.raw_id()).expect("the header is mounted");
+    assert_eq!(header_rect, Rect::new(0, 0, 800, 30), "the north track is fixed");
+
+    let parent_of =
+        |id| rust_widgets::widget::runtime::with_widget(id, |widget| widget.parent()).flatten();
+    assert_eq!(
+        parent_of(header.raw_id()),
+        Some(panel.raw_id()),
+        "a panel factory must parent the child to the panel, not the window"
+    );
+    assert_eq!(parent_of(body.raw_id()), Some(panel.raw_id()));
+    assert_eq!(
+        parent_of(body_text.raw_id()),
+        Some(body.raw_id()),
+        "a nested panel must own its own child"
+    );
+
+    let body_rect =
+        rust_widgets::widget::runtime::geometry_of(body.raw_id()).expect("the body is mounted");
+    assert_eq!(body_rect, Rect::new(0, 30, 800, 570), "the center takes the rest");
+
+    let text_rect = rust_widgets::widget::runtime::geometry_of(body_text.raw_id())
+        .expect("the nested label is mounted");
+    assert_eq!(
+        text_rect,
+        Rect::new(0, 30, 800, 570),
+        "the nested panel's own layout must run after its parent places it"
+    );
 }
