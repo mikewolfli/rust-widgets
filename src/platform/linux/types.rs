@@ -48,6 +48,16 @@ pub struct LinuxPlatform {
 pub(crate) struct LinuxNativeState {
     /// Native GTK windows indexed by logical widget id.
     pub(crate) windows: HashMap<u64, gtk::Window>,
+    /// The GTK input-method context owned by each window.
+    ///
+    /// Kept here, with a `Weak` in the key-press signal closure, so teardown can drop the
+    /// `IMMulticontext` **before** `gtk_widget_destroy` tears the signal handlers down.
+    /// Measured: unref'ing the context from inside signal-handler destruction (fcitx5's module)
+    /// produced `GObject-CRITICAL: g_signal_handler_disconnect: invalid (NULL) pointer instance`
+    /// on every window destroy.
+    #[cfg(all(unix_desktop, feature = "gtk-native", widgets_unstripped))]
+    pub(crate) ime_contexts:
+        HashMap<u64, std::rc::Rc<core::cell::RefCell<Option<super::canvas::ImeContext>>>>,
     /// Root vertical containers hosting menu bar and content area.
     pub(crate) root_boxes: HashMap<u64, gtk::Box>,
     /// Absolute-position container for child controls.

@@ -45,7 +45,7 @@
 ///
 /// So the default is to refuse and say how to allow it, and the answer is a deliberate act rather
 /// than a side effect of running `cargo run --example`.
-#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
 fn gui_probe_allowed() -> bool {
     if std::env::var("RW_GUI_PROBE_OK").ok().as_deref() == Some("1") {
         return true;
@@ -130,7 +130,7 @@ fn arm_watchdog(
 fn staged() {
     // This probe creates a window and enters a loop, so on a toolkit build it puts a window on the
     // screen it runs on: see `gui_probe_allowed`.
-    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    #[cfg(all(unix_desktop, feature = "gtk-native"))]
     if !gui_probe_allowed() {
         std::process::exit(2);
     }
@@ -223,12 +223,12 @@ fn staged() {
     );
 
     // ── D: the window that was open really was on screen (GTK session only) ───────────────────
-    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    #[cfg(all(unix_desktop, feature = "gtk-native"))]
     {
         println!("\nD. composition of the window the session had open");
         gtk_composition_report();
     }
-    #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
+    #[cfg(not(all(unix_desktop, feature = "gtk-native")))]
     {
         println!(
             "\nD. skipped: this build has no toolkit to ask about composition \
@@ -312,7 +312,7 @@ fn staged() {
 ///
 /// This is the GTK half of the designer-feedback item that no display session could answer
 /// ("窗口承载、合成与真实 DPI 切换").
-#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
 fn gtk_composition_report() {
     use gtk::prelude::*;
 

@@ -502,11 +502,13 @@ pub fn run() {
 ///
 /// No toolkit accepts a stop from an arbitrary thread (`-[NSApplication stop:]` is
 /// main-thread-only, `gtk_main_quit` walks a global main-loop stack only the loop's thread may
-/// touch, `PostQuitMessage` is thread-affine), so this records a request the loop reads at its
-/// own next frame — see [`crate::platform::stop`] for the seam and for the backends' tick. The
-/// immediate path is still taken where it is legal: on the loop's thread
-/// [`Platform::quit`] performs the toolkit's own stop, which is the one case a backend can
-/// answer `true` for on its own.
+/// touch, `PostQuitMessage` is thread-affine). The immediate path is therefore tried first, on
+/// the calling thread: on the loop's thread [`Platform::quit`] performs the toolkit's own stop
+/// and this returns `true` without recording anything. When the backend refuses (`false`), this
+/// records **one** request that the loop reads at its own next frame — never both, because the
+/// GTK backend already records its own request when it is off the main thread, and a second
+/// request would outlive the loop that consumed the first and stop the next session. See
+/// [`crate::platform::stop`] for the seam and for the backends' tick.
 ///
 /// # Return value
 ///
@@ -527,8 +529,18 @@ pub fn run() {
 /// needs ("will this session end?").
 #[cfg(not(alloc_frugal))]
 pub fn quit() -> bool {
-    let has_a_reader = crate::platform::stop::request();
-    get_platform().quit() || has_a_reader
+    // Record at most **one** request. The backend may perform the stop itself (the state
+    // backends, or a toolkit on its own thread), and the GTK backend records the request itself
+    // when it is off the main thread; recording unconditionally here would arm a second request
+    // that the current loop never consumes. Measured: `crate::quit()` from a non-GTK-main thread
+    // left one request pending, which then stopped the *next* loop in the same process at its
+    // first frame — the opposite of the documented "a request stops one loop".
+    if get_platform().quit() {
+        return true;
+    }
+    // The backend refused: no loop has necessarily ticked, so the answer is the honest fact a
+    // caller needs before arranging its own ending.
+    crate::platform::stop::request()
 }
 
 /// Returns runtime capabilities for the active backend.

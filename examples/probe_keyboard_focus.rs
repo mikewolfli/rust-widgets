@@ -25,12 +25,12 @@
 //! Exit codes: `0` = every check held, `1` = a check failed, `2` = this host cannot stage it (no
 //! display, or one of `python3`/`wmctrl`/`xwininfo`/`xprop` missing — the line says which).
 
-#[cfg(all(not(alloc_frugal), target_os = "linux", feature = "gtk-native"))]
+#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
 fn main() {
     staged()
 }
 
-#[cfg(not(all(not(alloc_frugal), target_os = "linux", feature = "gtk-native")))]
+#[cfg(not(all(not(alloc_frugal), unix_desktop, feature = "gtk-native")))]
 fn main() {
     println!(
         "probe_keyboard_focus: this build has no X11 session to ask (`--features \
@@ -39,7 +39,7 @@ fn main() {
 }
 
 /// Whether the operator has allowed this probe to open real windows and inject input.
-#[cfg(all(not(alloc_frugal), target_os = "linux", feature = "gtk-native"))]
+#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
 fn gui_probe_allowed() -> bool {
     if std::env::var("RW_GUI_PROBE_OK").ok().as_deref() == Some("1") {
         return true;
@@ -51,7 +51,7 @@ fn gui_probe_allowed() -> bool {
     false
 }
 
-#[cfg(all(not(alloc_frugal), target_os = "linux", feature = "gtk-native"))]
+#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
 fn staged() {
     use rust_widgets::app::WidgetHandle;
     use std::process::Command;
@@ -108,6 +108,8 @@ fn staged() {
     }
 
     rust_widgets::init();
+    // Hold the display for this whole session: see `ProbeLock`.
+    let _probe_lock = ProbeLock::acquire();
     let window = rust_widgets::create_window(&title, 140, 140, 520, 260);
     check(window != 0, "the library created a window");
 
@@ -124,6 +126,16 @@ fn staged() {
             values.push(text);
         }
     });
+    // The uncommitted composition is a separate observation seam: `on_value_changed` only sees
+    // the committed text, so a host could not tell "the IME composed" from "ASCII was typed".
+    let preedits: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_preedit = Arc::clone(&preedits);
+    let preedit_hooked = field.on_ime_preedit(move |text, cursor| {
+        if let Ok(mut preedits) = seen_preedit.lock() {
+            preedits.push(format!("{text}@{cursor}"));
+        }
+    });
+    let ime_run = std::env::var_os("RW_PROBE_IME").is_some();
     let clicks = Arc::new(AtomicUsize::new(0));
     let clicked = Arc::clone(&clicks);
     button.on_click(move || {
@@ -206,6 +218,9 @@ fn staged() {
     );
     println!("   field text          : {text:?}");
     println!("   value notifications : {values:?}");
+    let preedits = preedits.lock().map(|preedits| preedits.clone()).unwrap_or_default();
+    println!("   preedit observer    : {preedit_hooked}");
+    println!("   preedit notifications: {preedits:?}");
     println!("   button clicks       : {}", clicks.load(Ordering::SeqCst));
 
     check(injection.is_ok(), "real X key events were injected into the window");
@@ -215,6 +230,15 @@ fn staged() {
         "`on_value_changed` reported the final value without the host polling",
     );
     check(!values.is_empty(), "an edit produces at least one value notification");
+    check(preedit_hooked, "the field accepted a pre-edit observer");
+    if ime_run {
+        check(
+            preedits
+                .iter()
+                .any(|preedit| preedit.split('@').next().is_some_and(|text| !text.is_empty())),
+            "an IME composition was observable before the commit",
+        );
+    }
     check(
         clicks.load(Ordering::SeqCst) == 0,
         "the button was not clicked, so focus moved to the field the pointer hit",
@@ -231,8 +255,74 @@ fn staged() {
     std::process::exit(if failures == 0 { 0 } else { 1 });
 }
 
+/// Serializes GUI probes on one X display for the whole session.
+///
+/// The injector's own focus checks cannot keep focus: a second probe may map and present its
+/// window while the first is between the check and the keystrokes, so the keys land in the
+/// other probe's window and one run fails for a reason unrelated to the library. Measured by
+/// running two probes in parallel. The lock covers window creation through the injection.
+///
+/// A stale file (a probe killed with `SIGKILL`) is reclaimed when its recorded pid no longer
+/// exists under `/proc`; this example only builds on Linux, so that is a local check rather
+/// than an OS assumption in library code.
+#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+struct ProbeLock {
+    path: std::path::PathBuf,
+}
+
+#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+impl ProbeLock {
+    fn acquire() -> Self {
+        use std::io::Write;
+        use std::time::{Duration, Instant};
+
+        let display = std::env::var("DISPLAY").unwrap_or_else(|_| "default".to_string());
+        let safe: String = display
+            .chars()
+            .map(|character| if character.is_ascii_alphanumeric() { character } else { '_' })
+            .collect();
+        let path = std::env::temp_dir().join(format!("rw-gui-probe-{safe}.lock"));
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(mut file) => {
+                    let _ = writeln!(file, "{}", std::process::id());
+                    return Self { path };
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let owner = std::fs::read_to_string(&path)
+                        .ok()
+                        .and_then(|contents| contents.trim().parse::<u32>().ok());
+                    if let Some(pid) = owner {
+                        if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
+                            let _ = std::fs::remove_file(&path);
+                            continue;
+                        }
+                    }
+                    if Instant::now() >= deadline {
+                        panic!(
+                            "another GUI probe on {display} still holds {}; run probes serially",
+                            path.display()
+                        );
+                    }
+                    println!("waiting for another GUI probe on {display} to finish...");
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+                Err(error) => panic!("could not create {}: {error}", path.display()),
+            }
+        }
+    }
+}
+
+#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+impl Drop for ProbeLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 /// Whether `tool` resolves on `PATH` (used to turn a failed `--help` into a host limitation).
-#[cfg(all(not(alloc_frugal), target_os = "linux", feature = "gtk-native"))]
+#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
 fn which(tool: &str) -> bool {
     std::env::var_os("PATH")
         .map(|path| std::env::split_paths(&path).any(|directory| directory.join(tool).is_file()))

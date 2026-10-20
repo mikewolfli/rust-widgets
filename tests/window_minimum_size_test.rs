@@ -28,7 +28,7 @@
 //! `gtk::Widget::size_request` is the property that matters and is readable
 //! without a window manager, so this runs under `xvfb` or a headed session alike.
 
-#![cfg(all(target_os = "linux", feature = "gtk-native"))]
+#![cfg(all(unix_desktop, feature = "gtk-native"))]
 
 use gtk::prelude::*;
 

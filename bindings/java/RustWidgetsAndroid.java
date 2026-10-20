@@ -176,23 +176,28 @@ public final class RustWidgets {
     public static native int nativeWidgetSelfTest();
 
     /**
-     * Run the on-device platform-services probe and return a pass/fail bit mask.
+     * Run the on-device platform-services probe and return a **passed** bit mask.
      *
-     * <p>Drives the real {@code Platform} methods that need the attached {@code Activity}
-     * {@code Context}: an application-defined MIME type on the system clipboard, and display
-     * enumeration. A host test cannot exercise either, so this is the on-device evidence.
+     * <p>The probe is the crate-wide `platform::diagnostics` run: every bit has three possible
+     * outcomes — pass, skip (the backend honestly has no such concept) and fail. This method
+     * carries the passed bits only; pair it with {@link #nativePlatformProbeFailures()} to tell a
+     * skip from a failure.
      *
-     * @return a bit mask; {@code 4095} ({@code 0b1111_1111_1111}) is a full pass. Bit 0 = custom MIME
-     *         write accepted, 1 = {@code has_format} sees it, 2 = typed read returns the same
-     *         bytes, 3 = {@code get_contents} reports {@code Custom}, 4 = at least one display
-     *         with positive metrics and a readable DPI scale, 5 = a real window is placed on a
-     *         display, 6 = {@code display_generation} is non-zero and stable, 7 = the clipboard
-     *         capability is reported while the probe runs, 8 = an IME bridge (soft keyboard) is
-     *         available, 9 = {@code system_theme()} answered from {@code Configuration.uiMode},
-     *         10 = {@code text_scale()} answered from {@code Configuration.fontScale},
-     *         11 = {@code safe_area_insets()} answered from {@code WindowMetrics}
+     * <p>Bit order (stable, shared by every backend): 0 custom clipboard MIME, 1 displays,
+     * 2 window-to-display ownership, 3 display generation, 4 DPI scale, 5 system theme,
+     * 6 text scale, 7 safe-area insets, 8 IME bridge, 9 accessibility bridge, 10 host path
+     * picker, 11 external opening.
      */
     public static native int nativePlatformProbe();
+
+    /**
+     * The **failed** bits of the same platform-services probe.
+     *
+     * <p>A bit set here is a fact the backend claimed and could not deliver; a bit that is set in
+     * neither this mask nor {@link #nativePlatformProbe()} is a skip, which is not a failure.
+     * A run is acceptable when this mask is zero.
+     */
+    public static native int nativePlatformProbeFailures();
 
     // ---- Host input forwarding (BLUE28 B28.02) ----------------------------
 

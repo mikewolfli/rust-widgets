@@ -199,6 +199,21 @@ thread_local! {
     #[allow(clippy::missing_const_for_thread_local)]
     static HOVERED: RefCell<Option<ObjectId>> = const { RefCell::new(None) };
 
+    /// Host observers of the IME pre-edit delivered to each widget.
+    ///
+    /// The platform half of IME (`ImeBridge`) *sends* the composition and the widget half
+    /// (`Event::ImePreedit`) is what a control handles, but a host had no way to observe the
+    /// uncommitted string frame by frame: `deliver_composition` returned a `bool` and nothing
+    /// else. Keeping the observers beside the registry gives them the same lifetime and thread
+    /// rules as the widget they belong to, and `unregister` drops them with it.
+    ///
+    /// `Rc<RefCell<..>>` rather than a boxed closure for the same reason as the value callbacks:
+    /// [`notify_ime_preedit`] clones the list out for the duration of the call, so a callback
+    /// that registers or removes an observer cannot hit an already-borrowed `RefCell`.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static IME_PREEDIT_CALLBACKS: RefCell<HashMap<ObjectId, Vec<ImePreeditCallback>>> =
+        RefCell::new(HashMap::new());
+
     /// Whether the last [`tick_animations`] sweep left a **mounted** control in flight.
     ///
     /// Kept across frames because the frame that observes a control *settling* is one the
@@ -467,6 +482,9 @@ pub fn unregister(id: ObjectId) -> bool {
             *hovered = None;
         }
     });
+    // A host observer of this widget's IME pre-edit would otherwise outlive the control it
+    // observes and keep its captured state alive for the rest of the thread.
+    clear_ime_preedit_callbacks(id);
     // And it must not keep pointer capture: routing would send every subsequent
     // pointer event to an id that resolves to nothing.
     let _ = CAPTURE.try_with(|capture| {
@@ -2323,6 +2341,71 @@ thread_local! {
     #[allow(clippy::missing_const_for_thread_local)]
     static LENT_MUTATING: RefCell<alloc::collections::BTreeSet<ObjectId>> =
         RefCell::new(alloc::collections::BTreeSet::new());
+}
+
+/// A host callback observing the IME pre-edit updates delivered to one widget.
+///
+/// `&str` is the uncommitted composition and `usize` its cursor position (the same shape
+/// [`crate::event::Event::ImePreedit`] carries). The string is borrowed for the duration of the
+/// call: a host that needs to keep it copies it.
+pub(crate) type ImePreeditCallback = Rc<RefCell<dyn FnMut(&str, usize)>>;
+
+/// Registers a host observer for the IME pre-edit delivered to `widget_id`.
+///
+/// Returns `false` when the id addresses no mounted widget, which is the same "a handler that
+/// can never run" answer [`register_value_callback`](crate::app::handle) gives: the caller can
+/// report it instead of holding a subscription that silently never fires.
+///
+/// The only caller is [`WidgetHandle::on_ime_preedit`](crate::app::WidgetHandle::on_ime_preedit),
+/// and the `app` layer is `full_widgets`-only. The stripped profiles still compile this module
+/// (the widget registry is what they run on), so the function has no consumer there — hence the
+/// per-item `dead_code` allowance rather than a crate-wide one.
+#[cfg_attr(not(full_widgets), allow(dead_code))]
+pub(crate) fn register_ime_preedit_callback<F: FnMut(&str, usize) + 'static>(
+    widget_id: ObjectId,
+    callback: F,
+) -> bool {
+    if !accepts_ime_input(widget_id) {
+        return false;
+    }
+    let stored: ImePreeditCallback = Rc::new(RefCell::new(callback));
+    let _ = IME_PREEDIT_CALLBACKS.try_with(|map| {
+        map.borrow_mut().entry(widget_id).or_default().push(stored);
+    });
+    true
+}
+
+/// Tells every observer of `widget_id` about one uncommitted composition update.
+///
+/// The list is cloned out before the callbacks run, so a callback may register another observer,
+/// destroy the widget, or call [`clear_ime_preedit_callbacks`] without hitting an already-borrowed
+/// `RefCell`. Returns whether at least one observer ran.
+pub(crate) fn notify_ime_preedit(widget_id: ObjectId, text: &str, cursor: usize) -> bool {
+    let callbacks: Vec<ImePreeditCallback> = IME_PREEDIT_CALLBACKS
+        .try_with(|map| map.borrow().get(&widget_id).cloned())
+        .unwrap_or_default()
+        .unwrap_or_default();
+    if callbacks.is_empty() {
+        return false;
+    }
+    for callback in callbacks {
+        if let Ok(mut observer) = callback.try_borrow_mut() {
+            observer(text, cursor);
+        } else {
+            log::warn!(
+                "the IME pre-edit observer for widget {widget_id} is already running; refusing \
+                 to re-enter it rather than panicking"
+            );
+        }
+    }
+    true
+}
+
+/// Drops every IME pre-edit observer registered for `widget_id`.
+pub(crate) fn clear_ime_preedit_callbacks(widget_id: ObjectId) {
+    let _ = IME_PREEDIT_CALLBACKS.try_with(|map| {
+        map.borrow_mut().remove(&widget_id);
+    });
 }
 
 /// Forwards a platform event into a mounted widget's `EventHandler`.

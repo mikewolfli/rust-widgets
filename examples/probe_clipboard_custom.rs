@@ -61,7 +61,7 @@ fn main() {
 ))]
 fn main() {
     #[cfg(any(
-        all(target_os = "linux", feature = "gtk-native"),
+        all(unix_desktop, feature = "gtk-native"),
         target_os = "windows",
         all(target_os = "macos", any(feature = "cocoa-legacy", feature = "macos"))
     ))]
@@ -69,7 +69,7 @@ fn main() {
         run_staging_probe();
     }
     #[cfg(not(any(
-        all(target_os = "linux", feature = "gtk-native"),
+        all(unix_desktop, feature = "gtk-native"),
         target_os = "windows",
         all(target_os = "macos", any(feature = "cocoa-legacy", feature = "macos"))
     )))]
@@ -85,7 +85,7 @@ fn main() {
 #[cfg(all(
     not(alloc_frugal),
     any(
-        all(target_os = "linux", feature = "gtk-native"),
+        all(unix_desktop, feature = "gtk-native"),
         target_os = "windows",
         all(target_os = "macos", any(feature = "cocoa-legacy", feature = "macos"))
     )
@@ -104,7 +104,7 @@ fn gui_probe_allowed() -> bool {
 #[cfg(all(
     not(alloc_frugal),
     any(
-        all(target_os = "linux", feature = "gtk-native"),
+        all(unix_desktop, feature = "gtk-native"),
         target_os = "windows",
         all(target_os = "macos", any(feature = "cocoa-legacy", feature = "macos"))
     )

@@ -49,8 +49,11 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
+import fcntl
+import os
 import subprocess
 import sys
+import tempfile
 import time
 
 # Keysyms from `X11/keysymdef.h` that this tool needs by name rather than by character.
@@ -243,6 +246,34 @@ def active_window_id() -> int | None:
     return int(prop.stdout.rsplit("#", 1)[1].strip(), 16)
 
 
+def acquire_display_lock():
+    """Serialize injection per X display, so two probes cannot steal each other's focus.
+
+    The safety checks below verify that this window has the server's input focus, but they
+    cannot *keep* it: a second probe can activate its own window between the check and the
+    typing, and both runs then fail for a reason that has nothing to do with the library (this
+    was measured by running two probes in parallel). The lock covers window activation, the
+    focus checks and the typing, which is the whole critical section.
+
+    Returns the open handle; keeping it referenced holds the lock until the process exits.
+    A filesystem that cannot lock (an exotic network mount) is a warning, not a failure, so
+    the tool still works where `flock` is unavailable.
+    """
+    display = os.environ.get("DISPLAY", "default")
+    safe = "".join(character if character.isalnum() else "_" for character in display)
+    path = os.path.join(tempfile.gettempdir(), f"rw-x11-inject-{safe}.lock")
+    try:
+        handle = open(path, "a+")
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        return handle
+    except OSError as error:
+        print(
+            f"x11_inject_keys: could not lock {path} ({error}); concurrent probes are not serialized",
+            file=sys.stderr,
+        )
+        return None
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 3:
         print(__doc__)
@@ -274,6 +305,10 @@ def main(argv: list[str]) -> int:
     # A desktop session may start with it inactive, and `-o` acts on the focused input context —
     # which exists only after the toolkit called `focus_in`.
     ime_activate = "--ime-activate" in argv
+
+    # Held for the rest of the process: see `acquire_display_lock` for why focus alone is not
+    # enough when two probes run at once.
+    _display_lock = acquire_display_lock()
 
     x = X()
 

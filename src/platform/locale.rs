@@ -62,6 +62,23 @@ pub(crate) fn from_environment() -> Option<String> {
         .find_map(|value| normalize(&value))
 }
 
+/// The locale named by the process environment, for the allocation-frugal profile.
+///
+/// `mini` is `no_std`, so there is no `std::env` to read and this backend cannot observe the
+/// POSIX locale variables at all. The honest answer is `None` ("this backend does not report a
+/// locale"), not a hardcoded `en-US`: the style layer treats a missing tag as "unknown" and
+/// leaves its own default in place, while a fabricated tag would silently pin every mini host to
+/// one language.
+///
+/// This arm exists so a backend can call [`from_environment`] unconditionally. Without it the
+/// call site had to be `cfg`-split per profile, and `linux`/`macos` were missed — the Linux
+/// `mini` build failed with `cannot find function from_environment` (feedback-20261019 §4).
+#[cfg(alloc_frugal)]
+#[cfg_attr(not(any(unix_desktop, target_vendor = "apple")), allow(dead_code))]
+pub(crate) fn from_environment() -> Option<String> {
+    None
+}
+
 /// Normalizes a POSIX locale value such as `de_DE.UTF-8@euro` to a BCP-47 tag (`de-DE`).
 ///
 /// The encoding and modifier are removed because they describe the C library's `LC_CTYPE`, not

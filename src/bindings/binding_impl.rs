@@ -3559,7 +3559,9 @@ mod tests {
             target_widget_id: target,
             mime: "application/x-rust-widgets-test".to_string(),
             payload: payload_bytes.clone(),
-            files: Vec::new(),
+            // `mini` has no `files` field: `DropEvent::files` is `not(alloc_frugal)`-only.
+            #[cfg(not(alloc_frugal))]
+            files: crate::compat::Vec::new(),
             action: crate::platform::DropAction::Copy,
             position: None,
         };

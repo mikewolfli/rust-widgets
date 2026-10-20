@@ -227,7 +227,7 @@ pub fn android_integration_ready() -> IntegrationStatus {
 /// Kept as a named constant next to the functions it counts, and asserted by a
 /// test, so adding an entry point without updating it fails the build rather than
 /// silently misreporting the integration's surface.
-pub const NATIVE_METHOD_COUNT: u32 = 13;
+pub const NATIVE_METHOD_COUNT: u32 = 17;
 
 /// The `startActivityForResult` request code the document picker uses.
 ///
@@ -2014,6 +2014,39 @@ fn platform_services_probe() -> jni::sys::jint {
 /// `alloc_frugal` has no platform singleton to probe.
 #[cfg(alloc_frugal)]
 fn platform_services_probe() -> jni::sys::jint {
+    0
+}
+
+/// The **failed** bits of the same unified probe, as a 12-bit mask.
+///
+/// `nativePlatformProbe` answers the passed bits, which cannot express the probe's third state:
+/// a fact the backend honestly does not have is `skip`, not `fail` (see
+/// [`crate::platform::diagnostics`]). A host that read an unset bit as a failure therefore
+/// marked Android's `accessibility` and `open_external` skips as failures and printed
+/// `RESULT: FAIL` for a run with zero failures. This entry point carries the distinction, so a
+/// host can label each bit `PASS` / `SKIP` / `FAIL` and decide on failures alone.
+#[no_mangle]
+pub extern "system" fn Java_rust_1widgets_RustWidgets_nativePlatformProbeFailures(
+    _env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+) -> jni::sys::jint {
+    platform_services_failures()
+}
+
+/// The body behind [`Java_rust_1widgets_RustWidgets_nativePlatformProbeFailures`].
+#[cfg(not(alloc_frugal))]
+fn platform_services_failures() -> jni::sys::jint {
+    let diagnostics = crate::platform::diagnostics::run();
+    diagnostics
+        .entries
+        .iter()
+        .filter(|entry| entry.status == crate::platform::diagnostics::DiagnosticStatus::Fail)
+        .fold(0i32, |mask, entry| mask | (1i32 << entry.bit)) as jni::sys::jint
+}
+
+/// `alloc_frugal` has no platform singleton to probe, so nothing can have failed.
+#[cfg(alloc_frugal)]
+fn platform_services_failures() -> jni::sys::jint {
     0
 }
 

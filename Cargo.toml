@@ -1,6 +1,6 @@
 [package]
 name = "rust_widgets"
-version = "2.8.9"
+version = "2.8.10"
 edition = "2021"
 description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 180 widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"
@@ -1068,6 +1068,18 @@ required-features = ["desktop", "icons"]
 [[example]]
 name = "probe_draw_only"
 path = "examples/probe_draw_only.rs"
+required-features = ["desktop"]
+
+# BLUE28 B28.01 platform diagnostic probe.
+#
+# The body names `platform::diagnostics` and the `platform::{get_platform, displays,
+# dpi_scale_factor}` re-exports, all of which are `not(alloc_frugal)`-only. Naming them from an
+# example without a `required-features` entry made `cargo check --no-default-features --features
+# mini --all-targets` fail on the example (five E0433/E0425 errors), which is the same class
+# `probe_draw_only` above already documents.
+[[example]]
+name = "platform_diagnostics"
+path = "examples/platform_diagnostics.rs"
 required-features = ["desktop"]
 
 # Batch-3 timing probe: the cost of one keystroke through `CodeEditor`'s own edit path.

@@ -737,7 +737,7 @@ fn test_std_only_feature() {
 ```toml
 # Cargo.toml
 [dependencies]
-rust_widgets = { version = "2.8.9", default-features = false, features = [
+rust_widgets = { version = "2.8.10", default-features = false, features = [
     "mini",
 ] }
 

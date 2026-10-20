@@ -5,7 +5,9 @@
 
 use super::types::{WasmHandleKind, WasmPlatform};
 use crate::compat::atomic::Ordering;
-#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+// `Vec` is needed by both arms of `displays`: the browser arm builds one entry and the host
+// arm answers an empty list. The import used to be `wasm32`-only, so a host build with the
+// `wasm` feature (and `mini`, which removes the prelude) failed with `cannot find type Vec`.
 use crate::compat::Vec;
 use crate::compat::{format, String};
 use crate::core::PlatformFamily;
@@ -459,6 +461,7 @@ impl Platform for WasmPlatform {
         }
         #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
         {
+            let _ = visible;
             false
         }
     }

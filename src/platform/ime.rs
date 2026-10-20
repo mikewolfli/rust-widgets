@@ -91,7 +91,18 @@ pub fn deliver_composition(widget_id: ObjectId, composition: &ImeComposition) ->
         text: composition.text.clone(),
         cursor: composition.cursor_position,
     };
-    crate::widget::runtime::dispatch_event(widget_id, &event)
+    let delivered = crate::widget::runtime::dispatch_event(widget_id, &event);
+    if delivered {
+        // The control's own handler has stored the composition by now, so an observer sees the
+        // same state the control does. This is the host-facing half: without it a host could
+        // only observe the *committed* text and had no way to log or assert a preedit frame.
+        crate::widget::runtime::notify_ime_preedit(
+            widget_id,
+            &composition.text,
+            composition.cursor_position,
+        );
+    }
+    delivered
 }
 
 /// [`deliver_composition`] for an allocation-frugal build: there is no widget registry and no
@@ -394,12 +405,25 @@ mod tests {
         let id = crate::widget::runtime::register(Box::new(Recorder {
             log: Rc::clone(&log),
             base: crate::widget::BaseWidget::new(
-                crate::widget::WidgetKind::Label,
+                // A kind that accepts IME input: the observer seam refuses a widget that could
+                // never receive a composition (see `register_ime_preedit_callback`).
+                crate::widget::WidgetKind::LineEdit,
                 crate::core::Rect::new(0, 0, 10, 10),
                 "recorder",
             ),
         }))
         .expect("mount the recorder");
+
+        // The host-facing observation seam: the widget's own event log above is the *control's*
+        // view, and before this observer existed a host had no way to see a preedit frame.
+        let observed = Rc::new(RefCell::new(Vec::new()));
+        let observer_log = Rc::clone(&observed);
+        assert!(
+            crate::widget::runtime::register_ime_preedit_callback(id, move |text, cursor| {
+                observer_log.borrow_mut().push(format!("{text}@{cursor}"));
+            }),
+            "a control that accepts IME input accepts an observer"
+        );
 
         let composition =
             ImeComposition { text: "にほ".to_string(), cursor_position: 6, selection_length: 0 };
@@ -407,7 +431,24 @@ mod tests {
         assert!(deliver_commit(id, "日本語"), "a commit reaches the control");
 
         assert_eq!(*log.borrow(), vec!["preedit:にほ@6", "commit:日本語"]);
+        assert_eq!(*observed.borrow(), vec!["にほ@6"], "the host observer saw the same preedit");
 
         crate::widget::runtime::unregister(id);
+        // The observer belonged to the widget, so it must not outlive it.
+        assert!(!crate::widget::runtime::notify_ime_preedit(id, "にほ", 6));
+
+        // A widget that does not accept IME input is refused rather than given an observer that
+        // can never run.
+        let label = crate::widget::runtime::register(Box::new(Recorder {
+            log: Rc::new(RefCell::new(Vec::new())),
+            base: crate::widget::BaseWidget::new(
+                crate::widget::WidgetKind::Label,
+                crate::core::Rect::new(0, 0, 10, 10),
+                "label",
+            ),
+        }))
+        .expect("mount the label");
+        assert!(!crate::widget::runtime::register_ime_preedit_callback(label, |_, _| {}));
+        crate::widget::runtime::unregister(label);
     }
 }

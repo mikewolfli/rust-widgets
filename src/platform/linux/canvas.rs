@@ -245,7 +245,7 @@ pub(crate) fn mount_canvas(
         // preedit characters **and** the committed string. `filter_keypress` answers whether the
         // context consumed the key, so a consumed key stops here and an unconsumed one follows
         // the ordinary path (which is what keeps a keyboard-us IME typing normally).
-        if ime.filter_keypress(event) {
+        if ime.borrow().as_ref().is_some_and(|ime| ime.filter_keypress(event)) {
             widget.queue_draw();
             note_canvas_redraw(id);
             return glib::Propagation::Stop;
@@ -663,84 +663,113 @@ impl ImeContext {
     /// The client window is set on `map` rather than at construction because a `DrawingArea` has
     /// no `GdkWindow` until it is realized; setting it early would leave the input method with no
     /// surface to place its candidate window against.
-    pub(crate) fn new(area: &gtk::DrawingArea) -> Self {
-        let context = gtk::IMMulticontext::new();
-        context.set_use_preedit(true);
+    ///
+    /// # Why the return value is a shared slot, and why every signal holds a `Weak`
+    ///
+    /// The window state owns the strong reference (`LinuxNativeState::ime_contexts`) so teardown
+    /// can drop the `IMMulticontext` **before** `gtk_widget_destroy`. The signals connected here
+    /// therefore hold a `Weak`: a strong capture would keep the context alive until the widget's
+    /// handlers are destroyed, which releases the IM module's object from inside GTK's own
+    /// signal-handler teardown (measured with fcitx5: `g_signal_handler_disconnect: invalid
+    /// (NULL) pointer instance` on every window destroy).
+    pub(crate) fn new(area: &gtk::DrawingArea) -> std::rc::Rc<std::cell::RefCell<Option<Self>>> {
+        let this = std::rc::Rc::new(std::cell::RefCell::new(Some(Self {
+            context: gtk::IMMulticontext::new(),
+            last_focused: std::rc::Rc::new(std::cell::RefCell::new(None)),
+        })));
+        let weak = std::rc::Rc::downgrade(&this);
 
-        let mapped = context.clone();
-        area.connect_map(move |area| {
+        {
+            let borrowed = this.borrow();
+            let context = &borrowed.as_ref().expect("constructed just above").context;
+            context.set_use_preedit(true);
             if let Some(window) = area.window() {
-                mapped.set_client_window(Some(&window));
+                context.set_client_window(Some(&window));
+            }
+
+            // The composition is the field's preview, not its value: delivering it as `ImePreedit`
+            // lets `LineEdit` paint the preedit at the caret without firing `text_changed`.
+            context.connect_preedit_changed(|context| {
+                let (text, _, cursor) = context.preedit_string();
+                let Some(widget) = crate::widget::runtime::focused_widget() else {
+                    return;
+                };
+                if !control_accepts_ime(widget) {
+                    return;
+                }
+                let composition = crate::platform::ime::ImeComposition {
+                    text: text.to_string(),
+                    cursor_position: cursor.max(0) as usize,
+                    selection_length: 0,
+                };
+                let _ = crate::platform::ime::deliver_composition(widget, &composition);
+            });
+            // A withdrawn composition clears the preview; without this an input method that ends a
+            // session without committing would leave the underlined text painted forever.
+            context.connect_preedit_end(|_| {
+                let Some(widget) = crate::widget::runtime::focused_widget() else {
+                    return;
+                };
+                if !control_accepts_ime(widget) {
+                    return;
+                }
+                let _ = crate::platform::ime::deliver_composition(
+                    widget,
+                    &crate::platform::ime::ImeComposition::default(),
+                );
+            });
+            context.connect_commit(|_, text| {
+                let Some(widget) = crate::widget::runtime::focused_widget() else {
+                    return;
+                };
+                if !control_accepts_ime(widget) {
+                    return;
+                }
+                // Clear the preview before the text arrives, so a field that paints both cannot show
+                // the committed string and its own stale composition at the same time.
+                let _ = crate::platform::ime::deliver_composition(
+                    widget,
+                    &crate::platform::ime::ImeComposition::default(),
+                );
+                let _ = crate::platform::ime::deliver_commit(widget, text);
+            });
+        }
+
+        let mapped = weak.clone();
+        area.connect_map(move |area| {
+            if let Some(this) = mapped.upgrade() {
+                if let Some(ime) = this.borrow().as_ref() {
+                    if let Some(window) = area.window() {
+                        ime.context.set_client_window(Some(&window));
+                    }
+                }
             }
         });
-        if let Some(window) = area.window() {
-            context.set_client_window(Some(&window));
-        }
 
         // Focus is a toolkit fact as well as a library one. The input method learns that an edit
         // session may begin when the area takes keyboard focus, **not** when the first key arrives:
         // an inactive input method cannot be switched on for the field if it has not seen the
         // field focus yet. Keeping these two signals is what makes "click, then choose an input
         // method, then type" work rather than forcing the user to type once first.
-        let focus_context = context.clone();
+        let focus_in = weak.clone();
         area.connect_focus_in_event(move |_, _| {
-            focus_context.focus_in();
+            if let Some(this) = focus_in.upgrade() {
+                if let Some(ime) = this.borrow().as_ref() {
+                    ime.context.focus_in();
+                }
+            }
             glib::Propagation::Proceed
         });
-        let blur_context = context.clone();
         area.connect_focus_out_event(move |_, _| {
-            blur_context.focus_out();
+            if let Some(this) = weak.upgrade() {
+                if let Some(ime) = this.borrow().as_ref() {
+                    ime.context.focus_out();
+                }
+            }
             glib::Propagation::Proceed
         });
 
-        // The composition is the field's preview, not its value: delivering it as `ImePreedit`
-        // lets `LineEdit` paint the preedit at the caret without firing `text_changed`.
-        context.connect_preedit_changed(|context| {
-            let (text, _, cursor) = context.preedit_string();
-            let Some(widget) = crate::widget::runtime::focused_widget() else {
-                return;
-            };
-            if !control_accepts_ime(widget) {
-                return;
-            }
-            let composition = crate::platform::ime::ImeComposition {
-                text: text.to_string(),
-                cursor_position: cursor.max(0) as usize,
-                selection_length: 0,
-            };
-            let _ = crate::platform::ime::deliver_composition(widget, &composition);
-        });
-        // A withdrawn composition clears the preview; without this an input method that ends a
-        // session without committing would leave the underlined text painted forever.
-        context.connect_preedit_end(|_| {
-            let Some(widget) = crate::widget::runtime::focused_widget() else {
-                return;
-            };
-            if !control_accepts_ime(widget) {
-                return;
-            }
-            let _ = crate::platform::ime::deliver_composition(
-                widget,
-                &crate::platform::ime::ImeComposition::default(),
-            );
-        });
-        context.connect_commit(|_, text| {
-            let Some(widget) = crate::widget::runtime::focused_widget() else {
-                return;
-            };
-            if !control_accepts_ime(widget) {
-                return;
-            }
-            // Clear the preview before the text arrives, so a field that paints both cannot show
-            // the committed string and its own stale composition at the same time.
-            let _ = crate::platform::ime::deliver_composition(
-                widget,
-                &crate::platform::ime::ImeComposition::default(),
-            );
-            let _ = crate::platform::ime::deliver_commit(widget, text);
-        });
-
-        Self { context, last_focused: std::rc::Rc::new(std::cell::RefCell::new(None)) }
+        this
     }
 
     /// Aligns the context's focus with the library's focused widget and returns that widget.
@@ -797,6 +826,21 @@ impl ImeContext {
             ));
         }
         self.context.filter_keypress(event)
+    }
+}
+
+impl ImeContext {
+    /// Ends the input-method session and resets the context.
+    ///
+    /// Called explicitly by `LinuxPlatform::destroy_widget` **before** the context is dropped and
+    /// before `gtk_widget_destroy`. Doing this from a `Drop` impl would also run for a surface
+    /// whose signal closure is dropped by GTK during teardown, which is exactly the point where
+    /// toolkit calls are unsafe; `Drop` is therefore inert on purpose.
+    pub(crate) fn release(&self) {
+        if gtk::is_initialized_main_thread() {
+            self.context.focus_out();
+            self.context.reset();
+        }
     }
 }
 

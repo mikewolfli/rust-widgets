@@ -342,9 +342,23 @@ fn documented_matrix_matches_real_backends() {
     /// matrix still prints `✅`, because it describes a GTK-backed build; this row has to hold on
     /// any host the test runs on.)
     type Row = (&'static str, PlatformFamily, bool, bool, bool, bool, bool, bool, bool);
-    // Linux's `clipboard` flag is computed the same way its `dpi_scaling` is: the GDK display
-    // clipboard only exists with `gtk-native`, so the honest answer depends on the build.
-    let expect_linux_clipboard = cfg!(feature = "gtk-native");
+    // Linux's `clipboard` flag is computed the same way its `dpi_scaling` is. The GDK display
+    // clipboard needs **both** halves: `gtk-native` is the build half, but a build without an X11
+    // session has the interface and no display behind it, so `LinuxPlatform::capabilities()` asks
+    // `gdk_clipboard::available()` (the same predicate the backend's own flag uses). Expecting
+    // `cfg!(feature = "gtk-native")` here made the row a pure build fact and disagreed with the
+    // backend on every headless run — which is exactly what this test caught on a Linux host
+    // (`clipboard: false` from the backend vs `true` from the row).
+    let expect_linux_clipboard = {
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
+        {
+            crate::platform::linux::gdk_clipboard::available()
+        }
+        #[cfg(not(all(unix_desktop, feature = "gtk-native")))]
+        {
+            false
+        }
+    };
     let expect_linux_dpi = {
         #[cfg(unix_desktop)]
         {

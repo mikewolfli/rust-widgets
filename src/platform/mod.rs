@@ -99,9 +99,14 @@ pub mod diagnostics;
 /// System-font enumeration snapshot shared by the C ABI and the font dialog (B28.39).
 pub mod fonts;
 /// CoreText-backed installed-font enumeration for the Apple backends (B28.39).
+///
+/// The caller on macOS is each backend's `system_fonts`; on iOS it is `ios/native.rs`, which is
+/// itself `ios-uikit-ffi`-only. Including a plain `ios` build here compiled three functions that
+/// nothing could call (three `never used` warnings in `check_ios_cross.sh`), so the gate names
+/// the feature that actually has the caller.
 #[cfg(all(
     target_vendor = "apple",
-    any(feature = "macos", feature = "cocoa-legacy", feature = "ios")
+    any(feature = "macos", feature = "cocoa-legacy", feature = "ios-uikit-ffi")
 ))]
 pub(crate) mod fonts_apple;
 /// Host-reported mobile lifecycle, orientation, and the animation-clock link (BLUE28 B28.24).

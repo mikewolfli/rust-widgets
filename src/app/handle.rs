@@ -622,6 +622,31 @@ pub trait WidgetHandle: Sized {
     /// the [`WidgetTriggerKind::ValueChanged`] event.
     fn on_value_changed<F: FnMut(String) + 'static>(&self, f: F);
 
+    /// Register an observer for the uncommitted IME **pre-edit** text.
+    ///
+    /// The closure runs on the loop's thread for every composition update the input method
+    /// delivers to this widget: the first argument is the uncommitted string and the second its
+    /// cursor position. It runs **before** the commit, so a host can log or assert the
+    /// composition frame by frame instead of only seeing the final text.
+    ///
+    /// Returns whether the subscription was installed. `false` means the id is not a mounted
+    /// control that accepts IME input (a window, a button, or a destroyed field), and the
+    /// callback is dropped rather than left registered where it could never fire. The ignored
+    /// binding is also counted by [`unwired_binding_count`], so "how many of my handlers are
+    /// unwired?" answers this case too.
+    fn on_ime_preedit<F: FnMut(&str, usize) + 'static>(&self, f: F) -> bool {
+        let installed = crate::widget::runtime::register_ime_preedit_callback(self.raw_id(), f);
+        if !installed {
+            log::warn!(
+                "on_ime_preedit ignored for id={}: it is not mounted or does not accept IME \
+                 input, so no composition will reach it",
+                self.raw_id()
+            );
+            record_unwired_binding(self.raw_id());
+        }
+        installed
+    }
+
     /// Register a callback for the control being **closed** / dismissed.
     ///
     /// # Why this has a default body
@@ -1032,6 +1057,9 @@ pub fn remove_callbacks(id: ObjectId) {
             map.remove(&id);
         }
     });
+    // The IME pre-edit observers are stored by the widget runtime (they are per-widget state like
+    // focus and hover), so an explicit "remove every callback for this id" must clear them too.
+    crate::widget::runtime::clear_ime_preedit_callbacks(id);
     // Disconnect the signal subscriptions this widget's handles made. The
     // handles are taken out of the table first so a re-entrant removal cannot see
     // the same handles twice, then applied against the live widget.

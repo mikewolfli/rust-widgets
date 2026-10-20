@@ -155,6 +155,17 @@ impl ControlBackend for super::CustomPaintControlBackend {
     /// brand-new window open at the size of a *different*, long-gone window, because
     /// `window_client_size` answers from this map before falling back to geometry.
     fn destroy_widget(&self, widget_id: ObjectId) -> bool {
+        // A window has a host object the platform built for it in
+        // `attach_window_host_if_needed`; that object is not owned by the widget registry, so
+        // dropping the widget alone left it live. Resolve it *before* `unregister` removes the
+        // association, and tear it down through the same `Platform` entry the native control
+        // backend uses. Without this the platform kept one window per destroyed window forever:
+        // Android's one-Activity-window rule then refused every later `create_window`, and the
+        // unified diagnostics probe reported `display_of_window returned None` on-device.
+        #[cfg(not(alloc_frugal))]
+        if let Some(host) = crate::widget::runtime::host_window_for(widget_id) {
+            let _ = crate::platform::get_platform().destroy_widget(host);
+        }
         // `widget::runtime` is compiled out of the alloc-frugal profile, which
         // holds no widget objects by design; only the host-side maps remain there.
         #[cfg(not(alloc_frugal))]

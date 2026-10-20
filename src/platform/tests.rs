@@ -680,14 +680,18 @@ impl Platform for LoopingPlatform {
     }
 }
 
-/// Serializes the two tests that drive a real loop against the process-global seams.
+/// Serializes the tests that drive a real loop against the process-global seams.
 ///
 /// [`crate::platform::stop`]'s request flag and [`crate::platform::main_thread`]'s queue are
 /// process-wide by design, so two loops running at once drain each other's requests and queued
 /// work — one test's `quit`/`schedule_on_main` can stop or run inside the other's loop, which is a
-/// cross-test race rather than a defect in either seam. Holding this guard for a test's duration is
-/// what makes each a statement about its own loop.
-static LOOP_SEAM_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// cross-test race rather than a defect in either seam. The guard is owned by `platform::stop`
+/// (see [`crate::platform::stop::TEST_SEAM_SERIAL`]) so that the stop flag's own unit tests take
+/// the **same** lock; a per-module guard left them able to leave a pending request behind, which
+/// ended this test's loop at its first frame.
+fn loop_seam_serial_guard() -> std::sync::MutexGuard<'static, ()> {
+    crate::platform::stop::TEST_SEAM_SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// A stop request from a thread that does not own the loop must end the session.
 ///
@@ -714,8 +718,8 @@ fn a_request_from_another_thread_ends_a_running_loop() {
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
-    // Held for the whole test: see [`LOOP_SEAM_SERIAL`].
-    let _serial = LOOP_SEAM_SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Held for the whole test: see [`loop_seam_serial_guard`].
+    let _serial = loop_seam_serial_guard();
 
     static LOOP_PLATFORM: LoopingPlatform = LoopingPlatform::new();
 
@@ -774,8 +778,8 @@ fn work_scheduled_from_another_thread_runs_on_the_loops_thread() {
     use std::sync::atomic::AtomicU64;
     use std::time::{Duration, Instant};
 
-    // Held for the whole test: see [`LOOP_SEAM_SERIAL`].
-    let _serial = LOOP_SEAM_SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Held for the whole test: see [`loop_seam_serial_guard`].
+    let _serial = loop_seam_serial_guard();
 
     static LOOP_PLATFORM: LoopingPlatform = LoopingPlatform::new();
     /// Set by the callback, with the elapsed time it observed when it ran.

@@ -40,7 +40,11 @@ pub mod displays;
 ///
 /// The ArkTS host calls the `rw_harmony_set_*` entry points from its own lifecycle; see the
 /// module docs for why these are host-pushed rather than synchronous SDK queries.
-#[cfg(not(alloc_frugal))]
+///
+/// Compiled in every profile, including `mini`: the facts are plain atomics plus the shared
+/// IME state machine, and [`platform_impl`] calls them unconditionally. Gating the module on
+/// `not(alloc_frugal)` made the backend reference a module that did not exist there
+/// (`mini,harmony`: five `cannot find host_facts in super` errors).
 pub mod host_facts;
 
 pub use types::*;

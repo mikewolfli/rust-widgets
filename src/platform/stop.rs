@@ -122,12 +122,23 @@ pub(crate) fn honour_request_on_loop_thread() {
     }
 }
 
+/// Serializes every test that touches the process-global stop flag or the loop-turn seam.
+///
+/// [`STOP_REQUESTED`] and [`LOOP_TICKED`] are process-wide by design, so a request left pending
+/// by one test ends another test's loop at its first frame — measured as the scheduling test
+/// failing only in the full suite and passing alone. The guard lives here rather than in
+/// `platform::tests` because the flag's own unit tests are a sibling module and must take the
+/// same lock; a per-module guard cannot express that.
+#[cfg(test)]
+pub(crate) static TEST_SEAM_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn a_request_is_recorded_and_consumed_once() {
+        let _serial = TEST_SEAM_SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         // The flag is process-wide, so this test states its own end state rather than assuming
         // one: take() first, then assert the record, the read and the single consumption.
         let _ = take();
@@ -141,6 +152,7 @@ mod tests {
 
     #[test]
     fn a_stop_request_does_not_depend_on_which_thread_asked() {
+        let _serial = TEST_SEAM_SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         // The whole point of the flag: asking from a thread that does not own any loop must not
         // panic, must not call into a toolkit, and must leave the request where a loop reads it.
         let _ = take();

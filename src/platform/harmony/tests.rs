@@ -261,7 +261,9 @@ fn drag_and_drop() {
             target_widget_id: window,
             mime: "text/plain".into(),
             payload: vec![],
-            files: Vec::new(),
+            // `mini` has no `files` field: `DropEvent::files` is `not(alloc_frugal)`-only.
+            #[cfg(not(alloc_frugal))]
+            files: crate::compat::Vec::new(),
             action: crate::platform::DropAction::Copy,
             position: None,
         }),

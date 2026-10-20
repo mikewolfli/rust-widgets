@@ -40,7 +40,7 @@
 ///
 /// So the default is to refuse and say how to allow it, and the answer is a deliberate act rather
 /// than a side effect of running `cargo run --example`.
-#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
 fn gui_probe_allowed() -> bool {
     if std::env::var("RW_GUI_PROBE_OK").ok().as_deref() == Some("1") {
         return true;
@@ -77,13 +77,13 @@ fn main() {
 ))]
 fn staged() {
     // Every stage below can open a real chooser: see `gui_probe_allowed`.
-    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    #[cfg(all(unix_desktop, feature = "gtk-native"))]
     if !gui_probe_allowed() {
         std::process::exit(2);
     }
     // `gtk::prelude::*` brings in the traits the GTK-gated sections below need
     // (`Cast::downcast`, `GtkWindowExt::list_toplevels`).
-    #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+    #[cfg(all(unix_desktop, feature = "gtk-native"))]
     use gtk::prelude::*;
     use rust_widgets::platform::{PathPickerError, PathPurpose};
 
@@ -134,7 +134,7 @@ fn staged() {
         println!(
             "\nB. the picker opens and answers (dismissed by a timer inside its own modal loop)"
         );
-        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
         {
             // The timer has to be armed *before* the call: `choose_path` runs the dialog's nested
             // main loop, so a timeout registered now fires inside it and can answer the dialog.
@@ -187,7 +187,7 @@ fn staged() {
                 "the call really waited on the dialog instead of returning immediately",
             );
         }
-        #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
+        #[cfg(not(all(unix_desktop, feature = "gtk-native")))]
         {
             println!(
                 "   skipped: this build has no toolkit to stage a real dialog with \
@@ -196,7 +196,7 @@ fn staged() {
         }
 
         // ── B2: a real answer — real X key events typed into the live dialog ────────────────
-        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
         {
             println!("\nB2. the same picker, answered by *typed input* (real X key events)");
             /// The path the typist will name, typed into the open dialog's location popup

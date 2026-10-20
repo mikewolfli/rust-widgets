@@ -15,9 +15,12 @@
 //!   pick a GTK host that cannot exist there.
 
 use super::types::{LinuxHandleKind, LinuxPlatform};
+// `Vec` is imported from the alloc bridge rather than the prelude: `mini` is `no_std` and has
+// no standard prelude, while this module still compiles there (feedback-20261019 §4).
 use crate::compat::atomic::Ordering;
 use crate::compat::OnceLock;
 use crate::compat::String;
+use crate::compat::Vec;
 #[cfg(all(unix_desktop, feature = "gtk-native"))]
 use crate::core::MutexExt;
 use crate::core::PlatformFamily;
@@ -746,12 +749,56 @@ impl Platform for LinuxPlatform {
     fn destroy_widget(&self, widget_id: u64) -> bool {
         #[cfg(all(unix_desktop, feature = "gtk-native"))]
         {
+            // A `gtk::Window` dropped by Rust is **not** a destroyed toplevel: GTK and the window
+            // manager keep the X window alive until `gtk_widget_destroy` runs. Removing the map
+            // entry alone therefore left the window on screen (measured with `wmctrl`: the id was
+            // still listed after `destroy_widget`). Destroy it explicitly, but only where GTK
+            // allows the call — the toolkit is main-thread-only, and `create_window` is the only
+            // path that can have built a native toplevel at all.
+            let on_gtk_thread = gtk::is_initialized_main_thread();
             let mut native = self.native.lock_guard();
-            native.windows.remove(&widget_id);
+            let window = native.windows.remove(&widget_id);
+            // Resolve and drop the input-method context *before* the toolkit tears the widget
+            // down. See the `ime_contexts` field note: dropping it from inside signal-handler
+            // destruction runs IM-module code against an already-invalid object.
+            let ime = native.ime_contexts.remove(&widget_id);
             native.root_boxes.remove(&widget_id);
             native.content_overlay.remove(&widget_id);
             native.window_painters.remove(&widget_id);
             native.widgets.remove(&widget_id);
+            drop(native);
+            if let Some(ime) = ime {
+                // `try_borrow_mut` rather than `borrow_mut`: a (re-entrant) call that destroys
+                // the window from inside `filter_keypress` would still be holding the read
+                // borrow. Refusing here leaks the context into the closure's `Weak` (which then
+                // fails to upgrade) instead of panicking inside a GTK callback.
+                if let Ok(mut slot) = ime.try_borrow_mut() {
+                    if let Some(context) = slot.take() {
+                        // End the IME session while the widget/context are both valid; then drop
+                        // the context before `gtk_widget_destroy` runs.
+                        context.release();
+                        drop(context);
+                    }
+                }
+            }
+            if on_gtk_thread {
+                if let Some(window) = window {
+                    // SAFETY: `window` is a toplevel this backend created through
+                    // `gtk::Window::new` on this thread, and the call runs only when
+                    // `gtk::is_initialized_main_thread()` says this is that thread. Nothing else
+                    // holds a Rust reference to it: it was just removed from `native.windows`.
+                    unsafe {
+                        window.destroy();
+                    }
+                    // `gtk_widget_destroy` queues the X `DestroyWindow`; with no main loop
+                    // running (the session was just stopped) nothing else would flush it, and
+                    // the WM would keep listing the window. Flushing here makes the destruction
+                    // observable to the server immediately.
+                    if let Some(display) = gtk::gdk::Display::default() {
+                        display.flush();
+                    }
+                }
+            }
         }
 
         // The state record is the authority on whether the widget existed.
@@ -825,7 +872,14 @@ impl Platform for LinuxPlatform {
             });
             // The input method must see keys before the widget layer does; see `ImeContext` for
             // why the library owns it instead of the host.
+            //
+            // The closure holds a `Weak`: `destroy_widget` takes the strong reference out of
+            // `native.ime_contexts` and drops the context *before* GTK destroys the widget. A
+            // strong capture would unref the `IMMulticontext` from inside GTK's own
+            // signal-handler teardown, which warns (and runs IM-module code at a point where
+            // the object is already invalid).
             let ime = super::canvas::ImeContext::new(&paint_area);
+            let ime_for_keys = std::rc::Rc::downgrade(&ime);
 
             // Key input is owned by the **toplevel**, not by the area.
             //
@@ -859,7 +913,9 @@ impl Platform for LinuxPlatform {
                     crate::platform::linux::canvas::note_canvas_redraw(window_widget);
                     return glib::Propagation::Stop;
                 }
-                if ime.filter_keypress(event) {
+                if ime_for_keys.upgrade().is_some_and(|ime| {
+                    ime.borrow().as_ref().is_some_and(|ime| ime.filter_keypress(event))
+                }) {
                     key_area.queue_draw();
                     crate::platform::linux::canvas::note_canvas_redraw(window_widget);
                     return glib::Propagation::Stop;
@@ -1210,8 +1266,9 @@ impl Platform for LinuxPlatform {
             let last_position = std::rc::Rc::new(core::cell::Cell::new(None::<(i32, i32)>));
             let moved_window = window.clone();
             moved_window.connect_configure_event(move |_, event| {
-                let (x, y) = event.position();
-                let position = (x.round() as i32, y.round() as i32);
+                // GDK3's `EventConfigure::position()` is already integer root coordinates; there is
+                // no fractional part to round (the `f64`-shaped API is GDK4's).
+                let position = event.position();
                 if last_position.get() != Some(position) {
                     let first = last_position.get().is_none();
                     last_position.set(Some(position));
@@ -1227,7 +1284,9 @@ impl Platform for LinuxPlatform {
                         }
                     }
                 }
-                glib::Propagation::Proceed
+                // gtk-rs 0.18 types `configure-event` as `-> bool` (`true` stops the default
+                // handler); the `glib::Propagation` shape is for the handlers that adopted it.
+                false
             });
             window.connect_delete_event(move |_, _| {
                 if let Some(widget_id) = crate::widget::runtime::widget_id_for_host_window(id) {
@@ -1242,6 +1301,7 @@ impl Platform for LinuxPlatform {
 
             let mut native = self.native.lock_guard();
             native.windows.insert(id, window.clone());
+            native.ime_contexts.insert(id, ime);
             native.root_boxes.insert(id, root);
             native.content_overlay.insert(id, overlay.clone());
             native.window_painters.insert(id, paint_area);
@@ -1378,7 +1438,7 @@ impl Platform for LinuxPlatform {
             );
             window.set_geometry_hints(
                 None::<&gtk::Widget>,
-                &geometry,
+                Some(&geometry),
                 gtk::gdk::WindowHints::MIN_SIZE,
             );
             self.state.set_window_min_size(widget_id, width, height);

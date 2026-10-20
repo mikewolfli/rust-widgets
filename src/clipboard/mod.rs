@@ -59,7 +59,10 @@ mod tests {
             target_widget_id: target,
             mime: "text/plain".to_string(),
             payload: b"payload".to_vec(),
-            files: Vec::new(),
+            // `mini` has no `files` field: it is `not(alloc_frugal)`-only because the
+            // allocation-frugal profile cannot carry a `Vec<PathBuf>` of dropped paths.
+            #[cfg(not(alloc_frugal))]
+            files: crate::compat::Vec::new(),
             action: crate::platform::DropAction::Copy,
             position: None,
         };

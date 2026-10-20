@@ -327,6 +327,23 @@ public class MainActivity extends Activity {
         }
         Log.i(TAG, "nativePlatformProbe -> " + bits + " (0b" + Integer.toBinaryString(bits) + ")");
 
+        // The probe has three outcomes per fact: pass, skip and fail. `bits` carries pass only, so
+        // an unset bit is ambiguous without the failure mask — reading it as a failure marked the
+        // honest `accessibility` and `open_external` skips as FAIL and reported RESULT: FAIL for a
+        // run with zero failures.
+        int failures;
+        try {
+            failures = RustWidgets.nativePlatformProbeFailures();
+        } catch (UnsatisfiedLinkError e) {
+            Log.e(TAG, "nativePlatformProbeFailures not linked: " + e.getMessage());
+            // A missing entry point means the .so predates this class, so the pass mask above
+            // cannot be trusted either. Reporting PASS here would be the silent-success defect
+            // the probe exists to prevent.
+            return false;
+        }
+        Log.i(TAG, "nativePlatformProbeFailures -> " + failures
+                + " (0b" + Integer.toBinaryString(failures) + ")");
+
         final String[] steps = {
             "custom MIME write accepted",
             "at least one display with positive metrics",
@@ -344,10 +361,12 @@ public class MainActivity extends Activity {
         boolean ok = true;
         for (int i = 0; i < steps.length; i++) {
             boolean passed = (bits & (1 << i)) != 0;
-            if (!passed) {
+            boolean failed = (failures & (1 << i)) != 0;
+            if (failed) {
                 ok = false;
             }
-            Log.i(TAG, (passed ? "  [PASS] " : "  [FAIL] ") + steps[i]);
+            String status = passed ? "  [PASS] " : failed ? "  [FAIL] " : "  [SKIP] ";
+            Log.i(TAG, status + steps[i]);
         }
         return ok;
     }

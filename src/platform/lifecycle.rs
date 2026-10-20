@@ -141,7 +141,7 @@ pub fn set_axis_orientation(axis: i32) -> bool {
 }
 
 #[cfg(test)]
-pub(crate) static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static TEST_LOCK: crate::compat::Mutex<()> = crate::compat::Mutex::new(());
 
 #[cfg(test)]
 mod tests {

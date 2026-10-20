@@ -5,6 +5,69 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.8.10 (2026-10-20) — host-feedback closure, GTK teardown, mini hygiene
+
+This release closes the Linux `mini` build request from
+`docs/issues/feedback-20261019.md` and the defects that a Linux host exposed for the first time
+(the previous rounds only built the GTK path on macOS).
+
+### Build and profile hygiene
+
+- `linux` × `mini` compiles again: `locale::from_environment` has an allocation-frugal `None`
+  arm, and the backend uses `crate::compat::Vec` instead of the removed prelude.
+- `mini` now builds across the backend matrix (`wasm`, `harmony`, `ios`, `windows`,
+  `linux-wayland`, `i18n`) with `--all-targets`: fixed the `Vec` import in the WASM backend,
+  the `host_facts` gate in the Harmony backend, `DropEvent::files` in tests, and the
+  `std::sync::Mutex`/`spin::Mutex` split in the lifecycle test lock.
+- `examples/platform_diagnostics` declares `required-features = ["desktop"]`, so `--all-targets`
+  on a stripped profile no longer compiles symbols that profile does not have.
+- Tests and examples gate GTK on the crate's `unix_desktop` alias instead of
+  `target_os = "linux"`; OpenHarmony reports `target_os = "linux"` too, so its `--all-targets`
+  builds used to compile code that references the absent `gtk` crate.
+
+### Linux / GTK
+
+- The GTK backend compiles again on a Linux host: `EventConfigure::position()` is already
+  integer, gtk-rs 0.18 types `configure-event` as `-> bool`, and `set_geometry_hints` takes
+  `Option<&Geometry>`.
+- `destroy_widget` now destroys the native toplevel (`gtk_widget_destroy` + `gdk_display_flush`)
+  instead of only removing the bookkeeping entry. This also fixes the fcitx5
+  `GObject-CRITICAL`: the IME context is owned by the window state, area signals hold only a
+  `Weak`, and it is released (`focus_out`/`reset`) before the widget is torn down.
+- GUI probes serialize themselves per display (`ProbeLock`) and the key injector takes an
+  `flock`, so concurrent probes no longer steal each other's input focus.
+
+### Platform and bindings
+
+- The custom control backend tells `Platform::destroy_widget` about the host window it attached;
+  previously every destroyed window leaked a platform record, and Android's one-Activity-window
+  rule refused every later `create_window`.
+- Android's unified probe now reports pass/skip/fail truthfully: a new JNI
+  `nativePlatformProbeFailures()` carries the failed bits, and `NATIVE_METHOD_COUNT` is 17
+  (it had drifted from the real export count).
+- `crate::quit()` records at most one stop request, and the stop flag's unit tests share the
+  loop-test serialization guard; one `quit()` can no longer stop the next session.
+- `fonts_apple` is compiled only where a caller exists (`ios-uikit-ffi` on iOS), removing three
+  dead-code warnings from the iOS cross-check.
+
+### New API
+
+- `WidgetHandle::on_ime_preedit(|text, cursor| ...) -> bool` observes each uncommitted IME
+  composition frame before the commit; observers live with the widget registry and are cleared
+  on `unregister`/`remove_callbacks`. Non-IME widgets are refused and counted as unwired.
+
+### Verification
+
+- 7401 tests pass; clippy and fmt are clean for the desktop profile.
+- Linux: real X11 keyboard/IME (`fcitx5` preedit → commit), window on screen, window destroy,
+  and two concurrent probes.
+- Android: four ABIs compile; x86_64 emulator and a physical arm64 device both report
+  `RESULT: PASS` for the unified probe.
+- Windows: xwin cross-build links the library and `platform_diagnostics.exe`, which runs under
+  Wine 9.0 reporting 11 pass / 1 skip / 0 fail.
+- OpenHarmony: the full cross gate builds and links aarch64/armv7/x86_64 with the XComponent
+  bridge; macOS/iOS/BSD type-check gates pass.
+
 ## 2.8.9 (2026-10-19) — BLUE28 platform completeness and full mobile services
 
 This release closes the remaining BLUE28 platform-layer items and turns the optional

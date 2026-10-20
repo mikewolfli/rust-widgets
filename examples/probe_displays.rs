@@ -36,7 +36,7 @@
 /// running an example (`probe_file_picker` documents the measured cost of learning this the hard
 /// way).
 #[cfg(any(
-    all(target_os = "linux", feature = "gtk-native"),
+    all(unix_desktop, feature = "gtk-native"),
     all(target_os = "macos", feature = "cocoa-legacy")
 ))]
 fn gui_probe_allowed() -> bool {
@@ -67,7 +67,7 @@ fn main() {
 ))]
 fn main() {
     #[cfg(any(
-        all(target_os = "linux", feature = "gtk-native"),
+        all(unix_desktop, feature = "gtk-native"),
         all(target_os = "macos", feature = "cocoa-legacy")
     ))]
     {
@@ -75,7 +75,7 @@ fn main() {
     }
 
     #[cfg(not(any(
-        all(target_os = "linux", feature = "gtk-native"),
+        all(unix_desktop, feature = "gtk-native"),
         all(target_os = "macos", feature = "cocoa-legacy")
     )))]
     {
@@ -90,7 +90,7 @@ fn main() {
 #[cfg(all(
     not(alloc_frugal),
     any(
-        all(target_os = "linux", feature = "gtk-native"),
+        all(unix_desktop, feature = "gtk-native"),
         all(target_os = "macos", feature = "cocoa-legacy")
     )
 ))]
