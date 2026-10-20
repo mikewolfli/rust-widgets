@@ -410,13 +410,12 @@ extern "C" fn mouse_dragged(this: &Object, _cmd: Sel, event: id) {
 
 /// `-mouseMoved:` — the pointer travelled with **no** button held.
 ///
-/// A drag and a move both reach the widget as [`Event::MouseMove`] (that is what
-/// `MousePhase::Drag` produces), so the translation is shared rather than duplicated: the
-/// difference between them is which AppKit message delivered it, and the router treats
-/// the payload identically. What the two are *not* interchangeable for is hover, which is
-/// why this handler has to exist at all — see [`TRACKING_MOUSE_MOVED`].
+/// A drag and a move both reach the widget as [`Event::MouseMove`], but they are not the
+/// same repaint obligation: a drag must redraw on every sample, a hover move only when
+/// the hover target changes. [`MousePhase::Move`] carries that distinction into
+/// [`forward_mouse`].
 extern "C" fn mouse_moved(this: &Object, _cmd: Sel, event: id) {
-    forward_mouse(this, event, MousePhase::Drag);
+    forward_mouse(this, event, MousePhase::Move);
 }
 
 /// `-rightMouseDown:` — the secondary button went down.
@@ -588,7 +587,7 @@ fn forward_mouse(this: &Object, event: id, phase: MousePhase) {
                     super::accelerator::map_modifiers(ns_event_modifier_flags(event)),
                 ),
                 MousePhase::Release => Event::MouseRelease { pos: position, button: 1 },
-                MousePhase::Drag => Event::MouseMove { pos: position },
+                MousePhase::Drag | MousePhase::Move => Event::MouseMove { pos: position },
                 MousePhase::SecondaryPress => Event::mouse_press_with(
                     position.x,
                     position.y,
@@ -600,6 +599,16 @@ fn forward_mouse(this: &Object, event: id, phase: MousePhase) {
                     button: crate::event::mouse_button::SECONDARY,
                 },
                 MousePhase::DoubleClick => Event::mouse_double_click(position.x, position.y, 1),
+            };
+            // A hover move that stayed inside the same control changes nothing on screen.
+            // It used to repaint the whole window anyway, which made pointer movement over a
+            // large window cost a full software frame per sample. Reading the hover target
+            // before and after is the exact question the move can change; every other phase
+            // (press, release, drag, double click) owes a repaint unconditionally.
+            let hover_before = if matches!(phase, MousePhase::Move) {
+                crate::widget::runtime::hovered_widget()
+            } else {
+                None
             };
             let delivered = crate::platform::platform_facts().route_pointer_event(
                 widget_id,
@@ -620,6 +629,11 @@ fn forward_mouse(this: &Object, event: id, phase: MousePhase) {
                 if window != nil {
                     let _: () = msg_send![window, makeFirstResponder: view];
                 }
+            }
+            let hover_changed = !matches!(phase, MousePhase::Move)
+                || hover_before != crate::widget::runtime::hovered_widget();
+            if !hover_changed {
+                return;
             }
             // The widget's state changed, so ask AppKit to repaint it. Telling the library
             // too is what keeps a frame's account complete and stops the native and
@@ -652,16 +666,35 @@ extern "C" fn key_down(this: &Object, _cmd: Sel, event: id) {
             // AppKit reports Tab as keycode 48 with no printable characters. The
             // widget-layer modifier bit for Shift is 1 (see `Modifiers::from_event_bits`).
             const WIDGET_SHIFT: u32 = 1;
+            // A control chord is a command, not content: `⌘C`/`⌃C` must reach the
+            // control's key handler (67 with the primary bit) instead of being typed as
+            // the letter `c`. Option is deliberately *not* a chord here: on macOS it is
+            // how a text field types an accented character (`⌥e` → `´`).
+            const WIDGET_CONTROL: u32 = 2;
+            const WIDGET_META: u32 = 8;
             if key == KEY_TAB {
                 crate::widget::runtime::focus_next(modifiers & WIDGET_SHIFT == 0);
                 let _: () = msg_send![view, setNeedsDisplay: YES];
                 note_native_redraw(widget_id);
                 return;
             }
-            let translated = if let Some(text) = printable_characters(event) {
+            let chord = modifiers & (WIDGET_CONTROL | WIDGET_META) != 0;
+            let translated = if chord {
+                // `charactersIgnoringModifiers` is the key's text with ⌘/⌃ stripped, so
+                // `⌘A` answers `"a"`. The framework key code for that is `65` (upper
+                // case), which is what `LineEdit` matches for `Primary+A`.
+                let text = characters_ignoring_modifiers(event);
+                Event::KeyPress {
+                    key: super::accelerator::logical_key(key as u16, text.as_deref()),
+                    modifiers,
+                }
+            } else if let Some(text) = printable_characters(event) {
                 Event::TextInput { text }
             } else {
-                Event::KeyPress { key, modifiers }
+                Event::KeyPress {
+                    key: super::accelerator::logical_key(key as u16, None),
+                    modifiers,
+                }
             };
             // Keys follow focus: with nothing focused, the surface owner keeps them.
             let target = crate::widget::runtime::focused_widget().unwrap_or(widget_id);
@@ -699,7 +732,13 @@ extern "C" fn key_up(this: &Object, _cmd: Sel, event: id) {
             let view = this as *const Object as id;
             let Some(widget_id) = widget_id_of(view) else { return };
             let (key, modifiers) = super::types::translate_key_event(event);
-            let released = Event::KeyRelease { key, modifiers };
+            let released = Event::KeyRelease {
+                key: super::accelerator::logical_key(
+                    key as u16,
+                    characters_ignoring_modifiers(event).as_deref(),
+                ),
+                modifiers,
+            };
             // Keys follow focus, the same rule `key_down` applies, so a release reaches the
             // control its press did.
             let target = crate::widget::runtime::focused_widget().unwrap_or(widget_id);
@@ -724,7 +763,31 @@ const KEY_TAB: u32 = 48;
 /// Control characters are excluded: Enter, Tab and Escape are meaningful as
 /// [`Event::KeyPress`] and the widget maps them to editing commands there.
 unsafe fn printable_characters(event: id) -> Option<String> {
-    let characters: id = msg_send![event, characters];
+    characters_of(event, false)
+}
+
+/// Returns the key event's text with its modifiers ignored.
+///
+/// A command chord still reports the letter it was pressed with, which is what lets the
+/// platform boundary produce the framework key code for `⌘A` (65) rather than the text
+/// `"a"` (which would be inserted instead of selecting). See
+/// [`super::accelerator::logical_key`].
+unsafe fn characters_ignoring_modifiers(event: id) -> Option<String> {
+    characters_of(event, true)
+}
+
+/// Reads the event's `NSString` characters, filtered to printable characters.
+///
+/// `ignoring_modifiers` selects `charactersIgnoringModifiers` instead of `characters`.
+/// The selector is selected by a boolean rather than passed in because `msg_send!`
+/// resolves a selector at compile time; a runtime `Sel` value has to go through
+/// `performSelector:`, which would add an `id` return that is harder to narrow safely.
+unsafe fn characters_of(event: id, ignoring_modifiers: bool) -> Option<String> {
+    let characters: id = if ignoring_modifiers {
+        msg_send![event, charactersIgnoringModifiers]
+    } else {
+        msg_send![event, characters]
+    };
     if characters == nil {
         return None;
     }

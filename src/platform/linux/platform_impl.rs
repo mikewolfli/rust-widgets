@@ -21,6 +21,7 @@ use crate::compat::atomic::Ordering;
 use crate::compat::OnceLock;
 use crate::compat::String;
 use crate::compat::Vec;
+use crate::compat::{Rc, RefCell};
 #[cfg(all(unix_desktop, feature = "gtk-native"))]
 use crate::core::MutexExt;
 use crate::core::PlatformFamily;
@@ -927,13 +928,19 @@ impl Platform for LinuxPlatform {
                 }
                 // A printable character is committed text; everything else keeps its key code
                 // so shortcuts and navigation reach the control unchanged. `printable_text`
-                // refuses a control chord, so Ctrl+C is a copy rather than a typed `c`.
+                // refuses a control chord, so Ctrl+C is a copy rather than a typed `c`. The
+                // keyval is normalised to the framework's logical code at this boundary: GDK's
+                // Return is `0xFF0D` while every control matches `13`.
                 let translated = if let Some(text) = super::canvas::printable_text(event) {
                     crate::event::Event::TextInput { text }
                 } else {
+                    let modifiers = super::canvas::modifier_bits(event);
                     crate::event::Event::KeyPress {
-                        key: *event.keyval(),
-                        modifiers: super::canvas::modifier_bits(event),
+                        key: super::canvas::logical_key(
+                            *event.keyval(),
+                            super::canvas::is_control_chord(modifiers),
+                        ),
+                        modifiers,
                     }
                 };
                 let target = crate::widget::runtime::focused_widget().unwrap_or(window_widget);
@@ -953,9 +960,13 @@ impl Platform for LinuxPlatform {
                 else {
                     return glib::Propagation::Stop;
                 };
+                let release_modifiers = super::canvas::modifier_bits(event);
                 let key_event = crate::event::Event::KeyRelease {
-                    key: *event.keyval(),
-                    modifiers: super::canvas::modifier_bits(event),
+                    key: super::canvas::logical_key(
+                        *event.keyval(),
+                        super::canvas::is_control_chord(release_modifiers),
+                    ),
+                    modifiers: release_modifiers,
                 };
                 let target = crate::widget::runtime::focused_widget().unwrap_or(window_widget);
                 if crate::widget::runtime::dispatch_event(target, &key_event) {
@@ -1034,12 +1045,28 @@ impl Platform for LinuxPlatform {
                     | gtk::gdk::EventMask::LEAVE_NOTIFY_MASK,
             );
             let click_area = paint_area.clone();
+            let press_double_click =
+                Rc::new(RefCell::new(super::canvas::DoubleClickTracker::new()));
             paint_area.connect_button_press_event(move |widget, event| {
                 let (x, y) = event.position();
                 let point = crate::core::Point::new(x as i32, y as i32);
                 let Some(window_widget) = crate::widget::runtime::widget_id_for_host_window(id)
                 else {
                     return glib::Propagation::Proceed;
+                };
+                // A second press inside GTK's double-click interval is the double-click
+                // event the controls actually listen for; otherwise it is a normal press.
+                let is_double = event.button() == 1
+                    && press_double_click.borrow_mut().register(event.time(), x, y);
+                let translated = if is_double {
+                    crate::event::Event::mouse_double_click(point.x, point.y, 1)
+                } else {
+                    crate::event::Event::mouse_press_with(
+                        point.x,
+                        point.y,
+                        1,
+                        crate::platform::linux::canvas::modifier_state_bits(event.state()),
+                    )
                 };
                 // The area is focusable so a clicked control can take the keyboard
                 // afterwards. The runtime router focuses the control the press landed on
@@ -1048,16 +1075,8 @@ impl Platform for LinuxPlatform {
                 // the router decides *which* control, GTK decides *whether* the area sees keys.
                 widget.set_can_focus(true);
                 let _ = super::canvas::focus_area_if_enabled(widget);
-                if crate::widget::runtime::dispatch_pointer_event(
-                    window_widget,
-                    &crate::event::Event::mouse_press_with(
-                        point.x,
-                        point.y,
-                        1,
-                        crate::platform::linux::canvas::modifier_state_bits(event.state()),
-                    ),
-                    point,
-                ) {
+                if crate::widget::runtime::dispatch_pointer_event(window_widget, &translated, point)
+                {
                     click_area.queue_draw();
                     crate::platform::linux::canvas::note_canvas_redraw(window_widget);
                 }
@@ -1107,11 +1126,20 @@ impl Platform for LinuxPlatform {
                 // Routed through the same path a click uses, which is what lets the router
                 // own the enter/leave pair: the widget layer synthesises `MouseEnter` and
                 // `MouseLeave` from a move, so a plain `MouseMove` carries the hover.
+                // A hover that stayed over the same control owes no repaint; a drag does,
+                // because the dragged control follows the pointer. See `linux::canvas`.
+                let hover_before =
+                    if crate::platform::linux::canvas::pointer_button_down(event.state()) {
+                        None
+                    } else {
+                        Some(crate::widget::runtime::hovered_widget())
+                    };
                 if crate::widget::runtime::dispatch_pointer_event(
                     window_widget,
                     &crate::event::Event::MouseMove { pos: point },
                     point,
-                ) {
+                ) && hover_before != Some(crate::widget::runtime::hovered_widget())
+                {
                     widget.queue_draw();
                     crate::platform::linux::canvas::note_canvas_redraw(window_widget);
                 }

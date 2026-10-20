@@ -43,6 +43,12 @@ pub struct CollapsiblePane {
     /// **expanded**, so a pane that has never been toggled draws at rest rather than fading open
     /// on its first frame.
     open: PropertyDriver,
+    /// Whether the content child is currently visible.
+    ///
+    /// Kept so the visibility write happens only when it changes: the frame bus calls
+    /// `tick` every frame while the pane animates, and a redundant write would request a
+    /// subtree repaint each time.
+    content_visible: bool,
     /// Emitted when the collapsed state changes (parameter: new collapsed state).
     pub toggled: Signal1<bool>,
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
@@ -60,6 +66,7 @@ impl CollapsiblePane {
             header_height: dimensions::COLLAPSIBLE_HEADER_HEIGHT,
             // Expanded at rest, so an untouched pane pays no frames and shows its content.
             open: PropertyDriver::at(1.0, MotionSlot::Normal),
+            content_visible: true,
             toggled: Signal1::new(),
             registry: None,
         }
@@ -122,7 +129,9 @@ impl CollapsiblePane {
     /// Advances the open/close animation by `delta_ms`; `true` while it is still moving.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
         self.open.set_target(self.open_target());
-        self.open.tick(delta_ms)
+        let moving = self.open.tick(delta_ms);
+        self.sync_content_state();
+        moving
     }
 
     /// Whether the pane is between two open fractions -- answers only, never advances.
@@ -143,6 +152,8 @@ impl CollapsiblePane {
         }
         self.content_child = Some(child);
         self.base.add_child_linked(child);
+        self.content_visible = true;
+        self.sync_content_state();
         self.base.request_redraw();
     }
 
@@ -200,8 +211,41 @@ impl CollapsiblePane {
             return;
         }
         if let Some(content) = self.content_child {
+            let rect = self.content_rect();
             if let Some(ref reg) = self.registry {
-                reg.borrow_mut().set_widget_geometry(content, self.content_rect());
+                reg.borrow_mut().set_widget_geometry(content, rect);
+            }
+            // The main tree path (a window that paints its children) does not know this
+            // control's content box; it draws the child at the child's own geometry. Writing
+            // the geometry through the public entry keeps both paths agreeing.
+            crate::set_widget_geometry(content, rect.x, rect.y, rect.width, rect.height);
+        }
+    }
+
+    /// Applies the animated open fraction to the content child: it is visible while the
+    /// pane is at all open, and its band is the current `content_rect`.
+    ///
+    /// # Why a collapsed pane must hide its child
+    ///
+    /// Clipping is a *painting* rule. The hit test walks geometry and visibility, not the
+    /// ancestor clip, so a fully collapsed pane whose content was merely clipped still
+    /// delivered clicks to a control the user could not see. Hiding the child is the only
+    /// state both paths read (and the frame that closes the pane already animates through
+    /// smaller bands, so the hide lands when the band reaches zero).
+    fn sync_content_state(&mut self) {
+        #[cfg(not(alloc_frugal))]
+        {
+            let Some(content) = self.content_child else {
+                self.content_visible = false;
+                return;
+            };
+            let want_visible = self.open.value() > 0.0;
+            if want_visible != self.content_visible {
+                crate::set_widget_visible(content, want_visible);
+                self.content_visible = want_visible;
+            }
+            if want_visible {
+                self.sync_content_geometry();
             }
         }
     }
@@ -225,6 +269,12 @@ impl Widget for CollapsiblePane {
             dimensions::COLLAPSIBLE_PANE_DEFAULT_WIDTH,
             dimensions::COLLAPSIBLE_PANE_DEFAULT_HEIGHT,
         )
+    }
+
+    /// Moves the pane and re-places its content band.
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        self.sync_content_state();
     }
 
     fn remove_child(&mut self, child: ObjectId) {
@@ -517,7 +567,7 @@ impl Draw for CollapsiblePane {
         // fully collapsed pane is.
         let content_rect = self.content_rect();
         if content_rect.height > 0 {
-            self.sync_content_geometry();
+            self.sync_content_state();
             context.fill_rect(content_rect, content_bg);
             context.draw_line(
                 Point::from_f32(content_rect.x as f32, content_rect.y as f32),

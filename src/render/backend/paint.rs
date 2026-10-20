@@ -177,6 +177,18 @@ impl SoftwarePaintBackend {
         target.copy_from_slice(frame);
         true
     }
+
+    /// Consumes the backend and returns the presented frame without copying it.
+    ///
+    /// # Why this is preferable to `frame_rgba().to_vec()`
+    ///
+    /// The three render entry points in `widget::runtime` own their backend and return
+    /// the frame, so they can move the buffer instead of copying it. `to_vec` duplicated
+    /// the whole `width * height * 4` buffer on every painted frame; at 1280×800 that is
+    /// 4 MB of memcpy per frame on the UI thread.
+    pub fn into_frame_rgba(self) -> crate::compat::Vec<u8> {
+        self.surface.into_frame_rgba()
+    }
 }
 impl PaintBackend for SoftwarePaintBackend {
     fn begin_frame(&mut self, clear: Color) {

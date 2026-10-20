@@ -91,7 +91,7 @@ pub(crate) unsafe extern "system" fn wnd_proc(
         // `_` arm still answers the message — with no tree to route to, it is the honest answer.
         #[cfg(widgets_unstripped)]
         WM_MOUSEMOVE => {
-            forward_window_mouse(hwnd, lparam, MousePhase::Drag);
+            forward_window_mouse(hwnd, lparam, crate::platform::windows::canvas::move_phase());
             0
         }
         #[cfg(widgets_unstripped)]
@@ -719,7 +719,7 @@ unsafe fn forward_window_mouse(hwnd: HWND, lparam: isize, phase: MousePhase) {
         MousePhase::Release => {
             crate::event::Event::MouseRelease { pos: position, button: MOUSE_PRIMARY }
         }
-        MousePhase::Drag => crate::event::Event::MouseMove { pos: position },
+        MousePhase::Drag | MousePhase::Move => crate::event::Event::MouseMove { pos: position },
         MousePhase::SecondaryPress => crate::event::Event::mouse_press_with(
             position.x,
             position.y,
@@ -734,8 +734,13 @@ unsafe fn forward_window_mouse(hwnd: HWND, lparam: isize, phase: MousePhase) {
             crate::event::Event::mouse_double_click(position.x, position.y, MOUSE_PRIMARY)
         }
     };
+    let hover_before = if matches!(phase, MousePhase::Move) {
+        crate::widget::runtime::hovered_widget()
+    } else {
+        None
+    };
     let delivered = crate::widget::runtime::dispatch_pointer_event(window_id, &event, position);
-    if matches!(phase, MousePhase::Drag) {
+    if matches!(phase, MousePhase::Drag | MousePhase::Move) {
         // The request is consumed by the event it produces, so it must be re-issued on
         // every move — without it the leave message never arrives and hover sticks.
         let mut track: winapi::um::winuser::TRACKMOUSEEVENT = std::mem::zeroed();
@@ -752,7 +757,12 @@ unsafe fn forward_window_mouse(hwnd: HWND, lparam: isize, phase: MousePhase) {
         {
             winapi::um::winuser::SetFocus(hwnd);
         }
-        invalidate_window(hwnd);
+        // See `windows::canvas::forward_mouse`: an unchanged hover target owes no repaint.
+        let hover_changed = !matches!(phase, MousePhase::Move)
+            || hover_before != crate::widget::runtime::hovered_widget();
+        if hover_changed {
+            invalidate_window(hwnd);
+        }
     }
 }
 

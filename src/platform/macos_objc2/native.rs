@@ -1147,7 +1147,7 @@ impl RustWidgetsObjc2CanvasView {
                     pos: position,
                     button: crate::event::mouse_button::PRIMARY,
                 },
-                MousePhase::Drag => Event::MouseMove { pos: position },
+                MousePhase::Drag | MousePhase::Move => Event::MouseMove { pos: position },
                 MousePhase::SecondaryPress => Event::mouse_press_with(
                     position.x,
                     position.y,

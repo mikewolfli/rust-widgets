@@ -880,7 +880,17 @@ pub fn create_scroll_area(
 /// A tab widget's pages are child ids declared with
 /// [`app::TabWidgetHandle::add_tab`](crate::app::TabWidgetHandle::add_tab), not the
 /// generic `Layout` machinery: a page is selected, not placed in a track.
-#[cfg(not(alloc_frugal))]
+///
+/// # Why the gate is `widgets_unstripped`
+///
+/// This function names [`widget::WidgetKind::TabWidget`], which exists only where the
+/// widget set was not stripped (`widgets_unstripped`, i.e. not `mini` **and** not
+/// `embedded`). Gating the constructor with `not(alloc_frugal)` was narrower than the
+/// variant it references: `embedded` has `alloc_frugal = false` and
+/// `widgets_unstripped = false`, so the constructor compiled and the variant did not,
+/// making the profile fail with `no variant ... named TabWidget`. The constructor and
+/// the variant must share the same predicate (principle #47).
+#[cfg(widgets_unstripped)]
 pub fn create_tab_widget(
     parent: crate::core::ObjectId,
     x: i32,
@@ -894,7 +904,11 @@ pub fn create_tab_widget(
 /// Creates a splitter. Its panes are child ids added through
 /// [`app::SplitterHandle::add_pane`](crate::app::SplitterHandle::add_pane); ratios are the
 /// splitter's own content model, not a generic layout.
-#[cfg(not(alloc_frugal))]
+/// # Profile gate
+///
+/// Shares [`create_tab_widget`]'s `widgets_unstripped` gate for the same reason: the
+/// `Splitter` variant exists under that predicate and not under `not(alloc_frugal)`.
+#[cfg(widgets_unstripped)]
 pub fn create_splitter(
     parent: crate::core::ObjectId,
     x: i32,
@@ -907,7 +921,11 @@ pub fn create_splitter(
 
 /// Creates a grid widget — a visual row/column matrix, distinct from the generic
 /// [`layout::GridLayout`](crate::layout::GridLayout) placement engine.
-#[cfg(not(alloc_frugal))]
+/// # Profile gate
+///
+/// Shares [`create_tab_widget`]'s `widgets_unstripped` gate for the same reason: the
+/// `Grid` variant exists under that predicate and not under `not(alloc_frugal)`.
+#[cfg(widgets_unstripped)]
 pub fn create_grid_widget(
     parent: crate::core::ObjectId,
     x: i32,
@@ -921,7 +939,11 @@ pub fn create_grid_widget(
 /// Creates a generic dialog. Its content child is set with
 /// [`app::DialogHandle::set_content_widget`](crate::app::DialogHandle::set_content_widget);
 /// the dialog owns the chrome and the content owns its own layout.
-#[cfg(not(alloc_frugal))]
+/// # Profile gate
+///
+/// Shares [`create_tab_widget`]'s `widgets_unstripped` gate for the same reason: the
+/// `Dialog` variant exists under that predicate and not under `not(alloc_frugal)`.
+#[cfg(widgets_unstripped)]
 pub fn create_dialog(
     parent: crate::core::ObjectId,
     title: &str,
@@ -1327,6 +1349,36 @@ pub fn create_widget_of_kind(
         );
         return 0;
     };
+
+    // A backend that has no per-widget surface has exactly one way to host a control: the
+    // control backend's widget-tree path, which is also what every `create_*` function uses.
+    // Sending the object to `mount_widget_object` first would register it, fail the mount,
+    // unregister it and drop it — so this branch has to be taken **before** the surface path,
+    // not as a recovery after it. That asymmetry is what made `create_widget_of_kind` return
+    // 0 for every kind on a native desktop backend while the typed constructors succeeded.
+    if !supports_surfaces() {
+        // Parity with the typed constructors: a non-window control needs a live parent, or
+        // the returned id would address a widget no tree can reach. The surface path got this
+        // for free because `mount_surface` refuses an unknown parent; the widget-tree path has
+        // to say it explicitly.
+        if kind != widget::WidgetKind::Window
+            && (parent == 0 || !widget::runtime::is_mounted(parent))
+        {
+            log::warn!(
+                "create_widget_of_kind: refusing to create {kind:?} under parent {parent}, which \
+                 addresses no live container; returning 0"
+            );
+            return 0;
+        }
+        let id = control_backend::get_control_backend().mount_widget_box(widget, Some(parent), 0);
+        if id == 0 {
+            log::warn!(
+                "create_widget_of_kind: {kind:?} could neither be hosted on a platform \
+                 surface nor adopted by the widget-tree backend; returning 0"
+            );
+        }
+        return id;
+    }
 
     match mount_widget_object(parent, widget, rect) {
         Ok(id) => id,

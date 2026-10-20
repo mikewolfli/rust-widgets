@@ -50,7 +50,9 @@ impl StackedWidget {
     pub fn add_widget(&mut self, widget: ObjectId) -> usize {
         self.base.add_child_linked(widget);
         self.widgets.push(widget);
-        self.widgets.len().saturating_sub(1)
+        let index = self.widgets.len().saturating_sub(1);
+        self.sync_pages();
+        index
     }
     /// Inserts a widget at position.
     /// Inserts a widget before the given index.
@@ -66,6 +68,7 @@ impl StackedWidget {
         if !was_empty && self.current_index >= index {
             self.current_index += 1;
         }
+        self.sync_pages();
     }
     /// Removes a widget.
     pub fn remove_widget(&mut self, widget: ObjectId) {
@@ -78,6 +81,7 @@ impl StackedWidget {
             if self.widgets.is_empty() {
                 self.current_index = 0;
             }
+            self.sync_pages();
         }
     }
     /// Returns number of widgets.
@@ -114,6 +118,7 @@ impl StackedWidget {
     pub fn set_current_index(&mut self, index: usize) {
         if index < self.widgets.len() && self.current_index != index {
             self.current_index = index;
+            self.sync_pages();
             self.base.request_redraw();
             if !self.base.is_enabled() {
                 // See `current_changed_suppression_reason`: a disabled container must not
@@ -121,6 +126,45 @@ impl StackedWidget {
                 return;
             }
             self.current_changed.emit(index);
+        }
+    }
+
+    /// Applies the page model to the mounted children: the current page is shown and
+    /// fills the stack, every other page is hidden.
+    ///
+    /// # Why this is the control's job
+    ///
+    /// A stacked widget is *defined* by showing exactly one page. Linking the children
+    /// was only half the model: the tree painter draws every visible child, so without
+    /// this pass all pages painted on top of each other — the container looked like a
+    /// panel holding several overlapping panels. Hiding the inactive pages is also what
+    /// keeps a click from reaching a page the user cannot see, because the hit test skips
+    /// hidden children.
+    ///
+    /// The write goes through the public visibility entry (the same one `TabWidget`
+    /// uses), so the flag the painter reads and the one a host reads cannot disagree.
+    fn sync_pages(&self) {
+        #[cfg(not(alloc_frugal))]
+        {
+            for (index, widget_id) in self.widgets.iter().enumerate() {
+                crate::set_widget_visible(*widget_id, index == self.current_index);
+            }
+            self.place_current_page();
+        }
+    }
+
+    /// Places the current page in the stack's own rectangle.
+    ///
+    /// A stacked widget has no chrome of its own — the whole control box is the page —
+    /// so "placing" is moving the selected child onto the control's geometry. Without it
+    /// a page created at `0x0` stayed at `0x0` and painted nothing.
+    fn place_current_page(&self) {
+        #[cfg(not(alloc_frugal))]
+        {
+            if let Some(widget_id) = self.current_widget() {
+                let rect = self.geometry();
+                crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
+            }
         }
     }
 
@@ -172,6 +216,15 @@ impl Widget for StackedWidget {
 
     fn size_hint(&self) -> Size {
         crate::core::Size::new(300, 200)
+    }
+
+    /// Moves the stack and re-places the visible page.
+    ///
+    /// A layout positions the stack through this entry point, so this is where a window
+    /// or panel resize reaches the visible page.
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        self.place_current_page();
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

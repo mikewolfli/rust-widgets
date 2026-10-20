@@ -71,6 +71,66 @@ pub(crate) fn map_key_modifiers(appkit_flags: u64, key_code: u16) -> (u32, u32) 
     (key_code as u32, map_modifiers(appkit_flags))
 }
 
+/// Normalises an AppKit virtual key code to the framework's key-code convention.
+///
+/// # Why the raw `keyCode` cannot be forwarded
+///
+/// AppKit's `keyCode` is a **hardware** code: Return is 36, Escape 53, Backspace 51,
+/// Left 123. The widget layer matches the framework's logical codes (Return 13,
+/// Escape 27, Backspace 8, Left 37 — see [`crate::event::key_codes`]), so forwarding
+/// the hardware code meant Enter was read as Home, Escape was unhandled, and the
+/// arrow keys moved the caret the wrong way. The Linux/GTK backend had the mirror
+/// defect with GDK keyvals (Return `0xFF0D`), so both desktop backends now translate
+/// at the platform boundary instead of teaching every control two conventions.
+///
+/// `characters` is the event's text with modifiers ignored, used for chords
+/// (`⌘A`, `⌘C`): the widget layer matches upper-case ASCII (`65` for `A`), which is
+/// what [`crate::event::key_codes::ascii_key_code`] produces. A key with no printable
+/// form falls back to its hardware code, which is the honest "no framework name"
+/// answer for a layout-specific key.
+#[cfg(widgets_unstripped)]
+pub(crate) fn logical_key(appkit_code: u16, characters: Option<&str>) -> u32 {
+    use crate::event::key_codes as keys;
+
+    let named = match appkit_code {
+        36 | 76 => keys::ENTER,
+        53 => keys::ESCAPE,
+        51 => keys::BACKSPACE,
+        117 => keys::DELETE,
+        123 => keys::LEFT,
+        124 => keys::RIGHT,
+        125 => keys::DOWN,
+        126 => keys::UP,
+        115 => keys::HOME,
+        119 => keys::END,
+        116 => keys::PAGE_UP,
+        121 => keys::PAGE_DOWN,
+        48 => keys::TAB,
+        122 => keys::F1,
+        120 => keys::F2,
+        99 => keys::F3,
+        118 => keys::F4,
+        96 => keys::F5,
+        97 => keys::F6,
+        98 => keys::F7,
+        100 => keys::F8,
+        101 => keys::F9,
+        109 => keys::F10,
+        103 => keys::F11,
+        111 => keys::F12,
+        _ => 0,
+    };
+    if named != 0 {
+        return named;
+    }
+    if let Some(ch) = characters.and_then(|text| text.chars().next()) {
+        if let Some(code) = keys::ascii_key_code(ch) {
+            return code;
+        }
+    }
+    appkit_code as u32
+}
+
 /// Converts AppKit's `NSEventModifierFlag` bits into the widget-layer bitfield.
 ///
 /// Split out of [`map_key_modifiers`] so a **pointer** event can carry the same
@@ -258,5 +318,64 @@ mod parse_shortcut_tests {
         let (key, mask) = parse_shortcut(Some("F1"));
         assert_eq!(key, "f1");
         assert_eq!(mask, MOD_COMMAND);
+    }
+}
+
+/// AppKit's hardware key codes must arrive at the widget layer as the framework's
+/// logical codes; otherwise Enter is read as Home and Escape is ignored.
+#[cfg(all(test, widgets_unstripped))]
+mod logical_key_tests {
+    use super::logical_key;
+    use crate::event::key_codes as keys;
+
+    #[test]
+    fn editing_and_navigation_keys_are_normalised() {
+        // AppKit: Return 36, Escape 53, Backspace 51, ForwardDelete 117.
+        assert_eq!(logical_key(36, None), keys::ENTER);
+        assert_eq!(logical_key(76, None), keys::ENTER, "keypad Enter is Enter");
+        assert_eq!(logical_key(53, None), keys::ESCAPE);
+        assert_eq!(logical_key(51, None), keys::BACKSPACE);
+        assert_eq!(logical_key(117, None), keys::DELETE);
+        // AppKit: Left 123, Right 124, Down 125, Up 126 (note the inverted pair).
+        assert_eq!(logical_key(123, None), keys::LEFT);
+        assert_eq!(logical_key(124, None), keys::RIGHT);
+        assert_eq!(logical_key(125, None), keys::DOWN);
+        assert_eq!(logical_key(126, None), keys::UP);
+        // AppKit: Home 115, End 119, PageUp 116, PageDown 121.
+        assert_eq!(logical_key(115, None), keys::HOME);
+        assert_eq!(logical_key(119, None), keys::END);
+        assert_eq!(logical_key(116, None), keys::PAGE_UP);
+        assert_eq!(logical_key(121, None), keys::PAGE_DOWN);
+    }
+
+    #[test]
+    fn function_keys_map_to_the_conventional_range() {
+        assert_eq!(logical_key(122, None), keys::F1);
+        assert_eq!(logical_key(120, None), keys::F2);
+        assert_eq!(logical_key(99, None), keys::F3);
+        assert_eq!(logical_key(118, None), keys::F4);
+        assert_eq!(logical_key(96, None), keys::F5);
+        assert_eq!(logical_key(97, None), keys::F6);
+        assert_eq!(logical_key(98, None), keys::F7);
+        assert_eq!(logical_key(100, None), keys::F8);
+        assert_eq!(logical_key(101, None), keys::F9);
+        assert_eq!(logical_key(109, None), keys::F10);
+        assert_eq!(logical_key(103, None), keys::F11);
+        assert_eq!(logical_key(111, None), keys::F12);
+    }
+
+    #[test]
+    fn a_chord_reports_the_letters_upper_case_code() {
+        // "a" is AppKit key code 0; `charactersIgnoringModifiers` gives the letter.
+        assert_eq!(logical_key(0, Some("a")), 65, "⌘A reaches LineEdit as 65");
+        assert_eq!(logical_key(8, Some("c")), 67, "⌘C reaches LineEdit as 67");
+        assert_eq!(logical_key(7, Some("x")), 88, "⌘X reaches LineEdit as 88");
+        assert_eq!(logical_key(6, Some("z")), 90, "⌘Z reaches LineEdit as 90");
+        assert_eq!(logical_key(16, Some("y")), 89, "⌘Y reaches LineEdit as 89");
+    }
+
+    #[test]
+    fn an_unnamed_key_keeps_its_hardware_code() {
+        assert_eq!(logical_key(10, None), 10, "§ has no framework name");
     }
 }

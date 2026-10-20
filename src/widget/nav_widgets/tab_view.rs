@@ -637,6 +637,26 @@ impl Draw for TabView {
                 );
                 reg.borrow_mut().draw_widget(widget_id, context);
                 context.pop_clip();
+            } else if let Some(page) = self.tabs.get_mut(self.selected_index) {
+                // No registry: the content is a `Box<dyn Widget>` this control owns, so it
+                // draws itself into the content box. Only the **selected** page is drawn;
+                // the other pages are not part of this frame at all, which is what keeps a
+                // tab view from stacking every page on top of the others.
+                if let Some(content) = page.content.as_deref_mut() {
+                    let origin = content.geometry();
+                    if let Some(drawable) = content.as_draw_mut() {
+                        context.push_clip(
+                            content_rect.x,
+                            content_rect.y,
+                            content_rect.width,
+                            content_rect.height,
+                        );
+                        context.push_offset(content_rect.x - origin.x, content_rect.y - origin.y);
+                        drawable.draw(context);
+                        context.pop_offset();
+                        context.pop_clip();
+                    }
+                }
             }
         }
     }

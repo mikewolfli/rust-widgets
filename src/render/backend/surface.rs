@@ -79,6 +79,19 @@ impl BackBuffer {
     pub fn front(&self) -> &[u8] {
         &self.front
     }
+    /// Moves the most recently presented frame out of the buffer.
+    ///
+    /// # Why a move rather than a copy
+    ///
+    /// The render entry points own their backend and return the frame, so the final
+    /// `frame_rgba().to_vec()` was a full `width * height * 4` copy on every painted
+    /// frame — 4 MB at 1280×800, on the same thread that has to deliver the next input
+    /// event. Taking the buffer gives the caller the same bytes with no copy. The
+    /// surface is consumed by the caller immediately afterwards, so the emptied front
+    /// buffer is never read or drawn into again.
+    pub(crate) fn take_front(&mut self) -> Vec<u8> {
+        core::mem::take(&mut self.front)
+    }
     /// Swaps the front and back buffers, publishing the drawn frame.
     ///
     /// After the swap the former back buffer is readable through

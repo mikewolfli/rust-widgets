@@ -95,7 +95,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="rust-widgets",
-    version="2.8.11",
+    version="2.8.12",
     packages=find_packages(),
     description="Python bindings for the rust-widgets GUI library",
 )
@@ -490,7 +490,7 @@ Node.js 綁定使用 `koffi` 載入原生函式庫，並直接從 JavaScript 呼
 ```json
 {
   "name": "rust-widgets",
-  "version": "2.8.11",
+  "version": "2.8.12",
   "description": "rust-widgets GUI 库的 Node.js 绑定",
   "main": "index.js",
   "dependencies": {

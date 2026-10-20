@@ -18,7 +18,7 @@
 ))]
 
 use rust_widgets::app::{App, TabPosition, TabShape, WidgetHandle};
-use rust_widgets::core::{Alignment, Orientation};
+use rust_widgets::core::{Alignment, Orientation, Rect};
 
 #[test]
 fn a_tab_handle_owns_its_tabs_and_selection() {
@@ -355,4 +355,211 @@ fn panel_and_frame_expose_the_group_box_properties() {
     assert_eq!(frame.alignment(), Some(Alignment::Right));
     assert!(frame.toggle());
     assert_eq!(frame.checked(), Some(false));
+}
+
+/// A stacked widget shows **one** page at a time: the selected page fills the stack and
+/// every other page is hidden.
+///
+/// Before this was enforced, `add_widget` linked the children but never touched their
+/// visibility or geometry, so the tree painter drew every page on top of the others —
+/// the container looked like a panel holding all of its sub-panels at once.
+#[test]
+fn a_stacked_widget_shows_only_the_selected_page() {
+    let mut app = App::new();
+    app.init();
+    let win = app.new_window("stacked", 0, 0, 800, 600);
+
+    let stacked = rust_widgets::control_backend::get_control_backend().mount_widget_box(
+        Box::new(rust_widgets::widget::StackedWidget::new(Rect::new(0, 0, 400, 300))),
+        Some(win.raw_id()),
+        0,
+    );
+    assert_ne!(stacked, 0, "the stacked widget is mounted");
+
+    let first = win.new_panel(0, 0, 0, 0);
+    let second = win.new_panel(0, 0, 0, 0);
+    rust_widgets::widget::runtime::with_widget_mut(stacked, |widget| {
+        let stacked = rust_widgets::widget::capability::coercion::widget_as_mut::<
+            rust_widgets::widget::StackedWidget,
+        >(widget)
+        .expect("the id addresses a StackedWidget");
+        stacked.add_widget(first.raw_id());
+        stacked.add_widget(second.raw_id());
+    })
+    .expect("the stacked widget is mounted");
+
+    assert!(rust_widgets::is_widget_visible(first.raw_id()));
+    assert!(
+        !rust_widgets::is_widget_visible(second.raw_id()),
+        "an inactive page must not paint over the selected one"
+    );
+    assert_eq!(
+        rust_widgets::widget::runtime::geometry_of(first.raw_id()),
+        Some(Rect::new(0, 0, 400, 300)),
+        "the selected page fills the stack"
+    );
+
+    rust_widgets::widget::runtime::with_widget_mut(stacked, |widget| {
+        rust_widgets::widget::capability::coercion::widget_as_mut::<
+            rust_widgets::widget::StackedWidget,
+        >(widget)
+        .expect("the id addresses a StackedWidget")
+        .set_current_index(1);
+    });
+    assert!(!rust_widgets::is_widget_visible(first.raw_id()));
+    assert!(rust_widgets::is_widget_visible(second.raw_id()));
+    assert_eq!(
+        rust_widgets::widget::runtime::geometry_of(second.raw_id()),
+        Some(Rect::new(0, 0, 400, 300)),
+        "the newly selected page takes the stack's rectangle"
+    );
+}
+
+/// A dock widget places its child on the main tree path, not only through a registry.
+///
+/// The registry path wrote the geometry while drawing; a window painted by
+/// `render_frame_tree` never runs that path, so the child stayed at its construction
+/// rectangle. This asserts the geometry the tree painter will use.
+#[test]
+fn a_dock_widget_places_its_child_below_the_title_bar() {
+    let mut app = App::new();
+    app.init();
+    let win = app.new_window("dock", 0, 0, 800, 600);
+
+    let dock = rust_widgets::control_backend::get_control_backend().mount_widget_box(
+        Box::new(rust_widgets::widget::DockWidget::new(Rect::new(10, 20, 300, 200))),
+        Some(win.raw_id()),
+        0,
+    );
+    assert_ne!(dock, 0, "the dock is mounted");
+    let content = win.new_panel(0, 0, 0, 0);
+
+    rust_widgets::widget::runtime::with_widget_mut(dock, |widget| {
+        rust_widgets::widget::capability::coercion::widget_as_mut::<
+            rust_widgets::widget::DockWidget,
+        >(widget)
+        .expect("the id addresses a DockWidget")
+        .set_widget(Some(content.raw_id()));
+    })
+    .expect("the dock is mounted");
+
+    assert_eq!(
+        rust_widgets::widget::runtime::geometry_of(content.raw_id()),
+        Some(Rect::new(10, 44, 300, 176)),
+        "the content fills the box below the 24px horizontal title bar"
+    );
+}
+
+/// A collapsed collapsible pane must **hide** its content, not merely clip it.
+///
+/// Clipping only stops pixels; the hit test walks geometry and visibility, so a collapsed
+/// pane whose child was still `visible` delivered clicks to a control the user could not
+/// see. The pane now hides the child when the open band reaches zero and shows it again
+/// on the way open.
+#[test]
+fn a_collapsed_pane_hides_its_content_from_painting_and_input() {
+    let mut app = App::new();
+    app.init();
+    let win = app.new_window("collapsible", 0, 0, 800, 600);
+
+    let pane = rust_widgets::control_backend::get_control_backend().mount_widget_box(
+        Box::new(rust_widgets::widget::CollapsiblePane::new(
+            Rect::new(0, 0, 400, 300),
+            "Details".to_string(),
+        )),
+        Some(win.raw_id()),
+        0,
+    );
+    assert_ne!(pane, 0, "the pane is mounted");
+    let content = win.new_panel(0, 0, 0, 0);
+
+    rust_widgets::widget::runtime::with_widget_mut(pane, |widget| {
+        let pane = rust_widgets::widget::capability::coercion::widget_as_mut::<
+            rust_widgets::widget::CollapsiblePane,
+        >(widget)
+        .expect("the id addresses a CollapsiblePane");
+        pane.set_content(content.raw_id());
+        pane.set_collapsed(true);
+        // One long frame reaches the target without waiting for the animation.
+        pane.tick(10_000);
+    })
+    .expect("the pane is mounted");
+
+    assert!(
+        !rust_widgets::is_widget_visible(content.raw_id()),
+        "a fully collapsed pane must hide its content"
+    );
+
+    rust_widgets::widget::runtime::with_widget_mut(pane, |widget| {
+        let pane = rust_widgets::widget::capability::coercion::widget_as_mut::<
+            rust_widgets::widget::CollapsiblePane,
+        >(widget)
+        .expect("the id addresses a CollapsiblePane");
+        pane.set_collapsed(false);
+        pane.tick(10_000);
+    });
+
+    assert!(
+        rust_widgets::is_widget_visible(content.raw_id()),
+        "opening the pane shows its content again"
+    );
+    assert_eq!(
+        rust_widgets::widget::runtime::geometry_of(content.raw_id()),
+        Some(Rect::new(0, 44, 400, 256)),
+        "the content fills the band below the 44px header"
+    );
+}
+
+/// A tool box shows one page beside its tab strip; the strip only occupies the slots
+/// its tabs actually use, and the page fills the rest.
+#[test]
+fn a_tool_box_shows_only_the_selected_page_in_the_remaining_band() {
+    let mut app = App::new();
+    app.init();
+    let win = app.new_window("toolbox", 0, 0, 800, 600);
+
+    let toolbox = rust_widgets::control_backend::get_control_backend().mount_widget_box(
+        Box::new(rust_widgets::widget::ToolBox::new(Rect::new(0, 0, 400, 300))),
+        Some(win.raw_id()),
+        0,
+    );
+    assert_ne!(toolbox, 0, "the tool box is mounted");
+
+    let first = win.new_panel(0, 0, 0, 0);
+    let second = win.new_panel(0, 0, 0, 0);
+    rust_widgets::widget::runtime::with_widget_mut(toolbox, |widget| {
+        let toolbox = rust_widgets::widget::capability::coercion::widget_as_mut::<
+            rust_widgets::widget::ToolBox,
+        >(widget)
+        .expect("the id addresses a ToolBox");
+        toolbox.add_item("One".to_string(), Some(first.raw_id()));
+        toolbox.add_item("Two".to_string(), Some(second.raw_id()));
+    })
+    .expect("the tool box is mounted");
+
+    assert!(rust_widgets::is_widget_visible(first.raw_id()));
+    assert!(!rust_widgets::is_widget_visible(second.raw_id()));
+    // Two 32px tabs occupy the strip, so the page starts at y=64 and gets the rest. The
+    // old derivation reserved the strip's *capacity* (eight tabs), which left the page a
+    // 44px sliver at y=256.
+    assert_eq!(
+        rust_widgets::widget::runtime::geometry_of(first.raw_id()),
+        Some(Rect::new(0, 64, 400, 236)),
+        "the page starts where the two real tabs end"
+    );
+
+    rust_widgets::widget::runtime::with_widget_mut(toolbox, |widget| {
+        rust_widgets::widget::capability::coercion::widget_as_mut::<rust_widgets::widget::ToolBox>(
+            widget,
+        )
+        .expect("the id addresses a ToolBox")
+        .set_current_index(1);
+    });
+    assert!(!rust_widgets::is_widget_visible(first.raw_id()));
+    assert!(rust_widgets::is_widget_visible(second.raw_id()));
+    assert_eq!(
+        rust_widgets::widget::runtime::geometry_of(second.raw_id()),
+        Some(Rect::new(0, 64, 400, 236)),
+        "the newly selected page takes the same band"
+    );
 }

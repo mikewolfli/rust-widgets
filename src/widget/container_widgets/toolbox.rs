@@ -189,6 +189,7 @@ impl ToolBox {
         }
         self.items.push(item);
         self.clamp_scroll();
+        self.sync_pages();
         self.items.len().saturating_sub(1)
     }
     /// Inserts an item at position.
@@ -210,6 +211,7 @@ impl ToolBox {
             self.current_index += 1;
         }
         self.clamp_scroll();
+        self.sync_pages();
     }
     /// Removes an item.
     pub fn remove_item(&mut self, index: usize) {
@@ -225,6 +227,7 @@ impl ToolBox {
                 self.current_index = 0;
             }
             self.clamp_scroll();
+            self.sync_pages();
         }
     }
     /// Returns number of items.
@@ -243,8 +246,44 @@ impl ToolBox {
         if index < self.items.len() && self.current_index != index {
             self.current_index = index;
             self.scroll_current_into_view();
+            self.sync_pages();
             self.current_changed.emit(index);
             self.base.request_redraw();
+        }
+    }
+
+    /// Applies the page model to the mounted pages: the selected tab's page is shown and
+    /// fills [`Self::content_rect`], every other page is hidden.
+    ///
+    /// # Why this is the control's job
+    ///
+    /// A tool box shows one page beside its strip. Linking the page as a child was only
+    /// half the model: the tree painter draws every visible child, so the other pages
+    /// painted over the selected one (and over the strip). Hiding them is also what keeps
+    /// a click from reaching a page the user cannot see.
+    fn sync_pages(&self) {
+        #[cfg(not(alloc_frugal))]
+        {
+            for (index, item) in self.items.iter().enumerate() {
+                if let Some(widget_id) = item.widget {
+                    crate::set_widget_visible(widget_id, index == self.current_index);
+                }
+            }
+            self.place_current_page();
+        }
+    }
+
+    /// Places the selected page in the content box.
+    ///
+    /// The box comes from the same `content_rect` the painter uses, so a page and the
+    /// area drawn around it cannot disagree about where the page is.
+    fn place_current_page(&self) {
+        #[cfg(not(alloc_frugal))]
+        {
+            if let Some(widget_id) = self.current_widget() {
+                let rect = self.content_rect();
+                crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
+            }
         }
     }
     /// Returns current item widget.
@@ -283,6 +322,7 @@ impl ToolBox {
         // The other axis has a different extent and a different tab size, so an offset that was
         // legal in one is not necessarily legal in the other.
         self.clamp_scroll();
+        self.place_current_page();
         self.base.request_redraw();
     }
 
@@ -444,17 +484,17 @@ impl ToolBox {
     fn content_rect(&self) -> Rect {
         let rect = self.geometry();
         let extent = self.item_extent();
-        // `extent` is already the item's full slot, so the division needs no further cast: the
-        // count of whole tabs that fit beside the reserved page is what `strip_extent` reports.
-        let visible = self.strip_extent().saturating_sub(MIN_CONTENT_EXTENT) / extent.max(1);
-        // Every tab fits: the page gets whatever is left, which may be less than the minimum
-        // because the tabs are the part with a fixed size. `saturating_sub` keeps the short case
-        // from wrapping.
-        let strip_used = visible * extent;
+        // How many whole tabs the strip can show beside the reserved page.
+        let capacity = self.strip_extent().saturating_sub(MIN_CONTENT_EXTENT) / extent.max(1);
+        // The strip only occupies as much as it **has** tabs, capped by that capacity. Using
+        // the capacity alone reserved room for tabs that do not exist: with two items in a
+        // 300px vertical box the page started at `8 * 32 = 256`, so 192px of the control
+        // was empty strip and the page was a 44px sliver at the bottom.
+        let strip_used = (self.items.len() as u32).min(capacity) * extent;
         match self.orientation {
             Orientation::Horizontal => {
                 let remaining = rect.width.saturating_sub(strip_used);
-                let content_width = if self.items.len() as u32 <= visible {
+                let content_width = if self.items.len() as u32 <= capacity {
                     remaining.max(MIN_CONTENT_EXTENT).min(rect.width)
                 } else {
                     remaining
@@ -468,7 +508,7 @@ impl ToolBox {
             }
             Orientation::Vertical => {
                 let remaining = rect.height.saturating_sub(strip_used);
-                let content_height = if self.items.len() as u32 <= visible {
+                let content_height = if self.items.len() as u32 <= capacity {
                     remaining.max(MIN_CONTENT_EXTENT).min(rect.height)
                 } else {
                     remaining
@@ -509,6 +549,15 @@ impl Widget for ToolBox {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(200, 250)
+    }
+
+    /// Moves the tool box and re-places the visible page.
+    ///
+    /// The content box is a function of the control's rectangle (and of the orientation),
+    /// so a layout that moves the tool box has to move the page with it.
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        self.place_current_page();
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

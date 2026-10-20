@@ -33,6 +33,8 @@ use gtk::cairo;
 use gtk::gdk;
 use gtk::glib;
 use gtk::prelude::*;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// Creates a `DrawingArea` for `id`, adds it to `parent`'s content container and
 /// wires its `draw` and input signals.
@@ -119,16 +121,27 @@ pub(crate) fn mount_canvas(
     // the offset every nested control would be hit-tested against the wrong point.
     let origin = Point::new(rect.x, rect.y);
 
+    let double_click = Rc::new(RefCell::new(DoubleClickTracker::new()));
     area.connect_button_press_event(move |area, event| {
         let position = Point::new(event.position().0 as i32, event.position().1 as i32);
         let absolute = Point::new(origin.x + position.x, origin.y + position.y);
-        // The press carries the modifier state GTK reports, so a Shift/Ctrl click
-        // reaches the widget as a modifier click rather than as a plain one.
-        let delivered = forward_pointer_to_platform(
-            id,
-            &Event::mouse_press_with(absolute.x, absolute.y, 1, modifier_state_bits(event.state())),
-            absolute,
-        );
+        // A second primary press inside GTK's own double-click interval becomes
+        // `Event::MouseDoubleClick`; controls that activate on a double click (a list row,
+        // an in-place editor) only listen for that variant.
+        let is_double = event.button() == 1
+            && double_click.borrow_mut().register(
+                event.time(),
+                event.position().0,
+                event.position().1,
+            );
+        let translated = if is_double {
+            Event::mouse_double_click(absolute.x, absolute.y, 1)
+        } else {
+            // The press carries the modifier state GTK reports, so a Shift/Ctrl click
+            // reaches the widget as a modifier click rather than as a plain one.
+            Event::mouse_press_with(absolute.x, absolute.y, 1, modifier_state_bits(event.state()))
+        };
+        let delivered = forward_pointer_to_platform(id, &translated, absolute);
         if delivered {
             // A click may move focus to a child, so give it the keyboard too. The
             // area only receives key events while GTK considers it focused.
@@ -156,7 +169,17 @@ pub(crate) fn mount_canvas(
     area.connect_motion_notify_event(move |widget, event| {
         let position = Point::new(event.position().0 as i32, event.position().1 as i32);
         let absolute = Point::new(origin.x + position.x, origin.y + position.y);
-        if forward_pointer_to_platform(id, &Event::MouseMove { pos: absolute }, absolute) {
+        // A motion with no button held is a hover. It only owes a repaint when the control
+        // under the pointer changed; a drag repaints every sample because the dragged control
+        // follows the pointer. `None` makes the comparison below unconditional for a drag.
+        let hover_before = if pointer_button_down(event.state()) {
+            None
+        } else {
+            Some(crate::widget::runtime::hovered_widget())
+        };
+        if forward_pointer_to_platform(id, &Event::MouseMove { pos: absolute }, absolute)
+            && hover_before != Some(crate::widget::runtime::hovered_widget())
+        {
             widget.queue_draw();
             note_canvas_redraw(id);
         }
@@ -253,10 +276,14 @@ pub(crate) fn mount_canvas(
         let translated = if let Some(text) = printable_text(event) {
             Event::TextInput { text }
         } else {
-            // `keyval()` is a `gdk::keys::Key`, which derefs to its numeric GDK
-            // keyval — the value the widget layer's key handling expects.
-            let key = *event.keyval();
-            Event::KeyPress { key, modifiers: modifier_bits(event) }
+            // The control layer matches the framework's logical key codes (Return 13,
+            // Escape 27, Backspace 8, arrows 37..40 — see `crate::event::key_codes`),
+            // not GDK keyvals (`Return` is `0xFF0D`). Forwarding the raw keyval made
+            // Enter read as an unnamed key and Escape unhandled, while printable text
+            // worked only because it took the `TextInput` branch above.
+            let modifiers = modifier_bits(event);
+            let key = logical_key(*event.keyval(), is_control_chord(modifiers));
+            Event::KeyPress { key, modifiers }
         };
         if forward_key_to_platform(id, &translated) {
             widget.queue_draw();
@@ -272,10 +299,11 @@ pub(crate) fn mount_canvas(
         // Tab path handled on the press, so a printable character and a Tab both get a
         // release — which is what a control that watches both edges expects.
         //
-        // The keyval is forwarded the same way the press forwards it; the widget layer owns
-        // the decision of what a given keyval means.
-        let key = *event.keyval();
-        let released = Event::KeyRelease { key, modifiers: modifier_bits(event) };
+        // The keyval is forwarded through the same normalisation as the press; the widget
+        // layer owns the decision of what a given logical key means.
+        let modifiers = modifier_bits(event);
+        let key = logical_key(*event.keyval(), is_control_chord(modifiers));
+        let released = Event::KeyRelease { key, modifiers };
         if forward_key_to_platform(id, &released) {
             widget.queue_draw();
             note_canvas_redraw(id);
@@ -350,7 +378,14 @@ fn paint_area_for(native: &LinuxNativeState, id: ObjectId) -> Option<&gtk::Drawi
     if let Some(area) = native.canvases.get(&id) {
         return Some(area);
     }
-    let host = crate::widget::runtime::host_window_for(id).unwrap_or(id);
+    // A control created in the widget tree is painted by its **window's** area, not by an
+    // area of its own. `host_window_for(id)` only answers for a window id, so asking it
+    // about a child always fell through and `invalidate_surface(child)` reported `false` —
+    // which is why a `ListBox` rebuilt from a main-loop timer kept its old rows while the
+    // model (and `list_box_item_count`) had already changed. Resolving the child's top-level
+    // window first is what makes the request reach the surface that actually paints it.
+    let window = crate::widget::runtime::top_level_window_of(id).unwrap_or(id);
+    let host = crate::widget::runtime::host_window_for(window).unwrap_or(window);
     native.window_painters.get(&host)
 }
 
@@ -578,6 +613,24 @@ pub(crate) fn modifier_state_bits(state: gdk::ModifierType) -> u32 {
     bits
 }
 
+/// Whether any pointer button is held during a motion event.
+///
+/// GTK reports `GDK_MOTION_NOTIFY` for both a hover and a drag; the button mask in
+/// the event's state is the only thing that tells them apart. The distinction matters
+/// for repainting: a drag moves the control under the pointer, so every sample owes a
+/// frame, while a hover that stayed over the same control changed nothing on screen and
+/// repainting the whole area for it made pointer motion over a large window cost a
+/// software frame per sample.
+pub(crate) fn pointer_button_down(state: gdk::ModifierType) -> bool {
+    state.intersects(
+        gdk::ModifierType::BUTTON1_MASK
+            | gdk::ModifierType::BUTTON2_MASK
+            | gdk::ModifierType::BUTTON3_MASK
+            | gdk::ModifierType::BUTTON4_MASK
+            | gdk::ModifierType::BUTTON5_MASK,
+    )
+}
+
 /// Whether a GDK keyval is Tab, which the library consumes to move focus.
 ///
 /// Kept as a named predicate because the raw keyval (`0xFF09`) is otherwise an
@@ -586,8 +639,156 @@ pub(crate) fn gdk_keyval_is_tab(keyval: u32) -> bool {
     keyval == KEY_TAB
 }
 
+/// Whether the widget-layer modifier bits describe a control chord.
+///
+/// Control, Alt and Super are commands rather than content: their keys must reach the
+/// control's key handler with a framework key code, not be typed as the bare character.
+/// Alt is included because [`printable_text`] already refuses it (on GTK, `Mod1` is the
+/// Alt/Meta key and `Alt+letter` is a shortcut, not text).
+pub(crate) fn is_control_chord(modifiers: u32) -> bool {
+    const WIDGET_CONTROL: u32 = 2;
+    const WIDGET_ALT: u32 = 4;
+    const WIDGET_META: u32 = 8;
+    modifiers & (WIDGET_CONTROL | WIDGET_ALT | WIDGET_META) != 0
+}
+
+/// Normalises a GDK keyval to the framework's logical key-code convention.
+///
+/// # Why this exists
+///
+/// GDK reports a keyval, not a virtual-key code: Return is `0xFF0D` (65293), Escape
+/// `0xFF1B` (65307), Backspace `0xFF08`. The control layer matches `13`/`27`/`8`
+/// (see [`crate::event::key_codes`]), so forwarding the raw keyval left Enter and
+/// Escape dead in every text control. The mapping lives here, at the platform boundary,
+/// so a control does not have to know two conventions (principle #101).
+///
+/// A printable key is folded to its upper-case ASCII code **only for a control chord**:
+/// `Ctrl+A` arrives as keyval `a` (97) but the widget layer matches `65`.
+pub(crate) fn logical_key(keyval: u32, control_chord: bool) -> u32 {
+    use crate::event::key_codes as keys;
+
+    let named = match keyval {
+        KEY_RETURN | KEY_KP_ENTER => keys::ENTER,
+        KEY_ESCAPE => keys::ESCAPE,
+        KEY_BACKSPACE => keys::BACKSPACE,
+        KEY_DELETE => keys::DELETE,
+        KEY_LEFT => keys::LEFT,
+        KEY_UP => keys::UP,
+        KEY_RIGHT => keys::RIGHT,
+        KEY_DOWN => keys::DOWN,
+        KEY_HOME => keys::HOME,
+        KEY_END => keys::END,
+        KEY_PAGE_UP => keys::PAGE_UP,
+        KEY_PAGE_DOWN => keys::PAGE_DOWN,
+        KEY_TAB => keys::TAB,
+        KEY_F1 => keys::F1,
+        KEY_F2 => keys::F2,
+        KEY_F3 => keys::F3,
+        KEY_F4 => keys::F4,
+        KEY_F5 => keys::F5,
+        KEY_F6 => keys::F6,
+        KEY_F7 => keys::F7,
+        KEY_F8 => keys::F8,
+        KEY_F9 => keys::F9,
+        KEY_F10 => keys::F10,
+        KEY_F11 => keys::F11,
+        KEY_F12 => keys::F12,
+        _ => 0,
+    };
+    if named != 0 {
+        return named;
+    }
+    if control_chord {
+        if let Some(ch) = char::from_u32(keyval) {
+            if let Some(code) = keys::ascii_key_code(ch) {
+                return code;
+            }
+        }
+    }
+    keyval
+}
+
+/// GDK keyvals for the keys the framework names. The values are GDK's documented
+/// `GDK_KEY_*` constants; they are spelled here rather than imported because the
+/// `gdk` crate exposes them as individual items and the set is small and fixed.
+const KEY_RETURN: u32 = 0xFF0D;
+const KEY_KP_ENTER: u32 = 0xFF8D;
+const KEY_ESCAPE: u32 = 0xFF1B;
+const KEY_BACKSPACE: u32 = 0xFF08;
+const KEY_DELETE: u32 = 0xFFFF;
+const KEY_LEFT: u32 = 0xFF51;
+const KEY_UP: u32 = 0xFF52;
+const KEY_RIGHT: u32 = 0xFF53;
+const KEY_DOWN: u32 = 0xFF54;
+const KEY_HOME: u32 = 0xFF50;
+const KEY_END: u32 = 0xFF57;
+const KEY_PAGE_UP: u32 = 0xFF55;
+const KEY_PAGE_DOWN: u32 = 0xFF56;
+const KEY_F1: u32 = 0xFFBE;
+const KEY_F2: u32 = 0xFFBF;
+const KEY_F3: u32 = 0xFFC0;
+const KEY_F4: u32 = 0xFFC1;
+const KEY_F5: u32 = 0xFFC2;
+const KEY_F6: u32 = 0xFFC3;
+const KEY_F7: u32 = 0xFFC4;
+const KEY_F8: u32 = 0xFFC5;
+const KEY_F9: u32 = 0xFFC6;
+const KEY_F10: u32 = 0xFFC7;
+const KEY_F11: u32 = 0xFFC8;
+const KEY_F12: u32 = 0xFFC9;
+
 /// GDK keyval for Tab.
 const KEY_TAB: u32 = 0xFF09;
+
+/// Tracks the previous primary press so the GTK pointer path can synthesise a double
+/// click.
+///
+/// # Why the backend must synthesise it
+///
+/// GDK reports the presses, not the gesture: `GdkEventButton` carries a time and a
+/// position but no click count, and GTK's multi-press counting lives in
+/// `GtkGestureMultiPress`, which this backend does not install. The control layer acts
+/// on [`Event::MouseDoubleClick`] (a list row activates, a text field selects a word), so
+/// without this every double click arrived as two ordinary presses and those features
+/// were unreachable from a real window.
+///
+/// The interval and distance come from GTK's own settings — the same values its
+/// gesture would use — so the library does not invent a second definition of "double
+/// click". A missing setting falls back to the toolkit's documented defaults.
+pub(crate) struct DoubleClickTracker {
+    last: Option<(u32, f64, f64)>,
+    interval_ms: u32,
+    distance_px: f64,
+}
+
+impl DoubleClickTracker {
+    pub(crate) fn new() -> Self {
+        let settings = gtk::Settings::default();
+        let interval_ms = settings
+            .as_ref()
+            .map(|settings| settings.gtk_double_click_time().max(0) as u32)
+            .unwrap_or(400);
+        let distance_px = settings
+            .as_ref()
+            .map(|settings| settings.gtk_double_click_distance().max(0) as f64)
+            .unwrap_or(5.0);
+        Self { last: None, interval_ms, distance_px }
+    }
+
+    /// Records a primary press and reports whether it completed a double click.
+    pub(crate) fn register(&mut self, time_ms: u32, x: f64, y: f64) -> bool {
+        let is_double = self.last.is_some_and(|(last_time, last_x, last_y)| {
+            let within_time = time_ms.saturating_sub(last_time) <= self.interval_ms;
+            let dx = x - last_x;
+            let dy = y - last_y;
+            within_time && dx * dx + dy * dy <= self.distance_px * self.distance_px
+        });
+        // A completed double click starts a new run, so a third press is a fresh first
+        // click rather than a "triple".
+        self.last = if is_double { None } else { Some((time_ms, x, y)) };
+        is_double
+    }
+}
 
 /// Routes a pointer event through the active platform backend.
 ///
@@ -885,6 +1086,23 @@ mod tests {
         assert!(gdk::ModifierType::SHIFT_MASK.bits() != 0);
         assert!(gdk::ModifierType::CONTROL_MASK.bits() != 0);
         assert!(gdk::ModifierType::MOD1_MASK.bits() != 0);
+    }
+
+    #[test]
+    fn motion_with_a_held_button_is_a_drag() {
+        // No button held: a hover, which may skip a repaint when it stays put.
+        assert!(!pointer_button_down(gdk::ModifierType::SHIFT_MASK));
+        // Any held button is a drag, which owes a repaint every sample.
+        for button in [
+            gdk::ModifierType::BUTTON1_MASK,
+            gdk::ModifierType::BUTTON2_MASK,
+            gdk::ModifierType::BUTTON3_MASK,
+            gdk::ModifierType::BUTTON4_MASK,
+            gdk::ModifierType::BUTTON5_MASK,
+        ] {
+            assert!(pointer_button_down(button));
+            assert!(pointer_button_down(button | gdk::ModifierType::CONTROL_MASK));
+        }
     }
 
     #[test]

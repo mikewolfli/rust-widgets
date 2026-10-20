@@ -26,18 +26,18 @@
 
 ```toml
 [dependencies]
-rust_widgets = "2.8.11"
+rust_widgets = "2.8.12"
 ```
 
 **必须且只能选择一个设备配置**。它们互斥：`mini` 与 `embedded` 会把 crate 的一部分*编译掉*，
 与 `desktop` 叠加不是“取最小公共集”，而是一个无法工作的构建。
 
 ```toml
-rust_widgets = { version = "2.8.11", features = ["desktop"] }                       # 默认
-rust_widgets = { version = "2.8.11", default-features = false, features = ["tablet"] }
-rust_widgets = { version = "2.8.11", default-features = false, features = ["mobile"] }
-rust_widgets = { version = "2.8.11", default-features = false, features = ["embedded"] }
-rust_widgets = { version = "2.8.11", default-features = false, features = ["mini"] }
+rust_widgets = { version = "2.8.12", features = ["desktop"] }                       # 默认
+rust_widgets = { version = "2.8.12", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "2.8.12", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "2.8.12", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "2.8.12", default-features = false, features = ["mini"] }
 ```
 
 | 配置 | 适用场景 |

@@ -38,6 +38,14 @@ pub(crate) enum MousePhase {
     Release,
     /// Pointer moved while the button was held.
     Drag,
+    /// Pointer moved with **no** button held.
+    ///
+    /// Distinct from [`Self::Drag`] because the repaint rule is different: a drag owes a
+    /// repaint for every sample (a selection or slider follows it), while a hover move
+    /// owes one only when the pointer crossed into or out of a different control. Treating
+    /// both as `Drag` made every mouse movement over a 1280×800 window repaint the whole
+    /// frame, which is the "laggy while nothing changed" report.
+    Move,
     /// The secondary button went down (a context menu, a right-drag).
     ///
     /// A separate variant rather than a `button` parameter on [`Self::Press`]: the

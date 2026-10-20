@@ -219,7 +219,7 @@ unsafe extern "system" fn canvas_wnd_proc(
             0
         }
         WM_MOUSEMOVE => {
-            forward_mouse(hwnd, lparam, MousePhase::Drag);
+            forward_mouse(hwnd, lparam, move_phase());
             0
         }
         // The wheel arrives with a *screen* point and its delta in `wParam`; see
@@ -556,6 +556,23 @@ pub(crate) fn invalidate_canvas_rect(hwnd: HWND, rect: Rect) -> bool {
     true
 }
 
+/// Returns the phase a `WM_MOUSEMOVE` should be reported as.
+///
+/// Win32 sends `WM_MOUSEMOVE` both for a plain hover and for a drag; the button
+/// state is the only thing that tells them apart. Reporting a drag as a hover
+/// would drop the `TME_LEAVE` request below and make the pointer stick to the
+/// last hovered control, and reporting a hover as a drag defeats the
+/// unchanged-hover early exit the runtime uses to skip a repaint.
+pub(crate) unsafe fn move_phase() -> MousePhase {
+    use winapi::um::winuser::{GetKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON};
+    // A negative result means the button is currently down.
+    if GetKeyState(VK_LBUTTON) < 0 || GetKeyState(VK_RBUTTON) < 0 || GetKeyState(VK_MBUTTON) < 0 {
+        MousePhase::Drag
+    } else {
+        MousePhase::Move
+    }
+}
+
 /// Translates a Win32 mouse message into a widget event and delivers it.
 ///
 /// The coordinates Win32 reports are relative to this child window, so they are
@@ -584,7 +601,7 @@ unsafe fn forward_mouse(hwnd: HWND, lparam: LPARAM, phase: MousePhase) {
         MousePhase::Release => {
             Event::MouseRelease { pos: position, button: crate::event::mouse_button::PRIMARY }
         }
-        MousePhase::Drag => Event::MouseMove { pos: position },
+        MousePhase::Drag | MousePhase::Move => Event::MouseMove { pos: position },
         MousePhase::SecondaryPress => Event::mouse_press_with(
             position.x,
             position.y,
@@ -598,9 +615,14 @@ unsafe fn forward_mouse(hwnd: HWND, lparam: LPARAM, phase: MousePhase) {
             Event::mouse_double_click(position.x, position.y, crate::event::mouse_button::PRIMARY)
         }
     };
+    let hover_before = if matches!(phase, MousePhase::Move) {
+        crate::widget::runtime::hovered_widget()
+    } else {
+        None
+    };
     let delivered =
         crate::platform::platform_facts().route_pointer_event(widget_id, &event, position);
-    if matches!(phase, MousePhase::Drag) {
+    if matches!(phase, MousePhase::Drag | MousePhase::Move) {
         // Ask Win32 for a `WM_MOUSELEAVE` on the next exit. The request is consumed
         // by the event it produces, so it must be re-issued on every move — without
         // it the leave message never arrives and hover would stick.
@@ -617,7 +639,14 @@ unsafe fn forward_mouse(hwnd: HWND, lparam: LPARAM, phase: MousePhase) {
             // keyboard so subsequent keys are delivered here.
             SetFocus(hwnd);
         }
-        invalidate_canvas(hwnd);
+        // A hover that stayed inside the same control changed nothing on screen; every
+        // other phase owes a repaint unconditionally. Without this a plain pointer move
+        // over a large canvas cost a full frame per sample.
+        let hover_changed = !matches!(phase, MousePhase::Move)
+            || hover_before != crate::widget::runtime::hovered_widget();
+        if hover_changed {
+            invalidate_canvas(hwnd);
+        }
     }
 }
 

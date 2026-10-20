@@ -5,6 +5,90 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.8.12 (2026-10-20) — feedback closure, single-page tab containers, cheaper frames, Windows link verification
+
+This release closes the remaining defects in `docs/issues/feedback-20261020.md`, makes the tab
+containers genuinely single-page, and takes the Windows backend from `cargo check` to a real
+`lld-link` link.
+
+### Profiles
+
+- `create_tab_widget`, `create_splitter`, `create_grid_widget` and `create_dialog` are now gated
+  with `widgets_unstripped`, matching the `WidgetKind` variants they name. `embedded`
+  (`alloc_frugal = false`, `widgets_unstripped = false`) compiled the constructors against
+  variants that did not exist, so the profile failed with four `E0599` errors.
+
+### Creation path
+
+- `create_widget_of_kind` falls back to the control backend's widget-tree mount when the platform
+  reports no per-widget surfaces, and rejects a non-window kind whose parent is not mounted. The
+  typed `create_*` constructors and the unified entry now have one success criterion.
+
+### Input
+
+- macOS and GTK normalise native key values to the framework's key codes at the platform boundary:
+  Return/Enter, Escape, Backspace, Delete, arrows, Home/End, Page Up/Down and F1–F12. A command
+  chord is delivered as a `KeyPress` with the upper-case letter code (`⌘A` → 65) instead of as
+  text. On macOS this fixes Enter being read as Home and Escape being ignored; on GTK it fixes
+  `0xFF0D`/`0xFF1B` never matching `13`/`27`.
+- GTK synthesises `Event::MouseDoubleClick` from the toolkit's own double-click time and distance,
+  so `ListBox::item_activated` and text selection by double click work in a real window.
+- A pointer move with no button held repaints only when the hover target changed; a drag still
+  repaints every sample. Moving the pointer over an idle 1280×800 window no longer repaints the
+  whole software frame. All three backends share the rule: AppKit's `mouseMoved:`, Win32's
+  `WM_MOUSEMOVE` (phase chosen from `GetKeyState`) and GTK's `GDK_MOTION_NOTIFY` (chosen from the
+  event's button mask). `TrackMouseEvent(TME_LEAVE)` is still re-armed on every move, because the
+  request is consumed by the leave message it produces.
+
+### Repaint
+
+- On GTK, invalidating a control inside a window resolves the control's top-level window before
+  looking up the paint area. A `ListBox` rebuilt from a `schedule_on_main` callback now repaints
+  instead of reporting success while the old rows stay on screen.
+
+### Container content models
+
+- `StackedWidget` and `ToolBox` now show exactly one page: the selected page fills the content
+  box and every other page is hidden. Linking the child was only half the model, so the tree
+  painter used to draw all pages on top of each other.
+- `ToolBox::content_rect` reserves only the strip slots its tabs actually occupy. It previously
+  reserved the strip's whole capacity (eight tabs), leaving the page a 44 px sliver at the bottom
+  of a 300 px box with two tabs.
+- `CollapsiblePane` hides its content when fully collapsed and places it on the main tree path.
+  Clipping alone left the child clickable while invisible.
+- `TabView` draws the selected page itself when no registry is set, and never draws an inactive
+  page. A host-supplied registry keeps the existing draw/dispatch contract.
+
+### Performance
+
+- The window tree painter reads visibility, the child list, the descendant clip and the draw in
+  one registry loan per node (three loans per node before).
+- The loan markers use a small vector instead of four `BTreeSet`/`BTreeMap` insertions per node.
+- `render_frame`, `render_frame_incremental` and `render_frame_tree` move the finished RGBA buffer
+  out of the software surface instead of copying it; a 1280×800 frame no longer pays a 4 MB
+  `memcpy` on the UI thread.
+- The new `render_frame_tree` benchmark records 2.5 ms for a 9-widget and 15 ms for a 100-widget
+  1280×800 frame on the reference Apple-silicon host.
+
+### Platform verification
+
+- The Windows backend now compiles for `x86_64-pc-windows-msvc` on all five device profiles and
+  with `--all-targets`, and is clean under `clippy -D warnings`. The check found one real gap: the
+  Win32 mouse entry points reported every `WM_MOUSEMOVE` as a drag, so `MousePhase::Move` was never
+  constructed on Windows and each pointer sample invalidated the whole client area.
+- Windows verification was then pushed past `check` to the link layer: `lld-link` produces the
+  `mini` and `desktop` `cdylib` DLLs plus the `desktop` test-harness `.exe`, and all three PE images
+  import the expected Win32 surface (`user32`/`gdi32`/`dwrite`/`dxgi`/`opengl32`, plus the UCRT
+  `api-ms-win-crt-*` DLLs resolved from `~/.xwin`). This is `link-verified`, not `runtime-verified`:
+  no `.exe` was executed. Linking surfaced a build-environment trap worth recording — `~/.xwin/crt`
+  ships MSVC's own `intrin.h`, so putting that directory first in `-isystem` shadowed clang's
+  intrinsic headers and turned `_mm_*` intrinsics in `minimp3-sys` into undefined external calls;
+  clang's resource include directory must come first.
+- `tools/pkgconfig_linux_cross_shim.sh` lets a macOS host type-check the GTK backend for
+  `x86_64-unknown-linux-gnu`, so `src/platform/linux/**` is no longer verified by syntax alone. The
+  shim only strips Apple `-framework` flags from the host's `.pc` files; it is for `check`/`clippy`,
+  not for linking.
+
 ## 2.8.11 (2026-10-20) — workbench layout, panel factories, composite content, GTK resize repaint
 
 This release closes the three optional/defect items in `docs/issues/feedback-20261020.md` and

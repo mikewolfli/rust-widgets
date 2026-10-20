@@ -86,6 +86,44 @@ struct Mounted {
     widget: Box<dyn Widget>,
 }
 
+/// A tiny set of widget ids used for the registry's per-drive loan markers.
+///
+/// # Why a vector and not `BTreeSet`
+///
+/// These sets hold the ids of the **currently driven** widgets, which is almost always one
+/// (the widget whose `with_widget`/`with_widget_mut`/`dispatch_event` call is on the stack)
+/// and never more than the nesting depth of a callback. A `BTreeSet` paid a tree insert, a
+/// tree removal and an allocation per node; the vector is a linear scan over one or two
+/// `u64`s, and its capacity survives across drives because the set is reused. The paint
+/// path installs four of these per node per frame (`DISPATCHING`, `LENT_MUTATING`,
+/// `LENT_EXCLUSIVE`, `LENT_OUT`), so the per-node cost is directly the per-frame cost.
+struct IdSet(Vec<ObjectId>);
+
+impl IdSet {
+    const fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    fn insert(&mut self, id: ObjectId) {
+        if !self.0.contains(&id) {
+            self.0.push(id);
+        }
+    }
+
+    fn remove(&mut self, id: &ObjectId) -> bool {
+        if let Some(index) = self.0.iter().position(|candidate| candidate == id) {
+            self.0.remove(index);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn contains(&self, id: &ObjectId) -> bool {
+        self.0.contains(id)
+    }
+}
+
 // Per-thread widget registry.
 //
 // `clippy::missing_const_for_thread_local` fires on this block for the
@@ -107,8 +145,7 @@ thread_local! {
     /// so a handler that destroys the very control being dispatched is honoured instead of being
     /// overwritten by the reinsertion that follows the call.
     #[allow(clippy::missing_const_for_thread_local)]
-    static DISPATCHING: RefCell<alloc::collections::BTreeSet<ObjectId>> =
-        RefCell::new(alloc::collections::BTreeSet::new());
+    static DISPATCHING: RefCell<IdSet> = RefCell::new(IdSet::new());
 
     /// Ids unregistered while their dispatch was in progress.
     ///
@@ -116,8 +153,7 @@ thread_local! {
     /// then clears the entry. Without it, a handler that called `unregister(id)` would have its
     /// destroy silently undone by the dispatch epilogue putting the widget back.
     #[allow(clippy::missing_const_for_thread_local)]
-    static DESTROYED_DURING_DISPATCH: RefCell<alloc::collections::BTreeSet<ObjectId>> =
-        RefCell::new(alloc::collections::BTreeSet::new());
+    static DESTROYED_DURING_DISPATCH: RefCell<IdSet> = RefCell::new(IdSet::new());
 
     /// Widgets currently lent out of [`MOUNTED`] while a frame drives them.
     ///
@@ -141,8 +177,7 @@ thread_local! {
         RefCell::new(alloc::collections::BTreeMap::new());
 
     #[allow(clippy::missing_const_for_thread_local)]
-    static LENT_EXCLUSIVE: RefCell<alloc::collections::BTreeSet<ObjectId>> =
-        RefCell::new(alloc::collections::BTreeSet::new());
+    static LENT_EXCLUSIVE: RefCell<IdSet> = RefCell::new(IdSet::new());
 
     /// Monotonic id source for mounted widgets.
     ///
@@ -2350,8 +2385,7 @@ impl Drop for LentGuard {
 // Ids lent out for **mutation**, so a nested write to the same id can be refused.
 thread_local! {
     #[allow(clippy::missing_const_for_thread_local)]
-    static LENT_MUTATING: RefCell<alloc::collections::BTreeSet<ObjectId>> =
-        RefCell::new(alloc::collections::BTreeSet::new());
+    static LENT_MUTATING: RefCell<IdSet> = RefCell::new(IdSet::new());
 }
 
 /// A host callback observing the IME pre-edit updates delivered to one widget.
@@ -3497,7 +3531,7 @@ pub fn render_frame_incremental(
     if !painted {
         return None;
     }
-    Some(backend.frame_rgba().to_vec())
+    Some(backend.into_frame_rgba())
 }
 
 /// Renders the next frame of a mounted widget, reusing the previous one when the
@@ -3650,7 +3684,7 @@ pub fn render_frame(id: ObjectId, size: Size, clear: crate::core::Color) -> Opti
     if !painted {
         return None;
     }
-    Some(backend.frame_rgba().to_vec())
+    Some(backend.into_frame_rgba())
 }
 
 /// Renders one frame of a mounted widget using its own geometry as the size.
@@ -3700,8 +3734,13 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
     let mut backend = SoftwarePaintBackend::new(size, 1.0);
 
     // The root's own painting is part of the frame: a window draws its background and
-    // chrome, which the children then sit on top of.
+    // chrome, which the children then sit on top of. Its descendant clip and child list are
+    // read in that same loan, so the root is not visited twice before the traversal starts.
+    let mut root_clip = None;
+    let mut root_children = Vec::new();
     let mut painted = with_widget_mut(id, |widget| {
+        root_clip = widget.children_clip();
+        root_children = widget.base().children().to_vec();
         let Some(drawable) = widget.as_draw_mut() else {
             return false;
         };
@@ -3726,26 +3765,32 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
         // carried rectangle a container could only draw and place its content; the content
         // would then escape the viewport as soon as it was scrolled, which is exactly the
         // half-fix `ScrollArea` used to be.
-        let root_clip = with_widget(id, |widget| widget.children_clip()).flatten();
         let mut stack: Vec<(ObjectId, Option<Rect>)> =
-            direct_children_of(id).into_iter().map(|child| (child, root_clip)).collect();
+            root_children.into_iter().map(|child| (child, root_clip)).collect();
         // Reversed so the traversal visits children in declaration order: `pop` takes the
         // last element, so pushing the children reversed makes the first one first.
         stack.reverse();
         while let Some((current, clip)) = stack.pop() {
-            if !is_visible(current) {
-                continue;
-            }
             // A node whose clip has no area cannot paint anything, and neither can its
             // descendants. Skipping the node skips the subtree, the same rule hiding uses.
             if clip.is_some_and(|rect| rect.width == 0 || rect.height == 0) {
                 continue;
             }
-            let (drew, own_clip) = with_widget_mut(current, |widget| {
+            // Visibility, the child list, the descendant clip and the draw itself are read
+            // in **one** registry loan. They used to be three (`is_visible`, then
+            // `with_widget_mut`, then `direct_children_of`), and every loan detaches the
+            // widget from the registry, installs three loan markers and re-inserts it — so a
+            // 100-node window paid ~900 map operations per frame before it drew a pixel. One
+            // loan also makes the four values describe the same instant.
+            let outcome = with_widget_mut(current, |widget| {
+                if !widget.is_visible() {
+                    return None;
+                }
                 // Read before the draw: `as_draw_mut` needs the exclusive borrow.
                 let child_clip = widget.children_clip();
+                let nested = widget.base().children().to_vec();
                 let Some(drawable) = widget.as_draw_mut() else {
-                    return (false, child_clip);
+                    return Some((false, child_clip, nested));
                 };
                 let mut context = RenderContext::new(&mut backend);
                 context.push_offset(-origin.0, -origin.1);
@@ -3757,14 +3802,17 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
                     context.pop_clip();
                 }
                 context.pop_offset();
-                (true, child_clip)
+                Some((true, child_clip, nested))
             })
-            .unwrap_or((false, None));
+            .flatten();
+            let Some((drew, own_clip, mut nested)) = outcome else {
+                // Not visible: a hidden node hides its whole subtree.
+                continue;
+            };
             if drew {
                 painted = true;
             }
             let child_clip = intersect_clip(clip, own_clip);
-            let mut nested = direct_children_of(current);
             nested.reverse();
             stack.extend(nested.into_iter().map(|child| (child, child_clip)));
         }
@@ -3774,7 +3822,7 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
         return None;
     }
     backend.end_frame();
-    Some(backend.frame_rgba().to_vec())
+    Some(backend.into_frame_rgba())
 }
 
 /// The overlap of two clip rectangles, or a zero-area rectangle when they do not overlap.

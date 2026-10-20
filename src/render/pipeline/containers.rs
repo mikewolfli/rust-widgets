@@ -88,6 +88,15 @@ impl SoftwareSurface {
     pub fn frame_rgba(&self) -> &[u8] {
         self.buffer.front()
     }
+
+    /// Consumes the surface and returns the presented frame without copying it.
+    ///
+    /// See [`BackBuffer::take_front`] for why this exists: the render entry points own
+    /// the backend, so moving the buffer is always safe there and saves one full-frame
+    /// copy per painted frame.
+    pub fn into_frame_rgba(mut self) -> Vec<u8> {
+        self.buffer.take_front()
+    }
     /// Measures text bounds and baseline metrics.
     pub fn measure_text(&self, text: &str, font: &Font) -> TextMetrics {
         let scale = self.buffer.dpi_scale();

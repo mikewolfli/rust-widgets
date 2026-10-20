@@ -84,6 +84,55 @@ pub const PAGE_UP: u32 = 33;
 /// The Page Down key.
 pub const PAGE_DOWN: u32 = 34;
 
+/// The first function key, `F1`. `F12` is [`F12`].
+///
+/// Function keys are part of the framework's key-code convention because a host that
+/// normalises a platform key (AppKit `keyCode`, GDK `keyval`) has to produce a value the
+/// widget layer can branch on. The values are the conventional `112..=123` range
+/// [`crate::shortcut::Key`] already parses.
+pub const F1: u32 = 112;
+/// `F2`.
+pub const F2: u32 = 113;
+/// `F3`.
+pub const F3: u32 = 114;
+/// `F4`.
+pub const F4: u32 = 115;
+/// `F5`.
+pub const F5: u32 = 116;
+/// `F6`.
+pub const F6: u32 = 117;
+/// `F7`.
+pub const F7: u32 = 118;
+/// `F8`.
+pub const F8: u32 = 119;
+/// `F9`.
+pub const F9: u32 = 120;
+/// `F10`.
+pub const F10: u32 = 121;
+/// `F11`.
+pub const F11: u32 = 122;
+/// `F12`.
+pub const F12: u32 = 123;
+
+/// Maps a printable character to the framework's key code for it.
+///
+/// Letters are folded to **upper case** because that is what the control layer matches:
+/// `LineEdit` handles `Primary+A` as key `65`, not `97`, so a platform that reports the
+/// lower-case character for `⌘A` would otherwise miss every letter shortcut. Digits,
+/// punctuation and space keep their ASCII value.
+///
+/// Returns `None` for a non-ASCII character. A platform boundary should then keep its own
+/// native code rather than invent one: the widget layer has no name for it, and neither
+/// does this table.
+pub fn ascii_key_code(ch: char) -> Option<u32> {
+    let folded = ch.to_ascii_uppercase();
+    if folded.is_ascii() {
+        Some(folded as u32)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,5 +184,18 @@ mod tests {
         // first, and both must still agree with the enum.
         assert_eq!(Key::from_key_code(DELETE), Some(Key::Delete));
         assert_eq!(Key::from_key_code(127), Some(Key::Delete));
+    }
+
+    /// A platform chord reports a character regardless of case, and the widget layer
+    /// matches the upper-case code.
+    #[test]
+    fn ascii_key_codes_fold_letters_to_upper_case() {
+        assert_eq!(ascii_key_code('a'), Some(65));
+        assert_eq!(ascii_key_code('A'), Some(65));
+        assert_eq!(ascii_key_code('z'), Some(90));
+        assert_eq!(ascii_key_code('0'), Some(48));
+        assert_eq!(ascii_key_code('/'), Some(47));
+        assert_eq!(ascii_key_code(' '), Some(32));
+        assert_eq!(ascii_key_code('é'), None, "non-ASCII has no framework code");
     }
 }

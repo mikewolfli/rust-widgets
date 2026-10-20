@@ -282,6 +282,7 @@ impl DockWidget {
     /// Sets the shared widget registry for child forwarding.
     pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
         self.registry = Some(registry);
+        self.place_content();
         self.base.request_redraw();
     }
     /// Returns the shared widget registry, if set.
@@ -312,6 +313,7 @@ impl DockWidget {
         if let Some(widget_id) = widget {
             self.base.add_child_linked(widget_id);
         }
+        self.place_content();
         self.base.request_redraw();
     }
     /// Returns widget.
@@ -388,6 +390,8 @@ impl DockWidget {
         // Docking to a real edge is, by definition, not floating.
         self.floating = false;
         self.docked = area != DockWidgetArea::NoDockWidgetArea;
+        // A left/right dock takes a vertical title bar, which changes the content box.
+        self.place_content();
         self.dock_location_changed.emit(area);
         self.base.request_redraw();
     }
@@ -491,6 +495,27 @@ impl DockWidget {
             ),
         }
     }
+    /// Places the docked widget in the content box.
+    ///
+    /// # Why the main tree path needs this
+    ///
+    /// `DockWidget` used to place its child **only** when drawing through a host registry. A
+    /// window painted by `render_frame_tree` draws the child at the child's own geometry, so a
+    /// docked control built at `0x0` stayed at `0x0` and a docked control built at its old
+    /// rectangle kept painting there after the dock moved. The write goes through the public
+    /// geometry entry, the same one every other container uses, so both paths agree.
+    fn place_content(&self) {
+        #[cfg(not(alloc_frugal))]
+        {
+            if let Some(widget_id) = self.widget {
+                let rect = self.content_rect();
+                if let Some(ref registry) = self.registry {
+                    registry.borrow_mut().set_widget_geometry(widget_id, rect);
+                }
+                crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
+            }
+        }
+    }
     /// Returns close button rectangle.
     ///
     /// The button sits at the title bar's **trailing** end, which is what makes it follow the bar's
@@ -581,6 +606,12 @@ impl Widget for DockWidget {
             crate::widget::metrics::dimensions::DOCK_WIDGET_DEFAULT_WIDTH,
             crate::widget::metrics::dimensions::DOCK_WIDGET_DEFAULT_HEIGHT,
         )
+    }
+
+    /// Moves the dock and re-places its content.
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        self.place_content();
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

@@ -1,5 +1,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 use criterion::{criterion_group, criterion_main, Criterion};
+#[cfg(not(target_arch = "wasm32"))]
+use std::hint::black_box;
 
 #[cfg(not(target_arch = "wasm32"))]
 use rust_widgets::core::*;
@@ -115,6 +117,63 @@ fn bench_dispatch_pointer_event(c: &mut Criterion) {
     runtime::unregister(root_id);
 }
 
+/// Measures a **window tree** frame, which is the path a real window repaint uses.
+///
+/// # Why this is not `render_frame`
+///
+/// `render_frame` paints one control into its own box. Every desktop window paints its
+/// child list through `render_frame_tree`, so that is where the per-node registry work
+/// and the final frame copy actually happen. The traversal now reads visibility and the
+/// child list in the same registry loan as the draw (three loans per node became one)
+/// and moves the finished buffer out instead of copying it; this benchmark makes both
+/// properties measurable rather than a claim in a commit message.
+///
+/// Two sizes: a small dialog-like tree and a tree large enough that per-node overhead
+/// dominates the pixels.
+#[cfg(not(feature = "mini"))]
+#[cfg(not(target_arch = "wasm32"))]
+fn bench_render_frame_tree(c: &mut Criterion) {
+    use rust_widgets::widget::base_widgets::button::Button;
+    use rust_widgets::widget::container_widgets::groupbox::GroupBox;
+    use rust_widgets::widget::runtime;
+    use rust_widgets::widget::Widget;
+
+    let surface = Size::new(1280, 800);
+    let clear = Color::WHITE;
+
+    for (count, label) in [(9_usize, "9-widget tree"), (100, "100-widget tree")] {
+        let mut root = GroupBox::new(Rect::new(0, 0, surface.width, surface.height));
+        let mut children = Vec::new();
+        for index in 0..count {
+            let column = (index % 10) as i32;
+            let row = (index / 10) as i32;
+            let geometry = Rect::new(column * 120, row * 40, 110, 30);
+            let Some(id) = runtime::register(Box::new(Button::new(format!("b{index}"), geometry)))
+            else {
+                panic!("the runtime must accept a child widget");
+            };
+            root.add_child(id);
+            children.push(id);
+        }
+        let Some(root_id) = runtime::register(Box::new(root)) else {
+            panic!("the runtime must accept the root widget");
+        };
+
+        c.bench_function(&format!("render_frame_tree 1280x800 {label}"), |b| {
+            b.iter(|| {
+                let frame = runtime::render_frame_tree(root_id, surface, clear);
+                debug_assert!(frame.is_some(), "a window tree must paint a frame");
+                black_box(frame);
+            })
+        });
+
+        for id in children {
+            runtime::unregister(id);
+        }
+        runtime::unregister(root_id);
+    }
+}
+
 // The two runtime benchmarks are compiled only where `widget::runtime` exists: the
 // alloc-frugal profile (`mini`) compiles the widget runtime out, and a benchmark cannot
 // measure a path that is not there. Grouping them separately keeps the pixel-level
@@ -124,7 +183,12 @@ criterion_group!(pixel_benches, bench_fill_pixels, bench_blend_pixel);
 
 #[cfg(not(feature = "mini"))]
 #[cfg(not(target_arch = "wasm32"))]
-criterion_group!(runtime_benches, bench_render_frame, bench_dispatch_pointer_event);
+criterion_group!(
+    runtime_benches,
+    bench_render_frame,
+    bench_render_frame_tree,
+    bench_dispatch_pointer_event
+);
 
 #[cfg(not(feature = "mini"))]
 #[cfg(not(target_arch = "wasm32"))]

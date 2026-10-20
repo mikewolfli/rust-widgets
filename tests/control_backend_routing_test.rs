@@ -216,11 +216,15 @@ fn library_window_is_linked_to_its_host_window() {
     );
 
     if !platform.supports_surfaces() {
-        // No surface anywhere: the backend must refuse rather than hand back a dead
-        // id, and must not claim the window can carry controls.
-        assert_eq!(
-            button, 0,
-            "a backend that cannot display must refuse rather than hand back a dead id"
+        // No per-widget platform surface: the unified entry point must still host the
+        // control through the **widget-tree** path (the same path every typed `create_*`
+        // uses). Returning 0 here was the defect `feedback-20261020` §0.4 records: the
+        // caller handed over a real widget and was told the backend could not host it,
+        // while `create_button` on the same backend succeeded.
+        assert_ne!(button, 0, "a backend without surfaces must host through the widget-tree path");
+        assert!(
+            rust_widgets::widget::runtime::is_mounted(button),
+            "the returned id must address the registered control"
         );
         return;
     }
