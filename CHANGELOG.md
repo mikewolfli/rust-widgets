@@ -5,6 +5,38 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.8.13 (2026-10-21) — composite content, correct labels, cheaper editor frames, mobile safe area
+
+This release makes the non-basic controls show their own content and their own words, and removes
+the last per-frame document walk in the editor.
+
+### Composite content
+
+- The snapshot/demo fill now supplies content for the controls that were shipping as empty frames: `ribbon_bar`, `pie_menu`, `kanban_board`, `timeline_widget`, `gantt_widget`, `breadcrumb`, `snackbar`, `notification_center`, `shortcut_editor`, `wizard_dialog`, `progress_dialog`, `input_dialog`, `segmented_button`, `chip`, `dial`, `bottom_navigation_bar`, `material_navigation_rail`, `refresh_control`, and the six finance charts (`candlestick_chart`, `volume_chart`, `indicator_chart`, `depth_chart`, `order_book`, `quote_board`). A control whose feature is its content is now reviewable in its own picture.
+
+### Labels and layout
+
+- `SplitButton`'s trailing column paints a chevron icon instead of the letter `v`.
+- `RibbonItem` no longer seeds its icon with its own text, and large/small item labels are centred in their boxes instead of starting at the item's centre.
+- `FindReplaceDialog`'s action buttons read `Rpl` and `Rpl All` instead of `R` and `RA`, and its flag toggles are centred.
+- `Chip` is a rounded pill with a contrast-appropriate label ink, and no longer paints a full-width frame around a one-chip row.
+- Dialog title bars are neutral (no accent-filled header) and action rows are inset from the rounded frame; `MessageBox`'s default button uses the theme's primary token.
+- `MaterialNavigationRail` is an 80 px strip with resolved icon outlines and labels centred under them; its hit test uses the same strip.
+- `Heatmap` row labels are centred on their rows; `RefreshControl`'s indicator strip is 56 px so the spinner and `Loading...` both fit; `DropZone` names the accepted type in the well.
+- `DateRangePicker` puts January 2025's first day under Wednesday: the weekday conversion is Sunday-based, columns are derived from the available width (not the row height), and the hit test and the painted grid share one layout.
+
+### Performance
+
+- `CodeEditor::matching_brackets` caches its pair by `(revision, caret)`. Resolving a top-level brace scans to its partner, and the paint path called it every frame, so a still frame re-walked the document.
+
+### Mobile services
+
+- `crates/mobile-services` gains `Service::SafeArea` and `Service::Orientation`, with `safe_area()` / `set_orientation()` implemented for Android, iOS (orientation honestly unsupported) and HarmonyOS.
+
+### Verification
+
+- 7474 library tests and 7881 tests across the full suite pass, as do every demo, clippy and `cargo fmt --check`; `mini`, `embedded`, `wasm32`, Android, HarmonyOS and `x86_64-pc-windows-msvc` build; the SVG snapshot gate regenerates all 394 files byte-for-byte.
+
 ## 2.8.12 (2026-10-20) — feedback closure, single-page tab containers, cheaper frames, Windows link verification
 
 This release closes the remaining defects in `docs/issues/feedback-20261020.md`, makes the tab

@@ -453,10 +453,18 @@ pub fn create_segmented_control(geometry: Rect, text: &str) -> Box<dyn Widget> {
 }
 
 #[cfg(full_widgets)]
-/// Creates a chip with no label of its own. `text` is applied as the control's
-/// label.
+/// Creates a chip carrying `text` as its single item's label.
+///
+/// The factory used to build an **empty** chip and pass `text` to `label()`, which only
+/// reaches a control that publishes a label property — a chip's visible text comes from its
+/// items. The result was a blank pill: the control was present and told its accessible name,
+/// but nothing on screen said what it was.
 pub fn create_chip(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(Chip::new(geometry)))
+    let mut chip = Chip::new(geometry);
+    if !text.is_empty() {
+        chip.set_items(vec![ChipItem::new("chip", text)]);
+    }
+    label(geometry, text, Box::new(chip))
 }
 
 #[cfg(full_widgets)]
@@ -1143,10 +1151,17 @@ pub fn create_tooltip(geometry: Rect, text: &str) -> Box<dyn Widget> {
 }
 
 #[cfg(full_widgets)]
-/// Creates a segmented button group with no segments. `text` is applied as the
-/// control's label.
+/// Creates a segmented button group with one segment labelled `text`.
+///
+/// Empty means a blank stadium: the segments are the control's whole visible content, so a
+/// factory-created one used to paint an outline with nothing in it. One segment states the
+/// affordance and carries the caller's text; a host adds the rest.
 pub fn create_segmented_button(geometry: Rect, text: &str) -> Box<dyn Widget> {
-    label(geometry, text, Box::new(SegmentedButton::new(geometry)))
+    let mut button = SegmentedButton::new(geometry);
+    if !text.is_empty() {
+        button.add_segment(Segment::new(text));
+    }
+    label(geometry, text, Box::new(button))
 }
 
 #[cfg(full_widgets)]

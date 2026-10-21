@@ -17,8 +17,8 @@
 //! (`Intent.ACTION_VIEW`). Sensors and location are deliberately unsupported.
 
 use crate::{
-    validate_url, HapticKind, MobileServices, NotificationRequest, Permission, Service,
-    ServiceError, ShareRequest, Status,
+    validate_url, HapticKind, Insets, MobileServices, NotificationRequest, Orientation, Permission,
+    Service, ServiceError, ShareRequest, Status,
 };
 use jni::objects::{GlobalRef, JObject, JObjectArray, JValue};
 use jni::{JNIEnv, JavaVM};
@@ -148,6 +148,10 @@ impl MobileServices for AndroidServices {
                 }
             }
             Service::Permissions => Status::Available,
+            // Both need the attached Activity's window. A null window is answered as
+            // `Unsupported` by the actions themselves, so the coarse availability is
+            // `Available` on a target that has a binding at all.
+            Service::SafeArea | Service::Orientation => Status::Available,
             Service::Sensors | Service::Location => Status::Unsupported,
         }
     }
@@ -557,6 +561,75 @@ impl MobileServices for AndroidServices {
         })
         .unwrap_or(Err(ServiceError::Unsupported))
     }
+
+    fn safe_area(&self) -> Result<Insets, ServiceError> {
+        with_env(|env, context| {
+            let window = env
+                .call_method(context, "getWindow", "()Landroid/view/Window;", &[])
+                .map_err(|_| ServiceError::Failed)?
+                .l()
+                .map_err(|_| ServiceError::Failed)?;
+            let decor = env
+                .call_method(&window, "getDecorView", "()Landroid/view/View;", &[])
+                .map_err(|_| ServiceError::Failed)?
+                .l()
+                .map_err(|_| ServiceError::Failed)?;
+            let insets = env
+                .call_method(&decor, "getRootWindowInsets", "()Landroid/view/WindowInsets;", &[])
+                .map_err(|_| ServiceError::Failed)?
+                .l()
+                .map_err(|_| ServiceError::Failed)?;
+            // The framework delivers insets after the first layout pass. Zero is the honest
+            // answer before then: inventing a status-bar height would crop content on a device
+            // or a window that has none.
+            if insets.is_null() {
+                return Ok(Insets::ZERO);
+            }
+            Ok(Insets {
+                top: system_inset(env, &insets, "getSystemWindowInsetTop")?,
+                right: system_inset(env, &insets, "getSystemWindowInsetRight")?,
+                bottom: system_inset(env, &insets, "getSystemWindowInsetBottom")?,
+                left: system_inset(env, &insets, "getSystemWindowInsetLeft")?,
+            })
+        })
+        .unwrap_or(Err(ServiceError::Unsupported))
+    }
+
+    fn set_orientation(&self, orientation: Orientation) -> Result<(), ServiceError> {
+        // `ActivityInfo.SCREEN_ORIENTATION_*`: -1 unspecified, 1 portrait, 0 landscape. The
+        // sub-variants (reverse, sensor, locked) are deliberately not exposed; see
+        // [`Orientation`]'s documentation.
+        let requested = match orientation {
+            Orientation::Any => -1,
+            Orientation::Portrait => 1,
+            Orientation::Landscape => 0,
+        };
+        with_env(|env, context| {
+            env.call_method(context, "setRequestedOrientation", "(I)V", &[JValue::Int(requested)])
+                .map(|_| ())
+                .map_err(|_| ServiceError::Failed)
+        })
+        .unwrap_or(Err(ServiceError::Unsupported))
+    }
+}
+
+/// Reads one `WindowInsets.getSystemWindowInset*` value, as a non-negative pixel count.
+///
+/// The four getters are the API-20 spelling and are still present (deprecated) on current
+/// releases. Using them avoids a `Build.VERSION` branch and a second set of JNI signatures for
+/// the API-30 `getInsets(Type)` replacement; a negative value cannot mean an inset and is
+/// clamped rather than passed through.
+fn system_inset(
+    env: &mut JNIEnv<'_>,
+    insets: &JObject<'_>,
+    getter: &str,
+) -> Result<f32, ServiceError> {
+    let value = env
+        .call_method(insets, getter, "()I", &[])
+        .map_err(|_| ServiceError::Failed)?
+        .i()
+        .map_err(|_| ServiceError::Failed)?;
+    Ok(value.max(0) as f32)
 }
 
 fn permission_name(permission: Permission, sdk: i32) -> &'static str {

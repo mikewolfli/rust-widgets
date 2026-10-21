@@ -1536,6 +1536,25 @@ impl Platform for WindowsPlatform {
             // the return value is only used as the hInstance parameter for CreateWindowExW.
             // A null module name is explicitly documented to be valid.
             let hinstance = unsafe { GetModuleHandleW(std::ptr::null()) };
+            // `width`/`height` are a **client** size on every other backend — AppKit's
+            // `contentRect`, GTK's default size, the state backends' surface — and `new_window`
+            // documents them that way. Win32's `CreateWindowExW` takes the *outer* size, so fold
+            // the frame and caption in first. Without this the client came out a title bar shorter
+            // than asked and a bottom-anchored status bar was laid out below the visible area: the
+            // window looked like it had no status bar at all.
+            let mut frame = winapi::shared::windef::RECT {
+                left: 0,
+                top: 0,
+                right: width as i32,
+                bottom: height as i32,
+            };
+            // SAFETY: `frame` is a local `RECT` in client coordinates, which is exactly what
+            // `AdjustWindowRect` documents; it only reads the style and menu flag.
+            unsafe {
+                winapi::um::winuser::AdjustWindowRect(&mut frame, WS_OVERLAPPEDWINDOW, 0);
+            }
+            let outer_width = frame.right - frame.left;
+            let outer_height = frame.bottom - frame.top;
             let hwnd = unsafe {
                 CreateWindowExW(
                     0,
@@ -1544,8 +1563,8 @@ impl Platform for WindowsPlatform {
                     WS_OVERLAPPEDWINDOW | WS_VISIBLE,
                     x,
                     y,
-                    width as i32,
-                    height as i32,
+                    outer_width,
+                    outer_height,
                     null_mut(),
                     null_mut(),
                     hinstance as _,

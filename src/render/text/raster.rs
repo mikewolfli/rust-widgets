@@ -618,6 +618,10 @@ fn outline_in_face(
 }
 
 /// Emits `ch`'s flattened outline using an already-parsed `face`.
+///
+/// Gated with the two selectors that call it: a build with `text-shaping` but no vector face
+/// compiles this module for its types only, and an ungated helper would be dead code there.
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
 fn outline_in_parsed_face(
     ch: char,
     cell: Cell,

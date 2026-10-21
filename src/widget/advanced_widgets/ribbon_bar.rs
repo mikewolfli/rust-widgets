@@ -101,12 +101,18 @@ pub struct RibbonItem {
 
 impl RibbonItem {
     /// Creates a new ribbon item.
+    ///
+    /// The item starts with **no icon**. `icon_text` used to be seeded with the item's own text,
+    /// and the paint path draws its first character as the icon — so a ribbon created without
+    /// explicit icons showed a lone `P` above `Paste`, `B` before `Bold`, and so on. That is a
+    /// duplicated label, not an icon, and it is the first thing a reader sees. An item therefore
+    /// stays text-only until the caller supplies [`RibbonItem::set_icon_text`] or a typed source.
     pub fn new(text: impl Into<String>) -> Self {
         let text = text.into();
         Self {
-            icon_text: text.clone(),
+            icon_text: String::new(),
             icon_source: None,
-            text: text.clone(),
+            text,
             tooltip: String::new(),
             enabled: true,
             checkable: false,
@@ -916,12 +922,15 @@ impl RibbonBar {
                     let fg = if !item.is_enabled() { palette.muted } else { palette.ink };
 
                     if item.is_large() {
-                        // Large: icon text centered, label below
-                        let icon_center =
-                            Point::new(ir.x + ir.width as i32 / 2, ir.y + LARGE_ICON_SIZE / 2);
+                        // Large: icon above, label below. Both are centred on the item and the
+                        // glyph box starts at the origin, so `Center` is the alignment the item
+                        //'s own middle line needs; the old `Left` started every label at the
+                        // item's centre, which is why a large item's text ran past its column.
+                        let item_font = effective_font(self.style());
+                        let mut label_y = ir.y + 2;
                         if let Some(source) = item.icon_source() {
                             let icon_rect = Rect::new(
-                                icon_center.x - LARGE_ICON_SIZE / 2,
+                                ir.x + (ir.width as i32 - LARGE_ICON_SIZE) / 2,
                                 ir.y + 2,
                                 LARGE_ICON_SIZE as u32,
                                 LARGE_ICON_SIZE as u32,
@@ -939,32 +948,36 @@ impl RibbonBar {
                                     ii
                                 );
                             }
-                        } else {
-                            let icon_char = item.icon_text().chars().next().unwrap_or('?');
-                            context.draw_text(
-                                icon_center,
+                            label_y = ir.y + LARGE_ICON_SIZE + 2;
+                        } else if !item.icon_text().is_empty() {
+                            let icon_char = item.icon_text().chars().next().unwrap_or(' ');
+                            let icon_band =
+                                Rect::new(ir.x, ir.y + 2, ir.width, LARGE_ICON_SIZE as u32);
+                            context.draw_text_fitted(
+                                context.text_line(icon_band, item_font),
                                 &icon_char.to_string(),
-                                effective_font(self.style()),
+                                item_font,
                                 palette.accent,
-                                HorizontalAlignment::Left,
+                                HorizontalAlignment::Center,
                             );
+                            label_y = ir.y + LARGE_ICON_SIZE + 2;
                         }
-                        // Label below
-                        let label_y = ir.y + LARGE_ICON_SIZE + 2;
-                        context.draw_text(
-                            Point::new(ir.x + ir.width as i32 / 2, label_y),
+                        let label_band =
+                            Rect::new(ir.x + 2, label_y, ir.width.saturating_sub(4), 16);
+                        context.draw_text_fitted(
+                            context.text_line(label_band, item_font),
                             item.text(),
-                            effective_font(self.style()),
+                            item_font,
                             fg,
-                            HorizontalAlignment::Left,
+                            HorizontalAlignment::Center,
                         );
                     } else {
-                        // Small: icon and text side by side
-                        // The icon and the label share one line box centred in the item, so
-                        // the two rule the same row. Halving `ir.height` put the glyph box's
-                        // top edge on the item's middle line instead of centring the box.
+                        // Small: icon and text side by side. The icon column is reserved only when
+                        // the item actually has an icon; without one the label starts at the
+                        // item's own inset instead of at an empty `SMALL_ICON_SIZE` gap.
                         let item_font = effective_font(self.style());
                         let item_line = context.text_line(*ir, item_font);
+                        let mut label_x = ir.x + 4;
                         if let Some(source) = item.icon_source() {
                             let side = item_line.height.clamp(1, SMALL_ICON_SIZE as u32);
                             let icon_rect = Rect::new(ir.x + 2, item_line.y, side, side);
@@ -981,8 +994,9 @@ impl RibbonBar {
                                     ii
                                 );
                             }
-                        } else {
-                            let icon_char = item.icon_text().chars().next().unwrap_or('?');
+                            label_x = ir.x + SMALL_ICON_SIZE + 4;
+                        } else if !item.icon_text().is_empty() {
+                            let icon_char = item.icon_text().chars().next().unwrap_or(' ');
                             context.draw_text(
                                 Point::new(ir.x + 2, item_line.y),
                                 &icon_char.to_string(),
@@ -990,9 +1004,16 @@ impl RibbonBar {
                                 palette.accent,
                                 HorizontalAlignment::Left,
                             );
+                            label_x = ir.x + SMALL_ICON_SIZE + 4;
                         }
-                        context.draw_text(
-                            Point::new(ir.x + SMALL_ICON_SIZE + 4, item_line.y),
+                        let label_band = Rect::new(
+                            label_x,
+                            item_line.y,
+                            (ir.x + ir.width as i32 - label_x).max(0) as u32,
+                            item_line.height.max(1),
+                        );
+                        context.draw_text_fitted(
+                            label_band,
                             item.text(),
                             item_font,
                             fg,
@@ -1290,7 +1311,7 @@ mod tests {
         let group = ribbon.add_group(tab, "Clipboard");
         let item = ribbon.add_item(tab, group, "Paste");
         let item_ref = ribbon.item_mut(tab, group, item).expect("added ribbon item");
-        assert_eq!(item_ref.icon_text(), "Paste", "the item is seeded with its own text");
+        assert_eq!(item_ref.icon_text(), "", "an item has no icon until one is set");
 
         item_ref.set_icon_source(Some(IconSource::static_geometry(&RING)));
         assert_eq!(item_ref.icon_text(), "", "the typed set replaces the legacy text icon");

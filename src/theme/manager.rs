@@ -1226,6 +1226,86 @@ impl Theme {
         }
         theme
     }
+
+    /// A light palette built from macOS system colours.
+    ///
+    /// # What this is, and is not
+    ///
+    /// A **host-facing preset**, not the library's default. Registering it by default would
+    /// change every control and every SVG snapshot; the palette is a style choice an
+    /// application makes, and [`Theme::default`] stays the neutral light theme.
+    ///
+    /// The tokens map Apple's semantic colours onto this crate's roles: `systemBlue` is
+    /// `primary`, `label` / `secondaryLabel` are `foreground` / `secondary`, `separator` is
+    /// `outline`, and the window/card/raised greys are the three surface roles. The corner
+    /// radius is AppKit's 6 px for push buttons and text fields; surfaces stay flat because
+    /// macOS controls are flat.
+    pub fn macos_light() -> Self {
+        let mut theme =
+            Theme { name: "macos-light".to_string(), flat_surfaces: true, ..Theme::default() };
+        theme.appearance = AppearanceMode::Light;
+        theme.borders = Borders { width: 1, radius: 6, shadow: true };
+        theme.colors = Colors {
+            background: Color::rgb(236, 236, 236),
+            foreground: Color::rgb(29, 29, 31),
+            primary: Color::rgb(0, 122, 255),
+            secondary: Color::rgb(110, 110, 115),
+            // macOS uses the same system blue for controls and the accent; the default
+            // preset's orange accent made sliders and progress bars look like warnings.
+            accent: Color::rgb(0, 122, 255),
+            error: Color::rgb(255, 59, 48),
+            warning: Color::rgb(255, 204, 0),
+            success: Color::rgb(52, 199, 89),
+            disabled: Color::rgb(199, 199, 204),
+            info: Color::rgb(50, 173, 230),
+            outline: Color::rgb(142, 142, 147),
+            outline_variant: Color::rgb(209, 209, 214),
+            scrim: Color::rgba(0, 0, 0, 92),
+            surface_container: Color::rgb(245, 245, 247),
+            surface_container_high: Color::rgb(255, 255, 255),
+            inverse_surface: Color::rgb(29, 29, 31),
+            on_inverse_surface: Color::rgb(245, 245, 247),
+        };
+        // The state table (hover/pressed/checked fills) is derived from a palette, so replacing
+        // the palette without re-deriving it would leave those fills describing the replaced
+        // colours — the same drift `Theme::dark` guards against.
+        theme.overrides.styles = crate::theme::preset_states::preset_state_overrides(&theme.colors);
+        theme
+    }
+
+    /// A dark palette built from macOS system colours.
+    ///
+    /// The dark counterpart of [`Theme::macos_light`], built from [`Theme::dark`] so fonts,
+    /// spacing and the state table are the dark preset's. `systemBlue` in dark mode is
+    /// `#0A84FF` (Apple lightens it so it stays legible on `#1E1E1E`), and the three greys are
+    /// the vibrancy layers a dark window, card and raised surface use.
+    pub fn macos_dark() -> Self {
+        let mut theme =
+            Theme { name: "macos-dark".to_string(), flat_surfaces: true, ..Theme::dark() };
+        theme.appearance = AppearanceMode::Dark;
+        theme.borders = Borders { width: 1, radius: 6, shadow: true };
+        theme.colors = Colors {
+            background: Color::rgb(30, 30, 30),
+            foreground: Color::rgb(245, 245, 247),
+            primary: Color::rgb(10, 132, 255),
+            secondary: Color::rgb(152, 152, 157),
+            accent: Color::rgb(10, 132, 255),
+            error: Color::rgb(255, 69, 58),
+            warning: Color::rgb(255, 214, 10),
+            success: Color::rgb(48, 209, 88),
+            disabled: Color::rgb(72, 72, 74),
+            info: Color::rgb(100, 210, 255),
+            outline: Color::rgb(142, 142, 147),
+            outline_variant: Color::rgb(58, 58, 60),
+            scrim: Color::rgba(0, 0, 0, 120),
+            surface_container: Color::rgb(44, 44, 46),
+            surface_container_high: Color::rgb(58, 58, 60),
+            inverse_surface: Color::rgb(245, 245, 247),
+            on_inverse_surface: Color::rgb(29, 29, 31),
+        };
+        theme.overrides.styles = crate::theme::preset_states::preset_state_overrides(&theme.colors);
+        theme
+    }
 }
 
 #[cfg(all(test, feature = "desktop", widgets_unstripped))]
@@ -1378,5 +1458,47 @@ mod environment_appearance_tests {
 
         drop(previous);
         uninstall_environment();
+    }
+}
+
+#[cfg(all(test, feature = "desktop", widgets_unstripped))]
+mod macos_preset_tests {
+    use super::*;
+
+    /// The presets state their appearance and the semantic roles the demos rely on.
+    ///
+    /// What this pins: the presets are the **light/dark pair** (`set_appearance` picks by the
+    /// declared appearance, not by luminance), the action colour is Apple's system blue in each
+    /// appearance, and surfaces are flat with the AppKit corner radius. A change to any of those
+    /// silently re-skins three demos, so it is worth a failing test.
+    #[test]
+    fn the_macos_presets_state_their_appearance_and_roles() {
+        let light = Theme::macos_light();
+        assert_eq!(light.name, "macos-light");
+        assert_eq!(light.appearance, AppearanceMode::Light);
+        assert_eq!(light.colors.primary, Color::rgb(0, 122, 255));
+        assert_eq!(light.colors.accent, light.colors.primary, "accent is system blue, not orange");
+        assert!(light.flat_surfaces, "macOS controls are flat");
+        assert_eq!(light.borders.radius, 6);
+
+        let dark = Theme::macos_dark();
+        assert_eq!(dark.name, "macos-dark");
+        assert_eq!(dark.appearance, AppearanceMode::Dark);
+        assert_eq!(dark.colors.primary, Color::rgb(10, 132, 255));
+        assert_eq!(dark.colors.accent, dark.colors.primary);
+        assert!(dark.flat_surfaces);
+
+        // The presets must not be the library default: registering one is a host decision, and
+        // a default palette silently swapped for a macOS one would move every SVG snapshot.
+        assert_ne!(
+            Theme::default().colors.primary,
+            light.colors.primary,
+            "the default light theme must stay neutral"
+        );
+        assert_ne!(
+            Theme::dark().colors.primary,
+            dark.colors.primary,
+            "the built-in dark preset must stay as it was"
+        );
     }
 }

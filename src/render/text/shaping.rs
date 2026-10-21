@@ -33,6 +33,12 @@
 //! opt-in path, and the alternative is shared mutable state in the one place the three
 //! constraints say there must be none.
 
+// `char_advance` spells its single-character call as `c.to_string()`. `ToString` is in the std
+// prelude but not in the no-std one, so a profile that compiles the shaper without `std`
+// (`mini,runtime-fonts`) has to name the trait. The alias is the crate's convention for that —
+// see `compat::MiniToString`'s comment.
+#[cfg(alloc_frugal)]
+use crate::compat::MiniToString;
 use crate::compat::Vec;
 use crate::core::Font;
 use crate::render::text::font_assets::{active_faces, FaceBytes};
@@ -197,7 +203,7 @@ fn cluster_advances_in_face(
     // family: a label's base direction is a property of its content, and the reorder itself is
     // `bidi`'s job and happens later — shaping works in logical order.
     buffer.guess_segment_properties();
-    let output = rustybuzz::shape(parsed, &[], buffer);
+    let output = rustybuzz::shape(parsed, ligature_free_features(), buffer);
 
     // The pixel size of one font unit. An `em` is the font size, so a unit is
     // `font_size / units_per_em` logical pixels — the real advance, rather than a per-cluster
@@ -214,6 +220,38 @@ fn cluster_advances_in_face(
         }
     }
     Some(advances)
+}
+
+/// The shaping features this renderer can honour: **none of the ligatures**.
+///
+/// # Why standard ligatures are switched off
+///
+/// This text pipeline draws one *cluster* at a time from the cluster's own text
+/// ([`crate::render::text::line::for_each_cluster`] splits by scalar, not by
+/// shaped glyph). A ligature is one glyph covering two clusters: the shaper
+/// credits its advance to the cluster the glyph reports, and the other cluster is
+/// then drawn into a `max(1)`-pixel box — so `fib` painted as `f b`, with the `i`
+/// invisible and a gap where the ligature's extra advance sat. Measured in the
+/// code-editor demo: every `fi` in the sample source lost its `i`, in the tree
+/// view's file names as well as in the buffer, and the defect predates the
+/// editor work.
+///
+/// Turning the standard ligatures off is the fix the architecture supports: after
+/// it every glyph belongs to exactly one cluster, which is also the contract the
+/// editor's caret geometry and the cluster advances rely on. Editors that want
+/// ligatures need glyph-level painting, which is a different renderer — not a
+/// feature flag.
+///
+/// `kern` stays on: kerning moves a glyph within its own cluster and is honoured.
+fn ligature_free_features() -> &'static [rustybuzz::Feature] {
+    const TAG_LIGA: rustybuzz::ttf_parser::Tag = rustybuzz::ttf_parser::Tag::from_bytes(b"liga");
+    const TAG_CLIG: rustybuzz::ttf_parser::Tag = rustybuzz::ttf_parser::Tag::from_bytes(b"clig");
+    /// A global "off" feature: value 0 over the whole buffer.
+    const fn off(tag: rustybuzz::ttf_parser::Tag) -> rustybuzz::Feature {
+        rustybuzz::Feature { tag, value: 0, start: 0, end: u32::MAX }
+    }
+    const FEATURES: [rustybuzz::Feature; 2] = [off(TAG_LIGA), off(TAG_CLIG)];
+    &FEATURES
 }
 
 /// A shaper backed by a real font's layout tables.
@@ -272,7 +310,7 @@ impl RustybuzzShaper {
         let mut buffer = rustybuzz::UnicodeBuffer::new();
         buffer.push_str(text);
         buffer.guess_segment_properties();
-        let output = rustybuzz::shape(&parsed, &[], buffer);
+        let output = rustybuzz::shape(&parsed, ligature_free_features(), buffer);
 
         let unit_px = font_size * scale / units_per_em;
         let mut glyph_ids = Vec::with_capacity(output.len());

@@ -40,7 +40,7 @@
 
 use crate::core::{deg_to_rad, Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::render::RenderContext;
+use crate::render::{RenderContext, TEXT_FIT_MARGIN};
 use crate::signal::Signal1;
 use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -677,8 +677,19 @@ impl RadarChart {
             // Origin is the glyph box's top edge, so centring on the spoke is half the line
             // box; the removed `+ ascent / 2` sat the label half a line low on the anchor.
             let text_y = anchor_y - metrics.height as i32 / 2;
-            let bounds =
-                label_box(text_x, text_y, metrics.width as i32, metrics.height as i32, rect);
+            // The box is the *measured* width **plus both fit margins**. `draw_text_fitted`
+            // insets three pixels at each end, so handing it the bare measured width asks it
+            // to fit the label into 6 px less than the label needs — which it answers by
+            // truncating to `...`. Every axis label on the census canvas was three dots for
+            // exactly that reason, which reads as a broken chart rather than a tight one.
+            let margin = TEXT_FIT_MARGIN as i32;
+            let bounds = label_box(
+                text_x - margin,
+                text_y,
+                metrics.width as i32 + 2 * margin,
+                metrics.height as i32,
+                rect,
+            );
             context.draw_text_fitted(bounds, label, &font, label_ink, HorizontalAlignment::Left);
         }
     }

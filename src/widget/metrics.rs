@@ -1188,13 +1188,15 @@ pub mod dimensions {
     /// The height of one `color_history` row: 20, the swatch's own box.
     pub const COLOR_HISTORY_ROW_HEIGHT: u32 = COLOR_HISTORY_SWATCH;
 
-    /// A `refresh_control`'s pull indicator height: 40.
+    /// A `refresh_control`'s pull indicator height: 56.
     ///
     /// The reveal panel is a **fixed strip** at the top of the control, so a pull in
-    /// a 400 px list and a pull in the census cell open the same 40 px band. It was
+    /// a 400 px list and a pull in the census cell open the same band. It was
     /// `40` when refreshing and `0` otherwise, with the control's own rectangle
-    /// stretching beneath it.
-    pub const REFRESH_INDICATOR_HEIGHT: u32 = 40;
+    /// stretching beneath it — but the spinner and its `Loading...` line do not both fit in
+    /// 40: the label hangs from the strip's middle line and its lower half fell outside the
+    /// band. 56 is the spinner (20) plus the label row and its padding.
+    pub const REFRESH_INDICATOR_HEIGHT: u32 = 56;
 
     /// The step between visual-density levels: 4 logical px per unit.
     pub const DENSITY_STEP: u32 = 4;

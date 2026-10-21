@@ -1298,6 +1298,18 @@ impl RailItem {
     }
 }
 
+/// The widest the rail's own strip is drawn.
+///
+/// A navigation rail is a fixed-width edge strip (Material's spec is 80 dp), so the
+/// control's rectangle is the *room offered*, not the rail's width. Painting the whole
+/// rectangle made the rail a full-width panel and left its items against the far-left edge.
+const RAIL_MAX_WIDTH: u32 = 80;
+/// The vertical pitch of one rail destination.
+///
+/// Named once because the paint and the hit test both step by it; two literals would let
+/// the click target drift from the destination it describes.
+const RAIL_ITEM_HEIGHT: u32 = 72;
+
 /// Material Design navigation rail for tablets (BLUE11 R10.22).
 ///
 /// A vertically stacked set of destinations with one selected at a time. The
@@ -1518,13 +1530,15 @@ impl Draw for MaterialNavigationRail {
             .filter(|resolved| *resolved != rail)
             .unwrap_or_else(|| rail.blend(&secondary, 0.45));
 
-        let rail_width = rect.width;
+        let rail_width = rect.width.min(RAIL_MAX_WIDTH);
 
         // ── Rail background ──
         //
         // Painted before the empty check: a rail with nothing in it is still a rail, and hiding it
-        // made the control invisible rather than empty.
-        context.fill_rect(rect, rail);
+        // made the control invisible rather than empty. The strip is at most `RAIL_MAX_WIDTH` wide:
+        // a navigation rail is a fixed-width edge strip, and painting the caller's whole rectangle
+        // made it a full-width panel with the items stranded at its left edge.
+        context.fill_rect(Rect::new(rect.x, rect.y, rail_width, rect.height), rail);
         context.draw_line(
             Point::new(rect.x + rail_width as i32 - 1, rect.y),
             Point::new(rect.x + rail_width as i32 - 1, rect.y + rect.height as i32),
@@ -1535,7 +1549,7 @@ impl Draw for MaterialNavigationRail {
             return;
         }
 
-        let item_height = 72u32;
+        let item_height = RAIL_ITEM_HEIGHT;
         let icon_font = role_font(&style, 14.0);
         let label_font = role_font(&style, 12.0);
 
@@ -1565,45 +1579,55 @@ impl Draw for MaterialNavigationRail {
                 );
             }
 
-            // ── Icon (rendered as text placeholder) ──
+            // ── Icon ──
+            //
+            // A named icon (`home`, `search`, …) is resolved to the bundled outline. The text
+            // path was the control's *only* icon rendering, so a rail built with icon names
+            // painted the word `home` above the label `Home` — a duplicated label, not an icon.
+            // The glyph fallback is kept for a caller that passes a character.
             let icon_color = if is_selected { primary } else { secondary };
             let typed_source = self.item_icon_sources.get(i).copied().flatten();
-            let mut icon_metrics = context
-                .measure_text(if typed_source.is_some() { "M" } else { &item.icon }, &icon_font);
-            if typed_source.is_some() {
-                icon_metrics.width = icon_metrics.height.max(1);
-            }
-            let icon_x = rect.x + (rail_width as i32 - icon_metrics.width as i32) / 2;
-            let icon_y = item_y + 20 + icon_metrics.height as i32 / 2;
+            let icon_side = 24u32;
+            let icon_rect = Rect::new(
+                rect.x + (rail_width as i32 - icon_side as i32) / 2,
+                item_y + 16,
+                icon_side,
+                icon_side,
+            );
             if let Some(source) = typed_source {
-                let side = icon_metrics.height.clamp(1, 24);
-                let icon_rect = Rect::new(icon_x, item_y + 12, side, side);
                 if let Err(error) =
                     crate::widget::paint_icon(context, source.into(), icon_rect, icon_color)
                 {
                     log::warn!("navigation rail item {i} icon failed: {error:?}");
                 }
-            } else {
-                context.draw_text(
-                    Point::new(icon_x, icon_y),
+            } else if !crate::widget::draw_icon_named(context, icon_rect, icon_color, &item.icon) {
+                // A character rather than a registered name: draw it as a mark in the same box.
+                context.draw_text_fitted(
+                    icon_rect,
                     &item.icon,
                     &icon_font,
                     icon_color,
-                    HorizontalAlignment::Left,
+                    HorizontalAlignment::Center,
                 );
             }
 
             // ── Label ──
+            // Centred in a band whose top is the label's top edge: the origin is the glyph box,
+            // so `item_y + 44 + height / 2` put every label half a line low.
             let label_color = if is_selected { primary } else { secondary };
             let label_metrics = context.measure_text(&item.label, &label_font);
-            let label_x = rect.x + (rail_width as i32 - label_metrics.width as i32) / 2;
-            let label_y = item_y + 44 + label_metrics.height as i32 / 2;
-            context.draw_text(
-                Point::new(label_x, label_y),
+            let label_band = Rect::new(
+                rect.x + 4,
+                item_y + 44,
+                rail_width.saturating_sub(8),
+                label_metrics.height.max(1),
+            );
+            context.draw_text_fitted(
+                label_band,
                 &item.label,
                 &label_font,
                 label_color,
-                HorizontalAlignment::Left,
+                HorizontalAlignment::Center,
             );
         }
     }
@@ -1630,10 +1654,15 @@ impl EventHandler for MaterialNavigationRail {
                     return;
                 }
 
-                let item_height = 72u32;
+                let item_height = RAIL_ITEM_HEIGHT;
                 for i in 0..self.items.len() {
                     let item_y = rect.y + (i as u32 * item_height) as i32;
-                    let item_rect = crate::core::Rect::new(rect.x, item_y, rect.width, item_height);
+                    let item_rect = crate::core::Rect::new(
+                        rect.x,
+                        item_y,
+                        rect.width.min(RAIL_MAX_WIDTH),
+                        item_height,
+                    );
                     if item_rect.contains_point(*pos) {
                         if let Event::MouseRelease { .. } = event {
                             self.set_selected(i);
@@ -2139,7 +2168,6 @@ mod tests {
             grid: 24,
             paths: &["M2-2H22V-22H2Z M7-7V-17H17V-7Z"],
         };
-
         let mut rail = MaterialNavigationRail::new(Rect::new(0, 0, 80, 400));
         rail.add_item("legacy", "Home");
         assert_eq!(
@@ -2154,5 +2182,31 @@ mod tests {
             rail.set_item_icon_source(0, None),
             Err(IconItemError::IndexOutOfBounds { index: 0, len: 0 })
         );
+    }
+
+    /// The rail is an edge strip, and only presses inside that strip select an item.
+    ///
+    /// The strip used to be `rect.width`, so a rail offered a 240 px cell painted a
+    /// full-width panel and a press anywhere in the cell selected the item under that y.
+    #[test]
+    fn the_rail_strip_is_fixed_width_and_only_selects_inside_it() {
+        let mut rail = MaterialNavigationRail::new(Rect::new(0, 0, 240, 300));
+        rail.add_item("home", "Home");
+        rail.add_item("search", "Search");
+        assert_eq!(rail.selected(), 0);
+
+        // Inside the 80 px strip, on the second item's row (72 px tall).
+        rail.handle_event(&crate::event::Event::MouseRelease {
+            pos: Point::new(20, 80),
+            button: 1,
+        });
+        assert_eq!(rail.selected(), 1, "a press on the second destination selects it");
+
+        // Outside the strip but on the same row: the control's rectangle is room, not rail.
+        rail.handle_event(&crate::event::Event::MouseRelease {
+            pos: Point::new(200, 80),
+            button: 1,
+        });
+        assert_eq!(rail.selected(), 1, "a press past the strip's edge selects nothing");
     }
 }

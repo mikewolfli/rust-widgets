@@ -18,12 +18,63 @@ pub enum Service {
     Share,
     /// Open a URL or a custom scheme (deep link).
     DeepLink,
+    /// The window's safe-area insets (notch, status bar, home indicator).
+    SafeArea,
+    /// Lock the window to portrait or landscape.
+    Orientation,
     /// Device sensors. **Deliberately unsupported by this crate**: the widget library does not
     /// hold sensor/health permissions.
     Sensors,
     /// Geographic location. **Deliberately unsupported by this crate**: location belongs to the
     /// application, which owns the permission prompt and the privacy disclosure.
     Location,
+}
+
+/// A window's safe-area insets, in the platform's own units.
+///
+/// Android reports pixels, iOS points and OpenHarmony vp; the values are passed through
+/// unchanged rather than rescaled, because the only code that can scale them correctly is the
+/// host that owns the display density. A layout uses them as "content must stay inside the
+/// rectangle this much smaller than the window".
+///
+/// The type is `Copy` and has a `ZERO` constant, so a host can treat "no inset reported" and
+/// "no inset needed" the same way without an `Option` at every call site.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Insets {
+    /// Inset at the top edge (status bar, notch).
+    pub top: f32,
+    /// Inset at the right edge (rounded corner in landscape).
+    pub right: f32,
+    /// Inset at the bottom edge (home indicator, navigation bar).
+    pub bottom: f32,
+    /// Inset at the left edge.
+    pub left: f32,
+}
+
+impl Insets {
+    /// No inset on any edge.
+    pub const ZERO: Self = Self { top: 0.0, right: 0.0, bottom: 0.0, left: 0.0 };
+
+    /// `true` when every edge is zero.
+    pub fn is_zero(&self) -> bool {
+        self.top == 0.0 && self.right == 0.0 && self.bottom == 0.0 && self.left == 0.0
+    }
+}
+
+/// A requested screen orientation.
+///
+/// Three values, not the platform's full enum: every platform expresses "portrait" and
+/// "landscape" the same way, while the sub-variants (`reversePortrait`, `sensorLandscape`, …)
+/// differ per OS and would either be lossy or need a second, platform-shaped enum. A host that
+/// needs a sub-variant locks the coarse axis here and refines in its manifest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Orientation {
+    /// Let the system decide (the platform's `unspecified`/`any` value).
+    Any,
+    /// Portrait only.
+    Portrait,
+    /// Landscape only.
+    Landscape,
 }
 
 /// The three states an application service can be in.
@@ -133,6 +184,17 @@ pub trait MobileServices: Send + Sync {
     ///
     /// `javascript:` and `data:` are refused: they execute content rather than open a handler.
     fn open_url(&self, url: &str) -> Result<(), ServiceError>;
+
+    /// Reads the window's current safe-area insets.
+    ///
+    /// Returns [`Insets::ZERO`] when the platform reports none (a desktop-sized window, or
+    /// insets not yet delivered). Sealed before the first layout pass, a zero answer is the
+    /// only honest one — inventing a status-bar height would crop content on a device without
+    /// a status bar.
+    fn safe_area(&self) -> Result<Insets, ServiceError>;
+
+    /// Locks the window to `orientation`, or releases the lock with [`Orientation::Any`].
+    fn set_orientation(&self, orientation: Orientation) -> Result<(), ServiceError>;
 
     /// Sensor access. Always `Err(Unsupported)` in this crate; see [`Service::Sensors`].
     fn sensors(&self) -> Result<(), ServiceError> {

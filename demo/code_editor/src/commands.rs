@@ -21,7 +21,7 @@
 
 use rust_widgets::app::CustomWidgetHandle;
 use rust_widgets::shortcut::{Key, Modifiers, Shortcut};
-use rust_widgets::widget::special_widgets::code_editor::CodeEditor;
+use rust_widgets::widget::special_widgets::code_editor::{CodeEditor, MarkerSeverity};
 
 /// An action this demo exposes in its menus and tool bar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -103,6 +103,24 @@ impl Command {
             TriggerCompletion => "Complete",
             PageUp => "Page Up",
             PageDown => "Page Down",
+        }
+    }
+
+    /// Compact label for the toolbar, where horizontal space is the scarce
+    /// resource: the native button adds its own padding, so the full menu label
+    /// ("Toggle Comment") clips to "Toggle Comm..." in a 140 px button.
+    ///
+    /// Only used by the toolbar; menus keep the full [`Self::label`].
+    pub fn toolbar_label(self) -> &'static str {
+        use Command::*;
+        match self {
+            ToggleComment => "Comment",
+            AddCursorBelow => "+Cursor",
+            AddCursorAbove => "+Cursor Up",
+            SortLines => "Sort",
+            OpenFind => "Find",
+            OpenReplace => "Replace",
+            other => other.label(),
         }
     }
 
@@ -274,13 +292,21 @@ pub fn status_line(editor: &CustomWidgetHandle) -> Option<String> {
     editor.read(|widget| {
         let editor = (widget as &dyn std::any::Any).downcast_ref::<CodeEditor>()?;
         let (line, column) = editor.cursor();
-        let modified = if editor.is_modified() { " •" } else { "" };
+        let modified = if editor.is_modified() { " *" } else { "" };
+        // The diagnostic tally lives here because the editor's own status row is
+        // hidden in this demo (the window owns the single status bar).
+        let errors = editor.marker_count(MarkerSeverity::Error);
+        let warnings = editor.marker_count(MarkerSeverity::Warning);
+        let infos = editor.marker_count(MarkerSeverity::Info);
         Some(format!(
-            "{}  |  Ln {}, Col {}  |  {} lines{}",
+            "{}  |  Ln {}, Col {}  |  {} lines  |  E{} W{} I{}{}",
             editor.language_name(),
             line + 1,
             column + 1,
             editor.line_count(),
+            errors,
+            warnings,
+            infos,
             modified
         ))
     })?

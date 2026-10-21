@@ -14,6 +14,9 @@
 //! The set of installed fonts changes only when the host installs one, which is not a state this
 //! library observes; a caller that has just installed a font can ask
 //! [`refresh_system_fonts`] to drop the snapshot.
+//!
+//! One policy question lives here too, because it needs the snapshot: which installed family a host
+//! should register for full CJK coverage — see [`register_system_cjk_font`].
 
 use crate::compat::{OnceLock, String, ToString, Vec};
 use crate::platform::SystemFont;
@@ -127,6 +130,56 @@ pub fn register_family(family: &str) -> bool {
     crate::render::text::register_face(name, bytes)
 }
 
+/// The family names a desktop host most often ships for Simplified Chinese UI text.
+///
+/// Ordered from the face a UI would choose first to the broad fallback. The list is **data**:
+/// each backend's [`system_fonts`] reports which of these are actually installed, so nothing here
+/// branches on the operating system. It exists because the compiled CJK face is a *subset* of
+/// U+4E00..U+9FFF (`tools/cjk_vector_codepoints.txt`), and a host whose UI text goes beyond that
+/// subset has to name the installed family itself.
+#[cfg(all(feature = "runtime-fonts", not(alloc_frugal)))]
+pub const SYSTEM_CJK_FAMILIES: &[&str] = &[
+    "Noto Sans CJK SC",
+    "Noto Sans SC",
+    "Source Han Sans SC",
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Microsoft YaHei",
+    "WenQuanYi Micro Hei",
+    "Droid Sans Fallback",
+];
+
+/// Registers the first installed family from [`SYSTEM_CJK_FAMILIES`] and returns its name.
+///
+/// Returns `None` when none of the candidates is installed (or the backend reports names without
+/// readable files, as AppKit does). A `None` is worth reporting rather than ignoring: the compiled
+/// face covers only part of the CJK block, so without an installed face the rest renders as tofu.
+///
+/// # Two consequences worth knowing
+///
+/// * **A registered face is consulted first**, for every character it covers — that is
+///   [`register_face`](crate::render::text::register_face)'s documented precedence. A CJK family
+///   also carries Latin glyphs, so the UI's Latin text will be drawn (and measured) by this family
+///   rather than by the compiled Latin face. That is one consistent typography choice, not a bug,
+///   but it is a visible change and the reason this is an opt-in call rather than an automatic
+///   fallback.
+/// * **A font collection resolves to its first face.** The registered bytes are a `.ttc` on most
+///   hosts, and the renderer parses index 0. For Noto Sans CJK that is the JP face: it covers the
+///   same codepoints, so nothing is tofu, but a few glyphs take the JP default form. Selecting a
+///   sub-face would need a face index in `FaceBytes` and at every parse site, which is a larger
+///   change than this entry point; until then, a single-face family (Droid Sans Fallback) is the
+///   choice for a host that needs SC defaults exactly.
+///
+/// # Why this is a selector, not a second registration path
+///
+/// The reading, leaking, and registering is [`register_family`]'s job; this function only decides
+/// *which* family to ask for. Keeping one implementation means a fix to the file-reading or
+/// replacement rules cannot leave this caller behind.
+#[cfg(all(feature = "runtime-fonts", not(alloc_frugal)))]
+pub fn register_system_cjk_font() -> Option<String> {
+    SYSTEM_CJK_FAMILIES.iter().find(|family| register_family(family)).map(|family| (*family).into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,6 +198,47 @@ mod tests {
     #[test]
     fn an_unknown_family_is_not_registered() {
         assert!(!register_family("This Family Does Not Exist 12345"));
+    }
+
+    /// Whatever this host has, a reported registration must be visible in the face registry: a
+    /// `Some("X")` that did not put `X` in the list would be exactly the "reported success for
+    /// something that did not happen" failure the project rules forbid. `None` is a legitimate
+    /// answer on a host with no CJK face, so the assertion is conditional on the return value.
+    ///
+    /// The second half is the end-to-end check the demo depends on: a Han character the compiled
+    /// subset does not carry (U+7A97 窗 is past the subset's `U+4E00..=U+51E7` range) must resolve
+    /// to the face just registered, not to the subset face and not to tofu.
+    #[cfg(all(feature = "runtime-fonts", not(alloc_frugal)))]
+    #[test]
+    fn a_reported_cjk_registration_is_actually_in_the_registry() {
+        // The registry is process-wide and `cargo test` runs tests in parallel; the same lock the
+        // registry's own tests take keeps this sequence from interleaving with a `clear_faces`.
+        let _guard = crate::render::text::runtime_fonts::test_lock();
+        let registered = register_system_cjk_font();
+        let Some(family) = registered else {
+            // No installed CJK face on this host: the refusal path is the whole contract here.
+            return;
+        };
+        let (faces, len) = crate::render::text::runtime_fonts::active_runtime_faces();
+        assert!(
+            faces[..len].iter().any(|face| face.name.eq_ignore_ascii_case(&family)),
+            "reported `{family}` but the registry holds {:?}",
+            faces[..len].iter().map(|face| face.name).collect::<Vec<_>>()
+        );
+
+        // Outside the compiled subset, so only a registered face can answer.
+        let face = crate::render::text::font_assets::face_for_char('窗')
+            .expect("a registered CJK face must cover U+7A97");
+        assert!(
+            face.name.eq_ignore_ascii_case(&family),
+            "U+7A97 resolved to `{}`, not the registered `{family}`",
+            face.name
+        );
+
+        // Leave the process as this test found it. The registry is global, and a face left behind
+        // would answer for every later test that asks which face covers a Han character (two of
+        // `raster`'s tests assert exactly that).
+        crate::render::text::clear_faces();
     }
 
     #[cfg(feature = "text-shaping")]

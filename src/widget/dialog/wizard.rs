@@ -625,60 +625,81 @@ impl Draw for WizardDialog {
         let content_rect = Rect::new(rect.x, content_y, rect.width, content_height);
         context.fill_rect(content_rect, content_fill);
         if !self.steps.is_empty() {
+            // The well can be shorter than the text the current step asks for: a 120 px
+            // wizard reserves 50 px for the indicator and ~40 px for the navigation row, and a
+            // 16 pt title plus the "Step n of m" line does not fit in what is left. The title
+            // was drawn at a fixed `+ 8` and unbounded, so it crossed the separator that marks
+            // the well's bottom edge — the heading appeared to be underlined by the rule. Each
+            // label is now bounded by the well and omitted when the well has no room for it.
+            let well_top = content_rect.y;
+            let well_bottom = content_rect.y + content_rect.height as i32;
+            let info_font = Font::new("Arial", 11.0, false, false);
+            let info_text = format!("Step {} of {}", self.current_step + 1, self.steps.len());
+            let info_metrics = context.measure_text(&info_text, &info_font);
+            let info_h = info_metrics.height.max(1) as i32;
             // Step title in content area
             let title_font = Font::bold("Arial", 16.0);
             let title_metrics =
                 context.measure_text(&self.steps[self.current_step].title, &title_font);
-            context.draw_text_fitted(
-                Rect::new(
-                    rect.x + 12,
-                    content_rect.y + 8,
-                    rect.width.saturating_sub(24),
-                    title_metrics.height.max(1),
-                ),
-                &self.steps[self.current_step].title,
-                &title_font,
-                ink,
-                HorizontalAlignment::Left,
-            );
+            let title_natural = title_metrics.height.max(1) as i32;
+            // The step title is the content a reader needs; "Step n of m" restates the numbered
+            // indicator above. So the info line is what yields when the well cannot hold both,
+            // rather than the title being squeezed to nothing.
+            let both_fit = well_top + 6 + title_natural + info_h + 4 <= well_bottom;
 
-            // Optional label
-            if self.steps[self.current_step].optional {
-                let opt_font = Font::new("Arial", 11.0, false, true);
-                let opt_metrics = context.measure_text("(Optional step)", &opt_font);
+            let title_top = (well_top + 6).min(well_bottom);
+            let title_room = if both_fit {
+                (well_bottom - title_top - info_h - 4).max(0)
+            } else {
+                (well_bottom - title_top).max(0)
+            } as u32;
+            let title_h = (title_natural as u32).min(title_room);
+            if title_h > 2 {
                 context.draw_text_fitted(
-                    Rect::new(
-                        rect.x + 12,
-                        content_rect.y + 30,
-                        rect.width.saturating_sub(24),
-                        opt_metrics.height.max(1),
-                    ),
-                    "(Optional step)",
-                    &opt_font,
+                    Rect::new(rect.x + 12, title_top, rect.width.saturating_sub(24), title_h),
+                    &self.steps[self.current_step].title,
+                    &title_font,
+                    ink,
+                    HorizontalAlignment::Left,
+                );
+
+                // Optional label, on the row below the title and only when that row is inside
+                // the well.
+                if self.steps[self.current_step].optional {
+                    let opt_font = Font::new("Arial", 11.0, false, true);
+                    let opt_metrics = context.measure_text("(Optional step)", &opt_font);
+                    let opt_top = title_top + title_h as i32 + 2;
+                    let opt_h = opt_metrics.height.max(1) as i32;
+                    if opt_top + opt_h <= well_bottom - (if both_fit { info_h + 4 } else { 0 }) {
+                        context.draw_text_fitted(
+                            Rect::new(
+                                rect.x + 12,
+                                opt_top,
+                                rect.width.saturating_sub(24),
+                                opt_h as u32,
+                            ),
+                            "(Optional step)",
+                            &opt_font,
+                            ink.blend(&surface, 0.45),
+                            HorizontalAlignment::Left,
+                        );
+                    }
+                }
+            }
+
+            // Current step info. Anchored to the well's own bottom edge, so it follows the
+            // band rather than a fixed offset from the frame that the button row shares. It is
+            // omitted when the well is too short to hold it without crossing the title.
+            let info_y = (well_bottom - info_h).max(well_top);
+            if both_fit && info_y >= title_top + title_h as i32 + 2 {
+                context.draw_text_fitted(
+                    Rect::new(rect.x + 12, info_y, rect.width.saturating_sub(24), info_h as u32),
+                    &info_text,
+                    &info_font,
                     ink.blend(&surface, 0.45),
                     HorizontalAlignment::Left,
                 );
             }
-
-            // Current step info. Anchored to the well's own bottom edge, so it follows the
-            // band rather than a fixed offset from the frame that the button row shares.
-            let info_font = Font::new("Arial", 11.0, false, false);
-            let info_text = format!("Step {} of {}", self.current_step + 1, self.steps.len());
-            let info_metrics = context.measure_text(&info_text, &info_font);
-            let info_y = (content_rect.y + content_rect.height as i32 - info_metrics.height as i32)
-                .max(content_rect.y);
-            context.draw_text_fitted(
-                Rect::new(
-                    rect.x + 12,
-                    info_y,
-                    rect.width.saturating_sub(24),
-                    info_metrics.height.max(1),
-                ),
-                &info_text,
-                &info_font,
-                ink.blend(&surface, 0.45),
-                HorizontalAlignment::Left,
-            );
         } else {
             // Empty content area. Drawn inside the well's two rows so a 120 px wizard no
             // longer stacks this above the first navigation button.

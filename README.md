@@ -30,7 +30,7 @@ services at all.
 
 ```toml
 [dependencies]
-rust_widgets = "2.8.12"
+rust_widgets = "2.8.13"
 ```
 
 Choose **exactly one** device profile. They are mutually exclusive: `mini` and `embedded` compile
@@ -38,11 +38,11 @@ parts of the crate *out*, so pairing one with `desktop` is not a lowest common d
 a build that cannot work.
 
 ```toml
-rust_widgets = { version = "2.8.12", features = ["desktop"] }                       # default
-rust_widgets = { version = "2.8.12", default-features = false, features = ["tablet"] }
-rust_widgets = { version = "2.8.12", default-features = false, features = ["mobile"] }
-rust_widgets = { version = "2.8.12", default-features = false, features = ["embedded"] }
-rust_widgets = { version = "2.8.12", default-features = false, features = ["mini"] }
+rust_widgets = { version = "2.8.13", features = ["desktop"] }                       # default
+rust_widgets = { version = "2.8.13", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "2.8.13", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "2.8.13", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "2.8.13", default-features = false, features = ["mini"] }
 ```
 
 | Profile | Intended for |
@@ -116,6 +116,21 @@ user is actually on the keyboard.
   fontconfig on Linux/BSD and `/system/fonts` on Android. `FontDialog` and
   `FontComboBox::load_system_fonts` use one process-wide snapshot, and a chosen family is
   registered from its backend file when one is available.
+- The compiled `fonts-cjk` face is a **subset**: ASCII, CJK punctuation, kana, fullwidth forms and
+  the first 1000 Han codepoints. A host whose UI text goes past that subset calls
+  `render::text::register_system_cjk_font()` (feature `runtime-fonts`) once at startup: it tries
+  the common Chinese families in order, registers the file backing the first one installed, and
+  returns its name. `None` means no CJK face was found, and the missing glyphs will be tofu —
+  the choice is the host's, because which family answers is a typography decision.
+- `CodeEditor` lays text out from the **measured** advances of the face that paints it, not from
+  a fixed cell width: the compiled Latin face is proportional (Open Sans), so `column × cell` was
+  never where a glyph landed. Row height is `font_size × line_height_ratio` (default `1.5`, Zed's
+  `Standard` is `1.3` and `Comfortable` `1.618`); `line_advance(0.0)` means "derive it". Its
+  pointer is an I-beam over the buffer and an arrow over the gutter, minimap and scrollbar, and a
+  click on the minimap scrolls the viewport. An IME composition is drawn at the caret until it is
+  committed; tab widths are measured, tabs carry a close affordance and a hover wash; a press on a
+  line number selects that line; `Ctrl`+click adds a caret; soft-wrapped continuation rows keep the
+  line's indentation; and `relative_line_numbers` switches the gutter to caret-relative numbering.
 - `Icon` ships **69** `IconName` tokens. The three capable profiles draw the real **Material
   Symbols** outlines by default; `mini` / `embedded` draw geometry derived from the same outlines,
   so the two paths cannot disagree. Hosts can add icons with `register_icon` or

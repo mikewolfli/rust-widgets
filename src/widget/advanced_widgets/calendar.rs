@@ -84,6 +84,20 @@ pub struct Calendar {
     /// from a click, keyboard navigation, or a programmatic setter. Not emitted
     /// when the selection is set to the date it already held.
     pub selection_changed: Signal1<chrono::NaiveDate>,
+    /// Emitted when the user **commits** the selected date: a double click on a day
+    /// cell, or Enter/Space with the grid focused.
+    ///
+    /// Qt draws the same line between selection and activation: navigating a calendar
+    /// changes `selectedDate` continuously, while `activated` is the "use this date and
+    /// close me" event a date picker's host listens to. A host that closed its popup on
+    /// `selection_changed` would shut it after a single arrow-key move.
+    pub activated: Signal1<chrono::NaiveDate>,
+    /// Emitted when the displayed month changes, as `(year, month)`.
+    ///
+    /// Covers every way the page can move — the navigation bar, Page Up/Down, arrow keys
+    /// crossing a month boundary, and the programmatic setters — because they all go through
+    /// [`Calendar::show_page`]. Qt's `currentPageChanged` answers the same question.
+    pub current_page_changed: Signal1<(i32, u32)>,
     date_format: String,
 }
 impl Calendar {
@@ -107,7 +121,9 @@ impl Calendar {
             horizontal_header_visible: true,
             vertical_header_visible: false,
             selection_changed: Signal1::new(),
-            date_format: "%Y-%m-%d".to_string(),
+            activated: Signal1::new(),
+            current_page_changed: Signal1::new(),
+            date_format: "%B %Y".to_string(),
         }
     }
     /// Returns the date this calendar paints as "today".
@@ -148,14 +164,31 @@ impl Calendar {
         if self.display_month == date {
             return;
         }
+        self.show_page(date);
+    }
+    /// Moves the displayed page to `date`'s month, emitting `current_page_changed` when the
+    /// `(year, month)` pair actually changed.
+    ///
+    /// # One place for the page transition
+    ///
+    /// Every navigation path used to assign `display_month` directly, which made a page change
+    /// invisible to a host: there was no way to know that the grid had moved to another month.
+    /// Routing them through this helper is what makes `current_page_changed` complete rather
+    /// than a signal that only fires when someone remembers to emit it.
+    fn show_page(&mut self, date: chrono::NaiveDate) {
+        let before = (self.display_month.year(), self.display_month.month());
         self.display_month = date;
+        let after = (date.year(), date.month());
         self.base.request_redraw();
+        if before != after {
+            self.current_page_changed.emit(after);
+        }
     }
     /// Sets selected date and syncs the displayed month to match.
     pub fn set_selected_date(&mut self, date: chrono::NaiveDate) {
         if self.selected_date != date && date >= self.minimum_date && date <= self.maximum_date {
             self.selected_date = date;
-            self.display_month = date;
+            self.show_page(date);
             self.selection_changed.emit(date);
             self.base.request_redraw();
         }
@@ -238,35 +271,31 @@ impl Calendar {
     pub fn show_today(&mut self) {
         let today = chrono::Local::now().date_naive();
         self.today = today;
-        self.display_month = today;
+        self.show_page(today);
         self.set_selected_date(today);
     }
     /// Shows next month in the grid (does not change selected date).
     pub fn show_next_month(&mut self) {
         if let Some(next) = advance_month(self.display_month, 1) {
-            self.display_month = next;
-            self.base.request_redraw();
+            self.show_page(next);
         }
     }
     /// Shows previous month in the grid (does not change selected date).
     pub fn show_previous_month(&mut self) {
         if let Some(prev) = advance_month(self.display_month, -1) {
-            self.display_month = prev;
-            self.base.request_redraw();
+            self.show_page(prev);
         }
     }
     /// Shows next year in the grid (does not change selected date).
     pub fn show_next_year(&mut self) {
         if let Some(next) = self.display_month.with_year(self.display_month.year() + 1) {
-            self.display_month = next;
-            self.base.request_redraw();
+            self.show_page(next);
         }
     }
     /// Shows previous year in the grid (does not change selected date).
     pub fn show_previous_year(&mut self) {
         if let Some(prev) = self.display_month.with_year(self.display_month.year() - 1) {
-            self.display_month = prev;
-            self.base.request_redraw();
+            self.show_page(prev);
         }
     }
     /// Returns the current date format string.
@@ -417,10 +446,19 @@ impl Calendar {
         let blanks = self.leading_blank_count();
         let days_in_month =
             max_days_in_month(self.display_month.year(), self.display_month.month());
-        // The row's first *in-month* day: everything before the blanks belongs to the previous month
-        // and is not drawn, so the label must key off the first cell the grid actually paints.
+        // The row's first *painted* day: the leading blanks belong to the previous month
+        // and are not drawn, so the label must key off the first in-month cell of the row.
+        //
+        // # What this used to be
+        //
+        // `if first_slot < blanks { blanks - first_slot } else { 1 }` returned day 1 for
+        // **every row**: the subtraction was backwards, and every row after the first
+        // short-circuited to 1. The week gutter therefore painted the same ISO week
+        // (`36 36 36 36 36`) beside five different rows — the label named a week the row
+        // did not contain. `slot - blanks + 1` is the in-month day at the row's first cell,
+        // and saturating at zero gives day 1 for the short first row.
         let first_slot = row * 7;
-        let first_day = if first_slot < blanks { blanks - first_slot } else { 1 };
+        let first_day = first_slot.saturating_sub(blanks) + 1;
         if first_day > days_in_month {
             return None;
         }
@@ -523,6 +561,24 @@ impl Widget for Calendar {
                     CapabilityValue::String(format!("{v:?}"))
                 }))
             }
+            "activated" => Some(EventSignalRef::mapped("activated", &self.activated, |v| {
+                CapabilityValue::String(format!("{v:?}"))
+            })),
+            "current_page_changed" => Some(EventSignalRef::mapped(
+                "current_page_changed",
+                &self.current_page_changed,
+                // The payload is `(year, month)`, and the declared shape is a mixed tuple, so a
+                // subscriber that read the schema expects a `Tuple` of `Int` and `UInt`. This
+                // arm used to deliver the `Debug` spelling as a `String`, which the payload gate
+                // reported as a declared/received disagreement — a designer could not read the
+                // two numbers back out of it.
+                |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::Int(v.0 as i64),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ]))
+                },
+            )),
             _ => None,
         }
     }
@@ -670,9 +726,20 @@ impl EventHandler for Calendar {
                 // Click on day grid
                 if let Some(date) = self.date_at_position(*pos) {
                     if date >= self.minimum_date && date <= self.maximum_date {
+                        // `set_selected_date` moves the page with the selection, so the grid
+                        // follows the click without a second assignment here.
                         self.set_selected_date(date);
-                        // Keep display month synced to the selected month
-                        self.display_month = date;
+                    }
+                }
+            }
+            Event::MouseDoubleClick { pos, .. } => {
+                // Double click commits the date: Qt's `activated`. A double click also delivers
+                // a press first, so the cell is already selected; emitting here is what lets a
+                // date-picker host close its popup on the gesture the user made.
+                if let Some(date) = self.date_at_position(*pos) {
+                    if date >= self.minimum_date && date <= self.maximum_date {
+                        self.set_selected_date(date);
+                        self.activated.emit(date);
                     }
                 }
             }
@@ -682,7 +749,6 @@ impl EventHandler for Calendar {
                         // Left arrow
                         if let Some(prev_day) = self.selected_date.pred_opt() {
                             self.set_selected_date(prev_day);
-                            self.display_month = prev_day;
                         }
                     }
                     38 => {
@@ -691,14 +757,12 @@ impl EventHandler for Calendar {
                             self.selected_date.checked_sub_signed(chrono::TimeDelta::days(7))
                         {
                             self.set_selected_date(prev_week);
-                            self.display_month = prev_week;
                         }
                     }
                     39 => {
                         // Right arrow
                         if let Some(next_day) = self.selected_date.succ_opt() {
                             self.set_selected_date(next_day);
-                            self.display_month = next_day;
                         }
                     }
                     40 => {
@@ -707,7 +771,6 @@ impl EventHandler for Calendar {
                             self.selected_date.checked_add_signed(chrono::TimeDelta::days(7))
                         {
                             self.set_selected_date(next_week);
-                            self.display_month = next_week;
                         }
                     }
                     33 => {
@@ -721,6 +784,10 @@ impl EventHandler for Calendar {
                     36 => {
                         // Home
                         self.show_today();
+                    }
+                    13 | 32 => {
+                        // Enter / Space commits the current selection: Qt's `activated`.
+                        self.activated.emit(self.selected_date);
                     }
                     _ => { /* Other keys are not relevant */ }
                 }
@@ -1283,6 +1350,25 @@ mod tests {
         assert_eq!(Calendar::iso_week_of(NaiveDate::from_ymd_opt(2025, 1, 1).unwrap()), 1);
     }
 
+    /// Each painted row reports the week it actually contains.
+    ///
+    /// The gutter used to repeat one number for every row (`36 36 36 36 36` in the snapshot):
+    /// `week_row_start`'s first-day expression was inverted, so every row after the first
+    /// returned day 1. A label that names the wrong week is worse than none — it is the thing
+    /// the reader scrolls a calendar to count.
+    #[test]
+    fn each_row_reports_its_own_week_number() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        cal.set_display_month(NaiveDate::from_ymd_opt(2026, 9, 1).unwrap());
+        let weeks: Vec<u32> =
+            (0..6).filter_map(|row| cal.week_row_start(row)).map(Calendar::iso_week_of).collect();
+        assert!(weeks.len() >= 5, "September 2026 spans six rows, five of them populated");
+        assert!(
+            weeks.windows(2).all(|pair| pair[1] == pair[0] + 1),
+            "consecutive rows are consecutive weeks, got {weeks:?}"
+        );
+    }
+
     #[test]
     fn calendar_navigation() {
         let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
@@ -1367,7 +1453,9 @@ mod tests {
     #[test]
     fn calendar_date_format() {
         let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
-        assert_eq!(cal.date_format(), "%Y-%m-%d");
+        // A month header, not a date: the title names the month the grid shows, which is
+        // what a reader looks for at the top of a calendar.
+        assert_eq!(cal.date_format(), "%B %Y");
         cal.set_date_format("%d/%m/%Y".to_string());
         assert_eq!(cal.date_format(), "%d/%m/%Y");
     }
@@ -1379,10 +1467,10 @@ mod tests {
         // nothing. This asserts the *rendered* title, not a get/set round-trip.
         let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
         cal.set_display_month(chrono::NaiveDate::from_ymd_opt(2026, 3, 15).unwrap());
-        assert_eq!(cal.formatted_month_title(), "2026-03-15");
-
-        cal.set_date_format("%B %Y".to_string());
         assert_eq!(cal.formatted_month_title(), "March 2026");
+
+        cal.set_date_format("%d/%m/%Y".to_string());
+        assert_eq!(cal.formatted_month_title(), "15/03/2026");
 
         // A pattern chrono cannot resolve must fall back, never panic in paint.
         cal.set_date_format("%Q".to_string());
@@ -1393,6 +1481,79 @@ mod tests {
     fn calendar_signal_accessors() {
         let cal = Calendar::new(Rect::new(0, 0, 300, 250));
         let _ = &cal.selection_changed;
+        let _ = &cal.activated;
+        let _ = &cal.current_page_changed;
+    }
+
+    /// A page move is reported exactly once per month crossed, from every navigation path.
+    #[test]
+    fn moving_the_page_reports_the_new_month() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        cal.set_display_month(NaiveDate::from_ymd_opt(2026, 12, 1).unwrap());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        cal.current_page_changed.connect(move |page| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*page);
+            }
+        });
+
+        cal.show_next_month();
+        assert_eq!(cal.display_month().month(), 1);
+        assert_eq!(cal.display_month().year(), 2027, "December rolls into January");
+        cal.show_previous_month();
+        // Enter/Space and the paging keys route through the same helper, so a programmatic
+        // call and a key press cannot disagree about what counts as a page change.
+        cal.handle_event(&Event::key_press(34, 0));
+        let pages = seen.lock().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(pages, vec![(2027, 1), (2026, 12), (2027, 1)]);
+    }
+
+    /// Activation is the commit gesture, distinct from selection.
+    #[test]
+    fn a_double_click_or_enter_activates_the_selected_date() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        cal.set_display_month(NaiveDate::from_ymd_opt(2026, 3, 1).unwrap());
+        cal.set_selected_date(NaiveDate::from_ymd_opt(2026, 3, 12).unwrap());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        cal.activated.connect(move |date| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*date);
+            }
+        });
+
+        cal.handle_event(&Event::key_press(13, 0));
+        // And the pointer gesture: hit the centre of the cell that shows the 12th.
+        let grid = cal.grid_rect();
+        let cell_w = (grid.width / 7).max(1) as i32;
+        let cell_h = (grid.height / 6).max(1) as i32;
+        let mut target = None;
+        'search: for row in 0..6 {
+            for col in 0..7 {
+                let point = Point::new(
+                    grid.x + col * cell_w + cell_w / 2,
+                    grid.y + row * cell_h + cell_h / 2,
+                );
+                if cal.date_at_position(point)
+                    == Some(NaiveDate::from_ymd_opt(2026, 3, 12).unwrap())
+                {
+                    target = Some(point);
+                    break 'search;
+                }
+            }
+        }
+        let point = target.expect("the 12th is in the displayed March grid");
+        cal.handle_event(&Event::MouseDoubleClick { pos: point, button: 1 });
+        let activated = seen.lock().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(
+            activated,
+            vec![
+                NaiveDate::from_ymd_opt(2026, 3, 12).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 3, 12).unwrap()
+            ],
+            "Enter and a double click are both commits"
+        );
     }
 
     #[test]

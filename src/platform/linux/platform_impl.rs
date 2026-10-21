@@ -21,6 +21,9 @@ use crate::compat::atomic::Ordering;
 use crate::compat::OnceLock;
 use crate::compat::String;
 use crate::compat::Vec;
+// Only the GTK paths below share the double-click tracker and the owner-drawn app handle;
+// importing them unconditionally leaves an unused-import warning on every non-GTK build.
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
 use crate::compat::{Rc, RefCell};
 #[cfg(all(unix_desktop, feature = "gtk-native"))]
 use crate::core::MutexExt;

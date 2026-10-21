@@ -9,7 +9,8 @@
 //! payload is committed onto it. It implements [`crate::event::dnd::DropTarget`]
 //! so it can be handed directly to the drag session without an adapter.
 
-use crate::core::{Color, Point, Rect};
+use crate::compat::format;
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::dnd::{DragPayload, DropEffect, DropTarget};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -435,6 +436,23 @@ impl Draw for DropZone {
                 stroke,
             );
             y += (dash * 2) as i32;
+        }
+
+        // A dashed outline says "a control is here" but not what it wants. The accepted type is
+        // the one fact a zone holds, so it is painted in the middle as the cue — without it the
+        // census picture was an empty well, and a user had to guess whether a drag would be
+        // accepted. The band is inset past the dashes so the text never sits on the outline.
+        let font = crate::widget::metrics::effective_font(&style);
+        if rect.width > 40 && rect.height > 24 {
+            let hint = format!("Drop {} here", self.accepted_type);
+            let inner = Rect::new(rect.x + 10, rect.y, rect.width.saturating_sub(20), rect.height);
+            context.draw_text_fitted(
+                inner,
+                &hint,
+                font,
+                ink.blend(&fill, 0.30),
+                HorizontalAlignment::Center,
+            );
         }
     }
 }

@@ -4,9 +4,9 @@
 //! Optional mobile application services (BLUE28 B28.44).
 //!
 //! These are **application-shell** capabilities, not GUI core: keeping the screen awake, haptics,
-//! permission queries, local notifications, the share sheet, deep links, and (deliberately
-//! unsupported here) sensors/location. They live in their own crate so a desktop build never
-//! links them and a mobile host opts in explicitly:
+//! permission queries, local notifications, the share sheet, deep links, safe-area insets,
+//! orientation lock, and (deliberately unsupported here) sensors/location. They live in their own
+//! crate so a desktop build never links them and a mobile host opts in explicitly:
 //!
 //! ```toml
 //! [dependencies]
@@ -42,8 +42,8 @@ pub mod ios;
 mod unsupported;
 
 pub use types::{
-    validate_url, HapticKind, MobileServices, NotificationRequest, Permission, Service,
-    ServiceError, ShareRequest, Status,
+    validate_url, HapticKind, Insets, MobileServices, NotificationRequest, Orientation, Permission,
+    Service, ServiceError, ShareRequest, Status,
 };
 
 /// The mobile-services backend for this target.

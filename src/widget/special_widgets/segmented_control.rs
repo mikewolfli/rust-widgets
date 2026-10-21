@@ -481,7 +481,41 @@ impl Draw for SegmentedControl {
                     divider,
                 );
             }
+        }
 
+        // ── The selection indicator ──
+        //
+        // Drawn **after** the bar and dividers so it sits over them, and at the *slid* position
+        // rather than at `selected_index`: the pill's travel is what tells the reader the value
+        // changed, and a pill that teleported would carry no more information than the label colour
+        // it already changes. It is interpolated between two segment rectangles rather than between
+        // two x offsets, so a segment that changes width (the last one absorbs the remainder) still
+        // gives an indicator the right shape at both ends.
+        //
+        // # Why the labels come after this, not before
+        //
+        // The two used to be interleaved per segment, so the pill was painted **over** the
+        // selected segment's label. The label was still drawn — with `contrast_color()` picked
+        // for the pill — but the opaque fill covered it, and the selected segment rendered as a
+        // blank blue slab. A selected control whose label disappears is not a colour problem; it
+        // is a z-order problem, and the fix is one pass for fills and a second for text.
+        if let (Some(from), Some(to)) = (self.indicator_from(), self.indicator_to()) {
+            let t = self.slide.value();
+            let lerp = |a: i32, b: i32| a + ((b - a) as f32 * t) as i32;
+            let indicator = Rect::new(
+                lerp(from.x, to.x),
+                from.y,
+                lerp(from.width as i32, to.width as i32).max(1) as u32,
+                from.height,
+            );
+            context.fill_rect(indicator, selected_bg);
+        }
+
+        // ── Segment labels ──
+        for index in 0..self.items.len() {
+            let Some(seg) = self.segment_rect(index) else {
+                continue;
+            };
             if let Some(item) = self.items.get(index) {
                 // The label contrasts with the fill it is painted on — the indicator for the
                 // selected segment, the bar for the rest — so it stays legible on either
@@ -509,51 +543,70 @@ impl Draw for SegmentedControl {
                 );
             }
         }
-
-        // ── The selection indicator ──
-        //
-        // Drawn **after** the segments so it sits over their dividers, and at the *slid* position
-        // rather than at `selected_index`: the pill's travel is what tells the reader the value
-        // changed, and a pill that teleported would carry no more information than the label colour
-        // it already changes. It is interpolated between two segment rectangles rather than between
-        // two x offsets, so a segment that changes width (the last one absorbs the remainder) still
-        // gives an indicator the right shape at both ends.
-        if let (Some(from), Some(to)) = (self.indicator_from(), self.indicator_to()) {
-            // `slide` is the fraction travelled, so the pill interpolates between the two segment
-            // rectangles. Interpolating *rectangles* rather than two x offsets, so a segment that
-            // changes width (the last one absorbs the remainder) still gives an indicator of the
-            // right shape at both ends.
-            //
-            // # The defect this replaces
-            //
-            // This read `let t = 1.0; // injected: teleport to the target` — a reverse-injection
-            // probe that was never removed from the shipping draw path. The consequence was a
-            // control whose *model* animated correctly (`tick` advanced the driver,
-            // `is_animating` reported true, `indicator_position()` interpolated) while the
-            // **pixels teleported**: reading the target fraction pins `lerp` to `to`, so the
-            // painted pill jumped to the destination on the first frame of a transition that
-            // then spent ~200 ms reporting itself as in-flight. A user saw a jump followed by a
-            // motionless wait; an animation test sampling the model saw a smooth slide.
-            //
-            // That is why the assertion for this belongs on the *paint*, not on
-            // `indicator_position`: see `the_indicator_is_painted_mid_slide`.
-            let t = self.slide.value();
-            let lerp = |a: i32, b: i32| a + ((b - a) as f32 * t) as i32;
-            let indicator = Rect::new(
-                lerp(from.x, to.x),
-                from.y,
-                lerp(from.width as i32, to.width as i32).max(1) as u32,
-                from.height,
-            );
-            context.fill_rect(indicator, selected_bg);
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::{Color, Font, Size};
+    use crate::render::{
+        PaintBackend, RenderCommand, RenderContext, ShapedText, SoftwarePaintBackend,
+        SoftwareRenderConfig, TextMetrics,
+    };
     use std::sync::{Arc, Mutex};
+
+    /// A backend that records every command in draw order.
+    ///
+    /// Text and fills are separate commands, so "the label is painted over the pill" is
+    /// an ordered fact a test can read without a pixel comparison.
+    struct Recorder {
+        commands: Vec<RenderCommand>,
+        inner: SoftwarePaintBackend,
+    }
+
+    impl Recorder {
+        fn new(size: Size) -> Self {
+            Self { commands: Vec::new(), inner: SoftwarePaintBackend::new(size, 1.0) }
+        }
+    }
+
+    impl PaintBackend for Recorder {
+        fn begin_frame(&mut self, clear: Color) {
+            self.inner.begin_frame(clear);
+        }
+        fn end_frame(&mut self) {
+            self.inner.end_frame();
+        }
+        fn execute_command(&mut self, command: &RenderCommand) {
+            self.commands.push(command.clone());
+            self.inner.execute_command(command);
+        }
+        fn size(&self) -> Size {
+            self.inner.size()
+        }
+        fn set_size(&mut self, size: Size) {
+            self.inner.set_size(size);
+        }
+        fn dpi_scale(&self) -> f32 {
+            self.inner.dpi_scale()
+        }
+        fn set_dpi_scale(&mut self, scale: f32) {
+            self.inner.set_dpi_scale(scale);
+        }
+        fn measure_text(&self, text: &str, font: &Font) -> TextMetrics {
+            self.inner.measure_text(text, font)
+        }
+        fn shape_text(&self, text: &str, font: &Font) -> ShapedText {
+            self.inner.shape_text(text, font)
+        }
+        fn frame_rgba(&self) -> &[u8] {
+            self.inner.frame_rgba()
+        }
+        fn apply_render_config(&mut self, config: SoftwareRenderConfig) {
+            self.inner.apply_render_config(config);
+        }
+    }
 
     fn sample_items() -> Vec<SegmentItem> {
         vec![
@@ -561,6 +614,48 @@ mod tests {
             SegmentItem::new("details", "Details"),
             SegmentItem::new("history", "History"),
         ]
+    }
+
+    /// The selected segment's label is painted **after** the selection pill.
+    ///
+    /// The pill is an opaque fill drawn in the same loop as the labels and after each one,
+    /// so it covered the selected label completely: the control showed a blank blue slab
+    /// where "Overview" should be. Presence of the text command is not the property that
+    /// matters — order is.
+    #[test]
+    fn the_selected_label_is_painted_after_the_indicator() {
+        let mut control = SegmentedControl::new(Rect::new(0, 0, 300, 30));
+        control.set_items(sample_items());
+        assert_eq!(control.selected_index(), Some(0));
+        let segment = control.segment_rect(0).expect("the first segment exists");
+
+        let mut recorder = Recorder::new(Size::new(300, 30));
+        recorder.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut recorder);
+            control.draw(&mut context);
+        }
+        recorder.end_frame();
+
+        let mut indicator_at = None;
+        let mut label_at = None;
+        for (index, command) in recorder.commands.iter().enumerate() {
+            match command {
+                RenderCommand::FillRect { rect, .. } if *rect == segment => {
+                    indicator_at = Some(index);
+                }
+                RenderCommand::DrawText { text, .. } if text.as_str() == "Overview" => {
+                    label_at = Some(index);
+                }
+                _ => {}
+            }
+        }
+        let label_at = label_at.expect("the selected segment's label is drawn");
+        let indicator_at = indicator_at.expect("the selection pill is drawn");
+        assert!(
+            label_at > indicator_at,
+            "the label must come after the pill (label at {label_at}, pill at {indicator_at})"
+        );
     }
 
     #[test]

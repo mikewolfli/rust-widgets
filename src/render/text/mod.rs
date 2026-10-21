@@ -41,6 +41,13 @@ pub mod runtime_fonts;
 #[cfg(all(feature = "runtime-fonts", feature = "text-shaping"))]
 pub use runtime_fonts::{clear_faces, register_face, registered_face_count, MAX_RUNTIME_FACES};
 
+// Convenience over the installed-font snapshot: the compiled CJK face is a subset, so a host whose
+// UI text goes beyond it registers one of these families instead of rediscovering the names.
+// Defined in `platform::fonts` because that module already owns "look up an installed family and
+// register its file", and a second implementation of that read/leak/register step would drift.
+#[cfg(all(feature = "runtime-fonts", not(alloc_frugal)))]
+pub use crate::platform::fonts::{register_system_cjk_font, SYSTEM_CJK_FAMILIES};
+
 // The one derivation of a line's clusters, shared by both renderers.
 mod line;
 
@@ -52,11 +59,17 @@ mod line;
 #[cfg(feature = "text-shaping")]
 mod raster;
 
+// `VectorSource` and `OutlinePoint` are the rasteriser's types, so `text-shaping` (which is what
+// compiles `raster`) is the right gate for them.
 #[cfg(feature = "text-shaping")]
-pub use raster::{
-    outline, outline_by_coverage, OutlinePoint, VectorSource, OUTLINE_MAX_CONTOURS,
-    OUTLINE_MAX_POINTS,
-};
+pub use raster::{OutlinePoint, VectorSource};
+
+// The two outline entry points and their capacity constants exist only when a vector face does —
+// each selects a face and outlines a glyph from it. A build with `text-shaping` but no face data
+// (e.g. `mini,runtime-fonts`) compiles `raster` for its types and not these, so re-exporting them
+// under `text-shaping` alone failed to resolve.
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
+pub use raster::{outline, outline_by_coverage, OUTLINE_MAX_CONTOURS, OUTLINE_MAX_POINTS};
 
 // Colour bitmap faces (G-6): `CBDT`/`CBLC` plus the PNG decoder that reads what they point at.
 //

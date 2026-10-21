@@ -56,11 +56,12 @@
 //! | `syntax` | Built-in lexer, [`LanguageId`], [`SyntaxHighlighter`] plugin seam |
 //! | `buffer` | Line-indexed document model, tabs, folds, splice primitive |
 //! | `coords` | Document ↔ screen coordinate map (`B3`/`B4`) |
+//! | `grid` | Char index ↔ grid column ↔ byte offset (wide chars, tabs) |
 //! | `multicursor` | Multiple carets: add/merge, occurrence selection, edit projection |
 //! | `pairs` | Auto-pairing, bracket/quote skip-over and smart backspace |
-//! | `editor` | The [`CodeEditor`] widget: state, commands, history |
+//! | `editor` | The [`CodeEditor`] widget: state, construction, shared helpers; commands in `editor/*` |
 //! | `input` | Keyboard/IME/pointer/wheel translation layer |
-//! | `render` | Geometry metrics and the `Draw` implementation |
+//! | `render` | The `Draw` entry point, metrics and hit-testing; paint helpers in `render/*` |
 //! | `tests` | Behavioural test-suite |
 //!
 //! # Rust design notes (principle.md #28..#34)
@@ -82,6 +83,7 @@
 mod buffer;
 mod coords;
 mod editor;
+mod grid;
 mod input;
 mod multicursor;
 mod pairs;
@@ -110,6 +112,6 @@ pub use types::{
     DiagnosticMarker, DocumentCompletions, DocumentScale, EditRejection, EditorBuffer, FindState,
     FoldRegion, MarkerSeverity, MenuItem, ReadOnlySpan, SearchMatch, SearchOptions, SyntaxPalette,
     TextPosition, TokenKind, TokenSpan, ViewportSnapshot, VisualLine, DEFAULT_FONT_FAMILY,
-    DEFAULT_FONT_SIZE, DEFAULT_TAB_WIDTH, MAX_COMPLETIONS, MIN_TOUCH_TARGET, SCALE_REDUCED_LINES,
-    SCALE_VIEW_ONLY_LINES,
+    DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT_RATIO, DEFAULT_TAB_WIDTH, MAX_COMPLETIONS,
+    MIN_TOUCH_TARGET, SCALE_REDUCED_LINES, SCALE_VIEW_ONLY_LINES,
 };

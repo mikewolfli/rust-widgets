@@ -87,7 +87,7 @@ CONVERTED: dict[str, str] = {
     "chart": "src/widget/special_widgets/chart.rs",
     "check_box": "src/widget/base_widgets/checkbox.rs",
     "chip": "src/widget/special_widgets/chip.rs",
-    "code_editor": "src/widget/special_widgets/code_editor/editor.rs",
+    "code_editor": "src/widget/special_widgets/code_editor/editor/widget_impl.rs",
     "collapsible_pane": "src/widget/container_widgets/collapsible_pane.rs",
     "color_dialog": "src/widget/dialog/color_dialog.rs",
     "color_history": "src/widget/display_widgets/color_history.rs",

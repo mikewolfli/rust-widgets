@@ -95,7 +95,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="rust-widgets",
-    version="2.8.12",
+    version="2.8.13",
     packages=find_packages(),
     description="rust-widgets GUI 库的 Python 绑定",
 )
@@ -490,7 +490,7 @@ Node 18+ 上**根本无法编译**，实测原因见绑定 README。
 ```json
 {
   "name": "rust-widgets",
-  "version": "2.8.12",
+  "version": "2.8.13",
   "description": "rust-widgets GUI 库的 Node.js 绑定",
   "main": "index.js",
   "dependencies": {

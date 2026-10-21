@@ -656,13 +656,14 @@ impl Draw for FileDialog {
             );
             context.draw_rect(rect, border);
         }
-        // Title bar: a separate region from the dialog surface, in the theme's accent
-        // rather than the literal blue it carried before, so the bar follows the palette
-        // the rest of the application is using. The label is centred on the bar's own band
-        // through the shared primitive and fitted to it, so a long title truncates at the
-        // bar's edge instead of running past the frame. The strip comes from `top_band`.
+        // Title bar: a separate region from the dialog surface, derived one visible step from
+        // it rather than filled with the accent. Every other dialog in the crate (message box,
+        // wizard, progress, colour) draws a neutral title strip; the accent-filled bar made this
+        // one read as a different class of window — a blue header is not macOS chrome. The accent
+        // is still the accept button's fill below, which is where a call to action belongs.
+        let title_bar = surface.blend(&ink, 0.08);
         let title_bar_band = ControlMetrics::top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
-        context.fill_rect(title_bar_band, accent);
+        context.fill_rect(title_bar_band, title_bar);
         if !self.title.is_empty() {
             let title_font = font;
             let title_line = context.text_line(title_bar_band, title_font);
@@ -675,7 +676,7 @@ impl Draw for FileDialog {
                 ),
                 &self.title,
                 title_font,
-                accent_ink,
+                ink,
                 HorizontalAlignment::Left,
             );
         }
@@ -683,7 +684,10 @@ impl Draw for FileDialog {
         // the selected-file strip above it, and the list taking the remainder. Deriving all
         // three from the frame is what keeps them from overlapping on a short dialog — each
         // was previously placed from an absolute offset written for a taller one.
-        let button_band = ControlMetrics::bottom_band(rect, dimensions::DIALOG_BUTTON_HEIGHT);
+        let button_band = super::message_box::inset_action_band(
+            ControlMetrics::bottom_band(rect, dimensions::DIALOG_BUTTON_HEIGHT),
+            rect.y,
+        );
         let button_top = button_band.y;
         // The list top is the title bar's bottom edge plus the frame's own padding.
         let list_y = rect.y + dimensions::DIALOG_TITLE_BAR_HEIGHT as i32 + LIST_TOP_GAP;

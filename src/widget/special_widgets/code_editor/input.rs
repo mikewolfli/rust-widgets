@@ -310,8 +310,18 @@ impl CodeEditor {
     // ── Pointer handling (invoked from the `Draw`/`EventHandler` side) ───────────
 
     pub(crate) fn pointer_press(&mut self, pos: Point) {
+        self.pointer_press_with_modifiers(pos, 0);
+    }
+
+    /// A press with the modifier state the platform reported.
+    ///
+    /// `Ctrl` + click adds a caret, the Zed/VS Code multi-cursor gesture. On macOS a
+    /// host that uses Command for this can pass the same bit; the editor only needs
+    /// "a modifier was held".
+    pub(crate) fn pointer_press_with_modifiers(&mut self, pos: Point, modifiers: u32) {
         self.base.set_mouse_pressed(true);
         self.mouse_selecting = true;
+        self.last_pointer_position = Some(pos);
         if self.context_menu.visible {
             self.dismiss_completion();
             match self.hit_menu_row(pos) {
@@ -334,19 +344,75 @@ impl CodeEditor {
             }
             self.dismiss_completion();
         }
+        // The tab strip is chrome above the buffer: a press there is a tab command,
+        // never a caret placement. The close box is the smaller target inside the
+        // tab, and it is checked first (`tab_at` reports which one was hit).
+        if let Some((index, close)) = self.tab_at(pos) {
+            self.mouse_selecting = false;
+            if close {
+                self.close_buffer(index);
+            } else {
+                // A tab click navigates; it is not an edit of either document, so it
+                // must not push a `TabSwitchCommand` (undo belongs to the buffer).
+                self.activate_buffer_untracked(index);
+            }
+            return;
+        }
         if let Some(line) = self.hit_fold_marker(pos) {
             self.toggle_fold(line);
             return;
         }
+        // A press on a line number selects that line, the way Zed's gutter does: the
+        // gutter is the one place where a click can only mean "this line", and
+        // dragging from it is how a range of whole lines is chosen.
+        if let Some(line) = self.hit_gutter_line(pos) {
+            self.mouse_selecting = false;
+            self.select_line(line);
+            return;
+        }
+        // The minimap is a scroll target, like Zed's: a click anywhere in the strip
+        // moves the viewport to that fraction of the document.
+        if let Some(fraction) = self.minimap_fraction_at(pos) {
+            // A minimap press is a scroll gesture, not a text selection: clearing the
+            // selection latch is what keeps the following motion from extending one.
+            self.mouse_selecting = false;
+            self.minimap_dragging = true;
+            self.scroll_to_fraction(fraction);
+            return;
+        }
         if let Some(position) = self.position_at_point(pos) {
-            self.move_caret_to(position, false);
+            if modifiers & MODIFIER_CONTROL != 0 {
+                self.add_cursor_at(position);
+            } else {
+                self.move_caret_to(position, false);
+            }
         }
     }
 
     pub(crate) fn pointer_drag(&mut self, pos: Point) {
+        // Hover is tracked even when no button is down: it is what reveals the close
+        // affordance on a tab and washes it as the pointer passes over.
+        self.update_hovered_tab(pos);
+        if self.minimap_dragging {
+            // A minimap drag keeps following the pointer after it leaves the strip,
+            // clamped by `scroll_to_fraction`.
+            let rect = self.geometry();
+            let top = rect.y + self.text_origin_y();
+            let bottom = rect.y + rect.height as i32 - self.status_bar_height();
+            let height = (bottom - top).max(1) as f32;
+            let fraction = ((pos.y - top) as f32 / height).clamp(0.0, 1.0);
+            self.scroll_to_fraction(fraction);
+            return;
+        }
         if !self.mouse_selecting {
             return;
         }
+        // A motion that has not moved is the toolkit echoing the press. Treating it
+        // as a drag collapsed a double-click selection to the click point.
+        if self.last_pointer_position == Some(pos) {
+            return;
+        }
+        self.last_pointer_position = Some(pos);
         if let Some(position) = self.position_at_point(pos) {
             self.move_caret_to(position, true);
         }
@@ -354,6 +420,8 @@ impl CodeEditor {
 
     pub(crate) fn pointer_release(&mut self) {
         self.mouse_selecting = false;
+        self.minimap_dragging = false;
+        self.last_pointer_position = None;
         self.base.set_mouse_pressed(false);
     }
 
@@ -362,15 +430,62 @@ impl CodeEditor {
         index_in_rows(pos, rect, self.context_menu.items.len())
     }
 
+    /// Which tab is under `pos`, and whether the point is on its close box.
+    ///
+    /// Reads the rectangles the painter published; a click in the strip before the
+    /// first frame is ignored rather than estimated from a character count.
+    fn tab_at(&self, pos: Point) -> Option<(usize, bool)> {
+        let slots = self.tab_hits.borrow();
+        let slot = slots.iter().find(|slot| slot.rect.contains_point(pos))?;
+        let close = slot.close.width > 0 && slot.close.contains_point(pos);
+        Some((slot.buffer, close))
+    }
+
+    /// Records the tab the pointer is over and repaints when it changed.
+    ///
+    /// A repaint per motion event would be wasteful; a repaint per *change* is what
+    /// the hover affordance costs.
+    pub(crate) fn update_hovered_tab(&mut self, pos: Point) {
+        let hovered = self.tab_at(pos).map(|(index, _)| index);
+        if hovered != self.hovered_tab {
+            self.hovered_tab = hovered;
+            self.base.request_redraw();
+        }
+    }
+
     fn hit_completion_row(&self, pos: Point) -> Option<usize> {
         let rect = self.completion_rect();
         index_in_rows(pos, rect, self.completion.items.len())
     }
 
+    /// Where in the minimap strip `pos` is, as a fraction of the document.
+    ///
+    /// `None` outside the strip, or when the minimap is disabled. The returned value
+    /// is the fraction the **click point** represents, not a row index: the strip shows
+    /// the whole document compressed, so the mapping is proportional.
+    fn minimap_fraction_at(&self, pos: Point) -> Option<f32> {
+        let width = self.minimap_width();
+        if width == 0 {
+            return None;
+        }
+        let rect = self.geometry();
+        let left = rect.x + rect.width as i32 - width;
+        let top = rect.y + self.text_origin_y();
+        let bottom = rect.y + rect.height as i32 - self.status_bar_height();
+        if pos.x < left || pos.x >= rect.x + rect.width as i32 || pos.y < top || pos.y >= bottom {
+            return None;
+        }
+        let height = (bottom - top).max(1) as f32;
+        Some(((pos.y - top) as f32 / height).clamp(0.0, 1.0))
+    }
+
     fn hit_fold_marker(&self, pos: Point) -> Option<usize> {
         let rect = self.geometry();
+        // The chevron column, not the leading edge of the gutter: the numbers live
+        // between them, and clicking a line number must place the caret, not fold.
+        let left = rect.x + self.fold_marker_offset();
         let width = self.fold_marker_width();
-        if pos.x < rect.x || pos.x >= rect.x + width {
+        if pos.x < left || pos.x >= left + width {
             return None;
         }
         let local_y = pos.y - rect.y - self.text_origin_y();
@@ -378,6 +493,31 @@ impl CodeEditor {
             return None;
         }
         let row = self.scroll_visual_row + (local_y as f32 / self.line_height()).floor() as usize;
+        let line = self.visual_row_to_line(row);
+        if self.line_to_visual_row(line) != row {
+            return None;
+        }
+        Some(line)
+    }
+
+    /// The line whose number is under `pos`, when the point is in the gutter.
+    ///
+    /// The gutter is not part of the text area (`position_at_point` rejects it), but
+    /// it is a line-selection target in every editor a reader is used to: a press on
+    /// the number selects the whole line, including its newline.
+    fn hit_gutter_line(&self, pos: Point) -> Option<usize> {
+        let rect = self.geometry();
+        let width = self.gutter_width();
+        if pos.x < rect.x || pos.x >= rect.x + width {
+            return None;
+        }
+        let top = rect.y + self.text_origin_y();
+        let bottom = rect.y + rect.height as i32 - self.status_bar_height();
+        if pos.y < top || pos.y >= bottom {
+            return None;
+        }
+        let row =
+            self.scroll_visual_row + ((pos.y - top) as f32 / self.line_height()).floor() as usize;
         let line = self.visual_row_to_line(row);
         if self.line_to_visual_row(line) != row {
             return None;

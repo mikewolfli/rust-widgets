@@ -393,6 +393,11 @@ mod tests {
     /// A repeated measurement and shape answer from the cache instead of recomputing.
     #[test]
     fn repeated_text_measurements_are_cached() {
+        // A host face registered by another test (in this process) invalidates the measurement
+        // cache, which would turn the expected hit below into a miss. The registry lock is the
+        // one serialisation point for that: hold it for the whole sequence.
+        #[cfg(all(feature = "runtime-fonts", feature = "text-shaping"))]
+        let _guard = crate::render::text::runtime_fonts::test_lock();
         let surface = SoftwareSurface::new(Size::new(20, 20), 1.0);
         let font = Font::default();
 
@@ -418,6 +423,10 @@ mod tests {
     #[cfg(feature = "runtime-fonts")]
     #[test]
     fn invalidating_text_measurements_forces_a_rebuild() {
+        // Same reason as `repeated_text_measurements_are_cached`: the build counters are process-
+        // wide and a parallel registration also bumps the epoch this test is about.
+        #[cfg(all(feature = "runtime-fonts", feature = "text-shaping"))]
+        let _guard = crate::render::text::runtime_fonts::test_lock();
         let surface = SoftwareSurface::new(Size::new(20, 20), 1.0);
         let font = Font::default();
         let _ = surface.measure_text("hello", &font);

@@ -1266,6 +1266,9 @@ fn mount_widget_object(
     // Register first: the backend looks the widget up by id on every repaint.
     let id = widget::runtime::register(widget).ok_or(SurfaceMountError::NoRegistryOnThread)?;
     widget::runtime::set_geometry(id, rect);
+    // The surface is not a child in the widget tree, so this is the only record that
+    // it belongs to `parent`. Cursor dispatch and repaint routing both need it.
+    widget::runtime::set_surface_window(id, parent);
 
     let host_parent = widget::runtime::host_window_for(parent).unwrap_or(parent);
 

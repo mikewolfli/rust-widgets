@@ -62,9 +62,11 @@ mod tests {
     fn tr_macro_with_special_chars() {
         let _lock = global_i18n_lock();
         reset_global();
-        // Keys with dots, underscores, slashes
-        assert_eq!(crate::tr!("common.button.ok"), "common.button.ok");
-        assert_eq!(crate::tr!("dialog.file_dialog.open_file"), "dialog.file_dialog.open_file");
+        // Dotted keys are ordinary keys. A catalogue entry resolves; a key with no entry
+        // still comes back unchanged, which is the only honest answer once the embedded
+        // English catalogue has been loaded on first use (see `global::ensure_initialized`).
+        assert_eq!(crate::tr!("common.button.ok"), "OK");
+        assert_eq!(crate::tr!("dialog.file_dialog.open_file"), "Open File");
         assert_eq!(crate::tr!("a.b.c.d.e"), "a.b.c.d.e");
     }
 

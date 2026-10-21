@@ -49,6 +49,7 @@ use std::sync::{Arc, Mutex};
 
 use rust_widgets::app::{App, WidgetHandle, WindowHandle};
 use rust_widgets::core::{ObjectId, Orientation, Rect};
+use rust_widgets::theme::{global_theme_manager, Theme};
 // The demo has a `Layout` struct of its own (the panel rects), so the library's layout
 // trait is imported under a distinct name rather than shadowing it.
 use rust_widgets::layout::{BoxLayout, Layout as LayoutTrait, LayoutConstraints};
@@ -942,6 +943,52 @@ fn verify_panels_paint(layout: &Layout, series: &PriceSeries, close: f64) -> Str
 // Entry point
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/// Registers the macOS-style palettes and selects one for this demo.
+///
+/// # Why the demo chooses the palette
+///
+/// The library's defaults are neutral (and the SVG snapshots pin them). A demo is a host, and
+/// a host picks its appearance. Both palettes are registered so `--dark` and `--light` work
+/// without a second build; the finance screen defaults to light because its charts use
+/// light-surface grid and label colours.
+fn apply_appearance(default_dark: bool) {
+    let dark = if std::env::args().any(|arg| arg == "--light") {
+        false
+    } else if std::env::args().any(|arg| arg == "--dark") {
+        true
+    } else {
+        default_dark
+    };
+    let mut manager = global_theme_manager();
+    manager.register_theme(Theme::macos_dark());
+    manager.register_theme(Theme::macos_light());
+    let name = if dark { "macos-dark" } else { "macos-light" };
+    manager.set_theme(name);
+    drop(manager);
+    rust_widgets::reapply_active_theme();
+}
+
+/// Registers a full-coverage CJK face, once, before anything is painted.
+///
+/// # Why the demo does this
+///
+/// The `desktop` profile compiles `fonts-cjk`, whose face is a *subset*: ASCII, CJK
+/// punctuation, kana, fullwidth forms and the first 1000 Han codepoints
+/// (`tools/cjk_vector_codepoints.txt`). This demo's UI text is Chinese — 就绪, 主图：…,
+/// 挂载失败：… — and most of those characters fall outside that subset, so without an
+/// installed face they would be drawn as tofu.
+///
+/// The library does not pick fonts behind the host's back: which family answers a character
+/// is part of a host's typography, and reading a 20 MB collection is not something to do
+/// implicitly. Asking once at startup is the host's decision, and the result is logged
+/// either way — a `None` is worth knowing about, because the fallback is visible tofu.
+fn register_cjk_face(log: &Arc<EventLog>) {
+    match rust_widgets::render::text::register_system_cjk_font() {
+        Some(family) => log.append(format!("[Fonts] 已注册系统 CJK 字体：{family}")),
+        None => log.append("[Fonts] 未找到已安装的 CJK 字体；超出内置子集的汉字会显示为方框"),
+    }
+}
+
 /// Runs the demo.
 ///
 /// Kept as `app::run()` so it matches the other demos, and so the body is callable
@@ -976,6 +1023,12 @@ pub fn run() {
 
     app.init();
     log.append("[App] init() done");
+    // Before the first control exists: a label resolves its face when it is painted, but the
+    // cache would then be built from the subset face and every miss would cost a re-scan.
+    register_cjk_face(&log);
+    // The demo's own appearance: a macOS-style palette registered by the host. `--dark` and
+    // `--light` override the default, so the same binary can be inspected in both.
+    apply_appearance(false);
 
     let win = app.new_window("Finance Demo — rust_widgets", 60, 60, WINDOW_WIDTH, WINDOW_HEIGHT);
     log.append(format!("[Window] created: id={:?}", win.raw_id()));

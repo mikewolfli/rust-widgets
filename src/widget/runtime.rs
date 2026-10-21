@@ -212,6 +212,17 @@ thread_local! {
     #[allow(clippy::missing_const_for_thread_local)]
     static HOST_WINDOWS: RefCell<HashMap<ObjectId, ObjectId>> = RefCell::new(HashMap::new());
 
+    /// Which library window a **mounted surface** is shown in.
+    ///
+    /// A surface is registered with no parent (it is not a child in the widget tree —
+    /// the platform mounts it as its own drawing area), so `parent()` cannot answer
+    /// "which window is this in". Everything that needs the top-level window of a
+    /// hovered control — cursor shape, repaint routing — therefore saw `None` for a
+    /// mounted surface: the code editor asked for an I-beam and no backend was ever
+    /// asked to apply it. The mount path knows the window, so it records it here.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static SURFACE_WINDOWS: RefCell<HashMap<ObjectId, ObjectId>> = RefCell::new(HashMap::new());
+
     /// The authoritative keyboard-focus owner for this thread's widget tree.
     ///
     /// Before this existed, [`crate::event::FocusManager`] was fully implemented
@@ -233,6 +244,16 @@ thread_local! {
     /// is what makes the pair balanced (see `dispatch_hover_transition`).
     #[allow(clippy::missing_const_for_thread_local)]
     static HOVERED: RefCell<Option<ObjectId>> = const { RefCell::new(None) };
+
+    /// The cursor last handed to the platform: the hovered widget and the shape.
+    ///
+    /// A control's pointer intent can change **within** one widget (a code editor is an
+    /// I-beam over its text and an arrow over its minimap), so the shape is re-asked on
+    /// every motion. This cell is what keeps that from becoming a platform call per
+    /// motion event: only a change of widget *or* of shape reaches `set_cursor`.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static LAST_CURSOR: RefCell<(Option<ObjectId>, crate::platform::CursorIcon)> =
+        const { RefCell::new((None, crate::platform::CursorIcon::Default)) };
 
     /// Host observers of the IME pre-edit delivered to each widget.
     ///
@@ -504,6 +525,7 @@ pub fn unregister(id: ObjectId) -> bool {
     // Drop any host-window association with the widget it belonged to, so a
     // recycled or reused id cannot inherit a stale host window.
     let _ = HOST_WINDOWS.try_with(|map| map.borrow_mut().remove(&id));
+    let _ = SURFACE_WINDOWS.try_with(|map| map.borrow_mut().remove(&id));
     // A widget that is gone must not stay in the tab order: `focus_next` would
     // hand focus to an id that resolves to nothing, and the key that triggered
     // the move would be swallowed. The manager also clears focus if this id owned
@@ -1135,12 +1157,9 @@ pub fn clear_modals() {
 /// the pair balanced — exactly one `MouseLeave` for the widget left, one
 /// `MouseEnter` for the widget entered, and neither when the pointer stays put.
 fn dispatch_hover_transition(hovered: Option<ObjectId>, point: Point) {
-    HOVERED.with(|last| {
-        let previous = *last.borrow();
-        if previous == hovered {
-            return;
-        }
-        *last.borrow_mut() = hovered;
+    let previous = HOVERED.with(|last| *last.borrow());
+    if previous != hovered {
+        HOVERED.with(|last| *last.borrow_mut() = hovered);
         // Deliver outside the cell borrow: a control handling `MouseLeave` may itself
         // read or write hover state.
         if let Some(previous) = previous {
@@ -1149,16 +1168,24 @@ fn dispatch_hover_transition(hovered: Option<ObjectId>, point: Point) {
         if let Some(hovered) = hovered {
             let _ = dispatch_event(hovered, &Event::MouseEnter { pos: point });
         }
-        // BLUE28 B28.09: the control's cursor intent is applied once per hover change, not per
-        // motion event. The window is the hovered control's top-level (or the one just left, so
-        // moving off a control restores the default).
-        let icon = hovered
-            .and_then(|id| with_widget(id, |widget| widget.cursor_icon()))
-            .unwrap_or(crate::platform::CursorIcon::Default);
-        if let Some(window) = hovered.or(previous).and_then(top_level_window_of) {
-            let _ = crate::platform::platform_facts().set_cursor(window, icon);
-        }
-    });
+    }
+
+    // BLUE28 B28.09: the control's cursor intent is applied through the platform once
+    // per **change**, not per motion event. The intent is asked at the pointer's
+    // position because one control may want different shapes in different regions
+    // (an editor's text is an I-beam, its minimap is an arrow). A platform call is
+    // made only when the answer or the target window changed.
+    let icon = hovered
+        .and_then(|id| with_widget(id, |widget| widget.cursor_icon_at(point)))
+        .unwrap_or(crate::platform::CursorIcon::Default);
+    let key = (hovered.or(previous), icon);
+    if LAST_CURSOR.with(|last| *last.borrow()) == key {
+        return;
+    }
+    LAST_CURSOR.with(|last| *last.borrow_mut() = key);
+    if let Some(window) = hovered.or(previous).and_then(top_level_window_of) {
+        let _ = crate::platform::platform_facts().set_cursor(window, icon);
+    }
 }
 
 /// Clears the hover target, sending `MouseLeave` to whatever was hovered.
@@ -2822,6 +2849,25 @@ pub fn request_repaint(id: ObjectId) {
     request_repaint_because(id, RepaintReason::Explicit);
 }
 
+/// Records that the mounted **surface** `surface` is shown inside library window `window`.
+///
+/// Called by the mount path, the only caller that knows both ids. Returns `false` when
+/// the surface is unknown to this thread's registry, so a caller cannot invent a link
+/// to a widget that does not exist.
+pub fn set_surface_window(surface: ObjectId, window: ObjectId) -> bool {
+    if with_widget(surface, |_| ()).is_none() {
+        return false;
+    }
+    SURFACE_WINDOWS
+        .try_with(|map| map.borrow_mut().insert(surface, window).is_none())
+        .unwrap_or(false)
+}
+
+/// The library window a mounted surface belongs to, if one was recorded.
+pub fn surface_window_for(surface: ObjectId) -> Option<ObjectId> {
+    SURFACE_WINDOWS.try_with(|map| map.borrow().get(&surface).copied()).unwrap_or(None)
+}
+
 /// Returns the top-level **window** widget that `id` lives under, if any.
 ///
 /// Walks the parent links up to the root and reports it only when the root is a
@@ -2832,7 +2878,16 @@ pub fn request_repaint(id: ObjectId) {
 /// The walk is bounded by `max_depth` steps so a corrupted parent chain — a cycle, or a
 /// link to an id that was recycled — cannot hang a paint path. Hitting the bound is
 /// reported as `None` rather than guessed at.
+///
+/// A **mounted surface** is the exception the walk cannot answer: it is registered with
+/// no parent (the platform mounts it as its own drawing area), so the mount path records
+/// its window in `SURFACE_WINDOWS` and that link is consulted first.
 pub fn top_level_window_of(id: ObjectId) -> Option<ObjectId> {
+    // A mounted surface has no parent in the widget tree, so the walk below cannot
+    // reach its window; the mount path recorded that link instead.
+    if let Some(window) = surface_window_for(id) {
+        return Some(window);
+    }
     // A widget tree is shallow (window → containers → controls); 64 is far past any real
     // depth and still a bound rather than a loop that trusts the data.
     const MAX_DEPTH: usize = 64;
@@ -7993,6 +8048,42 @@ mod tests {
     }
 
     // ── Host-window id translation (the P-05 seam) ──────────────────────────────
+
+    /// A mounted surface is not a child in the widget tree, so its window is recorded at
+    /// mount time; `top_level_window_of` must answer from that record, because cursor
+    /// dispatch and repaint routing both ask it for "the window this control is in".
+    ///
+    /// Regression: without the record, `top_level_window_of(editor)` answered `None` for
+    /// every mounted surface, so `dispatch_hover_transition` found no window to call
+    /// `set_cursor` on and the code editor's I-beam was never applied by any backend.
+    #[test]
+    fn a_mounted_surface_answers_the_window_it_was_mounted_in() {
+        let surface = register(Box::new(crate::widget::Label::new(
+            "editor".to_string(),
+            Rect::new(0, 0, 100, 80),
+        )))
+        .expect("mount");
+        let _unmount_surface = MountGuard(surface);
+        let window = register(Box::new(crate::widget::Label::new(
+            "window".to_string(),
+            Rect::new(0, 0, 100, 80),
+        )))
+        .expect("mount");
+        let _unmount_window = MountGuard(window);
+
+        assert_eq!(top_level_window_of(surface), None, "no parent, so no window by the walk");
+        assert!(set_surface_window(surface, window), "a registered surface accepts the link");
+        assert_eq!(top_level_window_of(surface), Some(window));
+        assert_eq!(surface_window_for(window), None, "only surfaces are recorded, not windows");
+        assert!(!set_surface_window(424_242, window), "an unknown surface cannot be linked");
+
+        unregister(surface);
+        assert_eq!(
+            surface_window_for(surface),
+            None,
+            "the link must not outlive the widget it described"
+        );
+    }
 
     /// A window widget's host id round-trips: `window -> host -> window`.
     ///

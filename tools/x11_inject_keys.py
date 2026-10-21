@@ -36,7 +36,9 @@ cannot stage typed input", not as a failure.
 `--activate` asks the window manager to focus the window first (and still runs the three checks
 above before typing). `--key` appends named keysym taps after the text, e.g. `--key Return`.
 `--click x y` / `--click-relative x y` moves the pointer and clicks before typing (absolute root
-coordinates, or window-relative ones). `--ctrl-l` presses Ctrl+L first, to open GTK's location
+coordinates, or window-relative ones). `--double-click-relative x y` stages two primary presses
+40 ms apart at one point, which is the gesture a control listening for a double click needs.
+`--ctrl-l` presses Ctrl+L first, to open GTK's location
 popup; it is **opt-in** because that popup can be slow to take focus and a key that arrives too
 early is dropped (see the probe for the default, which types into a save dialog's name entry
 instead). `--plain` skips that shortcut for an ordinary text entry.
@@ -177,6 +179,19 @@ class X:
         self.xtst.XTestFakeButtonEvent(self.display, 1, False, 0)
         self.x11.XFlush(self.display)
 
+    def double_click(self, x: int, y: int) -> None:
+        """Move the pointer to `x, y` and press twice inside the toolkit's double-click interval.
+
+        The two presses are 40 ms apart, well under GTK's default 250 ms threshold, so the
+        second one is a double click rather than two unrelated clicks. The platform's own
+        tracker decides; this only stages the gesture.
+        """
+        self.click(x, y)
+        time.sleep(0.04)
+        self.xtst.XTestFakeButtonEvent(self.display, 1, True, 0)
+        self.xtst.XTestFakeButtonEvent(self.display, 1, False, 0)
+        self.x11.XFlush(self.display)
+
     def input_focus_chain(self) -> list[int]:
         """The input focus window and its ancestors, root last.
 
@@ -298,6 +313,13 @@ def main(argv: list[str]) -> int:
             click_relative = (int(argv[index + 1]), int(argv[index + 2]))
         except (IndexError, ValueError):
             fail(64, "--click-relative needs two integers, x and y")
+    double_click_relative: tuple[int, int] | None = None
+    if "--double-click-relative" in argv:
+        index = argv.index("--double-click-relative")
+        try:
+            double_click_relative = (int(argv[index + 1]), int(argv[index + 2]))
+        except (IndexError, ValueError):
+            fail(64, "--double-click-relative needs two integers, x and y")
     # Plain typing skips the Ctrl+L that opens GTK's file-chooser location popup. A probe that
     # types into an ordinary entry wants the toolkit's normal key path, not a dialog shortcut.
     plain = "--plain" in argv
@@ -316,7 +338,7 @@ def main(argv: list[str]) -> int:
     if window is None:
         fail(3, f"no window manager window whose title contains {title!r}")
 
-    if click is not None or click_relative is not None:
+    if click is not None or click_relative is not None or double_click_relative is not None:
         # The pointer's own safety rule: the coordinates must be inside the window this tool was
         # pointed at, so a mistake here cannot click on somebody else's application.
         geometry = window_geometry(window)
@@ -325,11 +347,16 @@ def main(argv: list[str]) -> int:
         left, top, width, height = geometry
         if click_relative is not None:
             click = (left + click_relative[0], top + click_relative[1])
+        if double_click_relative is not None:
+            click = (left + double_click_relative[0], top + double_click_relative[1])
         assert click is not None
         inside = left <= click[0] < left + width and top <= click[1] < top + height
         if not inside:
             fail(2, f"refusing to click: {click} is outside {hex(window)} at {geometry}")
-        x.click(*click)
+        if double_click_relative is not None:
+            x.double_click(*click)
+        else:
+            x.click(*click)
         # A click that changes focus makes the checks below meaningful; the delay lets the toolkit
         # finish handling it.
         time.sleep(0.2)

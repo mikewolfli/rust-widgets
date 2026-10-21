@@ -745,7 +745,11 @@ impl Heatmap {
         let cell_width = grid.width as i32 / columns.max(1) as i32;
         let font_height = context.measure_text("M", font).height as i32;
         for row in 0..rows {
-            let y = grid.y + row as i32 * cell_height + cell_height / 2;
+            // The origin is the glyph box's **top edge**, so centring means subtracting half the
+            // line box. The old `row_centre` used the row's middle as the top edge, which sat
+            // every label half a line low — with three rows in a short control the labels read as
+            // one overlapping `R1R2R3` column instead of one label per row.
+            let y = grid.y + row as i32 * cell_height + (cell_height - font_height) / 2;
             // The row gutter is exactly `LABEL_GUTTER` wide and the label starts at its
             // left edge, so the room available is the gutter itself — not the distance to
             // the grid, which is the same number and would drift if the two ever stopped

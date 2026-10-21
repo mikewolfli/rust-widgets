@@ -50,12 +50,19 @@ use crate::widget::Widget;
 
 use crate::compat::{String, Vec};
 use crate::widget::advanced_widgets::calendar::Calendar;
+use crate::widget::advanced_widgets::dial::Dial;
+use crate::widget::advanced_widgets::pie_menu::PieMenu;
+use crate::widget::advanced_widgets::ribbon_bar::RibbonBar;
 use crate::widget::advanced_widgets::tab_bar::TabBar;
 use crate::widget::container_widgets::groupbox::GroupBox;
+use crate::widget::cupertino::core::MaterialNavigationRail;
 use crate::widget::dialog::bottom_sheet::BottomSheet;
 use crate::widget::dialog::dialog_widget::Dialog;
+use crate::widget::dialog::input_dialog::InputDialog;
 use crate::widget::dialog::message_box::MessageBox;
 use crate::widget::dialog::modal_bottom_sheet::ModalBottomSheet;
+use crate::widget::dialog::progress_dialog::ProgressDialog;
+use crate::widget::dialog::wizard::WizardDialog;
 use crate::widget::display_widgets::slider::{Slider, TickPosition};
 use crate::widget::display_widgets::switch::Switch;
 use crate::widget::input_widgets::cascader::{Cascader, CascaderOption};
@@ -65,10 +72,30 @@ use crate::widget::input_widgets::editable_combo_box::EditableComboBox;
 use crate::widget::input_widgets::font_combo_box::FontComboBox;
 use crate::widget::input_widgets::listbox::ListBox;
 use crate::widget::input_widgets::multi_select_combo_box::{MultiSelectComboBox, MultiSelectItem};
+use crate::widget::input_widgets::shortcut_editor::{ShortcutEditor, ShortcutEntry};
 use crate::widget::menu_toolbar::menu::Menu;
 use crate::widget::menu_toolbar::menu_button::{MenuButton, MenuItem};
+use crate::widget::misc_widgets::segmented_button::{Segment, SegmentedButton};
+use crate::widget::nav_widgets::bottom_navigation_bar::BottomNavigationBar;
+use crate::widget::overlay_widgets::refresh_control::RefreshControl;
+use crate::widget::special_widgets::breadcrumb::{Breadcrumb, BreadcrumbSegment};
+use crate::widget::special_widgets::chip::{Chip, ChipItem};
 use crate::widget::special_widgets::command_palette::{CommandEntry, CommandPalette};
+use crate::widget::special_widgets::finance::candlestick_chart::CandlestickChart;
+use crate::widget::special_widgets::finance::depth_chart::DepthChart;
+use crate::widget::special_widgets::finance::indicator_chart::IndicatorChart;
+use crate::widget::special_widgets::finance::order_book::OrderBookWidget;
+use crate::widget::special_widgets::finance::quote_board::QuoteBoard;
+use crate::widget::special_widgets::finance::volume_chart::VolumeChart;
+use crate::widget::special_widgets::finance::{Bar, BookLevel, OrderBook, PriceSeries, Quote};
+use crate::widget::special_widgets::gantt_widget::{GanttTask, GanttWidget};
+use crate::widget::special_widgets::kanban_board::{KanbanBoard, KanbanCard, KanbanColumn};
+use crate::widget::special_widgets::notification_center::{
+    NotificationCenter, NotificationItem, NotificationLevel,
+};
 use crate::widget::special_widgets::segmented_control::{SegmentItem, SegmentedControl};
+use crate::widget::special_widgets::snackbar::Snackbar;
+use crate::widget::special_widgets::timeline_widget::{TimelineItem, TimelineWidget};
 use crate::widget::view_widgets::data_grid::DataGrid;
 use crate::widget::view_widgets::data_source::IncrementalTableDataSource;
 use crate::widget::view_widgets::grid_table::GridTableWidget;
@@ -380,16 +407,18 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
 
         // ── Tabs ──
         //
-        // NOT filled. `create_tab_widget` already adds "Tab 1" and "Tab 2" itself, so the control's
-        // snapshot was never blank — it was the one data-ish control that already showed its feature. An
-        // earlier version of this module appended three more titles, which turned a correct two-tab strip
-        // into a five-tab one and made the snapshot disagree with the constructor. Leaving it alone is the
-        // fix: the gap being closed is *empty* snapshots, and this control does not have one.
+        // `create_tab_widget` seeds two tabs itself and this module leaves it alone: the gap
+        // being closed here is *empty* snapshots, and that control does not have one.
         //
-        // `tab_bar`, by contrast, is constructed empty (`create_tab_bar` passes no titles), so it is filled
-        // below.
+        // `tab_bar`'s factory constructor also seeds "Tab 1"/"Tab 2", and an earlier
+        // version of this arm **appended** three more titles on top of them. The snapshot was
+        // therefore a five-tab strip whose first two labels were constructor placeholders —
+        // the very "wrong button text" a reviewer notices first. Clearing first makes the
+        // sample the whole content, which is what `apply` means for every other control:
+        // it *supplies* the state, it does not add to it.
         "tab_bar" => match widget_as_mut::<TabBar>(widget) {
             Some(bar) => {
+                bar.clear();
                 for title in sample::tab_titles() {
                     bar.add_tab(title);
                 }
@@ -486,6 +515,359 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
             None => false,
         },
 
+        // ── Composites whose content is the feature ──
+        //
+        // Every arm below fills a control that is *correct* when empty and *unreviewable* when
+        // empty: a ribbon with no tabs draws one blank strip, a kanban board with no columns
+        // draws a blank page, a wizard with no steps draws "No steps configured". The snapshot,
+        // the census ink sample and any visual review therefore saw none of the feature the
+        // control exists for. The same reasoning as the table arms above, applied to the
+        // composites that were still shipping empty pictures.
+        "ribbon_bar" => match widget_as_mut::<RibbonBar>(widget) {
+            Some(ribbon) => {
+                // The constructor seeds no tab, so `clear` is a no-op that keeps the arm
+                // idempotent; the ids returned by `add_tab` are the indices used below.
+                ribbon.clear();
+                let home = ribbon.add_tab("Home");
+                let insert = ribbon.add_tab("Insert");
+                let clipboard = ribbon.add_group(home, "Clipboard");
+                ribbon.add_large_item(home, clipboard, "Paste");
+                let font = ribbon.add_group(home, "Font");
+                ribbon.add_item(home, font, "Bold");
+                ribbon.add_item(home, font, "Italic");
+                let shapes = ribbon.add_group(insert, "Shapes");
+                ribbon.add_large_item(insert, shapes, "Chart");
+                true
+            }
+            None => false,
+        },
+
+        // A pie menu is constructed closed, so its default picture is a dim ring with no
+        // wedges. It has to be *settled* open as well as populated: the reveal scales the
+        // radii, and a menu at progress 0.5 would make every wedge's extent depend on the
+        // frame the snapshot happened to land on.
+        "pie_menu" => match widget_as_mut::<PieMenu>(widget) {
+            Some(menu) => {
+                for label in ["Copy", "Move", "Rename", "Delete"] {
+                    menu.add_item(label);
+                }
+                menu.set_animation_progress(1.0);
+                true
+            }
+            None => false,
+        },
+
+        "kanban_board" => match widget_as_mut::<KanbanBoard>(widget) {
+            Some(board) => {
+                board.add_column(KanbanColumn::new("todo", "To Do"));
+                board.add_column(KanbanColumn::new("doing", "In Progress").with_wip_limit(2));
+                board.add_column(KanbanColumn::new("done", "Done"));
+                board.add_card(0, KanbanCard::new("card1", "Design the layout"));
+                board.add_card(
+                    0,
+                    KanbanCard::new("card2", "Write the spec").with_description("Owner: Ada"),
+                );
+                board.add_card(1, KanbanCard::new("card3", "Build the board"));
+                board.add_card(2, KanbanCard::new("card4", "Set up the repo").with_done(true));
+                true
+            }
+            None => false,
+        },
+
+        "timeline_widget" => match widget_as_mut::<TimelineWidget>(widget) {
+            Some(timeline) => {
+                // The viewport is stated rather than left at its default so the three items
+                // are inside it whatever the default range becomes.
+                timeline.set_viewport(0, 100);
+                timeline.set_items(vec![
+                    TimelineItem::new("t1", "Kickoff", 0, 20),
+                    TimelineItem::new("t2", "Design", 20, 55),
+                    TimelineItem::new("t3", "Build", 55, 95),
+                ]);
+                timeline.select_index(1);
+                true
+            }
+            None => false,
+        },
+
+        "gantt_widget" => match widget_as_mut::<GanttWidget>(widget) {
+            Some(gantt) => {
+                gantt.set_viewport(0, 100);
+                gantt.set_tasks(vec![
+                    GanttTask::new("g1", "Research", 0, 25, 100),
+                    GanttTask::new("g2", "Design", 25, 50, 60).depends_on(["g1"]),
+                    GanttTask::new("g3", "Build", 50, 90, 10).depends_on(["g2"]),
+                    GanttTask::milestone("m1", "Ship", 95),
+                ]);
+                gantt.select_index(1);
+                true
+            }
+            None => false,
+        },
+
+        "breadcrumb" => match widget_as_mut::<Breadcrumb>(widget) {
+            Some(breadcrumb) => {
+                breadcrumb.set_segments(vec![
+                    BreadcrumbSegment::new("root", "Home"),
+                    BreadcrumbSegment::new("docs", "Documents"),
+                    BreadcrumbSegment::new("project", "Project"),
+                ]);
+                // Select the last segment: a trail whose current page is marked is the state a
+                // breadcrumb exists to show, and it puts the selected style into the picture.
+                breadcrumb.set_selected_index(2);
+                true
+            }
+            None => false,
+        },
+
+        // The factory already calls `show` with the census text, which only *aims* the bar open:
+        // the draw reads the reveal, so at progress 0 a freshly shown snackbar paints nothing.
+        // Re-showing with an action and settling it puts the whole bar, its action and its
+        // message in the snapshot instead of an empty band.
+        "snackbar" => match widget_as_mut::<Snackbar>(widget) {
+            Some(snackbar) => {
+                snackbar.show_with_action("Draft saved", "Undo");
+                settle(widget, |w| {
+                    let mut settled = false;
+                    if let Some(snackbar) = widget_as_mut::<Snackbar>(w) {
+                        settled = !snackbar.tick(1000);
+                    }
+                    settled
+                });
+                true
+            }
+            None => false,
+        },
+
+        "notification_center" => match widget_as_mut::<NotificationCenter>(widget) {
+            Some(center) => {
+                center.push(NotificationItem::new(
+                    "n1",
+                    "Build finished",
+                    "All 7463 tests passed.",
+                    NotificationLevel::Info,
+                ));
+                center.push(NotificationItem::new(
+                    "n2",
+                    "Low disk space",
+                    "2.1 GB left on the root volume.",
+                    NotificationLevel::Warning,
+                ));
+                center.push(NotificationItem::new(
+                    "n3",
+                    "Update available",
+                    "Version 2.8.13 is ready to install.",
+                    NotificationLevel::Info,
+                ));
+                settle(widget, |w| {
+                    let mut settled = false;
+                    if let Some(center) = widget_as_mut::<NotificationCenter>(w) {
+                        settled = !center.tick(1000);
+                    }
+                    settled
+                });
+                true
+            }
+            None => false,
+        },
+
+        "shortcut_editor" => match widget_as_mut::<ShortcutEditor>(widget) {
+            Some(editor) => {
+                editor.add_shortcut(
+                    ShortcutEntry::new("save", "Save", "File").with_keys(vec!["Ctrl", "S"]),
+                );
+                editor.add_shortcut(
+                    ShortcutEntry::new("open", "Open", "File").with_keys(vec!["Ctrl", "O"]),
+                );
+                editor.add_shortcut(
+                    ShortcutEntry::new("find", "Find", "Edit").with_keys(vec!["Ctrl", "F"]),
+                );
+                editor.add_shortcut(
+                    ShortcutEntry::new("palette", "Command Palette", "View")
+                        .with_keys(vec!["Ctrl", "Shift", "P"]),
+                );
+                true
+            }
+            None => false,
+        },
+
+        "wizard_dialog" => match widget_as_mut::<WizardDialog>(widget) {
+            Some(wizard) => {
+                wizard.set_title("Setup".to_string());
+                wizard.add_step("Welcome", false);
+                wizard.add_step("Options", true);
+                wizard.add_step("Finish", false);
+                true
+            }
+            None => false,
+        },
+
+        "progress_dialog" => match widget_as_mut::<ProgressDialog>(widget) {
+            Some(dialog) => {
+                dialog.set_title("Installing");
+                dialog.set_label_text("Copying files...");
+                dialog.set_value(45);
+                true
+            }
+            None => false,
+        },
+
+        // An empty input dialog is two blank bands: the label row and the field row have no
+        // text to show, so the control's layout (label above field, field above buttons) is
+        // unreviewable. The fill supplies one of each.
+        "input_dialog" => match widget_as_mut::<InputDialog>(widget) {
+            Some(dialog) => {
+                dialog.set_title("Rename");
+                dialog.set_label_text("Name");
+                dialog.set_text_value("Document");
+                true
+            }
+            None => false,
+        },
+
+        // A dial without notches is a disc and a needle: the notch ring, which is the control's
+        // whole scale, is only drawn when the caller asks for it. Value 65 puts the needle away
+        // from the minimum, where "needle at the left stop" and "no value at all" look alike.
+        "dial" => match widget_as_mut::<Dial>(widget) {
+            Some(dial) => {
+                dial.set_notches_visible(true);
+                // The default target (3.7 px) yields ~70 notches on a 60 px dial — a starburst
+                // rather than a readable scale. 10 px is roughly one notch per 10 degrees.
+                dial.set_notch_target(10.0);
+                dial.set_value(65);
+                true
+            }
+            None => false,
+        },
+
+        // The factory builds a one-segment button from the census text, which is a control with
+        // no division to review. Three segments and a selection are the state the compound shape
+        // exists for; `segments_mut().clear()` first so the census text is *replaced*, not kept as
+        // a fourth segment (the same mistake `tab_bar` made).
+        "segmented_button" => match widget_as_mut::<SegmentedButton>(widget) {
+            Some(button) => {
+                button.segments_mut().clear();
+                button.add_segment(Segment::new("Day"));
+                button.add_segment(Segment::new("Week"));
+                button.add_segment(Segment::new("Month"));
+                button.set_selected_index(Some(1));
+                true
+            }
+            None => false,
+        },
+
+        "chip" => match widget_as_mut::<Chip>(widget) {
+            Some(chip) => {
+                let mut items = vec![
+                    ChipItem::new("bug", "Bug"),
+                    ChipItem::new("feature", "Feature"),
+                    ChipItem::new("docs", "Docs"),
+                ];
+                if let Some(first) = items.first_mut() {
+                    first.selected = true;
+                }
+                chip.set_items(items);
+                true
+            }
+            None => false,
+        },
+
+        // Navigation bars are item lists with no default item, so their default picture is an
+        // empty surface. The items are named icons (`home`, `search`, …) rather than letters:
+        // `draw_icon_named` resolves them to the bundled outlines, so the snapshot shows the
+        // same affordances a host gets when it passes those names.
+        "bottom_navigation_bar" => match widget_as_mut::<BottomNavigationBar>(widget) {
+            Some(bar) => {
+                bar.add_item("home", "Home");
+                bar.add_item("search", "Search");
+                bar.add_item("bell", "Alerts");
+                bar.add_item("user", "Profile");
+                bar.set_selected_index(0);
+                true
+            }
+            None => false,
+        },
+
+        "material_navigation_rail" => match widget_as_mut::<MaterialNavigationRail>(widget) {
+            Some(rail) => {
+                rail.add_item("home", "Home");
+                rail.add_item("search", "Search");
+                rail.add_item("settings", "Settings");
+                rail.set_selected(1);
+                true
+            }
+            None => false,
+        },
+
+        // A refresh wrapper at rest paints its content and nothing else, and the sample has no
+        // content to mount. Settling it into the refreshing state puts the one piece of chrome
+        // the control owns — the indicator strip — into its own picture.
+        "refresh_control" => match widget_as_mut::<RefreshControl>(widget) {
+            Some(refresh) => {
+                refresh.start_pull();
+                refresh.update_pull(refresh.threshold() + 16.0);
+                refresh.end_pull();
+                settle(widget, |w| {
+                    let mut settled = false;
+                    if let Some(refresh) = widget_as_mut::<RefreshControl>(w) {
+                        settled = !refresh.tick(1000);
+                    }
+                    settled
+                });
+                true
+            }
+            None => false,
+        },
+
+        // ── Financial charts ──
+        //
+        // These six controls have no default data and draw a literal "No data" plate at rest,
+        // which is the correct *empty* state and an uninformative *snapshot* one: axes, the
+        // candle/liquidity geometry, the depth curve and the quote columns were all absent from
+        // the census. The data is deterministic so the snapshots do not rotate.
+        "candlestick_chart" => match widget_as_mut::<CandlestickChart>(widget) {
+            Some(chart) => {
+                chart.set_series(sample_price_series());
+                true
+            }
+            None => false,
+        },
+        "volume_chart" => match widget_as_mut::<VolumeChart>(widget) {
+            Some(chart) => {
+                chart.set_series(sample_price_series());
+                true
+            }
+            None => false,
+        },
+        "indicator_chart" => match widget_as_mut::<IndicatorChart>(widget) {
+            Some(chart) => {
+                chart.set_series(sample_price_series());
+                true
+            }
+            None => false,
+        },
+        "depth_chart" => match widget_as_mut::<DepthChart>(widget) {
+            Some(chart) => {
+                chart.set_book(sample_order_book());
+                true
+            }
+            None => false,
+        },
+        "order_book" => match widget_as_mut::<OrderBookWidget>(widget) {
+            Some(book) => {
+                book.set_book(sample_order_book());
+                true
+            }
+            None => false,
+        },
+        "quote_board" => match widget_as_mut::<QuoteBoard>(widget) {
+            Some(board) => {
+                board.set_quotes(sample_quotes());
+                true
+            }
+            None => false,
+        },
+
         // Everything else has no data concept, or is already seeded by its own constructor (the charts).
         _ => false,
     }
@@ -538,6 +920,73 @@ fn sample_cascade() -> Vec<CascaderOption> {
         CascaderOption::branch("items", "Items", leaves(&["Widget", "Gadget", "Cog"])),
         CascaderOption::branch("parts", "Parts", leaves(&["Bolt", "Nut", "Washer"])),
     ]
+}
+
+/// A deterministic 24-bar price series with hour labels.
+///
+/// One series serves the candlestick, volume and indicator charts, so the three snapshots are
+/// three views of the same data — a difference between them is a layout difference, which is
+/// what a reviewer is looking for. Deterministic (no clock, no RNG) because these files are
+/// committed artifacts.
+fn sample_price_series() -> PriceSeries {
+    let mut series = PriceSeries::new();
+    let mut price: f64 = 100.0;
+    for index in 0..24 {
+        // A mild saw pattern: rising over each six-bar window, with a pull-back in the middle.
+        let drift = match index % 6 {
+            0 => 1.8,
+            1 => 0.9,
+            2 => -0.7,
+            3 => 1.4,
+            4 => -1.1,
+            _ => 0.6,
+        };
+        let open = price;
+        let close = open + drift;
+        let high = open.max(close) + 0.6;
+        let low = open.min(close) - 0.5;
+        let volume = 1200.0 + index as f64 * 137.0;
+        series
+            .push_with_label(Bar::new(open, high, low, close, volume), format!("{:02}:00", index));
+        price = close;
+    }
+    series
+}
+
+/// A five-level book on each side, with size growing away from the touch.
+fn sample_order_book() -> OrderBook {
+    let mut book = OrderBook::new();
+    book.set_bids(
+        (0..5)
+            .map(|level| BookLevel::new(99.9 - level as f64 * 0.1, 12.0 + level as f64 * 7.0))
+            .collect(),
+    );
+    book.set_asks(
+        (0..5)
+            .map(|level| BookLevel::new(100.0 + level as f64 * 0.1, 10.0 + level as f64 * 6.0))
+            .collect(),
+    );
+    book
+}
+
+/// Five quotes with both a riser and a faller, so the board's up/down colours are both visible.
+fn sample_quotes() -> Vec<Quote> {
+    let rows: [(&str, f64, f64, f64); 5] = [
+        ("AAPL", 189.5, 187.2, 54_120_000.0),
+        ("MSFT", 412.8, 416.1, 21_400_000.0),
+        ("NVDA", 128.4, 121.9, 310_800_000.0),
+        ("TSLA", 246.2, 249.7, 98_600_000.0),
+        ("AMD", 162.7, 159.4, 44_900_000.0),
+    ];
+    rows.iter()
+        .map(|(symbol, last, previous_close, volume)| {
+            let mut quote = Quote::new(symbol, *last, *previous_close);
+            quote.high = (*last).max(*previous_close) + 1.2;
+            quote.low = (*last).min(*previous_close) - 1.2;
+            quote.volume = *volume;
+            quote
+        })
+        .collect()
 }
 
 /// A `TableModel` over [`crate::widget::sample_data::ROWS`].
@@ -628,6 +1077,30 @@ mod tests {
             "tab_bar",
             "segmented_control",
             "calendar",
+            "ribbon_bar",
+            "pie_menu",
+            "kanban_board",
+            "timeline_widget",
+            "gantt_widget",
+            "breadcrumb",
+            "snackbar",
+            "notification_center",
+            "shortcut_editor",
+            "wizard_dialog",
+            "progress_dialog",
+            "input_dialog",
+            "dial",
+            "segmented_button",
+            "chip",
+            "candlestick_chart",
+            "volume_chart",
+            "indicator_chart",
+            "depth_chart",
+            "order_book",
+            "quote_board",
+            "bottom_navigation_bar",
+            "material_navigation_rail",
+            "refresh_control",
         ];
         for name in claimed {
             let Some(mut widget) =

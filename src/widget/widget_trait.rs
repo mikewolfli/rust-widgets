@@ -34,10 +34,24 @@ pub trait Widget: EventHandler + Any {
             core::any::type_name::<Self>()
         );
     }
+    /// Get the cursor shape this control wants while the pointer is at `point`.
+    ///
+    /// A control whose pointer intent depends on *where* it is hovered overrides
+    /// this, not [`Self::cursor_icon`]: a code editor is an I-beam over the text and
+    /// an arrow over its gutter, minimap and scrollbar, and one shape for the whole
+    /// rectangle cannot say that. `point` is in the window's logical coordinates —
+    /// the same space a widget's geometry lives in — so a control that owns an
+    /// absolute rectangle can hit-test it directly.
+    ///
+    /// The default is the whole-widget answer, so a control with one intent keeps
+    /// implementing [`Self::cursor_icon`] alone.
+    fn cursor_icon_at(&self, _point: crate::core::Point) -> crate::platform::CursorIcon {
+        self.cursor_icon()
+    }
     /// Get the cursor shape this control wants while hovered.
     ///
     /// BLUE28 B28.09: intent lives on the control; the runtime dispatches it once per hover
-    /// change through `Platform::set_cursor`. The single match here is the default policy for
+    /// change through [`Platform::set_cursor`]. The single match here is the default policy for
     /// every widget, so a new control inherits a sensible shape without a second table to sync.
     fn cursor_icon(&self) -> crate::platform::CursorIcon {
         use crate::platform::CursorIcon;

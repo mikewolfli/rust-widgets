@@ -3958,7 +3958,7 @@ dependencies = [
 
 [[package]]
 name = "rust_widgets"
-version = "2.8.12"
+version = "2.8.13"
 dependencies = [
  "aes",
  "boa_engine",
@@ -4008,6 +4008,7 @@ dependencies = [
  "tempfile",
  "ttf-parser",
  "unicode-bidi",
+ "unicode-width",
  "ureq",
  "wasm-bindgen",
  "wasm-bindgen-futures",

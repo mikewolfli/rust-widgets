@@ -492,7 +492,10 @@ impl Draw for ProgressDialog {
         // a literal.
         let body =
             ControlMetrics::content_below_top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
-        let button_band = ControlMetrics::bottom_band(body, dimensions::DIALOG_BUTTON_HEIGHT);
+        let button_band = super::message_box::inset_action_band(
+            ControlMetrics::bottom_band(body, dimensions::DIALOG_BUTTON_HEIGHT),
+            body.y,
+        );
         let content =
             ControlMetrics::content_above_bottom_band(body, dimensions::DIALOG_BUTTON_HEIGHT);
         let label_font = font;

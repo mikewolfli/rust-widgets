@@ -712,10 +712,14 @@ impl MessageBox {
         let context = RenderContext::new(&mut backend);
         let rect = self.frame_rect(&context);
         // The band the buttons are drawn in: the strip the title bar leaves, minus the row the
-        // message occupies — the same two derivations `draw` uses, in the same order.
+        // message occupies — the same two derivations `draw` uses, in the same order, and the
+        // same `inset_action_band` that keeps the row off the frame's rounded corners.
         let body =
             ControlMetrics::content_below_top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
-        let button_band = ControlMetrics::bottom_band(body, dimensions::DIALOG_BUTTON_HEIGHT);
+        let button_band = inset_action_band(
+            ControlMetrics::bottom_band(body, dimensions::DIALOG_BUTTON_HEIGHT),
+            body.y,
+        );
         // `place` is true exactly when the box has buttons, which is the same condition `draw`
         // passes: a box with no buttons has no row to hit and `hit` on an empty row is `None`
         // anyway, but the flag also keeps the two call sites reading the same way.
@@ -809,8 +813,19 @@ impl Draw for MessageBox {
         let title_bar = surface.blend(&ink, 0.08);
         // An ordinary button is a raised step on the frame; the default button is the
         // theme's action colour with text chosen for contrast against it.
+        //
+        // The default button used to read `theme.background_color` — the *window* fill, not the
+        // action colour — so the one affirmative action in the box was painted the same colour as
+        // the frame behind it and the census sample showed no primary button at all. `primary` is
+        // the token every other dialog's accept button uses.
         let button_fill = surface.blend(&ink, 0.12);
-        let primary = theme.as_ref().and_then(|t| t.background_color).unwrap_or(button_fill);
+        let primary = {
+            let manager = crate::style::theme_manager();
+            manager
+                .current_theme()
+                .map(|active| active.colors.primary)
+                .unwrap_or(Color::rgb(0, 120, 215))
+        };
         let primary_ink = primary.contrast_color();
 
         // A dialog is a normal widget: every element it emits has to stay inside its own
@@ -891,7 +906,13 @@ impl Draw for MessageBox {
         };
 
         // The button row is the bottom band; the message occupies what is left above it.
-        let button_band = ControlMetrics::bottom_band(body, dimensions::DIALOG_BUTTON_HEIGHT);
+        //
+        // The band is inset from the frame's own edges: a row flush with them put the last
+        // button's corner on top of the frame's rounded corner (the census sample showed the OK
+        // button cutting the bottom-right radius). `inset_action_band` is shared with
+        // `action_button_at`, so the press and the ink still describe one geometry.
+        let bottom_band = ControlMetrics::bottom_band(body, dimensions::DIALOG_BUTTON_HEIGHT);
+        let button_band = inset_action_band(bottom_band, body.y);
         // The row is computed **before** the message band, because the message band's own
         // trailing edge is derived from the row. That is the sibling-column relation — the
         // text side's padding is the sibling column's width — and it is the whole reason
@@ -1037,6 +1058,23 @@ impl ActionRowGeometry {
 /// and would lose the layout's device scaling (`update_with_context` grows the row's gaps with
 /// the text-size preference) — the failure mode where a control's own padding scales with the
 /// font and its gaps do not.
+/// Insets a dialog's action row from the frame's own edges.
+///
+/// A row flush with the frame puts the last button's corner on top of the frame's rounded
+/// corner — the census snapshot showed the OK button cutting the bottom-right radius. The same
+/// inset is used by the paint and by the hit test, so widening or moving the row cannot make
+/// the clickable button differ from the painted one.
+pub(crate) fn inset_action_band(band: Rect, frame_top: i32) -> Rect {
+    const MARGIN_X: u32 = 8;
+    const MARGIN_BOTTOM: i32 = 4;
+    Rect::new(
+        band.x + MARGIN_X as i32,
+        (band.y - MARGIN_BOTTOM).max(frame_top),
+        band.width.saturating_sub(MARGIN_X * 2),
+        band.height,
+    )
+}
+
 pub(crate) fn action_row_geometry(
     context: &RenderContext,
     font: &Font,

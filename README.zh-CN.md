@@ -26,18 +26,18 @@
 
 ```toml
 [dependencies]
-rust_widgets = "2.8.12"
+rust_widgets = "2.8.13"
 ```
 
 **必须且只能选择一个设备配置**。它们互斥：`mini` 与 `embedded` 会把 crate 的一部分*编译掉*，
 与 `desktop` 叠加不是“取最小公共集”，而是一个无法工作的构建。
 
 ```toml
-rust_widgets = { version = "2.8.12", features = ["desktop"] }                       # 默认
-rust_widgets = { version = "2.8.12", default-features = false, features = ["tablet"] }
-rust_widgets = { version = "2.8.12", default-features = false, features = ["mobile"] }
-rust_widgets = { version = "2.8.12", default-features = false, features = ["embedded"] }
-rust_widgets = { version = "2.8.12", default-features = false, features = ["mini"] }
+rust_widgets = { version = "2.8.13", features = ["desktop"] }                       # 默认
+rust_widgets = { version = "2.8.13", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "2.8.13", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "2.8.13", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "2.8.13", default-features = false, features = ["mini"] }
 ```
 
 | 配置 | 适用场景 |
@@ -103,6 +103,18 @@ fn main() {
   通过 CoreText、Windows 通过 DirectWrite、Linux/BSD 通过 fontconfig、Android 通过 `/system/fonts`
   枚举。`FontDialog` 与 `FontComboBox::load_system_fonts` 共用一份进程级快照；选择某个家族时，如果
   后端给出了对应文件，就通过 `register_face` 真正加载它。
+- 内置的 `fonts-cjk` 字体是**子集**：ASCII、CJK 标点、假名、全角形式与 U+4E00 起的前 1000 个汉字。
+  界面文字超出该子集时，宿主在启动时调用一次 `render::text::register_system_cjk_font()`
+  （特性 `runtime-fonts`）：它按顺序尝试常见中文字体，为第一个已安装的家族注册其文件并返回家族名。
+  返回 `None` 表示本机没有可用的 CJK 字体，缺失的字会画成方框——选择由宿主决定，因为用哪个
+  家族属于排版决策。
+- `CodeEditor` 按**实际字体度量**排版，而不是固定字符格：内置拉丁字体是比例字体（Open Sans），
+  `column × cell` 从来就不是字形真正落下的位置。行高为 `font_size × line_height_ratio`（默认 `1.5`，
+  Zed 的 `Standard` 是 `1.3`、`Comfortable` 是 `1.618`），`line_advance(0.0)` 表示“由字号推导”。
+  指针在正文上是 I 型光标，在行号槽、缩略图和滚动条上恢复箭头；点击缩略图会按比例滚动视口。
+  输入法的预编辑串在提交前绘制在光标处；标签页宽度按字体度量，带关闭按钮与悬停底色；
+  点击行号选中整行；`Ctrl`+点击增加光标；软换行的续行沿用该行的缩进；
+  `relative_line_numbers` 把行号槽切换为相对光标的编号。
 - `Icon` 提供 **69** 个 `IconName` 令牌。三个完整配置默认绘制真实的 **Material Symbols** 轮廓；
   `mini` / `embedded` 绘制由同一份轮廓生成的几何图形，因此两条路径不会给出不同形状。宿主可以用
   `register_icon` 或 `register_icon_on_grid` 添加自己的图标。

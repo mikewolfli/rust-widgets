@@ -550,7 +550,10 @@ impl Draw for ColorDialog {
         // derivation, so this dialog and the five others that draw the same pair cannot
         // disagree about the button width, the gap between them, or where the row's left edge
         // falls. The labels are centred in their buttons and fitted to them.
-        let band = Rect::new(rect.x, self.button_row_top(), rect.width, Self::BUTTON_HEIGHT as u32);
+        let band = super::message_box::inset_action_band(
+            Rect::new(rect.x, self.button_row_top(), rect.width, Self::BUTTON_HEIGHT as u32),
+            rect.y,
+        );
         let labels = vec![
             super::localized_label("common.button.ok", "OK"),
             super::localized_label("common.button.cancel", "Cancel"),

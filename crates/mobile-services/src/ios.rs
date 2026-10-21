@@ -26,8 +26,8 @@
 //! [`permission_status`] never has to block except for its first notification query.
 
 use crate::{
-    validate_url, HapticKind, MobileServices, NotificationRequest, Permission, Service,
-    ServiceError, ShareRequest, Status,
+    validate_url, HapticKind, Insets, MobileServices, NotificationRequest, Orientation, Permission,
+    Service, ServiceError, ShareRequest, Status,
 };
 use block2::RcBlock;
 use core::ptr::NonNull;
@@ -40,8 +40,8 @@ use objc2_av_foundation::{
 use objc2_foundation::{NSArray, NSError, NSString, NSURL};
 use objc2_photos::{PHAccessLevel, PHAuthorizationStatus, PHPhotoLibrary};
 use objc2_ui_kit::{
-    UIActivityViewController, UIApplication, UIImpactFeedbackGenerator, UIImpactFeedbackStyle,
-    UINotificationFeedbackGenerator, UINotificationFeedbackType,
+    UIActivityViewController, UIApplication, UIEdgeInsets, UIImpactFeedbackGenerator,
+    UIImpactFeedbackStyle, UINotificationFeedbackGenerator, UINotificationFeedbackType,
 };
 use objc2_user_notifications::{
     UNAuthorizationOptions, UNAuthorizationStatus, UNMutableNotificationContent,
@@ -119,6 +119,13 @@ impl MobileServices for IosServices {
             | Service::Notifications
             | Service::Share
             | Service::DeepLink => Status::Available,
+            // Reading insets is a plain property read on the key window.
+            Service::SafeArea => Status::Available,
+            // Locking the axis on iOS is declared by the host view controller's
+            // `supportedInterfaceOrientations`; this crate does not own that controller, and
+            // `UIDevice.setValue(_:forKey:"orientation")` is a private API. Reporting
+            // `Unsupported` is the only honest answer.
+            Service::Orientation => Status::Unsupported,
             Service::Sensors | Service::Location => Status::Unsupported,
         }
     }
@@ -322,6 +329,31 @@ impl MobileServices for IosServices {
         } else {
             Err(ServiceError::Failed)
         }
+    }
+
+    fn safe_area(&self) -> Result<Insets, ServiceError> {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return Err(ServiceError::Failed);
+        };
+        let Some(window) = UIApplication::sharedApplication(mtm).keyWindow() else {
+            // No key window yet (the app is launching): zero is the honest answer, see the
+            // trait documentation.
+            return Ok(Insets::ZERO);
+        };
+        let insets: UIEdgeInsets = window.safeAreaInsets();
+        Ok(Insets {
+            top: insets.top as f32,
+            right: insets.right as f32,
+            bottom: insets.bottom as f32,
+            left: insets.left as f32,
+        })
+    }
+
+    fn set_orientation(&self, _orientation: Orientation) -> Result<(), ServiceError> {
+        // See `availability`: the supported set belongs to the host's view controller. The call
+        // is accepted by the trait so a cross-platform host has one call site, and it answers
+        // `Unsupported` instead of silently doing nothing.
+        Err(ServiceError::Unsupported)
     }
 }
 

@@ -632,13 +632,15 @@ impl Draw for InputDialog {
             );
             context.draw_rect(rect, border);
         }
-        // Title bar: a separate region from the dialog surface, in the theme's accent
-        // rather than the literal blue it carried before. The label is fitted to the bar,
-        // so a long title truncates at the bar's edge instead of running past the frame, and
-        // it is centred on the bar's own band through the shared primitive rather than at a
-        // literal `y`. The strip comes from `top_band`, which keeps its thickness.
+        // Title bar: a separate region from the dialog surface, derived from it one visible step
+        // rather than filled with the accent. Every other dialog in the crate uses a neutral
+        // title strip; the accent fill made this one look like a different class of window (and a
+        // blue header is not macOS chrome). The accent still fills the accept button below, where
+        // a call to action belongs. The label is fitted to the bar, so a long title truncates at
+        // the bar's edge instead of running past the frame.
+        let title_bar = surface.blend(&ink, 0.08);
         let title_bar_band = ControlMetrics::top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
-        context.fill_rect(title_bar_band, accent);
+        context.fill_rect(title_bar_band, title_bar);
         if !self.title.is_empty() {
             let title_font = font;
             let title_line = context.text_line(title_bar_band, title_font);
@@ -651,7 +653,7 @@ impl Draw for InputDialog {
                 ),
                 &self.title,
                 title_font,
-                accent_ink,
+                ink,
                 HorizontalAlignment::Left,
             );
         }
@@ -720,7 +722,10 @@ impl Draw for InputDialog {
         // with, so the six cannot disagree about the button width, the gap or the row's left
         // edge. Taking the row from `bottom_band` is what stops the buttons floating up at a
         // tall frame (the old `rect.height - 40`) or clipping at a short one.
-        let button_band = ControlMetrics::bottom_band(rect, dimensions::DIALOG_BUTTON_HEIGHT);
+        let button_band = super::message_box::inset_action_band(
+            ControlMetrics::bottom_band(rect, dimensions::DIALOG_BUTTON_HEIGHT),
+            rect.y,
+        );
         let labels = vec![
             super::localized_label("common.button.ok", "OK"),
             super::localized_label("common.button.cancel", "Cancel"),

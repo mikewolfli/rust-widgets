@@ -716,7 +716,10 @@ impl Draw for FontDialog {
         );
         // The button row is reserved first; every band above it is derived from what is left,
         // through `layout()`, so the painter and `row_at()` cannot disagree.
-        let button_band = ControlMetrics::bottom_band(rect, dimensions::DIALOG_BUTTON_HEIGHT);
+        let button_band = super::message_box::inset_action_band(
+            ControlMetrics::bottom_band(rect, dimensions::DIALOG_BUTTON_HEIGHT),
+            rect.y,
+        );
         const COL_GAP: i32 = 4;
         let col_w = layout.col_w;
         let list_y = layout.list_y;

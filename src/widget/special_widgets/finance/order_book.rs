@@ -58,7 +58,6 @@ pub struct OrderBookWidget {
     decimals: Option<usize>,
     bid_color: Color,
     ask_color: Color,
-    text_color: Color,
     hovered: Option<(BookSide, usize)>,
     /// Emitted with the side and the level index when a row is clicked.
     pub level_clicked: crate::signal::Signal1<(BookSide, usize)>,
@@ -78,7 +77,6 @@ impl OrderBookWidget {
             decimals: None,
             bid_color: Color::rgb(38, 166, 91),
             ask_color: Color::rgb(220, 68, 70),
-            text_color: Color::rgb(214, 220, 228),
             hovered: None,
             level_clicked: crate::signal::Signal1::new(),
             level_hovered: crate::signal::Signal1::new(),
@@ -492,11 +490,14 @@ impl Draw for OrderBookWidget {
                     HorizontalAlignment::Left,
                 );
                 if quantity_x > geometry.x && quantity_x < geometry.x + geometry.width as i32 - 8 {
+                    // The quantity is neutral body text. It used to read a light-on-dark
+                    // literal stored at construction, so on a light theme the ladder's
+                    // sizes were painted in a colour barely distinguishable from the panel.
                     context.draw_text(
                         Point { x: quantity_x, y: text_y },
                         &quantity_text,
                         &role_font(self.style(), 11.0),
-                        self.text_color,
+                        secondary,
                         HorizontalAlignment::Left,
                     );
                 }
@@ -514,12 +515,24 @@ impl Draw for OrderBookWidget {
                 1,
             );
             let text = alloc::format!("spread {}", format_price(spread, decimals));
+            // Centred on the spine rather than started at the frame's left margin: at that
+            // margin the label sat on top of the last bid's price (the census sample read
+            // `99.5spread 0.1`), because the row above the rule still owns that column. The
+            // spine is the one place in the middle band that neither side's text occupies —
+            // and because the size bars do reach it, the label is laid on a piece of the panel
+            // first, so it is never read against a bid or an ask colour.
+            let font = role_font(self.style(), 10.0);
+            let label_w = context.measure_text(&text, &font).width as i32;
+            context.fill_rect(
+                Rect::new(spine - label_w / 2 - 3, y - 14, (label_w + 6).max(1) as u32, 13),
+                panel,
+            );
             context.draw_text(
-                Point { x: geometry.x + 6, y: y - 13 },
+                Point { x: spine, y: y - 13 },
                 &text,
-                &role_font(self.style(), 10.0),
+                &font,
                 ink.blend(&panel, 0.45),
-                HorizontalAlignment::Left,
+                HorizontalAlignment::Center,
             );
         }
     }

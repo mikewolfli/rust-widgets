@@ -122,7 +122,22 @@ pub(crate) fn mount_canvas(
     let origin = Point::new(rect.x, rect.y);
 
     let double_click = Rc::new(RefCell::new(DoubleClickTracker::new()));
+    // GDK event time of the last press this surface delivered.
+    //
+    // One primary press is emitted to this handler **twice** (same X timestamp), measured with
+    // an instrumented build: two presses 40 ms apart logged three calls, the third repeating the
+    // second's time. A press that reaches the widget twice is mostly harmless, but a *gesture*
+    // is not: the first delivery was translated to `MouseDoubleClick` (selecting the word) and
+    // the duplicate, arriving after the tracker reset, became an ordinary press and collapsed
+    // the selection again. Ignoring a press with a timestamp already handled makes the double
+    // click behave as one.
+    let last_press_time = Rc::new(core::cell::Cell::new(0u32));
     area.connect_button_press_event(move |area, event| {
+        let time = event.time();
+        if last_press_time.get() == time {
+            return glib::Propagation::Stop;
+        }
+        last_press_time.set(time);
         let position = Point::new(event.position().0 as i32, event.position().1 as i32);
         let absolute = Point::new(origin.x + position.x, origin.y + position.y);
         // A second primary press inside GTK's own double-click interval becomes
@@ -149,21 +164,41 @@ pub(crate) fn mount_canvas(
             press_area.queue_draw();
             note_canvas_redraw(id);
         }
-        glib::Propagation::Proceed
+        // **Stop** after delivery: the window's paint area has its own pointer handler,
+        // and GTK propagates an unhandled press from this surface up to it. Both
+        // handlers translate and dispatch, so one physical click reached the control
+        // twice — harmless for a caret, destructive for a gesture: the window's
+        // tracker saw the second press of a double click and sent
+        // `MouseDoubleClick` (selecting the word), then this surface's fresh tracker
+        // saw the same press as an ordinary one (collapsing the selection again).
+        // Letting an *undelivered* event proceed keeps clicks outside every surface
+        // reaching the window handler.
+        if delivered {
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
     });
 
     area.connect_button_release_event(move |widget, event| {
         let position = Point::new(event.position().0 as i32, event.position().1 as i32);
         let absolute = Point::new(origin.x + position.x, origin.y + position.y);
-        if forward_pointer_to_platform(
+        let delivered = forward_pointer_to_platform(
             id,
             &Event::MouseRelease { pos: absolute, button: 1 },
             absolute,
-        ) {
+        );
+        if delivered {
             widget.queue_draw();
             note_canvas_redraw(id);
         }
-        glib::Propagation::Proceed
+        // See the press handler: a delivered event must not bubble to the window's
+        // handler, or one release would be applied twice.
+        if delivered {
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
     });
 
     area.connect_motion_notify_event(move |widget, event| {
@@ -177,13 +212,19 @@ pub(crate) fn mount_canvas(
         } else {
             Some(crate::widget::runtime::hovered_widget())
         };
-        if forward_pointer_to_platform(id, &Event::MouseMove { pos: absolute }, absolute)
-            && hover_before != Some(crate::widget::runtime::hovered_widget())
-        {
+        let delivered =
+            forward_pointer_to_platform(id, &Event::MouseMove { pos: absolute }, absolute);
+        if delivered && hover_before != Some(crate::widget::runtime::hovered_widget()) {
             widget.queue_draw();
             note_canvas_redraw(id);
         }
-        glib::Propagation::Proceed
+        // A delivered motion is not re-dispatched by the window handler: a drag would
+        // otherwise advance the selection by two sample positions per physical move.
+        if delivered {
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
     });
 
     // GTK delivers a crossing event when the pointer leaves the area, which is the one
@@ -244,8 +285,10 @@ pub(crate) fn mount_canvas(
         if forward_pointer_to_platform(id, &widget_event, absolute) {
             widget.queue_draw();
             note_canvas_redraw(id);
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
         }
-        glib::Propagation::Proceed
     });
 
     area.connect_key_press_event(move |widget, event| {

@@ -19,7 +19,7 @@ bottom_navigation_bar: selected_changed
 bottom_sheet: dismissed
 breadcrumb: segment_activated
 button: canceled, clicked, pressed, released, state_changed
-calendar: selection_changed
+calendar: selection_changed, activated, current_page_changed
 camera_preview:
 candlestick_chart: bar_clicked, bar_hovered, bar_unhovered
 canvas: mouse_pressed, mouse_released, mouse_moved, double_clicked

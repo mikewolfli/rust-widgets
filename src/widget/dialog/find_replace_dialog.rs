@@ -33,6 +33,13 @@ const BTN_SIZE: u32 = 24;
 /// disagree (`24` at the draw site, a `28` stride the hit test measured with), so the
 /// clickable area of Replace All sat one inset to the left of the button it named.
 const ARROW_BTN: u32 = 24;
+/// The width of the two replacement buttons on the replace row.
+///
+/// Wider than the arrow buttons because their labels are words, not glyphs: at `24` the labels
+/// could only be `R` and `RA`, which a reader has to decode and which were the most conspicuous
+/// wrong labels in the control. The trailing group is derived from this constant in both the draw
+/// path and the hit test, so widening it moves the clickable button with the painted one.
+const REPLACE_BTN: u32 = 52;
 /// The width of the "Find:" / "Rpl:" label column.
 ///
 /// Both rows reserve the same column, so the two entry fields start on the same x. The
@@ -654,7 +661,7 @@ impl Draw for FindReplaceDialog {
             "Aa",
             font,
             if self.match_case { accent_ink } else { ink },
-            HorizontalAlignment::Left,
+            HorizontalAlignment::Center,
         );
         x += BTN_SIZE as i32 + GAP;
 
@@ -668,7 +675,7 @@ impl Draw for FindReplaceDialog {
             "W",
             font,
             if self.whole_word { accent_ink } else { ink },
-            HorizontalAlignment::Left,
+            HorizontalAlignment::Center,
         );
         x += BTN_SIZE as i32 + GAP;
 
@@ -682,7 +689,7 @@ impl Draw for FindReplaceDialog {
             ".*",
             font,
             if self.use_regex { accent_ink } else { ink },
-            HorizontalAlignment::Left,
+            HorizontalAlignment::Center,
         );
         x += BTN_SIZE as i32 + GAP;
 
@@ -696,7 +703,7 @@ impl Draw for FindReplaceDialog {
             "H",
             font,
             if self.highlight_all { accent_ink } else { ink },
-            HorizontalAlignment::Left,
+            HorizontalAlignment::Center,
         );
         x += BTN_SIZE as i32 + GAP;
 
@@ -732,7 +739,7 @@ impl Draw for FindReplaceDialog {
         // The replace row's trailing group is the two action buttons and the two GAPs
         // around them, laid out from the right edge by the same helper as the find row, so
         // the Replace All button sits inside the frame instead of 30 px past it.
-        let r_trailing = GAP * 2 + ARROW_BTN as i32 * 2;
+        let r_trailing = GAP * 2 + REPLACE_BTN as i32 * 2;
         let r_input_width =
             (replace_row.width as i32 - label_col as i32 - GAP - r_trailing).max(0) as u32;
         let mut x2 = replace_row.x;
@@ -763,18 +770,20 @@ impl Draw for FindReplaceDialog {
         }
         x2 = Self::trailing_x(replace_row, r_trailing);
 
-        // Replace button
-        let rep_rect = Rect::new(x2, replace_row.y, ARROW_BTN, replace_row.height);
+        // Replace button. The labels are words rather than `R`/`RA`: a one- or two-letter label
+        // is a code the reader has to puzzle out, and at this width there is room for `Rpl` and
+        // `Rpl All` when the two buttons take `REPLACE_BTN` each.
+        let rep_rect = Rect::new(x2, replace_row.y, REPLACE_BTN, replace_row.height);
         context.fill_rect(rep_rect, muted);
         let rep_line = self.text_line(rep_rect, font, context);
-        context.draw_text_fitted(rep_line, "R", font, muted_ink, HorizontalAlignment::Left);
-        x2 += ARROW_BTN as i32 + GAP;
+        context.draw_text_fitted(rep_line, "Rpl", font, muted_ink, HorizontalAlignment::Center);
+        x2 += REPLACE_BTN as i32 + GAP;
 
         // Replace All button
-        let ra_rect = Rect::new(x2, replace_row.y, ARROW_BTN, replace_row.height);
+        let ra_rect = Rect::new(x2, replace_row.y, REPLACE_BTN, replace_row.height);
         context.fill_rect(ra_rect, muted);
         let ra_line = self.text_line(ra_rect, font, context);
-        context.draw_text_fitted(ra_line, "RA", font, muted_ink, HorizontalAlignment::Left);
+        context.draw_text_fitted(ra_line, "Rpl All", font, muted_ink, HorizontalAlignment::Center);
     }
 }
 
@@ -827,7 +836,7 @@ impl EventHandler for FindReplaceDialog {
                     }
 
                     // Click on replace input
-                    let r_trailing = GAP * 2 + ARROW_BTN as i32 * 2;
+                    let r_trailing = GAP * 2 + REPLACE_BTN as i32 * 2;
                     let r_label_col = LABEL_WIDTH.min(replace_row.width);
                     let r_input_width =
                         (replace_row.width as i32 - r_label_col as i32 - GAP - r_trailing).max(0);
@@ -919,7 +928,8 @@ impl EventHandler for FindReplaceDialog {
                     // Replace button. Anchored to the row's right edge by the same helper
                     // the draw path uses, so the hit region is the button.
                     let r_btn_x = Self::trailing_x(replace_row, r_trailing);
-                    let rep_rect = Rect::new(r_btn_x, replace_row.y, ARROW_BTN, replace_row.height);
+                    let rep_rect =
+                        Rect::new(r_btn_x, replace_row.y, REPLACE_BTN, replace_row.height);
                     if rep_rect.contains_point(*pos) {
                         self.replace();
                         return;
@@ -927,9 +937,9 @@ impl EventHandler for FindReplaceDialog {
 
                     // Replace All button
                     let ra_rect = Rect::new(
-                        r_btn_x + ARROW_BTN as i32 + GAP,
+                        r_btn_x + REPLACE_BTN as i32 + GAP,
                         replace_row.y,
-                        ARROW_BTN,
+                        REPLACE_BTN,
                         replace_row.height,
                     );
                     if ra_rect.contains_point(*pos) {
@@ -1132,6 +1142,41 @@ mod tests {
             fired.load(Ordering::SeqCst),
             "replace_all_signal should fire with (find, replace)"
         );
+    }
+
+    /// A press on the painted Replace button replaces.
+    ///
+    /// The button was widened from 24 px to `REPLACE_BTN` so its label could be a word; the
+    /// click region is derived from the same constant, so this pins the pair together. A
+    /// press at the button's centre must reach `replace`, and the old 24 px position (the
+    /// leading edge of the new button) must still be inside it.
+    #[test]
+    fn a_press_on_the_replace_button_replaces() {
+        let mut dialog = FindReplaceDialog::new(Rect::new(0, 0, 240, 120));
+        dialog.set_find_text("foo");
+        dialog.set_replace_text("bar");
+        dialog.show();
+
+        let fired = Arc::new(AtomicBool::new(false));
+        let sink = Arc::clone(&fired);
+        dialog.replace_signal.connect(move |request: Arc<SearchRequest>| {
+            if request.text == "bar" {
+                sink.store(true, Ordering::SeqCst);
+            }
+        });
+
+        let (_, replace_row) = dialog.compute_layout();
+        let trailing = GAP * 2 + REPLACE_BTN as i32 * 2;
+        let button_x = FindReplaceDialog::trailing_x(replace_row, trailing);
+        dialog.handle_event(&Event::MousePress {
+            pos: crate::core::Point::new(
+                button_x + REPLACE_BTN as i32 / 2,
+                replace_row.y + replace_row.height as i32 / 2,
+            ),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(fired.load(Ordering::SeqCst), "the painted Replace button must be clickable");
     }
 
     /// A **shown** find bar paints differently in the two appearances.

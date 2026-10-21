@@ -13,23 +13,41 @@ pub(crate) static GLOBAL_I18N: Mutex<Option<I18nManager>> = Mutex::new(None);
 /// Initialize the i18n system, loading the embedded English translations.
 pub fn init() {
     let mut guard = crate::compat::lock(&GLOBAL_I18N);
-    let mut manager = I18nManager::new();
-    // Load embedded en.json as the default locale
-    match serde_json::from_str::<TranslationFile>(EMBEDDED_EN_JSON) {
-        Ok(translation_file) => {
-            let language = translation_file.language.clone();
-            manager.set_language(&language);
-            manager.inject_translations(language, translation_file);
-            log::info!(
-                "[i18n] Loaded embedded English translations ({} translation files)",
-                manager.translation_count()
-            );
-        }
-        Err(e) => {
-            log::error!("[i18n] Failed to parse embedded en.json: {e}");
-        }
+    ensure_initialized(&mut guard);
+}
+
+/// Builds the embedded catalogue into `slot` when it is empty.
+///
+/// # Why this is a helper and not four lines inside `init`
+///
+/// [`translate`] calls it too, and the contract it enforces is the reason: **a label
+/// lookup never returns a raw key**. A host that forgot `init` used to get
+/// `dialog.font.select_font` painted inside the dialog — every `tr!` call site
+/// showed its identifier, which reads as a broken label, not as a missing catalogue
+/// entry. Loading the compiled-in English catalogue on first use makes the default
+/// build correct with no setup, and an explicit `init_with_options` still replaces
+/// it (including the active language) when the host supplies real translations.
+///
+/// Returns `false` only when the embedded JSON cannot be parsed, which is a build
+/// error rather than a runtime condition; callers then leave the key untouched.
+fn ensure_initialized(slot: &mut Option<I18nManager>) -> bool {
+    if slot.is_some() {
+        return true;
     }
-    *guard = Some(manager);
+    let Ok(translation_file) = serde_json::from_str::<TranslationFile>(EMBEDDED_EN_JSON) else {
+        log::error!("[i18n] Failed to parse embedded en.json");
+        return false;
+    };
+    let mut manager = I18nManager::new();
+    let language = translation_file.language.clone();
+    manager.set_language(&language);
+    manager.inject_translations(language, translation_file);
+    log::info!(
+        "[i18n] Loaded embedded English translations ({} messages)",
+        manager.translation_count()
+    );
+    *slot = Some(manager);
+    true
 }
 /// Initialize the i18n system with options
 pub fn init_with_options(options: InitOptions) -> InitReport {
@@ -104,19 +122,23 @@ pub fn init_with_options(options: InitOptions) -> InitReport {
 /// Translate a key to the current language
 pub fn translate(key: &str) -> String {
     let mut guard = crate::compat::lock(&GLOBAL_I18N);
-    if let Some(ref mut manager) = *guard {
-        manager.translate(key)
-    } else {
-        key.to_string()
+    if !ensure_initialized(&mut guard) {
+        return key.to_string();
+    }
+    match *guard {
+        Some(ref mut manager) => manager.translate(key),
+        None => key.to_string(),
     }
 }
 /// Translate a key with optional context and plural count
 pub fn translate_with_context(key: &str, context: Option<&str>, count: u32) -> String {
     let mut guard = crate::compat::lock(&GLOBAL_I18N);
-    if let Some(ref mut manager) = *guard {
-        manager.translate_with_context(key, context, count)
-    } else {
-        key.to_string()
+    if !ensure_initialized(&mut guard) {
+        return key.to_string();
+    }
+    match *guard {
+        Some(ref mut manager) => manager.translate_with_context(key, context, count),
+        None => key.to_string(),
     }
 }
 /// Get the global i18n manager

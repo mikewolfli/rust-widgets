@@ -18,6 +18,14 @@ use alloc::vec::Vec;
 pub const DEFAULT_FONT_FAMILY: &str = "Menlo";
 /// Default font size in points for the editor surface.
 pub const DEFAULT_FONT_SIZE: f32 = 13.0;
+/// Default ratio between the font size and the height of one visual row.
+///
+/// Zed exposes this as `buffer_line_height`: `Standard` is `1.3`, the default
+/// `Comfortable` is `1.618`. `1.5` sits between them — enough leading that a
+/// 13 pt monospace line is not cramped (the previous fixed `16.0` px was a
+/// ratio of `1.23`, i.e. tighter than either of Zed's presets), while a screen
+/// still shows the ~40 lines a programmer expects.
+pub const DEFAULT_LINE_HEIGHT_RATIO: f32 = 1.5;
 /// Default tab width measured in spaces.
 pub const DEFAULT_TAB_WIDTH: usize = 4;
 /// Minimum height of any touch-driven hit target, in logical pixels.
@@ -866,6 +874,14 @@ pub struct CodeEditorConfig {
     pub word_wrap: bool,
     /// Render gutter line numbers.
     pub show_line_numbers: bool,
+    /// Number the gutter relative to the caret line instead of from 1.
+    ///
+    /// Zed's `relative_line_numbers` setting, and Vim's `relativenumber` before
+    /// it: the caret's own line keeps its absolute number and every other line
+    /// shows the distance to it, which is what makes "delete the next three
+    /// lines" (`3dd`) a glance rather than a subtraction. Absolute numbering is
+    /// the default because a stack trace names absolute lines.
+    pub relative_line_numbers: bool,
     /// Outline every occurrence of the selected word.
     pub highlight_occurrences: bool,
     /// Auto-insert the closing bracket/quote when an opener is typed.
@@ -874,6 +890,13 @@ pub struct CodeEditorConfig {
     pub show_whitespace: bool,
     /// Column at which a vertical ruler is drawn; 0 disables the ruler.
     pub column_ruler: usize,
+    /// Draw the editor's own status row (language, diagnostics, caret).
+    ///
+    /// A host that already shows a status bar for the window sets this to
+    /// `false`; two rows carrying the same caret position read as a bug. The
+    /// row is on by default because a lone editor has nowhere else to report
+    /// the reduced-feature notice.
+    pub show_status_bar: bool,
     /// Font size in points.
     pub font_size: f32,
     /// Monospace family.
@@ -881,7 +904,13 @@ pub struct CodeEditorConfig {
     /// Horizontal advance of one space, in logical pixels.
     pub space_advance: f32,
     /// Vertical advance of one line, in logical pixels.
+    ///
+    /// `0.0` means "derive it": the row height is `font_size *
+    /// line_height_ratio`. A non-zero value is an explicit override and wins,
+    /// which is what a host embedding the editor at a fixed row height wants.
     pub line_advance: f32,
+    /// Multiplier from `font_size` to row height when `line_advance` is `0.0`.
+    pub line_height_ratio: f32,
 }
 
 impl Default for CodeEditorConfig {
@@ -897,14 +926,17 @@ impl Default for CodeEditorConfig {
             highlight_active_line: true,
             word_wrap: false,
             show_line_numbers: true,
+            relative_line_numbers: false,
             highlight_occurrences: true,
             auto_close_brackets: true,
             show_whitespace: false,
             column_ruler: 0,
+            show_status_bar: true,
             font_size: DEFAULT_FONT_SIZE,
             font_family: DEFAULT_FONT_FAMILY.to_string(),
             space_advance: 7.0,
-            line_advance: 16.0,
+            line_advance: 0.0,
+            line_height_ratio: DEFAULT_LINE_HEIGHT_RATIO,
         }
     }
 }
@@ -976,6 +1008,12 @@ impl CodeEditorConfig {
         self
     }
 
+    /// Switches the gutter between absolute and caret-relative numbering.
+    pub fn relative_line_numbers(mut self, relative: bool) -> Self {
+        self.relative_line_numbers = relative;
+        self
+    }
+
     /// Enables or disables occurrence highlighting.
     pub fn highlight_occurrences(mut self, highlight: bool) -> Self {
         self.highlight_occurrences = highlight;
@@ -1018,10 +1056,37 @@ impl CodeEditorConfig {
         self
     }
 
-    /// Sets the vertical advance of one line.
+    /// Sets the vertical advance of one line. `0.0` restores the derived
+    /// `font_size * line_height_ratio` height.
     pub fn line_advance(mut self, advance: f32) -> Self {
         self.line_advance = advance;
         self
+    }
+
+    /// Sets the row height as a multiple of the font size.
+    ///
+    /// Ignored unless `line_advance` is `0.0` (see [`Self::line_advance`]).
+    pub fn line_height_ratio(mut self, ratio: f32) -> Self {
+        self.line_height_ratio = ratio;
+        self
+    }
+
+    /// Shows or hides the editor's own status row.
+    pub fn show_status_bar(mut self, show: bool) -> Self {
+        self.show_status_bar = show;
+        self
+    }
+
+    /// The row height this configuration describes, in logical pixels.
+    ///
+    /// One definition of the derivation, so the widget, the hit-test and a
+    /// caller measuring the editor cannot disagree about it.
+    pub fn resolved_line_advance(&self) -> f32 {
+        if self.line_advance > 0.0 {
+            self.line_advance
+        } else {
+            (self.font_size * self.line_height_ratio.max(1.0)).round()
+        }
     }
 
     /// Validates the configuration, returning the first violated constraint.
@@ -1038,8 +1103,13 @@ impl CodeEditorConfig {
         if !self.space_advance.is_finite() || self.space_advance <= 0.0 {
             return Err("space_advance must be positive");
         }
-        if !self.line_advance.is_finite() || self.line_advance < self.font_size {
-            return Err("line_advance must be >= font_size");
+        if !self.line_advance.is_finite()
+            || (self.line_advance != 0.0 && self.line_advance < self.font_size)
+        {
+            return Err("line_advance must be 0 (derive) or >= font_size");
+        }
+        if !self.line_height_ratio.is_finite() || self.line_height_ratio < 1.0 {
+            return Err("line_height_ratio must be a finite number >= 1.0");
         }
         if self.column_ruler > 10_000 {
             return Err("column_ruler must be at most 10000");

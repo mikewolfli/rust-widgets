@@ -142,7 +142,6 @@ pub struct QuoteBoard {
     selected: Option<usize>,
     rising_color: Color,
     falling_color: Color,
-    text_color: Color,
     /// Emitted with the symbol when a row is clicked.
     pub quote_clicked: Signal1<String>,
     /// Emitted with the symbol as the pointer moves onto a row.
@@ -170,7 +169,6 @@ impl QuoteBoard {
             selected: None,
             rising_color: Color::rgb(38, 166, 91),
             falling_color: Color::rgb(220, 68, 70),
-            text_color: Color::rgb(214, 220, 228),
             quote_clicked: Signal1::new(),
             quote_hovered: Signal1::new(),
             selection_changed: Signal1::new(),
@@ -362,21 +360,82 @@ impl QuoteBoard {
     ///
     /// Computed once per frame and shared by the header and the rows, which is what keeps
     /// the two aligned. Computing them per row would let a row drift from its heading.
+    ///
+    /// # Why the slots are not equal
+    ///
+    /// They used to be `width / count`, which gives every column 48 px on the census board.
+    /// A symbol is not as wide as a volume figure: `MSFT` measures wider than `AAPL` and was
+    /// elided to `MS…` while the neighbouring numeric column kept empty room. Each column now
+    /// asks for the width its own heading and values need, and the board's width is shared in
+    /// proportion to those wishes — so a column that needs more gets more, and the last one
+    /// still takes the rounding remainder so no strip at the right edge goes unpainted.
     fn column_ranges(&self) -> Vec<(i32, i32)> {
         let geometry = self.base.geometry();
         let width = geometry.width as i32;
-        let count = self.columns.len().max(1) as i32;
-        let slot = width / count;
-        (0..self.columns.len() as i32)
-            .map(|index| {
-                let start = geometry.x + index * slot;
-                // The last column takes the remaining pixels, so rounding cannot leave a
-                // strip of unpainted background at the right edge.
-                let column_width =
-                    if index == count - 1 { geometry.x + width - start } else { slot };
-                (start, column_width)
+        if self.columns.is_empty() || width <= 0 {
+            return Vec::new();
+        }
+        let style = self.style().clone();
+        let heading_font = role_font(&style, HEADING_FONT_SIZE);
+        let body_font = role_font(&style, BODY_FONT_SIZE);
+        let decimals = self.inferred_decimals();
+        let inset = self.cell_inset();
+        let desired: Vec<i32> = self
+            .columns
+            .iter()
+            .map(|column| {
+                let mut widest = measure_body_text(column.title(), &heading_font) as i32;
+                for quote in &self.quotes {
+                    let text = self.cell_text(quote, *column, decimals);
+                    widest = widest.max(measure_body_text(&text, &body_font) as i32);
+                }
+                widest + inset * 2
             })
-            .collect()
+            .collect();
+        let total: i32 = desired.iter().sum();
+        if total <= 0 {
+            // Every heading and every cell is empty: an equal split is the only meaningful
+            // division, and it keeps the header aligned with the (empty) rows.
+            let count = self.columns.len() as i32;
+            let slot = width / count;
+            return (0..count)
+                .map(|index| {
+                    let start = geometry.x + index * slot;
+                    let w = if index == count - 1 { geometry.x + width - start } else { slot };
+                    (start, w)
+                })
+                .collect();
+        }
+        let mut ranges = Vec::with_capacity(self.columns.len());
+        let mut x = geometry.x;
+        let mut remaining = width;
+        let mut remaining_desired = total;
+        for (index, want) in desired.iter().enumerate() {
+            let w = if index + 1 == self.columns.len() || remaining_desired <= 0 {
+                remaining
+            } else {
+                ((*want as i64 * remaining as i64) / remaining_desired as i64) as i32
+            };
+            let w = w.clamp(0, remaining);
+            ranges.push((x, w));
+            x += w;
+            remaining -= w;
+            remaining_desired -= want;
+        }
+        ranges
+    }
+
+    /// The horizontal padding inside a cell.
+    ///
+    /// Eight pixels each side cannot fit five columns into a 240 px board; the symbol then had
+    /// 32 px of text room and every four-letter ticker elided. A narrow board therefore uses
+    /// half the inset, which is also what keeps a numeric cell's right alignment on its column.
+    fn cell_inset(&self) -> i32 {
+        if self.base.geometry().width < 420 {
+            4
+        } else {
+            8
+        }
     }
 
     /// The text for one cell.
@@ -722,7 +781,10 @@ impl Draw for QuoteBoard {
                         self.falling_color
                     }
                 } else if *column == QuoteColumn::Symbol {
-                    self.text_color
+                    // The symbol is body text too. It used to read `self.text_color`, a
+                    // light-on-dark literal stored at construction, which made every symbol
+                    // nearly invisible in a light theme (the theme's ink never reached it).
+                    ink
                 } else {
                     body_text
                 };
@@ -742,15 +804,31 @@ impl Draw for QuoteBoard {
                 // is the honest reading: a clipped value reads as truncated, one that has run
                 // into its neighbour reads as a corrupted table.
                 let text_width = measure_body_text(&text, &font) as i32;
-                let cell = if column.is_numeric() {
+                let inset = self.cell_inset();
+                let band = if column.is_numeric() {
                     // Reserved from the trailing edge so the digits line up column-wise.
-                    Rect::new(start + width - 8 - text_width, y, text_width.max(1) as u32, 0)
+                    Rect::new(start + width - inset - text_width, y, text_width.max(1) as u32, 0)
                 } else {
                     // Reserved from the leading inset to the column's edge.
-                    Rect::new(start + 8, y, (width - 16).max(1) as u32, 0)
+                    Rect::new(start + inset, y, (width - inset * 2).max(1) as u32, 0)
                 };
-                let line = context.text_line(Rect { height: ROW_TEXT_HEIGHT, ..cell }, &font);
-                context.draw_text_fitted(line, &text, &font, color, HorizontalAlignment::Left);
+                let line = context.text_line(Rect { height: ROW_TEXT_HEIGHT, ..band }, &font);
+                if column.is_numeric() {
+                    // A numeric cell is already exactly as wide as its measured text. Fitting
+                    // it again subtracts `draw_text_fitted`'s inset at each end from that
+                    // measured width, so every value was truncated to `248...` even though
+                    // the column had room. Placing the measured line is what keeps the value
+                    // whole and still right-aligned.
+                    context.draw_text(
+                        Point { x: line.x, y: line.y },
+                        &text,
+                        &font,
+                        color,
+                        HorizontalAlignment::Left,
+                    );
+                } else {
+                    context.draw_text_fitted(line, &text, &font, color, HorizontalAlignment::Left);
+                }
             }
         }
     }
@@ -1098,6 +1176,39 @@ mod tests {
         board.select(None);
         assert_eq!(count.load(Ordering::SeqCst), 2, "clearing emits");
         assert_eq!(board.selected_symbol(), None);
+    }
+
+    /// A four-letter ticker keeps its whole column at the census width.
+    ///
+    /// # The defect this pins
+    ///
+    /// The columns were `width / count` wide: five 48 px slots on the 240 px census board.
+    /// Each cell reserved 8 px on both sides, so a symbol had 32 px of text room and `MSFT`
+    /// (40 px) elided to `MS…` while the numeric column beside it kept empty room. The
+    /// ranges now come from what each column's heading and values measure, and a narrow
+    /// board halves the inset, so the symbol column is at least as wide as its widest ticker.
+    #[test]
+    fn a_four_letter_symbol_keeps_its_whole_column_at_the_census_width() {
+        // Holds the theme guard: `column_ranges` reads the resolved font.
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut board = QuoteBoard::new(crate::widget::census::CENSUS_RECT);
+        let mut quote = Quote::new("MSFT", 412.8, 416.1);
+        quote.volume = 21_400_000.0;
+        board.set_quotes(alloc::vec![quote]);
+
+        let style = board.style().clone();
+        let font = role_font(&style, BODY_FONT_SIZE);
+        let inset = board.cell_inset();
+        let ranges = board.column_ranges();
+        let (_, symbol_width) = ranges[0];
+        let needed = measure_body_text("MSFT", &font) as i32 + inset * 2;
+        assert!(
+            symbol_width >= needed,
+            "the symbol column is {symbol_width} px but `MSFT` plus its insets needs {needed}"
+        );
+        // And the split still tiles the control exactly.
+        let total: i32 = ranges.iter().map(|(_, width)| *width).sum();
+        assert_eq!(total, crate::widget::census::CENSUS_RECT.width as i32);
     }
 
     /// An out-of-range selection clears rather than pointing at nothing.

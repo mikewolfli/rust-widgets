@@ -25,6 +25,7 @@
 use rust_widgets::app::{App, AppConfig, CustomWidgetHandle, WidgetHandle};
 use rust_widgets::core::{ObjectId, Orientation, Rect};
 use rust_widgets::layout::{BoxLayout, Layout, LayoutConstraints, SizePolicy};
+use rust_widgets::theme::{global_theme_manager, Theme};
 use rust_widgets::widget::special_widgets::code_editor::{
     CodeEditor, CodeEditorConfig, DiagnosticMarker, LanguageId, MarkerSeverity,
 };
@@ -34,6 +35,28 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::commands::{self, Command};
+
+/// Registers the macOS-style palettes and selects one for this demo.
+///
+/// A code editor is conventionally dark; `--light` switches to the light palette for a
+/// screenshot or a bright room. Both are library presets, so the three demos share one
+/// definition of the palette (principle #101).
+fn apply_appearance(default_dark: bool) {
+    let dark = if std::env::args().any(|arg| arg == "--light") {
+        false
+    } else if std::env::args().any(|arg| arg == "--dark") {
+        true
+    } else {
+        default_dark
+    };
+    let mut manager = global_theme_manager();
+    manager.register_theme(Theme::macos_dark());
+    manager.register_theme(Theme::macos_light());
+    let name = if dark { "macos-dark" } else { "macos-light" };
+    manager.set_theme(name);
+    drop(manager);
+    rust_widgets::reapply_active_theme();
+}
 
 /// 事件泵的轮询间隔。
 ///
@@ -106,16 +129,33 @@ impl EventLog {
 
 const WINDOW_W: u32 = 1100;
 const WINDOW_H: u32 = 720;
-/// 菜单栏高度。
-const MENU_H: u32 = 26;
+/// 菜单栏高度。A `MenuBar` paints a band of this height (see `dimensions::MENU_BAR_HEIGHT`),
+/// so the layout row must agree with the control's own band.
+const MENU_H: u32 = 28;
 /// 工具栏高度：必须 >= MIN_TOUCH_TARGET(28)，兼顾触屏。
 const TOOLBAR_H: u32 = 36;
 /// 状态栏高度。
 const STATUS_H: u32 = 26;
+
 /// 工具栏按钮条与下方内容之间的间距。
 const STRIP_GAP: u32 = 2;
 /// 项目树与编辑器之间的间距。
 const SPLIT_GAP: u32 = 4;
+
+/// The window's fixed chrome control ids.
+///
+/// Grouped because they travel together through the polling loop: the split-row geometry needs
+/// all three, and a function taking them one by one grows an argument per chrome row — which is
+/// how `run_loop` reached nine arguments when the menu row was added.
+#[derive(Debug, Clone, Copy)]
+struct ChromeIds {
+    /// The menu bar row (`0` when this window has no menu bar).
+    menu_bar: ObjectId,
+    /// The toolbar row.
+    tool_bar: ObjectId,
+    /// The status bar row.
+    status_bar: ObjectId,
+}
 
 /// 左右分栏的宽度**权重**（项目树 : 编辑器）。
 ///
@@ -153,11 +193,19 @@ const SPLIT_ROW_ID: ObjectId = u64::MAX;
 /// 忘记同步，而症状只是编辑器底部被状态栏盖住几像素。交给 `BoxLayout` 后，“谁在
 /// 上、谁在下、谁吃掉剩余空间”由图表达一次，几何是算出来的而不是抄出来的。
 fn build_window_layout(
+    menu_bar_id: ObjectId,
     tool_bar_id: ObjectId,
     split_id: ObjectId,
     status_bar_id: ObjectId,
 ) -> BoxLayout {
     let mut layout = BoxLayout::new(Orientation::Vertical, STRIP_GAP, 0);
+
+    // Menu bar first: the toolbar's buttons are placed in the toolbar's row, and without a
+    // reserved menu row the split row started at y = TOOLBAR_H and painted over the buttons'
+    // lower half. The rows are fixed in height except the split, which takes the rest.
+    layout.add_widget(menu_bar_id, 1);
+    layout.set_constraints(menu_bar_id, LayoutConstraints::new(MENU_H, Some(MENU_H)));
+    layout.set_size_policy(menu_bar_id, SizePolicy::Fixed);
 
     // 工具栏与状态栏高度固定；中间那行吃掉剩下的一切。
     layout.add_widget(tool_bar_id, 1);
@@ -230,16 +278,17 @@ fn apply_split(
 /// 用真实尺寸算出分栏行，内外两层就不会在一件事上给出两个答案。
 fn split_row_rect_in_for(
     client: Rect,
+    menu_bar_id: ObjectId,
     tool_bar_id: ObjectId,
     split_id: ObjectId,
     status_bar_id: ObjectId,
 ) -> Rect {
     let mut placed: Vec<(ObjectId, Rect)> = Vec::new();
-    build_window_layout(tool_bar_id, split_id, status_bar_id)
+    build_window_layout(menu_bar_id, tool_bar_id, split_id, status_bar_id)
         .update(client, &mut |id, rect| placed.push((id, rect)));
     placed.iter().find(|(id, _)| *id == split_id).map(|(_, rect)| *rect).unwrap_or(Rect::new(
         0,
-        MENU_H as i32 + TOOLBAR_H as i32,
+        (MENU_H + TOOLBAR_H) as i32,
         client.width,
         split_row_height_for(client.height),
     ))
@@ -248,7 +297,9 @@ fn split_row_rect_in_for(
 /// 初始客户区（窗口创建时给的大小）。`split_row_rect_in` 的便捷形式。
 #[cfg(test)]
 fn split_row_rect_in(tool_bar_id: ObjectId, split_id: ObjectId, status_bar_id: ObjectId) -> Rect {
-    split_row_rect_in_for(initial_client(), tool_bar_id, split_id, status_bar_id)
+    // `0` is the dummy menu id: a window layout only writes geometry, so an id that names no
+    // control still reserves its row.
+    split_row_rect_in_for(initial_client(), 0, tool_bar_id, split_id, status_bar_id)
 }
 
 /// 窗口创建时的客户区大小。
@@ -256,9 +307,9 @@ fn initial_client() -> Rect {
     Rect::new(0, 0, WINDOW_W, WINDOW_H)
 }
 
-/// 分栏那一行占据的高度：客户区去掉工具栏与状态栏，以及两条间距。
+/// 分栏那一行占据的高度：客户区去掉菜单栏、工具栏与状态栏，以及三条间距。
 fn split_row_height_for(client_height: u32) -> u32 {
-    client_height.saturating_sub(TOOLBAR_H + STATUS_H + STRIP_GAP * 2)
+    client_height.saturating_sub(MENU_H + TOOLBAR_H + STATUS_H + STRIP_GAP * 3)
 }
 
 /// [`split_row_height_for`] 在初始客户区下的便捷形式（测试与推导用）。
@@ -275,7 +326,7 @@ fn split_row_height() -> u32 {
 ///
 /// 传入**真实客户区**，所以窗口缩放后重新调用它会得到新的两栏矩形。
 fn pane_rects_for(client: Rect) -> (Rect, Rect) {
-    let row = split_row_rect_in_for(client, 1, 2, 3);
+    let row = split_row_rect_in_for(client, 0, 1, 2, 3);
 
     // 用一个临时布局跑一遍即可拿到两栏的宽度；id 只是占位，不指向真实控件。
     let mut placed: Vec<(ObjectId, Rect)> = Vec::new();
@@ -323,7 +374,11 @@ fn main() {
 /// 信号必须在**挂载之前**接：自绘控件自己持有信号，`SurfaceHandle` 的
 /// `on_click`/`on_value_changed` 对挂载面是**有意忽略**的（库会记一条 debug 日志，
 /// 而不是注册一个永不触发的回调）。详见 [`commands::wire_signals`]。
-fn build_editor(rect: Rect, log: &Arc<EventLog>) -> CodeEditor {
+fn build_editor(
+    rect: Rect,
+    log: &Arc<EventLog>,
+    status_target: Arc<Mutex<Option<ObjectId>>>,
+) -> CodeEditor {
     let config = CodeEditorConfig::new()
         .language(LanguageId::Rust)
         .tab_width(4)
@@ -335,7 +390,15 @@ fn build_editor(rect: Rect, log: &Arc<EventLog>) -> CodeEditor {
         .highlight_occurrences(true)
         .highlight_active_line(true)
         .auto_close_brackets(true)
-        .column_ruler(100);
+        .column_ruler(100)
+        // The window already has a status bar (`new_status_bar`), and it reports the
+        // caret position. Two rows saying "Ln 1, Col 1" look like a bug, so the
+        // editor's own row is off here — the widget still ships one for hosts that
+        // mount it on its own.
+        .show_status_bar(false)
+        // Zed's "comfortable" buffer leading is 1.618 and its standard is 1.3; 1.55
+        // is a desktop reading setting between the two.
+        .line_height_ratio(1.55);
 
     let mut editor =
         CodeEditor::with_config(rect, config).expect("demo 配置必须合法（由 validate 保证）");
@@ -353,8 +416,94 @@ fn build_editor(rect: Rect, log: &Arc<EventLog>) -> CodeEditor {
         "[signal] 已接入 text_changed / cursor_moved / selection_changed / \
                 tab_changed / search_changed / fold_changed / completion_changed",
     );
+    // The window's status bar is a native control, so it may only be touched from the
+    // UI thread — and the editor's signals fire there. See [`wire_status_bar`].
+    wire_status_bar(&editor, status_target);
 
     editor
+}
+
+/// The facts the window's status row is composed from.
+///
+/// # Why the status bar is signal-driven, not polled
+///
+/// The poller runs on a worker thread. A mounted widget lives in the runtime's
+/// **thread-local** registry, so `SurfaceHandle::read` / `update` from that thread return
+/// `None` without doing anything — and a native `set_widget_text` from it would touch GTK
+/// off the main thread. The demo's earlier status refresh therefore never fired: the bar
+/// sat at its creation text while the caret moved around. Signals are emitted while the
+/// widget handles an event, i.e. on the UI thread, which is exactly the thread a native
+/// control may be written from.
+#[derive(Clone)]
+struct StatusFacts {
+    language: String,
+    line: usize,
+    column: usize,
+    lines: usize,
+    errors: usize,
+    warnings: usize,
+    infos: usize,
+    modified: bool,
+}
+
+impl StatusFacts {
+    fn render(&self) -> String {
+        format!(
+            "{}  |  Ln {}, Col {}  |  {} lines  |  E{} W{} I{}{}",
+            self.language,
+            self.line + 1,
+            self.column + 1,
+            self.lines,
+            self.errors,
+            self.warnings,
+            self.infos,
+            if self.modified { " *" } else { "" }
+        )
+    }
+}
+
+/// Keeps the window's status bar in step with the editor.
+///
+/// `target` is filled in once the status bar exists; until then the signals update the
+/// shared facts and skip the write, so an edit that happens before the bar is created is
+/// still reflected by the first change after it exists.
+fn wire_status_bar(editor: &CodeEditor, target: Arc<Mutex<Option<ObjectId>>>) {
+    let facts = Arc::new(Mutex::new(StatusFacts {
+        language: editor.language_name(),
+        line: 0,
+        column: 0,
+        lines: editor.line_count(),
+        errors: editor.marker_count(MarkerSeverity::Error),
+        warnings: editor.marker_count(MarkerSeverity::Warning),
+        infos: editor.marker_count(MarkerSeverity::Info),
+        modified: false,
+    }));
+    let publish_facts = Arc::clone(&facts);
+    let publish = move || {
+        let Some(id) = *target.lock().unwrap() else { return };
+        let line = publish_facts.lock().unwrap().render();
+        rust_widgets::set_widget_text(id, &line);
+    };
+
+    let (cursor_facts, cursor_publish) = (Arc::clone(&facts), publish.clone());
+    editor.cursor_moved.connect(move |position| {
+        {
+            let mut facts = cursor_facts.lock().unwrap();
+            facts.line = position.0;
+            facts.column = position.1;
+        }
+        cursor_publish();
+    });
+
+    let (text_facts, text_publish) = (Arc::clone(&facts), publish);
+    editor.text_changed.connect(move |text| {
+        {
+            let mut facts = text_facts.lock().unwrap();
+            facts.lines = text.lines().count().max(1);
+            facts.modified = true;
+        }
+        text_publish();
+    });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -386,6 +535,16 @@ const PROJECT_TREE: &[&str] = &[
 fn build_project_tree(rect: Rect, log: &Arc<EventLog>) -> TreeView {
     let rows: Vec<String> = PROJECT_TREE.iter().map(|row| (*row).to_string()).collect();
     let mut tree = TreeView::new(rect);
+    // A file tree is a **sidebar**: it belongs to the window's ground, not to the
+    // sunken field tone the `Input` role gives a list. With the macOS light preset
+    // that role is `rgb(184,184,184)` next to a `#F5F5F7` editor — a dark slab beside a
+    // white page. The window's own background is the honest sidebar colour.
+    if let Some(theme) = global_theme_manager().current_theme().cloned() {
+        let mut style = tree.style().clone();
+        style.background_color = Some(theme.colors.background);
+        style.theme_derived = false;
+        tree.set_style(style);
+    }
     tree.set_model(Arc::new(VecTreeModel::new(rows)));
     log.append(format!("[TreeView] {} 行（含目录缩进）", tree.node_count()));
     tree
@@ -458,7 +617,7 @@ const MENU_STRUCTURE: &[(&str, &[Command])] = &[
 fn build_menu_bar(
     win: &rust_widgets::app::WindowHandle,
     log: &Arc<EventLog>,
-) -> Vec<(u64, MenuBinding)> {
+) -> (ObjectId, Vec<(u64, MenuBinding)>) {
     let bar = win.new_menu_bar(0, 0, WINDOW_W, MENU_H);
     log.append(format!("[MenuBar] created id={}", bar.raw_id()));
 
@@ -488,7 +647,7 @@ fn build_menu_bar(
         }
         log.append(format!("[MenuBar] menu '{title}' with {} items", items.len()));
     }
-    bindings
+    (bar.raw_id(), bindings)
 }
 
 /// 把一次菜单激活事件分派给编辑器。
@@ -516,23 +675,37 @@ fn dispatch_menu_event(
 // 工具栏
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// 工具栏按钮布局：`(命令, 按钮宽度)`。命令为 `None` 时是分隔符。
-const TOOLBAR_LAYOUT: &[(Option<Command>, i32)] = &[
-    (Some(Command::Undo), 64),
-    (Some(Command::Redo), 64),
-    (None, 2),
-    (Some(Command::Cut), 56),
-    (Some(Command::Copy), 56),
-    (Some(Command::Paste), 56),
-    (None, 2),
-    (Some(Command::ToggleComment), 72),
-    (Some(Command::Indent), 64),
-    (Some(Command::Outdent), 72),
-    (None, 2),
-    (Some(Command::OpenFind), 56),
-    (Some(Command::AddCursorBelow), 72),
-    (Some(Command::SortLines), 72),
+/// Toolbar buttons: a command, or `None` for a separator gap.
+///
+/// The width is derived from the label (see [`toolbar_button_width`]) instead of
+/// being a hand-written constant: the native button adds platform padding, so a
+/// fixed 72 px clipped "Find…" to "Fin..." while the same width was generous for
+/// "Cut".
+const TOOLBAR_LAYOUT: &[Option<Command>] = &[
+    Some(Command::Undo),
+    Some(Command::Redo),
+    None,
+    Some(Command::Cut),
+    Some(Command::Copy),
+    Some(Command::Paste),
+    None,
+    Some(Command::ToggleComment),
+    Some(Command::Indent),
+    Some(Command::Outdent),
+    None,
+    Some(Command::OpenFind),
+    Some(Command::AddCursorBelow),
+    Some(Command::SortLines),
 ];
+
+/// Width of one toolbar button, in pixels.
+///
+/// `label length × 9` is the label's own advance in the platform's button font at
+/// this size; the constant adds the button's horizontal padding plus a little
+/// slack so the text is never truncated.
+fn toolbar_button_width(command: Command) -> i32 {
+    (command.toolbar_label().chars().count() as i32 * 9 + 34).clamp(56, 190)
+}
 
 /// 建立工具栏。按钮的 `on_click` 直接打到编辑器。
 ///
@@ -553,16 +726,25 @@ fn build_tool_bar(
     // not a button), and `ToolBarHandle` has no `set_layout`. The strip itself is a
     // fixed-height row in the window layout, so its vertical position is not hand-placed.
     let mut x = 6i32;
-    let top = MENU_H as i32;
+    // The toolbar row starts one `STRIP_GAP` below the menu row; its buttons are children of
+    // the window (the toolbar has no public item API), so their absolute y is derived from
+    // the same two constants the layout uses.
+    let top = (MENU_H + STRIP_GAP) as i32;
     let mut button_count = 0usize;
-    for (entry, width) in TOOLBAR_LAYOUT {
+    for entry in TOOLBAR_LAYOUT {
         match entry {
             None => {
-                x += width;
+                x += 2;
             }
             Some(command) => {
-                let button =
-                    win.new_button(command.label(), x, top + 4, *width as u32, TOOLBAR_H - 8);
+                let width = toolbar_button_width(*command);
+                let button = win.new_button(
+                    command.toolbar_label(),
+                    x,
+                    top + 4,
+                    width as u32,
+                    TOOLBAR_H - 8,
+                );
                 // Record the shortcut next to the button in the event log. Native
                 // buttons expose no tooltip through the handle API yet, so the
                 // chord is surfaced here instead. It is rendered by the host OS,
@@ -596,6 +778,19 @@ fn build_tool_bar(
 // run — App 入口，由 main() 调用
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/// Registers a full-coverage CJK face, once, before anything is painted.
+///
+/// The `desktop` profile's `fonts-cjk` face is a subset (the first 1000 Han codepoints plus
+/// punctuation and kana), and this demo's sample source and window text are Chinese. Without
+/// an installed face those characters would be tofu; the library leaves that choice to the
+/// host, so the demo makes it once here and records which family answered.
+fn register_cjk_face(log: &Arc<EventLog>) {
+    match rust_widgets::render::text::register_system_cjk_font() {
+        Some(family) => log.append(format!("[Fonts] 已注册系统 CJK 字体：{family}")),
+        None => log.append("[Fonts] 未找到已安装的 CJK 字体；超出内置子集的汉字会显示为方框"),
+    }
+}
+
 /// 启动 demo 应用。
 ///
 /// `main()` 仅调用 `app::run()`；所有窗口创建、菜单/工具栏构建、事件循环都在这里。
@@ -624,6 +819,11 @@ pub fn run() {
     );
     app.init();
     log.append("[App] init 完成");
+    // Before any control is created: the sample source below is Chinese, and a face resolved
+    // after the first paint would leave the first frame in tofu.
+    register_cjk_face(&log);
+    // The demo's appearance, registered by the host before any control is created.
+    apply_appearance(true);
 
     let win = app.new_window("rust_widgets — CodeEditor", 80, 80, WINDOW_W, WINDOW_H);
     log.append(format!("[Window] 创建 id={:?}", win.raw_id()));
@@ -652,7 +852,11 @@ pub fn run() {
     };
 
     // ── 挂载编辑器 ──────────────────────────────────────────────────────
-    let editor_box: Box<dyn Widget> = Box::new(build_editor(rect, &log));
+    // The status bar is created after the editor but the editor's signals are wired
+    // before mounting, so the target id travels through a shared slot.
+    let status_target: Arc<Mutex<Option<ObjectId>>> = Arc::new(Mutex::new(None));
+    let editor_box: Box<dyn Widget> =
+        Box::new(build_editor(rect, &log, Arc::clone(&status_target)));
     let editor = match win.mount_surface(editor_box, rect) {
         Ok(handle) => {
             log.append(format!(
@@ -677,7 +881,7 @@ pub fn run() {
     }
 
     // ── 菜单栏 + 工具栏 + 状态栏 ────────────────────────────────────────
-    let bindings = build_menu_bar(&win, &log);
+    let (menu_bar_id, bindings) = build_menu_bar(&win, &log);
     let tool_bar_id = build_tool_bar(&win, &editor, &log);
 
     // 状态栏横跨整个窗口，而不是只对齐编辑器：它报告的是整个应用的状态（光标位置、
@@ -690,6 +894,9 @@ pub fn run() {
         STATUS_H,
     );
     log.append(format!("[StatusBar] created id={}", status.raw_id()));
+    // From here on the signals can write to it. The initial text above came from the
+    // same composer the signals use, so the bar starts correct on a fresh window.
+    *status_target.lock().unwrap() = Some(status.raw_id());
 
     // ── 应用窗口布局 ────────────────────────────────────────────────────
     //
@@ -699,14 +906,30 @@ pub fn run() {
     // 也不会像本轮之前那样让编辑器独占整个宽度。
     //
     // 客户区用**创建时**的尺寸；后续真实 resize 由 `run_loop` 里的监视循环重算内层。
-    apply_layout(&win, tool_bar_id, status.raw_id(), &tree, &editor, initial_client(), &log);
+    apply_layout(
+        &win,
+        menu_bar_id,
+        tool_bar_id,
+        status.raw_id(),
+        &tree,
+        &editor,
+        initial_client(),
+        &log,
+    );
 
     win.show();
-    eprintln!("PROBE after show");
     log.append("[Window] shown");
 
     print_usage();
-    run_loop(&app, win.raw_id(), tool_bar_id, status.raw_id(), &bindings, &tree, &editor, &log);
+    run_loop(
+        &app,
+        win.raw_id(),
+        ChromeIds { menu_bar: menu_bar_id, tool_bar: tool_bar_id, status_bar: status.raw_id() },
+        &bindings,
+        &tree,
+        &editor,
+        &log,
+    );
 }
 
 /// 一次性应用两层布局：窗口三行 + 分栏两栏。
@@ -718,6 +941,7 @@ pub fn run() {
 /// 首次启动与显式改变窗口尺寸都调同一个函数。
 fn apply_layout(
     win: &rust_widgets::app::WindowHandle,
+    menu_bar_id: ObjectId,
     tool_bar_id: ObjectId,
     status_bar_id: ObjectId,
     tree: &CustomWidgetHandle,
@@ -725,21 +949,19 @@ fn apply_layout(
     client: Rect,
     log: &Arc<EventLog>,
 ) {
-    // 外层：三行。`win.set_layout` 会用窗口自己的客户区重排（后端 resize 时已更新）。
-    let layout = build_window_layout(tool_bar_id, SPLIT_ROW_ID, status_bar_id);
+    // 外层：四行。`win.set_layout` 会用窗口自己的客户区重排（后端 resize 时已更新）。
+    let layout = build_window_layout(menu_bar_id, tool_bar_id, SPLIT_ROW_ID, status_bar_id);
     log.append(format!(
         "[Layout] window BoxLayout(Vertical): toolbar {TOOLBAR_H}px (fixed) + \
          split (expanding) + status bar {STATUS_H}px (fixed) in client {}x{}",
         client.width, client.height
     ));
     win.set_layout(layout);
-    eprintln!("PROBE after set_layout");
 
     // 内层：用**真实客户区**算出的分栏行矩形把两栏切开，而不是挂载时那份常量。
-    let row = split_row_rect_in_for(client, tool_bar_id, SPLIT_ROW_ID, status_bar_id);
+    let row = split_row_rect_in_for(client, menu_bar_id, tool_bar_id, SPLIT_ROW_ID, status_bar_id);
     let split = build_split_layout(tree.raw_id(), editor.raw_id());
     apply_split(&split, row, tree, editor);
-    eprintln!("PROBE after apply_split");
     log.append(format!(
         "[Layout] split BoxLayout(Horizontal): tree:editor = {}:{} \
          (min {TREE_MIN_W}px / {EDITOR_MIN_W}px) in row ({},{}, {}, {})",
@@ -757,14 +979,19 @@ fn apply_layout(
 /// 越拉越宽，两栏却停在挂载时那份 `WINDOW_W` 上。这里按当前客户区重算一次内层，把它
 /// 与窗口大小重新对齐。
 fn resync_split_to_client_size(
-    tool_bar_id: ObjectId,
-    status_bar_id: ObjectId,
+    chrome: ChromeIds,
     tree: &CustomWidgetHandle,
     editor: &CustomWidgetHandle,
     size: (u32, u32),
 ) {
     let client = Rect::new(0, 0, size.0, size.1);
-    let row = split_row_rect_in_for(client, tool_bar_id, SPLIT_ROW_ID, status_bar_id);
+    let row = split_row_rect_in_for(
+        client,
+        chrome.menu_bar,
+        chrome.tool_bar,
+        SPLIT_ROW_ID,
+        chrome.status_bar,
+    );
     let split = build_split_layout(tree.raw_id(), editor.raw_id());
     apply_split(&split, row, tree, editor);
 }
@@ -800,8 +1027,7 @@ fn resync_split_to_client_size(
 fn run_loop(
     app: &App,
     window_id: ObjectId,
-    tool_bar_id: ObjectId,
-    status_bar_id: ObjectId,
+    chrome: ChromeIds,
     bindings: &[(u64, MenuBinding)],
     tree: &CustomWidgetHandle,
     editor: &CustomWidgetHandle,
@@ -834,7 +1060,7 @@ fn run_loop(
             // 但项目树/编辑器是自绘挂载面，不在窗口布局的托管项里（见 [`resync_split_to_client_size`]）。
             if let Some(size) = rust_widgets::window_client_size(window_id) {
                 if last_client != Some(size) {
-                    resync_split_to_client_size(tool_bar_id, status_bar_id, &tree, &editor, size);
+                    resync_split_to_client_size(chrome, &tree, &editor, size);
                     poll_log.append(format!(
                         "[Layout] resize {}x{} -> 两栏已重算（tree/editor）",
                         size.0, size.1
@@ -861,7 +1087,6 @@ fn run_loop(
 
             if did_work {
                 idle_ticks = 0;
-                refresh_status(&poll_log, &editor, status_bar_id);
             } else {
                 idle_ticks += 1;
                 // 连续无事件超过 `IDLE_REPORT_AFTER` 时只记一条诊断，**不退出**。唯一的退出
@@ -889,25 +1114,6 @@ fn run_loop(
     // 否则最后几个菜单触发会在退出时丢失。
     done.store(true, Ordering::SeqCst);
     let _ = poller.join();
-}
-
-/// 把光标位置刷新到状态栏。
-///
-/// 状态栏直接改文本即可；`None` 表示控件已卸载（窗口正在关闭），
-/// 此时不再访问平台，避免关窗期间的无效调用。
-///
-/// # 这里必须真正写可见的状态栏句柄（本 demo 之前的缺陷）
-///
-/// 早先的 `refresh_status` 算出新文本后只写进了 `EventLog`（即控制台 / 日志），从没碰过
-/// 状态栏句柄——状态栏因此永远停在创建时那句初始文本上，看起来“状态不更新”。现在同时把
-/// 文本推到可见句柄上，日志行为保留。
-fn refresh_status(log: &Arc<EventLog>, editor: &CustomWidgetHandle, status_bar_id: ObjectId) {
-    let Some(line) = commands::status_line(editor) else {
-        return;
-    };
-    log.append(format!("[Status] {line}"));
-    // 写回可见句柄：这是“状态栏真的变了”的唯一可观察证据。
-    rust_widgets::set_widget_text(status_bar_id, &line);
 }
 
 fn banner() {
@@ -972,7 +1178,7 @@ mod tests {
     #[test]
     fn the_three_rows_stack_in_order() {
         let (toolbar, split, status) = strip_ids();
-        let layout = build_window_layout(toolbar, split, status);
+        let layout = build_window_layout(0, toolbar, split, status);
         let placed = laid_out(&layout, Rect::new(0, 0, WINDOW_W, WINDOW_H));
 
         let toolbar_rect = rect_of(&placed, toolbar);
@@ -999,14 +1205,15 @@ mod tests {
     #[test]
     fn fixed_rows_keep_their_height_and_the_split_absorbs_the_rest() {
         let (toolbar, split, status) = strip_ids();
-        let layout = build_window_layout(toolbar, split, status);
+        let layout = build_window_layout(0, toolbar, split, status);
 
         for height in [WINDOW_H, WINDOW_H + 200] {
             let placed = laid_out(&layout, Rect::new(0, 0, WINDOW_W, height));
             assert_eq!(rect_of(&placed, toolbar).height, TOOLBAR_H, "the toolbar is fixed");
             assert_eq!(rect_of(&placed, status).height, STATUS_H, "the status bar is fixed");
 
-            let expected = height - TOOLBAR_H - STATUS_H - STRIP_GAP * 2;
+            // Three fixed rows and three gaps: menu, toolbar, split, status.
+            let expected = height - MENU_H - TOOLBAR_H - STATUS_H - STRIP_GAP * 3;
             assert_eq!(
                 rect_of(&placed, split).height,
                 expected,
@@ -1019,7 +1226,7 @@ mod tests {
     #[test]
     fn every_row_spans_the_client_width() {
         let (toolbar, split, status) = strip_ids();
-        let layout = build_window_layout(toolbar, split, status);
+        let layout = build_window_layout(0, toolbar, split, status);
         let placed = laid_out(&layout, Rect::new(0, 0, WINDOW_W, WINDOW_H));
         for (id, rect) in &placed {
             assert_eq!(rect.x, 0, "id {id} must start at the left edge: {rect:?}");
@@ -1159,7 +1366,7 @@ mod tests {
 
         // 外层实际给分栏行的矩形，与 `split_row_rect_in` 的答案必须相同。
         let outer = laid_out(
-            &build_window_layout(toolbar, split_row, status),
+            &build_window_layout(0, toolbar, split_row, status),
             Rect::new(0, 0, WINDOW_W, WINDOW_H),
         );
         assert_eq!(row, rect_of(&outer, split_row), "the two layers disagree on the row");
@@ -1191,8 +1398,9 @@ mod tests {
     fn the_inner_split_follows_the_real_client_size() {
         // 分栏行本身就跟着客户区走。
         let (toolbar, split_row, status) = strip_ids();
-        let small = split_row_rect_in_for(Rect::new(0, 0, 800, 600), toolbar, split_row, status);
-        let large = split_row_rect_in_for(Rect::new(0, 0, 1600, 900), toolbar, split_row, status);
+        let small = split_row_rect_in_for(Rect::new(0, 0, 800, 600), 0, toolbar, split_row, status);
+        let large =
+            split_row_rect_in_for(Rect::new(0, 0, 1600, 900), 0, toolbar, split_row, status);
         assert_eq!(small.width, 800, "the split row must span the client width");
         assert_eq!(large.width, 1600, "and follow a wider client");
         assert!(
@@ -1231,51 +1439,39 @@ mod tests {
     ///
     /// # 这条测试能测什么、不能测什么
     ///
-    /// 这是无头测试，拿不到真实窗口，但可以用控件运行时直接挂一个 `CodeEditor` 与一个充当
-    /// 状态栏的 `Label`，让 `refresh_status` 真的走完整条写入路径。断言是这个探针状态栏的
-    /// 文本从初始值变成了 `status_line` 的结果 —— 如果 `refresh_status` 退回到“只写日志”，
-    /// 文本不会变，这条断言就挂。
+    /// 这是无头测试，拿不到真实窗口，但可以用控件运行时挂一个充当状态栏的 `Label`，
+    /// 再用 [`wire_status_bar`] 把编辑器的信号接到它上面 —— 这条路径正是 demo 真正走的那条。
+    /// 断言是：改变光标后，那个“状态栏”的文本从初始值变成了含 `Ln`/`Col` 的新行。
+    /// 旧实现（在**轮询线程**里 `read` 控件再写状态栏）在这条断言下不会变，因为运行时注册表
+    /// 是线程局部的，工作线程读不到已挂载控件，而且原生控件只能在 UI 线程写。
     #[test]
-    fn refresh_status_writes_the_visible_status_handle() {
+    fn a_cursor_move_writes_the_visible_status_handle() {
         use rust_widgets::widget::runtime;
         use rust_widgets::widget::special_widgets::code_editor::CodeEditor;
         use rust_widgets::widget::Label;
 
-        // Mount a real `CodeEditor` so `status_line` can read a cursor from it.
-        let mut editor = CodeEditor::new(Rect::new(0, 0, 400, 300));
-        editor.set_text("fn main() {}");
-        let editor_id = runtime::register(Box::new(editor)).expect("ui thread has a registry");
-        let editor = CustomWidgetHandle::from_raw(editor_id);
-
-        // A label stands in for the status bar: `refresh_status` writes to it by id.
+        // Mount a real `CodeEditor`; the status writer composes from signals, not from a read.
         let status_id = runtime::register(Box::new(Label::new(
             "initial".to_string(),
             Rect::new(0, 0, 200, 20),
         )))
         .expect("ui thread has a registry");
 
-        let log = Arc::new(EventLog::new());
-        refresh_status(&log, &editor, status_id);
+        let target = Arc::new(Mutex::new(Some(status_id)));
+        let mut editor = CodeEditor::new(Rect::new(0, 0, 400, 300));
+        editor.set_text("fn main() {}");
+        wire_status_bar(&editor, target);
+        // Mounting replaces the widget, so the signals are wired on the value and the write
+        // is asserted through the label: nothing here reads the editor back off its handle.
+        editor.set_cursor(0, 3, false);
 
-        let expected = commands::status_line(&editor).expect("the editor is mounted");
+        let text = rust_widgets::get_widget_text(status_id);
         assert!(
-            expected.contains("Ln") && expected.contains("Col"),
-            "the status line must carry the cursor position: {expected}"
+            text.contains("Ln 1") && text.contains("Col 4"),
+            "the status line must carry the caret position: {text}"
         );
-        assert_ne!(expected, "initial", "the status text must actually change");
-        assert_eq!(
-            rust_widgets::get_widget_text(status_id),
-            expected,
-            "the visible status handle must receive the status line, not only the log"
-        );
+        assert_ne!(text, "initial", "the visible status text must actually change");
 
-        // The log behaviour is kept: the same line is also recorded.
-        assert!(
-            log.entries.lock().unwrap().iter().any(|entry| entry.contains(&expected)),
-            "the [Status] log line must still be written"
-        );
-
-        runtime::unregister(editor_id);
         runtime::unregister(status_id);
     }
 }

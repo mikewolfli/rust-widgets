@@ -15,6 +15,8 @@ the root package's `Cargo.toml` does not compile it.
 | local notification | `NotificationManager` + API 26 channel | `UNMutableNotificationContent` + `UNNotificationRequest` | ArkTS `notificationManager` through the host |
 | share sheet | `Intent.ACTION_SEND` chooser | `UIActivityViewController` | ArkTS `ShareKit` through the host |
 | deep link | `Intent.ACTION_VIEW` | `UIApplication.openURL` | ArkTS `startAbility` through the host |
+| safe-area insets | `View.getRootWindowInsets().getSystemWindowInset*` | `UIWindow.safeAreaInsets` | ArkTS host function (vp) |
+| orientation lock | `Activity.setRequestedOrientation` | **unsupported by design**: declared by the host view controller's `supportedInterfaceOrientations` | ArkTS host function (`window.setPreferredOrientation`) |
 | sensors / location | **unsupported by design** | **unsupported by design** | **unsupported by design** |
 
 Sensors and location are out of scope for a widget library: the application owns the permission

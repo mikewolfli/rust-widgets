@@ -31,15 +31,18 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::composite::CompositeBuilder;
 use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetFactory, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetFactory, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
-/// The character the arrow column paints.
+/// The arrow column's placeholder text.
 ///
-/// Named because the assembled face creates its arrow column from this text and then paints the
-/// same glyph: two spellings of one fact, and the template test asserts the arrow column the
-/// layout reported is the box the glyph is centred in.
-const ARROW_LABEL: &str = "v";
+/// The assembled face reserves the trigger and the arrow column as two `label` rows, and a label's
+/// text is what a caller would normally see. The arrow itself is now an **icon outline**, not a
+/// character: the previous `"v"` was painted as a letter, which is why the control's second button
+/// read `v` instead of a chevron. The column's size comes from `arrow_width` (`add_sized`), so this
+/// placeholder carries no visible text and the label exists only to make the layout report the two
+/// boxes that tile the face.
+const ARROW_COLUMN_TEXT: &str = "";
 
 /// One selectable action in a split button drop-down list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -299,7 +302,7 @@ impl SplitButton {
         let arrow = builder.add_sized(
             &factory,
             "label",
-            ARROW_LABEL,
+            ARROW_COLUMN_TEXT,
             Size::new(self.arrow_width, band.height),
             LayoutParams::new(),
         );
@@ -744,16 +747,19 @@ impl Draw for SplitButton {
             HorizontalAlignment::Center,
         );
 
-        // The arrow glyph is centred on its own column rather than offset by a half-glyph
-        // literal: `(arrow.width / 2) - 3` hard-coded a 6 px-wide 'v', so a different font or
-        // size put the glyph off the column's centre. `draw_text_fitted` with `Center` derives
-        // the origin from the measured string inside the column.
-        context.draw_text_fitted(
-            context.text_line(arrow, font),
-            ARROW_LABEL,
-            font,
-            ink.blend(&arrow_bg, 0.35),
-            HorizontalAlignment::Center,
+        // The arrow is a **chevron icon**, centred on its own column, rather than the letter
+        // `v` a reader had to interpret as a drop-down affordance. An icon is geometry: both
+        // backends draw the same outline, and the glyph table cannot substitute a different
+        // shape at another font size. `draw_icon_centered` clamps the side to the column, so a
+        // narrow column shrinks the chevron instead of clipping it.
+        let arrow_ink = ink.blend(&arrow_bg, 0.35);
+        let icon_side = arrow.width.min(arrow.height).max(1);
+        crate::widget::draw_icon_centered(
+            context,
+            arrow,
+            icon_side,
+            arrow_ink,
+            IconName::ChevronDown,
         );
 
         if self.menu_open {
@@ -1111,33 +1117,28 @@ mod tests {
         );
     }
 
-    /// The arrow column is the box the glyph is painted into.
+    /// The arrow column is the box the icon is painted into, and it paints no letter.
     ///
-    /// The assembled face creates the arrow column from [`ARROW_LABEL`] and then paints that same
-    /// glyph, so this is the "one fact, one derivation" check between the two: a column the layout
-    /// reported somewhere other than where the glyph is centred would mean the assembly and the
-    /// paint were reading different boxes.
+    /// The control used to paint the character `v` in its second column, so the drop-down
+    /// affordance read as the letter v — the "wrong button text" a reader notices first. The
+    /// face now paints a chevron **icon outline**; this test pins the absence of text in that
+    /// column, which is the part of the change that is inspectable in the emitted document.
     #[test]
-    fn the_arrow_glyph_is_centred_in_the_column_the_layout_reported() {
+    fn the_arrow_column_paints_an_icon_and_not_a_letter() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
         let _theme_guard = crate::style::theme_test_guard();
         let mut split = SplitButton::new("Run", Rect::new(0, 0, 240, 120));
+        let arrow = split.arrow_rect();
         let svg = crate::widget::svg::render_to_svg(&mut split);
         let boxes = text_run_boxes(&svg);
-        assert_eq!(boxes.len(), 2, "the face paints a trigger run and an arrow run: {boxes:?}");
-        let arrow = split.arrow_rect();
-        let (left, top, right, bottom) = boxes[1];
-        let glyph_cx = (left + right) as f32 / 2.0;
-        let column_cx = arrow.x as f32 + arrow.width as f32 / 2.0;
+        assert_eq!(boxes.len(), 1, "only the trigger is text: {boxes:?}");
         assert!(
-            (glyph_cx - column_cx).abs() <= 1.5,
-            "the arrow must be centred in the column the layout reported: glyph {glyph_cx}, \
-             column {column_cx}"
-        );
-        assert!(
-            top >= arrow.y && bottom <= arrow.y + arrow.height as i32,
-            "the arrow must stay inside its own column: ink {top}..{bottom}, column {arrow:?}"
+            boxes.iter().all(|(left, _, right, _)| {
+                let centre = (left + right) / 2;
+                centre < arrow.x || centre >= arrow.x + arrow.width as i32
+            }),
+            "the arrow column must not contain a letter: {boxes:?}, column {arrow:?}"
         );
     }
 
@@ -1193,26 +1194,22 @@ mod tests {
         crate::widget::svg::text_ink_boxes(svg)
     }
 
-    /// The trigger's label is centred in the trigger, and the arrow in its own column.
+    /// The trigger's label is centred in the trigger rather than started at its padding.
     ///
-    /// Both used to be placed by hand: the label at `primary_rect.x + 8` (left-aligned against
-    /// a literal, so a 240 px control drew a 50 px word flush to the left of a 218 px face) and
-    /// the arrow at `arrow.x + (arrow.width / 2) - 3` (which hard-coded a 6 px-wide 'v', so any
-    /// other glyph or font put the arrow off the column's centre).
+    /// It used to be placed at `primary_rect.x + 8` (left-aligned against a literal, so a 240 px
+    /// control drew a 50 px word flush to the left of a 218 px face).
     ///
-    /// The check is on the emitted **ink**, not on a `<text x>` attribute. The two runs are told
-    /// apart by the band their ink's centre falls in — the trigger's box or the trailing arrow's
-    /// column — rather than by the string they spell, which is no longer in the document at all.
-    /// A run's centre is compared to the box centre it must be centred on, within the fitter's
-    /// own margin: a `font8x8` bitmap maps 8 columns onto `round(0.6 * size)` pixels, so the lit
-    /// columns rarely start on the box's first pixel. Asserting the margin keeps this a statement
-    /// about the layout rather than about the glyph table.
+    /// The check is on the emitted **ink**, not on a `<text x>` attribute. The run's centre is
+    /// compared to the box centre it must be centred on, within the fitter's own margin: a
+    /// `font8x8` bitmap maps 8 columns onto `round(0.6 * size)` pixels, so the lit columns rarely
+    /// start on the box's first pixel. Asserting the margin keeps this a statement about the
+    /// layout rather than about the glyph table.
     #[test]
-    fn the_label_and_the_arrow_are_each_centred_in_their_own_box() {
+    fn the_label_is_centred_in_the_trigger() {
         let rect = Rect::new(0, 0, 240, 120);
         let mut split = SplitButton::new("Sample", rect);
         let primary = split.primary_rect();
-        let arrow = split.arrow_rect();
+        let band = split.face_band();
 
         let svg = crate::widget::svg::render_to_svg(&mut split);
         let runs = text_run_boxes(&svg);
@@ -1226,14 +1223,6 @@ mod tests {
             })
             .copied()
             .unwrap_or_else(|| panic!("the label painted no ink in the trigger: {svg}"));
-        let arrow_run = runs
-            .iter()
-            .find(|(l, _, r, _)| {
-                let centre = (l + r) / 2;
-                centre >= arrow.x && centre < arrow.x + arrow.width as i32
-            })
-            .copied()
-            .unwrap_or_else(|| panic!("the arrow painted no ink in its column: {svg}"));
 
         let margin = crate::render::TEXT_FIT_MARGIN as i32;
         let label_centre = (label.0 + label.2) / 2;
@@ -1249,27 +1238,11 @@ mod tests {
             "the label is centred, not left-aligned at the padding: {label:?}"
         );
         assert!(label.2 > label.0, "the label laid down ink: {label:?}");
-        // The arrow's glyph is centred on its column, which is the fact the literal
-        // `(arrow.width / 2) - 3` got wrong for any glyph but a 6 px-wide 'v'.
-        let arrow_centre = (arrow_run.0 + arrow_run.2) / 2;
-        let column_centre = arrow.x + arrow.width as i32 / 2;
+        // The label is painted inside the face band, so it cannot drift off the control.
         assert!(
-            (arrow_centre - column_centre).abs() <= margin,
-            "the arrow's ink centre {arrow_centre} must be the column's centre {column_centre}"
+            label.1 >= band.y && label.3 <= band.y + band.height as i32,
+            "the label ink {label:?} must stay inside the face {band:?}"
         );
-        // And the two runs occupy their own halves of the face rather than colliding in it.
-        assert!(
-            label.2 <= arrow_run.0,
-            "the label {label:?} must not reach into the arrow column {arrow_run:?}"
-        );
-        // Both runs are painted inside the face band, so neither can drift off the control.
-        let band = split.face_band();
-        for (name, run) in [("label", label), ("arrow", arrow_run)] {
-            assert!(
-                run.1 >= band.y && run.3 <= band.y + band.height as i32,
-                "the {name} ink {run:?} must stay inside the face {band:?}"
-            );
-        }
     }
 
     /// The trigger's label box and a menu row's label box share one padding derivation.

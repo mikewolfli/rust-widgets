@@ -4,8 +4,8 @@
 //! The honest backend for targets with no mobile service binding.
 
 use crate::{
-    HapticKind, MobileServices, NotificationRequest, Permission, Service, ServiceError,
-    ShareRequest, Status,
+    HapticKind, Insets, MobileServices, NotificationRequest, Orientation, Permission, Service,
+    ServiceError, ShareRequest, Status,
 };
 
 /// Answers `Unsupported` for every service.
@@ -50,6 +50,14 @@ impl MobileServices for UnsupportedServices {
     fn open_url(&self, _url: &str) -> Result<(), ServiceError> {
         Err(ServiceError::Unsupported)
     }
+
+    fn safe_area(&self) -> Result<Insets, ServiceError> {
+        Err(ServiceError::Unsupported)
+    }
+
+    fn set_orientation(&self, _orientation: Orientation) -> Result<(), ServiceError> {
+        Err(ServiceError::Unsupported)
+    }
 }
 
 #[cfg(test)]
@@ -62,6 +70,9 @@ mod tests {
         assert_eq!(services.keep_screen_on(true), Err(ServiceError::Unsupported));
         assert_eq!(services.haptic(HapticKind::Light), Err(ServiceError::Unsupported));
         assert_eq!(services.request_permission(Permission::Camera), Err(ServiceError::Unsupported));
+        assert_eq!(services.safe_area(), Err(ServiceError::Unsupported));
+        assert_eq!(services.set_orientation(Orientation::Portrait), Err(ServiceError::Unsupported));
+        assert_eq!(services.availability(Service::SafeArea), Status::Unsupported);
         assert_eq!(services.sensors(), Err(ServiceError::Unsupported));
         assert_eq!(services.location(), Err(ServiceError::Unsupported));
     }

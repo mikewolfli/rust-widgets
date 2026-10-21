@@ -13,7 +13,7 @@ use super::date_utils::{days_in_month, parse_iso_date, DAY_NAMES, MONTH_NAMES};
 use crate::core::Point;
 use crate::core::{Color, HorizontalAlignment, Rect};
 use crate::event::{Event, EventHandler};
-use crate::render::RenderContext;
+use crate::render::{RenderContext, TEXT_FIT_MARGIN};
 use crate::signal::Signal1;
 use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -34,7 +34,13 @@ fn day_of_week(year: i32, month: u32, day: u32) -> u32 {
     let y = y % 100;
     let d = day as i32;
     let w = (d + (13 * (m as i32 + 1)) / 5 + y + y / 4 + c / 4 - 2 * c) % 7;
-    ((w + 7) % 7) as u32
+    // Zeller's congruence numbers the week **Saturday = 0**, while `DAY_NAMES` and the
+    // leading-blank count are Sunday-first. Returning the raw value shifted the whole grid
+    // one column: January 2025 (whose 1st is a Wednesday) drew its 1 under "Th", and every
+    // click then selected the date one day after the cell under the pointer. Adding 6 and
+    // reducing modulo 7 converts Saturday-based to Sunday-based (Wed 4 → 3); `rem_euclid`
+    // keeps proleptic years with a negative weekday from producing a negative column.
+    (w + 6).rem_euclid(7) as u32
 }
 
 /// DateRangePicker widget — select a date range by clicking start/end dates.
@@ -214,11 +220,25 @@ impl DateRangePicker {
         // producing a zero-sized cell the label would then be fitted into nothing.
         let gaps = CELL_SPACING * (rows - 1);
         let cell_size = (available_height.saturating_sub(gaps) / rows).clamp(1, NOMINAL_CELL);
+        // The **width** comes from the room the grid has across, not from the row height.
+        //
+        // `cell_size` is a *height* limit: it is `available_height / rows`. Using it for
+        // the columns too made a short, wide control draw a tiny grid in its top-left
+        // corner (a 240x120 census cell had 10 px columns in 240 px of room), and every
+        // day number then had 10 - 6 px to fit in, so the whole grid rendered as `...`.
+        // Seven columns across the available width is the same rule the advanced calendar
+        // uses and the one a reader expects.
+        let available_width =
+            (rect.x + rect.width as i32 - grid_left - GRID_RIGHT_INSET).max(1) as u32;
+        let column_gaps = CELL_SPACING * 6;
+        let cell_width = (available_width.saturating_sub(column_gaps) / 7).clamp(1, NOMINAL_CELL);
         GridLayout {
             grid_left,
             grid_top,
             cell_size,
-            total_cell: cell_size + CELL_SPACING,
+            cell_width,
+            row_pitch: cell_size + CELL_SPACING,
+            column_pitch: cell_width + CELL_SPACING,
             total_cells: first_dow + total_days,
         }
     }
@@ -230,6 +250,8 @@ const HEADER_HEIGHT: u32 = 40;
 const DAY_HEADER_HEIGHT: u32 = 20;
 /// Left inset of the grid from the control's edge.
 const GRID_LEFT_INSET: i32 = 4;
+/// Right inset of the grid from the control's edge.
+const GRID_RIGHT_INSET: i32 = 4;
 /// Gap between calendar cells.
 const CELL_SPACING: u32 = 2;
 /// The largest a calendar cell is allowed to be.
@@ -241,10 +263,14 @@ struct GridLayout {
     grid_left: i32,
     /// Absolute y of the first week row.
     grid_top: i32,
-    /// Edge length of one day cell.
+    /// Edge length of one day cell (the row height limit).
     cell_size: u32,
-    /// Column pitch: the cell plus its gap.
-    total_cell: u32,
+    /// Width of one day cell, from the grid's width.
+    cell_width: u32,
+    /// Row pitch: the cell height plus its gap.
+    row_pitch: u32,
+    /// Column pitch: the cell width plus its gap.
+    column_pitch: u32,
     /// Cells to draw, including the leading blanks of the first week.
     total_cells: usize,
 }
@@ -420,7 +446,9 @@ impl Draw for DateRangePicker {
         let grid_left = layout.grid_left;
         let grid_top = layout.grid_top;
         let cell_size = layout.cell_size;
-        let total_cell = layout.total_cell;
+        let cell_width = layout.cell_width;
+        let row_pitch = layout.row_pitch;
+        let column_pitch = layout.column_pitch;
 
         // ── Month/Year header ──
         //
@@ -492,10 +520,15 @@ impl Draw for DateRangePicker {
         // from `cell_size` and centring inside it keeps every label within its own cell.
         let dow_height = context.measure_text("M", &dow_font).height;
         for (i, day_name) in DAY_NAMES.iter().enumerate() {
-            let cell_x = grid_left + (i as u32 * total_cell) as i32;
+            let cell_x = grid_left + (i as u32 * column_pitch) as i32;
             let cell_y = grid_top - DAY_HEADER_HEIGHT as i32;
+            // The fit box is the cell **plus both margins**: `draw_text_fitted` insets three
+            // pixels at each end, so handing it the bare cell asks it to fit a label into 6 px
+            // less than the cell the label is measured for — which is how a column that fits
+            // still renders as `...`.
+            let margin = TEXT_FIT_MARGIN as i32;
             context.draw_text_fitted(
-                Rect::new(cell_x, cell_y + 4, cell_size, dow_height),
+                Rect::new(cell_x - margin, cell_y + 4, cell_width + 2 * margin as u32, dow_height),
                 day_name,
                 &dow_font,
                 dow_color,
@@ -515,10 +548,10 @@ impl Draw for DateRangePicker {
 
             let row = cell_idx / 7;
             let col = cell_idx % 7;
-            let cell_x = grid_left + (col as u32 * total_cell) as i32;
-            let cell_y = grid_top + (row as u32 * total_cell) as i32;
+            let cell_x = grid_left + (col as u32 * column_pitch) as i32;
+            let cell_y = grid_top + (row as u32 * row_pitch) as i32;
 
-            let cell_rect = Rect::new(cell_x, cell_y, cell_size, cell_size);
+            let cell_rect = Rect::new(cell_x, cell_y, cell_width, cell_size);
 
             // Determine cell styling
             let is_start = self.start_date == Some(date);
@@ -563,7 +596,12 @@ impl Draw for DateRangePicker {
                 text_color
             };
             context.draw_text_fitted(
-                Rect::new(cell_x, day_y, cell_size, day_metrics.height),
+                Rect::new(
+                    cell_x - TEXT_FIT_MARGIN as i32,
+                    day_y,
+                    cell_width + 2 * TEXT_FIT_MARGIN,
+                    day_metrics.height,
+                ),
                 &day_text,
                 &day_font,
                 day_color,
@@ -589,7 +627,7 @@ impl EventHandler for DateRangePicker {
             // The same grid the draw uses, so a click lands in the cell under the pointer.
             let layout = self.grid_layout();
             let (grid_left, grid_top) = (layout.grid_left, layout.grid_top);
-            let total_cell = layout.total_cell;
+            let (column_pitch, row_pitch) = (layout.column_pitch, layout.row_pitch);
 
             // Check header clicks for navigation
             let header_rect_left = Rect::new(rect.x + 4, rect.y + 4, 20, HEADER_HEIGHT);
@@ -612,8 +650,8 @@ impl EventHandler for DateRangePicker {
                 return;
             }
 
-            let col = (rel_x as u32) / total_cell;
-            let row = (rel_y as u32) / total_cell;
+            let col = (rel_x as u32) / column_pitch;
+            let row = (rel_y as u32) / row_pitch;
             if col >= 7 || row >= 6 {
                 // Click outside the grid — clear if only start is selected
                 if self.start_date.is_some() && self.end_date.is_none() {
@@ -736,22 +774,81 @@ mod tests {
         assert!(svg.ends_with("</svg>"));
     }
 
+    /// Centre of the cell at `col`/`row` in the picker's own grid geometry.
+    fn cell_centre(picker: &DateRangePicker, col: u32, row: u32) -> Point {
+        let layout = picker.grid_layout();
+        Point::new(
+            layout.grid_left + (col * layout.column_pitch) as i32 + layout.cell_width as i32 / 2,
+            layout.grid_top + (row * layout.row_pitch) as i32 + layout.cell_size as i32 / 2,
+        )
+    }
+
+    #[test]
+    fn january_2025_starts_in_the_wednesday_column() {
+        // The 1st of January 2025 is a Wednesday. Sunday-first numbering therefore puts it in
+        // column 3, with three leading blanks in the first week. The grid used to start it in
+        // column 4 (Zeller's Saturday-based value used verbatim), shifting every day one cell
+        // to the right of the weekday printed above it.
+        assert_eq!(day_of_week(2025, 1, 1), 3);
+        let picker = make_picker();
+        assert_eq!(picker.first_day_of_week(), 3);
+        assert_eq!(picker.date_at_cell(2), None);
+        assert_eq!(picker.date_at_cell(3), Some((2025, 1, 1)));
+        assert_eq!(picker.date_at_cell(9), Some((2025, 1, 7)));
+    }
+
+    #[test]
+    fn a_click_selects_the_day_painted_in_that_cell() {
+        // The draw places day `d` at `col = (offset + d - 1) % 7`; the hit test must resolve a
+        // press at that cell's centre back to the same `d`. Before the geometry fix the two
+        // agreed with each other but disagreed with the painted weekday, because the offset
+        // itself was a day off.
+        let picker = make_picker();
+        let offset = picker.first_day_of_week();
+        for day in [1u32, 7, 15, 22, 31] {
+            let index = offset + day - 1;
+            let (col, row) = (index % 7, index / 7);
+
+            let mut clicked = make_picker();
+            clicked.handle_event(&Event::MousePress {
+                pos: cell_centre(&picker, col, row),
+                button: 1,
+                modifiers: 0,
+            });
+            assert_eq!(
+                clicked.start_date(),
+                Some((2025, 1, day)),
+                "day {day} drawn at column {col}, row {row} was hit-tested as {:?}",
+                clicked.start_date()
+            );
+            assert!(clicked.end_date().is_none());
+        }
+    }
+
     #[test]
     fn date_range_picker_mouse_press_sets_start() {
         let mut picker = make_picker();
-        // Jan 1, 2025 is Wednesday -> day_of_week returns 4 (Zeller: 0=Sat, 4=Wed)
-        // Day 1 is at cell index 4
-        // Cell size = 28, spacing = 2, total_cell = 30
-        // Grid starts at x=4, y=40+20=60
-        // Day 15 = cell index 4 + 14 = 18 => row=2 (18/7=2), col=4 (18%7=4)
-        // Position: x=4 + 4*30 = 124, y=60 + 2*30 = 120
+        // Jan 1, 2025 is Wednesday -> column 3 (Sunday-based). Day 15 is therefore cell
+        // index 3 + 14 = 17 => row 2, column 3; the click below is that cell's centre.
         picker.handle_event(&Event::MousePress {
-            pos: Point::new(124, 120),
+            pos: cell_centre(&picker, 3, 2),
             button: 1,
             modifiers: 0,
         });
         assert_eq!(picker.start_date(), Some((2025, 1, 15)));
         assert!(picker.end_date().is_none());
+    }
+
+    #[test]
+    fn a_click_in_a_leading_blank_does_not_invent_a_date() {
+        let mut picker = make_picker();
+        // Column 0..2 of the first week precede January 1st and own no date.
+        picker.handle_event(&Event::MousePress {
+            pos: cell_centre(&picker, 0, 0),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(picker.start_date(), None);
     }
 
     #[test]

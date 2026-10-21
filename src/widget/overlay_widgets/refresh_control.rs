@@ -365,7 +365,7 @@ impl Draw for RefreshControl {
 
         // ── The reveal strip is a **fixed** band at the control's top edge ──
         //
-        // A pull-down indicator is chrome: the same 40 px strip opens in a 400 px list
+        // A pull-down indicator is chrome: the same 56 px strip opens in a 400 px list
         // and in a smaller one. The height is named (`REFRESH_INDICATOR_HEIGHT`) and the
         // band is placed with `ControlMetrics::top_band`, which is the shared derivation
         // for "a strip pinned to my top edge" — the indicator and the `content_rect`

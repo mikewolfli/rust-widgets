@@ -23,13 +23,15 @@
 //! | `notify` | id, title, body, icon resource | same |
 //! | `share` | text, URL (may be null), chooser title (may be null) | same |
 //! | `open_url` | validated URL | same |
+//! | `safe_area` | four `f32` out-pointers (top, right, bottom, left) | same |
+//! | `set_orientation` | `0` any / `1` portrait / `2` landscape | same |
 //!
 //! The returned strings are borrowed only for the duration of the call; the host copies whatever
 //! it needs before returning.
 
 use crate::{
-    validate_url, HapticKind, MobileServices, NotificationRequest, Permission, Service,
-    ServiceError, ShareRequest, Status,
+    validate_url, HapticKind, Insets, MobileServices, NotificationRequest, Orientation, Permission,
+    Service, ServiceError, ShareRequest, Status,
 };
 use std::ffi::CString;
 use std::os::raw::c_char;
@@ -53,6 +55,14 @@ pub struct HarmonyHost {
     pub share: Option<extern "C" fn(*const c_char, *const c_char, *const c_char) -> i32>,
     /// Open a URL or a custom scheme.
     pub open_url: Option<extern "C" fn(*const c_char) -> i32>,
+    /// Write the window's safe-area insets through the four out-pointers, in vp.
+    ///
+    /// The out-pointer form rather than a packed return keeps the units explicit and leaves
+    /// room for the four values to be fractional, which vp usually are. Returns the same
+    /// `1`/`0`/`-1` code as every other host function.
+    pub safe_area: Option<extern "C" fn(*mut f32, *mut f32, *mut f32, *mut f32) -> i32>,
+    /// Lock the window's orientation: `0` any, `1` portrait, `2` landscape.
+    pub set_orientation: Option<extern "C" fn(i32) -> i32>,
 }
 
 static HOST: RwLock<Option<HarmonyHost>> = RwLock::new(None);
@@ -87,7 +97,9 @@ pub fn attach(host: HarmonyHost) -> bool {
         || host.request_permission.is_some()
         || host.notify.is_some()
         || host.share.is_some()
-        || host.open_url.is_some();
+        || host.open_url.is_some()
+        || host.safe_area.is_some()
+        || host.set_orientation.is_some();
     if !any {
         return false;
     }
@@ -152,6 +164,9 @@ fn native_availability(service: Service) -> Status {
             Service::Share | Service::DeepLink | Service::Sensors | Service::Location => {
                 Status::Unsupported
             }
+            // Both are ArkTS-only APIs (`window.getWindowAvoidArea`,
+            // `window.setPreferredOrientation`), so a native-only host has no binding for them.
+            Service::SafeArea | Service::Orientation => Status::Unsupported,
         };
     }
     #[cfg(not(target_env = "ohos"))]
@@ -349,6 +364,8 @@ impl MobileServices for HarmonyServices {
             Service::Notifications => host.notify.is_some() && notifications_allowed(),
             Service::Share => host.share.is_some(),
             Service::DeepLink => host.open_url.is_some(),
+            Service::SafeArea => host.safe_area.is_some(),
+            Service::Orientation => host.set_orientation.is_some(),
             Service::Sensors | Service::Location => false,
         };
         if present {
@@ -462,6 +479,33 @@ impl MobileServices for HarmonyServices {
         let value = CString::new(url).map_err(|_| ServiceError::Denied)?;
         from_code(call(value.as_ptr()))
     }
+
+    fn safe_area(&self) -> Result<Insets, ServiceError> {
+        let Some(host) = host() else { return Err(ServiceError::Unsupported) };
+        let Some(call) = host.safe_area else { return Err(ServiceError::Unsupported) };
+        let mut insets = Insets::ZERO;
+        let code = call(&mut insets.top, &mut insets.right, &mut insets.bottom, &mut insets.left);
+        if code != 1 {
+            return from_code(code).map(|_| Insets::ZERO);
+        }
+        // A negative inset cannot mean anything; clamp rather than trust a host that wrote one.
+        insets.top = insets.top.max(0.0);
+        insets.right = insets.right.max(0.0);
+        insets.bottom = insets.bottom.max(0.0);
+        insets.left = insets.left.max(0.0);
+        Ok(insets)
+    }
+
+    fn set_orientation(&self, orientation: Orientation) -> Result<(), ServiceError> {
+        let Some(host) = host() else { return Err(ServiceError::Unsupported) };
+        let Some(call) = host.set_orientation else { return Err(ServiceError::Unsupported) };
+        let code = match orientation {
+            Orientation::Any => 0,
+            Orientation::Portrait => 1,
+            Orientation::Landscape => 2,
+        };
+        from_code(call(code))
+    }
 }
 
 #[cfg(test)]
@@ -471,6 +515,7 @@ mod tests {
 
     static LAST_HAPTIC: AtomicI32 = AtomicI32::new(0);
     static LAST_ON: AtomicI32 = AtomicI32::new(-1);
+    static LAST_ORIENTATION: AtomicI32 = AtomicI32::new(-1);
     /// The host is process-wide, so the tests that install and remove it serialize.
     static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -501,6 +546,29 @@ mod tests {
         i32::from(value.to_bytes() == b"https://example.com")
     }
 
+    /// Writes fixed insets through the out-pointers, the way an ArkTS host would.
+    extern "C" fn safe_area(
+        top: *mut f32,
+        right: *mut f32,
+        bottom: *mut f32,
+        left: *mut f32,
+    ) -> i32 {
+        // SAFETY: `HarmonyServices::safe_area` passes four live `f32` locations.
+        unsafe {
+            *top = 44.0;
+            *right = 0.0;
+            *bottom = 34.0;
+            *left = 0.0;
+        }
+        1
+    }
+
+    /// Records the requested orientation code so the test can read it back.
+    extern "C" fn orientation(code: i32) -> i32 {
+        LAST_ORIENTATION.store(code, Ordering::SeqCst);
+        1
+    }
+
     fn install() -> HarmonyHost {
         let host = HarmonyHost {
             keep_screen_on: Some(keep),
@@ -510,9 +578,30 @@ mod tests {
             notify: Some(notify),
             share: Some(share),
             open_url: Some(open),
+            safe_area: Some(safe_area),
+            set_orientation: Some(orientation),
         };
         assert!(attach(host));
         host
+    }
+
+    #[test]
+    fn safe_area_returns_the_host_insets_and_orientation_uses_the_documented_codes() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        detach();
+        install();
+        let services = HarmonyServices;
+        assert_eq!(services.availability(Service::SafeArea), Status::Available);
+        assert_eq!(services.availability(Service::Orientation), Status::Available);
+        assert_eq!(
+            services.safe_area(),
+            Ok(Insets { top: 44.0, right: 0.0, bottom: 34.0, left: 0.0 })
+        );
+        assert_eq!(services.set_orientation(Orientation::Landscape), Ok(()));
+        assert_eq!(LAST_ORIENTATION.load(Ordering::SeqCst), 2, "landscape is code 2");
+        assert_eq!(services.set_orientation(Orientation::Any), Ok(()));
+        assert_eq!(LAST_ORIENTATION.load(Ordering::SeqCst), 0, "any is code 0");
+        detach();
     }
 
     #[test]

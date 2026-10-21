@@ -224,7 +224,7 @@ impl Keyboard {
             ],
             // Row 2: Shift, z x c v b n m, Backspace
             vec![
-                KeyDefinition { label: "Shift".into(), key_code: 16, width_ratio: 1.5 },
+                KeyDefinition { label: "Shift".into(), key_code: 16, width_ratio: 2.0 },
                 KeyDefinition { label: "z".into(), key_code: 90, width_ratio: 1.0 },
                 KeyDefinition { label: "x".into(), key_code: 88, width_ratio: 1.0 },
                 KeyDefinition { label: "c".into(), key_code: 67, width_ratio: 1.0 },
@@ -232,7 +232,7 @@ impl Keyboard {
                 KeyDefinition { label: "b".into(), key_code: 66, width_ratio: 1.0 },
                 KeyDefinition { label: "n".into(), key_code: 78, width_ratio: 1.0 },
                 KeyDefinition { label: "m".into(), key_code: 77, width_ratio: 1.0 },
-                KeyDefinition { label: "Bksp".into(), key_code: 8, width_ratio: 1.5 },
+                KeyDefinition { label: "Bksp".into(), key_code: 8, width_ratio: 2.0 },
             ],
             // Row 3: 123?, Space (width 4), Enter
             vec![

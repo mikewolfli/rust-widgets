@@ -11,7 +11,7 @@ use std::f32::consts::TAU;
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
-use crate::render::RenderContext;
+use crate::render::{RenderContext, TEXT_FIT_MARGIN};
 use crate::signal::{GenericSignal, Signal1};
 use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::{expect_f32, expect_usize};
@@ -1148,12 +1148,32 @@ impl Draw for PieMenu {
             } else {
                 let label_text =
                     if item.icon_text().is_empty() { item.text() } else { item.icon_text() };
-                context.draw_text(
-                    Point::from_f32(lx, ly),
+                // The label is **centred on the wedge**, in a box bounded by the wedge's own
+                // geometry: the chord at the label radius is what two neighbouring labels may
+                // share, and the radial band is how tall the run can be. The previous call used
+                // the wedge centre as a *left* origin, so every label began at its wedge's middle
+                // and ran outward — the two top labels met over the hub and the right one left the
+                // control. Fitting the box also elides a label that genuinely cannot fit instead
+                // of overlapping its neighbour.
+                let sweep = (item.angle_end() - item.angle_start()).abs();
+                let half_chord = (label_r * (sweep * 0.5).sin()).abs();
+                // `draw_text_fitted` insets both ends by `TEXT_FIT_MARGIN`, so a box sized to the
+                // bare chord asks it to fit the label into 6 px less than the chord — which
+                // elided `Rename` to `Rena…` in a wedge that had room for the whole word.
+                let box_w = ((half_chord * 2.0) + 2.0 * TEXT_FIT_MARGIN as f32).max(1.0) as u32;
+                let box_h = ((outer_r - inner_r) * 0.8).max(1.0) as u32;
+                let label_box = Rect::new(
+                    (lx - box_w as f32 / 2.0).round() as i32,
+                    (ly - box_h as f32 / 2.0).round() as i32,
+                    box_w,
+                    box_h,
+                );
+                context.draw_text_fitted(
+                    label_box,
                     label_text,
                     font,
                     text_color,
-                    HorizontalAlignment::Left,
+                    HorizontalAlignment::Center,
                 );
             }
         }

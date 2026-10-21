@@ -704,9 +704,11 @@ impl Draw for Chip {
         // space no chip could occupy. The band is centred, so it sits on the control's middle
         // line whatever height the caller supplies, which is the same derivation each chip
         // uses (`row_band`).
-        let band = self.row_band();
-        context.fill_rect(band, background);
-        context.draw_rect(band, border);
+        // The row band is the *measure* of the chips, not a frame around them: the band used to
+        // be filled and stroked, so a single chip in a 240 px control was drawn inside a
+        // full-width rectangle with a vertical rule where the chip ended — a container with one
+        // child, which is not what a chip row looks like. Each chip paints its own pill instead;
+        // a chip is a rounded pill by definition, and a square box read as a table cell.
 
         for index in 0..self.items.len() {
             let Some(chip_rect) = self.chip_rect(index) else {
@@ -733,6 +735,10 @@ impl Draw for Chip {
                 background.blend(&text_color, 0.06)
             };
             let mut label_ink = text_color;
+            // The pill's ink must contrast with the fill it is actually painted on. A selected
+            // chip whose theme declares a fill but no ink kept the body text colour, so the
+            // accent pill carried dark text on a dark blue fill (the census sample showed exactly
+            // that). A declared ink still wins; otherwise the fill's own contrast colour does.
             if item.selected {
                 if let Some(declared) = selected_style.as_ref() {
                     if let Some(declared_background) = declared.background_color {
@@ -740,11 +746,18 @@ impl Draw for Chip {
                     }
                     if let Some(declared_ink) = declared.text_color {
                         label_ink = declared_ink;
+                    } else {
+                        label_ink = bg.contrast_color();
                     }
+                } else {
+                    label_ink = bg.contrast_color();
                 }
             }
-            context.fill_rect(chip_rect, bg);
-            context.draw_rect(chip_rect, border);
+            // A chip is a pill: the radius is half its height, clamped so a caller-supplied
+            // short height cannot invert the corner.
+            let pill_radius = (chip_rect.height / 2).max(1);
+            context.fill_rounded_rect(chip_rect, pill_radius, bg);
+            context.draw_rounded_rect_stroke(chip_rect, pill_radius, border, 1);
             // ── Icon ──
             //
             // A chip with typed content reserves a leading square, and the label band starts after
