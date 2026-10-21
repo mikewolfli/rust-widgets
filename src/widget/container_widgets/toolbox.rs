@@ -1030,11 +1030,10 @@ mod tests {
         let plain = render_to_svg(&mut toolbox);
         assert!(!plain.contains("<image"), "an item with no icon draws no image");
 
-        toolbox.item_mut(0).expect("the item exists").set_icon(Some(Image::from_rgba(
-            vec![200; 4 * 4 * 4],
-            4,
-            4,
-        )));
+        toolbox.item_mut(0).expect("the item exists").set_icon(Some(
+            Image::try_from_rgba(vec![200; 4 * 4 * 4], 4, 4)
+                .expect("the buffer matches its declared size"),
+        ));
         assert!(toolbox.item(0).expect("the item exists").has_icon());
         assert!(render_to_svg(&mut toolbox).contains("<image"), "the image must reach the backend");
 

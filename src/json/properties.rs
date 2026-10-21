@@ -56,20 +56,21 @@ pub(crate) enum ApplyOutcome {
     Rejected,
 }
 
-/// Normalise a property name the way the capability layer does.
+/// The capability layer's name comparison, re-exported so this module cannot drift from it.
 ///
 /// # Why this is a re-export and not a copy
 ///
-/// It used to be a private copy, justified by "the capability helper is crate-private".
-/// [`normalize_key`] is in fact `pub` — the crate's own `capability` module re-exports it —
-/// so that premise was false, and the copy was a second implementation of one rule. The two
-/// happened to agree when this was written, but nothing kept them agreeing: the loader and
-/// the capability layer decide "is this key a property?" independently, and the day one
-/// spelling changed the answer would differ between the two front ends (principle #101).
+/// This module used to carry a private copy of the normaliser, justified by "the capability
+/// helper is crate-private". That premise was false — it is `pub` — and the copy was a second
+/// implementation of one rule: the loader and the capability layer decide "is this key a
+/// property?" independently, and the day one spelling changed the answer would differ between
+/// the two front ends (principle #101).
 ///
-/// Re-exported under the local name so every call site in this module reads the same, and so
-/// there is exactly one implementation to change.
-use crate::widget::capability::coercion::normalize_key as normalize;
+/// The comparisons below use [`same_key`], the *comparing* form of that one rule: it answers
+/// "are these the same key" without materialising either normalised string, which
+/// `normalize_key(a) == normalize_key(b)` did once **per candidate name** — the cost of a miss
+/// scaled with the size of the control's schema table.
+use crate::widget::capability::coercion::same_key;
 
 /// Whether `name` is published by the widget's property contract.
 ///
@@ -81,8 +82,7 @@ pub fn is_widget_property(widget: &dyn crate::widget::Widget, name: &str) -> boo
     let Some(published) = widget_property_names(widget) else {
         return false;
     };
-    let wanted = normalize(name);
-    published.iter().any(|candidate| normalize(candidate) == wanted)
+    published.iter().any(|candidate| same_key(candidate, name))
 }
 
 /// Resolve the published property name that `name` refers to.
@@ -94,8 +94,7 @@ pub(crate) fn resolve_property_name(
     name: &str,
 ) -> Option<&'static str> {
     let published = widget_property_names(widget)?;
-    let wanted = normalize(name);
-    published.iter().copied().find(|candidate| normalize(candidate) == wanted)
+    published.iter().copied().find(|candidate| same_key(candidate, name))
 }
 
 /// Convert a JSON value to the `CapabilityValue` variant a property declares.
@@ -441,8 +440,7 @@ fn declared_schema(
 ) -> Option<crate::widget::capability::PropertySchema> {
     let factory = crate::json::schema_factory();
     let capability = factory.capability_for_kind_instance(widget)?;
-    let wanted = normalize(name);
-    capability.properties.iter().find(|schema| normalize(schema.name) == wanted).copied()
+    capability.properties.iter().find(|schema| same_key(schema.name, name)).copied()
 }
 
 /// Whether `widget` declares `name` as a record-list property (BLUE26 B26.09).
@@ -561,6 +559,7 @@ pub(crate) fn apply_widget_property_with_icon_resolver(
 mod tests {
     use super::*;
     use crate::core::Rect;
+    use crate::widget::capability::coercion::normalize_key as normalize;
     use crate::widget::Button;
 
     #[test]

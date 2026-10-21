@@ -98,12 +98,12 @@ fi
 echo "  PASS  no live reference to the removed wrapper"
 
 echo "[2/4] the capability question exists and is not hardcoded true"
-if ! grep -q "fn supports_web_engine" src/platform/types.rs; then
+if ! grep -q "fn supports_web_engine" src/platform/types/traits.rs; then
     echo "  FAIL  Platform::supports_web_engine is missing"
     exit 1
 fi
 # The default must be `false`: a backend that declares nothing declares no engine.
-DEFAULT_LINE="$(awk '/fn supports_web_engine/{found=1} found && /^    }/{exit} found && /true|false/{print; exit}' src/platform/types.rs)"
+DEFAULT_LINE="$(awk '/fn supports_web_engine/{found=1} found && /^    }/{exit} found && /true|false/{print; exit}' src/platform/types/traits.rs)"
 if ! printf '%s' "$DEFAULT_LINE" | grep -q "false"; then
     echo "  FAIL  the default body does not answer 'false'; got: $DEFAULT_LINE"
     exit 1

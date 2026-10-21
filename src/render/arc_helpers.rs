@@ -129,8 +129,8 @@ mod tests {
                 descent: 0,
             }
         }
-        fn shape_text(&self, _text: &str, _font: &Font) -> ShapedText {
-            ShapedText { clusters: Vec::new(), advance: 0.0 }
+        fn shape_text(&self, _text: &str, _font: &Font) -> crate::compat::Rc<ShapedText> {
+            crate::compat::Rc::new(ShapedText { clusters: Vec::new(), advance: 0.0 })
         }
         fn frame_rgba(&self) -> &[u8] {
             &[]

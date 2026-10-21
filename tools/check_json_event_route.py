@@ -70,11 +70,23 @@ def check_route_uses_the_capability_table() -> list[str]:
             "src/json/loader.rs no longer calls `control_publishes`, so nothing validates a "
             "declared `events` name against the capability table"
         )
-    elif "capability::WidgetFactory::new_with_defaults()" not in text:
-        findings.append(
-            "`control_publishes` does not build the capability registry, so it cannot be "
-            "comparing against the published names"
-        )
+    else:
+        # Either registry source is acceptable: `shared()` is the process-wide one every hot path
+        # uses (building the ~190-control table per call was the T1 defect), and
+        # `new_with_defaults()` is a self-built registry a test or a tool may legitimately use.
+        # What the gate is about is that *some* registry decides the answer, rather than a
+        # hand-written list of names diverging from the capability table.
+        if not any(
+            constructor in text
+            for constructor in (
+                "WidgetFactory::shared()",
+                "capability::WidgetFactory::new_with_defaults()",
+            )
+        ):
+            findings.append(
+                "`control_publishes` does not build the capability registry, so it cannot be "
+                "comparing against the published names"
+            )
     return findings
 
 
@@ -143,14 +155,14 @@ def check_single_source_of_keys() -> list[str]:
 def check_marker_kinds_are_real() -> list[str]:
     """[4] Every marker's trigger kind must be a `WidgetTriggerKind` variant."""
     findings: list[str] = []
-    kinds = pathlib.Path("src/platform/types.rs").read_text()
+    kinds = pathlib.Path("src/platform/types/values.rs").read_text()
     body = kinds.split("pub enum WidgetTriggerKind", 1)[-1]
     variants = set(re.findall(r"^\s{4}(\w+)\s*(?:=\s*\d+)?,", body, re.M))
     for kind in sorted(set(re.findall(r"WidgetTriggerKind::(\w+)", ROUTE.read_text()))):
         if kind not in variants:
             findings.append(
                 f"`WidgetTriggerKind::{kind}` is not a variant of the enum in "
-                f"src/platform/types.rs"
+                f"src/platform/types/values.rs"
             )
     return findings
 

@@ -570,7 +570,7 @@ mod tests {
         assert!(
             !engine.has_real_engine(),
             "a real engine became available: update the module docs of src/web/web_engine.rs \
-             and src/platform/types.rs, which state that no backend renders the web"
+             and src/platform/types/traits.rs, which state that no backend renders the web"
         );
     }
 

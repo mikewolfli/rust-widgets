@@ -225,7 +225,8 @@ mod tests {
         let mut view = ImageView::new(empty, Rect::new(0, 0, 100, 100));
         assert!(view.image().is_empty());
 
-        let rgba = Image::from_rgba(vec![255; 16 * 4], 4, 4);
+        let rgba = Image::try_from_rgba(vec![255; 16 * 4], 4, 4)
+            .expect("the buffer matches its declared size");
         view.set_image(rgba.clone());
         assert_eq!(view.image().width(), 4);
         assert_eq!(view.image().height(), 4);
@@ -269,7 +270,8 @@ mod tests {
 
     #[test]
     fn image_view_size_hint_with_image() {
-        let rgba = Image::from_rgba(vec![255; 64 * 64 * 4], 64, 64);
+        let rgba = Image::try_from_rgba(vec![255; 64 * 64 * 4], 64, 64)
+            .expect("the buffer matches its declared size");
         let view = ImageView::new(rgba, Rect::new(0, 0, 200, 200));
         assert_eq!(view.size_hint(), Size::new(64, 64));
     }

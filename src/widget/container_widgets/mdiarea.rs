@@ -1552,11 +1552,10 @@ mod tests {
         let without = render_to_svg(&mut area);
         assert!(!without.contains("<image"), "an iconless sub-window draws no image");
 
-        area.sub_window_mut(0).expect("exists").set_icon(Some(Image::from_rgba(
-            vec![128; 4 * 4 * 4],
-            4,
-            4,
-        )));
+        area.sub_window_mut(0).expect("exists").set_icon(Some(
+            Image::try_from_rgba(vec![128; 4 * 4 * 4], 4, 4)
+                .expect("the buffer matches its declared size"),
+        ));
         let with = render_to_svg(&mut area);
         assert!(with.contains("<image"), "a legacy sub-window image must reach the backend");
     }
@@ -1565,7 +1564,9 @@ mod tests {
     #[test]
     fn mdiarea_typed_and_legacy_icon_share_one_active_state() {
         let mut area = titled_area();
-        area.sub_window_mut(0).expect("exists").set_icon(Some(Image::from_rgba(vec![3; 4], 1, 1)));
+        area.sub_window_mut(0).expect("exists").set_icon(Some(
+            Image::try_from_rgba(vec![3; 4], 1, 1).expect("the buffer matches its declared size"),
+        ));
         assert!(area.sub_window(0).unwrap().has_icon());
 
         area.set_item_icon_source(widget_id_1(), Some(IconSource::Builtin(IconName::Save)))

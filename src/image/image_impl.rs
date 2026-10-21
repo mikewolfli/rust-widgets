@@ -19,19 +19,29 @@ impl Image {
         Self::from_raw(ImageData::Rgba8(Vec::new()), 0, 0)
     }
 
-    /// Creates an image from validated raw RGBA8 pixels.
+    /// Creates an image from validated raw RGBA8 pixels, refusing a size mismatch.
     ///
-    /// This compatibility constructor preserves the historical widget-image
-    /// API while storing pixels in the canonical `ImageData` representation.
-    pub fn from_rgba(data: Vec<u8>, width: u32, height: u32) -> Self {
+    /// This compatibility constructor preserves the historical widget-image API while storing
+    /// pixels in the canonical `ImageData` representation.
+    ///
+    /// # Why `Result` rather than a panic
+    ///
+    /// It used to `assert_eq!` the length against `width * height * 4`. That is a programming
+    /// error in the *caller's* arithmetic, not an invariant of this type, and a public constructor
+    /// has no business aborting the host process over it — a decoder that produced a short buffer,
+    /// or a caller who computed the size with saturating arithmetic, would take the whole
+    /// application down. `Err` names the mismatch; `expect` at a call site that knows its own
+    /// buffer is right is one line and reads better than an assertion buried in a library.
+    pub fn try_from_rgba(data: Vec<u8>, width: u32, height: u32) -> Result<Self, String> {
         let expected = width as usize * height as usize * 4;
-        assert_eq!(
-            data.len(),
-            expected,
-            "Image::from_rgba: data length {} does not match {width}x{height} RGBA (expected {expected})",
-            data.len()
-        );
-        Self::from_raw(ImageData::Rgba8(data), width, height)
+        if data.len() != expected {
+            return Err(format!(
+                "Image::try_from_rgba: data length {} does not match {width}x{height} RGBA \
+                 (expected {expected})",
+                data.len()
+            ));
+        }
+        Ok(Self::from_raw(ImageData::Rgba8(data), width, height))
     }
 
     /// Decode an image from raw bytes. Auto-detects format.
@@ -40,33 +50,22 @@ impl Image {
         Ok(Self { inner: decoded })
     }
 
-    /// Decode from bytes and convert to RGBA8.
+    /// Decode RGBA8 from bytes without consulting the decode cache.
+    ///
+    /// This is the *private decode* entry point: a caller that wants its own copy (loading a
+    /// series of frames, say) gets one. A caller that expects to share a decode **must** use
+    /// [`crate::image::cache::pixels_rgba8_or_none`], which returns the cached `Arc<Vec<u8>>`
+    /// directly — the controls' draw paths all go through it.
+    ///
+    /// There used to be a `from_bytes_rgba8_shared` beside this one. It went to the cache and
+    /// then copied the pixels into an owning `Image`, so it saved the decode but performed the
+    /// very copy its name promised to avoid, and nothing in the crate ever called it. An owner
+    /// that needs both can write
+    /// `Image::from_raw(ImageData::Rgba8(pixels.to_vec()), w, h)` against the cache entry, which
+    /// at least says out loud that a copy is happening.
     pub fn from_bytes_rgba8(data: &[u8]) -> Result<Self, String> {
         let decoded = decoder::decode_to_rgba8(data)?;
         Ok(Self { inner: decoded })
-    }
-
-    /// Decode RGBA8 from bytes, reusing a decode another caller already did.
-    ///
-    /// The counterpart of [`Self::from_bytes_rgba8`] for a caller that does not need to own the
-    /// result: it goes through [`crate::image::cache`], so a picture shown in two image views — or in
-    /// an image view and an avatar — is decoded once. `from_bytes_rgba8` stays as the *uncached* entry
-    /// point for a caller that wants a private decode (loading a series of frames, say), and having
-    /// both means "do I want to share this" is a decision at the call site rather than a property of
-    /// `Image` that a caller cannot see.
-    ///
-    /// # Errors
-    ///
-    /// Same as [`Self::from_bytes_rgba8`]. A failure is not cached; see
-    /// [`crate::image::cache::decode_to_rgba8_cached`] for why.
-    #[cfg(all(feature = "image", not(alloc_frugal)))]
-    pub fn from_bytes_rgba8_shared(data: &[u8]) -> Result<Self, String> {
-        let decoded = crate::image::cache::decode_to_rgba8_cached(data)?;
-        // The cache holds an `Arc`; `Image` owns its payload, so this clones out of it. The clone is
-        // the price of `Image`'s ownership model and is paid once per *caller* rather than once per
-        // request -- a caller that keeps the `Image` reuses it, and a caller that does not should use
-        // `crate::image::cache::pixels_rgba8_or_none` instead.
-        Ok(Self { inner: (*decoded).clone() })
     }
 
     /// Create from a DecodedImage.
@@ -194,9 +193,24 @@ mod tests {
         assert_eq!(img.height(), 2);
     }
 
+    /// A buffer whose length disagrees with its declared size is an `Err`, not an abort.
+    ///
+    /// The constructor used to `assert_eq!`, so a caller whose decoder produced a short buffer
+    /// took the host process down — from a library, over an arithmetic mistake the `Err` can
+    /// describe. This pins the refusal and that the message names the expected length, because a
+    /// bare "mismatch" would leave the caller to work it out.
+    #[test]
+    fn a_size_mismatch_is_refused_rather_than_panicking() {
+        let error = Image::try_from_rgba(vec![0u8; 3], 1, 1)
+            .expect_err("three bytes are not one RGBA pixel");
+        assert!(error.contains("expected 4"), "the error must name the expected length: {error}");
+        assert!(Image::try_from_rgba(vec![0u8; 4], 1, 1).is_ok());
+    }
+
     #[test]
     fn compatibility_rgba_constructor_exposes_canonical_pixels() {
-        let img = Image::from_rgba(vec![255, 0, 0, 255], 1, 1);
+        let img = Image::try_from_rgba(vec![255, 0, 0, 255], 1, 1)
+            .expect("the buffer matches its declared size");
         assert_eq!(img.format(), crate::image::format::ImageFormat::Rgba8);
         assert_eq!(img.rgba8_data(), Some(&[255, 0, 0, 255][..]));
         assert!(!img.is_empty());

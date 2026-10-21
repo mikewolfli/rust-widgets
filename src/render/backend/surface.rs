@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Software rendering surface: back buffer, surface, and configuration.
+use crate::compat::Rc;
 use crate::compat::{lock, vec, MiniToString, Mutex, OnceLock, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::render::pixel_bytes_len;
@@ -617,8 +618,9 @@ impl<'a> RenderContext<'a> {
     /// `rect` is translated by the current offset before drawing.
     pub fn fill_gradient(&mut self, rect: Rect, gradient: &crate::style::Gradient) {
         let rect = self.offset_rect(rect);
-        self.backend
-            .execute_command(&RenderCommand::DrawGradient { rect, gradient: gradient.clone() });
+        // Straight to the backend, which may paint it without owning a copy; the owning command is
+        // the *default* of that method, so a recording backend still gets the command it needs.
+        self.backend.fill_gradient(rect, gradient);
     }
 
     /// Paints a control's background: the `gradient` when the style declares one, otherwise the
@@ -1024,7 +1026,7 @@ impl<'a> RenderContext<'a> {
     /// advances, as used for hit testing and caret placement.
     ///
     /// Unaffected by the current translation offset.
-    pub fn shape_text(&self, text: &str, font: &Font) -> ShapedText {
+    pub fn shape_text(&self, text: &str, font: &Font) -> Rc<ShapedText> {
         self.backend.shape_text(text, font)
     }
     /// Pushes a clip rectangle onto the backend's clip stack, translated by the
@@ -2148,7 +2150,7 @@ mod tests {
             self.measures.set(self.measures.get() + 1);
             self.inner.measure_text(text, font)
         }
-        fn shape_text(&self, text: &str, font: &Font) -> ShapedText {
+        fn shape_text(&self, text: &str, font: &Font) -> Rc<ShapedText> {
             self.shapes.set(self.shapes.get() + 1);
             self.inner.shape_text(text, font)
         }

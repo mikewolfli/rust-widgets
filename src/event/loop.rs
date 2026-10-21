@@ -10,7 +10,7 @@ use super::translator::is_touch_cancel;
 use super::types::{Event, EventPriority};
 #[cfg(all(feature = "touch", not(alloc_frugal)))]
 use crate::compat::HashMap;
-use crate::compat::{lock, Box, MiniToString, Mutex, String, Vec};
+use crate::compat::{lock, Box, Mutex, String, Vec};
 use crate::core::ObjectId;
 #[cfg(all(feature = "touch", not(alloc_frugal)))]
 use crate::gesture::GestureEngine;
@@ -196,10 +196,16 @@ const NATIVE_PUMP_WAIT: Duration = Duration::from_millis(1);
 /// Used by both profiles: the threaded loop in its dispatch phase and the `mini`
 /// `pump_once`, which must honour the same cancellation contract.
 fn animation_frame_id(event: &Event) -> Option<u64> {
+    // The variant is what this crate posts; the `Custom` arm keeps the legacy encoding working
+    // for a host that replicates it (or a captured event), and costs one string compare on a
+    // path that no longer runs per frame.
+    if let Event::AnimationFrame(id) = event {
+        return Some(*id);
+    }
     let Event::Custom { name, payload } = event else {
         return None;
     };
-    if name != ANIMATION_FRAME_EVENT_NAME {
+    if name.as_ref() != ANIMATION_FRAME_EVENT_NAME {
         return None;
     }
     let bytes: [u8; 8] = payload.as_slice().try_into().ok()?;
@@ -755,8 +761,7 @@ impl EventLoop {
         // waiting out its idle sleep. It does not hold the queue lock while sleeping — the loop
         // polls `dequeue` and releases the lock between iterations — so this is politeness, not
         // the deadlock-avoidance measure it was once described as.
-        let _ =
-            self.sender.post(0, Event::Custom { name: "__stop_wake".to_string(), payload: vec![] });
+        let _ = self.sender.post(0, Event::Custom { name: "__stop_wake".into(), payload: vec![] });
         if let Some(handle) = self.thread_handle.take() {
             if let Err(e) = handle.join() {
                 log::error!("[event-loop] Thread join failed: {e:?}");
@@ -812,10 +817,7 @@ impl EventLoop {
         // lock is **not** held across `post_event` (which can synchronously run dispatch
         // callbacks), so this cannot deadlock against them.
         lock(&self.cancelled_anim_frames).request(id);
-        let event = Event::Custom {
-            name: ANIMATION_FRAME_EVENT_NAME.to_string(),
-            payload: id.to_le_bytes().to_vec(),
-        };
+        let event = Event::AnimationFrame(id);
         if let Err(error) = self.post_event(target, event, EventPriority::Normal) {
             // The frame was never published, so the pending record must not survive it.
             lock(&self.cancelled_anim_frames).forget(id);
@@ -963,7 +965,7 @@ mod tests {
         assert!(!feeds_the_gesture_engine(&Event::KeyPress { key: 65, modifiers: 0 }));
         assert!(!feeds_the_gesture_engine(&Event::Resize { size: crate::core::Size::new(10, 10) }));
         assert!(!feeds_the_gesture_engine(&Event::Custom {
-            name: "x".to_string(),
+            name: "x".into(),
             payload: alloc::vec::Vec::new(),
         }));
         // And the engine's own output still round-trips.
@@ -1040,7 +1042,7 @@ mod tests {
 
         for i in 0..1000 {
             let bytes: [u8; 8] = (i as u64).to_le_bytes();
-            let event = Event::Custom { name: "test".to_string(), payload: bytes.to_vec() };
+            let event = Event::Custom { name: "test".into(), payload: bytes.to_vec() };
             sender.post_with_priority(target, event, EventPriority::Normal).unwrap();
         }
 
@@ -1063,9 +1065,9 @@ mod tests {
         let queue = EventQueue::new();
         let sender = queue.sender();
         let target: ObjectId = 1;
-        let normal_event = Event::Custom { name: "normal".to_string(), payload: vec![] };
-        let high_event = Event::Custom { name: "high".to_string(), payload: vec![] };
-        let idle_event = Event::Custom { name: "idle".to_string(), payload: vec![] };
+        let normal_event = Event::Custom { name: "normal".into(), payload: vec![] };
+        let high_event = Event::Custom { name: "high".into(), payload: vec![] };
+        let idle_event = Event::Custom { name: "idle".into(), payload: vec![] };
 
         sender.post_with_priority(target, normal_event, EventPriority::Normal).unwrap();
         sender.post_with_priority(target, high_event, EventPriority::High).unwrap();
@@ -1131,6 +1133,32 @@ mod tests {
         );
     }
 
+    /// The frame id travels in the variant; the legacy `Custom` encoding still decodes.
+    ///
+    /// Both arms matter. The variant is what `request_animation_frame` now posts, and the byte
+    /// encoding is what a host that replicates it — or an event captured before the variant
+    /// existed — still carries. Dropping the legacy arm would silently stop honouring
+    /// `cancel_animation_frame` for such a sender: the frame would run and the cancellation would
+    /// be reported as `true`, which is the opposite of what happened.
+    #[test]
+    fn the_frame_id_decodes_both_the_variant_and_the_legacy_encoding() {
+        assert_eq!(animation_frame_id(&Event::AnimationFrame(7)), Some(7));
+        assert_eq!(
+            animation_frame_id(&Event::Custom {
+                name: ANIMATION_FRAME_EVENT_NAME.into(),
+                payload: 7u64.to_le_bytes().to_vec(),
+            }),
+            Some(7),
+            "the legacy byte encoding must keep decoding"
+        );
+        assert_eq!(animation_frame_id(&Event::Quit), None, "an unrelated event is not a frame");
+        assert_eq!(
+            animation_frame_id(&Event::Custom { name: "something_else".into(), payload: vec![] }),
+            None,
+            "a custom event with another name is not a frame"
+        );
+    }
+
     #[cfg(all(not(alloc_frugal), not(target_arch = "wasm32")))]
     #[test]
     fn test_event_loop_animation_frame_dispatch() {
@@ -1139,8 +1167,14 @@ mod tests {
         let anim_fired_clone = anim_fired.clone();
 
         el.set_dispatch_fn(Arc::new(move |_target, event| {
+            // The frame is now its own variant. The `Custom` arm is kept in this observer on
+            // purpose: it is what would catch a regression that went back to the allocating
+            // encoding, and `animation_frame_id` still decodes it for a host that does.
+            if let Event::AnimationFrame(_) = event {
+                anim_fired_clone.store(true, Ordering::SeqCst);
+            }
             if let Event::Custom { name, .. } = event {
-                if name == ANIMATION_FRAME_EVENT_NAME {
+                if name.as_ref() == ANIMATION_FRAME_EVENT_NAME {
                     anim_fired_clone.store(true, Ordering::SeqCst);
                 }
             }
@@ -1251,7 +1285,7 @@ mod tests {
         el.start();
         let result = el.post_event(
             1u64,
-            Event::Custom { name: "orphan".to_string(), payload: vec![] },
+            Event::Custom { name: "orphan".into(), payload: vec![] },
             EventPriority::Normal,
         );
         assert!(result.is_ok());
@@ -1611,19 +1645,19 @@ mod tests {
         // Posted oldest-first: Normal, then Idle, then a High. FIFO would yield Normal first.
         el.post_event(
             1,
-            Event::Custom { name: "normal".to_string(), payload: vec![] },
+            Event::Custom { name: "normal".into(), payload: vec![] },
             EventPriority::Normal,
         )
         .unwrap();
         el.post_event(
             1,
-            Event::Custom { name: "idle".to_string(), payload: vec![] },
+            Event::Custom { name: "idle".into(), payload: vec![] },
             EventPriority::Idle,
         )
         .unwrap();
         el.post_event(
             1,
-            Event::Custom { name: "high".to_string(), payload: vec![] },
+            Event::Custom { name: "high".into(), payload: vec![] },
             EventPriority::High,
         )
         .unwrap();
@@ -1644,13 +1678,13 @@ mod tests {
         order.lock().unwrap().clear();
         el.post_event(
             1,
-            Event::Custom { name: "high".to_string(), payload: vec![1] },
+            Event::Custom { name: "high".into(), payload: vec![1] },
             EventPriority::High,
         )
         .unwrap();
         el.post_event(
             1,
-            Event::Custom { name: "high".to_string(), payload: vec![2] },
+            Event::Custom { name: "high".into(), payload: vec![2] },
             EventPriority::High,
         )
         .unwrap();
@@ -1805,7 +1839,7 @@ mod tests {
             el.post_event(
                 1,
                 Event::Custom {
-                    name: "burst".to_string(),
+                    name: "burst".into(),
                     payload: (index as u32).to_le_bytes().to_vec(),
                 },
                 EventPriority::Normal,
@@ -1857,14 +1891,14 @@ mod tests {
         for _ in 0..backlog {
             el.post_event(
                 1,
-                Event::Custom { name: "normal".to_string(), payload: vec![] },
+                Event::Custom { name: "normal".into(), payload: vec![] },
                 EventPriority::Normal,
             )
             .unwrap();
         }
         el.post_event(
             1,
-            Event::Custom { name: "high".to_string(), payload: vec![] },
+            Event::Custom { name: "high".into(), payload: vec![] },
             EventPriority::High,
         )
         .unwrap();
@@ -1905,13 +1939,13 @@ mod tests {
         for i in 0..4 {
             el.post_event(
                 1,
-                Event::Custom { name: "n".to_string(), payload: vec![i] },
+                Event::Custom { name: "n".into(), payload: vec![i] },
                 EventPriority::Normal,
             )
             .unwrap();
             el.post_event(
                 1,
-                Event::Custom { name: "h".to_string(), payload: vec![i] },
+                Event::Custom { name: "h".into(), payload: vec![i] },
                 EventPriority::High,
             )
             .unwrap();
@@ -1961,7 +1995,7 @@ mod tests {
         for index in 0u8..3 {
             el.post_event(
                 1,
-                Event::Custom { name: "idle".to_string(), payload: vec![index] },
+                Event::Custom { name: "idle".into(), payload: vec![index] },
                 EventPriority::Idle,
             )
             .unwrap();

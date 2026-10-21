@@ -597,7 +597,7 @@ mod tests {
         fn measure_text(&self, text: &str, font: &Font) -> TextMetrics {
             self.inner.measure_text(text, font)
         }
-        fn shape_text(&self, text: &str, font: &Font) -> ShapedText {
+        fn shape_text(&self, text: &str, font: &Font) -> crate::compat::Rc<ShapedText> {
             self.inner.shape_text(text, font)
         }
         fn frame_rgba(&self) -> &[u8] {

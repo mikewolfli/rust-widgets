@@ -36,7 +36,7 @@ import sys
 
 CAPABILITY = "src/widget/capability.rs"
 PROPERTIES = "src/widget/capability/properties.rs"
-PLATFORM = "src/platform/types.rs"
+PLATFORM = "src/platform/types/traits.rs"
 
 
 def normalize_key(value: str) -> str:

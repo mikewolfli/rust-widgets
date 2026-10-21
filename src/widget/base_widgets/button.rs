@@ -1161,7 +1161,8 @@ mod tests {
 
     #[cfg(all(feature = "image", not(alloc_frugal)))]
     fn make_image() -> Image {
-        Image::from_rgba(vec![0u8; 8 * 8 * 4], 8, 8)
+        Image::try_from_rgba(vec![0u8; 8 * 8 * 4], 8, 8)
+            .expect("the buffer matches its declared size")
     }
 
     fn rect() -> Rect {

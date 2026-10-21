@@ -118,7 +118,7 @@ echo "[3/3] the raw entry points still exist for the paths that need them"
 # surface; removing them would mean the platform cannot reach them at all. This step
 # asserts they were not deleted in pursuit of the rule above.
 for f in 'fn invalidate_surface' 'fn invalidate_surface_rect'; do
-    if ! grep -qE "$f" src/platform/types.rs; then
+    if ! grep -qE "$f" src/platform/types/traits.rs; then
         echo "  FAIL  \`$f\` is gone from the Platform trait"
         echo "        The platform must still be able to invalidate its own surfaces; this"
         echo "        gate is about the *library's* submissions naming a cause, not about"

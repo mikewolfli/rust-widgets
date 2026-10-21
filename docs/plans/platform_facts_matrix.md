@@ -92,7 +92,7 @@ Legend: `✅` real override · `M` shared `impl_platform_state_properties!` expa
 | `get_native_handle` | ✅ | ✅ | ✅ | · | · | · | · | · | · | · | · | · |
 | `raw_window_handle` | ✅ | ✅ | ✅ | · | · | · | · | · | · | · | · | · |
 | `raw_display_handle` | ✅ | ✅ | ✅ | · | · | · | · | · | · | · | · | · |
-| `poll_menu_triggered` | · | ✅ | · | · | ✅ | ✅ | · | ✅ | · | · | ✅ | ✅ |
+| `poll_menu_triggered` | · | · | · | · | ✅ | ✅ | · | ✅ | · | · | ✅ | ✅ |
 | `inject_menu_trigger` | · | · | · | · | ✅ | ✅ | · | ✅ | · | · | ✅ | ✅ |
 | `activate_menu_item` | · | ✅ | · | · | · | · | · | · | · | · | · | · |
 | `poll_widget_triggered` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -197,7 +197,7 @@ Legend: `✅` real override · `M` shared `impl_platform_state_properties!` expa
 | backend | real overrides | macro-covered | default |
 |---|---:|---:|---:|
 | Windows | 67 | 38 | 78 |
-| macOS cocoa | 75 | 0 | 108 |
+| macOS cocoa | 74 | 0 | 109 |
 | macOS objc2 | 56 | 47 | 80 |
 | GTK/X11 | 57 | 0 | 126 |
 | Wayland | 52 | 52 | 79 |

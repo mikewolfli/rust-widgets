@@ -841,6 +841,26 @@ pub fn normalize_key(input: &str) -> String {
         .collect()
 }
 
+/// Whether two names are the **same key** under [`normalize_key`]'s rules, without building
+/// either normalised string.
+///
+/// `normalize_key` drops `_`, `-` and spaces and lower-cases; comparing two names therefore
+/// means comparing two character streams after those transformations. The callers that match a
+/// declared name against a schema table used to spell that as
+/// `normalize_key(candidate) == normalize_key(declared)`, which allocates **per candidate** — a
+/// capability with thirty properties cost thirty `String`s to answer one miss, and the miss is
+/// the common case (the exact-spelling fast path is tried first).
+///
+/// This is the same predicate over borrowed iterators, so it allocates nothing and its answer is
+/// identical by construction: the filter and the lower-casing are the operations `normalize_key`
+/// performs, applied in the same order, without the `collect`.
+pub fn same_key(left: &str, right: &str) -> bool {
+    fn stream(text: &str) -> impl Iterator<Item = char> + '_ {
+        text.chars().filter(|ch| !matches!(*ch, '_' | '-' | ' ')).flat_map(char::to_lowercase)
+    }
+    stream(left).eq(stream(right))
+}
+
 // ── Value → stable string ───────────────────────────────────────────────────
 //
 // These conversions have no profile dependency: they map a *core* or *base*

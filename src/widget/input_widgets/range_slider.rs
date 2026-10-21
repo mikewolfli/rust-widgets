@@ -1316,6 +1316,12 @@ mod tests {
     /// however correct the field is — the model-versus-pixels pair this crate keeps re-learning.
     #[test]
     fn the_dragged_handle_is_drawn_larger() {
+        // The test compares three SVG renders of one control, and `render_to_svg` resolves its
+        // style against the **process-wide** theme. A concurrent test that switches the active
+        // theme changes what the second render resolves, so `released == resting` failed
+        // intermittently under the full suite while passing in isolation. The theme guard is the
+        // established serialisation point for exactly this (see `theme_test_guard`).
+        let _theme = crate::style::theme_test_guard();
         let mut rs = RangeSlider::new(Rect::new(0, 0, 200, 28));
         rs.set_range(0.0, 100.0);
         rs.set_lower_value(20.0);

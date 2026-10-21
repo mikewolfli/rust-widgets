@@ -16,7 +16,7 @@ import pathlib
 import re
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-TYPES = ROOT / "src/platform/types.rs"
+TYPES = ROOT / "src/platform/types/traits.rs"
 STATE_IMPL = ROOT / "src/platform/state_impl.rs"
 
 BACKENDS = [

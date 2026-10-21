@@ -223,8 +223,7 @@ pub fn find_event_schema<'a>(
     if let Some(schema) = capability.events.iter().find(|schema| schema.name == name) {
         return Some(schema);
     }
-    let normalized = normalize_key(name);
-    capability.events.iter().find(|schema| normalize_key(schema.name) == normalized)
+    capability.events.iter().find(|schema| same_key(schema.name, name))
 }
 
 /// Runs `f` with the canonical name of `kind`, reusing one scratch buffer per thread.
@@ -866,10 +865,9 @@ impl WidgetFactory {
     /// canonical name still has to accept the alias spellings a document may use, and
     /// this is how it knows which those are without keeping a second list.
     pub fn aliases_of(&self, canonical: &str) -> crate::compat::Vec<crate::compat::String> {
-        let wanted = normalize_key(canonical);
         self.capabilities
             .iter()
-            .find(|capability| normalize_key(capability.canonical_name) == wanted)
+            .find(|capability| same_key(capability.canonical_name, canonical))
             .map(|capability| {
                 capability.aliases.iter().map(|alias| crate::compat::String::from(*alias)).collect()
             })
@@ -1025,9 +1023,8 @@ impl WidgetFactory {
         let capability =
             self.capability_for_widget(widget).ok_or(CapabilityAccessError::UnknownWidget)?;
 
-        let normalized = normalize_key(property_name);
         let Some(property) =
-            capability.properties.iter().find(|schema| normalize_key(schema.name) == normalized)
+            capability.properties.iter().find(|schema| same_key(schema.name, property_name))
         else {
             return Err(CapabilityAccessError::UnknownProperty);
         };
@@ -1051,9 +1048,8 @@ impl WidgetFactory {
         let capability =
             self.capability_for_widget(widget).ok_or(CapabilityAccessError::UnknownWidget)?;
 
-        let normalized = normalize_key(property_name);
         let Some(property) =
-            capability.properties.iter().find(|schema| normalize_key(schema.name) == normalized)
+            capability.properties.iter().find(|schema| same_key(schema.name, property_name))
         else {
             return Err(CapabilityAccessError::UnknownProperty);
         };
@@ -1122,14 +1118,13 @@ impl WidgetFactory {
         // what makes the lookup agree with `capability()` / `read_property`, which
         // both normalise. A caller using `"clear-selection"` must reach the same
         // command as one using `"clear_selection"`.
-        let normalized = normalize_key(command_name);
         // Resolve the caller's spelling to the **published** one and dispatch that. Passing the
         // raw argument through (as this did) meant `"clear-selection"` passed validation and then
         // reached the control as an unknown name, so a legitimate spelling produced the
         // misleading `UnsupportedOnWidget` ("the control was expected to have it") instead of
         // succeeding. The published spelling is what the control's own `command` matches on.
         let Some(canonical) =
-            capability.commands.iter().copied().find(|name| normalize_key(name) == normalized)
+            capability.commands.iter().copied().find(|name| same_key(name, command_name))
         else {
             return Err(CapabilityAccessError::UnknownCommand);
         };
@@ -1468,9 +1463,8 @@ impl WidgetFactory {
         let capability =
             self.capability(kind_or_name).ok_or(CapabilityAccessError::UnknownWidget)?;
 
-        let normalized = normalize_key(property_name);
         let Some(property) =
-            capability.properties.iter().find(|schema| normalize_key(schema.name) == normalized)
+            capability.properties.iter().find(|schema| same_key(schema.name, property_name))
         else {
             return Err(CapabilityAccessError::UnknownProperty);
         };
@@ -1513,9 +1507,8 @@ impl WidgetFactory {
         let capability =
             self.capability(kind_or_name).ok_or(CapabilityAccessError::UnknownWidget)?;
 
-        let normalized = normalize_key(property_name);
         let Some(property) =
-            capability.properties.iter().find(|schema| normalize_key(schema.name) == normalized)
+            capability.properties.iter().find(|schema| same_key(schema.name, property_name))
         else {
             return Err(CapabilityAccessError::UnknownProperty);
         };

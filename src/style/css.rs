@@ -88,10 +88,7 @@ impl CssSelector {
     ) -> bool {
         match self {
             CssSelector::Universal => true,
-            CssSelector::Kind(k) => {
-                use crate::widget::capability::coercion::normalize_key;
-                normalize_key(k) == normalize_key(kind)
-            }
+            CssSelector::Kind(k) => crate::widget::capability::coercion::same_key(k, kind),
             CssSelector::Class(c) => class == Some(c.as_str()),
             CssSelector::Id(i) => id == Some(i.as_str()),
             CssSelector::State(s) => state == Some(*s),
@@ -160,9 +157,12 @@ pub struct CssRule {
 /// A kind absent from the list is refused rather than guessed at, so an unknown
 /// selector still selects nothing instead of silently becoming `Window`.
 fn widget_kind_from_str(name: &str) -> Option<WidgetKind> {
-    use crate::widget::capability::coercion::normalize_key;
-    let wanted = normalize_key(name);
-    CSS_SUPPORTED_KINDS.iter().find(|kind| normalize_key(&format!("{kind:?}")) == wanted).copied()
+    use crate::widget::capability::coercion::same_key;
+    // `css_name` rather than `format!("{kind:?}")`: the comparison used to format every
+    // candidate kind on every selector resolution, which is a heap allocation and a formatting
+    // pass per entry per lookup. The spelling is identical by construction
+    // (`css_name_matches_the_debug_spelling_for_every_registered_kind` pins it).
+    CSS_SUPPORTED_KINDS.iter().copied().find(|kind| same_key(kind.css_name(), name))
 }
 
 /// The kinds a CSS kind selector may name.
@@ -264,17 +264,25 @@ const CSS_SUPPORTED_KINDS: &[WidgetKind] = &[
 pub struct CssParser;
 
 impl CssParser {
-    /// Parse CSS text into a `StyleSheet` with `StyleRule` entries.
-    /// Each rule stores its selector and property declarations.
+    /// Validates CSS text and returns a sheet of the rules whose selectors name a known kind.
+    ///
+    /// The sheet carries selectors and specificity, **not** their declarations: declarations are
+    /// applied by [`Self::parse_and_apply`], and [`Self::parse_rules`] is the inspector's view of
+    /// them. A caller that only needs the syntax check — a stylesheet hot-reload watcher, which is
+    /// what [`crate::style::css_watcher`] does — can discard the result.
+    ///
+    /// This used to also copy every rule's declarations into a process-wide side table, for a
+    /// `get_declarations` reader that nothing outside the tests ever called. That copy took a
+    /// global lock and cloned each declaration slice, on a path a watcher runs on every file
+    /// change and a JSON document can run once per node. The table and its reader are gone; the
+    /// declarations still reach a control through `parse_and_apply`.
     pub fn parse(css: &str) -> Result<StyleSheet, String> {
         let mut sheet = StyleSheet::new();
         let rules = Self::parse_rules(css)?;
         for rule in &rules {
-            store_declarations(&rule.selector_text, rule.declarations.clone());
             // A selector whose kind is unknown contributes no rule: silently
             // substituting another kind is what made a typo'd selector mis-style
-            // an unrelated control. The declarations are still stored above, so a
-            // caller can inspect what was written.
+            // an unrelated control.
             let Some(selector) =
                 Self::parse_selector(&rule.selector_text).and_then(|cs| cs.to_selector())
             else {
@@ -971,106 +979,6 @@ impl CssParser {
     }
 }
 
-// ── Declaration registry ────────────────────────────────────────────────────
-//
-// `StyleRule` carries a selector and a specificity, not the declarations
-// themselves, so parsed declarations are kept in a side table keyed by the rule's
-// selector text. The table is process-wide because the public `store_declarations`
-// / `get_declarations` pair is a published API.
-//
-// Two properties matter and were both wrong before:
-//
-// * **It must be bounded.** It is never evicted, so an unbounded map grows for
-//   the lifetime of the process every time the same stylesheet is re-parsed
-//   (a hot-reload loop is the realistic case). A small cap with oldest-first
-//   eviction keeps it useful for the introspection it exists for while making
-//   the growth finite and observable.
-// * **Lookups must be ordered.** Iterating a `HashMap` yields an unspecified
-//   order, so a caller relying on cascade order got a non-deterministic merge.
-//   Entries now carry the sequence number they were inserted with, and results
-//   are returned in that order.
-
-use crate::compat::atomic::{AtomicU64, Ordering};
-use crate::compat::{lock, Mutex, OnceLock};
-
-/// Monotonically increasing counter giving each stored rule a stable order and a
-/// unique key, so two stylesheets with the same selector text do not collide.
-static DECL_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// How many stored rules to keep. Sized for introspection of the stylesheets an
-/// application actually has loaded (a handful), not for archival.
-const MAX_STORED_RULES: usize = 512;
-
-/// The declaration registry: insertion order → that rule's declarations.
-///
-/// A named alias rather than the inline type so the `static` declaration below
-/// stays readable, and so the accessor functions share one spelling.
-type DeclarationRegistry = Vec<(u64, String, Vec<CssDeclaration>)>;
-
-/// The declaration registry itself.
-static DECLARATIONS: OnceLock<Mutex<DeclarationRegistry>> = OnceLock::new();
-
-/// Stores a rule's declarations in the process-wide registry.
-///
-/// `rule_name` is only a **suffix** of the real key: each call prepends a fresh
-/// counter, so the same `rule_name` can be stored many times without overwriting
-/// previous entries. Combined with [`get_declarations`], which matches by suffix,
-/// this means lookups are additive — storing a rule under a name that is a suffix
-/// of another rule's name will make that lookup return both.
-///
-/// The registry holds at most a fixed number of entries (the private
-/// `MAX_STORED_RULES`); the oldest is dropped once that is reached, so repeated
-/// parsing cannot grow it without bound. A poisoned lock is recovered rather than
-/// propagated.
-pub fn store_declarations(rule_name: &str, decls: Vec<CssDeclaration>) {
-    let sequence = DECL_COUNTER.fetch_add(1, Ordering::Relaxed);
-    // SAFETY: If the lock is poisoned (a previous panic while held), we recover
-    // by ignoring the poison — the stored data is still valid for CSS parsing.
-    // `lock` is the shared spelling of that recovery; see its documentation.
-    let mut registry = lock(DECLARATIONS.get_or_init(|| Mutex::new(Vec::new())));
-    if registry.len() >= MAX_STORED_RULES {
-        // Drop the oldest entry. `Vec::remove(0)` is O(n) but n is the small cap
-        // above and this runs once per over-cap insertion, not per lookup.
-        registry.remove(0);
-    }
-    registry.push((sequence, rule_name.to_string(), decls));
-}
-
-/// Returns every stored declaration whose rule name ends with `rule_name`,
-/// concatenated in insertion order.
-///
-/// Because the key is matched by suffix, a name that is a suffix of another stored
-/// name yields that other rule's declarations too. Returns `None` rather than an
-/// empty vector when nothing matches, so `None` is distinguishable from "matched
-/// but declared nothing". The returned vector is always non-empty.
-///
-/// A poisoned lock is recovered rather than propagated.
-///
-/// # Reachability
-///
-/// **Published API with no in-crate consumer.** `CssParser::parse` writes into this registry so a
-/// caller can read a rule's declarations back; no control in this crate calls the reader. It is
-/// kept because it is a documented pair with [`store_declarations`]. Removal condition: either a
-/// consumer exists (a stylesheet inspector, or the JSON loader resolving a rule by name), or the
-/// pair is removed in a release that can take the API break. The linear suffix scan is acceptable
-/// only because the registry is capped at `MAX_STORED_RULES`; a consumer on a hot path would need
-/// an index instead.
-pub fn get_declarations(rule_name: &str) -> Option<Vec<CssDeclaration>> {
-    // SAFETY: Same poison recovery strategy — stale data is safe to read.
-    let registry = lock(DECLARATIONS.get_or_init(|| Mutex::new(Vec::new())));
-    let mut result = Vec::new();
-    for (_, name, decls) in registry.iter() {
-        if name.ends_with(rule_name) {
-            result.extend(decls.iter().cloned());
-        }
-    }
-    if result.is_empty() {
-        None
-    } else {
-        Some(result)
-    }
-}
-
 impl CssParser {
     /// Parse CSS text into StyleSheet with stored declarations.
     /// Then use `CssParser::parse_and_apply` (or `StyleSheetManager::apply_to`) to
@@ -1724,69 +1632,6 @@ mod tests {
             error.contains("radial") || error.contains("geometry"),
             "the message must name the unsupported geometry: {error}"
         );
-    }
-
-    // ── Declaration registry ──────────────────────────────────────────────
-
-    /// A stored rule is retrievable by its name, and a name that was never stored
-    /// answers `None` rather than an empty vector.
-    #[test]
-    fn stored_declarations_round_trip() {
-        let name = "reg-round-trip";
-        store_declarations(
-            name,
-            vec![CssDeclaration { property: "color".into(), value: "#010203".into() }],
-        );
-        let retrieved = get_declarations(name).expect("the stored rule must be found");
-        assert_eq!(retrieved.len(), 1);
-        assert_eq!(retrieved[0].property, "color");
-        assert_eq!(get_declarations("reg-never-stored"), None);
-    }
-
-    /// Repeated storage of the same selector is bounded. Before the cap this grew
-    /// for the lifetime of the process, which a hot-reload loop would drive
-    /// without limit.
-    #[test]
-    fn the_registry_is_bounded() {
-        let name = "reg-bounded";
-        let last = MAX_STORED_RULES + 63;
-        for index in 0..last {
-            store_declarations(
-                name,
-                vec![CssDeclaration { property: "color".into(), value: format!("#{index:06x}") }],
-            );
-        }
-        let registry_len = lock(DECLARATIONS.get_or_init(|| Mutex::new(Vec::new()))).len();
-        assert!(
-            registry_len <= MAX_STORED_RULES,
-            "the registry held {registry_len} entries, over the cap of {MAX_STORED_RULES}"
-        );
-        // The most recent insertion must still be present, so eviction removes the
-        // oldest rather than simply truncating the newest.
-        let retrieved = get_declarations(name).expect("the latest rule survives");
-        assert_eq!(
-            retrieved.last().map(|decl| decl.value.clone()),
-            Some(format!("#{:06x}", last - 1)),
-            "the newest entry must be the one still stored"
-        );
-    }
-
-    /// Lookups come back in insertion order. The registry used to be a `HashMap`,
-    /// so a caller relying on cascade order got an unspecified one.
-    #[test]
-    fn declarations_come_back_in_insertion_order() {
-        let name = "reg-order";
-        store_declarations(
-            name,
-            vec![CssDeclaration { property: "color".into(), value: "#aaaaaa".into() }],
-        );
-        store_declarations(
-            name,
-            vec![CssDeclaration { property: "color".into(), value: "#bbbbbb".into() }],
-        );
-        let retrieved = get_declarations(name).expect("both entries found");
-        assert_eq!(retrieved[0].value, "#aaaaaa");
-        assert_eq!(retrieved[1].value, "#bbbbbb");
     }
 
     /// `is_known_property` must accept exactly what `apply_one` acts on, and reject

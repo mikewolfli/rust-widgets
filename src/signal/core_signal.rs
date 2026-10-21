@@ -549,8 +549,28 @@ impl<T: Clone + Send + 'static> Signal<T> {
 
     /// The emit pass: snapshot the slot list, then invoke each slot in priority order.
     fn emit_inner(&self, arc_value: Arc<T>) {
+        let identity = self.identity();
+
+        // Fast path: a signal with exactly one subscriber has no order to compute, so the
+        // snapshot buffer and the sort are pure overhead. That is the shape of nearly every
+        // control signal — one handler on `value_changed` — and it used to pay a heap
+        // allocation and a sort on every emit. The claim below is the same one the loop
+        // performs, so blocked slots, once-slots and re-entrancy behave identically.
+        let single_subscriber = {
+            let slots = read_lock(&self.inner.slots);
+            let mut handles = slots.keys();
+            match (handles.next(), handles.next()) {
+                (Some(&only), None) => Some(only),
+                _ => None,
+            }
+        };
+        if let Some(handle) = single_subscriber {
+            self.deliver_to(identity, handle, &arc_value);
+            return;
+        }
+
         // 1. Snapshot handles, priorities and connection order under a read lock.
-        let snapshot: Vec<(ConnectionHandle, Priority, u64)> = {
+        let mut snapshot: Vec<(ConnectionHandle, Priority, u64)> = {
             let slots = read_lock(&self.inner.slots);
             slots.iter().map(|(h, e)| (*h, e.priority, e.sequence)).collect()
         };
@@ -560,59 +580,63 @@ impl<T: Clone + Send + 'static> Signal<T> {
         // The sequence is the tie-breaker that makes "same priority fires in connection order",
         // the module's documented contract, actually hold: the snapshot comes from a `HashMap`,
         // whose iteration order is unspecified, so without it the within-priority order was the
-        // map's and could change between runs.
-        let mut snapshot = snapshot;
-        snapshot.sort_by_key(|a| (a.1.rank(), a.2));
-
-        let identity = self.identity();
-
-        // 3. Invoke each slot by cloning its `Arc<Mutex<..>>` under a short read lock, then running it
-        //    with **no signal lock held**. Holding no lock across the callback is what removes the
-        //    cross-signal lock cycle (E-29); the per-slot mutex is what keeps a concurrent emit from
-        //    dropping the value (E-21).
-        for (handle, _priority, _sequence) in snapshot {
-            // Claim once-slots atomically with the lookup: removing one under the same map lock
-            // prevents another emit that already snapshotted this handle from cloning the slot
-            // while the first callback is still running.
-            let slot = {
-                let mut slots = write_lock(&self.inner.slots);
-                let Some(entry) = slots.get(&handle) else {
-                    continue;
-                };
-                if entry.blocked {
-                    None
-                } else {
-                    let slot = entry.slot.clone();
-                    if entry.once {
-                        slots.remove(&handle);
-                    }
-                    slot
-                }
-            };
-            let Some(slot) = slot else {
-                // Blocked, or disconnected by a prior callback in this pass.
-                continue;
-            };
-
-            // A same-thread re-entrant emit must skip the slot already on the stack: its callback is
-            // executing on this very thread, so running it again would recurse without bound. The
-            // documented contract is that the slot does not run twice from one stack. Cross-thread
-            // callers are NOT skipped — they defer their value to the running thread (see `deliver`).
-            if slot_running_here(identity, handle) {
-                continue;
-            }
-
-            // Record that this slot is executing on this thread before running it, so a nested emit of
-            // the same signal skips it instead of recursing. The guard clears the marker on normal
-            // return and on an unwind out of the callback.
-            let _running = SlotRunning::new(identity, handle);
-
-            // `deliver` takes the per-slot callback with `try_lock`: it runs the callback here when
-            // free, and otherwise **defers** the value to the thread already running it. No lock is
-            // held while another slot's lock is acquired, so a mutual cross-signal forward cannot
-            // dead-lock, and a concurrent emit cannot drop its value (BLUE-issues E-21, E-29).
-            let _ = slot.deliver(arc_value.clone());
+        // map's and could change between runs. A list of one is already in order.
+        if snapshot.len() > 1 {
+            snapshot.sort_by_key(|a| (a.1.rank(), a.2));
         }
+
+        // 3. Invoke each slot, in order.
+        for (handle, _priority, _sequence) in snapshot {
+            self.deliver_to(identity, handle, &arc_value);
+        }
+    }
+
+    /// Claim one slot from the map and run it.
+    ///
+    /// The claim happens under a single short write lock: a once-slot is removed there, so only
+    /// one concurrent emit can own it, and a `blocked` entry is skipped without ever cloning its
+    /// callback. The callback itself runs with **no signal lock held** — that is what removes the
+    /// cross-signal lock cycle (E-29) — and behind its own per-slot mutex, which is what lets a
+    /// concurrent emit defer its value instead of dropping it (E-21).
+    fn deliver_to(&self, identity: usize, handle: ConnectionHandle, arc_value: &Arc<T>) {
+        let slot = {
+            let mut slots = write_lock(&self.inner.slots);
+            let Some(entry) = slots.get(&handle) else {
+                return;
+            };
+            if entry.blocked {
+                None
+            } else {
+                let slot = entry.slot.clone();
+                if entry.once {
+                    slots.remove(&handle);
+                }
+                slot
+            }
+        };
+        let Some(slot) = slot else {
+            // Blocked, or disconnected by a prior callback in this pass.
+            return;
+        };
+
+        // A same-thread re-entrant emit must skip the slot already on the stack: its callback is
+        // executing on this very thread, so running it again would recurse without bound. The
+        // documented contract is that the slot does not run twice from one stack. Cross-thread
+        // callers are NOT skipped — they defer their value to the running thread (see `deliver`).
+        if slot_running_here(identity, handle) {
+            return;
+        }
+
+        // Record that this slot is executing on this thread before running it, so a nested emit of
+        // the same signal skips it instead of recursing. The guard clears the marker on normal
+        // return and on an unwind out of the callback.
+        let _running = SlotRunning::new(identity, handle);
+
+        // `deliver` takes the per-slot callback with `try_lock`: it runs the callback here when
+        // free, and otherwise **defers** the value to the thread already running it. No lock is
+        // held while another slot's lock is acquired, so a mutual cross-signal forward cannot
+        // dead-lock, and a concurrent emit cannot drop its value (BLUE-issues E-21, E-29).
+        let _ = slot.deliver(arc_value.clone());
     }
 
     /// Return number of currently connected slots.
@@ -1044,6 +1068,39 @@ mod emit_behaviour_tests {
         assert!(signal.unblock(handle));
         signal.emit(2);
         assert_eq!(calls.load(Ordering::SeqCst), 1, "an unblocked slot must run again");
+    }
+
+    /// The single-subscriber fast path must keep the two contracts the snapshot loop was the
+    /// only test of: a once-slot is removed before it runs, and a nested emit from inside the
+    /// callback does not re-enter it.
+    ///
+    /// `emit_inner` now skips the snapshot buffer and the sort when a signal has exactly one
+    /// subscriber, which is the shape of nearly every control signal. Those two behaviours are
+    /// what a fast path can silently lose, so they are pinned against that shape specifically.
+    #[test]
+    fn a_single_subscriber_still_honours_once_and_re_entrancy() {
+        let signal = Signal::<u32>::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let nested = Arc::new(AtomicUsize::new(0));
+
+        let calls_inner = Arc::clone(&calls);
+        let nested_inner = Arc::clone(&nested);
+        let again = signal.clone();
+        signal.connect_once(move |_| {
+            calls_inner.fetch_add(1, Ordering::SeqCst);
+            nested_inner.fetch_add(1, Ordering::SeqCst);
+            again.emit(99);
+        });
+
+        signal.emit(1);
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "a once-slot runs exactly once");
+        assert_eq!(
+            nested.load(Ordering::SeqCst),
+            1,
+            "the nested emit must not re-enter the slot that is still on the stack"
+        );
+        assert_eq!(signal.slot_count(), 0, "a once-slot is removed by its own emit");
     }
 
     /// Slots run in priority order, and equal priorities preserve a stable order.

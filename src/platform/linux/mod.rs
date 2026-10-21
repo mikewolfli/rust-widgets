@@ -48,7 +48,7 @@ pub(crate) mod canvas;
 
 // The `webkit_engine` module lived here: 76 lines wrapping `webkit2gtk::WebView` behind
 // a private trait, never added to a GTK container. Deleted by BLUE20 layer 5 (ruling W1,
-// 2026-09-21) because it never displayed a page. See `src/platform/types.rs` where
+// 2026-09-21) because it never displayed a page. See `src/platform/types/traits.rs` where
 // `NativeWebEngine` was, and `tools/check_web_engine_honest.sh`, which fails if it returns.
 
 pub use types::*;

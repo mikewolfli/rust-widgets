@@ -12,6 +12,48 @@ use super::*;
 use crate::core::Rect;
 use crate::widget::view_widgets::virtual_list::VirtualList;
 
+/// `same_key` must be exactly `normalize_key(left) == normalize_key(right)`.
+///
+/// Every schema lookup uses it instead of building both normalised strings — one allocation per
+/// *candidate schema* before — so an answer that differed even for one spelling would change which
+/// property or event a declaration resolved to. The Unicode entry is the one that makes this more
+/// than a case-insensitive compare: `İ` lower-cases to two `char`s, which only an iterator-based
+/// comparison gets right without materialising it.
+#[test]
+fn same_key_agrees_with_normalising_both_names() {
+    let spellings = [
+        "clicked",
+        "Clicked",
+        "CLICKED",
+        "click-ed",
+        "click ed",
+        "click_ed",
+        "value_changed",
+        "value-changed",
+        "VALUE CHANGED",
+        "valuechanged",
+        "",
+        "_",
+        "-",
+        "  ",
+        "selection-changed",
+        "selection_changed",
+        "İstanbul",
+        "istanbul",
+        "İ",
+        "i̇",
+    ];
+    for left in spellings {
+        for right in spellings {
+            assert_eq!(
+                same_key(left, right),
+                normalize_key(left) == normalize_key(right),
+                "same_key disagreed for {left:?} vs {right:?}"
+            );
+        }
+    }
+}
+
 /// The shared factory is built once and answers the same table as a fresh one.
 ///
 /// Pins the property the hot paths rely on: `shared()` must not quietly rebuild the ~190-control

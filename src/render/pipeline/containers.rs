@@ -8,7 +8,7 @@
 //! `primitives` sub-module.
 
 use crate::compat::atomic::{AtomicU64, Ordering};
-use crate::compat::{HashMap, RefCell, Vec, VecDeque};
+use crate::compat::{HashMap, Rc, RefCell, Vec, VecDeque};
 use crate::core::{Color, Font, Rect, Size};
 use crate::render::default_software_render_config;
 use crate::render::pipeline::pixel_ops::{fill_pixels, pixel_visible, write_pixel_with_mode};
@@ -51,6 +51,13 @@ const TEXT_SHAPES_CACHE_LIMIT: usize = 512;
 /// A cached measurement: the two fingerprints of `(text, font, scale)` and the answer.
 type TextMetricsCache = HashMap<(u64, u64), TextMetrics>;
 
+/// Shaped runs for one text epoch, keyed by the same measurement fingerprint as the metrics.
+///
+/// The values are `Rc<ShapedText>`: a hit is a refcount bump. `ShapedText` owns a
+/// `Vec<TextCluster>` whose every entry owns a `String`, so an owned cache value made each hit
+/// clone the whole run to hand back a value nothing mutates (REND-03).
+type ShapeCache = RefCell<(u64, HashMap<(u64, u64), Rc<ShapedText>>)>;
+
 thread_local! {
     // Two independently seeded hashes rather than an owning key: the pair is computed from the
     // borrowed inputs, so a lookup allocates nothing, and two 64-bit values make an accidental
@@ -63,7 +70,7 @@ thread_local! {
     // over the bound discarded the whole working set and the next frame re-shaped everything.
     static TEXT_METRICS_ORDER: RefCell<VecDeque<(u64, u64)>> =
         const { RefCell::new(VecDeque::new()) };
-    static TEXT_SHAPES: RefCell<(u64, HashMap<(u64, u64), ShapedText>)> =
+    static TEXT_SHAPES: ShapeCache =
         RefCell::new((0, HashMap::new()));
     static TEXT_SHAPES_ORDER: RefCell<VecDeque<(u64, u64)>> =
         const { RefCell::new(VecDeque::new()) };
@@ -267,17 +274,21 @@ impl SoftwareSurface {
     /// cluster and collects advances (~1.7µs for a short caption, measured). `draw_text` asked for
     /// the shaped run and then `draw_text_fitted` asked again for the same string and font on the
     /// next frame; the answer is immutable for a given `(text, font, scale)`.
-    pub fn shape_text(&self, text: &str, font: &Font) -> ShapedText {
+    pub fn shape_text(&self, text: &str, font: &Font) -> Rc<ShapedText> {
         let scale = self.buffer.dpi_scale();
         let epoch = TEXT_METRICS_EPOCH.load(Ordering::Relaxed);
         let key = text_measurement_fingerprint(text, font, scale);
+        // The cache holds `Rc<ShapedText>` and the function hands that handle out, so a hit is a
+        // refcount bump. Returning an owned `ShapedText` cloned the whole run on every hit —
+        // one `Vec<TextCluster>` plus one `String` per cluster, per label, per frame — to hand
+        // back a value nobody mutates.
         if let Some(hit) = TEXT_SHAPES.with(|cache| {
             let cache = cache.borrow();
             (cache.0 == epoch).then(|| cache.1.get(&key).cloned()).flatten()
         }) {
             return hit;
         }
-        let shaped = crate::render::text::shape_line(text, font, scale);
+        let shaped = Rc::new(crate::render::text::shape_line(text, font, scale));
         note_shape_built();
         TEXT_SHAPES.with(|cache| {
             let mut cache = cache.borrow_mut();
@@ -295,7 +306,7 @@ impl SoftwareSurface {
                 }
                 order.push_back(key);
             });
-            cache.1.insert(key, shaped.clone());
+            cache.1.insert(key, Rc::clone(&shaped));
         });
         shaped
     }
@@ -451,6 +462,27 @@ mod tests {
         let _ = surface.measure_text("world", &font);
         let (shapes, metrics) = take_builds();
         assert_eq!((shapes, metrics), (1, 1), "a different string is a different key");
+    }
+
+    /// A cache hit hands back the **same** shaped run, not a copy of it.
+    ///
+    /// `ShapedText` owns a `Vec<TextCluster>` and every cluster owns a `String`, so returning it by
+    /// value cloned all of that on every hit: the cache avoided the shaping cost and paid for it in
+    /// allocator traffic instead. The handle comparison is the evidence that nothing was cloned;
+    /// the build counter is the evidence that the value came from the cache rather than a rebuild.
+    #[test]
+    fn a_shaped_run_hit_is_the_same_allocation_not_a_copy() {
+        #[cfg(all(feature = "runtime-fonts", feature = "text-shaping"))]
+        let _guard = crate::render::text::runtime_fonts::test_lock();
+        let surface = SoftwareSurface::new(Size::new(20, 20), 1.0);
+        let font = Font::default();
+
+        let first = surface.shape_text("hello", &font);
+        let _ = take_builds();
+        let second = surface.shape_text("hello", &font);
+
+        assert!(Rc::ptr_eq(&first, &second), "a cache hit must return the cached run itself");
+        assert_eq!(take_builds(), (0, 0), "and it must not have shaped anything");
     }
 
     /// The epoch hook makes every cached measurement unreachable.

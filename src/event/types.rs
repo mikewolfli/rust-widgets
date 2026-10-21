@@ -4,6 +4,9 @@
 //! Event types and handler trait.
 use crate::compat::{Box, String, Vec};
 use crate::core::{Point, Size};
+// `Cow` is what keeps a constant event name from being copied into an owned `String`; see
+// `Event::Custom`.
+use alloc::borrow::Cow;
 /// A unique identifier for a touch contact point (used by `touch` and `holographic` features).
 pub type TouchId = u64;
 
@@ -277,10 +280,27 @@ pub enum Event {
     /// Free-form custom event payload.
     Custom {
         /// The event name the sender and receiver agree on.
-        name: String,
+        ///
+        /// A `Cow` rather than an owned `String`: the names this crate posts are `const`s, and
+        /// every `Custom` event used to heap-allocate one merely to copy a compile-time string.
+        /// A host with a runtime-computed name still passes an owned string; the type says which
+        /// case the sender is in, and only the owned case allocates.
+        name: Cow<'static, str>,
         /// Opaque payload; the framework does not interpret it.
         payload: Vec<u8>,
     },
+    /// One animation frame is due, carrying the request id it was posted for.
+    ///
+    /// A dedicated variant rather than a `Custom` event named `"animation_frame"` with the id
+    /// encoded in an eight-byte payload. That encoding allocated a `String` for the name and a
+    /// `Vec<u8>` for the id **on every frame** (60–120 Hz while anything is animating), and it
+    /// forced the receiver to decode bytes back into an integer it had just encoded. The id is
+    /// carried directly here.
+    ///
+    /// [`crate::event::r#loop::request_animation_frame`] is the producer; the loop's dispatch
+    /// phase is the consumer. The legacy `Custom` encoding is still *accepted* so a host that
+    /// replicates it — or an event captured before this variant existed — keeps working.
+    AnimationFrame(u64),
     /// Screen orientation changed (portrait ↔ landscape).
     OrientationChanged {
         /// The orientation now in effect.

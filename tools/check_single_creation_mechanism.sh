@@ -54,7 +54,7 @@ ALLOWED='^(create_window|create_menu|create_menu_bar|create_native_platform|crea
 echo "=== [1] Backends must not override per-kind control constructors ==="
 
 # Search backend implementation files only. The trait declarations live in
-# `src/platform/types.rs` and are intentionally excluded: they carry honest default
+# `src/platform/types/traits.rs` and are intentionally excluded: they carry honest default
 # bodies so a future backend can declare a genuine primitive deliberately.
 #
 # `#[cfg(test)]` bodies are excluded too: a test helper named `create_*` verifies
@@ -73,6 +73,11 @@ while IFS= read -r hit; do
     violations=$((violations + 1))
   fi
 done < <(awk '
+    # The trait declarations live under src/platform/types/ and are not a backend: they carry
+    # honest default bodies so a future backend can override one deliberately. The glob is
+    # src/platform/*/*.rs, which now matches that directory too, so it is excluded by name.
+    # (No apostrophes in this block: it is inside a single-quoted awk program.)
+    FILENAME ~ /^src\/platform\/types\// { next }
     # Print only the part of each backend file that precedes `mod tests`.
     FNR == 1 { in_tests = 0 }
     /^mod tests/ { in_tests = 1 }

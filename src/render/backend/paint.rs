@@ -4,6 +4,7 @@
 //! Paint backend trait and software implementation.
 use super::batch::BatchState;
 use crate::compat::vec;
+use crate::compat::Rc;
 use crate::core::{Color, Font, Size};
 use crate::render::pipeline::{
     sat_add_i32, sat_mul_i32, sat_neg_i32, set_pixel, u32_to_i32_saturating,
@@ -106,6 +107,21 @@ pub trait PaintBackend {
             alignment,
         });
     }
+    /// Fills `rect` with `gradient`.
+    ///
+    /// The same shape as [`Self::draw_text`], and for the same reason: [`RenderCommand::DrawGradient`]
+    /// owns its `Gradient` — a paint server with a `stops` vector — so routing every gradient fill
+    /// through the command copies that vector even when the backend paints it immediately and keeps
+    /// nothing. `RenderContext::fill_gradient` did exactly that, once per gradient-filled control per
+    /// frame.
+    ///
+    /// The default implementation is the old behaviour, so a recording or deferred backend is
+    /// unchanged and only an immediate backend has anything to gain by overriding it.
+    fn fill_gradient(&mut self, rect: crate::core::Rect, gradient: &crate::style::Gradient) {
+        #[cfg(test)]
+        note_gradient_owned_command();
+        self.execute_command(&RenderCommand::DrawGradient { rect, gradient: gradient.clone() });
+    }
     /// Returns the size of the target surface in logical (DPI-independent)
     /// units.
     fn size(&self) -> Size;
@@ -125,7 +141,7 @@ pub trait PaintBackend {
     ///
     /// Like [`PaintBackend::measure_text`], valid outside a frame. Backends
     /// without real shaping may return a trivial single-run result.
-    fn shape_text(&self, text: &str, font: &Font) -> ShapedText;
+    fn shape_text(&self, text: &str, font: &Font) -> Rc<ShapedText>;
     /// Returns the final frame as tightly packed RGBA bytes, 8 bits per
     /// channel, row-major, top row first.
     ///
@@ -254,6 +270,14 @@ impl PaintBackend for SoftwarePaintBackend {
     ) {
         self.surface.draw_text(origin, text, font, color, alignment);
     }
+    /// Fills `rect` with `gradient` without owning a copy of it.
+    ///
+    /// The gradient-paint counterpart of [`Self::draw_text`]: the software surface reads the stops
+    /// and paints at once, so the owning command would copy the `stops` vector per fill for pixels
+    /// it immediately discards.
+    fn fill_gradient(&mut self, rect: crate::core::Rect, gradient: &crate::style::Gradient) {
+        self.surface.fill_rect_gradient(rect, gradient);
+    }
     fn fill_path_non_zero(
         &mut self,
         points: &[crate::core::Point],
@@ -279,7 +303,7 @@ impl PaintBackend for SoftwarePaintBackend {
     fn measure_text(&self, text: &str, font: &Font) -> TextMetrics {
         self.surface.measure_text(text, font)
     }
-    fn shape_text(&self, text: &str, font: &Font) -> ShapedText {
+    fn shape_text(&self, text: &str, font: &Font) -> Rc<ShapedText> {
         self.surface.shape_text(text, font)
     }
     fn frame_rgba(&self) -> &[u8] {
@@ -314,6 +338,28 @@ pub(crate) fn note_image_bytes_drawn_without_copy(bytes: usize) {
 #[cfg(test)]
 pub(crate) fn take_image_bytes_drawn_without_copy() -> usize {
     IMAGE_BYTES_DRAWN_WITHOUT_COPY.with(|cell| cell.replace(0))
+}
+
+// Test-only count of gradient fills that went through the **owning** command, i.e. the trait's
+// default implementation. A backend that paints immediately overrides `fill_gradient` and never
+// builds the command, so zero is the evidence that the override is the one being taken — the
+// counter moves only when a backend falls back to the default.
+#[cfg(test)]
+thread_local! {
+    #[allow(clippy::missing_const_for_thread_local)]
+    static GRADIENT_OWNED_COMMANDS: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+/// Records one gradient fill routed through the owning `RenderCommand`.
+#[cfg(test)]
+fn note_gradient_owned_command() {
+    GRADIENT_OWNED_COMMANDS.with(|cell| cell.set(cell.get() + 1));
+}
+
+/// Resets and returns that counter.
+#[cfg(test)]
+fn take_gradient_owned_command_count() -> usize {
+    GRADIENT_OWNED_COMMANDS.with(|cell| cell.replace(0))
 }
 
 /// Route one [`RenderCommand`] into a bare [`SoftwareSurface`].
@@ -813,6 +859,59 @@ mod tests {
     }
 
     // ── SoftwarePaintBackend surface access ─────────────────────────────
+
+    /// The software backend paints a gradient without building the owning command.
+    ///
+    /// `fill_gradient`'s trait default constructs `RenderCommand::DrawGradient`, which owns a copy
+    /// of the paint server — `stops` vector and all — for pixels an immediate backend is about to
+    /// paint and forget. The software surface overrides it, so the counter must not move; the pixel
+    /// assertions keep the override honest about *painting* what the default would have painted.
+    #[test]
+    fn the_software_backend_fills_a_gradient_without_building_the_owning_command() {
+        use crate::style::{Gradient, GradientStop};
+
+        let size = Size::new(16, 16);
+        let mut backend = SoftwarePaintBackend::new(size, 1.0);
+        backend.begin_frame(Color::WHITE);
+        let _ = take_gradient_owned_command_count();
+
+        let gradient = Gradient::linear(Point::new(0, 0), Point::new(16, 0)).with_stops(vec![
+            GradientStop::new(0.0, Color::RED),
+            GradientStop::new(1.0, Color::BLUE),
+        ]);
+        backend.fill_gradient(Rect::new(0, 0, 16, 16), &gradient);
+        backend.end_frame();
+
+        assert_eq!(
+            take_gradient_owned_command_count(),
+            0,
+            "the software backend must paint the gradient itself rather than copy it into a command"
+        );
+
+        let rgba = backend.frame_rgba();
+
+        // Reference: the same gradient through the owning command, which is the default the
+        // override replaced. Equal buffers prove the override paints what the default painted;
+        // the WHITE-only backend proves it painted *something* (an equality check against an
+        // untouched frame would otherwise pass for a no-op).
+        let mut through_command = SoftwarePaintBackend::new(size, 1.0);
+        through_command.begin_frame(Color::WHITE);
+        through_command.execute_command(&RenderCommand::DrawGradient {
+            rect: Rect::new(0, 0, 16, 16),
+            gradient: gradient.clone(),
+        });
+        through_command.end_frame();
+        let mut untouched = SoftwarePaintBackend::new(size, 1.0);
+        untouched.begin_frame(Color::WHITE);
+        untouched.end_frame();
+
+        assert_eq!(
+            rgba,
+            through_command.frame_rgba(),
+            "the override must paint the command's pixels"
+        );
+        assert_ne!(rgba, untouched.frame_rgba(), "the gradient must actually paint");
+    }
 
     #[test]
     fn software_paint_backend_surface_accessor() {

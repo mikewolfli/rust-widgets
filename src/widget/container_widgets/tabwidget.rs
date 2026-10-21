@@ -2267,7 +2267,9 @@ mod tests {
         let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
         tw.add_tab("Tab".to_string(), None);
 
-        tw.tab_mut(0).unwrap().set_icon(Some(Image::from_rgba(vec![9; 4], 1, 1)));
+        tw.tab_mut(0).unwrap().set_icon(Some(
+            Image::try_from_rgba(vec![9; 4], 1, 1).expect("the buffer matches its declared size"),
+        ));
         assert!(tw.tab(0).unwrap().has_icon());
         assert!(tw.tab(0).unwrap().icon().is_some());
         assert!(tw.tab(0).unwrap().icon_source().is_none());
@@ -2278,7 +2280,9 @@ mod tests {
         assert_eq!(tw.tab(0).unwrap().icon_source(), Some(IconSource::Builtin(IconName::Save)));
 
         // ... and the legacy setter replaces the typed source in turn.
-        tw.tab_mut(0).unwrap().set_icon(Some(Image::from_rgba(vec![0; 4], 1, 1)));
+        tw.tab_mut(0).unwrap().set_icon(Some(
+            Image::try_from_rgba(vec![0; 4], 1, 1).expect("the buffer matches its declared size"),
+        ));
         assert!(tw.tab(0).unwrap().icon_source().is_none());
 
         // An explicit clear removes both forms, so nothing can reappear afterwards.
@@ -2320,7 +2324,10 @@ mod tests {
         let without = render_widget_to_svg(&mut tw, Rect::new(0, 0, 300, 200));
         assert!(!without.contains("<image"), "an iconless tab draws no image");
 
-        tw.tab_mut(0).unwrap().set_icon(Some(Image::from_rgba(vec![200; 4 * 4 * 4], 4, 4)));
+        tw.tab_mut(0).unwrap().set_icon(Some(
+            Image::try_from_rgba(vec![200; 4 * 4 * 4], 4, 4)
+                .expect("the buffer matches its declared size"),
+        ));
         let with = render_widget_to_svg(&mut tw, Rect::new(0, 0, 300, 200));
         assert!(with.contains("<image"), "a legacy tab image must reach the backend");
     }

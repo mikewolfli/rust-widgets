@@ -21,7 +21,7 @@
 //! activating `MouseRelease` would turn a cancellation into a click. Touch-aware controls
 //! receive the cancel event and reset their latch without activating.
 
-use crate::compat::{HashMap, MiniToString, Vec};
+use crate::compat::{HashMap, Vec};
 use crate::event::types::{mouse_button, Event, TouchId};
 
 /// Canonical name of the internal touch-cancel event (D09-EVT-02).
@@ -53,12 +53,12 @@ pub fn touch_cancel(pos: crate::core::Point, touch_id: TouchId) -> Event {
     payload.extend_from_slice(&touch_id.to_le_bytes());
     payload.extend_from_slice(&pos.x.to_le_bytes());
     payload.extend_from_slice(&pos.y.to_le_bytes());
-    Event::Custom { name: TOUCH_CANCEL_EVENT_NAME.to_string(), payload }
+    Event::Custom { name: TOUCH_CANCEL_EVENT_NAME.into(), payload }
 }
 
 /// Whether `event` is the internal touch-cancel event (D09-EVT-02).
 pub fn is_touch_cancel(event: &Event) -> bool {
-    matches!(event, Event::Custom { name, .. } if name == TOUCH_CANCEL_EVENT_NAME)
+    matches!(event, Event::Custom { name, .. } if name.as_ref() == TOUCH_CANCEL_EVENT_NAME)
 }
 
 /// Decodes the `(pos, touch_id)` carried by a touch-cancel event, or `None` for any other
@@ -426,7 +426,7 @@ mod tests {
         // A malformed cancel payload decodes to `None` rather than panicking.
         assert_eq!(
             touch_cancel_payload(&Event::Custom {
-                name: TOUCH_CANCEL_EVENT_NAME.to_string(),
+                name: TOUCH_CANCEL_EVENT_NAME.into(),
                 payload: alloc::vec![1, 2, 3],
             }),
             None

@@ -161,7 +161,7 @@ BACKENDS: tuple[tuple[str, str], ...] = (
 NON_BACKEND_CAPABILITY_FILES = (
     # The trait's own default: `false` for everything by construction, so there is nothing to
     # promise and nothing to check.
-    "src/platform/types.rs",
+    "src/platform/types/traits.rs",
     # A test-only recorder in the runtime module.
     "src/platform/runtime.rs",
     # The shared state machine the state-backed backends build on; it defines no

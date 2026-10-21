@@ -968,9 +968,11 @@ pub trait Widget: EventHandler + Any {
     /// Apply CSS styles to this widget. The `css` text is parsed and rules matching
     /// the widget's kind and optional class/id are applied to the widget's style.
     fn apply_css(&mut self, css: &str, class: Option<&str>) -> Result<(), String> {
-        let kind_str = format!("{:?}", self.kind());
+        // `css_name` is the same `Debug` spelling the selector parser expects, without the
+        // per-call `format!` allocation this used to make on the inline-CSS path.
+        let kind_str = self.kind().css_name();
         let mut style = self.style().clone();
-        CssParser::parse_and_apply(css, &kind_str, class, None, None, &mut style)?;
+        CssParser::parse_and_apply(css, kind_str, class, None, None, &mut style)?;
         self.set_style(style);
         Ok(())
     }

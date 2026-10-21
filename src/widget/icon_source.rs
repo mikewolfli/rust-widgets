@@ -431,7 +431,8 @@ mod shared_pixels_tests {
     fn owned_rgba_image_transfers_its_pixel_allocation() {
         let bytes = vec![7; 2 * 3 * 4];
         let original_ptr = bytes.as_ptr();
-        let image = Image::from_rgba(bytes, 2, 3);
+        let image =
+            Image::try_from_rgba(bytes, 2, 3).expect("the buffer matches its declared size");
         let shared = SharedIconPixels::from_image(image).expect("valid RGBA image");
 
         assert_eq!(shared.width(), 2);

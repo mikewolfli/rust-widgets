@@ -1419,10 +1419,7 @@ pub extern "C" fn rw_widget_layout_apply(
 /// while it is still building the tree.
 ///
 pub extern "C" fn rw_widget_layout_child_count(parent: u64) -> c_uint {
-    c_try!({
-        crate::layout::declarative::preview_layout(parent, crate::core::Rect::new(0, 0, 0, 0)).len()
-            as c_uint
-    })
+    c_try!({ crate::layout::declarative::layout_child_count(parent) as c_uint })
 }
 
 #[no_mangle]

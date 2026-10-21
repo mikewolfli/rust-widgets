@@ -594,12 +594,25 @@ fn declared_property_schema(
     property: &str,
 ) -> Option<crate::widget::capability::PropertySchema> {
     let capability = factory.capability(widget_name)?;
-    let wanted = crate::widget::capability::normalize_key(property);
     capability
         .properties
         .iter()
-        .find(|schema| crate::widget::capability::normalize_key(schema.name) == wanted)
+        .find(|schema| crate::widget::capability::same_key(schema.name, property))
         .copied()
+}
+
+/// Appends formatted text to `out` without the intermediate `String` that
+/// `push_str(&format!(..))` allocates.
+///
+/// This file builds source text a fragment at a time — per node, per property, per statement — and
+/// every `push_str(&format!(..))` used to allocate a temporary `String`, copy the formatted bytes
+/// into it, copy them again into `out`, and free it. `fmt::Arguments` writes straight into the
+/// buffer instead: one copy, no allocation.
+///
+/// Writing into a `String` cannot fail; the `Result` exists only because `fmt::Write` is shared
+/// with fallible sinks, which is why it is dropped here rather than at every call site.
+fn push_fmt(out: &mut String, args: core::fmt::Arguments<'_>) {
+    let _ = core::fmt::Write::write_fmt(out, args);
 }
 
 /// Emits one `Node::new(..)` expression, recursing into children.
@@ -650,7 +663,7 @@ fn emit_node(
     report.nodes_emitted += 1;
 
     let mut line = format!("Node::new({})", quote(&node.widget));
-    line.push_str(&format!(".key({})", quote(&node.key)));
+    push_fmt(&mut line, format_args!(".key({})", quote(&node.key)));
 
     // The diff engine re-runs layout when the window resizes, so this template does **not** freeze
     // coordinates (d-3 applies to the stripped target, where nothing would re-run them). The root's
@@ -754,7 +767,10 @@ fn emit_node(
                 }
             }
         }
-        line.push_str(&format!(".prop({}, {})", quote(&name), capability_value_expr(&value)));
+        push_fmt(
+            &mut line,
+            format_args!(".prop({}, {})", quote(&name), capability_value_expr(&value)),
+        );
         report.properties_emitted += 1;
     }
 
@@ -841,7 +857,7 @@ fn emit_node(
                 continue;
             }
         }
-        line.push_str(&format!(".prop({}, {expr})", quote(&name)));
+        push_fmt(&mut line, format_args!(".prop({}, {expr})", quote(&name)));
         report.properties_emitted += 1;
     }
 
@@ -1026,7 +1042,7 @@ fn emit_stripped_mode(
     let (root_path, root_expr, _) = &nodes[0];
     debug_assert!(root_path.is_empty(), "the root must be collected first");
     // The root **always** needs `mut`: `try_add_child` goes through `base_mut()`.
-    body.push_str(&format!("    let mut root = {root_expr};\n"));
+    push_fmt(&mut body, format_args!("    let mut root = {root_expr};\n"));
 
     // # Why no outer binding carries `mut`
     //
@@ -1038,7 +1054,7 @@ fn emit_stripped_mode(
     // because `base_mut()` *does* need it. Both halves are pinned by
     // `tests/generated_artifacts_are_lint_clean_test.rs`.)
     for (path, expr, _setters) in nodes.iter().skip(1) {
-        body.push_str(&format!("    let {} = {expr};\n", binding_name(path)));
+        push_fmt(&mut body, format_args!("    let {} = {expr};\n", binding_name(path)));
     }
     body.push('\n');
 
@@ -1156,7 +1172,7 @@ fn collect_stripped_nodes(
             continue;
         }
         if let Some(call) = setter_call(&binding, &name, &value) {
-            setters.push_str(&format!("\n        // {name}\n        {call}"));
+            push_fmt(&mut setters, format_args!("\n        // {name}\n        {call}"));
             report.properties_emitted += 1;
         } else if is_known_setter_name(&name) && value.is_number() {
             // A recognised numeric setter whose value does not fit the generated setter's

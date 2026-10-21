@@ -23,6 +23,8 @@
 //! Callers use [`EventHandlerMap`](crate::json::EventHandlerMap) to
 //! register closures against those handler names.
 
+use std::borrow::Cow;
+
 use serde_json::Value;
 
 use crate::app::{ButtonHandle, WidgetHandle};
@@ -491,6 +493,12 @@ impl JsonLoader {
             .as_object()
             .ok_or_else(|| format!("'{widget_type}' value must be a JSON object"))?;
 
+        // The node's name, lowercased once per node rather than once per test against it.
+        // Three comparisons below ask "is this a button/label/window", and each used to spell
+        // `widget_type.to_lowercase()` — a fresh `String` per question, per node, for a name
+        // that is lowercase in the document almost every time.
+        let widget_key = lowered(widget_type);
+
         // Get the widget ID (optional — auto-generated if missing).
         let id_str = obj.get("id").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -666,16 +674,14 @@ impl JsonLoader {
         // BEFORE passing to the loader (e.g. tr!("button.ok")).
         // The loader uses the literal string as-is.
         if let Some(text) = obj.get("text").and_then(|v| v.as_str()) {
-            if !text.is_empty()
-                && !matches!(widget_type.to_lowercase().as_str(), "button" | "label")
-            {
+            if !text.is_empty() && !matches!(widget_key.as_ref(), "button" | "label") {
                 crate::set_widget_text(widget_id, text);
             }
         }
         // Handle "title" property — BLUE4.md spec says groupbox uses "title"
         // (not "text"). For window, title is already set in create_widget.
         // Only apply via platform API for non-window widgets.
-        if widget_type.to_lowercase().as_str() != "window" {
+        if widget_key.as_ref() != "window" {
             if let Some(title) = obj.get("title").and_then(|v| v.as_str()) {
                 if !title.is_empty() {
                     crate::set_widget_text(widget_id, title);
@@ -823,7 +829,7 @@ impl JsonLoader {
         obj: &serde_json::Map<String, Value>,
     ) -> Result<Box<dyn Widget>, String> {
         let geometry = Rect::new(0, 0, 100, 100);
-        match widget_type.to_lowercase().as_str() {
+        match lowered(widget_type).as_ref() {
             "window" => {
                 let title = obj.get("title").and_then(|v| v.as_str()).unwrap_or("Window");
                 Ok(Box::new(Window::new(title.to_string(), geometry)))
@@ -911,13 +917,7 @@ impl JsonLoader {
             }
             "combobox" => {
                 let mut cb = ComboBox::new(geometry);
-                if let Some(items) = obj.get("items").and_then(|v| v.as_array()) {
-                    for item in items {
-                        if let Some(text) = item.as_str() {
-                            cb.add_item(text.to_string());
-                        }
-                    }
-                }
+                for_each_json_item(obj, |text| cb.add_item(text));
                 // current_index: pre-select an item by index (0-based)
                 if let Some(idx) = json_usize_at(obj, "current_index") {
                     cb.set_current_index(Some(idx));
@@ -934,13 +934,7 @@ impl JsonLoader {
             }
             "listbox" => {
                 let mut lb = ListBox::new(geometry);
-                if let Some(items) = obj.get("items").and_then(|v| v.as_array()) {
-                    for item in items {
-                        if let Some(text) = item.as_str() {
-                            lb.add_item(text.to_string());
-                        }
-                    }
-                }
+                for_each_json_item(obj, |text| lb.add_item(text));
                 if let Some(mode) = obj.get("selection_mode").and_then(|v| v.as_str()) {
                     match mode {
                         "none" => lb.set_selection_mode(crate::widget::SelectionMode::None),
@@ -955,22 +949,9 @@ impl JsonLoader {
             }
             "slider" => {
                 let mut sl = Slider::new(geometry);
-                let (min, max) = read_json_range(obj);
-                if let Some(min) = min {
-                    sl.set_range(i32_from_i64(min), i32_from_i64(max.unwrap_or(100)));
-                } else if let Some(max) = max {
-                    sl.set_maximum(i32_from_i64(max));
-                }
-                if let Some(value) = obj.get("value").and_then(|v| v.as_i64()) {
-                    sl.set_value(i32_from_i64(value));
-                }
-                if let Some(orientation) = obj.get("orientation").and_then(|v| v.as_str()) {
-                    match orientation {
-                        "horizontal" => sl.set_orientation(Orientation::Horizontal),
-                        "vertical" => sl.set_orientation(Orientation::Vertical),
-                        // Unknown value; use widget default
-                        _ => {}
-                    }
+                apply_range_like(obj, &mut sl);
+                if let Some(orientation) = json_orientation(obj) {
+                    sl.set_orientation(orientation);
                 }
                 // single_step: keyboard arrow increment
                 if let Some(step) = json_i32_at(obj, "single_step") {
@@ -1008,22 +989,9 @@ impl JsonLoader {
             }
             "scrollbar" => {
                 let mut sb = ScrollBar::new(geometry);
-                let (min, max) = read_json_range(obj);
-                if let Some(min) = min {
-                    sb.set_range(i32_from_i64(min), i32_from_i64(max.unwrap_or(100)));
-                } else if let Some(max) = max {
-                    sb.set_maximum(i32_from_i64(max));
-                }
-                if let Some(value) = obj.get("value").and_then(|v| v.as_i64()) {
-                    sb.set_value(i32_from_i64(value));
-                }
-                if let Some(orientation) = obj.get("orientation").and_then(|v| v.as_str()) {
-                    match orientation {
-                        "horizontal" => sb.set_orientation(Orientation::Horizontal),
-                        "vertical" => sb.set_orientation(Orientation::Vertical),
-                        // Unknown value; use widget default
-                        _ => {}
-                    }
+                apply_range_like(obj, &mut sb);
+                if let Some(orientation) = json_orientation(obj) {
+                    sb.set_orientation(orientation);
                 }
                 // single_step: arrow button increment
                 if let Some(step) = json_i32_at(obj, "single_step") {
@@ -1037,25 +1005,14 @@ impl JsonLoader {
             }
             "progressbar" => {
                 let mut pb = ProgressBar::new(geometry);
-                let (min, max) = read_json_range(obj);
-                if let Some(min) = min {
-                    pb.set_range(i32_from_i64(min), i32_from_i64(max.unwrap_or(100)));
-                } else if let Some(max) = max {
-                    pb.set_maximum(i32_from_i64(max));
-                }
-                if let Some(value) = obj.get("value").and_then(|v| v.as_i64()) {
-                    pb.set_value(i32_from_i64(value));
-                }
+                apply_range_like(obj, &mut pb);
                 // text_visible: show percentage text overlay
                 if let Some(tv) = obj.get("text_visible").and_then(|v| v.as_bool()) {
                     pb.set_text_visible(tv);
                 }
                 // orientation: "horizontal"|"vertical"
-                if let Some(orient) = obj.get("orientation").and_then(|v| v.as_str()) {
-                    match orient {
-                        "vertical" => pb.set_orientation(Orientation::Vertical),
-                        _ => pb.set_orientation(Orientation::Horizontal),
-                    }
+                if let Some(orientation) = json_orientation(obj) {
+                    pb.set_orientation(orientation);
                 }
                 // inverted_appearance: fill from right/bottom
                 if let Some(inv) = obj.get("inverted_appearance").and_then(|v| v.as_bool()) {
@@ -1424,12 +1381,32 @@ pub fn bind_event_binding(
     JsonLoader::bind_one(widget_id, binding, handler_name)
 }
 
-/// The widget's kind in `Debug` spelling, for diagnostics.
+/// The ASCII-lowercased spelling of a declared name, borrowing when it already is.
 ///
-/// A free function rather than a trait method: only this module's warnings need
-/// it, and the kind is already reachable through `Widget::kind`.
-fn kind_label(widget: &dyn Widget) -> String {
-    format!("{:?}", widget.kind())
+/// The loader compares declared widget/event names against lowercase literals. That used to
+/// call `to_lowercase()` per comparison, which allocates a `String` even though the common
+/// spelling in a document is already lowercase — the allocation bought nothing. Borrowing in
+/// that case makes the comparison free; only a mixed-case declaration pays.
+///
+/// `to_ascii_lowercase` rather than `to_lowercase` is deliberate: these are control names,
+/// every literal they are compared against is ASCII, and a non-ASCII name reaches the same
+/// fallback arm either way (Unicode case folding could only turn it into a different
+/// non-ASCII name).
+fn lowered(name: &str) -> Cow<'_, str> {
+    if name.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        Cow::Owned(name.to_ascii_lowercase())
+    } else {
+        Cow::Borrowed(name)
+    }
+}
+
+/// The widget's kind in `Debug` spelling, for diagnostics and stylesheet matching.
+///
+/// A free function rather than a trait method: only this module's warnings and its stylesheet
+/// pass need it, and the kind is already reachable through `Widget::kind`. It returns a
+/// `'static` string rather than a formatted one — see `WidgetKind::css_name` for why.
+fn kind_label(widget: &dyn Widget) -> &'static str {
+    widget.kind().css_name()
 }
 
 /// Apply declarative stylesheet rules to a freshly created widget.
@@ -1463,7 +1440,7 @@ fn apply_declared_styles(widget: &mut dyn Widget, obj: &serde_json::Map<String, 
     //    replace the kind, so `<button class="primary">` was classified as `Surface` (because
     //    "primary" is not a control kind) and painted as a grey panel instead of a filled
     //    brand-coloured button — the class silently discarded the role it was meant to select.
-    if let Some(theme_style) = crate::theme::resolved_theme_style_for(&kind, class) {
+    if let Some(theme_style) = crate::theme::resolved_theme_style_for(kind, class) {
         let mut style = widget.style().clone();
         style.merge(&theme_style);
         widget.set_style(style);
@@ -1473,7 +1450,7 @@ fn apply_declared_styles(widget: &mut dyn Widget, obj: &serde_json::Map<String, 
     let mut style = widget.style().clone();
     let applied = {
         let manager = crate::style::global_stylesheet_manager();
-        manager.apply_to(&kind, class, id, None, &mut style)
+        manager.apply_to(kind, class, id, None, &mut style)
     };
     if let Err(error) = applied {
         log::warn!(
@@ -1849,6 +1826,111 @@ fn read_json_range(obj: &serde_json::Map<String, Value>) -> (Option<i64>, Option
     (read("minimum", "min"), read("maximum", "max"))
 }
 
+/// The numeric-range surface `slider`, `scrollbar` and `progressbar` share.
+///
+/// The three widgets take the same `minimum`/`maximum`/`value` triple from the same JSON
+/// spellings, and the loader used to carry three copies of that parse — three places to change
+/// and two to forget. The trait only *reaches* each widget's own setters; clamping,
+/// re-clamping and signal behaviour stay where they are implemented.
+trait RangeLike {
+    fn set_range(&mut self, minimum: i32, maximum: i32);
+    fn set_maximum(&mut self, maximum: i32);
+    fn set_value(&mut self, value: i32);
+}
+
+impl RangeLike for Slider {
+    fn set_range(&mut self, minimum: i32, maximum: i32) {
+        Slider::set_range(self, minimum, maximum);
+    }
+
+    fn set_maximum(&mut self, maximum: i32) {
+        Slider::set_maximum(self, maximum);
+    }
+
+    fn set_value(&mut self, value: i32) {
+        Slider::set_value(self, value);
+    }
+}
+
+impl RangeLike for ScrollBar {
+    fn set_range(&mut self, minimum: i32, maximum: i32) {
+        ScrollBar::set_range(self, minimum, maximum);
+    }
+
+    fn set_maximum(&mut self, maximum: i32) {
+        ScrollBar::set_maximum(self, maximum);
+    }
+
+    fn set_value(&mut self, value: i32) {
+        ScrollBar::set_value(self, value);
+    }
+}
+
+impl RangeLike for ProgressBar {
+    fn set_range(&mut self, minimum: i32, maximum: i32) {
+        ProgressBar::set_range(self, minimum, maximum);
+    }
+
+    fn set_maximum(&mut self, maximum: i32) {
+        ProgressBar::set_maximum(self, maximum);
+    }
+
+    fn set_value(&mut self, value: i32) {
+        ProgressBar::set_value(self, value);
+    }
+}
+
+/// Applies the `minimum`/`maximum`/`value` triple a range-like widget declares.
+///
+/// Two rules are shared by all three widgets and were spelled out identically in each arm:
+///
+/// * a declared `minimum` without a `maximum` pairs with 100, the maximum every one of them is
+///   constructed with, so `{"minimum": 5}` means `5..=100` rather than `5..=i32::MAX`;
+/// * a `maximum` on its own widens the existing range (`set_maximum`) instead of also resetting
+///   the lower bound, which keeps a document that states one end from silently moving the other.
+///
+/// `spinbox` deliberately does not use this: it applies `minimum` and `maximum` independently
+/// rather than as a range, so folding it in would change what it does.
+fn apply_range_like<W: RangeLike>(obj: &serde_json::Map<String, Value>, widget: &mut W) {
+    let (minimum, maximum) = read_json_range(obj);
+    if let Some(minimum) = minimum {
+        widget.set_range(i32_from_i64(minimum), i32_from_i64(maximum.unwrap_or(100)));
+    } else if let Some(maximum) = maximum {
+        widget.set_maximum(i32_from_i64(maximum));
+    }
+    if let Some(value) = obj.get("value").and_then(|value| value.as_i64()) {
+        widget.set_value(i32_from_i64(value));
+    }
+}
+
+/// Reads an `orientation` string as these widgets spell it.
+///
+/// `None` means the document named no orientation, or named one nobody defines. Both leave the
+/// control on the orientation it was constructed with, which is what `slider` and `scrollbar`
+/// already did for an unknown value. `progressbar` used to force `Horizontal` for an unknown
+/// string; that is the orientation it is constructed with, so the resulting state is unchanged.
+fn json_orientation(obj: &serde_json::Map<String, Value>) -> Option<Orientation> {
+    match obj.get("orientation").and_then(|value| value.as_str())? {
+        "horizontal" => Some(Orientation::Horizontal),
+        "vertical" => Some(Orientation::Vertical),
+        _ => None,
+    }
+}
+
+/// Calls `add` with every string in the document's `items` array.
+///
+/// A non-string entry is skipped rather than stringified: an item is a caption, and a `null` or
+/// a number in the array is a document mistake, not a label to invent.
+fn for_each_json_item(obj: &serde_json::Map<String, Value>, mut add: impl FnMut(String)) {
+    if let Some(items) = obj.get("items").and_then(|value| value.as_array()) {
+        for item in items {
+            if let Some(text) = item.as_str() {
+                add(text.to_string());
+            }
+        }
+    }
+}
+
 /// Reads a JSON `u64` field and narrows it to `u32`, clamping at the bounds.
 ///
 /// A JSON number is an arbitrary `u64` (or a float), so `as u32` is a truncation rather
@@ -2167,6 +2249,114 @@ pub fn load_layout_from_str(json_str: &str) -> Result<BoundJsonLayout, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `lowered` is the loader's one answer to "compare this declared name against a lowercase
+    /// literal". The borrow is the point: a document that spells its controls the documented way
+    /// must not allocate once per comparison.
+    #[test]
+    fn a_lowercase_name_is_borrowed_and_a_mixed_case_name_is_lowered() {
+        let plain = "button";
+        assert!(
+            matches!(lowered(plain), Cow::Borrowed(_)),
+            "an already-lowercase name must not allocate"
+        );
+        assert_eq!(lowered(plain), "button");
+
+        let mixed = "ScrollArea";
+        assert!(matches!(lowered(mixed), Cow::Owned(_)), "a mixed-case name must still be lowered");
+        assert_eq!(lowered(mixed), "scrollarea");
+
+        // The predicate is ASCII case, not "contains no uppercase letter": digits and
+        // underscores are already lowercase and must not trigger an allocation either.
+        assert!(matches!(lowered("spin_box2"), Cow::Borrowed(_)));
+    }
+
+    /// The borrow shortcut must not change which arm a name reaches: a declaration that spells
+    /// its type in capitals still has to build the same control.
+    #[test]
+    fn a_mixed_case_type_name_reaches_the_same_arm_as_a_lowercase_one() {
+        let declaration = serde_json::Map::new();
+        let lowercase = JsonLoader::create_widget("button", &declaration).expect("button");
+        let uppercase = JsonLoader::create_widget("BUTTON", &declaration).expect("BUTTON");
+        assert_eq!(uppercase.kind(), lowercase.kind());
+    }
+
+    /// `slider`, `scrollbar` and `progressbar` read one declaration through one function
+    /// (`BIND-06`: the loader used to carry three copies of it). The three arms were identical
+    /// line for line, which is exactly the shape that drifts — so the shared contract is pinned
+    /// against all three widgets rather than against the helper alone.
+    #[test]
+    fn the_range_triple_reads_the_same_for_slider_scrollbar_and_progressbar() {
+        let declaration =
+            serde_json::json!({ "minimum": 5, "value": 7, "orientation": "vertical" });
+        let obj = declaration.as_object().expect("a declaration is an object");
+
+        let mut slider = Slider::new(Rect::new(0, 0, 100, 100));
+        apply_range_like(obj, &mut slider);
+        if let Some(orientation) = json_orientation(obj) {
+            slider.set_orientation(orientation);
+        }
+
+        let mut scrollbar = ScrollBar::new(Rect::new(0, 0, 100, 100));
+        apply_range_like(obj, &mut scrollbar);
+        if let Some(orientation) = json_orientation(obj) {
+            scrollbar.set_orientation(orientation);
+        }
+
+        let mut progress = ProgressBar::new(Rect::new(0, 0, 100, 100));
+        apply_range_like(obj, &mut progress);
+        if let Some(orientation) = json_orientation(obj) {
+            progress.set_orientation(orientation);
+        }
+
+        for (name, minimum, maximum, value, orientation) in [
+            ("slider", slider.minimum(), slider.maximum(), slider.value(), slider.orientation()),
+            (
+                "scrollbar",
+                scrollbar.minimum(),
+                scrollbar.maximum(),
+                scrollbar.value(),
+                scrollbar.orientation(),
+            ),
+            (
+                "progressbar",
+                progress.minimum(),
+                progress.maximum(),
+                progress.value(),
+                progress.orientation(),
+            ),
+        ] {
+            assert_eq!(minimum, 5, "{name} must take the declared minimum");
+            assert_eq!(maximum, 100, "{name}: a minimum without a maximum keeps the default 100");
+            assert_eq!(value, 7, "{name} must take the declared value");
+            assert_eq!(
+                orientation,
+                Orientation::Vertical,
+                "{name} must take the declared orientation"
+            );
+        }
+    }
+
+    /// The other half of the shared rule: a document that states only the upper bound widens the
+    /// range instead of also resetting the lower one, and an orientation nobody defines leaves
+    /// the control on its own.
+    #[test]
+    fn a_maximum_alone_widens_the_range_without_moving_the_minimum() {
+        let declaration = serde_json::json!({ "maximum": 40, "orientation": "sideways" });
+        let obj = declaration.as_object().expect("a declaration is an object");
+
+        let mut slider = Slider::new(Rect::new(0, 0, 100, 100));
+        slider.set_range(-10, 10);
+        apply_range_like(obj, &mut slider);
+
+        assert_eq!(slider.minimum(), -10, "a lone maximum must not reset the lower bound");
+        assert_eq!(slider.maximum(), 40);
+        assert_eq!(
+            json_orientation(obj),
+            None,
+            "an orientation nobody defines must leave the control alone"
+        );
+    }
 
     #[test]
     fn conflicting_legacy_and_typed_action_icons_are_rejected_together() {

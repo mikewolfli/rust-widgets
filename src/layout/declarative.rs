@@ -327,6 +327,24 @@ pub fn preview_layout(parent_id: ObjectId, rect: Rect) -> Vec<(ObjectId, Rect)> 
     })
 }
 
+/// How many children `parent_id`'s declarative layout holds, **not** counting spacers.
+///
+/// The C ABI used to answer this with `preview_layout(parent, Rect::new(0, 0, 0, 0)).len()`, which
+/// runs the whole arrangement — every child's size arithmetic, a `Vec` of geometries, and an
+/// `update` callback per child — to throw all of it away except the length. A caller polling the
+/// count (a live inspector, a test loop) paid that on every call.
+///
+/// A spacer is still not a child here: [`add_spacer_to_layout`] stores it under [`SPACER_ID`],
+/// which carries no control, so counting it would overstate the number of children a host can
+/// address by id. That is the same rule `preview_layout` applies.
+pub fn layout_child_count(parent_id: ObjectId) -> usize {
+    LAYOUT_MAP.with(|map| {
+        map.borrow().get(&parent_id).map_or(0, |layout| {
+            layout.child_ids().iter().filter(|child| **child != SPACER_ID).count()
+        })
+    })
+}
+
 /// Name of a `DeclarativeLayoutKind`, for diagnostics and the C ABI.
 ///
 /// Defined here rather than on the enum so this module does not depend on the

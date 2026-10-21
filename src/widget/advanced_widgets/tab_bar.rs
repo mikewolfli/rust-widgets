@@ -1232,11 +1232,10 @@ mod tests {
         let plain = render(&mut tabs);
         assert!(!plain.contains("<image"), "a tab with no icon draws no image");
 
-        tabs.tab_mut(0).expect("the tab exists").set_icon(Some(Image::from_rgba(
-            vec![200; 4 * 4 * 4],
-            4,
-            4,
-        )));
+        tabs.tab_mut(0).expect("the tab exists").set_icon(Some(
+            Image::try_from_rgba(vec![200; 4 * 4 * 4], 4, 4)
+                .expect("the buffer matches its declared size"),
+        ));
         assert!(tabs.tab(0).expect("the tab exists").has_icon());
         assert!(render(&mut tabs).contains("<image"), "the image must reach the backend");
 

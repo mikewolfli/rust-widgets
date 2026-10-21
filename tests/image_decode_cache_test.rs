@@ -77,8 +77,7 @@ fn a_shared_icon_decodes_once_for_the_whole_toolbar() {
 
     // The image-view path shares with it: a second request for the same bytes is a hit.
     let mid = stats();
-    let _ = rust_widgets::image::Image::from_bytes_rgba8_shared(&png_fixture())
-        .expect("the image decodes");
+    let _ = cache::pixels_rgba8_or_none(&png_fixture()).expect("the image decodes");
     let end = stats();
     println!(
         "one image-view request: requests={} misses={}",

@@ -6,6 +6,7 @@
 //! Provides types for organizing draw commands into batches that can be
 //! recorded once and replayed efficiently by the renderer.
 
+use crate::compat::Rc;
 use crate::compat::{fmt, HashMap, String, Vec};
 
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
@@ -68,7 +69,7 @@ impl PaintBackend for SurfacePaintBackend<'_> {
     fn measure_text(&self, text: &str, font: &Font) -> TextMetrics {
         self.0.measure_text(text, font)
     }
-    fn shape_text(&self, text: &str, font: &Font) -> ShapedText {
+    fn shape_text(&self, text: &str, font: &Font) -> Rc<ShapedText> {
         self.0.shape_text(text, font)
     }
     fn frame_rgba(&self) -> &[u8] {

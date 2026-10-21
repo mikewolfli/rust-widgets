@@ -4,6 +4,7 @@
 //! SVG paint backend — converts `RenderCommand`s into SVG elements.
 
 use super::convert::{color_to_rgba, point_attrs, rect_attrs};
+use crate::compat::Rc;
 use crate::compat::{format, MiniToString, String, Vec};
 use crate::core::{Color, Font, Point, Size};
 use crate::render::core::command::{BlendMode, RenderCommand};
@@ -699,7 +700,147 @@ fn base64_encode(data: &[u8]) -> String {
 
 // ─── PaintBackend implementation ─────────────────────────────────────────────
 
+impl SvgPaintBackend {
+    /// Emits the markup for one text run from **borrowed** inputs.
+    ///
+    /// [`RenderCommand::DrawText`] owns its `String` and `Font`, because a command has to be
+    /// storable. This backend turns a command into markup immediately and keeps neither, so routing
+    /// a label through the command cost two heap copies per label per frame (the text and the
+    /// font's family string) for bytes that were consumed and dropped.
+    ///
+    /// One body, two callers: the `DrawText` arm below and the [`PaintBackend::draw_text`] override,
+    /// so the borrowed entry point cannot drift from the command path.
+    fn emit_text(
+        &mut self,
+        origin: Point,
+        text: &str,
+        font: &Font,
+        color: &Color,
+        alignment: crate::core::HorizontalAlignment,
+    ) {
+        // `origin` is the glyph box's **top-left**, exactly as for the rasteriser.
+        //
+        // `HorizontalAlignment` is resolved here for the same reason it always was:
+        // `origin` is the alignment's *anchor*, and the shift is the measured advance —
+        // the same `shape_text` the rasteriser uses.
+        let shaped = self.shape_text(text, font);
+        // The same two quantities the rasteriser's `draw_text` reads: the measured glyph
+        // box height, and a floating-point pen advanced by each cluster's own advance.
+        let glyph_height = self.measure_text(text, font).height.max(1);
+        let anchor_x = match alignment {
+            crate::core::HorizontalAlignment::Left => origin.x as f32,
+            crate::core::HorizontalAlignment::Center => origin.x as f32 - shaped.advance() / 2.0,
+            crate::core::HorizontalAlignment::Right => origin.x as f32 - shaped.advance(),
+        };
+        let mut path = String::new();
+        let mut pen_x = anchor_x;
+        for cluster in shaped.clusters() {
+            let glyph_width = cluster.advance.max(1.0).round() as u32;
+            let display_char = cluster
+                .text
+                .chars()
+                .find(|ch| !is_combining_mark(*ch) && !is_variation_selector(*ch));
+            if let Some(ch) = display_char {
+                // Try the outline path first: an outline face covers ASCII (and, with
+                // `fonts-cjk`, Han and kana), while the bitmap faces cover everything the
+                // default build draws. Only one of the two ever produces geometry, so the
+                // order is a statement of preference, not a risk of double-drawing.
+                //
+                // The **bitmap fallback is taken only for `Uncovered`**, never for
+                // `ClippedAway`: a covered glyph whose ink clipped to nothing is honestly
+                // nothing, and drawing its 8x8 bitmap instead put a bitmap letter inside an
+                // otherwise vector word. The rasteriser paints the same glyph into the same
+                // cell and also writes nothing, so `ClippedAway` is the picture the pixels
+                // actually show.
+                #[cfg(any(
+                    feature = "fonts-vector-latin",
+                    feature = "fonts-complex",
+                    cjk_outline_face
+                ))]
+                let outcome =
+                    self.append_outline(&mut path, ch, pen_x, origin.y, glyph_width, glyph_height);
+                // Without an outline face there is no ink to emit, so every glyph takes the
+                // 1-bit path exactly as it always did.
+                #[cfg(not(any(
+                    feature = "fonts-vector-latin",
+                    feature = "fonts-complex",
+                    cjk_outline_face
+                )))]
+                let outcome = OutlineOutcome::Uncovered;
+                if outcome == OutlineOutcome::Uncovered {
+                    self.append_bitmap_rects(
+                        &mut path,
+                        ch,
+                        pen_x,
+                        origin.y,
+                        glyph_width,
+                        glyph_height,
+                    );
+                }
+            }
+            pen_x += cluster.advance;
+        }
+        if path.is_empty() {
+            // Nothing to paint — an empty string, or one whose glyphs are all blank.
+            // An empty `<path d="">` would be a drawing element that draws nothing,
+            // which the snapshot gate reads as a defect.
+            return;
+        }
+        // `fill-rule` and the `data-text` provenance tag are emitted only when an outline
+        // face is in the build.
+        //
+        // The 1-bit path needs neither: axis-aligned, non-overlapping rectangles are the
+        // same picture under either fill rule, and a run built from `h`/`v` is already
+        // identifiable by its command letters alone (see `widget::svg::is_text_path`).
+        // Adding either attribute unconditionally would rewrite all 377 committed snapshots
+        // for no behavioural change, which is exactly the kind of silent churn the
+        // byte-identical requirement exists to prevent.
+        //
+        // # Why the tag exists at all
+        //
+        // `data-text` is what lets a consumer tell a text run from a drawn shape **without
+        // guessing**. It was guessed before — "a `d` containing `L` is a picture, not text"
+        // — because the only glyph path that existed was the bitmap one, whose command set
+        // is `M`/`h`/`v`/`z`. An outline's command set is `M`/`L`/`Z` with fractional
+        // coordinates, which is *also* how a triangle or an elbow is written, so the guess
+        // became ambiguous the moment outlines were drawn: `widget::svg::text_ink_boxes`
+        // answered "no text" for every vector-rendered control, and 42 tests that assert on
+        // where a label's ink landed began to fail.
+        //
+        // A provenance tag resolves it at the source. The producer knows a run is a run;
+        // recording that fact costs 15 bytes on a path that is already hundreds, and it
+        // replaces a heuristic that cannot be made correct by adding cases.
+        #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
+        self.push_element(format!(
+            r#"<path d="{}" fill="{}" fill-rule="nonzero" data-text="1" />"#,
+            path,
+            color_to_rgba(color)
+        ));
+        #[cfg(not(any(
+            feature = "fonts-vector-latin",
+            feature = "fonts-complex",
+            cjk_outline_face
+        )))]
+        self.push_element(format!(r#"<path d="{}" fill="{}" />"#, path, color_to_rgba(color)));
+    }
+}
+
 impl PaintBackend for SvgPaintBackend {
+    /// Draws `text` straight from the caller's `&str` and `&Font`.
+    ///
+    /// The `DrawText` command owns its text and font because a command must be storable; this
+    /// backend turns it into markup immediately and keeps neither. Overriding the borrowed entry
+    /// point removes the two heap copies per label per frame that owning the command forced.
+    fn draw_text(
+        &mut self,
+        origin: Point,
+        text: &str,
+        font: &Font,
+        color: Color,
+        alignment: crate::core::HorizontalAlignment,
+    ) {
+        self.emit_text(origin, text, font, &color, alignment);
+    }
     fn begin_frame(&mut self, clear: Color) {
         self.elements.clear();
         self.clip_depth = 0;
@@ -870,126 +1011,7 @@ impl PaintBackend for SvgPaintBackend {
             // which draws tofu — a deliberate, visible degradation rather than a silently wrong
             // picture. See `snapshots/svg/README.md` and the round log for why that is the ruling.
             RenderCommand::DrawText { origin, text, font, color, alignment } => {
-                // `origin` is the glyph box's **top-left**, exactly as for the rasteriser.
-                //
-                // `HorizontalAlignment` is resolved here for the same reason it always was:
-                // `origin` is the alignment's *anchor*, and the shift is the measured advance —
-                // the same `shape_text` the rasteriser uses.
-                let shaped = self.shape_text(text, font);
-                // The same two quantities the rasteriser's `draw_text` reads: the measured glyph
-                // box height, and a floating-point pen advanced by each cluster's own advance.
-                let glyph_height = self.measure_text(text, font).height.max(1);
-                let anchor_x = match alignment {
-                    crate::core::HorizontalAlignment::Left => origin.x as f32,
-                    crate::core::HorizontalAlignment::Center => {
-                        origin.x as f32 - shaped.advance() / 2.0
-                    }
-                    crate::core::HorizontalAlignment::Right => origin.x as f32 - shaped.advance(),
-                };
-                let mut path = String::new();
-                let mut pen_x = anchor_x;
-                for cluster in shaped.clusters() {
-                    let glyph_width = cluster.advance.max(1.0).round() as u32;
-                    let display_char = cluster
-                        .text
-                        .chars()
-                        .find(|ch| !is_combining_mark(*ch) && !is_variation_selector(*ch));
-                    if let Some(ch) = display_char {
-                        // Try the outline path first: an outline face covers ASCII (and, with
-                        // `fonts-cjk`, Han and kana), while the bitmap faces cover everything the
-                        // default build draws. Only one of the two ever produces geometry, so the
-                        // order is a statement of preference, not a risk of double-drawing.
-                        //
-                        // The **bitmap fallback is taken only for `Uncovered`**, never for
-                        // `ClippedAway`: a covered glyph whose ink clipped to nothing is honestly
-                        // nothing, and drawing its 8x8 bitmap instead put a bitmap letter inside an
-                        // otherwise vector word. The rasteriser paints the same glyph into the same
-                        // cell and also writes nothing, so `ClippedAway` is the picture the pixels
-                        // actually show.
-                        #[cfg(any(
-                            feature = "fonts-vector-latin",
-                            feature = "fonts-complex",
-                            cjk_outline_face
-                        ))]
-                        let outcome = self.append_outline(
-                            &mut path,
-                            ch,
-                            pen_x,
-                            origin.y,
-                            glyph_width,
-                            glyph_height,
-                        );
-                        // Without an outline face there is no ink to emit, so every glyph takes the
-                        // 1-bit path exactly as it always did.
-                        #[cfg(not(any(
-                            feature = "fonts-vector-latin",
-                            feature = "fonts-complex",
-                            cjk_outline_face
-                        )))]
-                        let outcome = OutlineOutcome::Uncovered;
-                        if outcome == OutlineOutcome::Uncovered {
-                            self.append_bitmap_rects(
-                                &mut path,
-                                ch,
-                                pen_x,
-                                origin.y,
-                                glyph_width,
-                                glyph_height,
-                            );
-                        }
-                    }
-                    pen_x += cluster.advance;
-                }
-                if path.is_empty() {
-                    // Nothing to paint — an empty string, or one whose glyphs are all blank.
-                    // An empty `<path d="">` would be a drawing element that draws nothing,
-                    // which the snapshot gate reads as a defect.
-                    return;
-                }
-                // `fill-rule` and the `data-text` provenance tag are emitted only when an outline
-                // face is in the build.
-                //
-                // The 1-bit path needs neither: axis-aligned, non-overlapping rectangles are the
-                // same picture under either fill rule, and a run built from `h`/`v` is already
-                // identifiable by its command letters alone (see `widget::svg::is_text_path`).
-                // Adding either attribute unconditionally would rewrite all 377 committed snapshots
-                // for no behavioural change, which is exactly the kind of silent churn the
-                // byte-identical requirement exists to prevent.
-                //
-                // # Why the tag exists at all
-                //
-                // `data-text` is what lets a consumer tell a text run from a drawn shape **without
-                // guessing**. It was guessed before — "a `d` containing `L` is a picture, not text"
-                // — because the only glyph path that existed was the bitmap one, whose command set
-                // is `M`/`h`/`v`/`z`. An outline's command set is `M`/`L`/`Z` with fractional
-                // coordinates, which is *also* how a triangle or an elbow is written, so the guess
-                // became ambiguous the moment outlines were drawn: `widget::svg::text_ink_boxes`
-                // answered "no text" for every vector-rendered control, and 42 tests that assert on
-                // where a label's ink landed began to fail.
-                //
-                // A provenance tag resolves it at the source. The producer knows a run is a run;
-                // recording that fact costs 15 bytes on a path that is already hundreds, and it
-                // replaces a heuristic that cannot be made correct by adding cases.
-                #[cfg(any(
-                    feature = "fonts-vector-latin",
-                    feature = "fonts-complex",
-                    cjk_outline_face
-                ))]
-                self.push_element(format!(
-                    r#"<path d="{}" fill="{}" fill-rule="nonzero" data-text="1" />"#,
-                    path,
-                    color_to_rgba(color)
-                ));
-                #[cfg(not(any(
-                    feature = "fonts-vector-latin",
-                    feature = "fonts-complex",
-                    cjk_outline_face
-                )))]
-                self.push_element(format!(
-                    r#"<path d="{}" fill="{}" />"#,
-                    path,
-                    color_to_rgba(color)
-                ));
+                self.emit_text(*origin, text, font, color, *alignment);
             }
 
             // ── Image ──────────────────────────────────────────────────
@@ -1343,12 +1365,12 @@ impl PaintBackend for SvgPaintBackend {
         TextMetrics { width, ..TextMetrics::for_font(font, scale) }
     }
 
-    fn shape_text(&self, text: &str, font: &Font) -> ShapedText {
+    fn shape_text(&self, text: &str, font: &Font) -> Rc<ShapedText> {
         // One run of clusters in visual order, from the text layer's single derivation — the same
         // call the software surface makes, so the vector and raster backends wrap and position
         // text identically (principle #51: one derivation, not two copies that must be kept in
         // step). Reordering for a right-to-left line is applied there, once, for both.
-        crate::render::text::shape_line(text, font, self.dpi_scale)
+        Rc::new(crate::render::text::shape_line(text, font, self.dpi_scale))
     }
 
     /// The SVG backend produces vector markup, not a raster surface, so it has no

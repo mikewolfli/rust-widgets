@@ -407,7 +407,7 @@ pub fn register(widget: Box<dyn Widget>) -> Option<ObjectId> {
     // Join the tab order if the control says it is focusable. Asked of the widget
     // itself (see `Widget::is_focusable`) rather than of a table of kinds, so a
     // control the library has never heard of participates by answering `true`.
-    let focusable = with_widget(id, |widget| widget.is_focusable()).unwrap_or(false);
+    let focusable = read_widget(id, |widget| widget.is_focusable()).unwrap_or(false);
     if focusable {
         register_focusable(id);
     }
@@ -507,7 +507,7 @@ pub fn register_with_id(
             map.borrow_mut().insert(own_id, declared_id);
         });
     }
-    let focusable = with_widget(declared_id, |widget| widget.is_focusable()).unwrap_or(false);
+    let focusable = read_widget(declared_id, |widget| widget.is_focusable()).unwrap_or(false);
     if focusable {
         register_focusable(declared_id);
     }
@@ -616,7 +616,7 @@ pub fn has_focus(id: ObjectId) -> bool {
 /// tab order (so the user can move past it) but must not *receive* focus, which is why enabled
 /// state is checked here rather than in [`Widget::is_focusable`].
 pub fn widget_wants_keyboard_focus(id: ObjectId) -> bool {
-    with_widget(id, |widget| widget.is_enabled() && widget.is_focusable()).unwrap_or(false)
+    read_widget(id, |widget| widget.is_enabled() && widget.is_focusable()).unwrap_or(false)
 }
 
 /// Whether `id` is a text-entry control that should own the input method's key stream.
@@ -626,7 +626,7 @@ pub fn widget_wants_keyboard_focus(id: ObjectId) -> bool {
 /// the widget's kind, so every backend asks the same question and a new entry control opts in
 /// once (`WidgetKind::accepts_ime_input`).
 pub fn accepts_ime_input(id: ObjectId) -> bool {
-    with_widget(id, |widget| widget.is_enabled() && widget.kind().accepts_ime_input())
+    read_widget(id, |widget| widget.is_enabled() && widget.kind().accepts_ime_input())
         .unwrap_or(false)
 }
 
@@ -927,7 +927,7 @@ fn with_child_ids<R>(widget_id: ObjectId, f: impl FnOnce(&[ObjectId]) -> R) -> O
 /// window it is containment in client coordinates — which is the space `point` is documented to be
 /// in above.
 pub fn widget_at(root: ObjectId, point: Point) -> Option<ObjectId> {
-    let bounds = with_widget(root, |widget| widget.geometry())?;
+    let bounds = read_widget(root, |widget| widget.geometry())?;
     // A **window** root's geometry is written in the operating system's space (the position it was
     // asked to open at), while its children are written in client coordinates. `frame_origin` is
     // the one predicate that knows that difference, so the root bound is applied in the same space
@@ -967,7 +967,7 @@ pub fn widget_at(root: ObjectId, point: Point) -> Option<ObjectId> {
             let mut deepest = None;
             let mut open_popup = None;
             for child in children.iter().rev().copied() {
-                let (visible, overlay, accepts) = with_widget(child, |widget| {
+                let (visible, overlay, accepts) = read_widget(child, |widget| {
                     (widget.is_visible(), widget.has_open_popup(), widget.contains_point(point))
                 })
                 .unwrap_or((false, false, false));
@@ -999,7 +999,7 @@ pub fn widget_at(root: ObjectId, point: Point) -> Option<ObjectId> {
 /// hit rule — the touch-target expansion in `contains_point`, or a shape narrower
 /// than the bounding box. Returns `false` for an unmounted id.
 fn widget_accepts_point(id: ObjectId, point: Point) -> bool {
-    with_widget(id, |widget| widget.contains_point(point)).unwrap_or(false)
+    read_widget(id, |widget| widget.contains_point(point)).unwrap_or(false)
 }
 
 /// Delivers `event` to whatever widget is under `point`.
@@ -1035,7 +1035,7 @@ pub fn dispatch_pointer_event(root: ObjectId, event: &Event, point: Point) -> bo
             // be routed normally, not swallowed by this one — and the check also keeps two
             // windows in one process (or two tests on one thread) from interfering.
             if top_level_window_of(popup) == Some(root) {
-                let still_open = with_widget(popup, |widget| widget.is_visible()).unwrap_or(false);
+                let still_open = read_widget(popup, |widget| widget.is_visible()).unwrap_or(false);
                 if !still_open {
                     // The popup closed itself (an item was chosen, Escape, a programmatic
                     // close).
@@ -1047,7 +1047,7 @@ pub fn dispatch_pointer_event(root: ObjectId, event: &Event, point: Point) -> bo
                     clear_popup_grab();
                     return handled;
                 }
-            } else if !with_widget(popup, |widget| widget.is_visible()).unwrap_or(false) {
+            } else if !read_widget(popup, |widget| widget.is_visible()).unwrap_or(false) {
                 clear_popup_grab();
             }
         }
@@ -1151,12 +1151,12 @@ fn is_descendant_of(ancestor: ObjectId, descendant: ObjectId) -> bool {
     if ancestor == descendant {
         return true;
     }
-    let mut cursor = with_widget(descendant, |widget| widget.parent());
+    let mut cursor = read_widget(descendant, |widget| widget.parent());
     while let Some(current) = cursor.flatten() {
         if current == ancestor {
             return true;
         }
-        cursor = with_widget(current, |widget| widget.parent());
+        cursor = read_widget(current, |widget| widget.parent());
     }
     false
 }
@@ -2456,6 +2456,36 @@ pub fn with_widget<R>(id: ObjectId, f: impl FnOnce(&dyn Widget) -> R) -> Option<
     Some(result)
 }
 
+/// Runs `f` with shared access to a mounted widget **without detaching it from the registry**.
+///
+/// [`with_widget`] has to detach, because its `f` may emit a signal whose callback mounts,
+/// unmounts or writes a control — operations that need the registry to itself. A pure read needs
+/// none of that, and the detachment costs a `remove`, an `insert` and two bookkeeping guards:
+/// roughly ten hash operations to answer what one lookup already holds.
+///
+/// This is the read-only counterpart the hot paths use: hit-testing every child of a node,
+/// walking `parent()` links per modal layer, and copying a root's child list. They were doing the
+/// detach/renter dance for a `Rect`, an `ObjectId` or a `bool`.
+///
+/// # The contract `f` must keep
+///
+/// `f` may only **read**. It must not mount, unmount, mutate or emit: a signal whose callback did
+/// any of those would take a mutable borrow of the registry while this call holds a shared one.
+/// Nested [`read_widget`] calls are fine (shared borrows compose), and so are ordinary getters.
+/// When in doubt, use [`with_widget`] — it is the general form and pays for the freedom.
+///
+/// A control currently lent out for mutation answers `None`; one lent out for reading resolves
+/// through the loan. Those are the same visibility rules [`with_widget`] obeys.
+pub fn read_widget<R>(id: ObjectId, f: impl FnOnce(&dyn Widget) -> R) -> Option<R> {
+    if lent_present(id) {
+        return lent_out_widget(id, f);
+    }
+    MOUNTED
+        .try_with(|map| map.borrow().get(&id).map(|entry| f(entry.widget.as_ref())))
+        .ok()
+        .flatten()
+}
+
 /// Whether `id` currently has a lent-out entry (read or mutating).
 fn lent_present(id: ObjectId) -> bool {
     LENT_OUT.with(|map| map.borrow().contains_key(&id))
@@ -3072,11 +3102,11 @@ fn bring_popup_to_front(popup: ObjectId) -> bool {
     if window == popup {
         return false;
     }
-    let Some(parent) = with_widget(popup, |widget| widget.parent()) else {
+    let Some(parent) = read_widget(popup, |widget| widget.parent()) else {
         return false;
     };
     let already_last = parent == Some(window)
-        && with_widget(window, |widget| widget.children().last().copied() == Some(popup))
+        && read_widget(window, |widget| widget.children().last().copied() == Some(popup))
             .unwrap_or(false);
     if already_last {
         return true;
@@ -3177,7 +3207,7 @@ pub fn top_level_window_of(id: ObjectId) -> Option<ObjectId> {
     const MAX_DEPTH: usize = 64;
     let mut current = id;
     for _ in 0..MAX_DEPTH {
-        let (kind, parent) = with_widget(current, |widget| (widget.kind(), widget.parent()))?;
+        let (kind, parent) = read_widget(current, |widget| (widget.kind(), widget.parent()))?;
         if kind == crate::widget::WidgetKind::Window {
             return Some(current);
         }
@@ -3465,7 +3495,7 @@ pub fn should_track_damage(id: ObjectId) -> bool {
     // cannot narrow anything. Counted through the widget rather than the tree so a
     // caller need not build one.
     let has_children =
-        with_widget(id, |widget| !widget.base().children().is_empty()).unwrap_or(false);
+        read_widget(id, |widget| !widget.base().children().is_empty()).unwrap_or(false);
     has_children
 }
 
@@ -3487,7 +3517,7 @@ pub const AUTO_REPAINT_MIN_PIXELS: u64 = 250_000;
 /// a control would be judged "silent" for the rest of its life. Asking the widget
 /// answers the same question the request actually made.
 fn has_ever_requested_redraw(id: ObjectId) -> bool {
-    with_widget(id, |widget| widget.has_ever_requested_redraw()).unwrap_or(false)
+    read_widget(id, |widget| widget.has_ever_requested_redraw()).unwrap_or(false)
 }
 
 /// Enables damage tracking for `id` **if the library judges it worthwhile**, returning
@@ -3966,6 +3996,21 @@ pub fn render_frame_tree_cached(
     size: Size,
     clear: crate::core::Color,
 ) -> Option<Vec<u8>> {
+    let shared = render_frame_tree_cached_shared(id, size, clear)?;
+    Some(shared.as_ref().clone())
+}
+
+/// [`render_frame_tree_cached`] returning the frame the cache holds, **not** a copy of it.
+///
+/// The unchanged-epoch path is the reason this exists: a 4K frame is about 33 MB, and the owned
+/// form had to duplicate it to hand the caller a buffer whose pixels nobody had touched. The cache
+/// already stores an `Rc<Vec<u8>>`, so this form answers a refcount increment. A caller that
+/// presents the frame (or reads it as `&[u8]`) needs nothing more.
+pub fn render_frame_tree_cached_shared(
+    id: ObjectId,
+    size: Size,
+    clear: crate::core::Color,
+) -> Option<Rc<Vec<u8>>> {
     if size.width == 0 || size.height == 0 {
         return None;
     }
@@ -3980,15 +4025,14 @@ pub fn render_frame_tree_cached(
         .ok()
         .flatten();
     if let Some(previous) = previous {
-        return Some(previous.as_ref().clone());
+        return Some(previous);
     }
 
-    let frame = render_frame_tree(id, size, clear)?;
-    let shared = Rc::new(frame);
+    let shared = Rc::new(render_frame_tree(id, size, clear)?);
     let _ = LAST_TREE_FRAME.try_with(|map| {
         map.borrow_mut().insert(id, (size, Rc::clone(&shared), epoch));
     });
-    Some(shared.as_ref().clone())
+    Some(shared)
 }
 
 /// Renders one frame of a mounted widget, reusing the previous one when the
@@ -4012,6 +4056,24 @@ pub fn render_frame_tree_cached(
 /// rectangle, so the saving is in what is *drawn*, not in what is returned. Returns
 /// `None` when the widget is unmounted, has no `Draw` impl, or the size is empty.
 pub fn render_frame_cached(id: ObjectId, size: Size, clear: crate::core::Color) -> Option<Vec<u8>> {
+    let shared = render_frame_cached_shared(id, size, clear)?;
+    // The owned form is the one that pays: this is the single copy that becomes the caller's
+    // frame. `render_frame_cached_shared` makes none at all.
+    note_frame_cache_copy();
+    Some(shared.as_ref().clone())
+}
+
+/// [`render_frame_cached`] returning the cached frame itself, so "nothing changed" costs an
+/// `Rc` increment rather than a full-buffer copy.
+///
+/// The owned form has to hand back a `Vec<u8>`; for a 4K surface that is ~33 MB duplicated to
+/// return pixels the cache already holds. A caller that presents the frame, or reads it as
+/// `&[u8]`, can take this form and never copy.
+pub fn render_frame_cached_shared(
+    id: ObjectId,
+    size: Size,
+    clear: crate::core::Color,
+) -> Option<Rc<Vec<u8>>> {
     if size.width == 0 || size.height == 0 {
         return None;
     }
@@ -4048,22 +4110,20 @@ pub fn render_frame_cached(id: ObjectId, size: Size, clear: crate::core::Color) 
                     state.large_damage_run = 0;
                 }
             });
-            note_frame_cache_copy(); // the single copy that becomes the caller's frame
-            return Some(previous.as_ref().clone());
+            return Some(Rc::clone(previous));
         }
     }
 
     let frame =
         render_frame_incremental(id, size, clear, previous.as_deref().map(|rc| rc.as_slice()))?;
 
-    // The freshly produced frame must be both cached and returned; wrapping it in an `Rc` for the
-    // cache shares the buffer and costs the one unavoidable clone that hands an owned buffer to
-    // the caller. (D09-RENDER-04)
-    note_frame_cache_copy();
+    // The freshly produced frame is moved into the `Rc` the cache holds — no pixel copy — and the
+    // same handle is returned, so the painted path does not duplicate it either.
+    let shared = Rc::new(frame);
     let _ = LAST_FRAME.try_with(|map| {
-        map.borrow_mut().insert(id, (size, Rc::new(frame.clone())));
+        map.borrow_mut().insert(id, (size, Rc::clone(&shared)));
     });
-    Some(frame)
+    Some(shared)
 }
 
 /// Forgets the cached frame for `id`.
@@ -4168,7 +4228,7 @@ fn ordered_root_children(children: Vec<ObjectId>) -> Vec<ObjectId> {
     let mut ordinary = Vec::with_capacity(children.len());
     let mut overlays = Vec::new();
     for child in children {
-        let overlay = with_widget(child, |widget| widget.is_visible() && widget.has_open_popup())
+        let overlay = read_widget(child, |widget| widget.is_visible() && widget.has_open_popup())
             .unwrap_or(false);
         if overlay {
             overlays.push(child);
@@ -4348,7 +4408,7 @@ fn intersect_clip(outer: Option<Rect>, inner: Option<Rect>) -> Option<Rect> {
 ///
 /// Read through [`with_widget`] so a caller sees the same widget the traversal will.
 fn direct_children_of(id: ObjectId) -> Vec<ObjectId> {
-    with_widget(id, |widget| widget.base().children().to_vec()).unwrap_or_default()
+    read_widget(id, |widget| widget.base().children().to_vec()).unwrap_or_default()
 }
 
 /// The direct children of `id`, as a public read-only view of the mounted tree.
@@ -4439,8 +4499,27 @@ mod tests {
     /// because a transition that has not settled is exactly the case a host has to keep
     /// scheduling for. A driver that returned `false` here would paint one step of the
     /// animation and then freeze, which is the failure the driver exists to prevent.
+    /// Serialises the tests that drive the **process-wide** frame loop.
+    ///
+    /// `drive_frame` drains one shared event queue and advances every mounted control, so two of
+    /// these tests running concurrently can consume each other's events. `drive_frame_drains_input_before_advancing`
+    /// asserts that *its* injected trigger reached its handler during *its* frame, and a sibling's
+    /// frame can dequeue that trigger first — the handler then runs on the other thread, whose
+    /// thread-local observation flag is not the one the test reads. That is exactly how it flaked
+    /// under the full suite while passing in isolation.
+    ///
+    /// A poison is ignored rather than propagated: the poisoning test has already failed, and the
+    /// remaining tests must still be able to take the lock and report honestly.
+    static DRIVE_FRAME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Takes [`DRIVE_FRAME_LOCK`]. Hold the guard for the whole test.
+    fn serialise_drive_frame() -> std::sync::MutexGuard<'static, ()> {
+        DRIVE_FRAME_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn drive_frame_ticks_a_hovered_control_and_asks_for_another_frame() {
+        let _serial = serialise_drive_frame();
         let id = register(Box::new(crate::widget::Button::new(
             "ok".to_string(),
             crate::core::Rect::new(0, 0, 80, 32),
@@ -4469,6 +4548,7 @@ mod tests {
     /// idle window pays for a sweep and nothing else.
     #[test]
     fn drive_frame_on_a_resting_tree_submits_nothing() {
+        let _serial = serialise_drive_frame();
         let id = register(Box::new(crate::widget::Button::new(
             "ok".to_string(),
             crate::core::Rect::new(0, 0, 80, 32),
@@ -4532,6 +4612,7 @@ mod tests {
     /// through a queue that other tests own shares of.
     #[test]
     fn drive_frame_drains_input_before_advancing() {
+        let _serial = serialise_drive_frame();
         let id = register(Box::new(crate::widget::Button::new(
             "ok".to_string(),
             crate::core::Rect::new(0, 0, 80, 32),
@@ -4620,6 +4701,7 @@ mod tests {
     /// defect without needing a counting double.
     #[test]
     fn drive_frame_advances_each_control_once_per_frame() {
+        let _serial = serialise_drive_frame();
         use crate::widget::display_widgets::switch::Switch;
 
         let mut switch = Switch::new(Rect::new(0, 0, 60, 30));
@@ -4845,6 +4927,7 @@ mod tests {
     /// `false`, which would make this test measure the backend rather than the driver.
     #[test]
     fn drive_frame_accounts_for_repaints_and_clears_the_count() {
+        let _serial = serialise_drive_frame();
         use crate::platform::with_recorded_invalidations;
         use crate::platform::RecordingInvalidations;
 
@@ -5642,6 +5725,30 @@ mod tests {
         unregister(id);
     }
 
+    /// The shared form answers the cache's own handle, so an unchanged frame is not copied.
+    ///
+    /// This is the difference the owned form cannot offer: it must return a `Vec<u8>`, which for
+    /// a 4K surface is tens of megabytes duplicated per repaint even though no pixel changed. The
+    /// pointer comparison is the evidence — equal pointers mean the two calls handed out the same
+    /// allocation, and the copy counter says the same thing in numbers.
+    #[test]
+    fn the_shared_frame_is_the_cached_allocation_when_nothing_changed() {
+        let size = Size::new(64, 48);
+        let id = register(sample_editor("fn main() {}")).expect("registry");
+        // `Full` is the default and bypasses every cache by design; the fast path belongs to the
+        // damage-tracked modes.
+        assert!(set_repaint_mode(id, RepaintMode::Dirty));
+
+        let first = render_frame_cached_shared(id, size, Color::WHITE).expect("first frame");
+        let _ = take_frame_cache_copies();
+        let second = render_frame_cached_shared(id, size, Color::WHITE).expect("second frame");
+
+        assert!(Rc::ptr_eq(&first, &second), "an undamaged frame must be the same buffer");
+        assert_eq!(take_frame_cache_copies(), 0, "the shared form must not copy the frame at all");
+
+        unregister(id);
+    }
+
     /// The cached no-damage fast path must keep `Adaptive`'s reset behaviour. (D09-RENDER-04)
     ///
     /// # Why this is a regression test and not just a copy count
@@ -6077,6 +6184,39 @@ mod tests {
     #[test]
     fn with_widget_mut_on_missing_id_is_none() {
         assert!(with_widget_mut(0x1234_5678, |_| ()).is_none());
+    }
+
+    /// `read_widget` answers a mounted control without detaching it.
+    ///
+    /// The value coming back is not the whole point: the registry must be untouched, so a
+    /// **nested** read has to resolve as well (shared borrows compose), and the control has to
+    /// still be mounted afterwards. Detaching and reinserting — what `with_widget` does — would
+    /// also return the value, so only these two assertions distinguish the two functions.
+    #[test]
+    fn read_widget_answers_and_leaves_the_registry_alone() {
+        let id = register(sample_editor("fn main() {}")).expect("registry");
+        let base_id = read_widget(id, |widget| widget.base().id()).expect("mounted");
+
+        // The outer read holds the registry borrow; the inner one must still resolve, and it
+        // must see the widget's own state rather than a detached copy.
+        let nested = read_widget(id, |_| read_widget(id, |inner| inner.base().id())).flatten();
+        assert_eq!(nested, Some(base_id), "a nested read must resolve through the same borrow");
+        assert_eq!(
+            read_widget(id, |widget| widget.base().id()),
+            Some(base_id),
+            "the entry must never have left the registry"
+        );
+        unregister(id);
+    }
+
+    /// A control lent out for mutation is not readable, for the same reason `with_widget` refuses
+    /// it: its state is being rewritten through an exclusive borrow.
+    #[test]
+    fn read_widget_refuses_a_control_that_is_being_mutated() {
+        let id = register(sample_editor("x")).expect("registry");
+        let inside = with_widget_mut(id, |_| read_widget(id, |_| 1));
+        assert_eq!(inside, Some(None), "a mutating loan must not be readable");
+        unregister(id);
     }
 
     #[test]
