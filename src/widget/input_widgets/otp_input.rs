@@ -633,7 +633,7 @@ impl Draw for OtpInput {
             return;
         }
 
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let enabled = self.base.is_enabled();
         let text_color = style.text_color.unwrap_or(Color::BLACK);
         // A filled box is drawn in the theme's border colour so an entered

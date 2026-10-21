@@ -582,11 +582,11 @@ impl Draw for FileDialog {
         }
         // The **frame**, not the control's rectangle: see `frame_rect`.
         let rect = self.frame_rect();
-        let style = self.style().clone();
+        let style = self.style();
         // The **effective font** — the resolved theme/caller font — for the title, placeholder,
         // labels, file name and buttons, so the dialog honours the theme body font and the user's
         // text scale (D09-STYLE-01).
-        let font = effective_font(&style);
+        let font = effective_font(style);
 
         // Chrome colours resolve explicit style first, then the theme's resolved style
         // for this control, and only then fall back to a literal. The style step alone

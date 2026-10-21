@@ -386,6 +386,15 @@ impl Draw for BarChart {
         let height_range = plot_area.height as f64;
         let value_span = (y_max - y_min).max(f64::EPSILON);
 
+        // # Why the label's face and its line height are resolved once
+        //
+        // Both are properties of the control, not of a bar, yet they sat inside the per-bar loop: a
+        // 40-bar chart resolved the theme font 40 times and measured `"M"` 40 times, per frame. The
+        // label text itself still has to be formatted per bar (each bar shows its own value), but
+        // the appearance it is drawn with does not.
+        let label_font = role_font(self.base.style(), LABEL_FONT_SIZE);
+        let label_line_height = context.measure_text("M", &label_font).height.max(1) as i32;
+
         for (i, bar) in self.bars.iter().enumerate() {
             let bar_color = bar.color.unwrap_or(self.bar_color);
             let effective_color = if is_enabled { bar_color } else { disabled_color };
@@ -413,17 +422,13 @@ impl Draw for BarChart {
             if self.show_values && is_enabled {
                 let label = format!("{:.1}", bar.value);
                 let label_x = bar_x.max(plot_area.x) + (bar_width as i32 / 2).min(12);
-                // The chart's label face is the **effective font** at the value role's size, so the
-                // theme family and the user's text scale reach the chart chrome (D09-STYLE-01).
-                let font = role_font(self.base.style(), LABEL_FONT_SIZE);
-                let line_height = context.measure_text("M", &font).height.max(1) as i32;
                 let label_band = Rect {
                     x: label_x,
-                    y: (bar_y - LABEL_GAP - line_height).max(plot_area.y),
+                    y: (bar_y - LABEL_GAP - label_line_height).max(plot_area.y),
                     width: bar_width as u32,
-                    height: line_height as u32,
+                    height: label_line_height as u32,
                 };
-                draw_label(context, &label, label_band, &font);
+                draw_label(context, &label, label_band, &label_font);
             }
 
             // ── Category label below the axis ──

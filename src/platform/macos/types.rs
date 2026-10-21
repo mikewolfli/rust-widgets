@@ -5,7 +5,7 @@
 
 #![allow(deprecated)] // Cocoa 0.24 fallback; remove when objc2 backend fully replaces cocoa
 
-use crate::compat::{HashMap, Mutex, OnceLock, String, Vec};
+use crate::compat::{HashMap, Mutex, String};
 use crate::core::ObjectId;
 use crate::platform::accessibility::macos::MacOSAccessibilityBridge;
 use crate::platform::state::BackendState;
@@ -52,12 +52,6 @@ pub struct MacOSPlatform {
     /// Accelerator display text per menu item, so a host can confirm which chord
     /// was actually registered (see `Platform::menu_item_shortcut`).
     pub(crate) menu_item_shortcuts: Mutex<HashMap<ObjectId, String>>,
-}
-
-static MENU_EVENTS: OnceLock<Mutex<Vec<u64>>> = OnceLock::new();
-pub(crate) fn menu_events() -> &'static Mutex<Vec<u64>> {
-    // Shared menu-trigger queue used by Cocoa selector bridge.
-    MENU_EVENTS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
 /// Translates an AppKit `NSEvent` key event into `(key_code, widget_modifiers)`.

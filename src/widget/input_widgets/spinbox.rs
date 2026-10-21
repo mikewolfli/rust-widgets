@@ -3,7 +3,7 @@
 
 //! Spin box widget for numeric input.
 //!
-//! # The value box yields to the step column, and the column is assembled
+//! # The value box yields to the step column
 //!
 //! BLUE22 §F.2.2 puts this control first in the §B.8 migration queue, and the reason is the one
 //! insight the whole composite section rests on: the sibling-column relation reads
@@ -11,27 +11,20 @@
 //! the sibling column's width**. The value's box is therefore not "the field minus a constant"
 //! — it is whatever the column leaves.
 //!
-//! That relation is now expressed by assembling the row: a value column that declares
-//! [`LayoutParams::filled`] and a step column of two buttons at their own width, handed to a
-//! [`FlexLayout`]. The value column takes the remainder because it *asked to fill*, and the
-//! column pushes it narrower when the column grows. Nothing here computes an `x`.
+//! That relation is stated once in [`SpinBox::row_widths`]: the value takes the remainder, so the
+//! column pushes it narrower when the column grows, and no second placement can disagree about
+//! which edge the column sits on.
 //!
 //! The public accessors ([`SpinBox::editable_rect`], [`SpinBox::up_button`],
-//! [`SpinBox::down_button`]) keep their names and their meaning: they report the layout's answer
-//! rather than a second derivation of it, so the paint path, the hit test and the tests all read
+//! [`SpinBox::down_button`]) keep their names and their meaning: they report the derivation's
+//! answer rather than a second copy of it, so the paint path, the hit test and the tests all read
 //! one geometry.
 use crate::compat::{format, String, ToString};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-#[cfg(full_widgets)]
-use crate::layout::{
-    AlignItems, FlexDirection, FlexLayout, FlexWrap, JustifyContent, LayoutParams,
-};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::style::EdgeOffsets;
-#[cfg(full_widgets)]
-use crate::widget::composite::CompositeBuilder;
 use crate::widget::decorations::{
     DecorationLayout, DecorationMetrics, DecorationSlots, DECORATION_GAP,
 };
@@ -45,8 +38,6 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::numeric::ordered_clamp_f64;
-#[cfg(full_widgets)]
-use crate::widget::WidgetFactory;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -215,121 +206,73 @@ impl SpinBox {
         )
     }
 
-    /// The value box and the step column, placed by the layout that owns the tiling.
+    /// The value box and the step column.
     ///
-    /// # Why the row is assembled rather than computed
+    /// # Why the split is one relation
     ///
-    /// This is the sibling-column relation — `leftPadding: padding + down.width` — with the
-    /// arithmetic done by the thing that owns it. The value column *asks to fill* and the step
-    /// column declares its own width, so the value's box is the remainder **by construction**: a
-    /// wider column, or a larger font on the buttons, narrows the value rather than running it
-    /// underneath, and no code here can express the overlap the comment above records.
+    /// This is the sibling-column relation — `leftPadding: padding + down.width` — stated once: the
+    /// value takes the remainder and the step column declares its own width, so a wider column, or
+    /// a larger font on the buttons, narrows the value rather than running underneath it, and no
+    /// code here can express the overlap the comment above records.
     ///
-    /// # Why the column is two children and not one
+    /// # Why the column is two boxes and not one
     ///
-    /// The column's two halves are `up` and `down`, tiled vertically — the same `VBox` relation
-    /// the hand-written `+ height / 2` used to express, now spelled as a second layout. The two
-    /// buttons are what the column's *width* is derived from (the same relation again: the width
-    /// is one button's), so they are the children that decide it.
+    /// The column's two halves are `up` and `down`, tiled vertically by
+    /// [`SpinBox::up_button`]/[`SpinBox::down_button`] from the column's own box, which is the same
+    /// `VBox` relation expressed as one halving of a rectangle. The two buttons are what the
+    /// column's *width* is derived from (the width is one button's, doubled), so they decide it.
     ///
-    /// # What the assembly is measured from
+    /// # What the split is measured from
     ///
     /// Both numbers come from the shared table ([`dimensions::SPIN_BOX_STEP_BUTTON_WIDTH`],
-    /// [`dimensions::TEXT_FIELD_MIN_HEIGHT`]), so the hint `size_hint` reports and the boxes this
+    /// [`dimensions::TEXT_FIELD_PADDING_H`]), so the hint `size_hint` reports and the boxes this
     /// method hands the paint path are two readings of one derivation.
     fn assemble_row(&self) -> (Rect, Rect) {
         let band = self.row_band();
-        let column_width = self.step_column_width();
+        let (value_width, column_width) = Self::row_widths(band.width, self.step_column_width());
         // # Why the direction is resolved to two edges, once
         //
-        // The step column sits at the **leading** edge of the band and the value fills from the
+        // The step column sits at the **trailing** edge of the band and the value fills from the
         // other side. In LTR that is the right edge; in RTL the reading order is reversed and it is
-        // the left one, so the number stays next to the buttons that change it. Both arms below are
-        // written against these two values rather than against `band.x` / `band.right()`, so the
-        // layout and the fallback cannot disagree about which edge is which.
+        // the left one, so the number stays next to the buttons that change it.
         let rtl = self.direction.is_right_to_left();
-        let column_x =
-            if rtl { band.x } else { band.x + band.width.saturating_sub(column_width) as i32 };
-        let value_x = if rtl { band.x + column_width as i32 } else { band.x };
-        // # Why the stripped profiles take the direct route
-        //
-        // `mini`/`embedded` have neither `WidgetFactory` nor `Box` under `alloc_frugal`
-        // (principle #47: `full_widgets` is "a device profile *and* an unstripped widget set"), so
-        // the assembly cannot exist there. The two-column split is one subtraction, and both arms
-        // of this function are readings of the *same* two numbers (`column_width` and the band), so
-        // the fallback is not a second derivation — it is the same relation written the only way
-        // that profile can express it.
-        #[cfg(not(full_widgets))]
-        {
-            (
-                Rect::new(value_x, band.y, band.width.saturating_sub(column_width), band.height),
-                Rect::new(column_x, band.y, column_width, band.height),
-            )
-        }
-        #[cfg(full_widgets)]
-        {
-            let factory = WidgetFactory::new_with_defaults();
-            // The row reads right-to-left when the field does, which is what puts the *first* child
-            // (the value) on the right and the step column on the left without either child knowing
-            // the direction. Reversing the children's order instead would have made the value the
-            // second child and every index below depend on the direction — the kind of two-place
-            // agreement that the comment this replaces records as the cause of the value running
-            // under the buttons.
-            let mut row = CompositeBuilder::new(
-                Box::new(FlexLayout::with_params(
-                    if rtl { FlexDirection::RowReverse } else { FlexDirection::Row },
-                    FlexWrap::NoWrap,
-                    JustifyContent::FlexStart,
-                    AlignItems::Stretch,
-                    0,
-                    0,
-                )),
-                EdgeOffsets::all(0),
-                Size::new(0, 0),
-            );
-            // The value column: it fills whatever the step column leaves. Its own floor is the
-            // field's padding, so a band narrower than the step column collapses it to nothing rather
-            // than giving it a negative width.
-            let value = row.add_sized(
-                &factory,
-                "label",
-                "",
-                Size::new(dimensions::TEXT_FIELD_PADDING_H, band.height),
-                LayoutParams::filled(),
-            );
-            debug_assert!(value.is_some(), "the value column is a core control");
-            // One column of two stacked buttons. Its height is the band's, so the layout has nothing
-            // to resolve on the cross axis: the column is as tall as the field it belongs to,
-            // whatever the field's own height turns out to be.
-            let column = row.add_sized(
-                &factory,
-                "label",
-                "",
-                Size::new(column_width, band.height),
-                LayoutParams::new(),
-            );
-            debug_assert!(column.is_some(), "the step column is a core control");
+        let (column_x, value_x) = if rtl {
+            (band.x, band.x + column_width as i32)
+        } else {
+            (band.x + value_width as i32, band.x)
+        };
+        (
+            Rect::new(value_x, band.y, value_width, band.height),
+            Rect::new(column_x, band.y, column_width, band.height),
+        )
+    }
 
-            let mut placed: Vec<Rect> = Vec::with_capacity(2);
-            row.arrange(band, &mut |_, rect| placed.push(rect));
-            match (placed.first(), placed.get(1)) {
-                (Some(value), Some(column)) => (*value, *column),
-                // `debug_assert!` above makes this unreachable in a debug build; the fallback keeps
-                // the two boxes tiling the band instead of leaving a sub-part at a stale rectangle.
-                _ => {
-                    let column_width = column_width.min(band.width);
-                    (
-                        Rect::new(
-                            value_x,
-                            band.y,
-                            band.width.saturating_sub(column_width),
-                            band.height,
-                        ),
-                        Rect::new(column_x, band.y, column_width, band.height),
-                    )
-                }
-            }
+    /// The value's and the step column's widths for a band `band_width` wide.
+    ///
+    /// # The two cases
+    ///
+    /// * The band holds both: the column keeps the width it declares and the value takes the
+    ///   remainder. That is the `fill` value column's statement, and it is why a wider column
+    ///   narrows the value by exactly the same amount.
+    /// * The band is narrower than the column plus the value's floor (the field's own padding):
+    ///   tiling at those sizes cannot work, so the shortfall is shared **proportionally** (G-1).
+    ///   Keeping the column 40 px in a 30 px band would leave the value zero wide, and a numeric
+    ///   field with no visible number is a worse outcome than one whose steppers are compressed.
+    ///   The integer remainder goes to the leading column so the pair sums to exactly `band_width`.
+    fn row_widths(band_width: u32, column_width: u32) -> (u32, u32) {
+        let value_floor = dimensions::TEXT_FIELD_PADDING_H;
+        let total = value_floor.saturating_add(column_width);
+        if total <= band_width || total == 0 {
+            let column = column_width.min(band_width);
+            return (band_width - column, column);
         }
+        let scaled = |width: u32| -> u32 {
+            ((u64::from(width) * u64::from(band_width)) / u64::from(total)) as u32
+        };
+        let value = scaled(value_floor);
+        let column = scaled(column_width);
+        let short = band_width.saturating_sub(value.saturating_add(column));
+        (value + short, column)
     }
 
     /// The width the step column occupies: two buttons, clamped to the band.

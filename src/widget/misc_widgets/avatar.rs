@@ -85,7 +85,12 @@ impl Avatar {
     }
 
     /// Sets the initials text displayed inside the avatar.
+    ///
+    /// A same-value write is a no-op: the initials are all it paints (WDGT-12).
     pub fn set_text(&mut self, text: &str) {
+        if self.text == text {
+            return;
+        }
         self.text = text.to_string();
         self.base.request_redraw();
     }

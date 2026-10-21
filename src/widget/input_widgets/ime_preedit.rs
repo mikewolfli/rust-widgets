@@ -57,7 +57,13 @@ impl ImePreedit {
     }
 
     /// Sets the preedit composition text to display.
+    ///
+    /// A same-value write is a no-op: an IME can re-announce the composition it already has, and
+    /// repainting the same glyphs queues a frame nobody can see (WDGT-12).
     pub fn set_text(&mut self, text: &str) {
+        if self.text == text {
+            return;
+        }
         self.text = text.to_string();
         self.base.request_redraw();
     }
@@ -221,7 +227,7 @@ impl Draw for ImePreedit {
         // would sit on in a real edit host. The theme read is a separate manager lock, taken and
         // released inside the accessor, so it is not held across the draw — the global manager's
         // mutex is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("ime_preedit");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.

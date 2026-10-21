@@ -473,7 +473,7 @@ impl Draw for MultiSelectComboBox {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("multi_select_combo_box");
         let themed_ink = theme.as_ref().and_then(|t| t.text_color);
         let themed_border = theme.as_ref().and_then(|t| t.border_color);
@@ -526,7 +526,7 @@ impl Draw for MultiSelectComboBox {
         // summary yields to the indicator instead of being written at an unconstrained offset.
         // The font is the **effective** one so the theme body font and the user's text scale
         // reach the summary and the list rows (D09-STYLE-01).
-        let font = effective_font(&style);
+        let font = effective_font(style);
         let line = context.text_line(rect, font);
         let geometry = self.indicator_geometry(line.height);
         let summary = self.summary_text();

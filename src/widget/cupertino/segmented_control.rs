@@ -288,7 +288,7 @@ impl Draw for CupertinoSegmentedControl {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's
         // mutex is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("cupertino_segmented_control");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme. The control is not in the role table, so it
@@ -360,7 +360,7 @@ impl Draw for CupertinoSegmentedControl {
 
         // ── Segment labels ──
         // The label face is the **effective font** at its role size (D09-STYLE-01).
-        let font = role_font(&style, 13.0);
+        let font = role_font(style, 13.0);
         // The unselected label is de-emphasised from the control's own ink rather than being
         // a fixed grey that a dark theme would render illegible.
         let unselected = ink.blend(&track_color, 0.45);

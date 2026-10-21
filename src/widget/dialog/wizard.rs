@@ -393,7 +393,7 @@ impl Draw for WizardDialog {
         //
         // The theme reads take and release the global manager's lock internally, so no
         // guard is held across the draw (the mutex is not re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("wizard_dialog");
         // `wizard_dialog` is absent from `WidgetRole::for_kind_name`'s table, so it
         // classifies as `Surface` and resolves to `theme.colors.background` — the window's

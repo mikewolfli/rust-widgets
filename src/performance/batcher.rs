@@ -131,3 +131,106 @@ impl Default for UpdateBatcher {
         Self::new(16)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::{PaintBackend as _, RenderContext, SoftwarePaintBackend};
+
+    /// Nothing queued means nothing to flush — and no timer may start.
+    #[test]
+    fn an_empty_batch_never_flushes() {
+        let mut batcher = UpdateBatcher::new(0);
+        assert!(!batcher.should_flush(), "an empty batch is never ready");
+        assert!(batcher.is_empty());
+        assert_eq!(batcher.flush(), Vec::new(), "and flushing it yields nothing");
+        // A flush of nothing must not start the periodic timer either: the next `add`
+        // still owns the first rect's latency budget.
+        batcher.add(Rect::new(0, 0, 10, 10));
+        assert!(batcher.should_flush(), "the zero-timeout budget starts at the first rect");
+    }
+
+    /// The count threshold is what flushes a burst without waiting for a clock.
+    #[test]
+    fn ten_rects_flush_a_batch_whose_timeout_has_not_elapsed() {
+        let mut batcher = UpdateBatcher::new(60_000);
+        for i in 0..9 {
+            batcher.add(Rect::new(i * 20, 0, 10, 10));
+            assert!(!batcher.should_flush(), "{} rects is below the threshold", i + 1);
+        }
+        batcher.add(Rect::new(200, 0, 10, 10));
+        assert!(batcher.should_flush(), "ten rects flush regardless of the timeout");
+        assert_eq!(batcher.len(), 10, "`len` counts raw adds, before merging");
+    }
+
+    /// A flush merges through the shared tracker, so the batch and the damage path agree.
+    #[test]
+    fn flush_merges_through_the_dirty_region_tracker() {
+        let mut batcher = UpdateBatcher::new(60_000);
+        batcher.add(Rect::new(0, 0, 100, 100));
+        batcher.add(Rect::new(50, 50, 100, 100));
+        batcher.add(Rect::new(400, 400, 10, 10));
+
+        // What the tracker alone answers for the same three rects.
+        let mut reference = DirtyRegionTracker::new();
+        for rect in
+            [Rect::new(0, 0, 100, 100), Rect::new(50, 50, 100, 100), Rect::new(400, 400, 10, 10)]
+        {
+            reference.add(rect);
+        }
+        reference.merge();
+        let expected: Vec<Rect> = reference.regions().iter().map(|r| r.rect).collect();
+
+        let flushed = batcher.flush();
+        assert_eq!(flushed, expected, "the batch merges exactly as the damage tracker does");
+        assert_eq!(flushed.len(), 2, "the two overlapping rects became one");
+        assert!(batcher.is_empty(), "a flush drains the batch");
+        assert!(batcher.flush().is_empty(), "and a second flush is empty");
+    }
+
+    /// The flush restarts the cadence, and `clear` drops the batch without buying time.
+    #[test]
+    fn flush_and_clear_treat_their_timers_differently() {
+        let mut batcher = UpdateBatcher::new(60_000);
+        for i in 0..10 {
+            batcher.add(Rect::new(i * 20, 0, 10, 10));
+        }
+        assert!(batcher.should_flush());
+        let _ = batcher.flush();
+
+        // The last flush was just now, so a single new rect must not flush immediately.
+        batcher.add(Rect::new(0, 0, 10, 10));
+        assert!(!batcher.should_flush(), "the periodic cadence holds after a flush");
+
+        // `clear` empties without touching the flush cadence: the next add is still
+        // subject to the timer, which is what the documented contract says.
+        batcher.clear();
+        assert!(batcher.is_empty());
+        assert!(!batcher.should_flush(), "nothing pending, so nothing to flush");
+        batcher.add(Rect::new(0, 0, 10, 10));
+        assert_eq!(batcher.len(), 1, "clear only drops what was queued");
+    }
+
+    /// `flush_clipped` paints exactly once for a merged batch, and not at all when empty.
+    #[test]
+    fn flush_clipped_paints_only_what_was_queued() {
+        let frame = crate::core::Size::new(400, 300);
+        let mut backend = SoftwarePaintBackend::new(frame, 1.0);
+        backend.begin_frame(crate::core::Color::rgb(0, 0, 0));
+
+        let mut batcher = UpdateBatcher::new(0);
+        let mut paints = 0usize;
+        {
+            let mut ctx = RenderContext::new(&mut backend);
+            // Nothing queued: the renderer must not be asked to paint.
+            batcher.flush_clipped(&mut ctx, |_| paints += 1);
+            assert_eq!(paints, 0, "an empty batch paints nothing");
+
+            // Two overlapping rects are one merged region, so one clipped pass.
+            batcher.add(Rect::new(10, 10, 40, 40));
+            batcher.add(Rect::new(30, 30, 40, 40));
+            batcher.flush_clipped(&mut ctx, |_| paints += 1);
+        }
+        assert_eq!(paints, 1, "a merged batch is one clipped paint");
+    }
+}

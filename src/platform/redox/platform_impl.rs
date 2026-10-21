@@ -59,7 +59,7 @@ use std::thread;
 ///
 /// One constant, so the number handed to [`crate::drive_frame`] cannot differ from the other
 /// hosts' — a transition must take the time the theme said it should.
-const FRAME_INTERVAL_MS: u32 = 16;
+const FRAME_INTERVAL_MS: u32 = crate::platform::types::FRAME_INTERVAL_MS as u32;
 
 /// Widget-layer modifier bits (see `event::Modifiers::from_event_bits`).
 const MOD_SHIFT: u32 = 1;

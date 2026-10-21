@@ -456,7 +456,7 @@ impl Draw for ProgressBar {
         // Draw base widget
         let rect = self.geometry();
         let progress = self.progress();
-        let style = self.style().clone();
+        let style = self.style();
         // The track is the bar's *groove*: the empty run behind the fill. It used to be
         // `style.background_color` with a light-grey literal fallback, but `progress_bar`
         // classifies as `WidgetRole::Accent` and `role_colors` writes the theme's **accent**
@@ -639,7 +639,7 @@ impl Draw for ProgressBar {
             context.draw_text_line(
                 rect,
                 &text,
-                effective_font(&style),
+                effective_font(style),
                 text_color,
                 HorizontalAlignment::Center,
             );

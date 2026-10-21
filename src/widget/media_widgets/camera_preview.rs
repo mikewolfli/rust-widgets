@@ -270,7 +270,7 @@ impl Draw for CameraPreview {
         // while the ink on it is derived from that stage — which is what keeps the escape hatch
         // the old literals were reaching for (a light stage still gets legible ink) without the
         // theme being unable to move anything.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("camera_preview");
         // A host that gave the control an explicit colour wins; otherwise the dark stage default.
         let viewfinder = style

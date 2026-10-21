@@ -375,9 +375,9 @@ impl QuoteBoard {
         if self.columns.is_empty() || width <= 0 {
             return Vec::new();
         }
-        let style = self.style().clone();
-        let heading_font = role_font(&style, HEADING_FONT_SIZE);
-        let body_font = role_font(&style, BODY_FONT_SIZE);
+        let style = self.style();
+        let heading_font = role_font(style, HEADING_FONT_SIZE);
+        let body_font = role_font(style, BODY_FONT_SIZE);
         let decimals = self.inferred_decimals();
         let inset = self.cell_inset();
         let desired: Vec<i32> = self
@@ -639,7 +639,7 @@ impl Draw for QuoteBoard {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("quote_board");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
@@ -691,7 +691,7 @@ impl Draw for QuoteBoard {
         for (column, (start, width)) in self.columns.iter().zip(ranges.iter()) {
             // The header face is the **effective font** at its role size, so the theme family and the
             // user's text scale reach the board's headings (D09-STYLE-01).
-            let font = role_font(&style, HEADING_FONT_SIZE);
+            let font = role_font(style, HEADING_FONT_SIZE);
             let title = column.title();
             let label_x = heading_origin(*start, *width, title, &font);
             if heading_fits(*width, title, &font) {
@@ -748,7 +748,7 @@ impl Draw for QuoteBoard {
                             panel, ink,
                         )
                     },
-                    &role_font(&style, 12.0),
+                    &role_font(style, 12.0),
                 );
             }
             return;
@@ -788,7 +788,7 @@ impl Draw for QuoteBoard {
                 } else {
                     body_text
                 };
-                let font = role_font(&style, BODY_FONT_SIZE);
+                let font = role_font(style, BODY_FONT_SIZE);
                 // The advance model the renderer draws with, not a per-character guess: a
                 // right-aligned number whose reserved width was a guess lands short of its
                 // column edge by the difference, and the guess drifts with every glyph that

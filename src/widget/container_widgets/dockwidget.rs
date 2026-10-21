@@ -787,7 +787,7 @@ impl Draw for DockWidget {
         //
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("dock_widget");
         // `dock_widget` is absent from `WidgetRole::for_kind_name`'s table, so it classifies
         // as `Surface` and resolves to `theme.colors.background` — the window's own fill. A
@@ -853,7 +853,7 @@ impl Draw for DockWidget {
         // left of the row.
         // The **effective font** — the resolved theme/caller font — so the title honours the theme
         // body font and the user's text scale (D09-STYLE-01).
-        let title_font = effective_font(&style);
+        let title_font = effective_font(style);
         // The line box is measured in the *device* scale, so it is used at its own width; the
         // centring arithmetic below casts once, here, rather than at each of the two bands.
         let title_h = context.measure_text("M", title_font).height.max(1) as i32;

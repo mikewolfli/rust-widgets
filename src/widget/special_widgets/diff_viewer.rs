@@ -289,7 +289,7 @@ impl Draw for DiffViewer {
         // `resolved_theme_style` takes and releases the global manager's lock
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("diff_viewer");
         let background = style
             .background_color
@@ -351,14 +351,14 @@ impl Draw for DiffViewer {
         context.draw_text(
             Point::new(rect.x + 8, rect.y + 16),
             "LEFT",
-            effective_font(&style),
+            effective_font(style),
             text_color,
             HorizontalAlignment::Left,
         );
         context.draw_text(
             Point::new(mid_x + 8, rect.y + 16),
             "RIGHT",
-            effective_font(&style),
+            effective_font(style),
             text_color,
             HorizontalAlignment::Left,
         );
@@ -390,7 +390,7 @@ impl Draw for DiffViewer {
                 context.draw_text(
                     Point::new(rect.x + 8, y),
                     text,
-                    effective_font(&style),
+                    effective_font(style),
                     text_color,
                     HorizontalAlignment::Left,
                 );
@@ -399,7 +399,7 @@ impl Draw for DiffViewer {
                 context.draw_text(
                     Point::new(mid_x + 8, y),
                     text,
-                    effective_font(&style),
+                    effective_font(style),
                     text_color,
                     HorizontalAlignment::Left,
                 );

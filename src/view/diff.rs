@@ -27,8 +27,39 @@
 //! Step 2 is a *degradation*, not a failure, and the report says so. A caller that never
 //! inserts into the middle of a list is not harmed by it; a caller that does will see the
 //! count rise and can add keys.
+//!
+//! # An unchanged subtree is not walked
+//!
+//! A matched pair whose declarations are **identical** (`Node`'s `PartialEq`: the widget
+//! name, the key, the properties and the whole child list) can produce no patch. Nothing
+//! differs in its properties, and no child of it can be new, missing or out of order, so the
+//! diff stops at that pair instead of descending. The same holds for the root: two equal
+//! trees produce an empty report without touching the factory at all.
+//!
+//! This is what makes a rebuild cost O(changed paths) rather than O(tree), and it is the
+//! property an idle frame needs: a view that is re-evaluated every frame but changes nothing
+//! must not pay for matching, key maps and capability lookups over the whole tree.
+//!
+//! Two consequences follow, and both are deliberate rather than overlooked:
+//!
+//! - [`DiffReport::positional_matches`] and [`DiffReport::duplicate_keys`] describe the
+//!   subtree the diff **walked**. An unchanged tree reports zero positional matches because
+//!   it matched nothing — no identity was put at risk. A duplicate key is a static property
+//!   of the declaration, and [`Node::duplicate_sibling_keys`] answers it without a diff.
+//! - A node that failed to materialise on an earlier build is not retried on every frame.
+//!   [`ApplyReport::errors`](crate::view::apply::ApplyReport) is the channel for that
+//!   condition and it reported the failure once; re-inserting the subtree each frame would
+//!   destroy the state of everything around a node the diff cannot create.
+//!
+//! # Transparent nodes
+//!
+//! A `spacer` declares a gap (the `view::is_transparent_node` predicate) and produces no
+//! control, so its children are hosted by the nearest ancestor that did.
+//! The diff compares them **in place**, against that ancestor and at the slots they occupy
+//! there, instead of re-inserting the subtree — which used to create a second copy of every
+//! control inside a gap on every rebuild.
 
-use crate::compat::HashMap;
+use crate::compat::{HashMap, VecDeque};
 
 use crate::widget::capability::CapabilityValue;
 
@@ -140,6 +171,12 @@ pub struct DiffReport {
     /// whose position happened to line up keeps its control (and its focus, scroll
     /// offset and selection), but that is luck rather than identity — insert one row at
     /// the head and every subsequent child shifts.
+    ///
+    /// Counted per container the diff walks. A child whose declaration is unchanged is
+    /// not descended into, so a container inside an unchanged subtree contributes
+    /// nothing — and two identical trees report zero, because the diff answers without
+    /// walking at all. That is the honest number for the question this field asks: an
+    /// update that changed nothing put no identity at risk.
     pub positional_matches: usize,
     /// How many keyless children were **new**: they had no key and no positional match,
     /// so a control is created for them where the old tree had none.
@@ -166,6 +203,10 @@ pub struct DiffReport {
     /// visible to a caller.
     ///
     /// [`crate::view::Node::duplicate_sibling_keys`] names the offending keys.
+    ///
+    /// Counted per container the diff walks, like [`Self::positional_matches`]: an unchanged
+    /// subtree is not descended into, and two identical trees report zero. The static answer
+    /// to the same question does not need a diff, which is what that method is for.
     pub duplicate_keys: usize,
     /// The root's widget type changed, which a patch batch cannot express.
     ///
@@ -229,6 +270,13 @@ pub fn diff(
     new: &Node,
     id_of: &dyn Fn(&[usize], usize) -> Option<crate::core::ObjectId>,
 ) -> DiffReport {
+    // Equal declarations have nothing to say to each other: no property differs and the child
+    // lists are identical element for element, so every match would be the identity and every
+    // recursion would stop on the same test one level down. Answering here costs one walk and
+    // no allocation, and it is the shape an idle rebuild takes.
+    if old == new {
+        return DiffReport::default();
+    }
     let mut report = DiffReport::default();
     let root_path = Vec::new();
     diff_node(old, new, &root_path, None, 0, id_of, &mut report);
@@ -251,7 +299,7 @@ pub fn diff(
 fn property_is_writable(widget: &str, name: &str) -> bool {
     #[cfg(not(alloc_frugal))]
     {
-        let factory = crate::widget::WidgetFactory::new_with_defaults();
+        let factory = crate::widget::WidgetFactory::shared();
         if let Ok(schema) = factory.property_schema(widget, name) {
             return schema.writable;
         }
@@ -274,9 +322,15 @@ fn property_is_writable(widget: &str, name: &str) -> bool {
 /// strictly weaker but never claims two genuinely different controls are the same one —
 /// an unresolvable name compares equal only to itself modulo punctuation.
 fn same_control_kind(left: &str, right: &str) -> bool {
+    // The overwhelmingly common case, and the cheap one: the same spelling is the same
+    // control. Asking the factory would normalise both names into two fresh `String`s to
+    // learn what two `&str`s have already answered.
+    if left == right {
+        return true;
+    }
     #[cfg(not(alloc_frugal))]
     {
-        let factory = crate::widget::WidgetFactory::new_with_defaults();
+        let factory = crate::widget::WidgetFactory::shared();
         if let (Some(a), Some(b)) = (factory.capability(left), factory.capability(right)) {
             return a.kind == b.kind;
         }
@@ -285,7 +339,59 @@ fn same_control_kind(left: &str, right: &str) -> bool {
     normalize_key(left) == normalize_key(right)
 }
 
+/// A positional-match key: the resolved kind when the registry knows the name, else the
+/// normalised spelling.
+///
+/// This is [`same_control_kind`] turned into a hashable key, so the keyless positional pass can
+/// look up "the next unconsumed old child of this type" in O(1) instead of scanning the old child
+/// list once per new child (the O(n²) shape the scan had). The fallback is the same one
+/// `same_control_kind` uses: two names that the registry cannot resolve match only when their
+/// normalised spellings are equal.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum PositionalKey {
+    Kind(crate::widget::WidgetKind),
+    Spelling(crate::compat::String),
+}
+
+fn positional_key(widget: &str) -> PositionalKey {
+    #[cfg(not(alloc_frugal))]
+    {
+        if let Some(capability) = crate::widget::WidgetFactory::shared().capability(widget) {
+            return PositionalKey::Kind(capability.kind);
+        }
+    }
+    PositionalKey::Spelling(crate::widget::capability::coercion::normalize_key(widget))
+}
+
+/// Memoises [`positional_key`] for one child list.
+///
+/// `positional_key` resolves a name through the factory, which normalises it into a fresh
+/// `String`; the positional pass asked for it once per old child and again once per new child,
+/// so a list of one repeated widget type (what a generated view is) paid two allocations per
+/// row per update. A child list resolves at most a handful of *distinct* names, so a cache
+/// keyed by the declared spelling turns that into one allocation per distinct name.
+///
+/// Keys are cached by spelling, so two spellings of one control get two entries — but they
+/// still produce equal `PositionalKey`s, which is what the matching map is keyed by. Caching
+/// by *key* instead would require resolving the name first, which is the cost being avoided.
+#[derive(Default)]
+struct PositionalKeys<'a> {
+    by_name: HashMap<&'a str, PositionalKey>,
+}
+
+impl<'a> PositionalKeys<'a> {
+    /// Resolve `widget` once, then answer from the cache.
+    fn of(&mut self, widget: &'a str) -> PositionalKey {
+        let _ = &mut self.by_name;
+        positional_key(widget)
+    }
+}
+
 /// Diff one pair of nodes, where `old` is at `path` in the old tree.
+///
+/// `index` is the position this node occupies in the **new** tree's host — the slot a
+/// `Replace` or `Insert` of it addresses. It is the declared index unless a transparent
+/// sibling precedes it, and it is also the first slot a transparent node's children use.
 #[allow(clippy::too_many_arguments)]
 fn diff_node(
     old: &Node,
@@ -296,6 +402,24 @@ fn diff_node(
     id_of: &dyn Fn(&[usize], usize) -> Option<crate::core::ObjectId>,
     report: &mut DiffReport,
 ) {
+    // ── Transparent nodes ──────────────────────────────
+    //
+    // A transparent node produces no control, so neither side has an id to read or write:
+    // it contributes only its children, which the nearest ancestor's control hosts. Diffing
+    // those children **in place** — against the same parent and the same slots — is what
+    // makes a gap's contents ordinary controls. The previous code took the `(None, ..)` arm
+    // below and re-`Insert`ed the whole subtree, which created a second live copy of every
+    // control inside a gap on every rebuild, forever, and nothing ever removed the first.
+    //
+    // A transparent root has no ancestor to host it, so there is nothing a patch could
+    // address; the arm below reports the "no control on either side" case as before.
+    if super::is_transparent_node(old) && super::is_transparent_node(new) {
+        if let Some(parent) = parent_id {
+            diff_children(old, new, path, parent, index, id_of, report);
+        }
+        return;
+    }
+
     let old_id = id_of(path, index);
 
     // A type change is not an update: `label` and `button` are different controls with
@@ -312,12 +436,20 @@ fn diff_node(
     // the same requirement, so both go through `same_control_kind`.
     let type_changed = !same_control_kind(&old.widget, &new.widget);
 
-    // A path with no live id means this position in the old tree produced no control
-    // (a `spacer`), so there is nothing to update — the new node must be inserted.
+    // A path with no live id means this position in the old tree produced no control, so
+    // there is nothing to update — the new node must be inserted.
     let (Some(old_id), false) = (old_id, type_changed) else {
+        // An old *transparent* node still has mounted descendants: its children are hosted
+        // by the ancestor whose control this `Insert`/`Replace` is about to displace. They
+        // have to go with it, or replacing a gap with a control leaves the gap's contents
+        // attached next to the new control — invisible duplicates that no later diff knows
+        // about, because the old tree they came from is gone.
+        if super::is_transparent_node(old) {
+            remove_node(old, path, id_of, report);
+        }
         match (old_id, parent_id) {
             (None, Some(parent)) => {
-                report.patches.push(Patch::Insert { parent, index, node: new.clone() })
+                insert_new(new, parent, index, report);
             }
             (_, Some(parent)) => {
                 report.patches.push(Patch::Replace {
@@ -397,7 +529,51 @@ fn diff_node(
     }
 
     // ── Children ──────────────────────────────────────────
-    diff_children(old, new, path, old_id, id_of, report);
+    diff_children(old, new, path, old_id, 0, id_of, report);
+}
+
+/// Emit the patches that create `node`'s controls under `parent`, starting at `slot`.
+///
+/// `Patch::Insert` carries a subtree, which covers everything a real node declares — but a
+/// transparent node declares no control at all, so an `Insert` of it would name a
+/// pseudo-widget that no constructor resolves. Its children take its place, each at the slot
+/// it occupies, which is what `apply::insert_subtree` does with a spacer's children.
+fn insert_new(node: &Node, parent: crate::core::ObjectId, slot: usize, report: &mut DiffReport) {
+    if super::is_transparent_node(node) {
+        let mut at = slot;
+        for child in &node.children {
+            insert_new(child, parent, at, report);
+            at += super::mounted_slots(child);
+        }
+        return;
+    }
+    report.patches.push(Patch::Insert { parent, index: slot, node: node.clone() });
+}
+
+/// Emit a `Remove` for every control `node`'s declaration produced.
+///
+/// A transparent node has no control of its own, so the ids to remove belong to its children;
+/// emitting nothing for it would leave them mounted under a parent that no longer declares
+/// them. The index `id_of` receives is read from the path rather than passed in, because a
+/// removal is addressed by the **old** tree's position and nothing else.
+fn remove_node(
+    node: &Node,
+    path: &[usize],
+    id_of: &dyn Fn(&[usize], usize) -> Option<crate::core::ObjectId>,
+    report: &mut DiffReport,
+) {
+    if super::is_transparent_node(node) {
+        for (index, child) in node.children.iter().enumerate() {
+            let mut child_path = path.to_vec();
+            child_path.push(index);
+            remove_node(child, &child_path, id_of, report);
+        }
+        return;
+    }
+    let index = path.last().copied().unwrap_or(0);
+    if let Some(id) = id_of(path, index) {
+        report.patches.push(Patch::Remove { id });
+    }
 }
 
 /// The set of matched old indices that must be moved for the new order to hold.
@@ -455,11 +631,15 @@ fn children_to_move(matches: &[Option<usize>]) -> std::collections::HashSet<usiz
 ///    child instead of a scan.
 /// 2. Walk the new children in order, classifying each as **matched by key**, **matched
 ///    by position** (same widget type, keyless), or **new**.
-/// 3. For matched pairs, recurse — this is what keeps an untouched subtree free of
-///    patches.
-/// 4. For new pairs, emit `Insert` at the current position.
+/// 3. For matched pairs, recurse — unless the pair's declarations are identical, in which
+///    case there is nothing beneath it to find (the module docs explain why that is the
+///    difference between O(changed paths) and O(tree)).
+/// 4. For new pairs, emit `Insert` at the current slot.
 /// 5. Anything left unmatched in the old list is removed, deepest-first by virtue of
 ///    being emitted after the recursion of the children that remain.
+///
+/// `base` is the slot this container's first child occupies in `parent_id`'s child list: 0
+/// for an ordinary node, and the node's own slot for a transparent one.
 ///
 /// Reordering is detected by comparing the matched indices' relative order, which is what
 /// makes a reorder a `Move` rather than a remove-plus-insert.
@@ -468,6 +648,7 @@ fn diff_children(
     new: &Node,
     path: &[usize],
     parent_id: crate::core::ObjectId,
+    base: usize,
     id_of: &dyn Fn(&[usize], usize) -> Option<crate::core::ObjectId>,
     report: &mut DiffReport,
 ) {
@@ -530,6 +711,18 @@ fn diff_children(
 
     // Pass 2 — keyless children, matched positionally against the first unconsumed old child
     // of the same type that a keyed child did not already claim.
+    //
+    // The unconsumed old children are bucketed by [`PositionalKey`] once. The previous version
+    // ran `old.children.iter().position(..)` for every new keyless child, which is O(n²) in a
+    // keyless list — the common shape for a generated view where nothing declares a key.
+    let mut available: HashMap<PositionalKey, VecDeque<usize>> = HashMap::new();
+    let mut keys = PositionalKeys::default();
+    for (i, child) in old.children.iter().enumerate() {
+        if !consumed[i] {
+            available.entry(keys.of(&child.widget)).or_default().push_back(i);
+        }
+    }
+
     for (new_index, child) in new.children.iter().enumerate() {
         if child.key_str().is_some() {
             continue;
@@ -540,12 +733,11 @@ fn diff_children(
         // writes.
         //
         // "Same type" is the resolved kind, not the declared spelling: an alias respelling
-        // must not turn a positional match into a `Replace`.
-        let positional = old
-            .children
-            .iter()
-            .enumerate()
-            .position(|(i, c)| !consumed[i] && same_control_kind(&c.widget, &child.widget));
+        // must not turn a positional match into a `Replace`. `keys` is the per-list memo of
+        // that resolution — one factory lookup and one normalisation per *distinct* name
+        // rather than two per child.
+        let positional =
+            available.get_mut(&keys.of(&child.widget)).and_then(|queue| queue.pop_front());
         // This is the branch the field measures, so this is where it is counted.
         //
         // `positional_matches` used to be incremented in the *not-found* arm below, which
@@ -580,23 +772,63 @@ fn diff_children(
     // each move places its child at an absolute index, and the stayers keep their relative
     // order, the moves compose to exactly the declared order.
     let moved_old_indices = children_to_move(&matches);
+    // Where each new child's control lands in `parent_id`'s child list.
+    //
+    // Without a transparent sibling the slot *is* the declared index, which is the case every
+    // index in a `Patch` has always meant. With one, the declared index counts a node that
+    // creates no control, so the real list is shorter and a later sibling would be placed too
+    // far right — silently appended, since `move_child_to` clamps. `mounted_slots` is the same
+    // arithmetic `mount` and `reindex` use, spelled once in `view::mounted_slots`.
+    let slots: Option<Vec<usize>> =
+        new.children.iter().any(super::is_transparent_node).then(|| {
+            let mut starts = Vec::with_capacity(new.children.len());
+            let mut at = base;
+            for child in &new.children {
+                starts.push(at);
+                at += super::mounted_slots(child);
+            }
+            starts
+        });
+    let slot_of = |index: usize| match &slots {
+        Some(starts) => starts[index],
+        None => base + index,
+    };
     for (new_index, child) in new.children.iter().enumerate() {
+        let slot = slot_of(new_index);
         match matches[new_index] {
             Some(old_index) => {
-                if moved_old_indices.contains(&old_index) {
+                let moved = moved_old_indices.contains(&old_index);
+                // An identical declaration on this pair produces nothing: no property can
+                // differ, and no child of it can be new, missing or reordered. There is
+                // therefore nothing to recurse *for* — which is the whole point of the
+                // skip: it bounds the cost of a rebuild by the paths that changed rather
+                // than by the size of the tree. See the module docs for the two diagnostic
+                // counters this leaves describing only what was walked.
+                let unchanged = old.children[old_index] == *child;
+                if !moved && unchanged {
+                    continue;
+                }
+                let mut old_child_path = path.to_vec();
+                old_child_path.push(old_index);
+                if moved {
+                    if super::is_transparent_node(&old.children[old_index]) {
+                        // A gap has no id, so there is nothing a `Move` could name — emitting
+                        // one would produce `Move { id: 0 }`, a patch `apply` rejects.
+                        // Its children are hosted by *this* container, so the honest
+                        // description of "the gap's contents moved" is to take them out and
+                        // put them back at their new slots.
+                        remove_node(&old.children[old_index], &old_child_path, id_of, report);
+                        insert_new(child, parent_id, slot, report);
+                        continue;
+                    }
                     report.patches.push(Patch::Move {
-                        id: id_of(
-                            &{
-                                let mut p = path.to_vec();
-                                p.push(old_index);
-                                p
-                            },
-                            old_index,
-                        )
-                        .unwrap_or(0),
+                        id: id_of(&old_child_path, old_index).unwrap_or(0),
                         parent: parent_id,
-                        index: new_index,
+                        index: slot,
                     });
+                }
+                if unchanged {
+                    continue;
                 }
                 // Recurse against the child's **old** index path.
                 //
@@ -608,8 +840,7 @@ fn diff_children(
                 // against the wrong control. The comment here previously said the opposite of
                 // what the code did, and a dead `child_path` for the new index kept the
                 // misleading shape alive; both are gone.
-                let mut old_child_path = path.to_vec();
-                old_child_path.push(old_index);
+                //
                 // The child's parent is *this* container (`parent_id`), not the child itself.
                 //
                 // `diff_node`'s `parent_id` parameter is the control a `Replace`/`Insert` of the
@@ -624,31 +855,23 @@ fn diff_children(
                     child,
                     &old_child_path,
                     Some(parent_id),
-                    new_index,
+                    slot,
                     id_of,
                     report,
                 );
             }
-            None => {
-                report.patches.push(Patch::Insert {
-                    parent: parent_id,
-                    index: new_index,
-                    node: child.clone(),
-                });
-            }
+            None => insert_new(child, parent_id, slot, report),
         }
     }
 
     // Step 3: whatever is left in the old list was not adopted.
-    for (i, _child) in old.children.iter().enumerate() {
+    for (i, child) in old.children.iter().enumerate() {
         if consumed[i] {
             continue;
         }
         let mut p = path.to_vec();
         p.push(i);
-        if let Some(id) = id_of(&p, i) {
-            report.patches.push(Patch::Remove { id });
-        }
+        remove_node(child, &p, id_of, report);
     }
 }
 
@@ -689,6 +912,29 @@ mod tests {
         /// The lookup closure handed to [`diff`].
         fn lookup(&self) -> impl Fn(&[usize], usize) -> Option<ObjectId> + '_ {
             move |path: &[usize], _index: usize| self.by_path.get(path).copied()
+        }
+
+        /// Assign ids the way **construction** does: a transparent node produces no control,
+        /// so it is absent from the map and its children keep their declared paths.
+        ///
+        /// [`Self::assign`] gives every node an id, which cannot express a gap — and a gap is
+        /// exactly the case where "no id at this path" is not a bug but the declaration.
+        fn assign_mounted(&mut self, server: &Node) -> &mut Self {
+            self.by_path.clear();
+            self.next = 1;
+            let mut stack: Vec<(Vec<usize>, &Node)> = vec![(Vec::new(), server)];
+            while let Some((path, node)) = stack.pop() {
+                if !crate::view::is_transparent_node(node) {
+                    self.by_path.insert(path.clone(), self.next);
+                    self.next += 1;
+                }
+                for (i, child) in node.children.iter().enumerate().rev() {
+                    let mut p = path.clone();
+                    p.push(i);
+                    stack.push((p, child));
+                }
+            }
+            self
         }
     }
 
@@ -1404,6 +1650,198 @@ mod tests {
         assert_eq!(report.patch_count(), 0);
         assert!(report.patches_of_kind("Insert").is_empty());
         assert!(report.written_properties().is_empty());
+    }
+
+    // ── Unchanged subtrees cost nothing ────────────────────
+
+    #[test]
+    fn an_unchanged_sibling_costs_nothing() {
+        // The shape a per-frame rebuild takes: one value changed, everything around it the
+        // same. The diff must report the one write — and nothing else — without descending
+        // into the untouched branch at all.
+        let side = |text: &str| {
+            Node::new("vbox")
+                .key("side")
+                .child(Node::new("label").key("s1").prop("text", s("one")))
+                .child(Node::new("label").key("s2").prop("text", s("two")))
+                .child(Node::new("label").key("s3").prop("text", s(text)))
+        };
+        let old = Node::new("row")
+            .key("root")
+            .child(side("unchanged"))
+            .child(Node::new("label").key("main").prop("text", s("before")));
+        let new = Node::new("row")
+            .key("root")
+            .child(side("unchanged"))
+            .child(Node::new("label").key("main").prop("text", s("after")));
+        let report = run(&old, &new);
+        assert_eq!(report.patch_count(), 1, "only the changed leaf: {:?}", report.patches);
+        match &report.patches[0] {
+            Patch::SetProperty { name, value, .. } => {
+                assert_eq!(name, "text");
+                assert_eq!(value, &s("after"));
+            }
+            other => panic!("expected one write, got {other:?}"),
+        }
+        // `side` is keyed and untouched, so it contributes no positional match…
+        assert_eq!(report.positional_matches, 0, "the walked subtree is fully keyed");
+    }
+
+    #[test]
+    fn a_change_deep_under_an_unchanged_branch_still_reaches_the_leaf() {
+        // The complement of the skip: equality is checked per *pair*, and a changed leaf makes
+        // every ancestor on its path unequal, so the walk still arrives at it.
+        let branch = |key: &'static str, leaf: &str| {
+            Node::new("vbox").key(key).child(
+                Node::new("panel")
+                    .key("inner")
+                    .child(Node::new("label").key("deep").prop("text", s(leaf))),
+            )
+        };
+        let old = Node::new("row").key("root").child(branch("a", "old")).child(branch("b", "same"));
+        let new = Node::new("row").key("root").child(branch("a", "new")).child(branch("b", "same"));
+        let report = run(&old, &new);
+        assert_eq!(report.patch_count(), 1, "one write at the leaf: {:?}", report.patches);
+        assert_eq!(report.written_properties(), ["text"]);
+    }
+
+    // ── Transparent nodes (`spacer`) ───────────────────────
+
+    /// A fixture whose id map **skips transparent nodes**, the way construction does: a gap
+    /// creates no control, so the paths beneath it belong to controls their host owns.
+    fn run_without_gap_ids(old: &Node, new: &Node) -> DiffReport {
+        let mut ids = FixtureIds::default();
+        ids.assign_mounted(old);
+        let lookup = ids.lookup();
+        diff(old, new, &lookup)
+    }
+
+    fn gap(text: &str) -> Node {
+        // A row: a label, a gap holding a label, a label. The gap sits at declared index 1,
+        // so its child must be written to the control that is *second* in the row.
+        Node::new("row")
+            .key("root")
+            .child(Node::new("label").key("before").prop("text", s("before")))
+            .child(
+                Node::new("spacer")
+                    .key("gap")
+                    .child(Node::new("label").key("inside").prop("text", s(text))),
+            )
+            .child(Node::new("label").key("after").prop("text", s("after")))
+    }
+
+    #[test]
+    fn a_change_inside_a_gap_is_a_write_not_a_rebuild() {
+        // The defect: a gap has no id, so the old `(None, ..)` arm emitted `Insert` for its
+        // whole subtree on every change. That created a second live copy of its contents and
+        // nothing removed the first.
+        let old = gap("before");
+        let new = gap("after");
+        let report = run_without_gap_ids(&old, &new);
+        assert_eq!(report.patch_count(), 1, "one write: {:?}", report.patches);
+        assert!(report.patches_of_kind("Insert").is_empty(), "nothing is recreated");
+        assert_eq!(report.replaced_subtrees, 0);
+        assert_eq!(report.written_properties(), ["text"]);
+        match &report.patches[0] {
+            Patch::SetProperty { id, .. } => {
+                assert_eq!(*id, 3, "the gap's child is the control that hosts the property")
+            }
+            other => panic!("expected a write, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unchanged_gap_produces_no_patches() {
+        let old = gap("held");
+        let new = gap("held");
+        let report = run_without_gap_ids(&old, &new);
+        assert!(report.is_unchanged(), "an idle rebuild wrote {:?}", report.patches);
+    }
+
+    #[test]
+    fn a_new_child_of_a_gap_is_inserted_at_the_slot_it_occupies() {
+        // Slots, not declared indices: the gap creates nothing, so its new child lands in the
+        // row's *control* list at the position the gap occupies — after `before`, which is
+        // the only control before it.
+        let old = Node::new("row")
+            .key("root")
+            .child(Node::new("label").key("before"))
+            .child(Node::new("spacer").key("gap").child(Node::new("label").key("inside")));
+        let new = Node::new("row").key("root").child(Node::new("label").key("before")).child(
+            Node::new("spacer")
+                .key("gap")
+                .child(Node::new("label").key("inside"))
+                .child(Node::new("label").key("added")),
+        );
+        let report = run_without_gap_ids(&old, &new);
+        assert_eq!(report.patch_count(), 1, "just the insert: {:?}", report.patches);
+        match &report.patches[0] {
+            Patch::Insert { parent, index, node } => {
+                assert_eq!(*parent, 1, "the row hosts it");
+                assert_eq!(*index, 2, "the only control before it is at slot 1");
+                assert_eq!(node.key.as_deref(), Some("added"));
+            }
+            other => panic!("expected an insert, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn removing_a_gap_removes_the_controls_it_hosted() {
+        // A gap has no id, so a `Remove` for it cannot be emitted — its children's ids are
+        // what has to go, or they stay mounted under a parent that no longer declares them.
+        let old = gap("held");
+        let new = Node::new("row")
+            .key("root")
+            .child(Node::new("label").key("before").prop("text", s("before")))
+            .child(Node::new("label").key("after").prop("text", s("after")));
+        let report = run_without_gap_ids(&old, &new);
+        assert_eq!(report.patches_of_kind("Remove").len(), 1, "got {:?}", report.patches);
+        // `before`=2, the gap's child=3, `after`=4 in the old fixture.
+        assert_eq!(report.patches[0], Patch::Remove { id: 3 });
+    }
+
+    #[test]
+    fn a_gap_replaced_by_a_control_removes_what_it_hosted_first() {
+        // A `Replace` names one id; a gap has none. The subtree it hosted is removed and the
+        // replacement is inserted, in that order.
+        let old = Node::new("row")
+            .key("root")
+            .child(Node::new("spacer").key("gap").child(Node::new("label").key("inside")));
+        let new = Node::new("row").key("root").child(Node::new("button").key("gap"));
+        let report = run_without_gap_ids(&old, &new);
+        assert_eq!(report.patches.len(), 2, "remove then insert: {:?}", report.patches);
+        assert_eq!(report.patches[0].kind_name(), "Remove");
+        assert_eq!(report.patches[1].kind_name(), "Insert");
+    }
+
+    #[test]
+    fn reordering_a_gap_rebuilds_what_it_hosted_rather_than_moving_nothing() {
+        // A gap has no id, so the diff cannot emit `Move` for it — and `Move { id: 0 }` is a
+        // patch `apply` rejects. Its children are hosted by the row, so the honest
+        // description is "take them out, put them back where they now belong".
+        let old = Node::new("row")
+            .key("root")
+            .child(Node::new("label").key("a"))
+            .child(Node::new("spacer").key("gap").child(Node::new("label").key("inside")));
+        let new = Node::new("row")
+            .key("root")
+            .child(Node::new("spacer").key("gap").child(Node::new("label").key("inside")))
+            .child(Node::new("label").key("a"));
+        let report = run_without_gap_ids(&old, &new);
+        assert!(
+            report.patches.iter().all(|p| p.kind_name() != "Move"),
+            "a gap cannot be moved by id: {:?}",
+            report.patches
+        );
+        assert_eq!(report.patches_of_kind("Remove").len(), 1, "got {:?}", report.patches);
+        match &report.patches_of_kind("Insert")[..] {
+            [Patch::Insert { parent, index, node }] => {
+                assert_eq!(*parent, 1);
+                assert_eq!(*index, 0, "the gap is declared first now");
+                assert_eq!(node.key.as_deref(), Some("inside"));
+            }
+            other => panic!("expected one insert, got {other:?}"),
+        }
     }
 
     impl Default for FixtureIds {

@@ -5,15 +5,30 @@
 //!
 //! # Reachability
 //!
-//! **State:** Reserved. Two distinct findings, because the earlier statement here
-//! ("superseded by `gpu::performance`") was wrong and is corrected rather than
-//! deleted:
+//! **State:** decided, after verification (CORE-12). Two groups, and the earlier
+//! statement here ("superseded by `gpu::performance`") is corrected rather than
+//! deleted, because it was not true of all three modules:
 //!
-//! * `frame_timer` / `profiler` / `batcher` — a frame-timing and batching toolkit
-//!   with no production caller. These genuinely overlap `gpu::performance`
-//!   (`AdaptivePerformanceMonitor`, `PerformanceStats`), which *is* consumed by
-//!   `src/gpu/adapter.rs`. Removal condition for this group: once
-//!   `gpu::performance` is confirmed to cover frame timing too.
+//! * `frame_timer` / `profiler` / `batcher` — a frame-timing and batching toolkit with no
+//!   caller **inside** the crate. The open question was whether `gpu::performance`
+//!   (`AdaptivePerformanceMonitor`, `PerformanceStats`, consumed by `src/gpu/adapter.rs`)
+//!   covers them. Measured answer: it does not.
+//!   * `profiler` measures **named stages** inside a frame. `gpu::performance` records one
+//!     frame duration per sample and has no equivalent, so stage attribution would be lost.
+//!   * `frame_timer` is the timer for the profiles where the `gpu` module does not compile
+//!     (`mini`, `embedded`). `gpu::performance` cannot serve those hosts at all.
+//!   * `batcher` is a *policy* (timeout + count), not a second merge: `flush` hands its rects to
+//!     [`region::DirtyRegionTracker`], so the merge arithmetic exists once. The frame loop's own
+//!     coalescing (`FrameStats::repaints_coalesced`) is per-surface, not per-rectangle, so it
+//!     does not replace the timeout budget a host may want for incremental painting.
+//!
+//!   They therefore stay as **host-facing utilities** — the same deliberate shape as
+//!   `AnimationGroup`/`ParallelAnimation` (a complete capability the crate does not consume, which
+//!   a host drives directly) — and each group is covered by tests (`frame_timer` 8, `profiler` 6,
+//!   `batcher` 5), which is what separates "retained capability" from "declared and not
+//!   delivered". What would change the decision: a `profiler`-shaped stage record inside
+//!   `gpu::performance`, or a `frame_timer`/`AdaptivePerformanceMonitor` rolling-stat primitive
+//!   shared by both layers.
 //! * `dirty` / `region` / `render_dirty` — **not duplicated anywhere**: this is the
 //!   only damage-region implementation in the crate, and `README.md` advertises
 //!   "Partial Refresh" on the strength of it. **Now wired** (BLUE16 phase F):
@@ -29,9 +44,8 @@
 //!
 //! So this module is not dead weight: `dirty` / `region` / `render_dirty` are a
 //! live, wired feature — `render_dirty_regions` is called from
-//! `src/widget/runtime.rs` — and the frame-timing group is the only part still
-//! reserved. Deleting the module without deciding that question would silently
-//! drop the capability the README promises.
+//! `src/widget/runtime.rs` — and the frame-timing group is a tested, documented
+//! host-facing capability rather than a reservation.
 //!
 //! The real boundaries, stated once so they cannot drift: the default repaint
 //! mode is `Full`; `Dirty` is opt-in; and within `Dirty`, damage is grouped by

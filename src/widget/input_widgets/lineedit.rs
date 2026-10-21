@@ -538,25 +538,17 @@ impl LineEdit {
     }
 
     /// The byte offset of the character *before* the caret.
+    ///
+    /// Delegates to the shared [`crate::widget::text_utils::previous_char_boundary`]: this control,
+    /// `TextArea`, `TextEdit` and `MentionEdit` all step a caret the same way, and the copies had
+    /// drifted (WDGT-11).
     fn previous_char_boundary(&self) -> usize {
-        if self.cursor_position == 0 {
-            return 0;
-        }
-        let caret = floor_char_boundary(&self.text, self.cursor_position.min(self.text.len()));
-        self.text[..caret].char_indices().next_back().map(|(index, _)| index).unwrap_or(0)
+        crate::widget::text_utils::previous_char_boundary(&self.text, self.cursor_position)
     }
 
     /// The byte offset of the character *after* the caret.
     fn next_char_boundary(&self) -> usize {
-        if self.cursor_position >= self.text.len() {
-            return self.text.len();
-        }
-        let caret = floor_char_boundary(&self.text, self.cursor_position.min(self.text.len()));
-        self.text[caret..]
-            .char_indices()
-            .nth(1)
-            .map(|(index, _)| caret + index)
-            .unwrap_or(self.text.len())
+        crate::widget::text_utils::next_char_boundary(&self.text, self.cursor_position)
     }
 
     /// The byte offset a horizontal pixel `x` points at.
@@ -816,8 +808,8 @@ impl LineEdit {
 
     /// The `*`-masked form of `text`, as [`EchoMode::Password`] presents it.
     ///
-    /// One definition for the two readers that must agree: [`LineEdit::display_text`]
-    /// paints with it and the clipboard path copies with it, so a copy can never mask the
+    /// One definition for the two readers that must agree: the paint path
+    /// (`LineEdit::draw`) and the clipboard path copies with it, so a copy can never mask the
     /// value differently from the way the field drew it.
     fn mask_text(text: &str) -> String {
         "*".repeat(text.len())
@@ -858,19 +850,7 @@ impl LineEdit {
             crate::set_clipboard_text(&text);
         }
     }
-    /// Returns display text based on echo mode.
-    ///
-    /// `EchoMode` has exactly three modes, so this match is exhaustive without a
-    /// catch-all: adding a mode to the canonical enum forces every renderer to
-    /// decide what it looks like, instead of silently inheriting one.
-    fn display_text(&self) -> String {
-        match self.echo_mode {
-            EchoMode::Normal => self.text.clone(),
-            EchoMode::Password => Self::mask_text(&self.text),
-            EchoMode::NoEcho => String::new(),
-        }
-    }
-
+    /// The text a copy or cut gesture may place on the platform clipboard, or `None`
     /// The field the control actually paints.
     ///
     /// # Why the field is not the control's rectangle
@@ -994,10 +974,10 @@ impl LineEdit {
     /// under the field, and the support row would be as wide as the cell rather than as the input.
     fn decoration_layout(&self, context: &mut RenderContext) -> DecorationLayout {
         let field = self.field_rect();
-        let style = self.base.style().clone();
+        let style = self.base.style();
         // The effective font, taken through the shared accessor so this layout, `byte_index_at_x`
         // and `draw` all measure with one font (D09-STYLE-02).
-        let font = effective_font(&style);
+        let font = effective_font(style);
         let metrics = DecorationMetrics::measure(&self.decorations, |text| {
             context.measure_text(text, font).width
         });
@@ -1615,10 +1595,23 @@ impl Draw for LineEdit {
             }
         }
         // Draw text or placeholder
-        let display_text = if self.text.is_empty() && !self.placeholder_text.is_empty() {
+        //
+        // The value is **borrowed** when the echo mode allows it. `display_text()` returns an owned
+        // `String`, so the ordinary case — normal echo, painting the field's own text — cloned the
+        // whole value once per frame on the crate's highest-traffic control. Only the password mask
+        // genuinely derives a string, and it is held in `masked` so the borrow can outlive the match.
+        let masked: String;
+        let display_text: &str = if self.text.is_empty() && !self.placeholder_text.is_empty() {
             &self.placeholder_text
         } else {
-            &self.display_text()
+            match self.echo_mode {
+                EchoMode::Normal => &self.text,
+                EchoMode::NoEcho => "",
+                EchoMode::Password => {
+                    masked = Self::mask_text(&self.text);
+                    &masked
+                }
+            }
         };
         let font = effective_font(style);
         let value_line = context.text_line(rect, font);

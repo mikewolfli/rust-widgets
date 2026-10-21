@@ -156,18 +156,16 @@ pub(crate) use properties::{to_capability_value, to_capability_value_with_record
 /// The capability registry used to resolve a JSON widget name to a constructor
 /// and to look up a property's declared value kind.
 ///
-/// Built on demand rather than cached in a `static`, matching the call pattern
-/// used elsewhere in the crate (`control_backend::custom::mount_widget_of_kind`,
-/// `lib::create_widget_of_kind`): the registry is a handful of `Vec`/`HashMap`
-/// insertions, which is negligible next to instantiating a widget tree, and a
-/// process-wide `static` would need its own lock and lifetime story for no gain.
+/// Borrows the process-wide default factory: the registry is immutable once built, and this
+/// function is called once per declared property and once per unknown control during a load, so
+/// rebuilding ~190 registrations on each call was measurable on a large document.
 ///
 /// Gated on the full widget set: a stripped profile compiles neither the factory
 /// nor the constructors it resolves against, so the JSON path there falls back to
 /// the loader's own construction table.
 #[cfg(full_widgets)]
-pub(crate) fn schema_factory() -> crate::widget::WidgetFactory {
-    crate::widget::WidgetFactory::new_with_defaults()
+pub(crate) fn schema_factory() -> &'static crate::widget::WidgetFactory {
+    crate::widget::WidgetFactory::shared()
 }
 
 /// A registry that answers "not registered" in a build without the full widget

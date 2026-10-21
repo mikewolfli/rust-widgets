@@ -220,6 +220,8 @@ pub fn draw_y_ticks(
     // appearance the tick labels (`80,80,80` on an `18,18,18` surface) sat at 2.3:1 -- barely
     // legible -- while the near-white gridlines were the brightest thing in the picture.
     let (axis_color, label_color, grid_color) = axis_chrome();
+    // One reused label buffer: `format!` allocated a `String` per tick per frame.
+    let mut label = crate::compat::String::new();
     for tick in 0..=tick_count {
         let t = tick as f32 / tick_count as f32;
         let y = layout.plot_y + layout.plot_h - t * layout.plot_h;
@@ -238,8 +240,10 @@ pub fn draw_y_ticks(
             axis_color,
         );
         let value = min_y + (max_y - min_y) * t as f64;
+        label.clear();
+        let _ = core::fmt::Write::write_fmt(&mut label, format_args!("{value:.1}"));
         context.draw_text(
-            &format!("{value:.1}"),
+            &label,
             Point::from_f32(layout.plot_x - 44.0, y + 4.0),
             10.0,
             label_color,
@@ -265,6 +269,8 @@ pub fn draw_x_ticks(
     // appearance the tick labels (`80,80,80` on an `18,18,18` surface) sat at 2.3:1 -- barely
     // legible -- while the near-white gridlines were the brightest thing in the picture.
     let (axis_color, label_color, grid_color) = axis_chrome();
+    // One reused label buffer, as in `draw_y_ticks`.
+    let mut label = crate::compat::String::new();
     for tick in 0..=tick_count {
         let t = tick as f32 / tick_count as f32;
         let x = layout.plot_x + t * layout.plot_w;
@@ -283,6 +289,8 @@ pub fn draw_x_ticks(
             axis_color,
         );
         let value = min_x + (max_x - min_x) * t as f64;
+        label.clear();
+        let _ = core::fmt::Write::write_fmt(&mut label, format_args!("{value:.1}"));
         // The label is centred on its tick and clamped inside the **plot area's** own width.
         //
         // Two problems are fixed together here. The origin was `x - 12`, a fixed half-width
@@ -291,7 +299,6 @@ pub fn draw_x_ticks(
         // vertically: `plot_y + plot_h + 16` is below the plot by construction, so a plot
         // that fills its control drew the axis row outside the control. Clamping both to the
         // layout means the row is inside the rectangle the layout reserved for it.
-        let label = format!("{value:.1}");
         let label_width = (label.chars().count() as f32 * 10.0 * 0.6).max(10.0);
         let label_x = (x - label_width / 2.0).clamp(layout.plot_x, layout.plot_x + layout.plot_w);
         let label_y = (layout.plot_y + layout.plot_h + 16.0)

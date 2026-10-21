@@ -122,6 +122,9 @@ impl Dial {
     /// clamp saturates unpredictably; use [`Dial::set_range`] instead, which
     /// keeps `maximum >= minimum`.
     pub fn set_minimum(&mut self, min: i32) {
+        if self.minimum == min {
+            return;
+        }
         self.minimum = min;
         self.set_value(self.value);
         self.base.request_redraw();
@@ -129,6 +132,9 @@ impl Dial {
     /// Sets the upper bound and re-applies it to the current value through
     /// [`Dial::set_value`]. See [`Dial::set_minimum`] for range caveats.
     pub fn set_maximum(&mut self, max: i32) {
+        if self.maximum == max {
+            return;
+        }
         self.maximum = max;
         self.set_value(self.value);
         self.base.request_redraw();
@@ -139,8 +145,12 @@ impl Dial {
     ///
     /// This is a convenience writer; query bounds via `minimum()` and `maximum()`.
     pub fn set_range(&mut self, min: i32, max: i32) {
+        let max = max.max(min);
+        if self.minimum == min && self.maximum == max {
+            return;
+        }
         self.minimum = min;
-        self.maximum = max.max(min);
+        self.maximum = max;
         self.set_value(self.value);
         self.base.request_redraw();
     }
@@ -173,18 +183,29 @@ impl Dial {
     /// Sets the arrow-key increment, floored at `1` so the value can always
     /// move. Requests a redraw.
     pub fn set_single_step(&mut self, step: i32) {
-        self.single_step = step.max(1);
+        let step = step.max(1);
+        if self.single_step == step {
+            return;
+        }
+        self.single_step = step;
         self.base.request_redraw();
     }
     /// Sets the Page Up / Page Down increment, floored at `1`. Requests a
     /// redraw.
     pub fn set_page_step(&mut self, step: i32) {
-        self.page_step = step.max(1);
+        let step = step.max(1);
+        if self.page_step == step {
+            return;
+        }
+        self.page_step = step;
         self.base.request_redraw();
     }
     /// Shows or hides the notch ring. See [`Dial::notches_visible`] — the ring is
     /// hidden by default. Requests a redraw.
     pub fn set_notches_visible(&mut self, visible: bool) {
+        if self.notches_visible == visible {
+            return;
+        }
         self.notches_visible = visible;
         self.base.request_redraw();
     }
@@ -193,7 +214,7 @@ impl Dial {
     /// non-positive value is ignored, so the stored target always describes a
     /// spacing the geometry can divide by. Requests a redraw.
     pub fn set_notch_target(&mut self, target: f64) {
-        if target.is_finite() && target > 0.0 {
+        if target.is_finite() && target > 0.0 && self.notch_target != target {
             self.notch_target = target;
             self.base.request_redraw();
         }
@@ -205,6 +226,9 @@ impl Dial {
     /// that was produced by wrapping in place, which is fine because wrapped
     /// values are always inside the range. Requests a redraw.
     pub fn set_wrapping(&mut self, wrapping: bool) {
+        if self.wrapping == wrapping {
+            return;
+        }
         self.wrapping = wrapping;
         self.base.request_redraw();
     }
@@ -434,7 +458,7 @@ impl Draw for Dial {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's
         // mutex is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("dial");
         // Read as its own lock acquisition and copied out as values, so the guard is
         // dropped before anything else touches the theme. The accent is the dial's value

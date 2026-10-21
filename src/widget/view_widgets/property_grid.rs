@@ -304,7 +304,7 @@ impl Draw for PropertyGrid {
         //
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("property_grid");
         let mut surface = style
             .background_color

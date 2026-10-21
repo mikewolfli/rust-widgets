@@ -200,7 +200,7 @@ impl CustomPaintControlBackend {
         height: u32,
     ) -> crate::core::ObjectId {
         let rect = crate::core::Rect::new(x, y, width, height);
-        let factory = crate::widget::WidgetFactory::new_with_defaults();
+        let factory = crate::widget::WidgetFactory::shared();
         let Some(capability) = factory.capability(name) else {
             log::warn!(
                 "custom backend: no control is registered under the name {name:?}; returning 0"
@@ -208,8 +208,7 @@ impl CustomPaintControlBackend {
             return 0;
         };
         let kind = capability.kind;
-        let Some(mut widget) =
-            crate::widget::WidgetFactory::new_with_defaults().create(name, rect, text)
+        let Some(mut widget) = crate::widget::WidgetFactory::shared().create(name, rect, text)
         else {
             log::warn!(
                 "custom backend: the factory lists {name:?} but produced no widget; returning 0"

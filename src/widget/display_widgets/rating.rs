@@ -363,7 +363,7 @@ impl Draw for Rating {
         // `resolved_theme_style` takes and releases the global manager's lock
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("rating");
         let background = style
             .background_color

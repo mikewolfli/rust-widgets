@@ -294,7 +294,7 @@ impl Draw for AdaptiveScaffold {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("adaptive_scaffold");
         let background = style
             .background_color
@@ -344,7 +344,7 @@ impl AdaptiveScaffold {
         // The bar draws with the scaffold's own resolved chrome, so the whole control
         // moves together on a theme switch rather than the bar keeping a literal white.
         // These are further manager locks, each taken and released inside the accessor.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("adaptive_scaffold");
         let bar_background = style
             .background_color
@@ -372,8 +372,8 @@ impl AdaptiveScaffold {
         let icon_font_size = (nav_rect.height as f32 * 0.32).clamp(14.0, 28.0);
         let label_font_size = (nav_rect.height as f32 * 0.18).clamp(9.0, 14.0);
 
-        let icon_font = role_font(&style, icon_font_size);
-        let label_font = role_font(&style, label_font_size);
+        let icon_font = role_font(style, icon_font_size);
+        let label_font = role_font(style, label_font_size);
 
         for (i, item) in self.nav_items.iter().enumerate() {
             let tab_x = nav_rect.x + (i as u32 * tab_width) as i32;

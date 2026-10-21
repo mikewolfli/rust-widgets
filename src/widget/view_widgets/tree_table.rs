@@ -488,7 +488,7 @@ impl Draw for TreeTable {
         //
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("tree_table");
         let mut surface = style
             .background_color
@@ -594,9 +594,9 @@ impl Draw for TreeTable {
                     let band =
                         Rect::new(text_x, y, (x + col_w - text_x).max(0) as u32, self.row_height);
                     context.draw_text_fitted(
-                        context.text_line(band, effective_font(&style)),
+                        context.text_line(band, effective_font(style)),
                         &text,
-                        effective_font(&style),
+                        effective_font(style),
                         ink,
                         HorizontalAlignment::Left,
                     );

@@ -46,7 +46,6 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::effective_font;
-use crate::widget::text_utils::floor_char_boundary;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -283,8 +282,13 @@ impl Mention {
     /// Delegates to the crate's shared [`floor_char_boundary`]: the walk is identical, and this
     /// file already imports the byte/character helpers for `insert_char`. A second copy of the
     /// same primitive is a second place for it to be wrong.
+    /// The byte offset of the character before `index`.
+    ///
+    /// Delegates to the shared [`crate::widget::text_utils::previous_char_boundary`]: the local copy
+    /// stepped back a byte and floored, which agreed with the other controls' scanning version but
+    /// was a fourth spelling of it (WDGT-11).
     fn previous_char_boundary(&self, index: usize) -> usize {
-        floor_char_boundary(&self.text, index.saturating_sub(1))
+        crate::widget::text_utils::previous_char_boundary(&self.text, index)
     }
 
     /// Moves the caret one character left.

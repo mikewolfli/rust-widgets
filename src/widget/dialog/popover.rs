@@ -315,7 +315,7 @@ impl Draw for Popover {
         //
         // The theme reads take and release the global manager's lock internally, so no
         // guard is held across the draw (the mutex is not re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("popover");
         // `popover` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
         // `Surface` and resolves to `theme.colors.background` — the window's own fill. A card
@@ -455,7 +455,7 @@ impl Draw for Popover {
         }
         // The **effective font** — the resolved theme/caller font — rather than the fixed 13 px
         // sans-serif this used to build (D09-STYLE-01).
-        let font = effective_font(&style);
+        let font = effective_font(style);
         let label = if self.content.is_some() { "Popover" } else { "Popover (empty)" };
         // The label is centred on the content box — **both ways**. `draw_text_fitted` aligns
         // horizontally only, so passing the padded content box pinned the label to the card's

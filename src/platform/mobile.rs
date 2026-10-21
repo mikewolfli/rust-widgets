@@ -19,7 +19,7 @@ use std::time::Duration;
 /// not a poll interval for a network-like resource: this loop is the single place a
 /// backend turns "what the host queued" into "what the widgets did", so the tick rate is
 /// the upper bound on how quickly a resize or an animation reaches the tree.
-const FRAME_INTERVAL_MS: u64 = 16;
+const FRAME_INTERVAL_MS: u64 = crate::platform::types::FRAME_INTERVAL_MS;
 
 /// Logical handle kinds that survive the self-drawn widget strategy.
 ///

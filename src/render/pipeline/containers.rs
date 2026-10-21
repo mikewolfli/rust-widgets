@@ -8,7 +8,7 @@
 //! `primitives` sub-module.
 
 use crate::compat::atomic::{AtomicU64, Ordering};
-use crate::compat::{HashMap, RefCell, Vec};
+use crate::compat::{HashMap, RefCell, Vec, VecDeque};
 use crate::core::{Color, Font, Rect, Size};
 use crate::render::default_software_render_config;
 use crate::render::pipeline::pixel_ops::{fill_pixels, pixel_visible, write_pixel_with_mode};
@@ -59,11 +59,26 @@ thread_local! {
     // corruption.
     static TEXT_METRICS: RefCell<(u64, TextMetricsCache)> =
         RefCell::new((0, HashMap::new()));
+    // Insertion order, for FIFO eviction. The caches used to `clear()` when full, so one entry
+    // over the bound discarded the whole working set and the next frame re-shaped everything.
+    static TEXT_METRICS_ORDER: RefCell<VecDeque<(u64, u64)>> =
+        const { RefCell::new(VecDeque::new()) };
     static TEXT_SHAPES: RefCell<(u64, HashMap<(u64, u64), ShapedText>)> =
         RefCell::new((0, HashMap::new()));
+    static TEXT_SHAPES_ORDER: RefCell<VecDeque<(u64, u64)>> =
+        const { RefCell::new(VecDeque::new()) };
 }
 
 /// Returns two fingerprints over everything a text measurement depends on.
+///
+/// # Why the second pass hashes a summary instead of the whole string
+///
+/// The pair only has to be a *function of the same inputs* — a cache collision needs both halves to
+/// match, and the first half is SipHash over every byte of the text, so the second half contributes
+/// independence rather than coverage. Hashing the entire text a second time therefore doubled the
+/// cost of every lookup for no extra safety (REND-14); it now hashes the length plus the first and
+/// last eight bytes, which still distinguishes the strings a label cache actually sees (a status
+/// line that ends differently, a number that grew) without reading the middle again.
 fn text_measurement_fingerprint(text: &str, font: &Font, scale: f32) -> (u64, u64) {
     use core::hash::{Hash, Hasher};
     let size = font.size().to_bits();
@@ -84,8 +99,15 @@ fn text_measurement_fingerprint(text: &str, font: &Font, scale: f32) -> (u64, u6
     line.hash(&mut first);
     scale.hash(&mut first);
 
+    let bytes = text.as_bytes();
+    let head = &bytes[..bytes.len().min(8)];
+    let tail = &bytes[bytes.len().saturating_sub(8)..];
+
     let mut second = std::collections::hash_map::DefaultHasher::new();
     0xA5u8.hash(&mut second);
+    bytes.len().hash(&mut second);
+    head.hash(&mut second);
+    tail.hash(&mut second);
     scale.hash(&mut second);
     line.hash(&mut second);
     word.hash(&mut second);
@@ -95,7 +117,6 @@ fn text_measurement_fingerprint(text: &str, font: &Font, scale: f32) -> (u64, u6
     font.weight().hash(&mut second);
     size.hash(&mut second);
     font.family().hash(&mut second);
-    text.hash(&mut second);
 
     (first.finish(), second.finish())
 }
@@ -219,10 +240,17 @@ impl SoftwareSurface {
             if cache.0 != epoch {
                 cache.0 = epoch;
                 cache.1.clear();
+                let _ = TEXT_METRICS_ORDER.try_with(|order| order.borrow_mut().clear());
             }
-            if cache.1.len() >= TEXT_METRICS_CACHE_LIMIT {
-                cache.1.clear();
-            }
+            TEXT_METRICS_ORDER.with(|order| {
+                let mut order = order.borrow_mut();
+                if order.len() >= TEXT_METRICS_CACHE_LIMIT {
+                    if let Some(oldest) = order.pop_front() {
+                        cache.1.remove(&oldest);
+                    }
+                }
+                order.push_back(key);
+            });
             cache.1.insert(key, metrics);
         });
         metrics
@@ -256,10 +284,17 @@ impl SoftwareSurface {
             if cache.0 != epoch {
                 cache.0 = epoch;
                 cache.1.clear();
+                let _ = TEXT_SHAPES_ORDER.try_with(|order| order.borrow_mut().clear());
             }
-            if cache.1.len() >= TEXT_SHAPES_CACHE_LIMIT {
-                cache.1.clear();
-            }
+            TEXT_SHAPES_ORDER.with(|order| {
+                let mut order = order.borrow_mut();
+                if order.len() >= TEXT_SHAPES_CACHE_LIMIT {
+                    if let Some(oldest) = order.pop_front() {
+                        cache.1.remove(&oldest);
+                    }
+                }
+                order.push_back(key);
+            });
             cache.1.insert(key, shaped.clone());
         });
         shaped
@@ -437,5 +472,46 @@ mod tests {
         invalidate_text_measurements();
         let _ = surface.measure_text("hello", &font);
         assert_eq!(take_builds(), (1, 1), "a new epoch must miss the old entry");
+    }
+
+    /// The two fingerprints still separate inputs the summary half cannot see.
+    ///
+    /// # What this pins
+    ///
+    /// The second half of the key hashes the text's length plus its first and last eight bytes
+    /// rather than every byte (REND-14). Two strings that agree on that summary — a long middle
+    /// differing, which is exactly what an edited line or a changed number looks like — must still
+    /// get different keys, or the cache would serve one label's width for another. The full-text
+    /// first half is what makes that true, and this asserts it end to end through the pair.
+    #[test]
+    fn fingerprints_separate_texts_that_share_a_summary() {
+        let font = Font::default();
+        let head = "head-head-";
+        let tail = "-tail-tail";
+        let a = format!("{head}alpha{tail}");
+        let b = format!("{head}bravo{tail}");
+        assert_eq!(a.len(), b.len(), "the fixture must agree on the summary's length");
+        assert_eq!(
+            fingerprint_summary(&a),
+            fingerprint_summary(&b),
+            "and on the head/tail bytes, or this test proves nothing"
+        );
+
+        let key_a = text_measurement_fingerprint(&a, &font, 1.0);
+        let key_b = text_measurement_fingerprint(&b, &font, 1.0);
+        assert_ne!(key_a, key_b, "different middles must still be different keys");
+
+        // The pair is a function, not a random value.
+        assert_eq!(text_measurement_fingerprint(&a, &font, 1.0), key_a);
+        // And a font difference is part of the key on both halves.
+        let mut bigger = Font::default();
+        bigger.set_size(28.0);
+        assert_ne!(text_measurement_fingerprint(&a, &bigger, 1.0), key_a);
+    }
+
+    /// The summary the second fingerprint is built from, for the test above.
+    fn fingerprint_summary(text: &str) -> (usize, &[u8], &[u8]) {
+        let bytes = text.as_bytes();
+        (bytes.len(), &bytes[..bytes.len().min(8)], &bytes[bytes.len().saturating_sub(8)..])
     }
 }

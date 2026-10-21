@@ -357,7 +357,7 @@ impl Draw for ToastStack {
         // `resolved_theme_style` takes and releases the global manager's lock
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("toast_stack");
         // `toast_stack` is not a control kind in the role table, so it classifies as
         // `Surface`, whose background is `theme.colors.background` — byte-identical
@@ -447,7 +447,7 @@ impl Draw for ToastStack {
             context.draw_text(
                 Point::new(row.x + 20, row.y + 17),
                 &item.message,
-                effective_font(&style),
+                effective_font(style),
                 text_color,
                 HorizontalAlignment::Left,
             );

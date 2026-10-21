@@ -465,6 +465,9 @@ impl Draw for PieChart {
 
         // Draw sectors
         let mut start_angle = -std::f32::consts::FRAC_PI_2; // Start at 12 o'clock
+                                                            // One reused buffer for the percentage labels: `format!` built a fresh `String` per sector
+                                                            // per frame, and the text is at most four characters.
+        let mut pct_text = crate::compat::String::new();
         for slice in &self.slices {
             if slice.value <= 0.0 || !slice.value.is_finite() {
                 continue;
@@ -544,7 +547,8 @@ impl Draw for PieChart {
                 // Draw percentage on the arc (inside, not overlapping label)
                 if self.show_percentages && total > 0.0 {
                     let pct = (slice.value / total * 100.0).round() as i32;
-                    let pct_text = format!("{pct}%");
+                    pct_text.clear();
+                    let _ = core::fmt::Write::write_fmt(&mut pct_text, format_args!("{pct}%"));
                     // Position percentage inside the sector, halfway between center and edge
                     let pct_radius = if self.donut {
                         (outer_radius + inner_radius) * 0.5

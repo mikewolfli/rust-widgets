@@ -439,7 +439,7 @@ impl Draw for LCDNumber {
         // `resolved_theme_style` and `current_theme` each take and release the global
         // manager's lock internally, so no guard is held across either call or the
         // draw (the mutex is not re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("lcd_number");
         let theme_background = crate::style::theme_manager()
             .current_theme()

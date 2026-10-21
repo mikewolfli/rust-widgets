@@ -115,6 +115,7 @@ pub use crate::style::HighContrastMode;
 ///
 /// Not intended for production use: an application does not have "other tests" to
 /// race against, and holding this would only couple unrelated code.
+pub(crate) use manager::invalidate_resolved_style_cache;
 pub use manager::theme_test_guard;
 pub use manager::{
     global_high_contrast, global_theme_manager, resolved_semantic_border, resolved_theme_style,

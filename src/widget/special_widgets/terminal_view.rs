@@ -303,7 +303,7 @@ impl Draw for TerminalView {
         // `resolved_theme_style` takes and releases the global manager's lock
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("terminal_view")
             .or_else(|| crate::style::resolved_theme_style("text_edit"));
         // `terminal_view` is not a control kind in the role table, so it classifies as
@@ -375,7 +375,7 @@ impl Draw for TerminalView {
         // line's top 10 px above the edge and let the glyphs paint 4 px below it. Reserving
         // one line height plus a margin keeps the prompt inside the frame, and it also
         // subtracts that row from the output area below so the two cannot overlap.
-        let prompt_font = effective_font(&style);
+        let prompt_font = effective_font(style);
         let prompt_line_height = context.measure_text("M", prompt_font).height.max(1);
         let prompt_row_height = prompt_line_height + 6;
         let body_height = rect.height.saturating_sub(prompt_row_height);

@@ -209,7 +209,7 @@ impl Draw for MiniCanvas {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
-        let style = self.style().clone();
+        let style = self.style();
         // `crate::theme` exists only in a `full_widgets` build (see `src/theme/mod.rs` and
         // principle #47). A `mini`/`embedded` build has no colour model at all, so the theme
         // read has to be conditioned on the module being there — naming it unconditionally

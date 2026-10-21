@@ -94,12 +94,17 @@ impl LottieAnimated {
         Self { base: Vec::new(), keyframes: Vec::new() }
     }
 
-    /// Interpolate the value at a given frame.
-    fn at_frame(&self, frame: f64) -> Vec<f64> {
+    /// The keyframe span containing `frame`, or `None` when the property is static.
+    ///
+    /// Returns `(prev, next, t)`: the keyframe at or before `frame`, the one after it (absent past
+    /// the last keyframe), and the interpolation fraction between them. Both value readers below go
+    /// through this, so a scalar and an array read of the same property cannot pick different
+    /// keyframes.
+    fn span_at(&self, frame: f64) -> Option<(&LottieKeyFrame, Option<&LottieKeyFrame>, f64)> {
         if self.keyframes.is_empty() {
-            return self.base.clone();
+            return None;
         }
-        // Find the two keyframes that surround `frame`.
+        // Find the keyframe at or before `frame`.
         let mut prev_idx = 0;
         for (i, kf) in self.keyframes.iter().enumerate() {
             if kf.t <= frame {
@@ -108,21 +113,74 @@ impl LottieAnimated {
                 break;
             }
         }
-        let next_idx = if prev_idx + 1 < self.keyframes.len() { prev_idx + 1 } else { prev_idx };
-
         let prev = &self.keyframes[prev_idx];
-        if prev_idx == next_idx {
-            return prev.s.clone();
-        }
-        let next = &self.keyframes[next_idx];
+        let Some(next) = self.keyframes.get(prev_idx + 1) else {
+            return Some((prev, None, 0.0));
+        };
         let range = (next.t - prev.t).max(1.0);
         let t = ((frame - prev.t) / range).clamp(0.0, 1.0);
-        prev.s.iter().zip(next.s.iter()).map(|(a, b)| a + (b - a) * t).collect()
+        Some((prev, Some(next), t))
+    }
+
+    /// Every component of the property at `frame`.
+    ///
+    /// This is the **parse-time** reader (a colour samples itself once at load); the per-frame
+    /// render path uses [`LottieAnimated::at_frame`] / [`LottieAnimated::at_frame_scalar`], which
+    /// allocate nothing.
+    fn components_at(&self, frame: f64) -> Vec<f64> {
+        match self.span_at(frame) {
+            None => self.base.clone(),
+            Some((prev, None, _)) => prev.s.clone(),
+            Some((prev, Some(next), t)) => {
+                prev.s.iter().zip(next.s.iter()).map(|(a, b)| a + (b - a) * t).collect()
+            }
+        }
+    }
+
+    /// The property's first two components at `frame`, each `None` when that component is absent.
+    ///
+    /// # Why a pair and not a `Vec`
+    ///
+    /// Every per-frame caller reads components 0 and 1 (position, scale, size) and nothing in the
+    /// renderer uses a third, yet this used to hand back a freshly allocated `Vec<f64>` per property
+    /// per frame — layers × transform × groups × shapes is easily hundreds of allocations a frame,
+    /// plus another for the `clone` of a static value.
+    fn at_frame(&self, frame: f64) -> (Option<f64>, Option<f64>) {
+        let Some((prev, next, t)) = self.span_at(frame) else {
+            return (self.base.first().copied(), self.base.get(1).copied());
+        };
+        let lerp = |a: Option<&f64>, b: Option<&f64>| -> Option<f64> {
+            // A component missing from either end is absent from the result, exactly as
+            // `zip`ping the two arrays used to answer.
+            match (a, b) {
+                (Some(a), Some(b)) => Some(a + (b - a) * t),
+                _ => None,
+            }
+        };
+        match next {
+            None => (prev.s.first().copied(), prev.s.get(1).copied()),
+            Some(next) => {
+                (lerp(prev.s.first(), next.s.first()), lerp(prev.s.get(1), next.s.get(1)))
+            }
+        }
     }
 
     /// Get a single interpolated value (for single-component properties).
+    ///
+    /// Zero-allocation: the scalar callers (rotation, opacity, corner radius, stroke width) are the
+    /// majority of the per-frame evaluations, and `at_frame(..).first()` built a whole `Vec` — for a
+    /// scalar property, a one-element heap allocation — to read one number.
     fn at_frame_scalar(&self, frame: f64) -> f64 {
-        self.at_frame(frame).first().copied().unwrap_or(0.0)
+        let Some((prev, next, t)) = self.span_at(frame) else {
+            return self.base.first().copied().unwrap_or(0.0);
+        };
+        match next {
+            None => prev.s.first().copied().unwrap_or(0.0),
+            Some(next) => match (prev.s.first(), next.s.first()) {
+                (Some(a), Some(b)) => a + (b - a) * t,
+                _ => 0.0,
+            },
+        }
     }
 }
 
@@ -150,7 +208,9 @@ pub struct LottieColor {
 impl LottieColor {
     fn from_json(val: &serde_json::Value) -> Self {
         let animated = LottieAnimated::from_json(val);
-        let v = animated.at_frame(0.0);
+        // A colour is sampled once, at load, and needs all four channels — so it uses the
+        // allocating reader rather than the two-component one the render path takes.
+        let v = animated.components_at(0.0);
         Self {
             r: v.first().copied().unwrap_or(0.0),
             g: v.get(1).copied().unwrap_or(0.0),
@@ -588,6 +648,12 @@ pub struct LottieWidget {
     pub animation_finished: GenericSignal,
     /// Parsed layers with shapes for rendering.
     layers: Vec<LottieLayer>,
+    /// The layers' indices into [`Self::layers`], sorted by `LottieLayer::index`.
+    ///
+    /// Resolved once at load. `render_layers` used to collect every layer into a fresh `Vec` and
+    /// sort it on **every frame**, for an order that cannot change after parsing (WDGT-04). Keeping
+    /// the order separate from `layers` means the accessors still report the document's own order.
+    layer_order: Vec<usize>,
     /// Composition width from Lottie JSON.
     comp_width: f64,
     /// Composition height from Lottie JSON.
@@ -617,6 +683,7 @@ impl LottieWidget {
             frame_timer_us: 0,
             animation_finished: GenericSignal::new(),
             layers: Vec::new(),
+            layer_order: Vec::new(),
             comp_width: 100.0,
             comp_height: 100.0,
             frame_offset: 0.0,
@@ -709,6 +776,10 @@ impl LottieWidget {
         } else {
             Vec::new()
         };
+        // The paint order is fixed by the document, so it is resolved here rather than per frame.
+        // Lower `index` is lower in the stack, which is the order `render_layers` draws in.
+        self.layer_order = (0..self.layers.len()).collect();
+        self.layer_order.sort_by_key(|&slot| self.layers[slot].index);
 
         // Record every shape type the renderer cannot draw. This is the queryable
         // diagnostic that replaces the old silent skip: a caller can now tell that
@@ -970,11 +1041,10 @@ impl LottieWidget {
         let offset_x = widget_rect.x as f64 + (widget_rect.width as f64 - comp_draw_w) / 2.0;
         let offset_y = widget_rect.y as f64 + (widget_rect.height as f64 - comp_draw_h) / 2.0;
 
-        // Render layers sorted by index (lower index = lower in the stack).
-        let mut sorted_layers: Vec<&LottieLayer> = self.layers.iter().collect();
-        sorted_layers.sort_by_key(|l| l.index);
-
-        for layer in &sorted_layers {
+        // Render layers in the order parsed at load (lower index = lower in the stack). The sort
+        // used to run per frame over a freshly collected `Vec`; the order is a property of the
+        // document, so it is resolved once in `load_json`.
+        for layer in self.layer_order.iter().filter_map(|&slot| self.layers.get(slot)) {
             let t = &layer.transform;
             let pos = t.position.at_frame(frame);
             let s = t.scale.at_frame(frame);
@@ -987,12 +1057,12 @@ impl LottieWidget {
             // approximate it. Positions use the uniform `scale`, exactly as the
             // original renderer did, so existing output is unchanged.
             let placement = ShapePlacement {
-                tx: offset_x + pos.first().copied().unwrap_or(0.0) * scale,
-                ty: offset_y + pos.get(1).copied().unwrap_or(0.0) * scale,
+                tx: offset_x + pos.0.unwrap_or(0.0) * scale,
+                ty: offset_y + pos.1.unwrap_or(0.0) * scale,
                 scale_x: scale,
                 scale_y: scale,
-                size_x: s.first().copied().unwrap_or(100.0) / 100.0,
-                size_y: s.get(1).copied().unwrap_or(100.0) / 100.0,
+                size_x: s.0.unwrap_or(100.0) / 100.0,
+                size_y: s.1.unwrap_or(100.0) / 100.0,
                 opacity: layer_opacity,
                 has_rotation: rot.abs() > 0.5,
             };
@@ -1068,11 +1138,11 @@ impl LottieWidget {
                     let gp = gt.position.at_frame(frame);
                     let gs = gt.scale.at_frame(frame);
                     let grot = gt.rotation.at_frame_scalar(frame);
-                    let gx = gs.first().copied().unwrap_or(100.0) / 100.0;
-                    let gy = gs.get(1).copied().unwrap_or(100.0) / 100.0;
+                    let gx = gs.0.unwrap_or(100.0) / 100.0;
+                    let gy = gs.1.unwrap_or(100.0) / 100.0;
                     let group_placement = ShapePlacement {
-                        tx: placement.tx + gp.first().copied().unwrap_or(0.0) * placement.scale_x,
-                        ty: placement.ty + gp.get(1).copied().unwrap_or(0.0) * placement.scale_y,
+                        tx: placement.tx + gp.0.unwrap_or(0.0) * placement.scale_x,
+                        ty: placement.ty + gp.1.unwrap_or(0.0) * placement.scale_y,
                         scale_x: placement.scale_x * gx,
                         scale_y: placement.scale_y * gy,
                         size_x: placement.size_x * gx,
@@ -1107,14 +1177,12 @@ impl LottieWidget {
         let rs = rect_shape.size.at_frame(frame);
         let rr = rect_shape.rounded.at_frame_scalar(frame);
 
-        let shape_x = placement.tx
-            + (rp.first().copied().unwrap_or(0.0) - rs.first().copied().unwrap_or(0.0) / 2.0)
-                * placement.scale_x;
-        let shape_y = placement.ty
-            + (rp.get(1).copied().unwrap_or(0.0) - rs.get(1).copied().unwrap_or(0.0) / 2.0)
-                * placement.scale_y;
-        let shape_w = (rs.first().copied().unwrap_or(0.0) * placement.scale_x).round() as u32;
-        let shape_h = (rs.get(1).copied().unwrap_or(0.0) * placement.scale_y).round() as u32;
+        let shape_x =
+            placement.tx + (rp.0.unwrap_or(0.0) - rs.0.unwrap_or(0.0) / 2.0) * placement.scale_x;
+        let shape_y =
+            placement.ty + (rp.1.unwrap_or(0.0) - rs.1.unwrap_or(0.0) / 2.0) * placement.scale_y;
+        let shape_w = (rs.0.unwrap_or(0.0) * placement.scale_x).round() as u32;
+        let shape_h = (rs.1.unwrap_or(0.0) * placement.scale_y).round() as u32;
         let radius = (rr * placement.scale_x).round().max(0.0) as u32;
 
         let shape_rect = Rect::new(shape_x as i32, shape_y as i32, shape_w, shape_h);
@@ -1176,10 +1244,10 @@ impl LottieWidget {
         let ep = ellipse_shape.position.at_frame(frame);
         let es = ellipse_shape.size.at_frame(frame);
 
-        let cx = placement.tx + ep.first().copied().unwrap_or(0.0) * placement.scale_x;
-        let cy = placement.ty + ep.get(1).copied().unwrap_or(0.0) * placement.scale_y;
-        let ew = (es.first().copied().unwrap_or(0.0) * placement.scale_x).round() as u32;
-        let eh = (es.get(1).copied().unwrap_or(0.0) * placement.scale_y).round() as u32;
+        let cx = placement.tx + ep.0.unwrap_or(0.0) * placement.scale_x;
+        let cy = placement.ty + ep.1.unwrap_or(0.0) * placement.scale_y;
+        let ew = (es.0.unwrap_or(0.0) * placement.scale_x).round() as u32;
+        let eh = (es.1.unwrap_or(0.0) * placement.scale_y).round() as u32;
 
         // Apply scaling from the transform chain.
         let sw = (ew as f64 * placement.size_x).round() as u32;
@@ -1500,7 +1568,7 @@ impl Draw for LottieWidget {
         // pixel baseline cannot move. Resolved once per draw, because the empty state, the
         // background, the border, the chips and the progress trough all read from it and
         // re-resolving would take the theme lock several times inside one draw.
-        let style = self.style().clone();
+        let style = self.style();
         let themed = crate::style::resolved_theme_style("lottie_widget");
         let themed_bg = themed.as_ref().and_then(|resolved| resolved.background_color);
         let themed_border = themed.as_ref().and_then(|resolved| resolved.border_color);
@@ -1530,7 +1598,7 @@ impl Draw for LottieWidget {
             // widget's chrome — there is no animation data here at all — so both now follow
             // the theme instead of pinning the control to one appearance.
             context.fill_rounded_rect(rect, 4, base_bg);
-            let font = effective_font(&style);
+            let font = effective_font(style);
             let text = "No Lottie animation loaded";
             // Centred on the vertical midline and fitted to the control's width: the label
             // is 25 characters at 14 px, wider than most controls it is drawn into, and
@@ -1576,7 +1644,7 @@ impl Draw for LottieWidget {
         self.render_layers(context, frame, rect);
 
         // Frame counter overlay at top-right.
-        let font = effective_font(&style);
+        let font = effective_font(style);
         let counter_text =
             format!("{}/{} FPS:{:.0}", self.current_frame + 1, self.total_frames, self.frame_rate);
         let c_metrics = context.measure_text(&counter_text, font);
@@ -2139,6 +2207,92 @@ mod tests {
         } else {
             panic!("Expected Rectangle shape");
         }
+    }
+
+    /// The scalar and array readers must interpolate identically, and neither allocates.
+    ///
+    /// # Why this exists
+    ///
+    /// `at_frame_scalar` used to be `at_frame(..).first()`: one heap `Vec` per scalar property per
+    /// frame (rotation, opacity, corner radius, stroke width — the majority of the evaluations) to
+    /// read one number. Splitting it into its own f64 path makes the two readers two
+    /// implementations of one interpolation, so the only thing keeping them honest is this
+    /// agreement check across the interesting frames: before the first keyframe, exactly on one, in
+    /// the middle of a span, and past the last one.
+    #[test]
+    fn the_scalar_reader_agrees_with_the_array_reader() {
+        let json = r#"{
+            "op":20,"ip":0,"fr":30,"v":"5.5.2","w":100,"h":100,
+            "layers":[
+                {
+                    "ind":0,"parent":-1,
+                    "ks":{"a":{"k":[0,0]},"p":{"k":[{"t":0,"s":[0,25]},{"t":10,"s":[100,75]}]},"s":{"k":[100,100]},"r":{"k":[{"t":0,"s":[0]},{"t":10,"s":[90]}]},"o":{"k":[100]}},
+                    "shapes":[]
+                }
+            ]
+        }"#;
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 100, 100));
+        lottie.load_json(json).unwrap();
+        let transform = &lottie.layers()[0].transform;
+
+        for frame in [-5.0, 0.0, 2.5, 5.0, 7.5, 10.0, 20.0] {
+            let (x, y) = transform.position.at_frame(frame);
+            assert_eq!(
+                transform.position.at_frame_scalar(frame),
+                x.unwrap_or(0.0),
+                "the scalar reader is the array reader's first component at frame {frame}"
+            );
+            assert!(y.is_some(), "the second component exists at frame {frame}");
+            assert_eq!(
+                transform.rotation.at_frame_scalar(frame),
+                transform.rotation.at_frame(frame).0.unwrap_or(0.0),
+                "rotation (a true scalar property) agrees at frame {frame}"
+            );
+        }
+
+        // The endpoints and the midpoint are the numbers the fixture states, so agreement is not
+        // agreement on a wrong answer.
+        assert_eq!(transform.position.at_frame(0.0), (Some(0.0), Some(25.0)));
+        assert_eq!(transform.position.at_frame(5.0), (Some(50.0), Some(50.0)));
+        assert_eq!(transform.position.at_frame(10.0), (Some(100.0), Some(75.0)));
+        // Past the last keyframe the value holds, and a static property reports its base.
+        assert_eq!(transform.position.at_frame(20.0), (Some(100.0), Some(75.0)));
+        assert_eq!(transform.opacity.at_frame(3.0), (Some(100.0), None));
+        assert_eq!(transform.opacity.at_frame_scalar(3.0), 100.0);
+    }
+
+    /// The layer paint order is resolved once at load, and it is a permutation of the layers.
+    ///
+    /// `render_layers` used to collect every layer into a fresh `Vec` and sort it **per frame**
+    /// (WDGT-04), for an order that cannot change after parsing. The order now lives in
+    /// `layer_order`; this pins that it is sorted by the document's `ind` while `layers()` keeps
+    /// reporting the document's own order.
+    #[test]
+    fn the_layer_paint_order_is_resolved_at_load() {
+        // Three layers declared out of paint order: `ind` 2, 0, 1.
+        let layer = |ind: u32| {
+            format!(
+                r#"{{"ind":{ind},"parent":-1,"ks":{{"a":{{"k":[0,0]}},"p":{{"k":[0,0]}},"s":{{"k":[100,100]}},"r":{{"k":[0]}},"o":{{"k":[100]}}}},"shapes":[]}}"#
+            )
+        };
+        let json = format!(
+            r#"{{"op":10,"ip":0,"fr":30,"w":100,"h":100,"layers":[{},{},{}]}}"#,
+            layer(2),
+            layer(0),
+            layer(1)
+        );
+        let mut lottie = LottieWidget::new(Rect::new(0, 0, 100, 100));
+        lottie.load_json(&json).unwrap();
+
+        assert_eq!(
+            lottie.layers().iter().map(|l| l.index).collect::<Vec<_>>(),
+            vec![2, 0, 1],
+            "the accessor reports the document's own order"
+        );
+        let painted: Vec<i32> =
+            lottie.layer_order.iter().map(|&slot| lottie.layers[slot].index).collect();
+        assert_eq!(painted, vec![0, 1, 2], "the paint order is sorted by `ind`");
+        assert_eq!(lottie.layer_order.len(), lottie.layers.len(), "and it addresses every layer");
     }
 
     #[test]

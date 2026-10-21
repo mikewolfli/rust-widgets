@@ -453,7 +453,7 @@ impl Draw for ColorPicker {
         // what the `hue-wheel` exemption is about). Every literal below used to be a light-theme
         // grey, so the panel did not move with the appearance at all and a dark-theme picker was
         // a white card.
-        let style = self.style().clone();
+        let style = self.style();
         let theme = crate::style::resolved_theme_style("color_picker");
         let panel = style
             .background_color
@@ -516,7 +516,7 @@ impl Draw for ColorPicker {
 
         // The hex readout takes the row immediately below the palette, which the palette's own
         // rectangle now leaves for it.
-        let hex_font = effective_font(&style);
+        let hex_font = effective_font(style);
         let hex_text = self.hex_rgba();
         let hex_height = context.measure_text(&hex_text, hex_font).height as i32;
         let palette = self.palette_rect();

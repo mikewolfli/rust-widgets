@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Focus management for widgets.
-use crate::compat::{Box, HashMap, Vec};
+use crate::compat::{BTreeSet, Box, HashMap, Vec};
 use crate::core::ObjectId;
 use crate::signal::GenericSignal;
 /// Manages keyboard focus across widgets.
@@ -28,6 +28,11 @@ pub struct FocusManager {
     traversal_strategy: FocusTraversalStrategy,
     /// Widget positions for RowMajor/ColumnMajor traversal.
     widget_positions: HashMap<ObjectId, (i32, i32)>,
+    /// Membership index for [`Self::registration_order`].
+    ///
+    /// Registration used `Vec::contains`, which made registering n widgets O(n²) comparisons;
+    /// this is O(log n) and keeps the canonical order untouched.
+    registered: BTreeSet<ObjectId>,
 }
 impl FocusManager {
     /// Creates a new focus manager.
@@ -40,6 +45,7 @@ impl FocusManager {
             on_focus_changed: None,
             traversal_strategy: FocusTraversalStrategy::TabOrder,
             widget_positions: HashMap::new(),
+            registered: BTreeSet::new(),
         }
     }
     /// Returns the currently focused widget, if any.
@@ -93,20 +99,34 @@ impl FocusManager {
 
     /// Register a widget as focusable, appending it to the tab order.
     pub fn register_focusable(&mut self, id: ObjectId) {
-        if !self.registration_order.contains(&id) {
-            self.registration_order.push(id);
+        if !self.registered.insert(id) {
+            // Already registered: the effective order is unchanged, so re-deriving it would only
+            // allocate and sort for nothing.
+            return;
         }
-        // A registration must respect the active spatial policy on the next Tab,
-        // not only when a position or strategy change re-sorts. Re-deriving the
-        // effective order here keeps a later `register_focusable` / `set_focus_order`
-        // from silently ignoring an enabled RowMajor/ColumnMajor strategy.
-        self.reorder_by_strategy();
+        self.registration_order.push(id);
+        // Under `TabOrder` the effective order is the canonical one, so append in place rather
+        // than re-deriving (and cloning) the whole list on every registration. A spatial policy
+        // still re-sorts, because the new widget's position may belong before existing entries.
+        match self.traversal_strategy {
+            FocusTraversalStrategy::TabOrder => self.focusable_widgets.push(id),
+            _ => self.reorder_by_strategy(),
+        }
     }
 
     /// Remove a widget from the focusable order.
     pub fn unregister_focusable(&mut self, id: ObjectId) {
+        if !self.registered.remove(&id) {
+            return;
+        }
         self.registration_order.retain(|&x| x != id);
-        self.reorder_by_strategy();
+        self.focusable_widgets.retain(|&x| x != id);
+        // A removal cannot move the remaining widgets relative to each other, so the effective
+        // order is already correct under `TabOrder`. Spatial strategies keep their sort because
+        // the positions of the remaining widgets are unchanged.
+        if !matches!(self.traversal_strategy, FocusTraversalStrategy::TabOrder) {
+            self.reorder_by_strategy();
+        }
         // If the removed widget was focused, clear focus and fire a11y callback.
         if self.focused_widget == Some(id) {
             self.focused_widget = None;
@@ -133,6 +153,7 @@ impl FocusManager {
             }
         }
         self.registration_order = ids;
+        self.registered = self.registration_order.iter().copied().collect();
         // A full replacement must respect an enabled spatial policy on the next
         // Tab too, exactly as dynamic registration does.
         self.reorder_by_strategy();

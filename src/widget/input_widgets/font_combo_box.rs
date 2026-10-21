@@ -662,7 +662,7 @@ impl Draw for FontComboBox {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         // `font_combo_box` classifies as `WidgetRole::Input` (the role table lists it as
         // `fontcombobox`), whose resolved background is the field interior — lighter on a light
         // theme, darker on a dark one — and whose ink is the theme's foreground.

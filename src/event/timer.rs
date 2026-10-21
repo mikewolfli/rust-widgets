@@ -147,69 +147,76 @@ impl TimerManager {
         // * Timers present -> `wait_timeout` for the nearest deadline, so a short timer
         //   fires as soon as it is due rather than on a fixed 2 ms tick, and a late
         //   notification recomputes the wait rather than delaying the next check.
-        let thread_handle = thread::spawn(move || loop {
-            worker_shared.wake_count.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+        let thread_handle = thread::spawn(move || {
+            // Scratch buffers reused across every wake. They used to be allocated fresh on each
+            // loop iteration, which meant two `Vec`s per timer tick even when no timer was due.
             let mut due_events: Vec<(ObjectId, u32)> = Vec::new();
+            let mut keys: Vec<(ObjectId, u32)> = Vec::new();
+            loop {
+                worker_shared.wake_count.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+                due_events.clear();
+                keys.clear();
 
-            {
-                let mut guard = lock(&worker_shared.state);
-                if !guard.running {
-                    return;
-                }
+                {
+                    let mut guard = lock(&worker_shared.state);
+                    if !guard.running {
+                        return;
+                    }
 
-                let now = Instant::now();
+                    let now = Instant::now();
 
-                // Collect everything already due and advance repeating deadlines.
-                let keys: Vec<(ObjectId, u32)> = guard.timers.keys().copied().collect();
-                for key in keys {
-                    if let Some(entry) = guard.timers.get_mut(&key) {
-                        if now >= entry.next_fire {
-                            due_events.push(key);
-                            if entry.repeating {
-                                // Use Instant::now() + interval to avoid cumulative drift.
-                                // If a timer fires late due to load, reset based on current time
-                                // so subsequent firings are not delayed by the accumulated drift.
-                                entry.next_fire = Instant::now() + entry.interval;
+                    // Collect everything already due and advance repeating deadlines.
+                    keys.extend(guard.timers.keys().copied());
+                    for key in keys.iter().copied() {
+                        if let Some(entry) = guard.timers.get_mut(&key) {
+                            if now >= entry.next_fire {
+                                due_events.push(key);
+                                if entry.repeating {
+                                    // Use Instant::now() + interval to avoid cumulative drift.
+                                    // If a timer fires late due to load, reset based on current time
+                                    // so subsequent firings are not delayed by the accumulated drift.
+                                    entry.next_fire = Instant::now() + entry.interval;
+                                }
                             }
                         }
                     }
-                }
 
-                for &(target, id) in &due_events {
-                    if let Some(entry) = guard.timers.get(&(target, id)) {
-                        if !entry.repeating {
-                            guard.timers.remove(&(target, id));
+                    for &(target, id) in &due_events {
+                        if let Some(entry) = guard.timers.get(&(target, id)) {
+                            if !entry.repeating {
+                                guard.timers.remove(&(target, id));
+                            }
                         }
+                    }
+
+                    if due_events.is_empty() {
+                        // Nothing to emit: park until the nearest deadline, or indefinitely when
+                        // no timer is registered. `spurious_wakeup` loops rather than assuming
+                        // the notification was the one we expected — the state is re-read under
+                        // the lock each time, which is the condition-variable contract.
+                        match TimerShared::nearest_deadline(&guard) {
+                            Some(deadline) => {
+                                let wait_for = deadline.saturating_duration_since(Instant::now());
+                                // A deadline already in the past collapses to a zero timeout,
+                                // which returns immediately; the next loop iteration then fires
+                                // it, so no due timer is missed.
+                                let _ = worker_shared.signal.wait_timeout(guard, wait_for);
+                            }
+                            None => {
+                                guard = worker_shared
+                                    .signal
+                                    .wait(guard)
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            }
+                        }
+                        continue;
                     }
                 }
 
-                if due_events.is_empty() {
-                    // Nothing to emit: park until the nearest deadline, or indefinitely when
-                    // no timer is registered. `spurious_wakeup` loops rather than assuming
-                    // the notification was the one we expected — the state is re-read under
-                    // the lock each time, which is the condition-variable contract.
-                    match TimerShared::nearest_deadline(&guard) {
-                        Some(deadline) => {
-                            let wait_for = deadline.saturating_duration_since(Instant::now());
-                            // A deadline already in the past collapses to a zero timeout,
-                            // which returns immediately; the next loop iteration then fires
-                            // it, so no due timer is missed.
-                            let _ = worker_shared.signal.wait_timeout(guard, wait_for);
-                        }
-                        None => {
-                            guard = worker_shared
-                                .signal
-                                .wait(guard)
-                                .unwrap_or_else(|poisoned| poisoned.into_inner());
-                        }
+                for (target, id) in due_events.drain(..) {
+                    if worker_sender.post(target, Event::timer(id)).is_err() {
+                        lock(&worker_shared.state).timers.remove(&(target, id));
                     }
-                    continue;
-                }
-            }
-
-            for (target, id) in due_events {
-                if worker_sender.post(target, Event::timer(id)).is_err() {
-                    lock(&worker_shared.state).timers.remove(&(target, id));
                 }
             }
         });

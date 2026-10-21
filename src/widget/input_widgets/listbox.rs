@@ -166,6 +166,26 @@ impl ListBox {
             }
         }
     }
+    /// Adds `index` to the selection, keeping `selected_indices` sorted. Returns whether it was new.
+    ///
+    /// # Why the order is an invariant
+    ///
+    /// [`ListBox::selected_indices`] reads as "a set of rows in row order" (its own test asserts
+    /// `&[1, 3]`, not `[3, 1]`), and [`ListBox::is_selected`] answers from that order with a binary
+    /// search. The `Multi` path used to `push` straight onto the end, so selecting rows 3 then 1
+    /// published `[3, 1]` *and* made the lookup miss row 1 on the next repaint — the row was
+    /// selected and drawn unselected. `select_with_modifiers` already sorted after its push; this is
+    /// the same rule for the plain path.
+    fn add_to_selection(&mut self, index: usize) -> bool {
+        match self.selected_indices.binary_search(&index) {
+            Ok(_) => false,
+            Err(position) => {
+                self.selected_indices.insert(position, index);
+                true
+            }
+        }
+    }
+
     /// Removes item at specified index.
     pub fn remove_item(&mut self, index: usize) {
         if index < self.items.len() {
@@ -243,8 +263,12 @@ impl ListBox {
         &self.selected_indices
     }
     /// Returns whether an item is selected.
+    ///
+    /// A binary search rather than a linear scan: `draw` asks this once per visible row, so the scan
+    /// made one frame cost O(visible rows × selected rows) (WDGT-09). The list is kept sorted by
+    /// every mutation — see [`ListBox::add_to_selection`].
     pub fn is_selected(&self, index: usize) -> bool {
-        self.selected_indices.contains(&index)
+        self.selected_indices.binary_search(&index).is_ok()
     }
     /// Selects an item.
     ///
@@ -269,8 +293,7 @@ impl ListBox {
                 self.selection_changed.emit();
             }
             SelectionMode::Multi => {
-                if !self.selected_indices.contains(&index) {
-                    self.selected_indices.push(index);
+                if self.add_to_selection(index) {
                     self.current_row = Some(index);
                     self.item_selected.emit(index);
                     self.selection_changed.emit();
@@ -836,7 +859,7 @@ impl Draw for ListBox {
         // Chrome resolved style-first, then the theme role for this control, then a literal. The
         // theme step is what makes an appearance switch visible; the previous form hardcoded the
         // selection blue, the current-row fill and the separator, so the control was theme-blind.
-        let style = self.style().clone();
+        let style = self.style();
         let theme = crate::style::resolved_theme_style("list_box");
         let surface = style
             .background_color
@@ -1067,6 +1090,47 @@ mod tests {
         lb.select(1);
         assert!(lb.is_selected(1));
         assert_eq!(lb.selected_indices().len(), 1);
+    }
+
+    /// The selection is published in **row order** however it was built.
+    ///
+    /// # The defect this pins
+    ///
+    /// [`ListBox::is_selected`] now answers with a binary search over `selected_indices`, so the
+    /// list has to stay sorted — and `selected_indices()` is a public accessor whose own test
+    /// asserts row order (`&[1, 3]`). The `Multi` path used to `push` straight onto the end, which
+    /// both published `[3, 1]` and made the lookup miss row 1: the row stayed selected while it was
+    /// painted unselected. `select_with_modifiers` already sorted after its push; the plain path
+    /// did not.
+    #[test]
+    fn the_selection_is_published_in_row_order_however_it_was_built() {
+        let mut lb = ListBox::new(Rect::new(0, 0, 200, 200));
+        for i in 0..5 {
+            lb.add_item(format!("item {i}"));
+        }
+        lb.set_selection_mode(SelectionMode::Multi);
+
+        // Out of order on purpose: the later row first.
+        lb.select(3);
+        lb.select(1);
+        lb.select(4);
+        assert_eq!(
+            lb.selected_indices(),
+            &[1, 3, 4],
+            "plain Multi selections are published in row order"
+        );
+        for index in [1, 3, 4] {
+            assert!(lb.is_selected(index), "row {index} must read as selected");
+        }
+        assert!(!lb.is_selected(0) && !lb.is_selected(2), "and the others must not");
+
+        // Re-selecting a selected row must not duplicate it.
+        lb.select(3);
+        assert_eq!(lb.selected_indices(), &[1, 3, 4]);
+
+        // The modifier path keeps the same invariant when it extends.
+        lb.select_with_modifiers(2, crate::shortcut::Modifiers::CTRL);
+        assert_eq!(lb.selected_indices(), &[1, 2, 3, 4], "ctrl-add lands in row order too");
     }
 
     /// A click must select the row `draw` paints under the pointer.

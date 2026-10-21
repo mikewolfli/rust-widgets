@@ -49,6 +49,37 @@ pub fn byte_index_of_char(text: &str, count: usize) -> usize {
     }
 }
 
+/// The byte offset of the character boundary **before** `offset`.
+///
+/// # Why this is shared
+///
+/// `LineEdit`, `TextArea`, `TextEdit` and `MentionEdit` each carried a copy, and the copies had
+/// drifted: three read a caret out of a field, one took an offset, and one stepped back a *byte* and
+/// floored instead of scanning the prefix (WDGT-11). Taking the offset as a parameter is what lets
+/// one implementation serve all of them, including a control that holds more than one caret.
+///
+/// Stepping back one byte and flooring is the same answer as walking the prefix for its last
+/// boundary — the byte before a boundary is always inside the previous character, or is that
+/// character's own first byte — and it does not read the prefix.
+pub fn previous_char_boundary(text: &str, offset: usize) -> usize {
+    let boundary = floor_char_boundary(text, offset);
+    if boundary == 0 {
+        return 0;
+    }
+    floor_char_boundary(text, boundary - 1)
+}
+
+/// The byte offset of the character boundary **after** `offset`.
+///
+/// At or past the end this returns `text.len()`, so a caret can never step out of the value.
+pub fn next_char_boundary(text: &str, offset: usize) -> usize {
+    let boundary = floor_char_boundary(text, offset);
+    match text[boundary..].chars().next() {
+        Some(ch) => boundary + ch.len_utf8(),
+        None => text.len(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,5 +135,39 @@ mod tests {
         for i in 0..=text.len() + 3 {
             let _ = &text[..floor_char_boundary(text, i)];
         }
+    }
+
+    /// The two stepping helpers round-trip on every character of a mixed string.
+    ///
+    /// # What this pins
+    ///
+    /// Four controls used to step the caret with their own copy of this arithmetic, and one of them
+    /// stepped back a byte instead of scanning. Unifying them is only safe if the shared answer is
+    /// the same for every input, so this walks a string containing a 1-, 2-, 3- and 4-byte character
+    /// and asserts both directions land exactly on the neighbouring boundaries — including that a
+    /// caret at the end cannot step out of the value.
+    #[test]
+    fn character_stepping_visits_every_boundary_exactly_once() {
+        let text = "aé世🎉b";
+        let boundaries: Vec<usize> =
+            text.char_indices().map(|(index, _)| index).chain([text.len()]).collect();
+        assert_eq!(boundaries, vec![0, 1, 3, 6, 10, 11], "the fixture's boundaries");
+
+        for pair in boundaries.windows(2) {
+            assert_eq!(next_char_boundary(text, pair[0]), pair[1], "forward from {}", pair[0]);
+            assert_eq!(previous_char_boundary(text, pair[1]), pair[0], "back from {}", pair[1]);
+        }
+        // The ends are total: no offset can step outside the value.
+        assert_eq!(previous_char_boundary(text, 0), 0);
+        assert_eq!(next_char_boundary(text, text.len()), text.len());
+        assert_eq!(next_char_boundary(text, text.len() + 99), text.len());
+        assert_eq!(previous_char_boundary(text, text.len() + 99), 10);
+
+        // An offset inside a character rounds down before stepping, exactly as the caret placement
+        // that produced it does.
+        assert_eq!(previous_char_boundary(text, 2), 0, "offset 2 is inside 'é'");
+        assert_eq!(next_char_boundary(text, 2), 3, "and stepping forward leaves that character");
+        assert_eq!(previous_char_boundary("", 0), 0);
+        assert_eq!(next_char_boundary("", 0), 0);
     }
 }

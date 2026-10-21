@@ -198,7 +198,14 @@ impl RadioButton {
     }
     /// Sets the text label displayed next to the radio button and requests a redraw.
     pub fn set_text(&mut self, text: impl Into<String>) {
-        self.text = text.into();
+        let text = text.into();
+        // A same-value write cannot change a pixel. `Button`, `CheckBox` and `ToggleButton` already
+        // answered this way; this radio button was the one in the family that repainted on every
+        // write, so a host syncing state in a loop queued frames nobody could see (WDGT-12).
+        if self.text == text {
+            return;
+        }
+        self.text = text;
         self.base.request_redraw();
     }
     /// Sets optional group identifier.
@@ -1395,5 +1402,33 @@ mod tests {
     fn label_ink_width(radio: &mut RadioButton) -> i32 {
         let svg = crate::widget::svg::render_to_svg(radio);
         crate::widget::svg::text_ink_box(&svg).map(|(x, _, right, _)| right - x).unwrap_or(0)
+    }
+
+    /// A same-value write must not queue a repaint.
+    ///
+    /// `Button`, `CheckBox` and `ToggleButton` already answered this way; this control was the one
+    /// in the family that repainted on every write, so a host that syncs its model in a loop queued
+    /// a frame per write for a picture that could not change (WDGT-12).
+    #[test]
+    fn a_same_value_write_does_not_queue_a_repaint() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut radio = RadioButton::new(Rect::new(0, 0, 200, 30));
+        radio.set_text("Option A".to_string());
+
+        let count = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&count);
+        let subscription = crate::signal::ConnectionScope::new();
+        radio.base().redraw_requested.connect_scoped(&subscription, move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+
+        radio.set_text("Option A".to_string());
+        assert_eq!(count.load(Ordering::SeqCst), 0, "a no-op write must not repaint");
+
+        radio.set_text("Option B".to_string());
+        assert_eq!(count.load(Ordering::SeqCst), 1, "a real change must repaint");
+        assert_eq!(radio.text(), "Option B");
     }
 }

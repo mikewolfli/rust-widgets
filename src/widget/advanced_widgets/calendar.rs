@@ -198,7 +198,14 @@ impl Calendar {
         self.minimum_date
     }
     /// Sets minimum date.
+    ///
+    /// A same-value write is a no-op: it cannot clamp anything (the selected date was already
+    /// clamped against this value or a larger one) and it cannot change a pixel, so the repaint it
+    /// used to request is pure waste in a host that syncs state in a loop.
     pub fn set_minimum_date(&mut self, date: chrono::NaiveDate) {
+        if self.minimum_date == date {
+            return;
+        }
         self.minimum_date = date;
         if self.selected_date < date {
             self.set_selected_date(date);
@@ -210,7 +217,12 @@ impl Calendar {
         self.maximum_date
     }
     /// Sets maximum date.
+    ///
+    /// See [`Calendar::set_minimum_date`] for why a same-value write returns early.
     pub fn set_maximum_date(&mut self, date: chrono::NaiveDate) {
+        if self.maximum_date == date {
+            return;
+        }
         self.maximum_date = date;
         if self.selected_date > date {
             self.set_selected_date(date);
@@ -222,7 +234,13 @@ impl Calendar {
         self.first_day_of_week
     }
     /// Sets first day of week.
+    ///
+    /// Returns early on a same-value write, like every setter in this file: the column order cannot
+    /// change, so there is nothing to repaint.
     pub fn set_first_day_of_week(&mut self, weekday: chrono::Weekday) {
+        if self.first_day_of_week == weekday {
+            return;
+        }
         self.first_day_of_week = weekday;
         self.base.request_redraw();
     }
@@ -232,6 +250,9 @@ impl Calendar {
     }
     /// Sets grid visibility.
     pub fn set_grid_visible(&mut self, visible: bool) {
+        if self.grid_visible == visible {
+            return;
+        }
         self.grid_visible = visible;
         self.base.request_redraw();
     }
@@ -241,6 +262,9 @@ impl Calendar {
     }
     /// Sets navigation bar visibility.
     pub fn set_navigation_bar_visible(&mut self, visible: bool) {
+        if self.navigation_bar_visible == visible {
+            return;
+        }
         self.navigation_bar_visible = visible;
         self.base.request_redraw();
     }
@@ -250,6 +274,9 @@ impl Calendar {
     }
     /// Sets horizontal header visibility.
     pub fn set_horizontal_header_visible(&mut self, visible: bool) {
+        if self.horizontal_header_visible == visible {
+            return;
+        }
         self.horizontal_header_visible = visible;
         self.base.request_redraw();
     }
@@ -259,6 +286,9 @@ impl Calendar {
     }
     /// Sets vertical header visibility.
     pub fn set_vertical_header_visible(&mut self, visible: bool) {
+        if self.vertical_header_visible == visible {
+            return;
+        }
         self.vertical_header_visible = visible;
         self.base.request_redraw();
     }
@@ -308,7 +338,13 @@ impl Calendar {
     }
 
     /// Sets the date format string (uses chrono format specifiers).
+    ///
+    /// A same-value write returns early: the pattern is what the navigation-bar title is rendered
+    /// from, so an unchanged one cannot change the ink.
     pub fn set_date_format(&mut self, format: String) {
+        if self.date_format == format {
+            return;
+        }
         self.date_format = format;
         self.base.request_redraw();
     }
@@ -1012,6 +1048,7 @@ impl Draw for Calendar {
             let gutter = self.week_gutter_rect();
             if gutter.width > 0 {
                 let font = role_font(style, 10.0);
+                let mut week_text = String::new();
                 for row in 0..6u32 {
                     let Some(start) = self.week_row_start(row) else {
                         continue;
@@ -1024,9 +1061,14 @@ impl Draw for Calendar {
                     // A step quieter than the day numbers: a week number is an index into the
                     // calendar, not a selectable day, and drawing it at full strength made it read
                     // as one more date in the row.
+                    week_text.clear();
+                    let _ = core::fmt::Write::write_fmt(
+                        &mut week_text,
+                        format_args!("{}", Self::iso_week_of(start)),
+                    );
                     context.draw_text_line(
                         band,
-                        &Self::iso_week_of(start).to_string(),
+                        &week_text,
                         &font,
                         text_color.blend(&calendar_bg, 0.45),
                         HorizontalAlignment::Center,
@@ -1069,6 +1111,14 @@ impl Draw for Calendar {
             } else {
                 border_color
             };
+
+            // The day-number face is a property of the control, not of a cell: it was resolved
+            // inside the 42-cell loop, so a calendar repaint asked the theme for the role font 42
+            // times a frame.
+            let day_font = role_font(style, 11.0);
+            // One reused buffer for the day numbers: `format!` built a fresh `String` for each of
+            // the 42 cells, and the text is at most two digits.
+            let mut day_text = String::new();
 
             for row in 0..6 {
                 for col in 0..7 {
@@ -1187,11 +1237,12 @@ impl Draw for Calendar {
                     // overhang into its neighbour, but the *number* belongs to the whole cell
                     // and must stay centred when that highlight is absent. Centring inside the
                     // tinted band instead would have shifted every non-today number by a pixel.
-                    let day_font = role_font(style, 11.0);
                     let day_line = context.text_line(cell_rect, &day_font);
+                    day_text.clear();
+                    let _ = core::fmt::Write::write_fmt(&mut day_text, format_args!("{day_num}"));
                     context.draw_text_fitted(
                         day_line,
-                        &format!("{day_num}"),
+                        &day_text,
                         &day_font,
                         day_color,
                         HorizontalAlignment::Center,

@@ -277,25 +277,15 @@ impl TextEdit {
     }
 
     /// The byte offset one character before `offset`.
+    ///
+    /// Delegates to the shared [`crate::widget::text_utils::previous_char_boundary`] (WDGT-11).
     fn previous_char_boundary(&self, offset: usize) -> usize {
-        if offset == 0 {
-            return 0;
-        }
-        let caret = floor_char_boundary(&self.text, offset.min(self.text.len()));
-        self.text[..caret].char_indices().next_back().map(|(index, _)| index).unwrap_or(0)
+        crate::widget::text_utils::previous_char_boundary(&self.text, offset)
     }
 
     /// The byte offset one character after `offset`.
     fn next_char_boundary(&self, offset: usize) -> usize {
-        if offset >= self.text.len() {
-            return self.text.len();
-        }
-        let caret = floor_char_boundary(&self.text, offset.min(self.text.len()));
-        self.text[caret..]
-            .char_indices()
-            .nth(1)
-            .map(|(index, _)| caret + index)
-            .unwrap_or(self.text.len())
+        crate::widget::text_utils::next_char_boundary(&self.text, offset)
     }
 
     /// Inserts `text` at the caret, replacing the selection when there is one.
@@ -479,20 +469,30 @@ impl TextEdit {
         let padding = 4;
         let font = self.text_font();
         let interior_width = rect.width.saturating_sub(padding as u32 * 2);
-        self.rows_for(interior_width, font, |ch| {
-            // One measurement per character, matching the painter — and taken from the **renderer's**
-            // own metrics rather than an estimate model.
-            //
-            // # Why the estimate was not good enough
-            //
-            // `estimate_text_width` measures `font.size() * 0.6` per character, which is right for
-            // neither CJK (roughly double) nor a proportional face (an `i` is a third of a `w`).
-            // The row breaks were therefore computed for a font nobody was drawing with, so a row
-            // could be declared full before the ink actually reached the interior's edge — or, worse
-            // for a hit test, the break could sit at a different character than the one the painter
-            // wrapped at. Measuring through `measure_text` makes the table and the ink the same
-            // answer.
-            self.char_advance(ch, font)
+        // # One measurement surface for the whole document
+        //
+        // The advance callback used to call `char_advance`, which builds a `SoftwarePaintBackend`
+        // **and** a `RenderContext` per character and allocates a `String` for each glyph. A
+        // `layout_rows()` of a 10 000-character document therefore built 10 000 measurement
+        // backends — and a single Up key built that table four times. The surface is created once
+        // here, and the glyph's own UTF-8 bytes are measured straight out of a stack buffer.
+        Self::with_measurement(|context| {
+            self.rows_for(interior_width, font, |ch| {
+                // One measurement per character, matching the painter — and taken from the
+                // **renderer's** own metrics rather than an estimate model.
+                //
+                // # Why the estimate was not good enough
+                //
+                // `estimate_text_width` measures `font.size() * 0.6` per character, which is right
+                // for neither CJK (roughly double) nor a proportional face (an `i` is a third of a
+                // `w`). The row breaks were therefore computed for a font nobody was drawing with,
+                // so a row could be declared full before the ink actually reached the interior's
+                // edge — or, worse for a hit test, the break could sit at a different character
+                // than the one the painter wrapped at. Measuring through `measure_text` makes the
+                // table and the ink the same answer.
+                let mut glyph = [0u8; 4];
+                context.measure_text(ch.encode_utf8(&mut glyph), font).width
+            })
         })
     }
 
@@ -509,23 +509,20 @@ impl TextEdit {
         self.text_font().effective_line_height().max(1.0) as i32
     }
 
-    /// The advance of one character under the renderer's own metrics.
+    /// Runs `f` against a throwaway measurement surface.
     ///
-    /// A throwaway backend is the **measurement surface**: `measure_text` writes no command, so a
-    /// zero-sized surface is enough and nothing is rasterised while a layout is computed.
-    fn char_advance(&self, ch: char, font: &Font) -> u32 {
+    /// `measure_text` writes no command, so a zero-sized backend is enough and nothing is
+    /// rasterised while a layout is computed. This exists so callers that measure **many** glyphs
+    /// (the wrap table, the click-to-offset walk) create one backend instead of one per glyph.
+    fn with_measurement<R>(f: impl FnOnce(&RenderContext) -> R) -> R {
         let mut measurement =
             crate::render::SoftwarePaintBackend::new(crate::core::Size::new(0, 0), 1.0);
-        let context = crate::render::RenderContext::new(&mut measurement);
-        context.measure_text(&ch.to_string(), font).width
+        f(&RenderContext::new(&mut measurement))
     }
 
     /// The advance of `text` under the renderer's own metrics.
     fn text_advance(&self, text: &str) -> u32 {
-        let mut measurement =
-            crate::render::SoftwarePaintBackend::new(crate::core::Size::new(0, 0), 1.0);
-        let context = crate::render::RenderContext::new(&mut measurement);
-        context.measure_text(text, self.text_font()).width
+        Self::with_measurement(|context| context.measure_text(text, self.text_font()).width)
     }
 
     /// The row spans the value lays out into at `interior_width`.
@@ -565,8 +562,17 @@ impl TextEdit {
 
     /// The row index a caret at `offset` belongs to.
     pub fn row_of_offset(&self, offset: usize) -> usize {
-        let offset = floor_char_boundary(&self.text, offset.min(self.text.len()));
-        let rows = self.layout_rows();
+        Self::row_of_offset_in(&self.layout_rows(), &self.text, offset)
+    }
+
+    /// The same answer, read from a wrap table the caller already has.
+    ///
+    /// Every caller that needs more than one answer about the same document (the arrow keys, the
+    /// caret's paint) used to call [`Self::layout_rows`] once per answer, so one Up key laid the
+    /// whole document out four times. Taking the table as a parameter is what lets the caller place
+    /// it once.
+    fn row_of_offset_in(rows: &[RowSpan], text: &str, offset: usize) -> usize {
+        let offset = floor_char_boundary(text, offset.min(text.len()));
         rows.iter().position(|row| offset < row.end).unwrap_or_else(|| rows.len().saturating_sub(1))
     }
 
@@ -639,19 +645,25 @@ impl TextEdit {
     fn offset_within_row(&self, span: RowSpan, x: i32) -> usize {
         let target = x.max(0) as u32;
         let line = &self.text[span.start..span.end];
-        let mut best = span.start;
-        let mut prefix_width = 0u32;
-        for (index, ch) in line.char_indices() {
-            let advance = self.char_advance(ch, self.text_font());
-            // The midpoint decides which side of a character's centre the pointer is on, which is
-            // what makes clicking the left half of a glyph put the caret before it.
-            if target < prefix_width + advance / 2 {
-                break;
+        let font = self.text_font();
+        // One measurement surface for the whole row; the per-character form built a backend per
+        // glyph, so a click allocated once per character it walked past.
+        Self::with_measurement(|context| {
+            let mut best = span.start;
+            let mut prefix_width = 0u32;
+            let mut glyph = [0u8; 4];
+            for (index, ch) in line.char_indices() {
+                let advance = context.measure_text(ch.encode_utf8(&mut glyph), font).width;
+                // The midpoint decides which side of a character's centre the pointer is on, which
+                // is what makes clicking the left half of a glyph put the caret before it.
+                if target < prefix_width + advance / 2 {
+                    break;
+                }
+                prefix_width += advance;
+                best = span.start + index + ch.len_utf8();
             }
-            prefix_width += advance;
-            best = span.start + index + ch.len_utf8();
-        }
-        floor_char_boundary(&self.text, best.min(self.text.len()))
+            floor_char_boundary(&self.text, best.min(self.text.len()))
+        })
     }
 
     /// The offset in `span` that keeps the caret's **column** when moving between rows.
@@ -660,9 +672,9 @@ impl TextEdit {
     /// re-applied to the destination, so a vertical move lands under the character it started over.
     /// A destination row shorter than the column saturates at its end, and the row's own newline is
     /// excluded so the caret never lands past the text the user can see.
-    fn offset_in_row(&self, span: RowSpan, from: usize) -> usize {
-        let source_row = self.row_of_offset(from);
-        let rows = self.layout_rows();
+    /// [`Self::offset_in_row`], reading a wrap table the caller already has.
+    fn offset_in_row_with(&self, rows: &[RowSpan], span: RowSpan, from: usize) -> usize {
+        let source_row = Self::row_of_offset_in(rows, &self.text, from);
         let source = rows.get(source_row).copied().unwrap_or(RowSpan { start: from, end: from });
         let column = self
             .text_advance(&self.text[source.start..from.min(source.end).max(source.start)])
@@ -1101,11 +1113,15 @@ impl EventHandler for TextEdit {
                     }
                     // Up/Down move by **laid-out row**, not by logical line: this control wraps, so
                     // the row above is what "up" means to a user looking at the screen.
+                    //
+                    // The wrap table is built **once** here and passed to both answers. It used to be
+                    // rebuilt by `row_of_offset` and again by `offset_in_row` (which itself asked for
+                    // `row_of_offset`), so one press laid the whole document out three times.
                     38 => {
                         let rows = self.layout_rows();
-                        let row = self.row_of_offset(self.cursor);
+                        let row = Self::row_of_offset_in(&rows, &self.text, self.cursor);
                         if row > 0 {
-                            let target = self.offset_in_row(rows[row - 1], self.cursor);
+                            let target = self.offset_in_row_with(&rows, rows[row - 1], self.cursor);
                             self.select_with_modifiers(target, mods);
                         } else if !shift {
                             self.clear_selection();
@@ -1114,9 +1130,9 @@ impl EventHandler for TextEdit {
                     }
                     40 => {
                         let rows = self.layout_rows();
-                        let row = self.row_of_offset(self.cursor);
+                        let row = Self::row_of_offset_in(&rows, &self.text, self.cursor);
                         if row + 1 < rows.len() {
-                            let target = self.offset_in_row(rows[row + 1], self.cursor);
+                            let target = self.offset_in_row_with(&rows, rows[row + 1], self.cursor);
                             self.select_with_modifiers(target, mods);
                         } else if !shift {
                             self.clear_selection();
@@ -1131,7 +1147,8 @@ impl EventHandler for TextEdit {
                             0
                         } else {
                             let rows = self.layout_rows();
-                            rows.get(self.row_of_offset(self.cursor)).map_or(0, |row| row.start)
+                            let row = Self::row_of_offset_in(&rows, &self.text, self.cursor);
+                            rows.get(row).map_or(0, |row| row.start)
                         };
                         self.select_with_modifiers(target, mods);
                     }
@@ -1141,19 +1158,17 @@ impl EventHandler for TextEdit {
                             self.text.len()
                         } else {
                             let rows = self.layout_rows();
-                            rows.get(self.row_of_offset(self.cursor)).map_or(
-                                self.text.len(),
-                                |row| {
-                                    // Exclude the row's own newline, so End is the end of the text the
-                                    // user sees rather than the start of the next row.
-                                    let end = row.end.min(self.text.len());
-                                    if self.text[..end].ends_with('\n') {
-                                        end - 1
-                                    } else {
-                                        end
-                                    }
-                                },
-                            )
+                            let row = Self::row_of_offset_in(&rows, &self.text, self.cursor);
+                            rows.get(row).map_or(self.text.len(), |row| {
+                                // Exclude the row's own newline, so End is the end of the text the
+                                // user sees rather than the start of the next row.
+                                let end = row.end.min(self.text.len());
+                                if self.text[..end].ends_with('\n') {
+                                    end - 1
+                                } else {
+                                    end
+                                }
+                            })
                         };
                         self.select_with_modifiers(target, mods);
                     }
@@ -1199,7 +1214,7 @@ impl Draw for TextEdit {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         // The fallback name matters: the role table is keyed on **role** names, so `text_edit`
         // (the factory name) is not in it and would classify as `Surface`, i.e. the window fill.
         // `line_edit` is, and resolves to the field interior plus the theme's foreground.
@@ -1252,6 +1267,12 @@ impl Draw for TextEdit {
         } else {
             &self.text
         };
+        // The wrap table is built **once per frame** and read by the ink, the selection band and
+        // the caret. The painter used to re-measure the document glyph by glyph while the markers
+        // read the table, so every frame laid the document out twice and the two could disagree
+        // about where a row ended. It is empty for the placeholder, which is not the document and
+        // therefore has no table of its own.
+        let rows = if self.text.is_empty() { Vec::new() } else { self.layout_rows() };
         if !display_text.is_empty() {
             // The placeholder is de-emphasised from the control's own ink rather than being a
             // fixed grey that a dark theme would render illegible.
@@ -1271,7 +1292,11 @@ impl Draw for TextEdit {
                 rect.width.saturating_sub(padding as u32 * 2),
                 rect.height.saturating_sub(padding as u32 * 2),
             );
-            self.draw_text_layout(context, display_text, interior, font, text_color);
+            if self.text.is_empty() {
+                self.draw_text_layout(context, display_text, interior, font, text_color);
+            } else {
+                self.draw_rows(context, &rows, interior, font, text_color);
+            }
         }
 
         // ── The caret and the selection ──
@@ -1280,7 +1305,6 @@ impl Draw for TextEdit {
         // and column the glyphs actually occupy. Measured any other way it would drift under wrapping,
         // which is the whole reason the table exists.
         if !self.text.is_empty() {
-            let rows = self.layout_rows();
             let line_height = self.line_box_height();
             let interior_width = rect.width.saturating_sub(padding as u32 * 2);
 
@@ -1290,11 +1314,11 @@ impl Draw for TextEdit {
                     crate::style::semantic_color(crate::style::SemanticColor::Info)
                         .map(|accent| accent.blend(&field, 0.72))
                         .unwrap_or_else(|| field.blend(&ink, 0.18));
-                for (index, span) in rows.iter().enumerate() {
-                    if index < self.first_visible_row {
-                        continue;
-                    }
-                    let top = self.row_top(index);
+                for (index, span) in rows.iter().enumerate().skip(self.first_visible_row) {
+                    // The row's top is its position **in the viewport**, which is what the scroll
+                    // offset means: the text, the selection and the caret are all drawn from this
+                    // one row index.
+                    let top = self.row_top(index - self.first_visible_row);
                     if top + line_height > rect.y + rect.height as i32 {
                         break;
                     }
@@ -1321,9 +1345,9 @@ impl Draw for TextEdit {
 
             // Then the caret, at the measured end of its row's prefix. The row it is on is translated
             // through the scroll, so the marker follows the text instead of its document position.
-            let caret_row = self.row_of_offset(self.cursor);
+            let caret_row = Self::row_of_offset_in(&rows, &self.text, self.cursor);
             if caret_row >= self.first_visible_row {
-                let top = self.row_top(caret_row);
+                let top = self.row_top(caret_row - self.first_visible_row);
                 if top + line_height <= rect.y + rect.height as i32 {
                     let span = rows
                         .get(caret_row)
@@ -1348,6 +1372,61 @@ impl Draw for TextEdit {
 }
 
 impl TextEdit {
+    /// Paints the wrap table, starting at the viewport's first visible row.
+    ///
+    /// # Why the table and not a second walk
+    ///
+    /// The painter used to re-measure the document glyph by glyph while the caret and the selection
+    /// read [`Self::layout_rows`] — two derivations of the same breaks on every frame, one of them
+    /// allocating a `String` per character. Reading the table makes the ink a **reader** of the one
+    /// wrap rule instead of a second implementation of it.
+    ///
+    /// It also makes the viewport real: the old walk always began at the interior's top edge, so
+    /// `first_visible_row` (which the caret, the hit test and the selection all index from) moved the
+    /// markers over text that had not scrolled — and, once the caret's row left the interior, made
+    /// the caret disappear while the text stayed. Starting the walk at `first_visible_row` puts the
+    /// ink, the band and the caret on one row grid.
+    fn draw_rows(
+        &self,
+        context: &mut RenderContext,
+        rows: &[RowSpan],
+        interior: Rect,
+        font: &Font,
+        color: Color,
+    ) {
+        let line_height = self.line_box_height();
+        let align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
+        let bottom = interior.y + interior.height as i32;
+        for (view_row, span) in self.rows_from_viewport(rows) {
+            let top = self.row_top(view_row);
+            if top + line_height > bottom {
+                break;
+            }
+            // The row's own newline is not ink; it is what the break consumed.
+            let end = if self.text[..span.end].ends_with('\n') { span.end - 1 } else { span.end };
+            let row = &self.text[span.start..end.max(span.start)];
+            Self::flush_row(context, row, interior, top, line_height, bottom, font, color, align);
+        }
+    }
+
+    /// The wraps to paint, in view order, as `(view_row, span)`.
+    ///
+    /// `view_row` is the row's index **from the top of the viewport**, which is what
+    /// [`Self::row_top`] and the caret both measure with. The painter stops early at the interior's
+    /// bottom; this yields every remaining row, so a caller can ask "what would be painted first"
+    /// without a render context.
+    ///
+    /// It starts at [`Self::first_visible_row`] rather than at zero because the ink and the markers
+    /// have to share one row grid — see [`Self::draw_rows`] for the defect that came from the
+    /// painter ignoring the scroll offset.
+    fn rows_from_viewport<'a>(
+        &self,
+        rows: &'a [RowSpan],
+    ) -> impl Iterator<Item = (usize, &'a RowSpan)> {
+        let first = self.first_visible_row;
+        rows.iter().enumerate().skip(first).map(move |(index, span)| (index - first, span))
+    }
+
     /// Paints `text` inside `interior`, honouring [`Self::line_wrap`].
     ///
     /// # The two layouts
@@ -1367,6 +1446,9 @@ impl TextEdit {
     /// measures glyph by glyph and breaks where the measurement says the row is full -- one
     /// measurement per character, which for a field-sized document is what keeps a long paragraph
     /// from being drawn as one unbounded string.
+    ///
+    /// This is the **placeholder's** painter. A real document is painted from the wrap table by
+    /// [`Self::draw_rows`], so the ink and the caret share one derivation instead of two.
     fn draw_text_layout(
         &self,
         context: &mut RenderContext,
@@ -1405,7 +1487,12 @@ impl TextEdit {
                 row_width = 0.0;
                 continue;
             }
-            let advance = context.measure_text(&ch.to_string(), font).width;
+            let advance = {
+                // Measured from the glyph's own UTF-8 bytes: `ch.to_string()` allocated a `String`
+                // per character, once per painted frame.
+                let mut glyph = [0u8; 4];
+                context.measure_text(ch.encode_utf8(&mut glyph), font).width
+            };
             // The break is taken *before* the glyph that would overflow, so the last glyph on a row
             // is never the one that crossed the edge. A row is never left empty by the break: a
             // single glyph wider than the interior has to go somewhere, and an empty row followed by
@@ -1810,6 +1897,47 @@ mod tests {
         overflowing.set_text("word ".repeat(40));
         let rows = text_ink_boxes(&render_to_svg(&mut overflowing)).len();
         assert!(rows <= 3, "a small field draws only the rows it has room for, not {rows} rows");
+    }
+
+    /// The ink follows the scroll offset, on the same row grid as the caret.
+    ///
+    /// # The defect this pins
+    ///
+    /// `draw_text_layout` always walked the document from the interior's top edge, while
+    /// `first_visible_row` moved the caret, the selection and the hit test. Once the caret's row
+    /// scrolled past the interior, the painter still drew the document's **first** rows — and the
+    /// caret, drawn from the same offset, fell outside the box and was skipped. The user then typed
+    /// into a row that was not on screen, over text that claimed to be the document's start.
+    ///
+    /// The assertion is on the order the painter consumes: the first row it paints is
+    /// `rows[first_visible_row]`, and the caret's own row is among the rows it reaches.
+    #[test]
+    fn the_painted_rows_follow_the_scroll_offset() {
+        let mut te = TextEdit::new(Rect::new(0, 0, 200, 60));
+        te.set_text("alpha\nbeta\ngamma\ndelta\nepsilon\nzeta\neta\ntheta".to_string());
+        assert_eq!(te.first_visible_row(), 0, "a freshly installed document opens at the top");
+
+        // An edit at the end is a movement the user made, so the view follows the caret.
+        te.insert_str("!");
+        let scroll = te.first_visible_row();
+        assert!(scroll > 0, "the caret's row left the field, so the view scrolled");
+
+        let text = te.text().to_string();
+        let rows = te.layout_rows();
+        let painted: Vec<RowSpan> = te.rows_from_viewport(&rows).map(|(_, span)| *span).collect();
+        assert_eq!(
+            painted.first().copied(),
+            rows.get(scroll).copied(),
+            "the painter starts at the scroll offset, not at the document's start"
+        );
+        assert!(
+            !painted.iter().any(|span| text[span.start..span.end].starts_with("alpha")),
+            "the row above the viewport is not painted: {painted:?}"
+        );
+        assert!(
+            painted.iter().any(|span| span.start <= te.cursor() && te.cursor() <= span.end),
+            "the caret's own row is among the painted rows"
+        );
     }
 
     // ─── The caret (the capability this control did not have) ───

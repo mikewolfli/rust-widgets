@@ -449,7 +449,7 @@ impl Draw for CollapsiblePane {
         //
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("collapsible_pane");
         // `collapsible_pane` is absent from `WidgetRole::for_kind_name`'s table, so it
         // classifies as `Surface` and resolves to `theme.colors.background` — the window's
@@ -520,7 +520,7 @@ impl Draw for CollapsiblePane {
         // hand-tuned constant was compensating for a defect rather than expressing the row. The
         // **effective font** — the resolved theme/caller font — replaces the hardcoded default so
         // the header honours the theme body font and the user's text scale (D09-STYLE-01).
-        let header_font = effective_font(&style);
+        let header_font = effective_font(style);
         let header_line = context.text_line(hdr, header_font);
         let arrow_x = hdr.x + 6;
         let arrow_y = header_line.y;

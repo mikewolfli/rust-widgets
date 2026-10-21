@@ -995,7 +995,7 @@ impl Draw for PieMenu {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("pie_menu");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
@@ -1120,7 +1120,7 @@ impl Draw for PieMenu {
         // Draw text labels centered in each slice, with the **effective font** — the resolved
         // theme/caller font — so the labels honour the theme body font and the user's text scale
         // (D09-STYLE-01).
-        let font = effective_font(&style);
+        let font = effective_font(style);
         for (i, item) in self.items.iter().enumerate() {
             if !item.is_enabled() {
                 continue;

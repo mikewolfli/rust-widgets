@@ -7,7 +7,7 @@
 //! CSS rules to widget styles. This enables app-wide theming similar to
 //! LVGL's `lv_theme_t` but using Rust's type-safe CSS parser.
 
-use crate::style::css::CssParser;
+use crate::style::css::{CssDeclaration, CssParser, CssSelector};
 use crate::style::PseudoState;
 use crate::style::WidgetStyle;
 
@@ -16,15 +16,36 @@ use crate::compat::MutexGuard;
 use crate::compat::OnceLock;
 use crate::compat::{lock, MiniToString, String, Vec};
 
-/// A registered stylesheet with its raw CSS text and priority.
+/// One rule of a registered sheet, with its selector parsed once at registration time.
+#[derive(Debug)]
+struct ParsedRule {
+    /// The selector, matched against `(kind, class, id, state)` on every apply.
+    selector: CssSelector,
+    /// The declarations the selector applies.
+    declarations: Vec<CssDeclaration>,
+}
+
+/// A registered stylesheet with its raw CSS text, priority, and parsed rules.
+///
+/// # Why the rules are parsed here
+///
+/// `apply_to` used to call `CssParser::parse_and_apply`, which re-tokenised the entire sheet and
+/// re-parsed every selector for **every control that asked for a style**. A theme registered once
+/// was therefore re-parsed thousands of times a frame. Parsing at `register` makes the apply path
+/// a selector match plus the declarations it already matched.
 #[derive(Debug)]
 struct RegisteredSheet {
     /// Name for debugging.
     name: String,
-    /// Raw CSS text.
+    /// Raw CSS text, kept so the registration is inspectable and so an error can be re-reported.
+    #[allow(dead_code)]
     css: String,
     /// Priority (higher overrides lower).
     priority: u8,
+    /// The sheet's rules, in source order.
+    rules: Vec<ParsedRule>,
+    /// The parse error, when the sheet was accepted but could not be parsed.
+    parse_error: Option<String>,
 }
 
 /// Global stylesheet manager for CSS-based theming.
@@ -48,11 +69,30 @@ impl StyleSheetManager {
     pub fn register(&mut self, name: &str, css: &str, priority: u8) {
         // Remove existing sheet with the same name, then add the new one.
         self.sheets.retain(|s| s.name != name);
+        let (rules, parse_error) = match CssParser::parse_rules(css) {
+            Ok(rules) => (
+                rules
+                    .into_iter()
+                    .filter_map(|rule| {
+                        CssParser::parse_selector(&rule.selector_text).map(|selector| ParsedRule {
+                            selector,
+                            declarations: rule.declarations,
+                        })
+                    })
+                    .collect(),
+                None,
+            ),
+            Err(error) => (Vec::new(), Some(error)),
+        };
         self.sheets.push(RegisteredSheet {
             name: name.to_string(),
             css: css.to_string(),
             priority,
+            rules,
+            parse_error,
         });
+        // Keep the list in apply order, so `apply_to` neither sorts nor allocates per call.
+        self.sheets.sort_by_key(|sheet| sheet.priority);
     }
 
     /// Remove a registered stylesheet by name.
@@ -75,15 +115,17 @@ impl StyleSheetManager {
         state: Option<PseudoState>,
         style: &mut WidgetStyle,
     ) -> Result<(), String> {
-        // Sort sheets by priority (ascending) so lower priority applied first.
-        let mut sorted: Vec<&RegisteredSheet> = self.sheets.iter().collect();
-        sorted.sort_by_key(|s| s.priority);
-
-        for sheet in &sorted {
-            // Parse and apply directly to the target style in priority order.
-            // Since `parse_and_apply` sets values directly, processing lower-
-            // priority sheets first lets higher-priority sheets override them.
-            CssParser::parse_and_apply(&sheet.css, kind, class, id, state, style)?;
+        // Sheets are kept in ascending priority order by `register`, so iteration order is the
+        // apply order: lower priority first, higher overrides it.
+        for sheet in &self.sheets {
+            if let Some(error) = &sheet.parse_error {
+                return Err(error.clone());
+            }
+            for rule in &sheet.rules {
+                if rule.selector.matches(kind, class, id, state) {
+                    CssParser::apply_declarations(&rule.declarations, style)?;
+                }
+            }
         }
 
         Ok(())

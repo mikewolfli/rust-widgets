@@ -48,6 +48,50 @@ use crate::core::{Font, Rect, Size};
 use crate::render::text::{estimate_cluster_advance, for_each_cluster};
 use crate::style::{EdgeOffsets, WidgetStyle};
 
+// The cluster ranges `estimate_text_width` hands to the shaper, reused across calls.
+//
+// This is on the layout hot path — every `size_hint`, every `arrange` — so a fresh `Vec` per call
+// was a small allocation per label per layout. One buffer per thread is enough because the list is
+// consumed inside a single call; a re-entrant measurement (a shaper that measures) finds the buffer
+// busy and gets its own, which is why the borrow cannot be assumed to succeed.
+#[cfg(feature = "text-shaping")]
+thread_local! {
+    static CLUSTER_RANGES: core::cell::RefCell<crate::compat::Vec<(usize, usize)>> =
+        const { core::cell::RefCell::new(crate::compat::Vec::new()) };
+}
+
+/// Runs `f` with `text`'s cluster byte ranges, reusing the per-thread buffer.
+#[cfg(feature = "text-shaping")]
+fn with_cluster_ranges<R>(text: &str, f: impl FnOnce(&[(usize, usize)]) -> R) -> R {
+    CLUSTER_RANGES.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut ranges) => {
+            ranges.clear();
+            for_each_cluster(text, |_cluster, range| ranges.push(range));
+            f(&ranges)
+        }
+        Err(_) => {
+            let mut owned: crate::compat::Vec<(usize, usize)> = crate::compat::Vec::new();
+            for_each_cluster(text, |_cluster, range| owned.push(range));
+            f(&owned)
+        }
+    })
+}
+
+/// The flat per-cluster model, and the cluster count it charged tracking gaps against.
+///
+/// This is the whole answer on a build with no shaper tier, and the fallback when a build with one
+/// finds no face for the font — so a build without the feature and a build that cannot shape a
+/// given font agree by construction.
+fn flat_cluster_model(text: &str, size: f32, scale: f32) -> (f32, usize) {
+    let mut total = 0.0f32;
+    let mut clusters = 0usize;
+    for_each_cluster(text, |cluster, _range| {
+        total += estimate_cluster_advance(cluster, size, scale);
+        clusters += 1;
+    });
+    (total, clusters)
+}
+
 /// The width `text` occupies in `font` at `scale`, without a render context.
 ///
 /// # Why a widget needs this
@@ -87,38 +131,30 @@ pub fn estimate_text_width(text: &str, font: &crate::core::Font, scale: f32) -> 
         return 0;
     }
 
-    // Collect the clusters once, so both tiers measure the same segmentation.
-    let mut ranges: crate::compat::Vec<(usize, usize)> = crate::compat::Vec::new();
-    let mut clusters = 0usize;
-    for_each_cluster(text, |_cluster, range| {
-        ranges.push(range);
-        clusters += 1;
-    });
-
-    // Real metrics when a face is enabled, exactly as `shape_line` does: the advance is what
-    // the face's `hmtx` and `GPOS` kerning say. `None` — no face, or a build with no vector
-    // data — leaves the flat model as the whole answer, so a default build's numbers do not
-    // change when this exists.
+    // Collect the clusters once, so both tiers measure the same segmentation. The list comes from
+    // the shared buffer: this function runs for every label a layout asks about, and a fresh `Vec`
+    // per call was an allocation per label per layout pass (WBASE-08).
     #[cfg(feature = "text-shaping")]
-    // `cluster_advances` returns `None` rather than an empty vector when no face applies,
-    // so the flattening is only about the inner `with_shaper_face` result.
-    let real_advances: Option<crate::compat::Vec<f32>> =
-        crate::render::text::shaping::cluster_advances(text, &ranges, font, scale);
-    #[cfg(not(feature = "text-shaping"))]
-    let real_advances: Option<crate::compat::Vec<f32>> = None;
-
-    let mut advance = match &real_advances {
-        // A length mismatch means the shaper returned an answer for a different segmentation;
-        // falling back is safer than crediting the wrong cluster.
-        Some(advances) if advances.len() == clusters => advances.iter().sum::<f32>(),
-        _ => {
-            let mut total = 0.0f32;
-            for_each_cluster(text, |cluster, _range| {
-                total += estimate_cluster_advance(cluster, size, scale);
-            });
-            total
+    let (mut advance, clusters) = {
+        let mut clusters = 0usize;
+        let shaped = with_cluster_ranges(text, |ranges| {
+            clusters = ranges.len();
+            // Real metrics when a face is enabled, exactly as `shape_line` does: the advance is
+            // what the face's `hmtx` and `GPOS` kerning say. `None` leaves the flat model as the
+            // whole answer, so a build whose font has no vector data answers as it always did.
+            crate::render::text::shaping::cluster_advances(text, ranges, font, scale).filter(
+                // A length mismatch means the shaper returned an answer for a different
+                // segmentation; falling back is safer than crediting the wrong cluster.
+                |advances| advances.len() == clusters,
+            )
+        });
+        match shaped {
+            Some(advances) => (advances.iter().sum::<f32>(), clusters),
+            None => flat_cluster_model(text, size, scale),
         }
     };
+    #[cfg(not(feature = "text-shaping"))]
+    let (mut advance, clusters) = flat_cluster_model(text, size, scale);
     // `letter_spacing` is the gap *between* clusters, so `n` clusters pay `n - 1` gaps. The
     // renderer counts them the same way and for the same reason: counting them after the
     // last cluster would make a centred label sit left of centre.
@@ -2106,6 +2142,29 @@ mod tests {
             estimate_text_width("abc", &tracked, 1.0),
             estimate_text_width("abc", &plain, 1.0) + 8
         );
+    }
+
+    /// The shared cluster buffer must not leak one measurement into the next.
+    ///
+    /// `estimate_text_width` now fills a per-thread range buffer instead of allocating, so a stale
+    /// entry would credit the previous string's clusters to the next one — and the symptom would be
+    /// silent (a label a few pixels too wide, only on some call orders). The assertion is the
+    /// relation that matters: interleaving measurements must equal measuring each one alone, in both
+    /// orders and across a shorter-then-longer and longer-then-shorter pair.
+    #[test]
+    fn the_shared_cluster_buffer_does_not_leak_between_measurements() {
+        let font = crate::core::Font::simple("sans-serif", 14.0);
+        let long = estimate_text_width("Hello, world", &font, 1.0);
+        let short = estimate_text_width("i", &font, 1.0);
+        assert!(long > short, "the fixture must actually differ in width: {long} vs {short}");
+
+        // Longer, then shorter, then both again: each answer is the one it got on its own.
+        assert_eq!(estimate_text_width("Hello, world", &font, 1.0), long);
+        assert_eq!(estimate_text_width("i", &font, 1.0), short);
+        // An empty value returns before the buffer is touched, so it must not clear anything either.
+        assert_eq!(estimate_text_width("", &font, 1.0), 0);
+        assert_eq!(estimate_text_width("Hello, world", &font, 1.0), long);
+        assert_eq!(estimate_text_width("i", &font, 1.0), short);
     }
 
     /// The line height follows an explicit `line_height` rather than the point size.

@@ -88,31 +88,38 @@ pub const PAGE_DOWN: u32 = 34;
 ///
 /// Function keys are part of the framework's key-code convention because a host that
 /// normalises a platform key (AppKit `keyCode`, GDK `keyval`) has to produce a value the
-/// widget layer can branch on. The values are the conventional `112..=123` range
-/// [`crate::shortcut::Key`] already parses.
-pub const F1: u32 = 112;
+/// widget layer can branch on.
+///
+/// # Why the range is `1120..=1131` and not `112..=123`
+///
+/// `112..=123` is the Win32 virtual-key range for `VK_F1`..`VK_F12`, but it collides with the
+/// framework's own letter codes: lowercase `'p'..'z'` are `112..=122`, so `F1` parsed as
+/// `Key::P` and every function-key shortcut silently matched a letter instead. The range below
+/// is above the ASCII space the rest of the convention uses, which is what makes the two
+/// unambiguous. `shortcut::Key::from_key_code` accepts exactly these values.
+pub const F1: u32 = 1120;
 /// `F2`.
-pub const F2: u32 = 113;
+pub const F2: u32 = 1121;
 /// `F3`.
-pub const F3: u32 = 114;
+pub const F3: u32 = 1122;
 /// `F4`.
-pub const F4: u32 = 115;
+pub const F4: u32 = 1123;
 /// `F5`.
-pub const F5: u32 = 116;
+pub const F5: u32 = 1124;
 /// `F6`.
-pub const F6: u32 = 117;
+pub const F6: u32 = 1125;
 /// `F7`.
-pub const F7: u32 = 118;
+pub const F7: u32 = 1126;
 /// `F8`.
-pub const F8: u32 = 119;
+pub const F8: u32 = 1127;
 /// `F9`.
-pub const F9: u32 = 120;
+pub const F9: u32 = 1128;
 /// `F10`.
-pub const F10: u32 = 121;
+pub const F10: u32 = 1129;
 /// `F11`.
-pub const F11: u32 = 122;
+pub const F11: u32 = 1130;
 /// `F12`.
-pub const F12: u32 = 123;
+pub const F12: u32 = 1131;
 
 /// Maps a printable character to the framework's key code for it.
 ///
@@ -160,12 +167,43 @@ mod tests {
             (DOWN, Key::Down),
             (HOME, Key::Home),
             (END, Key::End),
+            (PAGE_UP, Key::PageUp),
+            (PAGE_DOWN, Key::PageDown),
+            (DELETE, Key::Delete),
+            (F1, Key::F1),
+            (F2, Key::F2),
+            (F3, Key::F3),
+            (F4, Key::F4),
+            (F5, Key::F5),
+            (F6, Key::F6),
+            (F7, Key::F7),
+            (F8, Key::F8),
+            (F9, Key::F9),
+            (F10, Key::F10),
+            (F11, Key::F11),
+            (F12, Key::F12),
         ] {
             assert_eq!(
                 Key::from_key_code(code),
                 Some(expected),
                 "key code {code} must parse as {expected:?}"
             );
+        }
+    }
+
+    /// Function-key codes must not overlap the letter codes they used to collide with.
+    ///
+    /// The previous constants were `112..=123` (the Win32 `VK_F1`.. range), where `112`..`122`
+    /// are also lowercase `'p'`..`'z'`. `F1` therefore parsed as `Key::P`, and the test above did
+    /// not list the function keys, so nothing noticed.
+    #[test]
+    fn function_key_codes_are_outside_the_ascii_letter_range() {
+        use crate::shortcut::Key;
+
+        assert_eq!(Key::from_key_code(112), Some(Key::P), "112 is still lowercase 'p'");
+        for (code, expected) in [(F1, Key::F1), (F12, Key::F12)] {
+            assert!(code > 127, "a function key must not share a byte with ASCII: {code}");
+            assert_eq!(Key::from_key_code(code), Some(expected));
         }
     }
 

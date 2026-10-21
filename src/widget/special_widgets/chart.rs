@@ -496,8 +496,8 @@ impl Draw for ChartWidget {
         // `draw_truncated_label` *did* read the theme, so on the dark appearance it painted the
         // dark theme's ink onto that white slab: `rgb(163,163,163)` on white, 2.52:1. The panel
         // and its chrome now come from one derivation, so they cannot disagree.
-        let style = self.base.style().clone();
-        let (surface, ink) = Self::panel_colors_with(Some(&style));
+        let style = self.base.style();
+        let (surface, ink) = Self::panel_colors_with(Some(style));
         let label_row_height = self.category_label_line_height(context);
         let plot = PlotArea::of(rect, label_row_height);
         let border = style
@@ -525,7 +525,7 @@ impl Draw for ChartWidget {
             // arrives is what makes the two states read as the same control, and it is what
             // every charting toolkit does: the axes belong to the chart, not to a series.
             self.draw_value_axis(context, &plot, ink, surface);
-            let font = role_font(&style, 12.0);
+            let font = role_font(style, 12.0);
             let line = context.text_line(rect, &font);
             context.draw_text_fitted(
                 line,

@@ -935,7 +935,7 @@ impl Draw for ListView {
         //
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("list_view");
         let surface = style
             .background_color
@@ -989,7 +989,7 @@ impl Draw for ListView {
             let layout = self.list_layout();
             let row_count = self.row_count();
             let current_row = self.focused_row;
-            let font = effective_font(&style);
+            let font = effective_font(style);
             // The row-*index* arithmetic is in `usize` (it comes from the model) and the way to get
             // back to the row's number is to make the whole grid arithmetic `u32`, so the sole cast is
             // at the two ends. `index / columns` reports the line, `index % columns` the column within

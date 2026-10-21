@@ -78,7 +78,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
     ) -> ObjectId {
         #[cfg(full_widgets)]
         {
-            let factory = crate::widget::WidgetFactory::new_with_defaults();
+            let factory = crate::widget::WidgetFactory::shared();
             let Some(capability) = factory.capability(kind) else {
                 log::warn!(
                     "custom backend: no control is registered under the name {kind:?}; returning 0"

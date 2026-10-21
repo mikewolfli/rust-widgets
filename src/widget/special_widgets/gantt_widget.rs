@@ -413,7 +413,7 @@ impl Draw for GanttWidget {
         // `resolved_theme_style` takes and releases the global manager's lock
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("gantt_widget");
         // `gantt_widget` is not a control kind in the role table, so it classifies as
         // `Surface`, whose background is `theme.colors.background` — byte-identical
@@ -495,7 +495,7 @@ impl Draw for GanttWidget {
             context.draw_text_line(
                 label_band,
                 &task.label,
-                effective_font(&style),
+                effective_font(style),
                 text_color,
                 HorizontalAlignment::Left,
             );

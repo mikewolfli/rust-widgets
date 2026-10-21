@@ -530,7 +530,7 @@ impl Draw for Keyboard {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("keyboard");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme. A stripped device build has no theme
@@ -605,7 +605,7 @@ impl Draw for Keyboard {
         // than a fixed light grey.
         let text_color = ink;
 
-        let font = effective_font(&style);
+        let font = effective_font(style);
 
         for (row_idx, row_keys) in self.keys.iter().enumerate() {
             let total_ratio: f32 = row_keys.iter().map(|k| k.width_ratio).sum();

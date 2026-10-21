@@ -51,7 +51,7 @@ use std::thread;
 /// must be the same number, or every transition runs at the ratio between them with
 /// nothing to notice the mismatch. A backend that later runs at the display's own rate
 /// changes exactly this value.
-const FRAME_INTERVAL_MS: u64 = 16;
+const FRAME_INTERVAL_MS: u64 = crate::platform::types::FRAME_INTERVAL_MS;
 
 impl Platform for IosMobilePlatform {
     // The uniform widget-property methods are answered once, over `self.state`, by the

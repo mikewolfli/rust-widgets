@@ -364,7 +364,7 @@ impl Draw for MarkdownEditor {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("markdown_editor");
         let surface = style
             .background_color
@@ -425,7 +425,7 @@ impl Draw for MarkdownEditor {
         context.draw_text_fitted(
             header_band,
             &header,
-            effective_font(&style),
+            effective_font(style),
             header_ink,
             HorizontalAlignment::Left,
         );
@@ -441,7 +441,7 @@ impl Draw for MarkdownEditor {
             context.draw_text(
                 Point::new(rect.x + 12, y),
                 rendered,
-                effective_font(&style),
+                effective_font(style),
                 color,
                 HorizontalAlignment::Left,
             );

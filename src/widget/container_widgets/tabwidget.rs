@@ -3,38 +3,29 @@
 
 //! Tab widget.
 //!
-//! # The tab strip is assembled by a layout
+//! # The tab strip is assembled from measured widths
 //!
 //! BLUE22 §B.8 lists this control's defect as "tab width by hand". The width is measured and
-//! clamped here (that half was already derived), but the *run* — where each tab starts once the
-//! ones before it have taken their room — is now the answer of a [`FlexLayout`] rather than an
-//! accumulator re-derived inside `tab_rect`. See [`TabWidget::tab_run`].
+//! clamped by [`TabWidget::tab_width_hints`], and the run — where each tab starts — is a single
+//! pass over those widths plus the gap. It used to be handed to a `FlexLayout` through a
+//! `CompositeBuilder`, which created a temporary label widget per tab on **every** call; the draw
+//! pass and the hit test both ask for the run, so that was one temporary widget per tab per frame.
+//! All tabs declare a fixed width and the strip is sized to fit, so the layout's answer is exactly
+//! this arithmetic (the stripped-profile arm already computed it that way).
 
-#[cfg(full_widgets)]
-use crate::core::Size;
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::event::{DragPayload, DragSession, Event, EventHandler};
-#[cfg(full_widgets)]
-use crate::layout::{
-    AlignItems, AxisHints, FlexDirection, FlexLayout, FlexWrap, Hints, JustifyContent, LayoutParams,
-};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-#[cfg(full_widgets)]
-use crate::style::EdgeOffsets;
 
 use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-#[cfg(full_widgets)]
-use crate::widget::composite::CompositeBuilder;
 use crate::widget::metrics::{effective_font, estimate_text_width};
 use crate::widget::IconSource;
 #[cfg(feature = "image")]
 use crate::widget::Image;
-#[cfg(full_widgets)]
-use crate::widget::WidgetFactory;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -737,134 +728,36 @@ impl TabWidget {
         crate::compat::vec![(floor.min(share), share, share); count]
     }
 
-    /// The tab strip as a run, assembled by a layout rather than by an accumulator.
+    /// The tab strip as a run, in strip order and strip coordinates starting at `(0, 0)`.
     ///
-    /// # Why the strip is assembled
+    /// Each tab's width comes from [`Self::tab_width_hints`] — already measured and, on a crowded
+    /// strip, already reduced to its share — and the strip is sized to exactly `sum(widths) +
+    /// gaps`. A layout given fixed boxes in a strip that fits returns them unchanged, so the run is
+    /// one pass of integer additions. This used to build a `CompositeBuilder`, a `FlexLayout` and a
+    /// temporary `label` widget per tab; `tab_rects` is called by both the paint path and the hit
+    /// test, which made that one widget per tab per event. See the module docs.
     ///
-    /// BLUE22 §B.8 lists `tab_widget`'s defect as "tab width by hand", and the fix has two
-    /// halves. The first is the width: `label_width + TAB_TEXT_PADDING`, clamped into
-    /// `TAB_MIN_WIDTH..TAB_MAX_WIDTH` — which the widget does derive. The second is the **run**:
-    /// each tab started at "the sum of the widths before it plus the spacing times its index", an
-    /// accumulator of two separate terms re-derived inside `tab_rect` on every call. Handing the
-    /// widths to a [`FlexLayout`] makes the run the layout's answer, and the cross axis comes from
-    /// the tab's own declared height — so a North and a West strip are the same code with a
-    /// different direction.
-    ///
-    /// The result is in **strip order and strip coordinates**, starting at `(0, 0)`: the caller
-    /// translates it to wherever the strip lives. Keeping the assembly's origin at zero is what
-    /// lets one function serve all four `TabPosition`s, whose tab boxes differ only by that
-    /// translation.
+    /// Keeping the assembly's origin at zero is what lets one function serve all four
+    /// `TabPosition`s, whose tab boxes differ only by the translation `tab_rects` applies.
     fn tab_run(&self) -> crate::compat::Vec<Rect> {
         let hints = self.tab_width_hints();
         if hints.is_empty() {
             return crate::compat::Vec::new();
         }
-        let widths: crate::compat::Vec<i32> = hints.iter().map(|(_, pref, _)| *pref).collect();
         let horizontal = matches!(self.tab_position, TabPosition::North | TabPosition::South);
-        // # Why the stripped profiles take the direct route
-        //
-        // `full_widgets` is "a device profile *and* an unstripped widget set" (principle #47), and
-        // this module is only gated on the second half — so an Android `mobile-api` build has no
-        // `WidgetFactory` here. Both arms read the same widths and the same `TAB_SPACING`, so the
-        // fallback is the same run written the only way that profile can express it.
-        #[cfg(not(full_widgets))]
-        {
-            let mut placed: crate::compat::Vec<Rect> = crate::compat::Vec::new();
-            let mut cursor = 0i32;
-            for width in widths.iter() {
-                let box_rect = if horizontal {
-                    Rect::new(cursor, 0, *width as u32, TAB_HEIGHT as u32)
-                } else {
-                    Rect::new(0, cursor, TAB_HEIGHT as u32, *width as u32)
-                };
-                placed.push(box_rect);
-                cursor += *width + scaled_tab_spacing();
-            }
-            // No `return`: the block below is `#[cfg(full_widgets)]`, so exactly one of the two is
-            // compiled, and here `placed` is already the expression's value. Keeping the `return`
-            // made the stripped profile (Android `mobile-api`, whose feature set has no
-            // `full_widgets`) report `clippy::needless_return` — a warning that could not appear on
-            // any host profile, because every host profile compiles the *other* arm.
-            placed
-        }
-        #[cfg(full_widgets)]
-        {
-            // The strip must be wide enough for the tabs **and the gaps between them**: the layout
-            // charges `TAB_SPACING` once per adjacent pair, so a strip sized at `sum(widths)` alone
-            // is short by exactly that total. `remaining` then goes negative and the proportional
-            // shrink pass — correctly, by its own rules — takes the shortfall off the tabs, which is
-            // where the strip's 64s became 63s. The gaps are part of what the run occupies, so they
-            // are part of the band the run is given.
-            //
-            // The count is the **tab** count, not `self.count()`: this function is building the run
-            // it is about to hand to the layout, so it must count what it will place. The two agree
-            // today, and reading `self.tabs` here is what keeps them agreeing if the accessor ever
-            // grows a different meaning.
-            let count = self.tabs.len() as i32;
-            let gaps = scaled_tab_spacing() * (count.saturating_sub(1));
-            let extent = widths.iter().sum::<i32>() + gaps;
-            let strip = if horizontal {
-                Rect::new(0, 0, extent.max(0) as u32, TAB_HEIGHT as u32)
+        let spacing = scaled_tab_spacing();
+        let mut placed: crate::compat::Vec<Rect> = crate::compat::Vec::with_capacity(hints.len());
+        let mut cursor = 0i32;
+        for (_, preferred, _) in &hints {
+            let rect = if horizontal {
+                Rect::new(cursor, 0, *preferred as u32, TAB_HEIGHT as u32)
             } else {
-                Rect::new(0, 0, TAB_HEIGHT as u32, extent.max(0) as u32)
+                Rect::new(0, cursor, TAB_HEIGHT as u32, *preferred as u32)
             };
-            let factory = WidgetFactory::new_with_defaults();
-            let mut row = CompositeBuilder::new(
-                Box::new(FlexLayout::with_params(
-                    if horizontal { FlexDirection::Row } else { FlexDirection::Column },
-                    FlexWrap::NoWrap,
-                    JustifyContent::FlexStart,
-                    AlignItems::Stretch,
-                    TAB_SPACING,
-                    0,
-                )),
-                EdgeOffsets::all(0),
-                Size::new(0, 0),
-            );
-            for (index, tab) in self.tabs.iter().enumerate() {
-                // The tab's declaration: its measured width **on the run's axis** as a real
-                // `min`/`pref`/`max` triple, and `TAB_HEIGHT` across it.
-                //
-                // The three widths come from `tab_width_hints`, so a crowded strip declares the
-                // share it means instead of claiming that share as its own floor (BLUE22 · G-1).
-                // A tab is `TAB_HEIGHT` tall whatever the control was given, which is the whole
-                // point of taking the height from the constant rather than from `geometry()`.
-                let (min_width, pref_width, max_width) = hints.get(index).copied().unwrap_or((
-                    MIN_TAB_WIDTH,
-                    MIN_TAB_WIDTH,
-                    MIN_TAB_WIDTH,
-                ));
-                let declared = Hints {
-                    width: AxisHints::new(
-                        min_width.max(0) as u32,
-                        pref_width.max(0) as u32,
-                        max_width.max(0) as u32,
-                    ),
-                    height: AxisHints::fixed(TAB_HEIGHT as u32),
-                };
-                // A vertical strip is the same declaration with the axes exchanged, which is the
-                // only difference between the four `TabPosition`s' boxes.
-                let declared = if horizontal {
-                    declared
-                } else {
-                    Hints { width: declared.height, height: declared.width }
-                };
-                let created = row.add_with_hints(
-                    &factory,
-                    "label",
-                    &tab.title,
-                    declared,
-                    LayoutParams::new(),
-                );
-                debug_assert!(created.is_some(), "a tab is a core control");
-            }
-            let mut placed: crate::compat::Vec<Rect> = crate::compat::Vec::new();
-            row.arrange(strip, &mut |_, rect| placed.push(rect));
-            while placed.len() < self.tabs.len() {
-                placed.push(Rect::new(0, 0, 0, 0));
-            }
-            placed
+            placed.push(rect);
+            cursor += *preferred + spacing;
         }
+        placed
     }
 
     /// The close affordance's rectangle inside `tab_rect`.
@@ -913,11 +806,11 @@ impl TabWidget {
     /// # Why this exists
     ///
     /// [`Self::tab_rect`] used to call [`Self::tab_run`] on every invocation, and the draw pass
-    /// asks for every tab (and the hit test asks for every tab on a press). Each `tab_run` builds
-    /// a `CompositeBuilder`, measures every caption and runs a `FlexLayout`, so a strip of `n`
-    /// tabs paid `n` full layout passes **per frame** — quadratic in the tab count for a value
-    /// whose inputs did not change between the calls. This method is the single derivation the
-    /// callers that need more than one box should use.
+    /// asks for every tab (and the hit test asks for every tab on a press). A strip of `n` tabs
+    /// therefore paid `n` runs **per frame**. This method is the single derivation the callers that
+    /// need more than one box use. `tab_run` is now one pass over the measured widths (see its
+    /// docs), so the remaining cost is proportional to the tab count rather than to widget
+    /// construction and a layout pass per tab.
     fn tab_rects(&self) -> Vec<Rect> {
         let rect = self.geometry();
         let tab_height = TAB_HEIGHT as u32;
@@ -986,15 +879,14 @@ const TAB_HEIGHT: i32 = crate::widget::metrics::dimensions::TAB_HEIGHT as i32;
 /// Horizontal gap between adjacent tabs.
 const TAB_SPACING: i32 = 2;
 
-/// `TAB_SPACING` as the strip's layout will actually charge it.
+/// `TAB_SPACING` as the strip actually charges it.
 ///
-/// The strip is arranged by a `CompositeBuilder`, whose context-free `arrange` reads
-/// `LayoutContext::default()` — which carries the device's text-scale preference and widens the
-/// gap by it. The strip's band and the width hints must therefore be sized with the *same* gap, or
-/// the run overflows the band it was given and the proportional shrink takes a pixel off the tabs:
-/// a 100 px strip of two shares (each 49, the nominal 2 counted once) drew as two 48s once the
-/// layout charged 3. Deriving the band from this same value keeps the declaration and the run in
-/// agreement on every device.
+/// The run reads the device's text-scale preference through `LayoutContext::default()`, so the gap
+/// widens with it. The strip's band and the width hints must therefore be sized with the *same*
+/// gap, or the run overflows the band it was given and the proportional shrink takes a pixel off
+/// the tabs: a 100 px strip of two shares (each 49, the nominal 2 counted once) drew as two 48s
+/// once the run charged 3. Deriving the band from this same value keeps the declaration and the
+/// run in agreement on every device.
 fn scaled_tab_spacing() -> i32 {
     let context = crate::layout::types::LayoutContext::default();
     let scale = context.layout_scale.max(context.font_scale);
@@ -1297,7 +1189,7 @@ impl Draw for TabWidget {
         // `resolved_theme_style` takes and releases the global manager's lock
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("tab_widget");
         // `tab_widget` is not a control kind in the role table, so it classifies as
         // `Surface`, whose background is `theme.colors.background` — byte-identical
@@ -1399,7 +1291,7 @@ impl Draw for TabWidget {
                 // vertical midpoint. `draw_text_fitted` with `Center` states the intent and
                 // elides a title that cannot fit, instead of letting it leave the control.
                 let text_color = if !is_enabled { disabled_text } else { text_color };
-                let font = effective_font(&style);
+                let font = effective_font(style);
                 let tab_line = context.text_line(tab_rect, font);
                 // ── Icon ──
                 //

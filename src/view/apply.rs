@@ -601,13 +601,14 @@ fn insert_subtree(
 ) -> usize {
     // ── Transparent nodes ──
     //
-    // `spacer` (and the `layout` pseudo-widget) is a *declarative* node that produces **no
-    // control**. The JSON path has handled it since the beginning (`json/loader.rs:245`), and
-    // `view/diff.rs` documents the same contract in four places — but this function had no branch
-    // for it, so it fell through to `create`, which cannot resolve a pseudo-widget, and the node
-    // was reported as `UnknownWidgetType` and its **entire subtree dropped**. A single spacer in a
-    // declarative UI therefore deleted everything declared inside it, silently, with only an error
-    // entry to show for it.
+    // A transparent node (`spacer` — see `super::is_transparent_node`, which is the single
+    // spelling of that rule) is a *declarative* node that produces **no control**. The JSON path
+    // has handled it since the beginning (`json/loader.rs:245`), and `view/diff.rs` documents the
+    // same contract in four places — but this function had no branch for it, so it fell through to
+    // `create`, which cannot resolve a pseudo-widget, and the node was reported as
+    // `UnknownWidgetType` and its **entire subtree dropped**. A single spacer in a declarative UI
+    // therefore deleted everything declared inside it, silently, with only an error entry to show
+    // for it.
     //
     // The two front ends must agree about what a node means, so the treatment here matches the
     // loader's: the node itself contributes nothing, and its children are inserted **into the
@@ -620,7 +621,7 @@ fn insert_subtree(
     // what `justify_content` and the children's own hints already do. Recording the intent rather
     // than inventing a zero-sized control keeps `spacer` "a node that reserves space" rather than
     // "a control that happens to be invisible" (principle #4).
-    if node.widget.eq_ignore_ascii_case("spacer") {
+    if super::is_transparent_node(node) {
         let mut count = 0usize;
         for (i, child) in node.children.iter().enumerate() {
             count += insert_subtree(
@@ -774,7 +775,7 @@ mod tests {
     /// assertions but useless for asking "did the value actually change?" — and that
     /// question is the whole point of the reset test below.
     fn real_creator() -> impl Fn(&Node) -> Option<ObjectId> {
-        let factory = crate::widget::WidgetFactory::new_with_defaults();
+        let factory = crate::widget::WidgetFactory::shared();
         move |node: &Node| {
             let widget: Box<dyn crate::widget::Widget> = factory.create(
                 &node.widget,
@@ -811,7 +812,7 @@ mod tests {
         // `tools/check_declarative_path_repaints.sh` guards the call's presence in the source,
         // which is the half that cannot be observed without a live platform.
         let id = crate::widget::runtime::register(
-            crate::widget::WidgetFactory::new_with_defaults()
+            crate::widget::WidgetFactory::shared()
                 .create("label", crate::core::Rect::new(0, 0, 80, 24), "r")
                 .expect("label is a registered control"),
         )

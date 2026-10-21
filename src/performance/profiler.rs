@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use crate::compat::{format, HashMap, Instant, MiniToString, String, Vec};
+use crate::compat::{format, HashMap, Instant, MiniToString, String, Vec, VecDeque};
 use core::time::Duration;
 
 /// Mean of `total` over `call_count`, computed without truncating the count.
@@ -200,7 +200,7 @@ impl ProfileReport {
 /// most recently started frame; `frame_times` keeps at most `max_frames` samples
 /// (the oldest is dropped on overflow).
 pub struct FrameProfiler {
-    frame_times: Vec<Duration>,
+    frame_times: VecDeque<Duration>,
     max_frames: usize,
     current_frame_start: Option<Instant>,
     sections: HashMap<String, Duration>,
@@ -211,7 +211,7 @@ impl FrameProfiler {
     /// With `max_frames` of zero, `end_frame` never stores a sample.
     pub fn new(max_frames: usize) -> Self {
         Self {
-            frame_times: Vec::with_capacity(max_frames),
+            frame_times: VecDeque::with_capacity(max_frames),
             max_frames,
             current_frame_start: None,
             sections: HashMap::new(),
@@ -237,9 +237,9 @@ impl FrameProfiler {
                 return;
             }
             if self.frame_times.len() >= self.max_frames {
-                self.frame_times.remove(0);
+                self.frame_times.pop_front();
             }
-            self.frame_times.push(duration);
+            self.frame_times.push_back(duration);
         }
     }
     /// Starts timing a named section of the current frame, replacing any section

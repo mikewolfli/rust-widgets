@@ -18,27 +18,98 @@
 //! One policy question lives here too, because it needs the snapshot: which installed family a host
 //! should register for full CJK coverage — see [`register_system_cjk_font`].
 
-use crate::compat::{OnceLock, String, ToString, Vec};
+use crate::compat::{OnceLock, RwLock, String, ToString, Vec};
 use crate::platform::SystemFont;
 use alloc::boxed::Box;
 
-static SNAPSHOT: OnceLock<Vec<SystemFont>> = OnceLock::new();
+/// The current snapshot. `None` means "not queried yet".
+///
+/// A swappable slot rather than a plain `OnceLock<Vec<SystemFont>>`: `refresh_system_fonts`
+/// promises to drop the snapshot, and the old cell could not be reset. The slice is `'static`
+/// because that is the published return type, so each accepted snapshot is leaked once — see
+/// [`refresh_system_fonts`] for why the leak is bounded by real changes rather than calls.
+static SNAPSHOT: OnceLock<RwLock<Option<&'static [SystemFont]>>> = OnceLock::new();
+
+fn slot() -> &'static RwLock<Option<&'static [SystemFont]>> {
+    SNAPSHOT.get_or_init(|| RwLock::new(None))
+}
+
+/// Runs `f` with the installed snapshot under a read lock.
+///
+/// The lock type differs by profile (`std::sync::RwLock` recovers from poisoning, `spin::RwLock`
+/// has no `Result`), so the profile difference lives here rather than at every caller.
+fn with_snapshot<R>(f: impl FnOnce(Option<&'static [SystemFont]>) -> R) -> R {
+    #[cfg(not(alloc_frugal))]
+    {
+        let guard = slot().read().unwrap_or_else(|poisoned| poisoned.into_inner());
+        f(*guard)
+    }
+    #[cfg(alloc_frugal)]
+    {
+        f(*slot().read())
+    }
+}
+
+/// Runs `f` with the snapshot slot under a write lock. See [`with_snapshot`].
+fn with_snapshot_mut<R>(f: impl FnOnce(&mut Option<&'static [SystemFont]>) -> R) -> R {
+    #[cfg(not(alloc_frugal))]
+    {
+        let mut guard = slot().write().unwrap_or_else(|poisoned| poisoned.into_inner());
+        f(&mut guard)
+    }
+    #[cfg(alloc_frugal)]
+    {
+        let mut guard = slot().write();
+        f(&mut guard)
+    }
+}
+
+/// Reads the current snapshot.
+fn read_snapshot() -> Option<&'static [SystemFont]> {
+    with_snapshot(|snapshot| snapshot)
+}
 
 /// The host's installed fonts, queried once per process.
 pub fn system_fonts() -> &'static [SystemFont] {
-    SNAPSHOT.get_or_init(|| crate::platform::platform_facts().system_fonts())
+    if let Some(fonts) = read_snapshot() {
+        return fonts;
+    }
+    // Query outside the lock: the platform call can be slow (`fc-list`) and holding the slot
+    // across it would block every reader. Two racing first calls both query; only one snapshot is
+    // installed, so the other is a bounded, one-time allocation.
+    let fresh: &'static [SystemFont] =
+        Box::leak(crate::platform::platform_facts().system_fonts().into_boxed_slice());
+    with_snapshot_mut(|slot| match *slot {
+        Some(existing) => existing,
+        None => {
+            *slot = Some(fresh);
+            fresh
+        }
+    })
 }
 
 /// Drops the snapshot so the next [`system_fonts`] call queries the OS again.
 ///
-/// `OnceLock` cannot be reset, so the replacement is a fresh cell; a caller holding the previous
-/// slice keeps a valid (if stale) value, which is the safe outcome for a reader.
+/// # Why the leak is bounded
+///
+/// The return type is a process-lifetime slice, so an accepted snapshot cannot be freed while a
+/// reader may hold it. The previous implementation leaked a **new** snapshot on every call and
+/// never installed it, so the global readers were not refreshed at all and repeated calls grew
+/// the process without bound. This version installs what it returns and compares first: a refresh
+/// that produces the same font set returns the installed slice instead of leaking another copy.
+/// Memory therefore grows with the number of **real** font-set changes, not with calls.
 pub fn refresh_system_fonts() -> &'static [SystemFont] {
-    // Safe and race-free: replacing the whole cell means concurrent readers either finish with
-    // the old slice or start with the new one, and `&'static` from the old cell stays valid
-    // because the old `Vec` is leaked rather than dropped.
-    let fresh: &'static OnceLock<Vec<SystemFont>> = Box::leak(Box::new(OnceLock::new()));
-    fresh.get_or_init(|| crate::platform::platform_facts().system_fonts())
+    let fresh = crate::platform::platform_facts().system_fonts();
+    with_snapshot_mut(|slot| {
+        if let Some(existing) = *slot {
+            if existing == fresh.as_slice() {
+                return existing;
+            }
+        }
+        let leaked: &'static [SystemFont] = Box::leak(fresh.into_boxed_slice());
+        *slot = Some(leaked);
+        leaked
+    })
 }
 
 /// Sorted, de-duplicated family names from [`system_fonts`].
@@ -183,6 +254,19 @@ pub fn register_system_cjk_font() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A refresh that finds the same font set must reuse the installed slice.
+    ///
+    /// This pins the fix for the unbounded leak: every call used to hand out a newly leaked
+    /// snapshot that `system_fonts()` never saw. Pointer equality is the observable that says
+    /// "the second refresh accepted the existing snapshot instead of allocating another".
+    #[test]
+    fn a_refresh_with_no_change_reuses_the_installed_snapshot() {
+        let first = refresh_system_fonts();
+        let second = refresh_system_fonts();
+        assert!(core::ptr::eq(first, second), "an unchanged refresh leaked a second snapshot");
+        assert_eq!(second, system_fonts(), "the refresh must install what it returns");
+    }
 
     #[test]
     fn families_are_sorted_and_have_no_blank_or_duplicate_entries() {

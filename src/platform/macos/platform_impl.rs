@@ -886,14 +886,11 @@ impl Platform for MacOSPlatform {
             raw_window_handle::AppKitDisplayHandle::new(),
         ))
     }
-    fn poll_menu_triggered(&self) -> Option<u64> {
-        let mut events = crate::compat::lock(menu_events());
-        if events.is_empty() {
-            None
-        } else {
-            Some(events.remove(0))
-        }
-    }
+    // `poll_menu_triggered` / `inject_menu_trigger` are **not** overridden: this backend owns no
+    // native menu (the `NSMenu` bar was removed — see `status.md`), so nothing can ever queue an
+    // activation and the trait defaults (`None` / `false`) are the honest answers. There used to be
+    // a `MENU_EVENTS` static and a `Vec::remove(0)` poll behind these methods; nothing in the crate
+    // pushed to it, so every poll paid a mutex lock plus a memmove to read an always-empty queue.
 
     /// Drives a menu item through AppKit's own action dispatch.
     ///

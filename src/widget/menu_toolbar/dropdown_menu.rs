@@ -584,10 +584,10 @@ impl Draw for DropdownMenu {
         // `resolved_theme_style` takes and releases the global manager's lock
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         // The **effective font** — the resolved theme/caller font — for the field's value;
         // the list rows take the same font below (D09-STYLE-01).
-        let font = effective_font(&style);
+        let font = effective_font(style);
         let theme = crate::style::resolved_theme_style("dropdown_menu");
         // `dropdown_menu` is not a control kind in the role table, so it classifies as
         // `Surface`, whose background is `theme.colors.background` — the colour the
@@ -731,7 +731,7 @@ impl Draw for DropdownMenu {
                 let item_text_color = if !item.enabled { disabled_text_color } else { text_color };
                 // The item label takes the **effective font**, so the theme body font and the
                 // user's text scale reach the list rows (D09-STYLE-01).
-                let item_font = effective_font(&style);
+                let item_font = effective_font(style);
                 let mut item_x = ir.x + PADDING;
 
                 // Item icon

@@ -311,7 +311,7 @@ impl Draw for ModalBottomSheet {
         //
         // The theme reads take and release the global manager's lock internally, so no
         // guard is held across the draw (the mutex is not re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("modal_bottom_sheet");
         // `modal_bottom_sheet` is absent from `WidgetRole::for_kind_name`'s table, so it
         // classifies as `Surface` and resolves to `theme.colors.background` — the window's
@@ -391,7 +391,7 @@ impl Draw for ModalBottomSheet {
         let title_y = handle_y + handle_height as i32 + 12;
         // The **effective font** — the resolved theme/caller font — rather than the fixed 16 px
         // sans-serif this used to build (D09-STYLE-01).
-        let title_font = effective_font(&style);
+        let title_font = effective_font(style);
         let title_metrics = context.measure_text(&self.title, title_font);
         if !self.title.is_empty() {
             let title_x = rect.x + (rect.width as i32 - title_metrics.width as i32) / 2;

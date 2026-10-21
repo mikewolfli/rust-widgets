@@ -952,7 +952,7 @@ impl Draw for TimeEdit {
         // resolved style supplies `text_color` and `border_color` but no
         // `background_color` (ThemeRole::Input resolves that to `None`), so the interior
         // is derived below from the theme's own background rather than left unset.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("time_edit");
         // Read as its own lock acquisition and copied out as values, so the guard is
         // dropped before anything else touches the theme.
@@ -1012,7 +1012,7 @@ impl Draw for TimeEdit {
         // so deriving it here keeps the two from drifting.
         // The **effective font** — the resolved theme/caller font — so the value honours the theme
         // body font and the user's text scale (D09-STYLE-01).
-        let font = effective_font(&style);
+        let font = effective_font(style);
         let line = context.text_line(rect, font);
         context.draw_text_fitted(
             Rect {
@@ -1081,6 +1081,9 @@ impl TimeEdit {
         context.draw_circle(centre, (radius * MINUTE_RING_INNER) as u32, border);
         context.draw_circle(centre, (radius * HOUR_HOLE) as u32, border);
 
+        // One reused buffer for both rings' labels: `to_string()` / `format!` allocated a `String`
+        // for each of the 24 numerals on every frame, and the text is at most two digits.
+        let mut numeral = String::new();
         for step in 0..12 {
             // Clock convention: twelve at the top, growing clockwise. `step` counts from the top, so
             // the sine term is the horizontal offset and the cosine term is the vertical one.
@@ -1088,25 +1091,29 @@ impl TimeEdit {
             let (sin, cos) = angle.sin_cos();
             // Hours: 1..=12 rather than 0..=11, because a clock face has no zero.
             let hour = if step == 0 { 12 } else { step };
+            numeral.clear();
+            let _ = core::fmt::Write::write_fmt(&mut numeral, format_args!("{hour}"));
             self.draw_clock_numerals(
                 context,
                 centre,
                 radius * 0.82,
                 sin,
                 cos,
-                &hour.to_string(),
+                &numeral,
                 if self.hovered_hand == Some(ClockHand::Hour) { ink } else { muted },
                 font,
             );
             // Minutes: in five-minute steps, which is what the minute ring selects.
             let minute = step * 5;
+            numeral.clear();
+            let _ = core::fmt::Write::write_fmt(&mut numeral, format_args!("{minute:02}"));
             self.draw_clock_numerals(
                 context,
                 centre,
                 radius * 0.42,
                 sin,
                 cos,
-                &format!("{minute:02}"),
+                &numeral,
                 if self.hovered_hand == Some(ClockHand::Minute) { ink } else { muted },
                 font,
             );

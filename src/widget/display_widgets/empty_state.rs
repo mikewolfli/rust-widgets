@@ -234,7 +234,7 @@ impl Draw for EmptyState {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("empty_state");
         let surface = style
             .background_color
@@ -293,9 +293,9 @@ impl Draw for EmptyState {
         // and the title box in sequence, so the message's rows begin below both.
         // Each label's face comes from the **effective font** at its role size and weight, so the
         // theme family and the user's text scale reach the empty-state copy (D09-STYLE-01).
-        let title_font = role_font(&style, title_font_size as f32).with_weight_value(600);
-        let icon_font = role_font(&style, icon_size as f32).with_weight_value(400);
-        let message_font = role_font(&style, message_font_size as f32).with_weight_value(400);
+        let title_font = role_font(style, title_font_size as f32).with_weight_value(600);
+        let icon_font = role_font(style, icon_size as f32).with_weight_value(400);
+        let message_font = role_font(style, message_font_size as f32).with_weight_value(400);
         let icon_height = context.measure_text("M", &icon_font).height.max(1) as i32;
         let title_height = context.measure_text("M", &title_font).height.max(1) as i32;
         let line_height = context.measure_text("M", &message_font).height.max(1) as i32;
@@ -397,7 +397,7 @@ impl Draw for EmptyState {
             } else {
                 btn_bg.contrast_color()
             };
-            let btn_font = role_font(&style, 14.0).with_weight_value(600);
+            let btn_font = role_font(style, 14.0).with_weight_value(600);
             // Horizontal centring is measured; vertical centring comes from the shared line
             // box. The previous `btn_rect.y + btn_rect.height / 2` put the glyph box's top edge
             // on the button's middle line and drew the label half a line low.

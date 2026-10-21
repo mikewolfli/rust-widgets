@@ -553,7 +553,7 @@ impl Draw for FindReplaceDialog {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("find_replace_dialog");
         let themed_ink = theme.as_ref().and_then(|t| t.text_color);
         let themed_border = theme.as_ref().and_then(|t| t.border_color);
@@ -621,7 +621,7 @@ impl Draw for FindReplaceDialog {
         let label_rect = Rect::new(x, find_row.y, label_col, find_row.height);
         // The **effective font** — the resolved theme/caller font — for every label and field in
         // the bar, rather than the fixed 12 px sans-serif this used to build (D09-STYLE-01).
-        let font = effective_font(&style);
+        let font = effective_font(style);
         let label_line = self.text_line(label_rect, font, context);
         context.draw_text_fitted(label_line, "Find:", font, ink, HorizontalAlignment::Left);
         x += label_col as i32 + GAP;

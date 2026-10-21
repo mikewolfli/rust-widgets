@@ -1336,7 +1336,7 @@ pub fn create_widget_of_kind(
     let widget = widget.or_else(|| {
         #[cfg(all(device_profile, full_widgets))]
         {
-            widget::WidgetFactory::new_with_defaults().create(&kind_name(kind), rect, text)
+            widget::WidgetFactory::shared().create(&kind_name(kind), rect, text)
         }
         #[cfg(not(all(device_profile, full_widgets)))]
         {
@@ -1402,7 +1402,7 @@ pub fn create_widget_of_kind(
 #[cfg(all(not(alloc_frugal), full_widgets))]
 fn kind_name(kind: widget::WidgetKind) -> alloc::string::String {
     use alloc::string::ToString;
-    if let Some(capability) = widget::WidgetFactory::new_with_defaults().capability_by_kind(kind) {
+    if let Some(capability) = widget::WidgetFactory::shared().capability_by_kind(kind) {
         return capability.canonical_name.to_string();
     }
     widget::capability::factory_name_for_kind(kind).unwrap_or_default().to_string()

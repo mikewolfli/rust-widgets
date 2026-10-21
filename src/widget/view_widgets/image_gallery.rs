@@ -343,7 +343,7 @@ impl Draw for ImageGallery {
             // old literals kept only as the last fallback (rule #21: an unstyled gallery
             // looks exactly as it did). The label is derived from the panel it sits on, so
             // it cannot repeat the 2.02:1 mistake on any surface.
-            let style = self.base.style().clone();
+            let style = self.base.style();
             let theme = crate::style::resolved_theme_style("image_gallery");
             let fallback_bg = if !is_enabled {
                 Color::rgba(230, 230, 230, 200)
@@ -362,7 +362,7 @@ impl Draw for ImageGallery {
                 self.style().border_radius.unwrap_or(0),
                 Color::BLACK,
             );
-            let font = effective_font(&style);
+            let font = effective_font(style);
             let text = "No images in gallery";
             // Fitted to the control's width: 20 characters at 14 px is wider than a
             // gallery laid out in a narrow pane, and the label used to be placed from the
@@ -409,7 +409,7 @@ impl Draw for ImageGallery {
         // stage** rather than written down as four more near-whites. That is what keeps the original
         // defect from returning: the old form hardcoded every one of them as `rgba(2xx,2xx,2xx)`, so
         // a host that set a *light* stage through the style got white-on-white labels and no error.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("image_gallery");
         // The accent for the selected thumbnail, read from the role rather than from the gallery's
         // own surface. See the selected-thumbnail block below for why the surface was wrong.
@@ -451,7 +451,7 @@ impl Draw for ImageGallery {
 
         // Draw current image info in preview area.
         if let Some(image) = self.images.get(self.current_index) {
-            let font = effective_font(&style);
+            let font = effective_font(style);
 
             // Draw image label / filename centered.
             let display_name = image
@@ -622,7 +622,7 @@ impl Draw for ImageGallery {
             // Draw image label under thumbnail.
             if let Some(image) = self.images.get(img_idx) {
                 if let Some(ref label) = image.label {
-                    let font = effective_font(&style);
+                    let font = effective_font(style);
                     let label_text = if label.len() > 10 {
                         let boundary = crate::widget::text_utils::floor_char_boundary(label, 8);
                         format!("{}..", &label[..boundary])

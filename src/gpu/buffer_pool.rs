@@ -572,7 +572,7 @@ impl GpuUploadBatcher {
 }
 /// Performance monitor for GPU buffer pool
 pub struct GpuBufferPoolMonitor {
-    stats_history: Vec<GpuBufferPoolStats>,
+    stats_history: crate::compat::VecDeque<GpuBufferPoolStats>,
     max_history: usize,
 }
 impl GpuBufferPoolMonitor {
@@ -583,17 +583,17 @@ impl GpuBufferPoolMonitor {
     /// history would make the very first `record` call do exactly that (N-S-32).
     pub fn new(max_history: usize) -> Self {
         let max_history = max_history.max(1);
-        Self { stats_history: Vec::with_capacity(max_history), max_history }
+        Self { stats_history: crate::compat::VecDeque::with_capacity(max_history), max_history }
     }
     /// Records a stats sample
     pub fn record(&mut self, stats: GpuBufferPoolStats) {
         // Evict from the front only when there is something to evict; `new`
         // guarantees a non-zero capacity, but the guard makes the invariant local
         // to `record` as well and removes any dependence on construction order.
-        while self.stats_history.len() >= self.max_history && !self.stats_history.is_empty() {
-            self.stats_history.remove(0);
+        if self.stats_history.len() >= self.max_history {
+            self.stats_history.pop_front();
         }
-        self.stats_history.push(stats);
+        self.stats_history.push_back(stats);
     }
     /// Returns the average utilization
     pub fn average_utilization(&self) -> f32 {

@@ -1045,6 +1045,16 @@ pub fn store_declarations(rule_name: &str, decls: Vec<CssDeclaration>) {
 /// but declared nothing". The returned vector is always non-empty.
 ///
 /// A poisoned lock is recovered rather than propagated.
+///
+/// # Reachability
+///
+/// **Published API with no in-crate consumer.** `CssParser::parse` writes into this registry so a
+/// caller can read a rule's declarations back; no control in this crate calls the reader. It is
+/// kept because it is a documented pair with [`store_declarations`]. Removal condition: either a
+/// consumer exists (a stylesheet inspector, or the JSON loader resolving a rule by name), or the
+/// pair is removed in a release that can take the API break. The linear suffix scan is acceptable
+/// only because the registry is capped at `MAX_STORED_RULES`; a consumer on a hot path would need
+/// an index instead.
 pub fn get_declarations(rule_name: &str) -> Option<Vec<CssDeclaration>> {
     // SAFETY: Same poison recovery strategy — stale data is safe to read.
     let registry = lock(DECLARATIONS.get_or_init(|| Mutex::new(Vec::new())));

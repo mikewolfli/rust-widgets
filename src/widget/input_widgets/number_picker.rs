@@ -511,7 +511,7 @@ impl Draw for NumberPicker {
             return;
         }
 
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let background = style.background_color.unwrap_or(Color::WHITE);
         let text_color = style.text_color.unwrap_or(Color::BLACK);
         // The selected row is drawn in the theme's accent so the current value is

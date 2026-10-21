@@ -286,7 +286,7 @@ pub fn install_preset_appearances() {
 /// across a `draw`. A `Draw` implementation resolves its style from the same
 /// manager, so holding the lock across the call would deadlock.
 pub fn census_all_controls() -> Vec<ControlCensus> {
-    let factory = WidgetFactory::new_with_defaults();
+    let factory = WidgetFactory::shared();
     let mut results = Vec::new();
 
     for name in factory.widget_names() {

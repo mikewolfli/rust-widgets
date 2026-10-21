@@ -270,7 +270,7 @@ impl Draw for AppBar {
         // The theme reads are separate manager locks, each taken and released inside
         // `resolved_theme_style`, so none is held across the draw or across another
         // accessor — the global manager's mutex is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("app_bar");
         let background = style
             .background_color
@@ -372,7 +372,7 @@ impl Draw for AppBar {
             // Derive the title's face from the **effective font** — the theme's family/weight/leading —
             // and scale the role-derived title size by the same factor, so a text-scale preference
             // reaches the title (D09-STYLE-01).
-            let title_font = role_font(&style, title_font_size);
+            let title_font = role_font(style, title_font_size);
             let metrics = context.measure_text(&self.title, &title_font);
 
             let (leading_reserve, trailing_reserve) = (
@@ -416,7 +416,7 @@ impl Draw for AppBar {
         if !self.action_text.is_empty() {
             // Same rule as the title: the theme face at the action role's own size, scaled by the
             // text preference (D09-STYLE-01).
-            let action_font = role_font(&style, action_font_size);
+            let action_font = role_font(style, action_font_size);
             let metrics = context.measure_text(&self.action_text, &action_font);
 
             let action_x = if self.direction.is_right_to_left() {

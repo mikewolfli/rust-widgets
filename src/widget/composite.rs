@@ -73,6 +73,17 @@ use crate::style::EdgeOffsets;
 use crate::widget::metrics::ControlMetrics;
 use crate::widget::{Widget, WidgetFactory};
 
+// The `ChildInfo` list `hints()` / `arrange()` hand to a layout, reused across calls.
+//
+// `ChildInfo` is a set of `Copy` fields, so building it allocated for no reason — once per composite
+// per measurement pass, and again per level of nesting (WBASE-09). The list is consumed inside one
+// call, so one buffer per thread is enough; a layout that re-enters another composite's `arrange`
+// finds it busy and gets its own (see `with_child_infos`).
+thread_local! {
+    static CHILD_INFO_BUFFER: core::cell::RefCell<Vec<ChildInfo>> =
+        const { core::cell::RefCell::new(Vec::new()) };
+}
+
 /// One child of a composite, as the builder knows it.
 struct Child {
     id: ObjectId,
@@ -410,48 +421,78 @@ impl CompositeBuilder {
         // The major axis is vertical for a column, so `vertical` here is "is the additive
         // axis the vertical one" — the negation of `major_is_horizontal`.
         let vertical = !major_is_horizontal;
-        let infos = self.child_infos();
-        let major_min = total_minimum(&infos, vertical);
-        // `total_bounds` adds each child's margins to its preferred extent, which is what
-        // makes the sum the room the children actually occupy rather than the ink they draw.
-        let major_occupied = total_bounds(&infos, vertical);
-        let cross_pref = max_preferred(&infos, vertical);
-        let content = if major_is_horizontal {
-            Size::new(major_occupied, cross_pref)
-        } else {
-            Size::new(cross_pref, major_occupied)
-        };
-        let size = ControlMetrics::implicit_size(content, self.padding, self.floor);
-        if major_is_horizontal {
-            // The major axis keeps a floor of `major_min` — the smallest the children
-            // may be squeezed to — while remaining free to grow past `pref`, because whether
-            // a row stretches is a `fill` question and not a size question (§B.6 rule 9).
-            Hints {
-                width: AxisHints::new(
-                    major_min.saturating_add(self.padding.horizontal_total()).max(self.floor.width),
-                    size.width,
-                    u32::MAX,
-                ),
-                height: AxisHints::new(size.height, size.height, size.height),
+        self.with_child_infos(|infos| {
+            let major_min = total_minimum(infos, vertical);
+            // `total_bounds` adds each child's margins to its preferred extent, which is what
+            // makes the sum the room the children actually occupy rather than the ink they draw.
+            let major_occupied = total_bounds(infos, vertical);
+            let cross_pref = max_preferred(infos, vertical);
+            let content = if major_is_horizontal {
+                Size::new(major_occupied, cross_pref)
+            } else {
+                Size::new(cross_pref, major_occupied)
+            };
+            let size = ControlMetrics::implicit_size(content, self.padding, self.floor);
+            if major_is_horizontal {
+                // The major axis keeps a floor of `major_min` — the smallest the children
+                // may be squeezed to — while remaining free to grow past `pref`, because whether
+                // a row stretches is a `fill` question and not a size question (§B.6 rule 9).
+                Hints {
+                    width: AxisHints::new(
+                        major_min
+                            .saturating_add(self.padding.horizontal_total())
+                            .max(self.floor.width),
+                        size.width,
+                        u32::MAX,
+                    ),
+                    height: AxisHints::new(size.height, size.height, size.height),
+                }
+            } else {
+                Hints {
+                    width: AxisHints::new(size.width, size.width, size.width),
+                    height: AxisHints::new(
+                        major_min
+                            .saturating_add(self.padding.vertical_total())
+                            .max(self.floor.height),
+                        size.height,
+                        u32::MAX,
+                    ),
+                }
             }
-        } else {
-            Hints {
-                width: AxisHints::new(size.width, size.width, size.width),
-                height: AxisHints::new(
-                    major_min.saturating_add(self.padding.vertical_total()).max(self.floor.height),
-                    size.height,
-                    u32::MAX,
-                ),
-            }
-        }
+        })
     }
 
-    /// The children as the layout sees them.
-    fn child_infos(&self) -> Vec<ChildInfo> {
-        self.children
-            .iter()
-            .map(|child| ChildInfo { id: child.id, hints: child.hints, params: child.params })
-            .collect()
+    /// Runs `f` with the children as the layout sees them, reusing a per-thread buffer.
+    ///
+    /// `ChildInfo` is nothing but `Copy` fields, yet `hints()` and `arrange()` each used to build a
+    /// fresh `Vec` for every composite — one allocation per composite per measurement pass, and a
+    /// nesting level per composite (WBASE-09). The list is consumed inside the call, so one buffer
+    /// per thread is enough; a layout that re-enters another composite's `arrange` finds the buffer
+    /// busy and gets its own rather than panicking.
+    fn with_child_infos<R>(&self, f: impl FnOnce(&[ChildInfo]) -> R) -> R {
+        CHILD_INFO_BUFFER.with(|cell| match cell.try_borrow_mut() {
+            Ok(mut infos) => {
+                infos.clear();
+                infos.extend(self.children.iter().map(|child| ChildInfo {
+                    id: child.id,
+                    hints: child.hints,
+                    params: child.params,
+                }));
+                f(&infos)
+            }
+            Err(_) => {
+                let owned: Vec<ChildInfo> = self
+                    .children
+                    .iter()
+                    .map(|child| ChildInfo {
+                        id: child.id,
+                        hints: child.hints,
+                        params: child.params,
+                    })
+                    .collect();
+                f(&owned)
+            }
+        })
     }
 
     /// Lays the children out inside `rect` and reports each one's geometry.
@@ -494,9 +535,10 @@ impl CompositeBuilder {
     /// the caller is expected to have given it a sensible starting geometry.
     pub fn arrange(&self, rect: Rect, out: &mut dyn FnMut(ObjectId, Rect)) {
         let content = ControlMetrics::content_box(rect, self.padding);
-        let infos = self.child_infos();
-        let context = LayoutContext::default();
-        self.layout.arrange_with_context(content, &infos, &context, out);
+        self.with_child_infos(|infos| {
+            let context = LayoutContext::default();
+            self.layout.arrange_with_context(content, infos, &context, out);
+        });
     }
 
     /// The children's ids, in the order they were added.
@@ -1120,5 +1162,54 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The shared `ChildInfo` buffer must not leak one composite's children into another's answer.
+    ///
+    /// `hints()` and `arrange()` now fill a per-thread buffer instead of allocating, so a stale
+    /// entry would credit a *different* composite's children to this one — a wrong size that only
+    /// shows up when two composites are measured in the same pass, which is every real layout. The
+    /// relation asserted is that interleaving two composites answers exactly what measuring each one
+    /// on its own does, and that the placed rectangles are the ones that composite's own children
+    /// describe.
+    #[test]
+    fn the_shared_child_info_buffer_does_not_leak_between_composites() {
+        let (factory, mut wide) = builder();
+        wide.add(
+            &factory,
+            "label",
+            "a very wide label",
+            Rect::new(0, 0, 140, 14),
+            LayoutParams::new(),
+        )
+        .expect("label is published");
+        let (factory2, mut narrow) = builder();
+        narrow
+            .add(&factory2, "label", "i", Rect::new(0, 0, 9, 14), LayoutParams::new())
+            .expect("label is published");
+
+        let wide_alone = wide.hints(true);
+        let narrow_alone = narrow.hints(true);
+        assert!(
+            wide_alone.width.pref > narrow_alone.width.pref,
+            "the fixture must differ in width: {} vs {}",
+            wide_alone.width.pref,
+            narrow_alone.width.pref
+        );
+
+        // Interleaved, in both orders: each answer is the one it gave on its own.
+        assert_eq!(wide.hints(true), wide_alone);
+        assert_eq!(narrow.hints(true), narrow_alone);
+        assert_eq!(narrow.hints(true), narrow_alone);
+        assert_eq!(wide.hints(true), wide_alone);
+
+        // And the placement path reads its own children's boxes, not a neighbour's.
+        let mut wide_rects = Vec::new();
+        wide.arrange(Rect::new(0, 0, 400, 40), &mut |id, rect| wide_rects.push((id, rect)));
+        let mut narrow_rects = Vec::new();
+        narrow.arrange(Rect::new(0, 0, 400, 40), &mut |id, rect| narrow_rects.push((id, rect)));
+        assert_eq!(wide_rects.len(), 1, "the wide composite has one child");
+        assert_eq!(narrow_rects.len(), 1, "the narrow composite has one child");
+        assert_ne!(wide_rects[0].0, narrow_rects[0].0, "each composite placed its own child id");
     }
 }

@@ -842,6 +842,37 @@ thread_local! {
 /// The largest number of resolved names the per-thread cache keeps.
 const RESOLVED_STYLE_CACHE_LIMIT: usize = 256;
 
+/// Advances the revision the resolved-style caches validate against.
+///
+/// The theme registry bumps it whenever a theme is registered or activated. The environment
+/// snapshot — text scale, colour scheme, high contrast — also changes what a style resolves to
+/// and is not part of that registry, so `style::environment::refresh_environment` calls this
+/// when the snapshot differs from the previous frame's. Without it a 1.5× text preference
+/// resolved the same cached style as 1.0×.
+pub(crate) fn invalidate_resolved_style_cache() {
+    THEME_REVISION.fetch_add(1, Ordering::Relaxed);
+}
+
+/// `kind name -> (state -> (revision, style))`.
+///
+/// The two-level shape is what lets a cache hit borrow the kind name instead of allocating a
+/// composite `"kind:state"` key on every lookup.
+type StateStyleCache = HashMap<String, HashMap<Option<WidgetState>, (u64, WidgetStyle)>>;
+
+// The same cache for the `(kind, state)` resolver.
+//
+// `resolved_theme_style_for_state` is on the hover/press path: every control that paints a
+// hover state asks it once per frame, and every call took the global manager's mutex and rebuilt
+// the role style. The outer key is the kind and the inner key the state, so a hit borrows the
+// kind name rather than allocating a composite key.
+thread_local! {
+    static RESOLVED_STATE_STYLE_CACHE: crate::compat::RefCell<StateStyleCache> =
+        crate::compat::RefCell::new(HashMap::new());
+}
+
+/// The largest number of resolved kind names the state cache keeps.
+const RESOLVED_STATE_STYLE_CACHE_LIMIT: usize = 256;
+
 /// Resolves the active theme's style for `widget_name`.
 ///
 /// This is the single entry point the rest of the crate uses to ask "what should
@@ -915,9 +946,33 @@ pub fn resolved_theme_style_for_state(
     kind_name: &str,
     state: crate::style::WidgetState,
 ) -> Option<WidgetStyle> {
+    let revision = THEME_REVISION.load(Ordering::Relaxed);
+    let cached = RESOLVED_STATE_STYLE_CACHE.with(|cache| {
+        cache
+            .borrow()
+            .get(kind_name)
+            .and_then(|states| states.get(&Some(state)))
+            .filter(|(cached_revision, _)| *cached_revision == revision)
+            .map(|(_, style)| style.clone())
+    });
+    if let Some(style) = cached {
+        return Some(style);
+    }
+
     let manager = global_theme_manager();
     manager.current_theme()?;
-    Some(manager.resolve_style_for_state(kind_name, Some(state)))
+    let style = manager.resolve_style_for_state(kind_name, Some(state));
+    RESOLVED_STATE_STYLE_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= RESOLVED_STATE_STYLE_CACHE_LIMIT {
+            cache.clear();
+        }
+        cache
+            .entry(kind_name.to_string())
+            .or_default()
+            .insert(Some(state), (revision, style.clone()));
+    });
+    Some(style)
 }
 
 /// The border colour a control's [`SemanticState`](crate::style::SemanticState) asks for, or

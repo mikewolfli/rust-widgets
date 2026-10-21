@@ -266,7 +266,7 @@ impl Draw for CupertinoNavigationBar {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's
         // mutex is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("cupertino_navigation_bar");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme. The bar is not in the role table, so it
@@ -354,7 +354,7 @@ impl Draw for CupertinoNavigationBar {
         // settled at either end draws exactly what it drew before.
         if !self.title.is_empty() {
             let title_font =
-                role_font(&style, lerp_f32(18.0, 34.0, collapse)).with_bold(collapse > 0.5);
+                role_font(style, lerp_f32(18.0, 34.0, collapse)).with_bold(collapse > 0.5);
             let metrics = context.measure_text(&self.title, &title_font);
             let leading_x = bar_rect.x + 16;
             let centred_x = bar_rect.x + (bar_rect.width as i32 - metrics.width as i32) / 2;
@@ -374,7 +374,7 @@ impl Draw for CupertinoNavigationBar {
 
         // ── Back button (left side) ──
         if self.back_button_visible {
-            let label_font = role_font(&style, 17.0);
+            let label_font = role_font(style, 17.0);
             // The affordance sits on the bar, so the theme's primary is contrast-checked
             // against it rather than assumed legible.
             let action = primary.contrast_color().blend(&primary, 0.85);

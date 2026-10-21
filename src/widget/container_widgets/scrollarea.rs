@@ -3,36 +3,26 @@
 
 //! Scroll area widget.
 //!
-//! # The viewport and the two bars are assembled by a layout
+//! # The viewport and the two bars are one derivation
 //!
 //! BLUE22 §B.8 lists this control's defect as "the scroll bars' positions computed by hand":
 //! `h_band` and `v_band` were each written as the control's own extent minus an
 //! `if other_bar_visible { bar }` correction, twice, in two directions. [`ScrollArea::assemble_chrome`]
-//! states it once as an assembly — the content fills, the horizontal bar is a `bar`-tall row at the
-//! bottom, the vertical bar a `bar`-wide column at the trailing edge — and "the other bar shortens
-//! this one" becomes the layout's own consequence rather than a term repeated in two places.
+//! states the geometry once: the content box is the control's rectangle minus the bars it owes, and
+//! each bar is the strip the content leaves — so "the other bar shortens this one" is a consequence
+//! of the two bands' shared corner rather than a term repeated in two places.
 
 use crate::compat::{Rc, RefCell, ToString, Vec};
 use crate::core::{Alignment, Color, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-#[cfg(full_widgets)]
-use crate::layout::{
-    AlignItems, FlexDirection, FlexLayout, FlexWrap, JustifyContent, LayoutParams,
-};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-#[cfg(full_widgets)]
-use crate::style::EdgeOffsets;
 
 use crate::widget::capability::coercion::{expect_bool, expect_i64, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-#[cfg(full_widgets)]
-use crate::widget::composite::CompositeBuilder;
 use crate::widget::metrics::dimensions;
-#[cfg(full_widgets)]
-use crate::widget::WidgetFactory;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -685,9 +675,9 @@ impl ScrollArea {
         (thumb, pos as i32)
     }
 
-    /// The content box and the two bar bands, placed by the layout.
+    /// The content box and the two bar bands.
     ///
-    /// # Why the chrome is assembled rather than subtracted
+    /// # Why the chrome is one derivation and not two corrections
     ///
     /// The old form wrote each band as the control's own extent with an `if other_bar_visible { bar }`
     /// term applied to the *other* axis — written twice, once for each band, in two directions. "The
@@ -695,10 +685,18 @@ impl ScrollArea {
     /// about either of them, so stating it per band meant repeating the correction and keeping two
     /// spellings in agreement about one corner.
     ///
-    /// The assembly says it once: a column whose first row is the scrolling content and whose second
-    /// row is the horizontal bar, with the vertical bar as a trailing column *inside* that first row.
-    /// The vertical bar is therefore beside the content and stops above the horizontal bar, and the
-    /// corner is what the two bands leave rather than a third rectangle anyone computes.
+    /// It is stated once here: the content box is the rectangle minus each bar the control owes, and
+    /// each bar is the strip that content leaves. The vertical band therefore stops above the
+    /// horizontal one, and the corner square is what the two leave — the paint path fills it from the
+    /// same two boxes rather than from a third computed rectangle.
+    ///
+    /// # Why this is arithmetic rather than an assembled column and row
+    ///
+    /// The bands used to be placed by two `CompositeBuilder` + `FlexLayout` assemblies — four
+    /// temporary `label` widgets and two `Vec`s per call — for a control whose paint path reads this
+    /// geometry twice (once to clip the content, once to draw the bars) and whose hit test reads it
+    /// on every pointer event. The two assemblies resolved to the arithmetic below; the row/column
+    /// structure was a slower spelling of "minus the bars it owes".
     ///
     /// # What this does not cover
     ///
@@ -709,142 +707,37 @@ impl ScrollArea {
         let bar = dimensions::SCROLLBAR_THICKNESS;
         let h_scroll_visible = self.horizontal_scroll_bar_visible();
         let v_scroll_visible = self.vertical_scroll_bar_visible();
-        // A control with no bars needs no assembly: the content *is* the rectangle.
+        // A control with no bars needs no derivation: the content *is* the rectangle.
         if !h_scroll_visible && !v_scroll_visible {
             return ChromeBands { content: rect, horizontal: None, vertical: None };
         }
-        #[cfg(not(full_widgets))]
-        {
-            // `full_widgets` is "a device profile *and* an unstripped widget set" (principle #47),
-            // and this module compiles without one. Both arms read the same `bar` and the same two
-            // visibility flags, so the fallback is the same relation written the only way this
-            // profile can express it.
-            let h_band = if h_scroll_visible {
-                Some(Rect::new(
-                    rect.x,
-                    rect.y + rect.height.saturating_sub(bar) as i32,
-                    rect.width.saturating_sub(if v_scroll_visible { bar } else { 0 }),
-                    bar.min(rect.height),
-                ))
-            } else {
-                None
-            };
-            let v_band = if v_scroll_visible {
-                Some(Rect::new(
-                    rect.x + rect.width.saturating_sub(bar) as i32,
-                    rect.y,
-                    bar.min(rect.width),
-                    rect.height.saturating_sub(if h_scroll_visible { bar } else { 0 }),
-                ))
-            } else {
-                None
-            };
-            let content = Rect::new(
+        let h_band = if h_scroll_visible {
+            Some(Rect::new(
                 rect.x,
-                rect.y,
+                rect.y + rect.height.saturating_sub(bar) as i32,
                 rect.width.saturating_sub(if v_scroll_visible { bar } else { 0 }),
-                rect.height.saturating_sub(if h_scroll_visible { bar } else { 0 }),
-            );
-            ChromeBands { content, horizontal: h_band, vertical: v_band }
-        }
-        #[cfg(full_widgets)]
-        {
-            let factory = WidgetFactory::new_with_defaults();
-            // The outer column: the content row, then the horizontal bar.
-            let mut column = CompositeBuilder::new(
-                Box::new(FlexLayout::with_params(
-                    FlexDirection::Column,
-                    FlexWrap::NoWrap,
-                    JustifyContent::FlexStart,
-                    AlignItems::Stretch,
-                    0,
-                    0,
-                )),
-                EdgeOffsets::all(0),
-                Size::new(0, 0),
-            );
-            let content_row_height =
-                if h_scroll_visible { rect.height.saturating_sub(bar) } else { rect.height };
-            let row = column.add_sized(
-                &factory,
-                "label",
-                "",
-                Size::new(rect.width, content_row_height),
-                LayoutParams::filled(),
-            );
-            debug_assert!(row.is_some(), "the content row is a core control");
-            if h_scroll_visible {
-                let created = column.add_sized(
-                    &factory,
-                    "label",
-                    "",
-                    Size::new(rect.width, bar),
-                    LayoutParams::new(),
-                );
-                debug_assert!(created.is_some(), "the horizontal bar is a core control");
-            }
-            let mut column_boxes: Vec<Rect> = Vec::new();
-            column.arrange(rect, &mut |_, placed| column_boxes.push(placed));
-            // The solver emits one rectangle per registered item, so these are guards rather than
-            // routes. The fallbacks deliberately restate the *declaration* rather than the old
-            // hand-rolled chrome arithmetic they replaced: an unplaced content row is the band
-            // minus the horizontal bar, which is what was asked for, not a re-derivation of
-            // `rect.x + bar`.
-            let content_row = column_boxes.first().copied().unwrap_or(Rect::new(
-                rect.x,
+                bar.min(rect.height),
+            ))
+        } else {
+            None
+        };
+        let v_band = if v_scroll_visible {
+            Some(Rect::new(
+                rect.x + rect.width.saturating_sub(bar) as i32,
                 rect.y,
-                rect.width,
-                content_row_height,
-            ));
-            let horizontal = if h_scroll_visible { column_boxes.get(1).copied() } else { None };
-
-            // The content row is itself a row: the scrolling content, then the vertical bar. Adding
-            // the bar here rather than to the outer column is what makes it sit *beside* the content
-            // and stop above the horizontal bar.
-            if !v_scroll_visible {
-                return ChromeBands { content: content_row, horizontal, vertical: None };
-            }
-            let mut inner = CompositeBuilder::new(
-                Box::new(FlexLayout::with_params(
-                    FlexDirection::Row,
-                    FlexWrap::NoWrap,
-                    JustifyContent::FlexStart,
-                    AlignItems::Stretch,
-                    0,
-                    0,
-                )),
-                EdgeOffsets::all(0),
-                Size::new(0, 0),
-            );
-            let content = inner.add_sized(
-                &factory,
-                "label",
-                "",
-                Size::new(content_row.width.saturating_sub(bar), content_row.height),
-                LayoutParams::filled(),
-            );
-            debug_assert!(content.is_some(), "the viewport is a core control");
-            let bar_column = inner.add_sized(
-                &factory,
-                "label",
-                "",
-                Size::new(bar, content_row.height),
-                LayoutParams::new(),
-            );
-            debug_assert!(bar_column.is_some(), "the vertical bar is a core control");
-            let mut inner_boxes: Vec<Rect> = Vec::new();
-            inner.arrange(content_row, &mut |_, placed| inner_boxes.push(placed));
-            let content_box = inner_boxes.first().copied().unwrap_or(content_row);
-            let vertical = inner_boxes.get(1).copied().or_else(|| {
-                Some(Rect::new(
-                    content_row.x + content_row.width as i32 - bar as i32,
-                    content_row.y,
-                    bar,
-                    content_row.height,
-                ))
-            });
-            ChromeBands { content: content_box, horizontal, vertical }
-        }
+                bar.min(rect.width),
+                rect.height.saturating_sub(if h_scroll_visible { bar } else { 0 }),
+            ))
+        } else {
+            None
+        };
+        let content = Rect::new(
+            rect.x,
+            rect.y,
+            rect.width.saturating_sub(if v_scroll_visible { bar } else { 0 }),
+            rect.height.saturating_sub(if h_scroll_visible { bar } else { 0 }),
+        );
+        ChromeBands { content, horizontal: h_band, vertical: v_band }
     }
 }
 

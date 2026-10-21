@@ -355,7 +355,7 @@ impl Draw for BezierCurveEditor {
         // `resolved_theme_style` and `semantic_color` each take and release the
         // global manager's lock internally, so no guard is held across the draw (the
         // mutex is not re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("bezier_curve_editor");
         let surface = style
             .background_color
@@ -489,7 +489,7 @@ impl Draw for BezierCurveEditor {
         );
 
         // ── Labels ──
-        let font = effective_font(&style);
+        let font = effective_font(style);
         let cp1_label =
             format!("CP1: ({:.2}, {:.2})", self.control_point1.0, self.control_point1.1);
         let cp2_label =

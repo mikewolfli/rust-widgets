@@ -470,7 +470,18 @@ pub fn refresh_environment() {
             None => EnvironmentSnapshot::from_provider(&PlatformEnvironment),
         })
         .unwrap_or_default();
+    // A resolved style depends on these facts as well as on the theme registry (a text scale
+    // changes every role's font). The style caches are keyed by the theme revision, so a changed
+    // snapshot has to advance it — otherwise a 1.5× text preference built the same cached style
+    // as the 1.0× one. Comparing first keeps an unchanged frame from invalidating the cache.
+    let changed = SNAPSHOT.try_with(|slot| slot.get() != Some(snapshot)).unwrap_or(true);
     let _ = SNAPSHOT.try_with(|slot| slot.set(Some(snapshot)));
+    if changed {
+        // The style caches live in `theme`, which only exists where a device profile does; a
+        // profile without one resolves no styles, so there is nothing to invalidate.
+        #[cfg(device_profile)]
+        crate::theme::invalidate_resolved_style_cache();
+    }
 }
 
 /// The device facts in force for this frame. **The** read point.

@@ -327,11 +327,11 @@ pub fn generate(request: &GenerationRequest) -> Result<GeneratedSource, String> 
     // Mode 1 is the parse half. Reusing it is what makes the two modes agree about what a document
     // *means*; a second parser would be the duplication rule #101 forbids.
     let project = JsonProject::parse(&request.json)?;
-    let factory = WidgetFactory::new_with_defaults();
+    let factory = WidgetFactory::shared();
 
     let mut report = GenerationReport::default();
 
-    let availability = availability_with(&factory, &project.root_widget, request.target);
+    let availability = availability_with(factory, &project.root_widget, request.target);
     match availability {
         Availability::Unavailable | Availability::Unknown => {
             report.unsupported.push(GenerationGap {
@@ -359,14 +359,14 @@ pub fn generate(request: &GenerationRequest) -> Result<GeneratedSource, String> 
     let geometry = plan_geometry(request, &project, &mut report);
     let body = match request.target {
         TargetProfile::Default => {
-            emit_default_mode(&project, request, &geometry, &factory, &mut report)
+            emit_default_mode(&project, request, &geometry, factory, &mut report)
         }
         TargetProfile::Stripped => {
-            emit_stripped_mode(&project, request, &geometry, &factory, &mut report)
+            emit_stripped_mode(&project, request, &geometry, factory, &mut report)
         }
     };
 
-    let source = assemble(request, &project, &body, &report, &factory);
+    let source = assemble(request, &project, &body, &report, factory);
     Ok(GeneratedSource { source, report })
 }
 
@@ -429,7 +429,7 @@ fn is_rust_keyword(name: &str) -> bool {
 /// for every node in the tree) should call [`availability_with`] instead of rebuilding the registry
 /// per node.
 pub fn availability(name: &str, target: TargetProfile) -> Availability {
-    availability_with(&WidgetFactory::new_with_defaults(), name, target)
+    availability_with(WidgetFactory::shared(), name, target)
 }
 
 /// [`availability`], using a caller-supplied factory.
@@ -1126,7 +1126,7 @@ fn collect_stripped_nodes(
     // Both predicates are keyed on the **canonical** name, for the same reason `constructor_path`
     // resolves through the registry: a document that spelled the control `"btn"` would otherwise get
     // `Button::new(geometry)` — which does not compile — from a spelling that is perfectly valid.
-    let canonical = WidgetFactory::new_with_defaults().canonical_name(&node.widget);
+    let canonical = WidgetFactory::shared().canonical_name(&node.widget);
     let mut expr = if let Some(text) = node.text().filter(|_| constructor_takes_text(&canonical)) {
         format!(
             "{type_name}::new(String::from({}), Rect::new({}, {}, {}, {}))",
@@ -1342,7 +1342,7 @@ fn child_cell(node: &ProjectNode) -> Option<crate::json::ChildPlacement> {
 /// names out of the source and compares them against mode 1's document names, and a second copy of
 /// this table in the test would be free to disagree with the generator it is checking.
 pub fn constructor_type_name(widget: &str) -> &'static str {
-    constructor_type_for(&WidgetFactory::new_with_defaults(), widget)
+    constructor_type_for(WidgetFactory::shared(), widget)
         .and_then(|path| path.rsplit("::").next())
         .unwrap_or("UnsupportedControl")
 }
@@ -1452,7 +1452,7 @@ fn constructor_type_for(factory: &WidgetFactory, widget: &str) -> Option<&'stati
 
 /// [`constructor_type_for`] against a freshly built registry, for the public spelling.
 pub fn constructor_path(widget: &str) -> &'static str {
-    constructor_type_for(&WidgetFactory::new_with_defaults(), widget)
+    constructor_type_for(WidgetFactory::shared(), widget)
         .unwrap_or("rust_widgets::designer::UnsupportedControl")
 }
 

@@ -552,7 +552,13 @@ impl RibbonBar {
     // ── Expanded / minimized ──────────────────────────────────────────────
 
     /// Sets the expanded state (panel visible or hidden).
+    ///
+    /// A same-value write returns early: the flag is what the panel's visibility is drawn from, so
+    /// an unchanged one cannot change a pixel.
     pub fn set_expanded(&mut self, expanded: bool) {
+        if self.expanded == expanded {
+            return;
+        }
         self.expanded = expanded;
         self.base.request_redraw();
     }
@@ -563,7 +569,16 @@ impl RibbonBar {
     }
 
     /// Sets the minimized state.
+    ///
+    /// Returns early only when the write cannot change anything: the flag is already what the
+    /// caller asked for **and** the panel is not currently expanded. Setting `minimized = true` on a
+    /// ribbon that is flagged minimized but has been re-expanded (which `set_expanded(true)` alone
+    /// reaches) collapses the panel, so that case must still run.
     pub fn set_minimized(&mut self, minimized: bool) {
+        let changes_something = self.minimized != minimized || (minimized && self.expanded);
+        if !changes_something {
+            return;
+        }
         self.minimized = minimized;
         if minimized {
             self.expanded = false;
@@ -1247,7 +1262,7 @@ impl Draw for RibbonBar {
         // Every chrome colour below was a literal, so a light/dark switch left the whole bar
         // unchanged and the rendering census reported the control as theme-blind. The palette
         // resolves the explicit style first, then the theme's resolved style, then a literal.
-        let palette = RibbonPalette::resolve(&self.base.style().clone());
+        let palette = RibbonPalette::resolve(self.base.style());
 
         // ── Overall background ──
         let g = self.geometry();
@@ -1318,6 +1333,35 @@ mod tests {
         item_ref.set_icon_source(None);
         assert_eq!(item_ref.icon_source(), None);
         assert_eq!(item_ref.icon_text(), "", "an explicit clear is Empty, not the old text");
+    }
+
+    /// `set_minimized` is idempotent **except** where the collapse is still owed.
+    ///
+    /// # What this pins
+    ///
+    /// The setter now returns early on a same-value write (WDGT-15). That short-circuit must not
+    /// swallow the one case where re-writing `true` still changes the picture: `set_expanded(true)`
+    /// re-opens the panel without clearing the minimized flag, so a following
+    /// `set_minimized(true)` is the "collapse it again" command. Guarding on the flag alone made
+    /// that call a no-op, which is a visible regression dressed up as an optimisation.
+    #[test]
+    fn setting_minimized_again_still_collapses_a_re_expanded_panel() {
+        let mut ribbon = RibbonBar::new(Rect::new(0, 0, 480, 160));
+
+        assert!(ribbon.is_expanded(), "a fresh ribbon shows its panel");
+        ribbon.set_minimized(true);
+        assert!(!ribbon.is_expanded(), "minimizing hides the panel");
+
+        // A same-value write while already collapsed has nothing to do.
+        ribbon.set_minimized(true);
+        assert!(!ribbon.is_expanded());
+
+        // Re-opening the panel leaves the minimized flag set; writing `true` again must collapse it.
+        ribbon.set_expanded(true);
+        assert!(ribbon.is_expanded());
+        assert!(ribbon.is_minimized());
+        ribbon.set_minimized(true);
+        assert!(!ribbon.is_expanded(), "the second minimize must still collapse the panel");
     }
 
     #[test]

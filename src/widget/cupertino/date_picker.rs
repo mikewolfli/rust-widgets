@@ -279,7 +279,7 @@ impl Draw for CupertinoDatePicker {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's
         // mutex is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("cupertino_date_picker");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme. The picker is not in the role table, so it
@@ -383,8 +383,8 @@ impl Draw for CupertinoDatePicker {
         let col_width = wheel_rect.width / 3;
         let row_height = (wheel_rect.height / dimensions::PICKER_VISIBLE_ROWS).max(1);
         let font_size = (row_height as f32 * 0.38).clamp(9.0, 15.0);
-        let font = role_font(&style, font_size);
-        let arrow_font = role_font(&style, (font_size * 1.3).max(10.0)).with_bold(true);
+        let font = role_font(style, font_size);
+        let arrow_font = role_font(style, (font_size * 1.3).max(10.0)).with_bold(true);
 
         // Build visible column items (reuse static arrays — no per-draw Vec<String>)
         let constraint = self.date_constraint();

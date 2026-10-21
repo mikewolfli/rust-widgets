@@ -356,7 +356,7 @@ mod tests {
     fn every_factory_widget_can_be_painted() {
         use crate::widget::capability::WidgetFactory;
 
-        let factory = WidgetFactory::new_with_defaults();
+        let factory = WidgetFactory::shared();
         let names = factory.widget_names();
         assert!(!names.is_empty(), "the factory must register widgets");
 

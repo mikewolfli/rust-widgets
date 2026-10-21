@@ -29,13 +29,49 @@
 //!
 //! # Cost
 //!
-//! `sysconf` is a libc call with no file I/O. The `pmset` and `ps` probes spawn one
-//! short-lived child process each; like every other probe in this crate they are not
-//! called per frame, and a cached figure would be lying about a live measurement.
+//! `sysconf` is a libc call with no file I/O. The `pmset` and `ps` probes each spawn a
+//! short-lived child process, so their answers are cached for a short TTL
+//! ([`BATTERY_CACHE_TTL`], [`MEMORY_CACHE_TTL`]): `AdaptivePerformanceMonitor` samples memory
+//! every frame, and spawning `ps` at 60 Hz was a measurable share of a frame. A TTL is the
+//! honest middle ground between "never ask" and "ask 60 times a second": the figure is live to
+//! within a few seconds, and the cache is stamped rather than permanent.
 
 #[cfg(unix)]
 use crate::compat::ToString;
 use crate::compat::{format, String};
+
+/// How long a `ps` sample is reused.
+///
+/// Shorter than the battery TTL because memory pressure can change within a frame burst; five
+/// seconds is long enough that a sustained render loop spawns one `ps`, not hundreds.
+const MEMORY_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long a `pmset` answer is reused.
+///
+/// Power source changes on the scale of seconds at the fastest (a user unplugging a laptop), and
+/// a stale answer for half a minute cannot strip animations for longer than that.
+const BATTERY_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Runs `probe` at most once per `ttl`, returning the cached value in between.
+fn cached_probe<T: Copy>(
+    slot: &std::sync::Mutex<Option<(std::time::Instant, T)>>,
+    ttl: std::time::Duration,
+    probe: impl FnOnce() -> T,
+) -> T {
+    // The lock is never held across `probe`: spawning a child process under a shared lock would
+    // serialise unrelated callers for the length of that process.
+    let cached = slot
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .and_then(|(stamped, value)| (stamped.elapsed() < ttl).then_some(value));
+    if let Some(value) = cached {
+        return value;
+    }
+    let value = probe();
+    *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+        Some((std::time::Instant::now(), value));
+    value
+}
 
 /// Reads installed physical memory in mebibytes via `sysconf(_SC_PHYS_PAGES)`.
 ///
@@ -71,13 +107,17 @@ pub fn total_memory_mb() -> Option<u64> {
 /// direction, because a wrong "on battery" would silently strip animations.
 #[cfg(unix)]
 pub fn is_on_battery() -> bool {
-    let Ok(output) = std::process::Command::new("pmset").args(["-g", "batt"]).output() else {
-        return false;
-    };
-    // The phrase is ASCII, so a lossy decode is sufficient and avoids discarding the
-    // answer over an unrelated byte sequence later in the banner.
-    let text = String::from_utf8_lossy(&output.stdout);
-    text.contains("'Battery Power'")
+    static CACHE: std::sync::Mutex<Option<(std::time::Instant, bool)>> =
+        std::sync::Mutex::new(None);
+    cached_probe(&CACHE, BATTERY_CACHE_TTL, || {
+        let Ok(output) = std::process::Command::new("pmset").args(["-g", "batt"]).output() else {
+            return false;
+        };
+        // The phrase is ASCII, so a lossy decode is sufficient and avoids discarding the
+        // answer over an unrelated byte sequence later in the banner.
+        let text = String::from_utf8_lossy(&output.stdout);
+        text.contains("'Battery Power'")
+    })
 }
 
 /// Samples this process's resident memory against its virtual size, clamped to `[0, 1]`.
@@ -91,20 +131,24 @@ pub fn is_on_battery() -> bool {
 /// non-positive virtual size (a zero denominator has no utilisation to speak of).
 #[cfg(unix)]
 pub fn process_memory_utilization() -> Option<f32> {
-    let pid = std::process::id().to_string();
-    let output =
-        std::process::Command::new("ps").args(["-o", "rss=,vsz=", "-p", &pid]).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let mut fields = text.split_whitespace();
-    let rss_kb: f64 = fields.next()?.parse().ok()?;
-    let vsz_kb: f64 = fields.next()?.parse().ok()?;
-    if vsz_kb <= 0.0 {
-        return None;
-    }
-    Some((rss_kb / vsz_kb).clamp(0.0, 1.0) as f32)
+    static CACHE: std::sync::Mutex<Option<(std::time::Instant, Option<f32>)>> =
+        std::sync::Mutex::new(None);
+    cached_probe(&CACHE, MEMORY_CACHE_TTL, || {
+        let pid = std::process::id().to_string();
+        let output =
+            std::process::Command::new("ps").args(["-o", "rss=,vsz=", "-p", &pid]).output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut fields = text.split_whitespace();
+        let rss_kb: f64 = fields.next()?.parse().ok()?;
+        let vsz_kb: f64 = fields.next()?.parse().ok()?;
+        if vsz_kb <= 0.0 {
+            return None;
+        }
+        Some((rss_kb / vsz_kb).clamp(0.0, 1.0) as f32)
+    })
 }
 
 /// The `ps` selector this module relies on, exposed so a test can assert the spelling.

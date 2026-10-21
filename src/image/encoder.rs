@@ -680,19 +680,19 @@ impl GifLzwWriter {
 }
 
 /// Encode a sequence of indices using GIF LZW.
+///
+/// # Why the dictionary is keyed by `(code, byte)`
+///
+/// The previous encoder stored `Vec<u8>` prefixes and found them with two linear scans per input
+/// byte (one to extend the current sequence, one to look up the code to emit), over a dictionary
+/// that grows to 4096 entries. The standard LZW formulation keys the dictionary by the current
+/// code plus the next byte, which is a hash lookup and allocates nothing per symbol.
 fn gif_lzw_encode(indices: &[u8], min_code_size: u8) -> Vec<u8> {
     let clear_code = 1u16 << min_code_size;
     let eoi_code = clear_code + 1;
     let max_entries = 4096u16;
 
-    // Initial dictionary: each single-byte value -> code
-    let mut dict: Vec<Vec<u8>> = Vec::with_capacity(max_entries as usize);
-    for i in 0..(1u16 << min_code_size) {
-        dict.push(vec![i as u8]);
-    }
-    dict.push(Vec::new()); // clear_code placeholder
-    dict.push(Vec::new()); // eoi_code placeholder
-
+    let mut dict: crate::compat::HashMap<(u16, u8), u16> = crate::compat::HashMap::new();
     let mut writer = GifLzwWriter::new();
     let mut code_size = min_code_size + 1;
     let mut next_code = eoi_code + 1;
@@ -705,37 +705,33 @@ fn gif_lzw_encode(indices: &[u8], min_code_size: u8) -> Vec<u8> {
         return writer.out;
     }
 
-    let mut w = vec![indices[0]];
+    // `w` is the code of the longest sequence seen so far, not the sequence itself.
+    let mut w = indices[0] as u16;
 
     for &k in &indices[1..] {
-        let mut wk = w.clone();
-        wk.push(k);
-
-        let found = dict.iter().position(|entry| *entry == wk);
-        if found.is_some() {
-            w = wk;
-        } else {
-            let code = dict.iter().position(|entry| *entry == w).unwrap();
-            writer.write_code(code as u16, code_size);
-
-            if next_code < max_entries {
-                dict.push(wk);
-                next_code += 1;
-                if next_code == (1u16 << (code_size + 1)) && code_size < 12 {
-                    code_size += 1;
-                }
-            } else {
-                writer.write_code(clear_code, code_size);
-                dict.truncate((1usize << (min_code_size as usize)) + 2);
-                next_code = eoi_code + 1;
-                code_size = min_code_size + 1;
-            }
-            w = vec![k];
+        if let Some(&code) = dict.get(&(w, k)) {
+            w = code;
+            continue;
         }
+
+        writer.write_code(w, code_size);
+
+        if next_code < max_entries {
+            dict.insert((w, k), next_code);
+            next_code += 1;
+            if next_code == (1u16 << (code_size + 1)) && code_size < 12 {
+                code_size += 1;
+            }
+        } else {
+            writer.write_code(clear_code, code_size);
+            dict.clear();
+            next_code = eoi_code + 1;
+            code_size = min_code_size + 1;
+        }
+        w = k as u16;
     }
 
-    let code = dict.iter().position(|entry| *entry == w).unwrap();
-    writer.write_code(code as u16, code_size);
+    writer.write_code(w, code_size);
     writer.write_code(eoi_code, code_size);
     writer.finish();
 
@@ -1042,7 +1038,11 @@ fn encode_png(image: &DecodedImage) -> Result<Vec<u8>, String> {
         let end = (off + w as usize * 4).min(pixels.len());
         raw.extend_from_slice(&pixels[off..end]);
     }
-    let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&raw, 0);
+    // Level 6 (miniz_oxide's default) rather than 0. Level 0 emits stored blocks, so every
+    // encoded PNG was roughly the size of its raw pixels — about ten times what the same image
+    // needs, measured on this crate's own fixtures. Encoding is not a per-frame path, so the
+    // deflate time is the cheaper side of the trade.
+    let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&raw, 6);
     write_png_chunk(&mut out, b"IDAT", &compressed);
 
     // IEND chunk
@@ -1056,20 +1056,29 @@ fn write_png_chunk(out: &mut Vec<u8>, chunk_type: &[u8; 4], data: &[u8]) {
     out.extend_from_slice(&len.to_be_bytes());
     out.extend_from_slice(chunk_type);
     out.extend_from_slice(data);
-    // CRC32 over type + data
-    let crc = crc32(&[chunk_type, data].concat());
+    // CRC32 over type + data. Computed over the two slices directly: the previous
+    // `[chunk_type, data].concat()` copied the whole chunk (the entire compressed IDAT) just to
+    // hand it to the hasher, which doubled the encoder's peak memory for the largest chunk.
+    let crc = crc32_parts(&[chunk_type, data]);
     out.extend_from_slice(&crc.to_be_bytes());
 }
 
 fn crc32(data: &[u8]) -> u32 {
+    crc32_parts(&[data])
+}
+
+/// CRC-32 (IEEE 802.3) over several slices, without joining them first.
+fn crc32_parts(parts: &[&[u8]]) -> u32 {
     let mut crc: u32 = 0xFFFFFFFF;
-    for &byte in data {
-        crc ^= byte as u32;
-        for _ in 0..8 {
-            if crc & 1 != 0 {
-                crc = (crc >> 1) ^ 0xEDB88320;
-            } else {
-                crc >>= 1;
+    for part in parts {
+        for &byte in *part {
+            crc ^= byte as u32;
+            for _ in 0..8 {
+                if crc & 1 != 0 {
+                    crc = (crc >> 1) ^ 0xEDB88320;
+                } else {
+                    crc >>= 1;
+                }
             }
         }
     }

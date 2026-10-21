@@ -372,7 +372,7 @@ impl Draw for MaterialSnackbar {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("material_snackbar");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
@@ -438,7 +438,7 @@ impl Draw for MaterialSnackbar {
         if !self.message.is_empty() {
             // The message takes the **effective font** at its role size, so the theme family and the
             // user's text scale reach it (D09-STYLE-01).
-            let font = role_font(&style, 14.0);
+            let font = role_font(style, 14.0);
             let metrics = context.measure_text(&self.message, &font);
 
             let text_x = bar_rect.x + 16;
@@ -458,7 +458,7 @@ impl Draw for MaterialSnackbar {
 
         // ── Action text (right side, if non-empty) ──
         if !self.action_text.is_empty() {
-            let action_font = role_font(&style, 14.0).with_bold(true);
+            let action_font = role_font(style, 14.0).with_bold(true);
             let metrics = context.measure_text(&self.action_text, &action_font);
 
             let action_x = bar_rect.x + bar_rect.width as i32 - metrics.width as i32 - 16;
@@ -697,7 +697,7 @@ impl Draw for CupertinoAlertDialog {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's
         // mutex is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("cupertino_alert_dialog");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme. The dialog is not in the role table, so it
@@ -784,7 +784,7 @@ impl Draw for CupertinoAlertDialog {
         // panel is squeezed. It is fitted to the panel instead of measured at its full
         // width: a title wider than the dialog used to start at a negative x (its origin is
         // centred from its *unfitted* width) and run out of both sides.
-        let title_font = role_font(&style, 17.0).with_bold(true);
+        let title_font = role_font(style, 17.0).with_bold(true);
         if !self.title.is_empty() {
             let title_metrics = context.measure_text("M", &title_font);
             let title_y = dialog_rect.y + ((dialog_height as i32 * 24) / 100).max(0);
@@ -803,7 +803,7 @@ impl Draw for CupertinoAlertDialog {
         }
 
         // ── Message ──
-        let msg_font = role_font(&style, 14.0);
+        let msg_font = role_font(style, 14.0);
         if !self.message.is_empty() {
             let msg_metrics = context.measure_text("M", &msg_font);
             let msg_y = dialog_rect.y + ((dialog_height as i32 * 46) / 100).max(0);
@@ -834,7 +834,7 @@ impl Draw for CupertinoAlertDialog {
         );
 
         // ── Buttons ──
-        let button_font = role_font(&style, 17.0);
+        let button_font = role_font(style, 17.0);
         let button_metrics = context.measure_text("M", &button_font);
         let has_cancel = !self.cancel_text.is_empty();
 
@@ -1159,7 +1159,7 @@ impl Draw for CupertinoSlider {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's
         // mutex is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("cupertino_slider");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme. `cupertino_slider` is not in the role
@@ -1490,7 +1490,7 @@ impl Draw for MaterialNavigationRail {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("material_navigation_rail");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
@@ -1550,8 +1550,8 @@ impl Draw for MaterialNavigationRail {
         }
 
         let item_height = RAIL_ITEM_HEIGHT;
-        let icon_font = role_font(&style, 14.0);
-        let label_font = role_font(&style, 12.0);
+        let icon_font = role_font(style, 14.0);
+        let label_font = role_font(style, 12.0);
 
         for (i, item) in self.items.iter().enumerate() {
             let item_y = rect.y + (i as u32 * item_height) as i32;

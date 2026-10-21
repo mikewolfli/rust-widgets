@@ -534,7 +534,7 @@ impl Draw for AutoCompleteEdit {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("auto_complete_edit");
         let field_background = style
             .background_color
@@ -574,7 +574,7 @@ impl Draw for AutoCompleteEdit {
         // Draw text
         // The **effective font** — the resolved theme/caller font — so the value and the
         // suggestion rows honour the theme body font and the user's text scale (D09-STYLE-01).
-        let font = effective_font(&style);
+        let font = effective_font(style);
         let padding = 6i32;
         let text_x = rect.x + padding;
         // The glyph origin is the line box's top edge, so the vertical anchor comes from

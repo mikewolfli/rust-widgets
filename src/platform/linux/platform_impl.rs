@@ -59,7 +59,7 @@ use std::thread;
 /// the animation bus by a different delta makes every transition run at a speed that
 /// is a ratio of the two, with nothing to notice the mismatch. Named here so a backend
 /// that later runs at the display's own rate changes exactly one value.
-const FRAME_INTERVAL_MS: u64 = 16;
+const FRAME_INTERVAL_MS: u64 = crate::platform::types::FRAME_INTERVAL_MS;
 
 /// Resolves a window id to the GTK toplevel this backend owns for it.
 ///

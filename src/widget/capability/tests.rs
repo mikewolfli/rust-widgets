@@ -12,6 +12,26 @@ use super::*;
 use crate::core::Rect;
 use crate::widget::view_widgets::virtual_list::VirtualList;
 
+/// The shared factory is built once and answers the same table as a fresh one.
+///
+/// Pins the property the hot paths rely on: `shared()` must not quietly rebuild the ~190-control
+/// registry (a second build would make the pointer comparison fail), and it must not diverge
+/// from `new_with_defaults()` (the equality check).
+#[test]
+fn the_shared_factory_is_built_once_and_matches_a_fresh_registry() {
+    let first = WidgetFactory::shared();
+    let second = WidgetFactory::shared();
+    assert!(core::ptr::eq(first, second), "shared() rebuilt the registry instead of reusing it");
+
+    let fresh = WidgetFactory::new_with_defaults();
+    assert_eq!(
+        first.capabilities().len(),
+        fresh.capabilities().len(),
+        "the shared table must contain every core registration"
+    );
+    assert_eq!(first.widget_names(), fresh.widget_names());
+}
+
 #[test]
 fn default_factory_registers_core_capabilities() {
     let factory = WidgetFactory::new_with_defaults();

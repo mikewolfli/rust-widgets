@@ -370,7 +370,7 @@ impl Draw for OrderBookWidget {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("order_book");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
@@ -424,7 +424,7 @@ impl Draw for OrderBookWidget {
                         panel, ink,
                     )
                 },
-                &role_font(&style, 12.0),
+                &role_font(style, 12.0),
             );
             return;
         }

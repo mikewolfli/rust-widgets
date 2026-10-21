@@ -7,30 +7,27 @@
 //!
 //! BLUE22 §B.8 lists this control's defect as "multiple segments by hand, the last position
 //! hard-coded". The strip really is a row of segments — a transient message on the leading side and
-//! a permanent one on the trailing side — so the segment boxes are handed to a [`FlexLayout`]: the
-//! message column fills, and the layout puts the remainder before it, which is what
-//! `justify_content = FlexEnd` means. Nothing here computes the permanent message's `x`.
+//! a permanent one on the trailing side — so [`StatusBar::segment_boxes`] derives both boxes from
+//! one set of terms: the strip's padding, the grip's own box, and the trailing edge. The permanent
+//! column is as wide as the grip's reserve and ends at the trailing edge (the `FlexEnd` statement),
+//! and the transient column fills the room that is left (the `fill` statement). Neither position is
+//! a literal, and neither segment is placed against the other's assumption.
 //!
 //! The grip keeps its own derived box (it is a corner affordance, not a row segment), and its
-//! reserve is still read from that box — but the reserve is now one of the columns the layout is
-//! given rather than a subtraction from the message's width.
+//! reserve is read from that box — the reserve is a width the permanent column carries rather than
+//! a subtraction from the message's width.
 
-use crate::compat::{String, ToString, Vec};
-use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::compat::{String, ToString};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
-use crate::layout::{
-    AlignItems, FlexDirection, FlexLayout, FlexWrap, JustifyContent, LayoutParams,
-};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-use crate::style::EdgeOffsets;
 use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::composite::CompositeBuilder;
 use crate::widget::metrics::{dimensions, effective_font};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetFactory, WidgetKind};
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Status bar widget — shows status messages and permanent widgets.
 ///
@@ -140,8 +137,9 @@ impl StatusBar {
         self.permanent_message = msg.into();
         self.base.request_redraw();
     }
-    /// Enables or disables the resize grip flag and requests a redraw. See
-    /// [`StatusBar::size_grip_enabled`] — currently has no visual effect.
+    /// Enables or disables the resize grip and requests a redraw. See
+    /// [`StatusBar::size_grip_enabled`] — the flag removes both the grip's ink and the
+    /// room its box reserves for the permanent message.
     pub fn set_size_grip_enabled(&mut self, enabled: bool) {
         self.size_grip_enabled = enabled;
         self.base.request_redraw();
@@ -189,7 +187,7 @@ impl StatusBar {
         }
     }
 
-    /// The transient message's box and the permanent message's box, placed by the layout.
+    /// The transient message's box and the permanent message's box.
     ///
     /// # Why the segments are assembled rather than subtracted
     ///
@@ -198,69 +196,37 @@ impl StatusBar {
     /// as "start at the leading edge and be as wide as everything except the grip", which is a
     /// different statement from "sit against the trailing edge". The two agree only while nothing
     /// else is on the strip; the moment the message needs a box of its own, or the grip's reserve
-    /// changes, the spelling has to be re-derived. Handing two columns to a `FlexEnd` row makes the
-    /// anchor a property of the layout, which is how it cannot be forgotten at a call site.
+    /// changes, the spelling has to be re-derived. Anchoring the column to the trailing edge makes
+    /// the anchor a property of the derivation, which is how it cannot be forgotten at a call site.
     ///
-    /// Both columns declare the strip's own padding as a leading margin, so each message keeps its
-    /// distance from the edge it is anchored to — the padding is the same fact for both.
+    /// # The row, expressed as arithmetic
+    ///
+    /// The two columns used to be handed to a `FlexLayout` rebuilt on every call — two widgets, a
+    /// composite, a layout and a `Vec` of results per frame, to place two rectangles whose
+    /// relationship is three numbers. The row was `JustifyContent::FlexEnd` with a `fill` leading
+    /// column and zero gap, and that resolves to exactly this:
+    ///
+    /// * the trailing column's drawn width is `max(reserve, padding)`: the `fill` column cannot
+    ///   absorb it, so "the reserve is a size the column carries" and "the column is at least that
+    ///   wide" are the same statement;
+    /// * its box ends at the strip's trailing edge — the `FlexEnd` anchor;
+    /// * both columns declare the strip's padding as a leading margin, so the transient box starts
+    ///   one padding inside the leading edge and stops one padding short of the trailing column.
+    ///   The two leading margins are the gap between the columns.
+    ///
+    /// The trailing column is clamped to the strip's own width, and the leading one to the strip's
+    /// own box: a strip narrower than the reserve would otherwise place a column outside the
+    /// control it belongs to (`FlexLayout` resolves the same squeeze by scaling both columns).
     fn segment_boxes(&self, band: Rect) -> (Rect, Rect) {
-        let factory = WidgetFactory::new_with_defaults();
-        let reserve = self.grip_reserve(band);
-        let mut row = CompositeBuilder::new(
-            Box::new(FlexLayout::with_params(
-                FlexDirection::Row,
-                FlexWrap::NoWrap,
-                JustifyContent::FlexEnd,
-                AlignItems::Stretch,
-                0,
-                0,
-            )),
-            EdgeOffsets::all(0),
-            Size::new(0, 0),
-        );
-        // The transient message: it fills whatever is left, so a long one is fitted rather than
-        // running under the permanent message.
-        let message = row.add_sized(
-            &factory,
-            "label",
-            &self.message,
-            Size::new(dimensions::STATUS_BAR_PADDING_H, band.height),
-            LayoutParams::filled().with_margins(EdgeOffsets::new(
-                0,
-                0,
-                0,
-                dimensions::STATUS_BAR_PADDING_H,
-            )),
-        );
-        debug_assert!(message.is_some(), "a status segment is a core control");
-        // The permanent message: its own preferred width is the grip's reserve, so the column is at
-        // least as wide as the corner it must clear — the `reserved` subtraction, expressed as the
-        // column's size instead of as shaved-off width.
-        let permanent = row.add_sized(
-            &factory,
-            "label",
-            &self.permanent_message,
-            Size::new(reserve.max(dimensions::STATUS_BAR_PADDING_H), band.height),
-            LayoutParams::new().with_margins(EdgeOffsets::new(
-                0,
-                0,
-                0,
-                dimensions::STATUS_BAR_PADDING_H,
-            )),
-        );
-        debug_assert!(permanent.is_some(), "a status segment is a core control");
-
-        let mut placed: Vec<Rect> = Vec::with_capacity(2);
-        row.arrange(band, &mut |_, rect| placed.push(rect));
-        match (placed.first(), placed.get(1)) {
-            (Some(message), Some(permanent)) => (*message, *permanent),
-            // `debug_assert!` above makes this unreachable in a debug build; degrading to empty
-            // boxes keeps every drawing call inside the strip rather than at a stale rectangle.
-            _ => (
-                Rect::new(band.x, band.y, 0, band.height),
-                Rect::new(band.x + band.width as i32, band.y, 0, band.height),
-            ),
-        }
+        let padding = dimensions::STATUS_BAR_PADDING_H;
+        let permanent_width = self.grip_reserve(band).max(padding).min(band.width);
+        let permanent_x = band.x + band.width.saturating_sub(permanent_width) as i32;
+        let message_x = band.x + padding.min(band.width) as i32;
+        let message_width = (permanent_x - padding as i32 - message_x).max(0) as u32;
+        (
+            Rect::new(message_x, band.y, message_width, band.height),
+            Rect::new(permanent_x, band.y, permanent_width, band.height),
+        )
     }
 }
 
@@ -368,8 +334,8 @@ impl Draw for StatusBar {
         // what the theme resolved, so the ink follows it into either appearance.
         let ink = style.text_color.unwrap_or_else(|| band.contrast_color());
 
-        // The two segments, placed by the row: the message fills and the permanent message is
-        // anchored to the trailing edge by `justify_content = FlexEnd`. One assembly for both, so
+        // The two segments: the message fills the room the permanent column and the grip leave,
+        // and the permanent message is anchored to the trailing edge. One derivation for both, so
         // neither can be positioned against the other's assumption.
         let (message_box, permanent_box) = self.segment_boxes(rect);
         // Temporary message (left side).
@@ -581,10 +547,9 @@ mod tests {
     /// about the edge. The row now expresses it as `justify_content = FlexEnd`.
     ///
     /// The assertion is the relation that matters: the segment reaches the strip's trailing edge,
-    /// and the grip sits inside the room it reserved. The segment is *wider* than the grip's own
-    /// reserve — its own box width is `max(reserve, padding) + padding`, because §B.6 rule 4 makes
-    /// the reserve a size the segment carries rather than a gap between two boxes — so the test
-    /// states the containment rather than an equality that would encode the layout's arithmetic.
+    /// and the grip sits inside the room it reserved. The segment's drawn width is
+    /// `max(reserve, padding)`, so the test states the containment rather than an equality that
+    /// would encode the derivation's arithmetic.
     #[test]
     fn the_permanent_segment_reaches_the_trailing_edge_and_clears_the_grip() {
         let strip = Rect::new(0, 0, 400, 24);

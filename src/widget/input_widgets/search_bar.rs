@@ -313,7 +313,7 @@ impl Draw for SearchBar {
         // Resolved once for the whole draw: the field, the icon and the cancel label all read
         // it, and re-resolving would take the theme lock once per read. Precedence is the
         // crate-wide one — an explicit style wins, then the theme, then the literal.
-        let style = self.style().clone();
+        let style = self.style();
         let themed = crate::style::resolved_theme_style("search_bar");
         let themed_bg = themed.as_ref().and_then(|resolved| resolved.background_color);
         let accent = style
@@ -326,7 +326,7 @@ impl Draw for SearchBar {
         let cancel_x = rect.x + rect.width as i32 - cancel_width as i32;
         // The **effective font** — the resolved theme/caller font — for the cancel label, the
         // placeholder and the value (D09-STYLE-01).
-        let font = effective_font(&style);
+        let font = effective_font(style);
         if self.is_active && self.cancel_button_visible {
             let _cancel_rect = Rect::new(cancel_x, rect.y, cancel_width, rect.height);
             let cancel_font = font;

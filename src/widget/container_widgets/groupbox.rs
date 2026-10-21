@@ -14,41 +14,27 @@
 //! move together — a larger font or a taller title band pushes the content down instead of
 //! letting it overlap.
 //!
-//! # The title row is assembled from its two columns
+//! # The title row is split into its two columns by one derivation
 //!
 //! §B.8 also lists this control's title slot as hand-computed: the title's leading inset was
 //! `TITLE_INSET + indicator_reserve()` and the indicator was then placed *backwards* from the
 //! title's own leading edge (`title.x - spacing - box`). Those are the same relation stated twice,
 //! with the sign of the second one inverted — which is how the indicator once hung outside the
-//! frame while its width was computed correctly. [`GroupBox::title_row`] asks a [`FlexLayout`] for
-//! the two boxes instead, so the reserve and the placement are one answer.
+//! frame while its width was computed correctly. [`GroupBox::title_columns`] states it once, so the
+//! reserve and the placement are one answer.
 
-/// `Vec` is a scratch list the assembled title row builds; a stripped profile derives the two boxes
-/// arithmetically and never allocates one.
-#[cfg(full_widgets)]
-use crate::compat::Vec;
 use crate::compat::{Rc, RefCell, String, ToString};
 use crate::core::{Alignment, Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-#[cfg(full_widgets)]
-use crate::layout::{
-    AlignItems, FlexDirection, FlexLayout, FlexWrap, JustifyContent, LayoutParams,
-};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-#[cfg(full_widgets)]
-use crate::style::EdgeOffsets;
 use crate::widget::capability::coercion::{
     alignment_to_str, expect_alignment, expect_bool, expect_string,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-#[cfg(full_widgets)]
-use crate::widget::composite::CompositeBuilder;
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
-#[cfg(full_widgets)]
-use crate::widget::WidgetFactory;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -215,9 +201,8 @@ impl GroupBox {
 
     /// The width the title must leave for the indicator, if the box is checkable: 0 otherwise.
     ///
-    /// Read by the stripped-profile arm of [`Self::assemble_title_row`] (which has no layout to ask)
-    /// and by the tests, and it is the quantity the row's indicator column *is* in the assembled
-    /// arm — so the reserve and the placement cannot disagree in either profile.
+    /// Read by [`Self::title_columns`] and by the tests, so the reserve and the delivered columns
+    /// cannot disagree.
     fn indicator_reserve(&self) -> u32 {
         if !self.checkable {
             return 0;
@@ -225,9 +210,9 @@ impl GroupBox {
         dimensions::CHECKBOX_BOX + dimensions::INDICATOR_TEXT_SPACING
     }
 
-    /// The indicator's box and the title's box, placed side by side by the layout.
+    /// The indicator's column and the title, side by side.
     ///
-    /// # Why the two boxes are one assembly
+    /// # Why the two boxes are one derivation
     ///
     /// They used to be two derivations with opposite signs: the title's leading inset was
     /// `TITLE_INSET + indicator_reserve()`, and the indicator was then placed *backwards* from the
@@ -235,11 +220,11 @@ impl GroupBox {
     /// same two numbers in two directions agree only while both are right, which is exactly how the
     /// indicator came to hang outside the frame when the reserve was computed but not honoured.
     ///
-    /// Handing a row the two columns makes the reserve and the placement the same answer: the
-    /// indicator is a column `indicator_reserve()` wide (the box plus its gap) and the title is
-    /// whatever the row leaves.
+    /// Splitting the row through [`GroupBox::title_columns`] makes the reserve and the placement the
+    /// same answer: the indicator is a column `indicator_reserve()` wide (the box plus its gap) and
+    /// the title is whatever the row leaves.
     ///
-    /// # What the assembly covers, and what it does not
+    /// # What this covers, and what it does not
     ///
     /// It resolves the **horizontal** placement of the two columns. The vertical position (the
     /// title band's centre line on the frame's top border) is not a layout question — it is where
@@ -266,7 +251,7 @@ impl GroupBox {
         if row.width == 0 {
             return (None, Rect::new(frame.x, band_y, 0, band_height));
         }
-        let (indicator, title) = self.assemble_title_row(row, text_width, band_height);
+        let (indicator, title) = self.title_columns(row, text_width, band_height);
         // The label's own alignment inside the room the row left it. `Top`/`Bottom` are not
         // horizontal positions at all, so they take the leading edge — which is what the previous
         // `=> rect.x + 10` arm documented.
@@ -282,103 +267,56 @@ impl GroupBox {
         )
     }
 
-    /// The two columns of the title row, as the layout places them.
+    /// The two columns of the title row: the indicator's column and the title's box.
     ///
-    /// Two arms, because `full_widgets` is "a device profile *and* an unstripped widget set"
-    /// (principle #47) and this module has no `WidgetFactory` without one. Both arms read the same
-    /// two constants ([`dimensions::CHECKBOX_BOX`], [`dimensions::INDICATOR_TEXT_SPACING`]) through
-    /// [`Self::indicator_reserve`], so the fallback is the same relation written the only way that
-    /// profile can express it.
-    fn assemble_title_row(
-        &self,
-        row: Rect,
-        text_width: u32,
-        band_height: u32,
-    ) -> (Option<Rect>, Rect) {
-        #[cfg(not(full_widgets))]
-        {
-            let indicator_width = if self.checkable { dimensions::CHECKBOX_BOX } else { 0 };
-            let indicator = if self.checkable {
-                Some(Rect::new(row.x, row.y, indicator_width, band_height))
-            } else {
-                None
+    /// Both widths come from the same two constants ([`dimensions::CHECKBOX_BOX`],
+    /// [`dimensions::INDICATOR_TEXT_SPACING`]) through [`Self::indicator_reserve`], so the reserve
+    /// and the delivered columns are the same numbers.
+    ///
+    /// # The two cases
+    ///
+    /// * The row holds the indicator and the measured label: the indicator keeps its column and the
+    ///   title takes the remainder. The title is **the whole remainder**, not its own text width, so
+    ///   a short label still has room to be centred or right-aligned in — which is what the caller's
+    ///   alignment offset reads.
+    /// * The row is narrower than the two columns' sum: the shortfall is shared **proportionally**,
+    ///   with the integer remainder going to the leading (indicator) column, so the pair sums to
+    ///   exactly `row.width` and neither column is pushed outside the frame.
+    fn title_columns(&self, row: Rect, text_width: u32, band_height: u32) -> (Option<Rect>, Rect) {
+        let indicator_wanted = if self.checkable { dimensions::CHECKBOX_BOX } else { 0 };
+        // The gap is the *rest* of the declared reserve: the reserve is "the indicator's box plus
+        // the gap to the label", so reading it and subtracting the box is the same relation as
+        // adding the two parts. Taking it from the accessor is what keeps the accessor a delivered
+        // number rather than a declared one.
+        let gap = if self.checkable {
+            self.indicator_reserve().saturating_sub(dimensions::CHECKBOX_BOX)
+        } else {
+            0
+        };
+        let total = indicator_wanted.saturating_add(text_width).saturating_add(gap);
+        let (indicator_width, title_width) = if total <= row.width || total == 0 {
+            let indicator = indicator_wanted.min(row.width);
+            (indicator, row.width.saturating_sub(indicator).saturating_sub(gap))
+        } else {
+            let scaled = |width: u32| -> u32 {
+                ((u64::from(width) * u64::from(row.width)) / u64::from(total)) as u32
             };
-            // The reserve comes from the accessor rather than from a second summation of the same two
-            // constants. This is the only reader the accessor has — the assembled arm below builds a
-            // column of that width instead of asking for it — so reading it here is what turns a
-            // declared number into a delivered one.
-            let reserve = self.indicator_reserve();
-            let title_x = row.x + reserve as i32;
-            let title_width = text_width.min(row.width.saturating_sub(reserve));
-            (indicator, Rect::new(title_x, row.y, title_width, band_height))
-        }
-        #[cfg(full_widgets)]
-        {
-            let factory = WidgetFactory::new_with_defaults();
-            let mut columns = CompositeBuilder::new(
-                Box::new(FlexLayout::with_params(
-                    FlexDirection::Row,
-                    FlexWrap::NoWrap,
-                    JustifyContent::FlexStart,
-                    AlignItems::Stretch,
-                    0,
-                    0,
-                )),
-                EdgeOffsets::all(0),
-                Size::new(0, 0),
-            );
-            let indicator_width = if self.checkable { dimensions::CHECKBOX_BOX } else { 0 };
-            // The gap is the *rest* of the declared reserve: the reserve is "the indicator column
-            // plus the gap to the label", so reading it and subtracting the column is the same
-            // relation the stripped arm expresses by adding the two parts. Taking it from the
-            // accessor is what keeps the accessor a delivered number rather than a declared one.
-            let gap = if self.checkable {
-                self.indicator_reserve().saturating_sub(dimensions::CHECKBOX_BOX)
-            } else {
-                0
-            };
-            if self.checkable {
-                // The indicator column is exactly one checkbox wide; the gap to the label rides on
-                // the **title's own leading margin** — see the note below for why that side.
-                //
-                // # Why the gap is on the title and not on the indicator's trailing side
-                //
-                // A trailing margin on *any* child is measured into the room the following `fill`
-                // child may absorb, because `FlexLayout::arrange` computes the leftover **after**
-                // the margins — so a gap declared as `indicator.trailing` is eaten by the title
-                // column and the label lands on the indicator. The mirror-image placement is not an
-                // accident: a leading margin belongs to the child that *follows* it, and that child
-                // is the one whose box the gap is part of, so it cannot be given away.
-                let created = columns.add_sized(
-                    &factory,
-                    "label",
-                    "",
-                    Size::new(indicator_width, band_height),
-                    LayoutParams::new(),
-                );
-                debug_assert!(created.is_some(), "the indicator column is a core control");
-            }
-            // The title column fills whatever is left, with the gap to the indicator on its own
-            // leading side. Its preferred width is the measured label, so a short label does not
-            // stretch the column and a long one is bounded by the row.
-            let created = columns.add_sized(
-                &factory,
-                "label",
-                &self.title,
-                Size::new(text_width, band_height),
-                LayoutParams::filled().with_margins(EdgeOffsets::new(0, 0, 0, gap)),
-            );
-            debug_assert!(created.is_some(), "the title column is a core control");
-
-            let mut placed: Vec<Rect> = Vec::new();
-            columns.arrange(row, &mut |_, rect| placed.push(rect));
-            let mut iter = placed.into_iter();
-            let indicator = if self.checkable { iter.next() } else { None };
-            let title = iter.next().unwrap_or_else(|| {
-                Rect::new(row.x + (indicator_width + gap) as i32, row.y, text_width, band_height)
-            });
-            (indicator, title)
-        }
+            let indicator = scaled(indicator_wanted);
+            let title_outer = scaled(text_width.saturating_add(gap));
+            let short = row.width.saturating_sub(indicator.saturating_add(title_outer));
+            (indicator + short, title_outer.saturating_sub(gap))
+        };
+        let indicator = if self.checkable {
+            Some(Rect::new(row.x, row.y, indicator_width, band_height))
+        } else {
+            None
+        };
+        // The gap is the title's own leading margin, so it is room the label never draws in — and
+        // it belongs to the column that *follows* it, which is why the indicator's column cannot
+        // absorb it.
+        let title =
+            Rect::new(row.x + indicator_width as i32 + gap as i32, row.y, title_width, band_height);
+        (indicator, title)
     }
 
     /// The height of one row of the control's own chrome: the title band.

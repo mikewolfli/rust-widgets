@@ -538,7 +538,7 @@ impl Draw for TagInput {
         // Resolved from the style so a theme switch reaches this control; the three-state
         // ladder is *derived* from the resolved colour rather than being three fixed greys, so
         // the states stay distinguishable and the control follows the theme.
-        let style = self.style().clone();
+        let style = self.style();
         let themed = crate::style::resolved_theme_style("tag_input");
         let themed_bg = themed.as_ref().and_then(|resolved| resolved.background_color);
         let themed_border = themed.as_ref().and_then(|resolved| resolved.border_color);
@@ -587,7 +587,7 @@ impl Draw for TagInput {
         let mut current_x = rect.x + TAG_PADDING;
         let chip_y = self.chip_row_y();
         let max_width = rect.width as i32 - TAG_PADDING * 2;
-        let font = effective_font(&style);
+        let font = effective_font(style);
 
         // ── Draw tag chips ──
         for tag in &self.tags {

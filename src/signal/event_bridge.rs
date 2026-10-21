@@ -231,7 +231,7 @@ impl EventSignalBinder {
         // to walk. `0` is the honest answer: the method reports how many events it wired.
         #[cfg(full_widgets)]
         {
-            let factory = crate::widget::capability::WidgetFactory::new_with_defaults();
+            let factory = crate::widget::capability::WidgetFactory::shared();
             let Some(capability) = factory.capability_for_kind_instance(widget) else {
                 return 0;
             };
@@ -280,7 +280,7 @@ impl EventSignalBinder {
         if !self.wired_once || self.hub.is_none() {
             return None;
         }
-        let factory = crate::widget::capability::WidgetFactory::new_with_defaults();
+        let factory = crate::widget::capability::WidgetFactory::shared();
         let capability = factory.capability_for_kind_instance(widget)?;
         let unwired = capability
             .events

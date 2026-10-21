@@ -98,7 +98,12 @@ impl Badge {
     /// Sets the display text shown inside the badge. When non-empty, this takes
     /// precedence over the numeric count.
     pub fn set_text(&mut self, text: impl Into<String>) {
-        self.text = text.into();
+        let text = text.into();
+        // A same-value write is a no-op: the badge's caption is all it paints (WDGT-12).
+        if self.text == text {
+            return;
+        }
+        self.text = text;
         self.base.request_redraw();
     }
 
@@ -252,7 +257,7 @@ impl Draw for Badge {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("badge");
         // The severity colour is the badge's **subject**, so it is the base the pill is built
         // from — not a last-resort fallback.
@@ -327,7 +332,7 @@ impl Draw for Badge {
         // `pill_height` so a wide label also grew the pill taller. Both now derive from
         // the resolved label and the named pill metrics alone, and the pill is centred in
         // the control by [`ControlMetrics::center_in`], which clamps rather than expands.
-        let font = role_font(&style, dimensions::BADGE_LABEL_FONT_SIZE as f32);
+        let font = role_font(style, dimensions::BADGE_LABEL_FONT_SIZE as f32);
         let metrics = context.measure_text(&text_str, &font);
 
         let text_width = metrics.width;

@@ -52,11 +52,30 @@ fn geometry_of(id: u64) -> Option<Rect> {
 /// this binary can leave its own events here. Draining everything and dispatching exactly
 /// as the host does is therefore both the faithful thing and the robust one: an event
 /// belonging to another test still reaches its own window, and this test's layout is
-/// re-run by the event that names *its* window.
+/// re-run by the event that names *its* window — **provided no other test is running**,
+/// which is what [`window_test_lock`] guarantees.
 fn pump() {
     while let Some(event) = rust_widgets::poll_widget_trigger_event() {
         rust_widgets::app::dispatch_trigger(event.widget_id, event.kind);
     }
+}
+
+/// Serialises this file's tests, because the trigger queue is process-wide while the state a
+/// `Resized` event updates is thread-local.
+///
+/// `poll_widget_trigger_event` hands an event to whichever thread asks first, and
+/// `dispatch_trigger` applies it to the window records and layouts, both of which are
+/// `thread_local!` (a window created on this thread has no entry on another thread's map). A
+/// concurrent test that drains this test's event therefore applies the resize to *its own*
+/// thread's records and this test's window is never re-laid out: measured at 3 failures in 10
+/// consecutive runs of this binary before the lock existed, always as "the child still has the
+/// created size".
+///
+/// This is a property of the test harness, not of the production path: a host polls and
+/// dispatches on the thread that created its windows, so the queue and the records agree there.
+fn window_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Drains the queue until `window_id`'s `Resized` event has been dispatched.
@@ -80,6 +99,7 @@ fn pump_until_resize_of(window_id: u64) -> bool {
 /// the event is dispatched the way the host loop does.
 #[test]
 fn a_reported_resize_re_runs_the_layout() {
+    let _lock = window_test_lock();
     let (child, win) = window_with_filling_child(800, 600);
     let before = geometry_of(child).expect("child mounted");
     assert_eq!(before.width, 800, "the layout must have run for the created size");
@@ -105,6 +125,7 @@ fn a_reported_resize_re_runs_the_layout() {
 /// the real dimensions rather than a guess.
 #[test]
 fn the_reported_client_size_is_readable() {
+    let _lock = window_test_lock();
     let (_child, win) = window_with_filling_child(800, 600);
 
     // A window that has never been resized reports the size it was created with.
@@ -121,6 +142,7 @@ fn the_reported_client_size_is_readable() {
 /// A resize for an id the backend does not know must be refused, not queued blindly.
 #[test]
 fn a_resize_for_an_unknown_window_is_refused() {
+    let _lock = window_test_lock();
     let (_child, _win) = window_with_filling_child(800, 600);
     assert!(
         !rust_widgets::queue_resize_trigger(0xDEAD_BEEF, 100, 100),
@@ -132,6 +154,7 @@ fn a_resize_for_an_unknown_window_is_refused() {
 /// Several resizes in a row must each take effect.
 #[test]
 fn repeated_resizes_each_re_run_the_layout() {
+    let _lock = window_test_lock();
     let (child, win) = window_with_filling_child(800, 600);
 
     for width in [900u32, 1100, 700] {
@@ -148,6 +171,7 @@ fn repeated_resizes_each_re_run_the_layout() {
 /// A resize must not disturb a window whose layout has no children.
 #[test]
 fn a_resize_on_an_empty_window_is_harmless() {
+    let _lock = window_test_lock();
     let mut app = App::new();
     app.init();
     let win = app.new_window("empty", 0, 0, 400, 300);
@@ -163,6 +187,7 @@ fn a_resize_on_an_empty_window_is_harmless() {
 /// A height-only resize must be reported too, not just a width change.
 #[test]
 fn a_height_only_resize_is_reported() {
+    let _lock = window_test_lock();
     let (child, win) = window_with_filling_child(800, 600);
     let before = geometry_of(child).expect("child mounted");
 
@@ -230,6 +255,7 @@ fn window_with_horizontal_box(
 /// not lose the context on the way.
 #[test]
 fn a_window_resize_asks_its_layout_with_the_device_context() {
+    let _lock = window_test_lock();
     let (_ids, win) = window_with_horizontal_box(2, 1, 0);
 
     rust_widgets::queue_resize_trigger(win.raw_id(), 600, 200);
@@ -263,6 +289,7 @@ fn a_window_resize_asks_its_layout_with_the_device_context() {
 /// against a directly-computed expectation rather than a literal.
 #[test]
 fn a_nested_panels_children_are_laid_out_with_the_device_context() {
+    let _lock = window_test_lock();
     use rust_widgets::layout::{Layout, LayoutContext};
 
     let mut app = App::new();
@@ -312,6 +339,7 @@ fn a_nested_panels_children_are_laid_out_with_the_device_context() {
 /// store, or queues without recording, passes the entry-point tests above and fails here.
 #[test]
 fn the_platform_backend_forwards_a_resize_into_the_layout() {
+    let _lock = window_test_lock();
     use rust_widgets::platform::{Platform, StubPlatform};
 
     let platform: &'static dyn Platform = Box::leak(Box::new(StubPlatform::new(
@@ -362,6 +390,7 @@ fn the_platform_backend_forwards_a_resize_into_the_layout() {
 /// cross-test leak that makes a suite pass or fail depending on its order.
 #[test]
 fn the_platform_override_is_scoped_to_its_block() {
+    let _lock = window_test_lock();
     use rust_widgets::platform::{Platform, StubPlatform};
 
     let outer: &'static dyn Platform = Box::leak(Box::new(StubPlatform::new(
@@ -412,6 +441,7 @@ fn the_platform_override_is_scoped_to_its_block() {
 /// and it is deterministic, which a schedule-dependent test is not.
 #[test]
 fn a_recycled_widget_id_does_not_inherit_the_old_windows_size() {
+    let _lock = window_test_lock();
     use rust_widgets::control_backend::get_control_backend;
 
     let backend = get_control_backend();

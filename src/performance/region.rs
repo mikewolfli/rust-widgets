@@ -3,7 +3,6 @@
 
 //! Dirty region tracking for incremental rendering.
 use crate::compat::Vec;
-use crate::core::rect_merge::bounding_rect;
 use crate::core::Rect;
 use core::cmp::Reverse;
 /// Unique identifier for a dirty region.
@@ -285,8 +284,9 @@ impl DirtyRegionTracker {
     /// include large areas that are not actually dirty. Use
     /// [`DirtyRegionTracker::regions`] when the full extent is not wanted.
     pub fn get_bounding_rect(&self) -> Option<Rect> {
-        let rects: Vec<Rect> = self.regions.iter().map(|r| r.rect).collect();
-        bounding_rect(&rects)
+        // Folded over the tracker's own regions rather than collected into a `Vec` first: this runs
+        // on the damage path, and the intermediate list was pure overhead (CORE-20).
+        self.regions.iter().map(|region| region.rect).reduce(|acc, rect| acc.union(&rect))
     }
     /// Returns every tracked region whose rectangle intersects `rect`.
     ///

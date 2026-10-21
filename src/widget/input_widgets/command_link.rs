@@ -61,14 +61,20 @@ impl CommandLink {
         self.base.is_enabled()
     }
     /// Replaces the title line and requests a redraw. The description is
-    /// unaffected.
+    /// unaffected. A same-value write is a no-op (WDGT-12).
     pub fn set_text(&mut self, text: String) {
+        if self.text == text {
+            return;
+        }
         self.text = text;
         self.base.request_redraw();
     }
     /// Replaces the description line and requests a redraw. An empty string
-    /// removes the second line.
+    /// removes the second line. A same-value write is a no-op.
     pub fn set_description(&mut self, description: String) {
+        if self.description == description {
+            return;
+        }
         self.description = description;
         self.base.request_redraw();
     }

@@ -729,12 +729,28 @@ pub struct AnimationDriver {
     animations: HashMap<AnimationId, ActiveAnimation>,
     property_animations: HashMap<AnimationId, PropertyAnimation>,
     next_id: AnimationId,
+    /// Ids of the animations that were in flight when the current advance began.
+    ///
+    /// `advance`/`advance_by` have to capture this set **before** advancing, because an animation
+    /// that finishes during the call clears `is_running` — filtering afterwards would drop the frame
+    /// that carries its final value. Keeping the set on the driver is what removes the two or three
+    /// `Vec` allocations each of those calls used to make per frame (REND-13).
+    in_flight: Vec<AnimationId>,
+    /// `(id, progress)` taken between advancing and firing the callbacks, for the same reason: a
+    /// callback gets `&mut ActiveAnimation`, so the progress has to be read before it runs.
+    snapshot: Vec<(AnimationId, f32)>,
 }
 
 impl AnimationDriver {
     /// Creates a new empty animation driver.
     pub fn new() -> Self {
-        Self { animations: HashMap::new(), property_animations: HashMap::new(), next_id: 1 }
+        Self {
+            animations: HashMap::new(),
+            property_animations: HashMap::new(),
+            next_id: 1,
+            in_flight: Vec::new(),
+            snapshot: Vec::new(),
+        }
     }
 
     /// Advances every active animation by a caller-supplied delta instead of by the clock.
@@ -755,63 +771,66 @@ impl AnimationDriver {
     /// Easing and iteration still come from each animation's own config, so a delta-driven advance
     /// follows the same curve as a clock-driven one; only the source of elapsed time differs.
     pub fn advance_by(&mut self, delta: Duration) -> usize {
+        // The scratch buffers live on the driver, so the three `collect`s this used to do per frame
+        // are three `clear`+`push` passes over buffers that keep their capacity.
+        let Self { animations, property_animations, in_flight, snapshot, .. } = self;
         // Which animations were in flight *before* this advance. Recorded up front because an
         // animation that reaches its end during this call flips `is_running` to `false` inside
         // `advance_by`, and filtering the snapshot on `is_running` afterwards would therefore drop
         // exactly the frame that carries the final value: a caller watching a transition would see
         // it stop one step short of its target and never be told the last step. The set answers
         // "was this animating when the frame started", which is the question the snapshot needs.
-        let was_running: Vec<AnimationId> = self
-            .animations
-            .iter()
-            .filter(|(_, e)| e.anim.is_running())
-            .map(|(&id, _)| id)
-            .collect();
-        for id in &was_running {
-            if let Some(entry) = self.animations.get_mut(id) {
+        in_flight.clear();
+        for (id, entry) in animations.iter_mut() {
+            if entry.anim.is_running() {
+                in_flight.push(*id);
                 entry.advance_by(delta);
             }
         }
 
         // Snapshot progress without holding a mutable borrow, then fire the callbacks — the same
-        // two-phase shape `advance` uses, and for the same reason: a callback may add or remove
-        // animations, which cannot happen while the map is borrowed.
-        let snap: Vec<(AnimationId, f32)> = was_running
-            .iter()
-            .filter_map(|id| self.animations.get(id).map(|e| (*id, e.anim.progress())))
-            .collect();
-        for (id, progress) in &snap {
-            if let Some(entry) = self.animations.get_mut(id) {
-                if (progress - entry.last_progress).abs() > 0.001 || *progress == 0.0_f32 {
+        // two-phase shape the buffers above serve: a callback may add or remove animations, which
+        // cannot happen while the map is borrowed.
+        snapshot.clear();
+        for id in in_flight.iter() {
+            if let Some(entry) = animations.get(id) {
+                snapshot.push((*id, entry.anim.progress()));
+            }
+        }
+        for &(id, progress) in snapshot.iter() {
+            if let Some(entry) = animations.get_mut(&id) {
+                if (progress - entry.last_progress).abs() > 0.001 || progress == 0.0_f32 {
                     if let Some(ref mut cb) = entry.tick {
-                        cb(*progress);
+                        cb(progress);
                     }
-                    entry.last_progress = *progress;
+                    entry.last_progress = progress;
                 }
             }
         }
-        for (id, progress) in &snap {
-            if let Some(prop_anim) = self.property_animations.get_mut(id) {
+        for &(id, progress) in snapshot.iter() {
+            if let Some(prop_anim) = property_animations.get_mut(&id) {
                 let range = prop_anim.to - prop_anim.from;
                 prop_anim.current = prop_anim.from + range * progress;
             }
         }
         // Completed animations are removed and their completion callbacks fired, exactly as a
-        // clock-driven advance does, so the two paths leave the driver in the same state.
-        let finished: Vec<AnimationId> = self
-            .animations
-            .iter()
-            .filter(|(_, e)| e.anim.is_completed() && !e.anim.config().infinite)
-            .map(|(&id, _)| id)
-            .collect();
-        for id in &finished {
-            if let Some(mut entry) = self.animations.remove(id) {
+        // clock-driven advance does, so the two paths leave the driver in the same state. The
+        // in-flight buffer is free again by now, so the removal list reuses it rather than
+        // allocating a third `Vec`.
+        in_flight.clear();
+        for (id, entry) in animations.iter() {
+            if entry.anim.is_completed() && !entry.anim.config().infinite {
+                in_flight.push(*id);
+            }
+        }
+        for id in in_flight.iter() {
+            if let Some(mut entry) = animations.remove(id) {
                 if let Some(mut cb) = entry.on_complete.take() {
                     cb();
                 }
             }
         }
-        self.animations.len()
+        animations.len()
     }
 
     /// Register a new animation and return its ID.
@@ -881,6 +900,7 @@ impl AnimationDriver {
     /// Calls tick callbacks with updated progress and removes completed animations.
     /// Returns the number of still-active (running) animations.
     pub fn advance(&mut self) -> usize {
+        let Self { animations, property_animations, in_flight, snapshot, .. } = self;
         // Phase 1: Advance internal animation state (iteration counting,
         // on_complete callbacks) by calling update() on every active animation.
         // This must happen before progress snapshots so is_completed() is accurate.
@@ -888,57 +908,55 @@ impl AnimationDriver {
         // The in-flight set is captured first for the same reason `advance_by` captures it: an
         // animation that finishes during this call clears `is_running`, so a snapshot filtered on
         // `is_running` afterwards would silently skip the frame that carries its final value.
-        let was_running: Vec<AnimationId> = self
-            .animations
-            .iter()
-            .filter(|(_, e)| e.anim.is_running())
-            .map(|(&id, _)| id)
-            .collect();
-        for id in &was_running {
-            if let Some(entry) = self.animations.get_mut(id) {
+        in_flight.clear();
+        for (id, entry) in animations.iter_mut() {
+            if entry.anim.is_running() {
+                in_flight.push(*id);
                 entry.anim.update();
             }
         }
 
         // Snapshot: collect progress without mutable borrows
-        let snap: Vec<(AnimationId, f32)> = was_running
-            .iter()
-            .filter_map(|id| self.animations.get(id).map(|e| (*id, e.anim.progress())))
-            .collect();
+        snapshot.clear();
+        for id in in_flight.iter() {
+            if let Some(entry) = animations.get(id) {
+                snapshot.push((*id, entry.anim.progress()));
+            }
+        }
         // Fire tick callbacks with mutable access
-        for (id, progress) in &snap {
-            if let Some(entry) = self.animations.get_mut(id) {
-                if (progress - entry.last_progress).abs() > 0.001 || *progress == 0.0_f32 {
+        for &(id, progress) in snapshot.iter() {
+            if let Some(entry) = animations.get_mut(&id) {
+                if (progress - entry.last_progress).abs() > 0.001 || progress == 0.0_f32 {
                     if let Some(ref mut cb) = entry.tick {
-                        cb(*progress);
+                        cb(progress);
                     }
-                    entry.last_progress = *progress;
+                    entry.last_progress = progress;
                 }
             }
         }
         // Update PropertyAnimation.current values so callers reading
         // .current on a PropertyAnimation get the latest interpolated value.
-        for (id, progress) in &snap {
-            if let Some(prop_anim) = self.property_animations.get_mut(id) {
+        for &(id, progress) in snapshot.iter() {
+            if let Some(prop_anim) = property_animations.get_mut(&id) {
                 let range = prop_anim.to - prop_anim.from;
                 prop_anim.current = prop_anim.from + range * progress;
             }
         }
-        // Remove completed animations
-        let finished: Vec<AnimationId> = self
-            .animations
-            .iter()
-            .filter(|(_, e)| e.anim.is_completed() && !e.anim.config().infinite)
-            .map(|(&id, _)| id)
-            .collect();
-        for id in &finished {
-            if let Some(mut entry) = self.animations.remove(id) {
+        // Remove completed animations, reusing the in-flight buffer for the removal list.
+        in_flight.clear();
+        for (id, entry) in animations.iter() {
+            if entry.anim.is_completed() && !entry.anim.config().infinite {
+                in_flight.push(*id);
+            }
+        }
+        for id in in_flight.iter() {
+            if let Some(mut entry) = animations.remove(id) {
                 if let Some(mut cb) = entry.on_complete.take() {
                     cb();
                 }
             }
         }
-        self.animations.len()
+        animations.len()
     }
 
     /// Remove and stop a specific animation.

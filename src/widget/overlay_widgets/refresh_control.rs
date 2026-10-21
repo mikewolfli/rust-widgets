@@ -382,7 +382,7 @@ impl Draw for RefreshControl {
         // `resolved_theme_style` takes and releases the global manager's lock
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("refresh_control");
         // `refresh_control` is not a control kind in the role table, so it classifies
         // as `Surface`, whose background is `theme.colors.background` — byte-identical
@@ -460,7 +460,7 @@ impl Draw for RefreshControl {
                 // line further down, out past the indicator area.
                 // The label face is the **effective font** at its role size, so the theme family and
                 // the user's text scale reach it (D09-STYLE-01).
-                let font = role_font(&style, 11.0);
+                let font = role_font(style, 11.0);
                 let label = "Loading...";
                 let metrics = context.measure_text(label, &font);
                 let text_x = center_x - (metrics.width as i32) / 2;
@@ -505,7 +505,7 @@ impl Draw for RefreshControl {
                 // Progress text. Top edge origin again, so the descent from the arrow is the
                 // 14px offset alone rather than 14 plus a full ascent.
                 if progress >= 1.0 {
-                    let font = role_font(&style, 11.0);
+                    let font = role_font(style, 11.0);
                     let label = "Release to refresh";
                     let metrics = context.measure_text(label, &font);
                     let text_x = center_x - (metrics.width as i32) / 2;

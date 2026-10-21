@@ -648,7 +648,7 @@ impl Draw for RiveWidget {
         // pixel baseline cannot move. Resolved once per draw, because the empty state, the
         // background, the border, the chips and the progress trough all read from it and
         // re-resolving would take the theme lock several times inside one draw.
-        let style = self.style().clone();
+        let style = self.style();
         let themed = crate::style::resolved_theme_style("rive_widget");
         let themed_bg = themed.as_ref().and_then(|resolved| resolved.background_color);
         let themed_border = themed.as_ref().and_then(|resolved| resolved.border_color);
@@ -678,7 +678,7 @@ impl Draw for RiveWidget {
             // widget's chrome — there is no animation data here at all — so both now follow
             // the theme instead of pinning the control to one appearance.
             context.fill_rounded_rect(rect, 4, base_bg);
-            let font = effective_font(&style);
+            let font = effective_font(style);
             let text = "No Rive animation loaded";
             // Centred on the vertical midline and fitted to the control's width: the label
             // is 24 characters at 14 px, wider than most controls it is drawn into, and
@@ -770,7 +770,7 @@ impl Draw for RiveWidget {
         }
 
         // Draw animation name label at top.
-        let font = effective_font(&style);
+        let font = effective_font(style);
         let name_text = format!("Rive: {}", self.animation_name);
         let name_metrics = context.measure_text(&name_text, font);
         let name_x = rect.x + 4;

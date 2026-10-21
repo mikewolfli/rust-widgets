@@ -120,7 +120,13 @@ impl Frame {
         }
     }
     /// Sets the shared widget registry for child forwarding.
+    ///
+    /// A registry that is already installed (the same allocation) returns early: the field is a
+    /// handle, so re-storing an equal handle cannot change what any lookup answers.
     pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
+        if self.registry.as_ref().is_some_and(|current| Rc::ptr_eq(current, &registry)) {
+            return;
+        }
         self.registry = Some(registry);
         self.base.request_redraw();
     }
@@ -134,6 +140,9 @@ impl Frame {
     }
     /// Sets frame shape.
     pub fn set_frame_shape(&mut self, shape: FrameShape) {
+        if self.frame_shape == shape {
+            return;
+        }
         self.frame_shape = shape;
         self.base.request_redraw();
     }
@@ -143,6 +152,9 @@ impl Frame {
     }
     /// Sets frame shadow.
     pub fn set_frame_shadow(&mut self, shadow: FrameShadow) {
+        if self.frame_shadow == shadow {
+            return;
+        }
         self.frame_shadow = shadow;
         self.base.request_redraw();
     }
@@ -151,8 +163,15 @@ impl Frame {
         self.line_width
     }
     /// Sets line width.
+    ///
+    /// The stored value is floored at zero first, so `-1.0` and `0.0` are the same write and the
+    /// second is a no-op.
     pub fn set_line_width(&mut self, width: f32) {
-        self.line_width = width.max(0.0);
+        let width = width.max(0.0);
+        if self.line_width == width {
+            return;
+        }
+        self.line_width = width;
         self.base.request_redraw();
     }
     /// Returns mid line width.
@@ -160,8 +179,14 @@ impl Frame {
         self.mid_line_width
     }
     /// Sets mid line width.
+    ///
+    /// Floored at zero first, for the same reason as [`Frame::set_line_width`].
     pub fn set_mid_line_width(&mut self, width: f32) {
-        self.mid_line_width = width.max(0.0);
+        let width = width.max(0.0);
+        if self.mid_line_width == width {
+            return;
+        }
+        self.mid_line_width = width;
         self.base.request_redraw();
     }
     /// Sets widget.

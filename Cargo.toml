@@ -1151,6 +1151,15 @@ harness = false
 name = "event_bench"
 harness = false
 
+# Capability/property and event-queue hot paths (BIND-19 / CORE-04 / CORE-08).
+# Needs a device profile: `WidgetFactory::new_with_defaults` and the concrete controls it builds
+# only exist with `full_widgets`, so a stripped profile must skip the target rather than fail on
+# the missing symbols.
+[[bench]]
+name = "capability_bench"
+harness = false
+required-features = ["desktop"]
+
 # The coverage-cache benchmark (BLUE23 §0A.4 / the runtime-fonts + CJK-shard round). Measures
 # `face_for_char` against the `#[doc(hidden)]` un-cached control, and `paint_active` end to end,
 # so the cache's effect is a ratio rather than an absolute number that says nothing on its own.

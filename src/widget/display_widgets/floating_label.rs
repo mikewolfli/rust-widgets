@@ -531,7 +531,7 @@ impl Draw for FloatingLabel {
         // The theme reads are separate manager locks, each taken and released inside
         // `resolved_theme_style`, so none is held across the draw or across another
         // accessor — the global manager's mutex is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let field_background = self.field_background_color();
         // The surface the field sits on, which the *disabled* rules need: ink recedes toward the
         // field's contrast colour and a fill recedes toward the window it is painted on. Falls back
@@ -586,7 +586,7 @@ impl Draw for FloatingLabel {
         let has_label = !self.label.is_empty();
         let floats = has_label && self.show_label_above;
         // The input text takes the **effective font** at the input role's size (D09-STYLE-01).
-        let input_font = role_font(&style, INPUT_FONT_SIZE);
+        let input_font = role_font(style, INPUT_FONT_SIZE);
         let input_band = Rect::new(
             rect.x,
             rect.y + if floats { FLOATED_BAND_TOP } else { INLINE_BAND_TOP },

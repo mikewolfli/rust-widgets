@@ -5,28 +5,25 @@
 //!
 //! # The strip is assembled from its items
 //!
-//! BLUE22 §B.8 lists this control's defect as "item positions from a step literal", and the fix is
-//! the one the composite section exists for: the items are handed to a [`FlexLayout`] and the
-//! widget reads the rectangles that come back. A toolbar is a row (or a column) of chrome, which is
-//! precisely what a layout owns, so nothing here accumulates an offset or re-derives the direction.
+//! BLUE22 §B.8 lists this control's defect as "item positions from a step literal". The first fix
+//! handed every item to a [`FlexLayout`](crate::layout::FlexLayout) and created a temporary label
+//! widget per item just to learn its box. That made every hit test and every paint O(n) widget
+//! creations plus a layout pass — measured as the "ToolBar degrades to O(n²) per frame" item in
+//! the 2026-10-21 scan. The items all share one fixed advance, so the same boxes are now computed
+//! directly: `item_bands` is one pass of integer additions, and nothing is mounted to measure it.
 
 use crate::compat::{String, ToString, Vec};
-use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
-use crate::layout::{
-    AlignItems, FlexDirection, FlexLayout, FlexWrap, JustifyContent, LayoutParams,
-};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-use crate::style::EdgeOffsets;
 use crate::widget::capability::access::tool_bar_orientation_to_str;
 use crate::widget::capability::coercion::{expect_bool, expect_f32, expect_toolbar_orientation};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::composite::CompositeBuilder;
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetFactory, WidgetKind};
+use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Orientation of a toolbar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -427,70 +424,52 @@ impl ToolBar {
         self.item_bands().get(index).copied().unwrap_or(Rect { x: 0, y: 0, width: 0, height: 0 })
     }
 
-    /// Every item's box, placed by the layout that owns the running accumulator.
+    /// Every item's box, placed by the one advance every item shares.
     ///
-    /// # Why the items are assembled rather than walked
+    /// # Why this is arithmetic rather than a layout pass
     ///
-    /// The previous form carried its own `let mut offset = TOOLBAR_ITEM_INSET` and added each
-    /// item's step to it as it scanned for the requested index — the same "accumulate boxes in
-    /// sequence" that [`FlexLayout`] does, with the direction, the gap and the cross-axis
-    /// alignment each re-spelled in the widget. It was also why an item's size was a *step* rather
-    /// than a size: `icon_size + TOOLBAR_SPACING` is an advance, so a separator and a button could
-    /// only differ by comparing their two constants.
+    /// A toolbar item has no intrinsic size to negotiate: a button is `icon_size + spacing` along
+    /// the strip, a separator is `spacing`, and the cross axis is the band inset at both ends. The
+    /// previous form built a `CompositeBuilder`, a `FlexLayout`, and a temporary `label` widget per
+    /// item on **every** call — and this method is called by `item_rect` from the hit test and from
+    /// `draw`, so a 40-item toolbar created 40 widgets and ran a full layout pass per pointer event
+    /// and per frame. The boxes are the same ones the layout produced (the tests below pin the
+    /// relation), so computing them directly removes the work without changing a pixel.
     ///
-    /// Declaring each item's own box and handing them to a row makes the strip's geometry a
-    /// reading of the layout's answer: a wider icon, a different spacing or a vertical orientation
-    /// moves the whole arrangement without a second place to keep in step. `item_rect` is a lookup
-    /// into what the layout returned, so the hit test and the paint path cannot disagree.
+    /// `item_rect` remains a lookup into this list, so the hit test and the paint path cannot
+    /// disagree.
     fn item_bands(&self) -> Vec<Rect> {
         let band = self.band_rect();
         if self.items.is_empty() {
             return Vec::new();
         }
         let horizontal = self.orientation == ToolBarOrientation::Horizontal;
-        let factory = WidgetFactory::new_with_defaults();
-        let mut row = CompositeBuilder::new(
-            Box::new(FlexLayout::with_params(
-                if horizontal { FlexDirection::Row } else { FlexDirection::Column },
-                FlexWrap::NoWrap,
-                JustifyContent::FlexStart,
-                AlignItems::Stretch,
-                0,
-                0,
-            )),
-            EdgeOffsets::all(dimensions::TOOLBAR_ITEM_INSET),
-            Size::new(0, 0),
-        );
+        let inset = dimensions::TOOLBAR_ITEM_INSET as i32;
+        let cross = if horizontal {
+            band.height.saturating_sub(dimensions::TOOLBAR_ITEM_INSET * 2)
+        } else {
+            band.width.saturating_sub(dimensions::TOOLBAR_ITEM_INSET * 2)
+        };
+        let mut placed = Vec::with_capacity(self.items.len());
+        // The offset runs along the strip's main axis; the cross-axis position is the band's origin
+        // plus the same inset the layout used as padding.
+        let mut offset = if horizontal { band.x } else { band.y } + inset;
         for item in &self.items {
-            // A button occupies one icon square *plus the toolbar's own spacing*, exactly as the
-            // step accumulator did (`icon_size + TOOLBAR_SPACING` was the advance it added). The
-            // gap is therefore **inside the item's advance** rather than between two boxes, which
-            // is why the layout's own `gap` is zero: putting the spacing on the layout's gap as
-            // well would pay it twice and move every item after the first.
-            //
-            // A separator occupies just the spacing. Both boxes are declared on both axes, because
-            // the box an item paints in is the box its hover fill and its hit test use — and then
-            // the layout's cross axis has nothing to resolve.
             let step = if item.is_separator() {
                 dimensions::TOOLBAR_SPACING
             } else {
                 self.icon_size as u32 + dimensions::TOOLBAR_SPACING
             };
-            let size = if horizontal {
-                Size::new(step, band.height.saturating_sub(dimensions::TOOLBAR_ITEM_INSET * 2))
+            let rect = if horizontal {
+                let rect = Rect::new(offset, band.y + inset, step, cross);
+                offset += step as i32;
+                rect
             } else {
-                Size::new(band.width.saturating_sub(dimensions::TOOLBAR_ITEM_INSET * 2), step)
+                let rect = Rect::new(band.x + inset, offset, cross, step);
+                offset += step as i32;
+                rect
             };
-            let created = row.add_sized(&factory, "label", item.text(), size, LayoutParams::new());
-            debug_assert!(created.is_some(), "a toolbar item is a core control");
-        }
-        let mut placed: Vec<Rect> = Vec::with_capacity(self.items.len());
-        row.arrange(band, &mut |_, rect| placed.push(rect));
-        // A layout that reported fewer items than were registered is not a strip to paint into:
-        // the hit test would find a zero box for the missing ones, which reads as an item that is
-        // simply not clickable. Saturating the list keeps `item_rect` total.
-        while placed.len() < self.items.len() {
-            placed.push(Rect { x: 0, y: 0, width: 0, height: 0 });
+            placed.push(rect);
         }
         placed
     }

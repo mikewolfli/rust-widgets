@@ -209,15 +209,18 @@ impl Gradient {
         if position >= self.stops[self.stops.len() - 1].position {
             return self.stops[self.stops.len() - 1].color;
         }
-        for i in 0..self.stops.len() - 1 {
-            let current = &self.stops[i];
-            let next = &self.stops[i + 1];
-            if position >= current.position && position <= next.position {
-                let t = (position - current.position) / (next.position - current.position);
-                return Self::interpolate_color(current.color, next.color, t);
-            }
+        // `stops` is kept sorted by the builder methods, so the bracketing pair is found by
+        // binary search. The linear scan this replaces ran for every sampled pixel of a gradient
+        // fill and, with two stops at the same position, could divide by a zero span.
+        let index = self.stops.partition_point(|stop| stop.position <= position);
+        let current = &self.stops[index - 1];
+        let next = &self.stops[index];
+        let span = next.position - current.position;
+        if span <= 0.0 {
+            return current.color;
         }
-        self.stops[self.stops.len() - 1].color
+        let t = (position - current.position) / span;
+        Self::interpolate_color(current.color, next.color, t)
     }
     fn interpolate_color(from: Color, to: Color, t: f32) -> Color {
         // Kept hand-rolled rather than routed through `Color::blend`: `blend` goes through

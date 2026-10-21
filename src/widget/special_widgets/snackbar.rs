@@ -313,7 +313,7 @@ impl Draw for Snackbar {
         // `resolved_theme_style` takes and releases the global manager's lock
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("snackbar");
         // `Snackbar` is built on `WidgetKind::StatusBar` and classifies as
         // `Surface`, whose background is `theme.colors.background` — byte-identical
@@ -405,7 +405,7 @@ impl Draw for Snackbar {
         // 16..30, four pixels past the bar's bottom edge, and the action label likewise.
         // The message and action labels take the **effective font** — the resolved theme/caller font
         // — so the theme body font and the user's text scale reach them (D09-STYLE-01).
-        let message_font = effective_font(&style);
+        let message_font = effective_font(style);
         let message_h = context.measure_text("M", message_font).height;
         if !self.message.is_empty() {
             context.draw_text(

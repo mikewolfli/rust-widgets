@@ -2,16 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 //! Message box dialog widget.
-use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
-use crate::layout::hints::{ChildInfo, Hints, LayoutParams};
-use crate::layout::{FlexLayout, JustifyContent, Layout};
+use crate::layout::hints::Hints;
 use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::style::{EdgeOffsets, MotionSlot, PropertyDriver, SemanticColor};
+use crate::style::{MotionSlot, PropertyDriver, SemanticColor};
 use crate::widget::capability::coercion::{
     expect_bool, expect_message_box_icon, expect_string, message_box_icon_to_str,
 };
@@ -282,7 +281,13 @@ impl MessageBox {
     }
     /// Replaces the body text and requests a redraw.
     pub fn set_text(&mut self, text: impl Into<String>) {
-        self.text = text.into();
+        let text = text.into();
+        // A same-value write cannot change the painted message, so it must not queue a frame
+        // either (WDGT-12).
+        if self.text == text {
+            return;
+        }
+        self.text = text;
         self.base.request_redraw();
     }
     /// Replaces the icon and requests a redraw.
@@ -780,7 +785,7 @@ impl Draw for MessageBox {
         //
         // The theme reads take and release the global manager's lock internally, so no
         // guard is held across the draw (the mutex is not re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("message_box");
         // `message_box` is absent from `WidgetRole::for_kind_name`'s table — the variant
         // spells as `message_box`, but only `errordialog` is classified — so it resolves to
@@ -836,7 +841,7 @@ impl Draw for MessageBox {
         // These labels are drawn with the **effective font** — the resolved theme/caller font — so
         // the title, body and buttons honour the theme body font and the user's text scale
         // (D09-STYLE-01).
-        let font = effective_font(&style);
+        let font = effective_font(style);
 
         // Dialog background. Rounded by [`dimensions::DIALOG_RADIUS`] so a message box reads
         // as the same class of object as every other dialog; the radius is clamped to the
@@ -1051,13 +1056,16 @@ impl ActionRowGeometry {
 /// width a caller needs for an intrinsic-size calculation but does not pretend to know where a
 /// zero-extent band is.
 ///
-/// # Why a `BoxLayout` and not three lines of arithmetic here
+/// # Why the row is one pass over measured widths
 ///
 /// BLUE22 §B.6 rule 2 is that a composite's children are positioned by a `Layout`, not by
-/// `rect.x + k`. Doing the sum by hand would put a second placement rule next to the layouts'
-/// and would lose the layout's device scaling (`update_with_context` grows the row's gaps with
-/// the text-size preference) — the failure mode where a control's own padding scales with the
-/// font and its gaps do not.
+/// `rect.x + k` — but this row is not a composite: it is eight dialogs' worth of *measurement*,
+/// read by `draw`, by `intrinsic_size` and by the hit test on every press. It used to build a
+/// `FlexLayout` (with an `ObjectId` per button and a `find` per result) on each of those calls,
+/// for children that are all `Hints::fixed`: nothing grows, nothing shrinks, no `fill` is set, and
+/// the row's measure box is exactly the children's own total — so the solver's entire answer is
+/// the running sum written below. The width it spends comes from `action_button_hints`, which is
+/// where the measurement (and therefore the scaling) already lives.
 /// Insets a dialog's action row from the frame's own edges.
 ///
 /// A row flush with the frame puts the last button's corner on top of the frame's rounded
@@ -1085,76 +1093,17 @@ pub(crate) fn action_row_geometry(
     if labels.is_empty() {
         return ActionRowGeometry { row: band, buttons: Vec::new(), leading_inset: 0 };
     }
-    // The buttons' own wishes, one per label. `Hints::fixed` rather than the widget's
-    // `size_hint` because an action button is a standard command of a standard width: it does
-    // not grow with its translation, it elides.
-    let children: Vec<ChildInfo> = labels
-        .iter()
-        .enumerate()
-        .map(|(index, label)| {
-            // The gap is `margins.left` on every button *after the first*, so the layout solves
-            // one button's rect and the spacing follows from the sibling order rather than from
-            // a separate term each call site must remember to add.
-            //
-            // Exactly one side carries it — the button's *leading* margin — because placing it on
-            // both sides of every child pays it twice: the trailing margin of one button and the
-            // leading margin of the next are adjacent, so a 6 px gap became 12 px between every
-            // pair, even though the two buttons' own edges were what the caller asked to be
-            // spaced. The first button carries no leading margin either: the row's own edge is
-            // its edge, and a margin there would be room the row reserves but never spends.
-            let leading = if index == 0 { 0 } else { DIALOG_BUTTON_SPACING };
-            ChildInfo::new(context_row_id(index), action_button_hints(context, font, label))
-                .with_params(
-                    // `EdgeOffsets::new` is `(top, right, bottom, left)`: the gap before a button is
-                    // its *left* margin, which is the last argument.
-                    LayoutParams::new().with_margins(EdgeOffsets::new(0, 0, 0, leading)),
-                )
-        })
-        .collect();
-    // The row is a real layout, handed the buttons by their measured hints. `justify_content`
-    // is `FlexEnd`, which is what makes the row **right-anchored to the content box**: the
-    // layout places the children at their preferred size — none of them sets `fill` — and puts
-    // all the leftover room *before* the first one. Nothing here computes an x, because the
-    // anchor is a property of the container: that is the only shape in which "right-aligned"
-    // cannot be forgotten at one of the eight dialogs that draw this row.
-    //
-    // `gap` is 0 and the spacing rides on each child's own margin instead, so the distance
-    // before a button is derived from the *button* rather than from an index comparison inside
-    // the layout. The first button carries no leading margin, which is what lets the row's
-    // leading edge be a button rather than a gap.
-    let mut layout = FlexLayout::with_params(
-        crate::layout::FlexDirection::Row,
-        crate::layout::FlexWrap::NoWrap,
-        JustifyContent::FlexEnd,
-        crate::layout::AlignItems::Stretch,
-        0,
-        0,
-    );
-    for child in &children {
-        layout.add_widget(child.id, child.params.stretch);
-    }
-    // The box the row is laid out in is exactly as wide as the children ask for, not the band
-    // the caller offered. A row of buttons is not made wider by the dialog around it being wide,
-    // and laying it out in a box wider than its own total is what let the previous
-    // stretch-based derivation blow every button up to the band's width. With the measure box
-    // and the row's own extent equal, the anchor places the row at the measure box's origin and
-    // the `shift` below is the *only* thing that moves it — one place, and not eight.
-    //
-    // The measured box is **not** clamped to the band. Clamping it would feed the layout a
-    // parent narrower than its children, which is precisely the case whose handling this
-    // function is replacing: the children would be laid out relative to a box that is not the
-    // one they were measured in. A row too wide for the band is instead handled where it can be
-    // described — see `shift`.
-    let row_extent = children
-        .iter()
-        .map(|child| child.bounds().width)
-        .fold(0u32, |total, width| total.saturating_add(width))
-        .max(1);
-    let measure = Rect::new(band.x, band.y, row_extent, band.height);
-    let mut placed: Vec<(ObjectId, Rect)> = Vec::with_capacity(children.len());
-    layout.arrange(measure, &children, &mut |id, rect| placed.push((id, rect)));
+    // Each button's own wish. `Hints::fixed` rather than the widget's `size_hint` because an
+    // action button is a standard command of a standard width: it does not grow with its
+    // translation, it elides.
+    let widths: Vec<u32> =
+        labels.iter().map(|label| action_button_hints(context, font, label).width.pref).collect();
+    // The gaps come out of the band *before* the anchor is computed, and only between buttons:
+    // the row's own leading edge is a button's edge, not a gap.
+    let gaps = DIALOG_BUTTON_SPACING.saturating_mul(widths.len().saturating_sub(1) as u32);
+    let row_extent = widths.iter().fold(gaps, |total, width| total.saturating_add(*width)).max(1);
     // Where the row lands inside the band it was offered: `band` is the room the caller has,
-    // `measure` is what the row needs, and the difference is anchored to the trailing edge —
+    // `row_extent` is what the row needs, and the difference is anchored to the trailing edge —
     // which is what "right-aligned" means, and why the buttons sit at the dialog's own right
     // edge in every dialog that calls this rather than at an offset each one recomputes.
     //
@@ -1166,19 +1115,11 @@ pub(crate) fn action_row_geometry(
     // frame itself is sized from this row's own width (`intrinsic_size`), so in practice the
     // overhang only arises when a host forces a smaller rectangle on the control.
     let shift = if place { (band.width as i32 - row_extent as i32).max(0) } else { 0 };
-    let mut buttons = Vec::with_capacity(children.len());
-    for child in &children {
-        // A child the layout did not describe must not vanish from a row the caller indexes by
-        // position, so a missing rect falls back to the child's own measured bounds at the
-        // measure box's origin rather than to a zero rect (which would be an invisible button).
-        let rect =
-            placed.iter().find(|(id, _)| *id == child.id).map(|(_, rect)| *rect).unwrap_or_else(
-                || {
-                    let size = child.bounds();
-                    Rect::new(measure.x, band.y, size.width, band.height)
-                },
-            );
-        buttons.push(Rect::new(rect.x + shift, band.y, rect.width, band.height));
+    let mut cursor = band.x + shift;
+    let mut buttons = Vec::with_capacity(widths.len());
+    for width in widths {
+        buttons.push(Rect::new(cursor, band.y, width, band.height));
+        cursor += width as i32 + DIALOG_BUTTON_SPACING as i32;
     }
     let first = buttons.first().copied().unwrap_or(band);
     let last = buttons.last().copied().unwrap_or(band);
@@ -1187,28 +1128,11 @@ pub(crate) fn action_row_geometry(
     let row = Rect::new(row_left, band.y, (row_right - row_left).max(0) as u32, band.height);
     // What the row leaves *before* it: the padding this dialog's own content must carry so its
     // title, message and icon cannot overlap the buttons that share their band. This is the
-    // The sibling-column relation — the text side's padding is the sibling
-    // column's width —
+    // sibling-column relation — the text side's padding is the sibling column's width —
     // and it is why the row reports it instead of leaving each call site to re-subtract.
     let leading_inset = if place { (row_left - band.x).max(0) as u32 } else { 0 };
     ActionRowGeometry { row, buttons, leading_inset }
 }
-
-/// The id the row's `index`-th button carries into the layout.
-///
-/// Derived from the index rather than from `ObjectId::new()` so the layout's output can be put
-/// back in the caller's order without a map: the caller indexes its own buttons by position and
-/// the row must answer in that same order.
-fn context_row_id(index: usize) -> ObjectId {
-    ROW_ID_BASE + index as u64
-}
-
-/// The slot-space origin the row's ids are handed out from.
-///
-/// A file-local base: the row's ids only have to be distinct from each other, because the row is
-/// placed in one call and the caller matches the result back by position. A high base keeps them
-/// from colliding with the ids a host hands the same layout in its own tree.
-const ROW_ID_BASE: u64 = 0x1000_0000_0000_0000;
 
 #[cfg(test)]
 mod tests {

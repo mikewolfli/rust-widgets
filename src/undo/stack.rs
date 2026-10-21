@@ -3,12 +3,12 @@
 
 use super::command::UndoCommand;
 use super::types::*;
-use crate::compat::{format, Box, String, Vec};
+use crate::compat::{format, Box, String, VecDeque};
 
 /// Undo/Redo stack with configurable capacity.
 pub struct UndoStack {
-    undo_stack: Vec<Entry>,
-    redo_stack: Vec<Entry>,
+    undo_stack: VecDeque<Entry>,
+    redo_stack: VecDeque<Entry>,
     max_capacity: usize,
     /// Revision of the saved state, or `None` before any save.
     ///
@@ -55,8 +55,8 @@ impl UndoStack {
     /// Creates a new `UndoStack` with the specified maximum capacity.
     pub fn with_capacity(max: usize) -> Self {
         UndoStack {
-            undo_stack: Vec::with_capacity(max.min(128)),
-            redo_stack: Vec::new(),
+            undo_stack: VecDeque::with_capacity(max.min(128)),
+            redo_stack: VecDeque::new(),
             max_capacity: max,
             saved_revision: None,
             saved_reachable: true,
@@ -73,7 +73,7 @@ impl UndoStack {
     pub fn push(&mut self, command: Box<dyn UndoCommand>) {
         // Try merging with the last command.
         if self.merge_policy_allows(&*command) {
-            if let Some(last) = self.undo_stack.last_mut() {
+            if let Some(last) = self.undo_stack.back_mut() {
                 if last.command.try_merge(command.as_ref()) {
                     // Merge succeeded: no new entry, but the content changed, so the merged
                     // command gets a fresh revision — it is no longer the saved content even
@@ -112,10 +112,11 @@ impl UndoStack {
             return false;
         }
         if self.undo_stack.len() >= self.max_capacity {
-            let evicted = self.undo_stack.remove(0);
-            self.advance_base_past(evicted.after_revision);
+            if let Some(evicted) = self.undo_stack.pop_front() {
+                self.advance_base_past(evicted.after_revision);
+            }
         }
-        self.undo_stack.push(entry);
+        self.undo_stack.push_back(entry);
         true
     }
 
@@ -129,7 +130,7 @@ impl UndoStack {
     /// must not corrupt the history, so the command is put back on the undo stack before the error
     /// is returned — the caller sees the failure and the stack is exactly as it was.
     pub fn undo(&mut self) -> Result<(), String> {
-        let mut entry = self.undo_stack.pop().ok_or_else(|| {
+        let mut entry = self.undo_stack.pop_back().ok_or_else(|| {
             format!(
                 "nothing to undo: the undo stack is empty ({} redoable command(s) pending)",
                 self.redo_stack.len()
@@ -137,12 +138,12 @@ impl UndoStack {
         })?;
         match entry.command.undo() {
             Ok(()) => {
-                self.redo_stack.push(entry);
+                self.redo_stack.push_back(entry);
                 Ok(())
             }
             Err(err) => {
                 // Restore the command to the top of the undo stack so the history is unchanged.
-                self.undo_stack.push(entry);
+                self.undo_stack.push_back(entry);
                 Err(err)
             }
         }
@@ -150,7 +151,7 @@ impl UndoStack {
 
     /// Redo the most recently undone command, moving it back to the undo stack.
     pub fn redo(&mut self) -> Result<(), String> {
-        let mut entry = self.redo_stack.pop().ok_or_else(|| {
+        let mut entry = self.redo_stack.pop_back().ok_or_else(|| {
             format!(
                 "nothing to redo: the redo stack is empty ({} undoable command(s) pending)",
                 self.undo_stack.len()
@@ -169,7 +170,7 @@ impl UndoStack {
                 // A failed `redo` used to pop the command and drop it on error, losing it from
                 // both stacks so it could never be retried. Put it back so the history is
                 // unchanged and the command remains retryable — the mirror of `undo`'s recovery.
-                self.redo_stack.push(entry);
+                self.redo_stack.push_back(entry);
                 Err(err)
             }
         }
@@ -197,12 +198,12 @@ impl UndoStack {
 
     /// Returns the human-readable text of the next command to undo.
     pub fn undo_text(&self) -> Option<String> {
-        self.undo_stack.last().map(|e| e.command.description().text)
+        self.undo_stack.back().map(|e| e.command.description().text)
     }
 
     /// Returns the human-readable text of the next command to redo.
     pub fn redo_text(&self) -> Option<String> {
-        self.redo_stack.last().map(|e| e.command.description().text)
+        self.redo_stack.back().map(|e| e.command.description().text)
     }
 
     /// Mark the current state as "clean" (e.g., saved).
@@ -240,7 +241,7 @@ impl UndoStack {
     pub fn set_max_capacity(&mut self, max: usize) {
         self.max_capacity = max;
         while self.undo_stack.len() > self.max_capacity {
-            let evicted = self.undo_stack.remove(0);
+            let Some(evicted) = self.undo_stack.pop_front() else { break };
             self.advance_base_past(evicted.after_revision);
         }
     }
@@ -248,7 +249,7 @@ impl UndoStack {
     /// The revision of the document's current state: after the top entry, or the base state
     /// when the stack is empty.
     fn current_revision(&self) -> u64 {
-        self.undo_stack.last().map(|e| e.after_revision).unwrap_or(self.base_revision)
+        self.undo_stack.back().map(|e| e.after_revision).unwrap_or(self.base_revision)
     }
 
     /// Record that the base state has advanced to `revision` because the entry that produced it

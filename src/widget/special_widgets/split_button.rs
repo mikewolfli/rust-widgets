@@ -3,25 +3,22 @@
 
 //! SplitButton widget with primary action and drop-down action list.
 //!
-//! # The face is assembled from two columns, not computed from one edge
+//! The face is derived from the two columns' own sizes, not from one edge: the trigger takes what
+//! the arrow column does not.
 //!
 //! BLUE22 §B.8 lists this control's defect as "master face + arrow by hand", and the fix is not
 //! a nicer arithmetic: it is that the two columns must **tile** the face, so a wider arrow column
 //! *pushes* the trigger narrower instead of being placed from the trailing edge while the trigger
 //! is placed from the leading one.
 //!
-//! The assembly therefore goes through [`CompositeBuilder`]/[`FlexLayout`]: the layout reads each
-//! column's own [`Hints`], places them in order, and reports the rectangles. Nothing here computes
-//! an `x`. The one thing that is *declared* rather than derived is the arrow's preferred
-//! width ([`dimensions::SPLIT_ARROW_COLUMN_WIDTH`]) — see that constant for why the number is a
-//! constant and not the `v` glyph's advance.
+//! [`SplitButton::column_widths`] states that relation once and both boxes are read from it, so the
+//! two columns cannot be placed from opposite edges. The one thing that is *declared* rather than
+//! derived is the arrow's preferred width ([`dimensions::SPLIT_ARROW_COLUMN_WIDTH`]) — see that
+//! constant for why the number is a constant and not the `v` glyph's advance.
 
 use crate::compat::Vec;
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
-use crate::layout::{
-    AlignItems, FlexDirection, FlexLayout, FlexWrap, JustifyContent, LayoutParams,
-};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::style::EdgeOffsets;
@@ -29,20 +26,9 @@ use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::composite::CompositeBuilder;
 use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetFactory, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
-
-/// The arrow column's placeholder text.
-///
-/// The assembled face reserves the trigger and the arrow column as two `label` rows, and a label's
-/// text is what a caller would normally see. The arrow itself is now an **icon outline**, not a
-/// character: the previous `"v"` was painted as a letter, which is why the control's second button
-/// read `v` instead of a chevron. The column's size comes from `arrow_width` (`add_sized`), so this
-/// placeholder carries no visible text and the label exists only to make the layout report the two
-/// boxes that tile the face.
-const ARROW_COLUMN_TEXT: &str = "";
 
 /// One selectable action in a split button drop-down list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -271,53 +257,61 @@ impl SplitButton {
     /// resolve and `Stretch` and "keep the preferred height" agree. Declaring it anyway is what
     /// makes the assembly say *why* the arrow is 28 px: it is what the arrow asked for, not
     /// whatever the row's tallest child happened to be.
+    /// The trigger's box and the arrow column's box.
+    ///
+    /// # Why the two columns tile rather than being computed from two edges
+    ///
+    /// This used to be `primary_width = band.width - arrow_width` with the arrow placed from the
+    /// band's trailing edge: two derivations from two different edges, so the trigger's box and
+    /// the arrow's box agreed only because both subtracted the same constant. Both boxes are now
+    /// read from [`SplitButton::column_widths`], the one statement of "the trigger takes what the
+    /// arrow does not", so a wider arrow necessarily pushes the trigger narrower.
+    ///
+    /// # Why this is arithmetic and not an assembled row
+    ///
+    /// The pair used to be placed by a `CompositeBuilder` + `FlexLayout` built on every call — two
+    /// `label` widgets, a layout, and a `Vec` of results for every `draw`, every hit test and every
+    /// menu anchor read, to place two rectangles that tile one band. The row was
+    /// `justify_content = FlexStart` with a `fill` trigger and zero gap, which resolves to exactly
+    /// the relation `column_widths` states, so the row was a slower spelling of it.
     fn assemble_face(&self) -> (Rect, Rect) {
         let band = self.face_band();
-        let factory = WidgetFactory::new_with_defaults();
-        let mut builder = CompositeBuilder::new(
-            Box::new(FlexLayout::with_params(
-                FlexDirection::Row,
-                FlexWrap::NoWrap,
-                JustifyContent::FlexStart,
-                AlignItems::Stretch,
-                0,
-                0,
-            )),
-            EdgeOffsets::all(0),
-            Size::new(0, 0),
-        );
-        // The liveness of the two columns is the assembly's precondition, and a silent `None`
-        // would place a face with no trigger in it. `WidgetFactory::create` answers `Some` for
-        // every core kind in every profile (`button` and `label` are registered unconditionally),
-        // so the honest answer is a debug assertion rather than a production branch that cannot
-        // be reached and would therefore never be tested.
-        let trigger = builder.add_sized(
-            &factory,
-            "label",
-            &self.text,
-            Size::new(self.trigger_hint_width(), band.height),
-            LayoutParams::filled(),
-        );
-        debug_assert!(trigger.is_some(), "the trigger column is a core control");
-        let arrow = builder.add_sized(
-            &factory,
-            "label",
-            ARROW_COLUMN_TEXT,
-            Size::new(self.arrow_width, band.height),
-            LayoutParams::new(),
-        );
-        debug_assert!(arrow.is_some(), "the arrow column is a core control");
+        let (trigger_width, arrow_width) = self.column_widths(band.width);
+        let trigger = Rect::new(band.x, band.y, trigger_width, band.height);
+        let arrow = Rect::new(band.x + trigger_width as i32, band.y, arrow_width, band.height);
+        (trigger, arrow)
+    }
 
-        let mut placed: Vec<Rect> = Vec::with_capacity(2);
-        builder.arrange(band, &mut |_, rect| placed.push(rect));
-        match (placed.first(), placed.get(1)) {
-            (Some(trigger), Some(arrow)) => (*trigger, *arrow),
-            // A layout that reported nothing is not a face. Falling back to the band for the
-            // trigger and an empty arrow keeps every downstream box inside the control instead of
-            // painting a zero-extent arrow into the corner — and `debug_assert!` above makes this
-            // arm unreachable in a debug build, so it cannot be entered unnoticed in practice.
-            _ => (band, Rect::new(band.x + band.width as i32, band.y, 0, band.height)),
+    /// The trigger's and the arrow column's widths for a face `face_width` wide.
+    ///
+    /// # The two cases
+    ///
+    /// * The face holds both columns: the arrow keeps the width it declares and the trigger takes
+    ///   the remainder. That is the `fill` trigger's own statement — it absorbs the leftover — and
+    ///   it is why growing the arrow narrows the trigger by exactly the same amount.
+    /// * The face is narrower than the two columns' sum: tiling at their preferred sizes is
+    ///   arithmetic that cannot work, so the shortfall is shared **proportionally**. Keeping the
+    ///   arrow one arrow wide would take the whole shortfall out of the trigger and, on a narrow
+    ///   enough face, leave no trigger; scaling both keeps the arrow's *share*, which is what makes
+    ///   the drop-down affordance impossible to lose (G-1). The integer remainder goes to the
+    ///   leading column so the pair sums to exactly `face_width` and neither can land outside it.
+    fn column_widths(&self, face_width: u32) -> (u32, u32) {
+        let wanted = self.trigger_hint_width();
+        let total = wanted.saturating_add(self.arrow_width);
+        if total <= face_width || total == 0 {
+            let arrow = self.arrow_width.min(face_width);
+            return (face_width - arrow, arrow);
         }
+        let scaled = |width: u32| -> u32 {
+            ((u64::from(width) * u64::from(face_width)) / u64::from(total)) as u32
+        };
+        let arrow = scaled(self.arrow_width);
+        let trigger = scaled(wanted);
+        // Integer division truncates every column, so the pair can fall one pixel short of the
+        // face. The leading column takes it, matching the layout's "remainder from the leading
+        // edge" rule and keeping `trigger + arrow == face_width` exact.
+        let short = face_width.saturating_sub(trigger.saturating_add(arrow));
+        (trigger + short, arrow)
     }
 
     /// The width the trigger's own label asks for.
@@ -645,11 +639,11 @@ impl Draw for SplitButton {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         // The **effective font** — the resolved theme/caller font — used for the trigger label, the
         // drop-down arrow glyph and every menu row, so the control honours the theme body font and
         // the user's text scale (D09-STYLE-01).
-        let font = effective_font(&style);
+        let font = effective_font(style);
         let theme = crate::style::resolved_theme_style("split_button");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.

@@ -197,12 +197,12 @@ struct CachedPath {
 fn parse_static_cached(
     path: &'static str,
 ) -> Result<crate::compat::Arc<[Subpath]>, super::parser::PathError> {
-    use crate::compat::{lock, Mutex, OnceLock, Vec};
+    use crate::compat::{lock, Mutex, OnceLock, VecDeque};
 
     const CACHE_CAPACITY: usize = 128;
-    static CACHE: OnceLock<Mutex<Vec<CachedPath>>> = OnceLock::new();
+    static CACHE: OnceLock<Mutex<VecDeque<CachedPath>>> = OnceLock::new();
     let address = path.as_ptr() as usize;
-    if let Some(subpaths) = lock(CACHE.get_or_init(|| Mutex::new(Vec::new())))
+    if let Some(subpaths) = lock(CACHE.get_or_init(|| Mutex::new(VecDeque::new())))
         .iter()
         .find(|entry| entry.address == address && entry.length == path.len())
         .map(|entry| entry.subpaths.clone())
@@ -211,16 +211,16 @@ fn parse_static_cached(
     }
 
     let parsed: crate::compat::Arc<[Subpath]> = parse(path)?.into();
-    let mut cache = lock(CACHE.get_or_init(|| Mutex::new(Vec::new())));
+    let mut cache = lock(CACHE.get_or_init(|| Mutex::new(VecDeque::new())));
     if let Some(entry) =
         cache.iter().find(|entry| entry.address == address && entry.length == path.len())
     {
         return Ok(entry.subpaths.clone());
     }
     if cache.len() == CACHE_CAPACITY {
-        cache.remove(0);
+        cache.pop_front();
     }
-    cache.push(CachedPath { address, length: path.len(), subpaths: parsed.clone() });
+    cache.push_back(CachedPath { address, length: path.len(), subpaths: parsed.clone() });
     Ok(parsed)
 }
 

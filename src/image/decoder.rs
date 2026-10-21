@@ -996,33 +996,39 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
     let mut pixels = vec![0u8; (width * height * 4) as usize];
     let buf_width = (width.div_ceil(mcu_width) * mcu_width) as usize;
 
+    // The component planes are resolved once, outside the pixel loop. The previous version walked
+    // `comp_bufs.first().and_then(|b| b.first()).and_then(|row| row.get(..))` for every pixel —
+    // four `Option` layers and a bounds check per channel sample.
+    let luma = comp_bufs
+        .first()
+        .and_then(|buffer| buffer.first())
+        .ok_or("JPEG decoded luma component is incomplete")?;
+    let chroma = if components.len() >= 3 {
+        let cb = comp_bufs
+            .get(1)
+            .and_then(|buffer| buffer.first())
+            .ok_or("JPEG decoded Cb component is incomplete")?;
+        let cr = comp_bufs
+            .get(2)
+            .and_then(|buffer| buffer.first())
+            .ok_or("JPEG decoded Cr component is incomplete")?;
+        Some((cb, cr))
+    } else {
+        None
+    };
+
     for y in 0..height as usize {
         for x in 0..width as usize {
             let idx = y * width as usize + x;
             let bidx = y * buf_width + x;
 
-            let y_val = comp_bufs
-                .first()
-                .and_then(|b| b.first())
-                .and_then(|row| row.get(bidx))
-                .copied()
-                .ok_or("JPEG decoded luma component is incomplete")? as i32;
-            let (cb_val, cr_val) = if components.len() >= 3 {
-                let cb = comp_bufs
-                    .get(1)
-                    .and_then(|b| b.first())
-                    .and_then(|row| row.get(bidx))
-                    .copied()
-                    .ok_or("JPEG decoded Cb component is incomplete")?;
-                let cr = comp_bufs
-                    .get(2)
-                    .and_then(|b| b.first())
-                    .and_then(|row| row.get(bidx))
-                    .copied()
-                    .ok_or("JPEG decoded Cr component is incomplete")?;
-                (cb as i32, cr as i32)
-            } else {
-                (128, 128)
+            let y_val = *luma.get(bidx).ok_or("JPEG decoded luma component is incomplete")? as i32;
+            let (cb_val, cr_val) = match chroma {
+                Some((cb, cr)) => (
+                    *cb.get(bidx).ok_or("JPEG decoded Cb component is incomplete")? as i32,
+                    *cr.get(bidx).ok_or("JPEG decoded Cr component is incomplete")? as i32,
+                ),
+                None => (128, 128),
             };
 
             // YCbCr to RGB conversion (ITU-R BT.601)
@@ -1066,31 +1072,42 @@ type HuffCode = u16;
 #[derive(Clone, Copy)]
 struct HuffEntry {
     value: u8,
-    bits: u8,
     code: HuffCode,
 }
 
 /// Huffman table for JPEG entropy decoding.
+///
+/// # Why the codes are grouped by length
+///
+/// `decode_huff_symbol` used to scan every entry in the table for each of the 16 possible code
+/// lengths — up to 162 comparisons per decoded coefficient, and a JPEG block has 64 coefficients.
+/// Entries are generated in increasing code order within a length, so a per-length range plus a
+/// binary search turns that inner scan into `log2(n)` comparisons.
 struct HuffTable {
     entries: Vec<HuffEntry>,
+    /// `(start, end)` into `entries` for each code length, indexed by length (1..=16).
+    ranges: [(usize, usize); 17],
 }
 
 /// Build a Huffman table from JPEG DHT marker counts and symbols.
 fn build_huff_table(counts: &[usize; 16], symbols: &[u8]) -> HuffTable {
     let mut entries = Vec::new();
+    let mut ranges = [(0usize, 0usize); 17];
     let mut code: HuffCode = 0;
     let mut si = 0;
     for bits in 1..=16 {
+        let start = entries.len();
         for _ in 0..counts[bits - 1] {
             if si < symbols.len() {
-                entries.push(HuffEntry { value: symbols[si], bits: bits as u8, code });
+                entries.push(HuffEntry { value: symbols[si], code });
                 si += 1;
             }
             code += 1;
         }
+        ranges[bits] = (start, entries.len());
         code <<= 1;
     }
-    HuffTable { entries }
+    HuffTable { entries, ranges }
 }
 
 /// Decode a Huffman symbol from the bitstream.
@@ -1106,10 +1123,14 @@ fn decode_huff_symbol(data: &[u8], bit_pos: &mut usize, table: &HuffTable) -> Op
         *bit_pos += 1;
         code = (code << 1) | b as HuffCode;
 
-        for entry in &table.entries {
-            if entry.bits == bits as u8 && entry.code == code {
-                return Some((entry.value, bits));
-            }
+        let (start, end) = table.ranges[bits];
+        if start == end {
+            continue;
+        }
+        let candidates = &table.entries[start..end];
+        if let Ok(index) = candidates.binary_search_by_key(&code, |entry| entry.code) {
+            let entry = candidates[index];
+            return Some((entry.value, bits));
         }
     }
     None
@@ -1154,6 +1175,11 @@ fn receive_extended(data: &[u8], bit_pos: &mut usize, cat: usize) -> Result<i32,
 /// the range used by the pixel-store clamp.
 fn idct_8x8(input: &[i32; 64], output: &mut [i32; 64]) {
     let mut tmp = [0i128; 64];
+    // The cosine factors are a constant 8×8 table. This used to call `icosph` — and therefore
+    // `f64::cos` — 1024 times per block (8×8 pixels × 8 terms × 2 passes), which dominated the
+    // decode of a photographic image. The table is built once from the same `icosph`, so the
+    // values are bit-identical to the previous per-call computation.
+    let table = idct_table();
 
     // Rows
     for y in 0..8 {
@@ -1162,7 +1188,7 @@ fn idct_8x8(input: &[i32; 64], output: &mut [i32; 64]) {
             for u in 0..8 {
                 let cu = if u == 0 { 1 } else { 2 };
                 let val = input[y * 8 + u] as i128;
-                sum += val * cu * icosph(u, x) as i128;
+                sum += val * cu * table[u][x] as i128;
             }
             tmp[y * 8 + x] = sum;
         }
@@ -1175,7 +1201,7 @@ fn idct_8x8(input: &[i32; 64], output: &mut [i32; 64]) {
             for v in 0..8 {
                 let cv = if v == 0 { 1 } else { 2 };
                 let val = tmp[v * 8 + x];
-                sum += val * cv * icosph(v, y) as i128;
+                sum += val * cv * table[v][y] as i128;
             }
             // `i32::try_from` after the `/4` keeps a pathological block (which the clamp at the
             // store site would bound anyway) from wrapping in the narrowing cast.
@@ -1184,6 +1210,20 @@ fn idct_8x8(input: &[i32; 64], output: &mut [i32; 64]) {
                 i32::try_from(scaled).unwrap_or(if scaled > 0 { i32::MAX } else { i32::MIN });
         }
     }
+}
+
+/// The pre-computed 8×8 IDCT cosine table, built from [`icosph`] once per process.
+fn idct_table() -> &'static [[i32; 8]; 8] {
+    static TABLE: std::sync::OnceLock<[[i32; 8]; 8]> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut table = [[0i32; 8]; 8];
+        for (u, row) in table.iter_mut().enumerate() {
+            for (v, cell) in row.iter_mut().enumerate() {
+                *cell = icosph(u, v);
+            }
+        }
+        table
+    })
 }
 
 fn dequantize_block(block: &mut [i32; 64], quant_table: &[u16; 64]) -> Result<(), String> {

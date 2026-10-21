@@ -305,7 +305,7 @@ impl Draw for Toast {
         // `resolved_theme_style` takes and releases the global manager's lock
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("toast");
         // `toast` is not a control kind in the role table, so it classifies as
         // `Surface`, whose background is `theme.colors.background` — byte-identical
@@ -360,7 +360,7 @@ impl Draw for Toast {
         // control disagreed about the row they shared.
         // The message takes the **effective font** — the resolved theme/caller font — so the theme
         // body font and the user's text scale reach it (D09-STYLE-01).
-        let font = effective_font(&style);
+        let font = effective_font(style);
         let line = context.text_line(band, font);
         // Bounded to end before the close button, so a long message cannot run under it.
         let text_width = self

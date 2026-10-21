@@ -454,19 +454,15 @@ impl JsonLoader {
     /// always present when it runs. The fallback is stated rather than assumed because a future
     /// gate change would otherwise turn it into a silent `true`.
     fn control_publishes(widget_type: &str, event_name: &str) -> bool {
-        let factory = crate::widget::capability::WidgetFactory::new_with_defaults();
-        let normalized = crate::widget::capability::normalize_key(event_name);
+        let factory = crate::widget::capability::WidgetFactory::shared();
         factory.capability(widget_type).is_some_and(|capability| {
-            capability
-                .events
-                .iter()
-                .any(|schema| crate::widget::capability::normalize_key(schema.name) == normalized)
+            crate::widget::capability::find_event_schema(capability, event_name).is_some()
         })
     }
 
     /// The published event names of `widget_type`, for the warning above.
     fn published_events(widget_type: &str) -> Vec<&'static str> {
-        let factory = crate::widget::capability::WidgetFactory::new_with_defaults();
+        let factory = crate::widget::capability::WidgetFactory::shared();
         factory
             .capability(widget_type)
             .map(|capability| capability.events.iter().map(|schema| schema.name).collect())

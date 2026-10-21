@@ -547,10 +547,10 @@ impl Draw for MenuButton {
         // the old value means the existing pixel baselines cannot regress. The theme read is
         // a separate manager lock, taken and released inside `resolved_theme_style`, so no
         // guard is held across the draw (the mutex is not re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         // The **effective font** — the resolved theme/caller font — for the button's own label;
         // the popup rows take the same font below (D09-STYLE-01).
-        let font = effective_font(&style);
+        let font = effective_font(style);
         let themed = crate::style::resolved_theme_style("menu_button");
         let themed_bg = themed.as_ref().and_then(|r| r.background_color);
         let themed_border = themed.as_ref().and_then(|r| r.border_color);
@@ -685,7 +685,7 @@ impl Draw for MenuButton {
                 // Item text
                 let item_text_color =
                     if !item.enabled { item_ink.blend(&panel, 0.5) } else { item_ink };
-                let item_font = effective_font(&style);
+                let item_font = effective_font(style);
                 let mut item_x = item_rect.x + PADDING;
 
                 // Item icon

@@ -400,7 +400,7 @@ impl Draw for SegmentedControl {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         // `segmented_control` reports `WidgetKind::ToggleButton`, whose role is `Primary`; the
         // control itself is not a filled call to action, so the role's primary fill is not used.
         // Its accent serves the selection instead, and the bar derives its own surface below.
@@ -530,14 +530,14 @@ impl Draw for SegmentedControl {
                 // a line low rather than on the segment's middle.
                 // The **effective font** — the resolved theme/caller font — for the segment labels
                 // (D09-STYLE-01).
-                let line = context.text_line(seg, effective_font(&style));
+                let line = context.text_line(seg, effective_font(style));
                 // Material's segmented control insets a segment's label by 16 px rather than the
                 // 8 the old literal used: at 8 the label of a two-character segment ran into the
                 // divider it sits beside.
                 context.draw_text(
                     Point::new(seg.x + SEGMENT_LABEL_INSET, line.y),
                     &item.label,
-                    effective_font(&style),
+                    effective_font(style),
                     label_color,
                     HorizontalAlignment::Left,
                 );

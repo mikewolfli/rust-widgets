@@ -38,12 +38,36 @@ pub struct WidgetEntry {
 pub struct WidgetRegistry {
     entries: HashMap<ObjectId, WidgetEntry>,
     by_kind: HashMap<WidgetKind, Vec<ObjectId>>,
+    /// Parent → children index.
+    ///
+    /// `children_of` used to scan every entry on every call. The index is derived from
+    /// `entries`, so it is skipped by serde and rebuilt after a load.
+    #[cfg_attr(all(feature = "serde", widgets_unstripped), serde(skip))]
+    children: HashMap<ObjectId, Vec<ObjectId>>,
 }
 
 impl WidgetRegistry {
+    /// Rebuilds the derived indexes from `entries`.
+    ///
+    /// Only `load` needs it: the incremental paths maintain the indexes directly, and a build
+    /// without JSON has no `load`.
+    #[cfg(all(feature = "serde", feature = "serde_json", widgets_unstripped))]
+    fn rebuild_indices(&mut self) {
+        let mut by_kind: HashMap<WidgetKind, Vec<ObjectId>> = HashMap::new();
+        let mut children: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
+        for (id, entry) in &self.entries {
+            by_kind.entry(entry.kind).or_default().push(*id);
+            if let Some(parent) = entry.parent {
+                children.entry(parent).or_default().push(*id);
+            }
+        }
+        self.by_kind = by_kind;
+        self.children = children;
+    }
+
     /// Create an empty registry.
     pub fn new() -> Self {
-        Self { entries: HashMap::new(), by_kind: HashMap::new() }
+        Self { entries: HashMap::new(), by_kind: HashMap::new(), children: HashMap::new() }
     }
 
     /// Register (or update) a widget entry.
@@ -56,9 +80,17 @@ impl WidgetRegistry {
             if let Some(list) = self.by_kind.get_mut(&old.kind) {
                 list.retain(|&x| x != id);
             }
+            if let Some(parent) = old.parent {
+                if let Some(list) = self.children.get_mut(&parent) {
+                    list.retain(|&x| x != id);
+                }
+            }
         }
 
         self.by_kind.entry(kind).or_default().push(id);
+        if let Some(parent) = entry.parent {
+            self.children.entry(parent).or_default().push(id);
+        }
         self.entries.insert(id, entry);
     }
 
@@ -67,6 +99,11 @@ impl WidgetRegistry {
         if let Some(entry) = self.entries.remove(&id) {
             if let Some(list) = self.by_kind.get_mut(&entry.kind) {
                 list.retain(|&x| x != id);
+            }
+            if let Some(parent) = entry.parent {
+                if let Some(list) = self.children.get_mut(&parent) {
+                    list.retain(|&x| x != id);
+                }
             }
         }
     }
@@ -82,8 +119,14 @@ impl WidgetRegistry {
     }
 
     /// Return all entries whose parent matches the given [`ObjectId`].
+    ///
+    /// Reads the parent → children index, so the cost is proportional to the number of children
+    /// rather than to the size of the whole registry (the previous version scanned every entry).
     pub fn children_of(&self, parent_id: ObjectId) -> Vec<&WidgetEntry> {
-        self.entries.values().filter(|entry| entry.parent == Some(parent_id)).collect()
+        self.children
+            .get(&parent_id)
+            .map(|ids| ids.iter().filter_map(|id| self.entries.get(id)).collect())
+            .unwrap_or_default()
     }
 
     /// Serialize the registry to a JSON file at `path`.
@@ -124,6 +167,9 @@ impl WidgetRegistry {
             format!("widget registry file '{path}' is not valid WidgetRegistry JSON: {e}")
         })?;
         *self = loaded;
+        // The parent → children index is derived state and is skipped by serde, so it is empty
+        // after a load. Rebuild both indexes rather than trusting the serialized `by_kind`.
+        self.rebuild_indices();
         Ok(())
     }
 
@@ -146,7 +192,43 @@ impl WidgetRegistry {
     pub fn clear(&mut self) {
         self.entries.clear();
         self.by_kind.clear();
+        self.children.clear();
     }
 }
 
 crate::impl_default_via_new!(WidgetRegistry);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(id: ObjectId, parent: Option<ObjectId>) -> WidgetEntry {
+        WidgetEntry { id, kind: WidgetKind::Button, parent, label: String::new() }
+    }
+
+    /// The parent → children index must follow re-registration and removal, not only insertion.
+    #[test]
+    fn children_index_tracks_parent_changes_and_removal() {
+        let mut registry = WidgetRegistry::new();
+        registry.register(entry(1, None));
+        registry.register(entry(2, Some(1)));
+        registry.register(entry(3, Some(1)));
+        assert_eq!(registry.children_of(1).len(), 2);
+
+        // Re-registering with a different parent must move the id, not duplicate it.
+        registry.register(entry(2, Some(3)));
+        assert_eq!(registry.children_of(1).len(), 1);
+        assert_eq!(registry.children_of(3).len(), 1);
+
+        registry.unregister(3);
+        assert!(
+            registry.children_of(1).is_empty(),
+            "removing child 3 must also leave parent 1's list"
+        );
+        assert_eq!(
+            registry.children_of(3).len(),
+            1,
+            "child 2 still names 3 as its parent; the index mirrors the entries, it does not cascade"
+        );
+    }
+}

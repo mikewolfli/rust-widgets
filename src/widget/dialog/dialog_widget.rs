@@ -447,7 +447,7 @@ impl Draw for Dialog {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("dialog");
         // The dialog is a `Surface`-role control, and `Surface` resolves to
         // `theme.colors.background` — the colour the window behind it is already filled
@@ -537,7 +537,7 @@ impl Draw for Dialog {
         // strip did not have, and a bare literal `y` would reintroduce exactly that.
         // The **effective font** — the resolved theme/caller font — so the title honours the theme
         // body font and the user's text scale (D09-STYLE-01).
-        let title_font = effective_font(&style);
+        let title_font = effective_font(style);
         let band = ControlMetrics::band_inset(bar, 0);
         let title_line = context.text_line(band, title_font);
         context.draw_text_fitted(

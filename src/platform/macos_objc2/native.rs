@@ -549,11 +549,15 @@ pub(crate) fn store_native_view(widget_id: u64, view: *mut std::ffi::c_void) {
         let object = view as *mut AnyObject;
         let _: *mut AnyObject = msg_send![object, retain];
     }
-    NATIVE_VIEWS.lock().unwrap().insert(widget_id, NativePtr(view));
+    NATIVE_VIEWS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(widget_id, NativePtr(view));
 }
 
 pub(crate) fn remove_native_view(widget_id: u64) {
-    let removed = NATIVE_VIEWS.lock().unwrap().remove(&widget_id);
+    let removed =
+        NATIVE_VIEWS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&widget_id);
     if let Some(ptr) = removed {
         unsafe {
             let object = ptr.0 as *mut AnyObject;
@@ -618,7 +622,11 @@ pub(crate) fn destroy_native_handle(widget_id: u64) -> NativeDestroyOutcome {
     // never needed and breaking the shared teardown contract (a host that creates and
     // destroys off the main loop could not finish a destroy it was entitled to). Only a
     // real native handle is main-thread-bound, so only it is refused.
-    if !NATIVE_VIEWS.lock().unwrap().contains_key(&widget_id) {
+    if !NATIVE_VIEWS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains_key(&widget_id)
+    {
         return NativeDestroyOutcome::NoNativeObject;
     }
     if MainThreadMarker::new().is_none() {
@@ -627,7 +635,8 @@ pub(crate) fn destroy_native_handle(widget_id: u64) -> NativeDestroyOutcome {
         );
         return NativeDestroyOutcome::RefusedOffMainThread;
     }
-    let removed = NATIVE_VIEWS.lock().unwrap().remove(&widget_id);
+    let removed =
+        NATIVE_VIEWS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&widget_id);
     let Some(ptr) = removed else {
         // No native object was ever created for this id (a state-only widget), so
         // there is nothing to tear down and the caller's bookkeeping stands.
@@ -655,14 +664,17 @@ fn release_closed_window(host_id: u64) {
         );
         return;
     }
-    let removed = NATIVE_VIEWS.lock().unwrap().remove(&host_id);
+    let removed =
+        NATIVE_VIEWS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&host_id);
     if let Some(ptr) = removed {
-        PENDING_NATIVE_RELEASES.lock().unwrap().push(ptr);
+        PENDING_NATIVE_RELEASES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(ptr);
     }
 }
 
 fn drain_pending_native_releases() {
-    let pending = std::mem::take(&mut *PENDING_NATIVE_RELEASES.lock().unwrap());
+    let pending = std::mem::take(
+        &mut *PENDING_NATIVE_RELEASES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()),
+    );
     for ptr in pending {
         unsafe {
             let object = ptr.0 as *mut AnyObject;
@@ -1587,7 +1599,12 @@ pub(crate) fn mount_surface_native(
     // store their canvas there too). The runtime class check keeps a parent id that names a plain
     // view — rather than a window — from being reinterpreted as an `NSWindow`, which would be a type
     // confusion the compiler cannot catch on an erased pointer.
-    let parent_ptr = match NATIVE_VIEWS.lock().unwrap().get(&parent).copied() {
+    let parent_ptr = match NATIVE_VIEWS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&parent)
+        .copied()
+    {
         Some(ptr) if unsafe { object_is_window(ptr.0 as *mut AnyObject) } => ptr.0 as *mut NSWindow,
         Some(_) => {
             log::error!(
@@ -1694,7 +1711,12 @@ pub(crate) fn invalidate_window_native(id: u64) -> bool {
     let host_id = crate::widget::runtime::host_window_for(id).unwrap_or(id);
     #[cfg(not(widgets_unstripped))]
     let host_id = id;
-    let window_ptr = match NATIVE_VIEWS.lock().unwrap().get(&host_id).copied() {
+    let window_ptr = match NATIVE_VIEWS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&host_id)
+        .copied()
+    {
         Some(ptr) => ptr.0 as *mut NSWindow,
         None => return false,
     };
@@ -1717,7 +1739,7 @@ pub(crate) fn unmount_surface_native(id: u64) -> bool {
         log::error!("[macos-objc2] unmount_surface: refused off the AppKit main thread");
         return false;
     }
-    let removed = SURFACE_VIEWS.lock().unwrap().remove(&id);
+    let removed = SURFACE_VIEWS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&id);
     let Some(ptr) = removed else {
         log::error!("[macos-objc2] unmount_surface: id={id} is not mounted");
         return false;
@@ -1734,7 +1756,11 @@ pub(crate) fn unmount_surface_native(id: u64) -> bool {
 
 /// Looks up the canvas view pointer for a mounted surface.
 fn surface_view(id: u64) -> Option<*mut NSView> {
-    SURFACE_VIEWS.lock().unwrap().get(&id).map(|ptr| ptr.0 as *mut NSView)
+    SURFACE_VIEWS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&id)
+        .map(|ptr| ptr.0 as *mut NSView)
 }
 
 /// Bootstrap the shared `NSApplication` (create + `finishLaunching`).

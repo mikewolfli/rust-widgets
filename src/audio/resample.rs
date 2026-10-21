@@ -19,35 +19,32 @@ pub fn resample(buffer: &AudioBuffer, target_sample_rate: u32) -> AudioBuffer {
     if new_frames == 0 || buffer.frames() == 0 {
         return AudioBuffer::new(target_sample_rate, Vec::new(), buffer.channels());
     }
-    let mut new_samples = Vec::with_capacity(new_frames * buffer.channels() as usize);
+    let channels = buffer.channels() as usize;
+    let src_frames = buffer.frames();
+    let mut interleaved = Vec::with_capacity(new_frames * channels);
 
-    for ch in 0..buffer.channels() as usize {
-        let ch_data = buffer.channel(ch);
-        for i in 0..new_frames {
-            let src_pos = i as f64 / ratio;
-            let src_idx = src_pos as usize;
-            let frac = src_pos - src_idx as f64;
+    // One pass over the interleaved source. The previous version de-interleaved into a fresh
+    // `Vec` per channel (`AudioBuffer::channel`), resampled each, and then walked the three
+    // buffers to re-interleave — two extra full-buffer allocations and an extra traversal whose
+    // only purpose was to undo the split.
+    for i in 0..new_frames {
+        let src_pos = i as f64 / ratio;
+        let src_idx = src_pos as usize;
+        let frac = (src_pos - src_idx as f64) as f32;
 
-            if src_idx + 1 < ch_data.len() {
-                let val =
-                    ch_data[src_idx] * (1.0 - frac as f32) + ch_data[src_idx + 1] * frac as f32;
-                new_samples.push(val);
+        for channel in 0..channels {
+            // The final interpolation point clamps to the channel's last sample, so every output
+            // channel keeps exactly `new_frames` samples. A source position past the last frame
+            // (possible when the ratio rounds up) takes the same fallback.
+            let value = if src_idx + 1 < src_frames {
+                let index = src_idx * channels + channel;
+                let next = index + channels;
+                buffer.samples[index] * (1.0 - frac) + buffer.samples[next] * frac
             } else {
-                // Clamp the final interpolation point to the last sample so
-                // every output channel retains exactly `new_frames` samples.
-                new_samples.push(*ch_data.last().unwrap());
-            }
-        }
-    }
-
-    // Re-interleave
-    let ch = buffer.channels() as usize;
-    let frames = new_samples.len() / ch;
-    let mut interleaved = Vec::with_capacity(new_samples.len());
-    for f in 0..frames {
-        for c in 0..ch {
-            let idx = c * frames + f;
-            interleaved.push(new_samples[idx]);
+                let last = (src_frames - 1) * channels + channel;
+                buffer.samples.get(last).copied().unwrap_or(0.0)
+            };
+            interleaved.push(value);
         }
     }
 

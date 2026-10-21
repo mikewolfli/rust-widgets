@@ -1708,7 +1708,7 @@ impl WindowHandle {
         rect: Rect,
         text: &str,
     ) -> Result<SurfaceHandle, SurfaceMountError> {
-        let factory = crate::widget::WidgetFactory::new_with_defaults();
+        let factory = crate::widget::WidgetFactory::shared();
         let widget =
             factory.create(name, rect, text).ok_or(SurfaceMountError::UnknownWidgetName)?;
         self.mount_surface(widget, rect)
@@ -2600,21 +2600,24 @@ thread_local! {
 impl SliderHandle {
     /// Set the current slider value (clamped to min/max range).
     ///
-    /// The value is written both to the in-process mirror and to the native
-    /// control through [`crate::platform::Platform::set_widget_value`], so the change is
+    /// The value is written both to the in-process mirror and to the control
+    /// through its `value` property (via [`write_control_property`]), so the change is
     /// visible on screen and not just to `value()`. On a backend without a
     /// numeric value for sliders the mirror is still updated, because it is the
     /// authoritative copy for the self-drawn path.
     pub fn set_value(&self, value: i32) {
-        SLIDER_STATES.with(|map| {
+        // Clamped once and written from the same guarded borrow: the value used to be re-read
+        // through `self.value()`, which took the mirror lock a second time.
+        let clamped = SLIDER_STATES.with(|map| {
             let mut map = map.borrow_mut();
             let state = map.entry(self.raw_id()).or_default();
             state.value = ordered_clamp_i32(value, state.min, state.max);
+            state.value
         });
         write_control_property(
             self.raw_id(),
             "value",
-            crate::widget::capability::CapabilityValue::Int(i64::from(self.value())),
+            crate::widget::capability::CapabilityValue::Int(i64::from(clamped)),
         );
     }
 
@@ -2667,15 +2670,14 @@ impl SliderHandle {
             );
             // Both halves are written; a refusal has already been logged by the funnel, and this
             // signature has no channel to report one on.
-            let _ = low && high;
+            note_property_pair("slider.set_range", low, high);
         };
     }
 
     /// Set the slider step increment.
     ///
     /// Written to the control through its property contract, and recorded in the
-    /// in-process mirror as well
-    /// through [`crate::platform::Platform::set_widget_step`].
+    /// in-process mirror as well (the write goes through the control's own `single_step`).
     pub fn set_step(&self, step: i32) {
         SLIDER_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).step = step;
@@ -2731,15 +2733,17 @@ impl ProgressBarHandle {
     /// `Platform::set_widget_value`, a host-native surface this library never populates: the call
     /// answered `false` and was dropped, so the bar did not move at all.)
     pub fn set_value(&self, value: u32) {
-        PROGRESS_BAR_STATES.with(|map| {
+        // Clamped once and written from the same guarded borrow (see `SliderHandle::set_value`).
+        let clamped = PROGRESS_BAR_STATES.with(|map| {
             let mut map = map.borrow_mut();
             let state = map.entry(self.raw_id()).or_default();
             state.value = ordered_clamp_u32(value, state.min, state.max);
+            state.value
         });
         write_control_property(
             self.raw_id(),
             "value",
-            crate::widget::capability::CapabilityValue::Int(i64::from(self.value())),
+            crate::widget::capability::CapabilityValue::Int(i64::from(clamped)),
         );
     }
 
@@ -2752,8 +2756,7 @@ impl ProgressBarHandle {
     /// Set the minimum value.
     ///
     /// Written to the control through its property contract, and recorded in the
-    /// in-process mirror as well
-    /// through [`crate::platform::Platform::set_widget_range`].
+    /// in-process mirror as well (the write goes through the control's own bounds).
     ///
     /// # Crossed bounds
     ///
@@ -2783,15 +2786,14 @@ impl ProgressBarHandle {
                 "maximum",
                 crate::widget::capability::CapabilityValue::Int(i64::from(range.1)),
             );
-            let _ = low && high;
+            note_property_pair("progress_bar.set_min", low, high);
         };
     }
 
     /// Set the maximum value.
     ///
     /// Written to the control through its property contract, and recorded in the
-    /// in-process mirror as well
-    /// through [`crate::platform::Platform::set_widget_range`].
+    /// in-process mirror as well (the write goes through the control's own bounds).
     ///
     /// # Crossed bounds
     ///
@@ -2817,7 +2819,7 @@ impl ProgressBarHandle {
                 "maximum",
                 crate::widget::capability::CapabilityValue::Int(i64::from(range.1)),
             );
-            let _ = low && high;
+            note_property_pair("progress_bar.set_max", low, high);
         };
     }
 
@@ -3311,7 +3313,7 @@ impl ScrollAreaHandle {
                 "scroll_position_y",
                 crate::widget::capability::CapabilityValue::Int(i64::from(y)),
             );
-            let _ = wrote_x && wrote_y;
+            note_property_pair("scroll_area.set_scroll_position", wrote_x, wrote_y);
         };
         // The control clamps the offset against its own content/viewport, so the mirror
         // records what the control **accepted**, not what the caller asked for. Reading it
@@ -3362,7 +3364,7 @@ impl ScrollAreaHandle {
             "content_height",
             crate::widget::capability::CapabilityValue::UInt(u64::from(h)),
         );
-        let _ = wrote_w && wrote_h;
+        note_property_pair("scroll_area.set_content_size", wrote_w, wrote_h);
         // The control clamps its current offset against the new extent. Refresh the mirror
         // through the same read-back path so a shrunken content size cannot leave a stale
         // scroll position reported to the caller.
@@ -4061,8 +4063,7 @@ fn write_control_property(
     value: crate::widget::capability::CapabilityValue,
 ) -> bool {
     let written = crate::widget::runtime::with_widget_mut(id, |widget| {
-        crate::widget::capability::WidgetFactory::new_with_defaults()
-            .write_property(widget, name, value)
+        crate::widget::capability::WidgetFactory::shared().write_property(widget, name, value)
     });
     match written {
         Some(Ok(())) => true,
@@ -4077,6 +4078,22 @@ fn write_control_property(
     }
 }
 
+/// Records the outcome of a two-property write whose caller has no error channel.
+///
+/// Several setters (`set_range`, `set_content_size`, `set_scroll_position`) write a pair and
+/// return `()`. They used to compose the two results as `let _ = a && b;`, which both discarded
+/// the fact and read as a placeholder expression (project rule: no pseudo-expressions). This
+/// keeps the call site meaningful: the individual refusal is already logged at `warn` by
+/// [`write_control_property`], and this adds the operation that issued it.
+fn note_property_pair(operation: &str, first: bool, second: bool) {
+    if !(first && second) {
+        log::debug!(
+            "[handle] {operation}: one of the two property writes was refused \
+             (first={first}, second={second})"
+        );
+    }
+}
+
 /// Reads one property off the control the id addresses.
 ///
 /// `None` means "this control does not publish that name, or the id is not mounted" — the
@@ -4087,9 +4104,7 @@ fn read_control_property(
     name: &str,
 ) -> Option<crate::widget::capability::CapabilityValue> {
     crate::widget::runtime::with_widget_mut(id, |widget| {
-        crate::widget::capability::WidgetFactory::new_with_defaults()
-            .read_property(widget, name)
-            .ok()
+        crate::widget::capability::WidgetFactory::shared().read_property(widget, name).ok()
     })
     .flatten()
 }
@@ -4157,19 +4172,20 @@ impl SpinBoxHandle {
     /// Set the spin-box value (clamped to range).
     ///
     /// Written to the control through its property contract, and recorded in the
-    /// in-process mirror as well
-    /// through [`crate::platform::Platform::set_widget_value`], so the number the user sees
+    /// in-process mirror as well (the write goes through the control's own `value`).
     /// matches `value()`.
     pub fn set_value(&self, value: i32) {
-        SPINBOX_STATES.with(|map| {
+        // See `SliderHandle::set_value`: one mirror access, not two.
+        let clamped = SPINBOX_STATES.with(|map| {
             let mut map = map.borrow_mut();
             let state = map.entry(self.raw_id()).or_default();
             state.value = ordered_clamp_i32(value, state.min, state.max);
+            state.value
         });
         write_control_property(
             self.raw_id(),
             "value",
-            crate::widget::capability::CapabilityValue::Int(i64::from(self.value())),
+            crate::widget::capability::CapabilityValue::Int(i64::from(clamped)),
         );
     }
 
@@ -4206,7 +4222,7 @@ impl SpinBoxHandle {
             );
             // Both halves are written; a refusal has already been logged by the funnel, and this
             // signature has no channel to report one on.
-            let _ = low && high;
+            note_property_pair("spin_box.set_range", low, high);
         };
     }
 
@@ -4251,8 +4267,7 @@ impl SpinBoxHandle {
     /// Set the spin-box step increment.
     ///
     /// Written to the control through its property contract, and recorded in the
-    /// in-process mirror as well
-    /// through [`crate::platform::Platform::set_widget_step`].
+    /// in-process mirror as well (the write goes through the control's own `single_step`).
     pub fn set_step(&self, step: i32) {
         SPINBOX_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).step = step;
@@ -5097,29 +5112,27 @@ impl WindowHandle {
 
     /// Center the window on the screen.
     ///
-    /// Uses a default virtual screen size of 1920×1080 as a fallback.
-    /// Real platforms should query the actual screen geometry.
+    /// The target is the primary display's **work area**, read through
+    /// [`Platform::displays`](crate::platform::Platform::displays), so a window centres inside the
+    /// space the OS actually lets it occupy (a dock or taskbar is excluded) and on a secondary
+    /// monitor's coordinates rather than at the virtual origin. This used to hard-code a
+    /// 1920×1080 screen at `(0, 0)`, which placed the window outside the visible area on a
+    /// HiDPI or multi-monitor desktop.
+    ///
+    /// A backend that reports no displays has no geometry to centre on; the historical
+    /// 1920×1080 fallback is kept for it and is the only remaining use of that number.
     pub fn center_on_screen(&self) {
         // Query the stored window geometry to preserve current size.
         let (win_w, win_h) = WINDOW_STATES.with(|map| {
             let state = map.borrow().get(&self.raw_id()).cloned().unwrap_or_default();
             (state.w, state.h)
         });
-        let screen_w = 1920i32;
-        let screen_h = 1080i32;
-        crate::set_widget_geometry(
-            self.raw_id(),
-            (screen_w - win_w as i32) / 2,
-            (screen_h - win_h as i32) / 2,
-            win_w,
-            win_h,
-        );
+        let (centred_x, centred_y) = centred_position(win_w, win_h);
+        crate::set_widget_geometry(self.raw_id(), centred_x, centred_y, win_w, win_h);
         // Re-centring *is* a position change, so the mirror has to follow: leaving `x`/`y`
         // stale made a later `center_on_screen` (or any reader of the mirror) compute from a
         // position the window no longer had. The size fields already round-tripped through
         // `set_widget_geometry`'s mirror update; the position did not.
-        let centred_x = (screen_w - win_w as i32) / 2;
-        let centred_y = (screen_h - win_h as i32) / 2;
         WINDOW_STATES.with(|map| {
             let mut map = map.borrow_mut();
             let state = map.entry(self.raw_id()).or_insert_with(Default::default);
@@ -5128,6 +5141,30 @@ impl WindowHandle {
             state.w = win_w;
             state.h = win_h;
         });
+    }
+}
+
+/// The top-left position that centres a `window_w` × `window_h` window.
+///
+/// Prefers the primary display's work area and falls back to the historical virtual 1920×1080
+/// screen only when the backend enumerates no displays. Keeping the fallback here means the
+/// method has one coordinate rule instead of two, and the fallback is visible as a named fact
+/// rather than a literal in the middle of the arithmetic.
+fn centred_position(window_w: u32, window_h: u32) -> (i32, i32) {
+    let platform = crate::platform::platform_facts();
+    let displays = platform.displays();
+    let display = displays.iter().find(|display| display.is_primary).or_else(|| displays.first());
+    let area =
+        display.map(|display| display.work_area).filter(|area| area.width > 0 && area.height > 0);
+    match area {
+        Some(area) => (
+            area.x + (area.width as i32 - window_w as i32) / 2,
+            area.y + (area.height as i32 - window_h as i32) / 2,
+        ),
+        None => {
+            const FALLBACK_SCREEN: (i32, i32) = (1920, 1080);
+            ((FALLBACK_SCREEN.0 - window_w as i32) / 2, (FALLBACK_SCREEN.1 - window_h as i32) / 2)
+        }
     }
 }
 

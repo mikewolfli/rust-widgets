@@ -789,7 +789,7 @@ impl Carousel {
     /// panel painted in that colour is a legitimate look for this control, so the resolved
     /// surface is used as-is rather than re-derived a step away from the window.
     fn chrome_colors(&self) -> (Color, Color, Color) {
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let themed = crate::style::resolved_theme_style("carousel");
         let themed_bg = themed.as_ref().and_then(|r| r.background_color);
         let themed_border = themed.as_ref().and_then(|r| r.border_color);

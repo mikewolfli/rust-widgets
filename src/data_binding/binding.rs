@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use crate::compat::{format, lock, Box, HashMap, MiniToString, Mutex, String, Vec};
+use crate::compat::{format, lock, Box, HashMap, MiniToString, Mutex, String};
 use crate::data_binding::traits::*;
 use alloc::sync::{Arc, Weak};
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -109,7 +109,12 @@ impl<T: Clone + Send + 'static> Binding<T> {
     /// [`pending_replays`]: BindingInner::pending_replays
     pub fn set(&self, value: T) {
         // ── Publish the notification window and take the listeners, atomically ──
-        let mut listeners: Vec<(String, BoxedListener)>;
+        //
+        // The notification set is the map itself, moved out of the binding rather than copied into a
+        // `Vec` and copied back afterwards. A publish used to cost one `Vec` allocation plus 2N map
+        // operations on every value change (a slider drag is 60 of those a second); draining the map
+        // in place keeps the N restores and drops the allocation and the copy.
+        let mut listeners: HashMap<String, BoxedListener>;
         {
             let mut inner = lock(&self.inner);
             inner.value = value;
@@ -124,7 +129,7 @@ impl<T: Clone + Send + 'static> Binding<T> {
             // and `notifying == false`, which was the window that lost a tombstone.
             inner.notifying = true;
             inner.unsubscribed_during_notify.clear();
-            listeners = core::mem::take(&mut inner.listeners).into_iter().collect();
+            listeners = core::mem::take(&mut inner.listeners);
         }
 
         // ── Notify outside the lock, one full pass per delivery ──
@@ -142,7 +147,9 @@ impl<T: Clone + Send + 'static> Binding<T> {
             // listener set when a replay is due.
             let next = {
                 let mut inner = lock(&self.inner);
-                for (key, listener) in guard.listeners.drain(..) {
+                // `mem::take` + `into_iter` rather than `drain`: the stripped profiles' map is a
+                // `BTreeMap`, which has no `drain` (it has `pop_first`/`into_iter`).
+                for (key, listener) in core::mem::take(&mut guard.listeners) {
                     if inner.unsubscribed_during_notify.contains(&key) {
                         continue;
                     }
@@ -151,7 +158,7 @@ impl<T: Clone + Send + 'static> Binding<T> {
                 if inner.pending_replays > 0 {
                     inner.pending_replays -= 1;
                     inner.unsubscribed_during_notify.clear();
-                    Some(core::mem::take(&mut inner.listeners).into_iter().collect::<Vec<_>>())
+                    Some(core::mem::take(&mut inner.listeners))
                 } else {
                     inner.notifying = false;
                     inner.unsubscribed_during_notify.clear();
@@ -326,7 +333,7 @@ impl Drop for SyncingGuard<'_> {
 /// so a panicking listener can never leave the map empty with `notifying` stuck on.
 struct NotifyGuard<'a, T: Clone + Send + 'static> {
     inner: &'a Mutex<BindingInner<T>>,
-    listeners: Vec<(String, BoxedListener)>,
+    listeners: HashMap<String, BoxedListener>,
     armed: bool,
 }
 
@@ -339,7 +346,7 @@ impl<T: Clone + Send + 'static> Drop for NotifyGuard<'_, T> {
         // Panic path: restore what we still own, honouring the unsubscribe tombstone,
         // and end the pass so the binding stays usable.
         let mut inner = lock(self.inner);
-        for (key, listener) in self.listeners.drain(..) {
+        for (key, listener) in core::mem::take(&mut self.listeners) {
             if inner.unsubscribed_during_notify.contains(&key) {
                 continue;
             }

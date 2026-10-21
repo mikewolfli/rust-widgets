@@ -456,7 +456,7 @@ impl Draw for InplaceEditor {
         //
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("inplace_editor");
         // `inplace_editor` classifies as `Input`, which *does* carry a surface
         // (`Colors::input_background`), so the resolved background is already a visible step
@@ -493,7 +493,7 @@ impl Draw for InplaceEditor {
         let text_box = self.text_rect();
         if self.is_editing {
             // Draw editing mode
-            let style = self.base.style().clone();
+            let style = self.base.style();
             context.face_with_gradient(
                 rect,
                 surface,
@@ -532,7 +532,7 @@ impl Draw for InplaceEditor {
             }
         } else {
             // Draw display mode
-            let style = self.base.style().clone();
+            let style = self.base.style();
             context.face_with_gradient(
                 rect,
                 surface,

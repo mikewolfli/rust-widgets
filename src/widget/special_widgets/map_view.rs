@@ -444,7 +444,7 @@ impl Draw for MapView {
         // window was a white rectangle: the control could not follow the appearance at all.
         // The tile grid and the markers keep their own colours, because those encode place
         // and selection (rule #108 ③).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("map_view");
         let ink = style
             .text_color
@@ -547,7 +547,7 @@ impl Draw for MapView {
                 context.draw_text_fitted(
                     Rect::new(label_left, sy as i32 - half, label_width, 14),
                     &marker.label,
-                    effective_font(&style),
+                    effective_font(style),
                     ink,
                     HorizontalAlignment::Left,
                 );
@@ -557,7 +557,7 @@ impl Draw for MapView {
         context.draw_text_fitted(
             Rect::new(rect.x + 8, rect.y + 4, rect.width.saturating_sub(16), 14),
             &format!("Center ({:.1}, {:.1})  Zoom {:.2}x", self.center_x, self.center_y, self.zoom),
-            effective_font(&style),
+            effective_font(style),
             ink,
             HorizontalAlignment::Left,
         );

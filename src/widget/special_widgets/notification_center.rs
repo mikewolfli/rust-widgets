@@ -432,7 +432,7 @@ impl Draw for NotificationCenter {
         // `resolved_theme_style` takes and releases the global manager's lock
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("notification_center");
         // `notification_center` is not a control kind in the role table, so it
         // classifies as `Surface`, whose background is `theme.colors.background` —
@@ -536,7 +536,7 @@ impl Draw for NotificationCenter {
             context.draw_text_fitted(
                 title_band,
                 &item.title,
-                effective_font(&style),
+                effective_font(style),
                 text_color,
                 HorizontalAlignment::Left,
             );
@@ -550,7 +550,7 @@ impl Draw for NotificationCenter {
                 context.draw_text_fitted(
                     message_band,
                     &item.message,
-                    effective_font(&style),
+                    effective_font(style),
                     // The message is secondary text, so it is a tint of the resolved
                     // foreground rather than a second literal.
                     text_color.blend(&background, 0.25),

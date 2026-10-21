@@ -335,7 +335,7 @@ impl Draw for ProgressCircle {
         // appearance. The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so no guard is held across the draw (the mutex is not
         // re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let themed = crate::style::resolved_theme_style("progress_circle");
         let themed_bg = themed.as_ref().and_then(|r| r.background_color);
         // `progress_circle` is `WidgetRole::Accent`, so the theme writes a groove colour into

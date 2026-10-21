@@ -1092,11 +1092,11 @@ impl Draw for Menu {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         // The **effective font** — the resolved theme/caller font — used for the heading, every
         // entry label and every shortcut, so the menu honours the theme body font and the user's
         // text scale (D09-STYLE-01).
-        let font = effective_font(&style);
+        let font = effective_font(style);
         let theme = crate::style::resolved_theme_style("menu");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
@@ -2031,7 +2031,7 @@ mod tests {
     /// that is the same answer the event panel and `forward_all` get.
     #[test]
     fn the_submenu_event_is_published_by_the_capability() {
-        let factory = crate::widget::WidgetFactory::new_with_defaults();
+        let factory = crate::widget::WidgetFactory::shared();
         let menu = Menu::new("File", Rect::new(0, 0, 200, 200));
         let capability =
             factory.capability_for_kind_instance(&menu).expect("a menu resolves a capability");

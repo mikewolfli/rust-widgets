@@ -150,10 +150,23 @@ impl TouchEventTranslator {
     /// Translate a single event into zero or more synthesized mouse events.
     ///
     /// Returns a vector of synthesized events (may be empty if the input
-    /// is not a touch event or if translation is disabled).
+    /// is not a touch event or if translation is disabled). A host that translates one touch
+    /// stream at a time should prefer [`Self::translate_into`], which reuses the caller's buffer.
     pub fn translate(&mut self, event: &Event) -> Vec<Event> {
+        let mut synthesized = Vec::new();
+        self.translate_into(event, &mut synthesized);
+        synthesized
+    }
+
+    /// [`Self::translate`] writing into a caller-owned buffer.
+    ///
+    /// The buffer is **appended to**, not cleared: a caller that translates a batch can collect
+    /// every synthesized event into one allocation. This is the allocation-free form the previous
+    /// single-event API could not offer (it allocated a `Vec` for every touch event, including
+    /// the common "nothing synthesized" case).
+    pub fn translate_into(&mut self, event: &Event, out: &mut Vec<Event>) {
         if !self.enabled {
-            return Vec::new();
+            return;
         }
 
         match *event {
@@ -162,17 +175,13 @@ impl TouchEventTranslator {
                 // The mouse bridge reports the primary button: a touch is a left-click as far as a
                 // mouse-only consumer is concerned. Emitting button `0` made every consumer that
                 // checks `button == mouse_button::PRIMARY` (`1`) reject the synthesized press.
-                vec![
-                    Event::MousePress { pos, button: mouse_button::PRIMARY, modifiers: 0 },
-                    Event::MouseEnter { pos },
-                ]
+                out.push(Event::MousePress { pos, button: mouse_button::PRIMARY, modifiers: 0 });
+                out.push(Event::MouseEnter { pos });
             }
             Event::TouchMove { pos, touch_id } => {
                 if let Some(pos_ref) = self.active_touches.get_mut(&touch_id) {
                     *pos_ref = (pos.x, pos.y);
-                    vec![Event::MouseMove { pos }]
-                } else {
-                    Vec::new()
+                    out.push(Event::MouseMove { pos });
                 }
             }
             Event::TouchEnd { pos, touch_id } => {
@@ -181,12 +190,10 @@ impl TouchEventTranslator {
                 // leave for a press that never happened; unknown `TouchMove` is already ignored,
                 // so this restores the symmetry.
                 if self.active_touches.remove(&touch_id).is_none() {
-                    return Vec::new();
+                    return;
                 }
-                vec![
-                    Event::MouseRelease { pos, button: mouse_button::PRIMARY },
-                    Event::MouseLeave { pos },
-                ]
+                out.push(Event::MouseRelease { pos, button: mouse_button::PRIMARY });
+                out.push(Event::MouseLeave { pos });
             }
             _ if is_touch_cancel(event) => {
                 // D09-EVT-02: a cancelled contact is **not** a completed one. Drop the tracked
@@ -201,9 +208,8 @@ impl TouchEventTranslator {
                     // withdrawn", so clear the tracked set rather than leave a stale entry.
                     self.active_touches.clear();
                 }
-                Vec::new()
             }
-            _ => Vec::new(),
+            _ => {}
         }
     }
 
@@ -232,6 +238,17 @@ mod tests {
         assert!(matches!(result[0], Event::MousePress { .. }));
         assert!(matches!(result[1], Event::MouseEnter { .. }));
         assert_eq!(t.active_touch_count(), 1);
+    }
+
+    /// `translate_into` appends to the caller's buffer instead of allocating a new one.
+    #[test]
+    fn translate_into_appends_to_the_callers_buffer() {
+        let mut t = TouchEventTranslator::new();
+        let mut out = vec![Event::Paint];
+        t.translate_into(&Event::TouchBegin { pos: Point::new(1, 2), touch_id: 1 }, &mut out);
+        assert_eq!(out.len(), 3, "the sentinel plus the two synthesized events");
+        assert!(matches!(out[1], Event::MousePress { .. }));
+        assert!(matches!(out[2], Event::MouseEnter { .. }));
     }
 
     /// The synthesized press must carry the primary button, not `0`.

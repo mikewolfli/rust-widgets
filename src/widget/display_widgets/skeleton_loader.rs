@@ -272,7 +272,7 @@ impl Draw for SkeletonLoader {
         //
         // `resolved_theme_style` takes and releases the global manager's lock internally, so
         // no guard is held across the draw (the mutex is not re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let themed = crate::style::resolved_theme_style("skeleton_loader");
         let themed_bg = themed.as_ref().and_then(|r| r.background_color);
         let themed_text = themed.as_ref().and_then(|r| r.text_color);

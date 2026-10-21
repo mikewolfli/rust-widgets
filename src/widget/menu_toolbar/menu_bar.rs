@@ -447,7 +447,7 @@ impl Draw for MenuBar {
         // fallback so an inactive theme still has a defined appearance. The theme read is a
         // separate manager lock, taken and released inside `resolved_theme_style`, so no
         // guard is held across the draw (the mutex is not re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let themed = crate::style::resolved_theme_style("menu_bar");
         let themed_bg = themed.as_ref().and_then(|r| r.background_color);
         let themed_border = themed.as_ref().and_then(|r| r.border_color);

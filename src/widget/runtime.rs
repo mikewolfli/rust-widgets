@@ -846,6 +846,33 @@ pub fn set_focusable_position(id: ObjectId, x: i32, y: i32) -> bool {
 // Hit testing: point -> widget
 // ---------------------------------------------------------------------------
 
+// A reusable child-id buffer for the tree walks (see `with_child_ids`). One buffer per thread,
+// because every walk in this module is iterative and consumes a node's children before asking the
+// next node for its own.
+thread_local! {
+    static CHILD_IDS: RefCell<Vec<ObjectId>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Runs `f` with `widget_id`'s child ids, reusing a per-thread buffer instead of allocating.
+///
+/// [`widget_at`] asks every node on the pointer's path for its child list, and the answer used to be
+/// a fresh `Vec` each time (`children().to_vec()`). One buffer is enough because the list is
+/// consumed inside one iteration. A widget's `contains_point` is user code, though, so a control
+/// that re-entered a tree walk would find the buffer busy — that case reads the widget's own slice
+/// instead of panicking, which is why this cannot assume the borrow succeeds.
+fn with_child_ids<R>(widget_id: ObjectId, f: impl FnOnce(&[ObjectId]) -> R) -> Option<R> {
+    with_widget(widget_id, |widget| {
+        CHILD_IDS.with(|cell| match cell.try_borrow_mut() {
+            Ok(mut scratch) => {
+                scratch.clear();
+                scratch.extend_from_slice(widget.children());
+                f(&scratch)
+            }
+            Err(_) => f(widget.children()),
+        })
+    })
+}
+
 /// Returns the widget that should receive a pointer event at `point`.
 ///
 /// # Why this exists
@@ -912,50 +939,56 @@ pub fn widget_at(root: ObjectId, point: Point) -> Option<ObjectId> {
     let root_rect = Rect::new(0, 0, bounds.width, bounds.height);
     let mut current = root;
     loop {
-        let children = with_widget(current, |widget| widget.children().to_vec())?;
-        // A **root** is a container whose geometry is written in a different space from its
-        // children's (see the doc comment), so its bound is applied in the root's own space via the
-        // `local` point captured above. Every other node is tested normally: a control is addressed
-        // in its parent's space, which is the space its own rectangle is written in.
-        if current == root {
-            if !root_rect.contains_point(local) {
-                return None;
+        // `Ok(Some(child))` descends, `Ok(None)` means this node is the deepest hit, and `Err` means
+        // the point is not inside this node at all. The step is a value rather than a control-flow
+        // `return` because the node's child list is borrowed from [`with_child_ids`]'s buffer while
+        // the children are tested.
+        let step = with_child_ids(current, |children| {
+            // A **root** is a container whose geometry is written in a different space from its
+            // children's (see the doc comment), so its bound is applied in the root's own space via
+            // the `local` point captured above. Every other node is tested normally: a control is
+            // addressed in its parent's space, which is the space its own rectangle is written in.
+            if current == root {
+                if !root_rect.contains_point(local) {
+                    return Err(());
+                }
+            } else if !widget_accepts_point(current, point) {
+                return Err(());
             }
-        } else if !widget_accepts_point(current, point) {
-            return None;
-        }
-        // Topmost-first: a later sibling paints over an earlier one.
-        //
-        // Visibility, the overlay flag and the hit rule are asked in **one** registry visit. They
-        // used to be two separate `with_widget` calls per child, so every node cost three map
-        // lookups on a path that runs for every pointer event the host delivers.
-        //
-        // A child with an **open overlay** wins over a later sibling that happens to cover the
-        // same pixels: an open drop-down list is painted below its field, where the next form row
-        // may sit. Without the priority that row took the click and the list could not be used.
-        let mut deepest = None;
-        let mut open_popup = None;
-        for child in children.iter().rev().copied() {
-            let (visible, overlay, accepts) = with_widget(child, |widget| {
-                (widget.is_visible(), widget.has_open_popup(), widget.contains_point(point))
-            })
-            .unwrap_or((false, false, false));
-            if !visible || !accepts {
-                continue;
+            // Topmost-first: a later sibling paints over an earlier one.
+            //
+            // Visibility, the overlay flag and the hit rule are asked in **one** registry visit. They
+            // used to be two separate `with_widget` calls per child, so every node cost three map
+            // lookups on a path that runs for every pointer event the host delivers.
+            //
+            // A child with an **open overlay** wins over a later sibling that happens to cover the
+            // same pixels: an open drop-down list is painted below its field, where the next form row
+            // may sit. Without the priority that row took the click and the list could not be used.
+            let mut deepest = None;
+            let mut open_popup = None;
+            for child in children.iter().rev().copied() {
+                let (visible, overlay, accepts) = with_widget(child, |widget| {
+                    (widget.is_visible(), widget.has_open_popup(), widget.contains_point(point))
+                })
+                .unwrap_or((false, false, false));
+                if !visible || !accepts {
+                    continue;
+                }
+                if overlay {
+                    open_popup = Some(child);
+                    break;
+                }
+                if deepest.is_none() {
+                    deepest = Some(child);
+                }
             }
-            if overlay {
-                open_popup = Some(child);
-                break;
-            }
-            if deepest.is_none() {
-                deepest = Some(child);
-            }
-        }
-        let deepest = open_popup.or(deepest);
-        match deepest {
-            Some(child) => current = child,
+            Ok(open_popup.or(deepest))
+        })?;
+        match step {
+            Ok(Some(child)) => current = child,
             // No child claims the point, so this widget is the deepest hit.
-            None => return Some(current),
+            Ok(None) => return Some(current),
+            Err(()) => return None,
         }
     }
 }
@@ -1647,14 +1680,21 @@ pub fn drive_frame(delta_ms: u32) -> FrameOutcome {
     let events_dispatched = crate::drain_triggers();
 
     // Step 2 -- exactly one advance per animating control, before any paint.
-    if !suspended {
-        tick_animations(delta_ms);
-    }
-    let controls_ticked = count_animating_widgets();
+    //
+    // The sweep also counts what it advanced, and reports whether anything is still moving: the
+    // frame used to re-walk the whole registry for the count and a third time for
+    // `needs_another_frame`, so one still frame cost three full-tree scans.
+    let (controls_ticked, sweep_animating) = if suspended {
+        (count_animating_widgets(), false)
+    } else {
+        tick_animations_sweep(delta_ms)
+    };
 
     // Step 3 -- the bus answers for the *next* frame, so a settle is painted once more
-    // and then scheduling stops.
-    let needs_another_frame = !suspended && animation_bus_needs_another_frame();
+    // and then scheduling stops. `sweep_animating` is this frame's answer from the sweep just
+    // above; the host-owned fact and the settle latch are folded in by the helper.
+    let needs_another_frame =
+        !suspended && animation_bus_needs_another_frame_given(sweep_animating);
 
     // Step 4 -- translations that changed on disk, so an edited catalogue reaches the
     // screen without a restart. This runs *after* the animation step and before the
@@ -1769,25 +1809,21 @@ thread_local! {
     #[allow(clippy::missing_const_for_thread_local)]
     static FRAME_REPAINTS_COALESCED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
 
-    /// Whether each mounted surface has already had a repaint requested this frame.
-    ///
-    /// Keyed by the repaint's **target surface** rather than by control, because that is
-    /// what coalescing is about: two controls on the same surface produce one submission.
-    /// Cleared by [`take_frame_repaint_count`], so "this frame" is exactly the span between
-    /// two `drive_frame` calls.
-    #[allow(clippy::missing_const_for_thread_local)]
-    static FRAME_REPAINTED_SURFACES: core::cell::RefCell<alloc::vec::Vec<ObjectId>> =
-        const { core::cell::RefCell::new(alloc::vec::Vec::new()) };
-
     /// The last reason each surface was repainted, for BLUE24 §8's `FrameStats`.
     ///
     /// One entry per surface, overwritten (not appended), so a surface repainted fifty times
     /// in a frame reads as "the reason it was repainted" rather than fifty rows. `Explicit`
     /// means "a caller asked, and named no cause" — which is itself a fact worth being able
     /// to see, because it is the one reason a gate cannot attribute to a mechanism.
+    ///
+    /// This map is also the coalescing set: "has this surface already been repainted this
+    /// frame?" is `contains_key`. Keeping one ordered map rather than a `Vec` of surfaces plus
+    /// a `Vec` of reasons makes membership O(log n) instead of a linear scan on every repaint
+    /// request, which is what made a full-tree invalidate O(n²) in the number of surfaces.
     #[allow(clippy::missing_const_for_thread_local)]
-    static FRAME_REPAINT_REASONS: core::cell::RefCell<alloc::vec::Vec<(ObjectId, RepaintReason)>> =
-        const { core::cell::RefCell::new(alloc::vec::Vec::new()) };
+    static FRAME_REPAINT_REASONS: core::cell::RefCell<
+        alloc::collections::BTreeMap<ObjectId, RepaintReason>,
+    > = const { core::cell::RefCell::new(alloc::collections::BTreeMap::new()) };
 
     /// Monotonic frame counter, incremented once per [`drive_frame`].
     ///
@@ -1939,14 +1975,17 @@ impl RepaintReason {
 /// it is the cause that already made the frame happen, and overwriting it with a later, more
 /// incidental reason would make the ledger describe the last caller rather than the cost.
 pub(crate) fn note_frame_repaint_reason(surface: ObjectId, reason: RepaintReason) {
-    let already = FRAME_REPAINTED_SURFACES
-        .try_with(|surfaces| {
-            let mut surfaces = surfaces.borrow_mut();
-            if surfaces.contains(&surface) {
-                true
-            } else {
-                surfaces.push(surface);
-                false
+    // `true` when this surface was already recorded this frame. The stored reason is the
+    // first one, which is the cause that made the frame happen.
+    let already = FRAME_REPAINT_REASONS
+        .try_with(|reasons| {
+            let mut reasons = reasons.borrow_mut();
+            match reasons.entry(surface) {
+                alloc::collections::btree_map::Entry::Occupied(_) => true,
+                alloc::collections::btree_map::Entry::Vacant(slot) => {
+                    slot.insert(reason);
+                    false
+                }
             }
         })
         .unwrap_or(false);
@@ -1957,13 +1996,6 @@ pub(crate) fn note_frame_repaint_reason(surface: ObjectId, reason: RepaintReason
     }
 
     let _ = FRAME_REPAINTS.try_with(|count| count.set(count.get().saturating_add(1)));
-    let _ = FRAME_REPAINT_REASONS.try_with(|reasons| {
-        let mut reasons = reasons.borrow_mut();
-        match reasons.iter_mut().find(|(id, _)| *id == surface) {
-            Some(entry) => entry.1 = reason,
-            None => reasons.push((surface, reason)),
-        }
-    });
 }
 
 /// Records that this frame submitted one repaint, naming no surface.
@@ -1994,9 +2026,8 @@ fn take_frame_coalesced_count() -> usize {
 /// frame: clearing it early would let a second request for the same surface be counted as a
 /// fresh submission within the same frame.
 fn take_frame_repaint_reasons() -> alloc::vec::Vec<(ObjectId, RepaintReason)> {
-    let _ = FRAME_REPAINTED_SURFACES.try_with(|surfaces| surfaces.borrow_mut().clear());
     FRAME_REPAINT_REASONS
-        .try_with(|reasons| reasons.borrow_mut().drain(..).collect())
+        .try_with(|reasons| core::mem::take(&mut *reasons.borrow_mut()).into_iter().collect())
         .unwrap_or_default()
 }
 
@@ -2054,7 +2085,17 @@ fn take_frame_repaint_reasons() -> alloc::vec::Vec<(ObjectId, RepaintReason)> {
 /// directly-owned control -- able to drive the frames such a control needs. Without it the
 /// animation bus would be complete for mounted trees and silently inert for owned ones.
 pub fn tick_animations(delta_ms: u32) -> bool {
+    tick_animations_sweep(delta_ms).1
+}
+
+/// The sweep behind [`tick_animations`], also reporting how many controls it advanced.
+///
+/// `drive_frame` needs both numbers. Asking the registry a second time to count what the sweep
+/// just saw made every frame walk the whole tree twice, and a third time to answer
+/// "is anything still animating?". One walk now answers all of it.
+fn tick_animations_sweep(delta_ms: u32) -> (usize, bool) {
     let mut still_animating = false;
+    let mut ticked = 0usize;
     // Ids that advanced this sweep. Collected rather than invalidated in place: the sweep
     // holds each widget out of the registry for its `tick`, and a repaint request walks the
     // parent chain (and may call back into the registry), so doing it inside the loop would
@@ -2068,6 +2109,11 @@ pub fn tick_animations(delta_ms: u32) -> bool {
             // control can be mid-flight while its own `is_animating` is a coarser fact.
             if widget.tick(delta_ms) || widget.is_animating() {
                 still_animating = true;
+            }
+            // Counted *after* the tick, matching the ledger's pre-refactor meaning: a control
+            // that settles on this frame is not reported as still ticking.
+            if widget.is_animating() {
+                ticked += 1;
             }
             // Submitted even on the settle frame, where `tick` has just placed the value at
             // its target and both answers are now `false`. That frame is the one that paints
@@ -2114,7 +2160,7 @@ pub fn tick_animations(delta_ms: u32) -> bool {
     // `draw_bridge` when it advances an owned control, and `animation_bus_needs_another_frame` ORs
     // the two.
     let _ = LAST_SWEEP_HAD_UNSETTLED_MOUNTED.try_with(|flag| flag.set(still_animating));
-    still_animating
+    (ticked, still_animating)
 }
 
 /// Records that a **host-owned** control was advanced this frame, and reports whether the
@@ -2169,10 +2215,20 @@ pub fn animation_bus_reset_host_owned() {
 /// ["smooth"](super) has two halves and this function is what keeps the second one honest:
 /// a host asks *this*, not a constant `true`, so a window with nothing moving pays nothing.
 pub fn animation_bus_needs_another_frame() -> bool {
+    let mounted_animating = has_animating_widgets();
+    animation_bus_needs_another_frame_given(mounted_animating)
+}
+
+/// [`animation_bus_needs_another_frame`] when the caller already knows whether a mounted control
+/// is animating.
+///
+/// [`drive_frame`] gets that answer from the sweep it just ran, so it must not pay for a second
+/// full-tree scan to ask the same question.
+fn animation_bus_needs_another_frame_given(mounted_animating: bool) -> bool {
     let host_owned = HOST_OWNED_ANIMATING.try_with(|flag| flag.get()).unwrap_or(false);
     let sweep_unsettled =
         LAST_SWEEP_HAD_UNSETTLED_MOUNTED.try_with(|flag| flag.get()).unwrap_or(false);
-    host_owned || sweep_unsettled || has_animating_widgets()
+    host_owned || sweep_unsettled || mounted_animating
 }
 
 /// Whether any mounted control is currently animating.
@@ -2792,14 +2848,31 @@ pub fn dispatch_resize(id: ObjectId, width: u32, height: u32) -> usize {
 
 /// Collects `id` and every mounted descendant into `out`, parents before children.
 ///
-/// The traversal goes through [`crate::widget::Widget::children`] (via [`direct_children_of`]),
-/// which is the single definition of "the mounted tree" — the same source the hit-testing and
-/// damage walks use, so the three cannot disagree about what a subtree is.
+/// The traversal goes through [`crate::widget::Widget::children`] (via [`with_child_ids`]), which is
+/// the single definition of "the mounted tree" — the same source the hit-testing and damage walks
+/// use, so the three cannot disagree about what a subtree is.
+///
+/// # Why this is a loop and not a recursion
+///
+/// It used to recurse over [`direct_children_of`], which allocates a `Vec` per node — once per
+/// event for every widget in the subtree a broadcast reaches. An explicit work stack lets each
+/// node's list come from the shared child-id buffer, because the list is consumed before the walk
+/// moves on; a recursive version holds it while it descends, which would make the buffer busy at
+/// every level and buy nothing.
 #[cfg(not(alloc_frugal))]
 fn collect_subtree_ids(id: ObjectId, out: &mut alloc::vec::Vec<ObjectId>) {
     out.push(id);
-    for child in direct_children_of(id) {
-        collect_subtree_ids(child, out);
+    // Reversed pushes so `pop` yields the first child first: `out` stays "parents before children,
+    // siblings in declaration order", exactly as the recursive form produced.
+    let mut work: alloc::vec::Vec<ObjectId> = alloc::vec::Vec::new();
+    with_child_ids(id, |children| {
+        work.extend(children.iter().rev().copied());
+    });
+    while let Some(current) = work.pop() {
+        out.push(current);
+        with_child_ids(current, |children| {
+            work.extend(children.iter().rev().copied());
+        });
     }
 }
 
@@ -2891,6 +2964,11 @@ pub fn report_state(id: ObjectId, fact: StateFact) -> bool {
                 base.set_enabled(enabled);
             }
         }
+        // A state change the theme can see is a state change it must re-resolve. Done in this
+        // same registry drive: the previous version detached the widget a second time through
+        // `with_widget_mut(id, reapply_active_theme_state)`, paying another map remove/insert and
+        // a second pair of guards for the change it had just made.
+        crate::style::reapply_active_theme_state(widget);
         true
     }) else {
         return false;
@@ -2903,12 +2981,8 @@ pub fn report_state(id: ObjectId, fact: StateFact) -> bool {
     // backend that forgot one would make its control the only one whose hover neither painted
     // nor announced.
     if changed {
-        // A backend reports into `BaseWidget` directly, which bypasses the `Widget::set_enabled`
-        // default that re-resolves the theme — so the `"<kind>:disabled"` key would be reachable
-        // for a self-painted control and unreachable for a native one, from the same fact. This
-        // makes the native path go through the same door the self-painted path does, rather than
-        // relying on a backend to remember a second call.
-        with_widget_mut(id, crate::style::reapply_active_theme_state);
+        // The theme was already re-resolved inside the drive above (it needs the same `&mut`),
+        // so the remaining work is the repaint and the screen-reader announcement.
         request_repaint_because(id, RepaintReason::State);
         crate::widget::a11y_submit::submit_state_changed(id);
     }
@@ -3725,7 +3799,14 @@ pub fn render_frame_incremental(
     // rather than reading past its end.
     let carried = previous.filter(|buffer| buffer.len() == expected);
 
-    let use_dirty = mode != RepaintMode::Full && carried.is_some() && !dirty_rects(id).is_empty();
+    // Measured once: this used to call `dirty_rects` three times in the dirty path (once for the
+    // empty check and twice for coverage), and each call cloned the tracker and merged it.
+    let dirty = if mode != RepaintMode::Full && carried.is_some() {
+        dirty_rects(id)
+    } else {
+        alloc::vec::Vec::new()
+    };
+    let use_dirty = !dirty.is_empty();
     if mode == RepaintMode::Full || carried.is_none() {
         if let Some(frame) = render_frame(id, size, clear) {
             let _ = REPAINT.try_with(|map| {
@@ -3748,7 +3829,7 @@ pub fn render_frame_incremental(
     let covered_too_much = {
         let frame_area = u64::from(size.width) * u64::from(size.height);
         let covered: u64 =
-            dirty_rects(id).iter().map(|rect| u64::from(rect.width) * u64::from(rect.height)).sum();
+            dirty.iter().map(|rect| u64::from(rect.width) * u64::from(rect.height)).sum();
         frame_area == 0
             || (covered as f32)
                 >= (frame_area as f32) * crate::performance::render_dirty::FULL_REPAINT_AREA_RATIO
@@ -4189,15 +4270,24 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
             // widget from the registry, installs three loan markers and re-inserts it — so a
             // 100-node window paid ~900 map operations per frame before it drew a pixel. One
             // loan also makes the four values describe the same instant.
+            //
+            // The children go straight onto the work stack rather than into a per-node `Vec`:
+            // the traversal is iterative, so the list only has to exist long enough to be
+            // pushed, and a snapshot per node was one heap allocation per node per frame
+            // (WBASE-05). Pushing them **reversed** keeps the `pop` order the declaration
+            // order, exactly as the reverse-then-extend form did.
             let outcome = with_widget_mut(current, |widget| {
                 if !widget.is_visible() {
                     return None;
                 }
-                // Read before the draw: `as_draw_mut` needs the exclusive borrow.
-                let child_clip = widget.children_clip();
-                let nested = widget.base().children().to_vec();
+                // Read before the draw: `as_draw_mut` needs the exclusive borrow, and the child
+                // list is read from the same immutable view.
+                let descendant_clip = intersect_clip(clip, widget.children_clip());
+                for child in widget.base().children().iter().rev() {
+                    stack.push((*child, descendant_clip));
+                }
                 let Some(drawable) = widget.as_draw_mut() else {
-                    return Some((false, child_clip, nested));
+                    return Some(false);
                 };
                 let mut context = RenderContext::new(&mut backend);
                 context.push_offset(-origin.0, -origin.1);
@@ -4209,19 +4299,17 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
                     context.pop_clip();
                 }
                 context.pop_offset();
-                Some((true, child_clip, nested))
+                Some(true)
             })
             .flatten();
-            let Some((drew, own_clip, mut nested)) = outcome else {
-                // Not visible: a hidden node hides its whole subtree.
+            let Some(drew) = outcome else {
+                // Not visible: a hidden node hides its whole subtree. Its children were not
+                // pushed, because the visibility check precedes the push above.
                 continue;
             };
             if drew {
                 painted = true;
             }
-            let child_clip = intersect_clip(clip, own_clip);
-            nested.reverse();
-            stack.extend(nested.into_iter().map(|child| (child, child_clip)));
         }
     }
 

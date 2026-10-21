@@ -267,8 +267,8 @@ impl FontDialog {
 
     /// The header band height, from the dialog chrome font's size.
     fn header_height(&self) -> i32 {
-        let style = self.style().clone();
-        let font = effective_font(&style);
+        let style = self.style();
+        let font = effective_font(style);
         (font.size().ceil() as i32 + 2).max(MIN_HEADER_HEIGHT)
     }
 

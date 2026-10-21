@@ -584,7 +584,7 @@ impl Draw for RichEdit {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         // The fallback name matters: the role table is keyed on **role** names, so `rich_edit`
         // (the factory name) is not in it and would classify as `Surface`, i.e. the window fill.
         // `richedit` is, and resolves to the editable interior plus the theme's foreground.

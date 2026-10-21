@@ -569,7 +569,7 @@ impl EmojiPicker {
     /// panel and ink rather than from literals of their own, which is what makes one
     /// appearance swap reach every band.
     fn chrome_colors(&self) -> (Color, Color, Color, Color, Color) {
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("emoji_picker");
         // # Why the panel does not fall back to the window fill
         //

@@ -356,7 +356,7 @@ impl Draw for AnimatedImage {
         // pixel baseline cannot move. Resolved once per draw, because the empty state, the
         // background, the status chips and the counter all read from it and re-resolving
         // would take the theme lock several times inside one draw.
-        let style = self.style().clone();
+        let style = self.style();
         let themed = crate::style::resolved_theme_style("animated_image");
         let themed_bg = themed.as_ref().and_then(|resolved| resolved.background_color);
         let themed_border = themed.as_ref().and_then(|resolved| resolved.border_color);
@@ -382,7 +382,7 @@ impl Draw for AnimatedImage {
             // widget's chrome — there is no frame data here at all — so both now follow the
             // theme instead of pinning the control to one appearance.
             context.fill_rounded_rect(rect, 4, base_bg);
-            let font = effective_font(&style);
+            let font = effective_font(style);
             let text = "No frames loaded";
             // Centred on the vertical midline and **fitted** to the control's width. The
             // label is 16 characters at 14 px, so it is wider than a control narrower than
@@ -474,7 +474,7 @@ impl Draw for AnimatedImage {
 
             // Frame counter overlay at top-right.
             let counter_text = format!("{}/{}", self.current_frame + 1, self.frames.len());
-            let font = effective_font(&style);
+            let font = effective_font(style);
             let metrics = context.measure_text(&counter_text, font);
             let cx = rect.x + rect.width as i32 - metrics.width as i32 - 4;
             let cy = rect.y + 2;

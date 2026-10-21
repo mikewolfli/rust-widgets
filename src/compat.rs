@@ -56,6 +56,7 @@ pub use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 // ── alloc re-exports (available in both std and no_std) ──
 pub use alloc::boxed::Box;
 pub use alloc::collections::BTreeMap;
+pub use alloc::collections::BTreeSet;
 pub use alloc::collections::VecDeque;
 pub use alloc::format;
 pub use alloc::rc::Rc;

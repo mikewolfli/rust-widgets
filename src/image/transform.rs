@@ -48,28 +48,38 @@ pub fn resize(
     let x_ratio = src_w as f32 / dst_w as f32;
     let y_ratio = src_h as f32 / dst_h as f32;
 
+    // Precompute the source mapping for each destination column/row. The previous version
+    // recomputed both ratios, the clamps and the fractional parts for every output pixel, and
+    // built a `get_pixel` closure inside the inner loop.
+    let mut x_map: Vec<(u32, u32, f32)> = Vec::with_capacity(dst_w as usize);
+    for dx in 0..dst_w {
+        let sx = dx as f32 * x_ratio;
+        let x1 = (sx as u32).min(src_w.saturating_sub(1));
+        let x2 = (x1 + 1).min(src_w.saturating_sub(1));
+        x_map.push((x1, x2, sx - x1 as f32));
+    }
+    let mut y_map: Vec<(u32, u32, f32)> = Vec::with_capacity(dst_h as usize);
     for dy in 0..dst_h {
-        for dx in 0..dst_w {
-            let sx = dx as f32 * x_ratio;
-            let sy = dy as f32 * y_ratio;
-            let x1 = (sx as u32).min(src_w.saturating_sub(1));
-            let y1 = (sy as u32).min(src_h.saturating_sub(1));
-            let x2 = (x1 + 1).min(src_w.saturating_sub(1));
-            let y2 = (y1 + 1).min(src_h.saturating_sub(1));
+        let sy = dy as f32 * y_ratio;
+        let y1 = (sy as u32).min(src_h.saturating_sub(1));
+        let y2 = (y1 + 1).min(src_h.saturating_sub(1));
+        y_map.push((y1, y2, sy - y1 as f32));
+    }
 
-            let x_frac = sx - x1 as f32;
-            let y_frac = sy - y1 as f32;
-
-            let get_pixel = |x: u32, y: u32, c: usize| -> u8 {
-                let off = (y as usize * src_w as usize + x as usize) * 4 + c;
-                pixels[off]
-            };
-
-            for c in 0..4 {
-                let v00 = get_pixel(x1, y1, c) as f32;
-                let v10 = get_pixel(x2, y1, c) as f32;
-                let v01 = get_pixel(x1, y2, c) as f32;
-                let v11 = get_pixel(x2, y2, c) as f32;
+    let stride = src_w as usize * 4;
+    for &(y1, y2, y_frac) in &y_map {
+        let row1 = y1 as usize * stride;
+        let row2 = y2 as usize * stride;
+        for &(x1, x2, x_frac) in &x_map {
+            let a = row1 + x1 as usize * 4;
+            let b = row1 + x2 as usize * 4;
+            let c = row2 + x1 as usize * 4;
+            let d = row2 + x2 as usize * 4;
+            for channel in 0..4 {
+                let v00 = pixels[a + channel] as f32;
+                let v10 = pixels[b + channel] as f32;
+                let v01 = pixels[c + channel] as f32;
+                let v11 = pixels[d + channel] as f32;
 
                 let v0 = v00 * (1.0 - x_frac) + v10 * x_frac;
                 let v1 = v01 * (1.0 - x_frac) + v11 * x_frac;

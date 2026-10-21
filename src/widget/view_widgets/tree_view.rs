@@ -892,7 +892,7 @@ impl Draw for TreeView {
         // `Input` — a scrolling field whose whole rectangle is the control. The theme reads
         // take and release the global manager's lock internally, so no guard is held across
         // the draw (the mutex is not re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("tree_view");
         let surface = style
             .background_color
@@ -935,7 +935,7 @@ impl Draw for TreeView {
             // the same index `node_row_rect`, `node_at` and the selection speak, so the row that is
             // painted is the row a click hits.
             let rows = self.visible_indices();
-            let font = effective_font(&style);
+            let font = effective_font(style);
             for (visible, &model_index) in rows.iter().enumerate() {
                 // The row's own rectangle comes from the same derivation the hit test uses, so a
                 // click cannot land on a row other than the one that was painted.

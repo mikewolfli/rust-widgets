@@ -687,7 +687,7 @@ impl Draw for SignaturePad {
         // `resolved_theme_style` takes and releases the global manager's lock
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("signature_pad");
         // `signature_pad` is absent from `WidgetRole::for_kind_name`'s table, so it classifies
         // as `Surface` and resolves to `theme.colors.background` — the window's own fill. A pad

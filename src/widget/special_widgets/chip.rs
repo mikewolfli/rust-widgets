@@ -667,7 +667,7 @@ impl Draw for Chip {
         // base from `style` was the defect: one selected chip turned the entire band into the
         // declared selected fill and every other chip derived from it. The declared base of the
         // row is a fact about the theme and the row, so it comes from the theme.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("chip");
         let background = theme
             .as_ref()
@@ -789,7 +789,7 @@ impl Draw for Chip {
             context.draw_text_line(
                 label_box,
                 &item.label,
-                effective_font(&style),
+                effective_font(style),
                 label_ink,
                 HorizontalAlignment::Left,
             );

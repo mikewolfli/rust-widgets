@@ -660,7 +660,7 @@ impl Draw for RangeSlider {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         // `range_slider` is not in the role table, so it classifies as `Surface` and its resolved
         // background is the window fill itself; the empty track below therefore derives its own
         // distinct colour rather than painting the window's.

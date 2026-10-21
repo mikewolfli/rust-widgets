@@ -128,21 +128,28 @@ fn c_str_or_default(ptr: *const c_char) -> String {
     unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() }
 }
 
-/// Convert a Rust string to a C string pointer, returning an empty C string on failure.
-/// Never panics — all interior-NUL errors are caught.
-fn to_c_string_or_empty(s: impl Into<String>) -> *const c_char {
-    let owned: String = s.into();
-    match CString::new(owned) {
-        Ok(cs) => cs.into_raw(),
+/// Convert a Rust string to a C string, returning an empty C string on failure.
+///
+/// Never panics — an interior NUL is reported rather than silently turning the answer into an
+/// empty string at every call site. The log is the difference between "the caller asked for an
+/// empty label" and "the label contained a NUL and was dropped".
+fn c_string_or_empty(s: impl Into<String>) -> CString {
+    match CString::new(s.into()) {
+        Ok(cs) => cs,
         Err(nul_err) => {
             let pos = nul_err.nul_position();
             log::warn!(
-                "[bindings] CString::new failed (interior NUL at position {pos}), truncating"
+                "[bindings] CString::new failed (interior NUL at position {pos}); returning an \
+                 empty string instead"
             );
-            // Truncate — return an empty C string.
-            CString::new("").unwrap().into_raw()
+            CString::default()
         }
     }
+}
+
+/// [`c_string_or_empty`] as an owned raw pointer for the C ABI.
+fn to_c_string_or_empty(s: impl Into<String>) -> *mut c_char {
+    c_string_or_empty(s).into_raw()
 }
 #[no_mangle]
 /// Initializes the widget toolkit's global subsystems.
@@ -652,7 +659,7 @@ pub extern "C" fn rw_widget_kind_names(out: *mut c_char, cap: c_uint) -> c_uint 
         // failing to link; the gate is in the body so the symbol always exists
         // (principle #41).
         #[cfg(full_widgets)]
-        let names = crate::widget::capability::WidgetFactory::new_with_defaults().widget_names();
+        let names = crate::widget::capability::WidgetFactory::shared().widget_names();
         #[cfg(not(full_widgets))]
         let names: Vec<&str> = Vec::new();
         write_space_separated(&names, out, cap)
@@ -738,23 +745,47 @@ pub unsafe extern "C" fn rw_widget_property_tokens(
 /// the return is always the full byte length, which lets a caller discover the
 /// requirement without a second API call.
 fn write_space_separated(items: &[&str], out: *mut c_char, cap: c_uint) -> c_uint {
-    let joined = items.join(" ");
-    let bytes = joined.as_bytes();
-    let required = bytes.len() as c_uint;
+    // The required length is the sum of the items plus one separator between adjacent items.
+    // It used to be measured after `items.join(" ")`, which allocated a second copy of the whole
+    // list on every enumeration call (BIND-10). Writing is streamed for the same reason.
+    let mut required = 0usize;
+    for (index, item) in items.iter().enumerate() {
+        if index > 0 {
+            required = required.saturating_add(1);
+        }
+        required = required.saturating_add(item.len());
+    }
+    let required_c = required as c_uint;
     if out.is_null() || cap == 0 {
-        return required;
+        return required_c;
     }
     // Leave room for the terminator; copy at most `cap - 1` bytes.
-    let writable = (cap as usize).saturating_sub(1).min(bytes.len());
+    let writable = (cap as usize).saturating_sub(1).min(required);
+    let mut written = 0usize;
     unsafe {
-        // `ptr::cast` rather than `as`: `c_char` is `i8` on some targets and `u8`
-        // on others, so a plain `as` cast is a no-op on the latter and clippy
-        // rejects it there under `-D warnings` (`unnecessary_cast`). Casting goes
-        // through a type the compiler cannot already consider identical.
-        core::ptr::copy_nonoverlapping(bytes.as_ptr(), out.cast::<u8>(), writable);
-        *out.add(writable) = 0;
+        for (index, item) in items.iter().enumerate() {
+            if written >= writable {
+                break;
+            }
+            if index > 0 {
+                let separator = b" ";
+                core::ptr::copy_nonoverlapping(
+                    separator.as_ptr(),
+                    out.add(written).cast::<u8>(),
+                    1,
+                );
+                written += 1;
+                if written >= writable {
+                    break;
+                }
+            }
+            let take = item.len().min(writable - written);
+            core::ptr::copy_nonoverlapping(item.as_ptr(), out.add(written).cast::<u8>(), take);
+            written += take;
+        }
+        *out.add(written) = 0;
     }
-    required
+    required_c
 }
 #[no_mangle]
 /// Reads a property from `widget_id` by name.
@@ -909,14 +940,15 @@ pub extern "C" fn rw_set_theme(name: *const c_char) -> CBool {
 pub extern "C" fn rw_theme_names(out: *mut c_char, cap: c_uint) -> c_uint {
     c_try!({
         #[cfg(device_profile)]
-        let names = {
+        {
             let manager = crate::theme::global_theme_manager();
-            manager.theme_names().iter().map(|name| name.to_string()).collect::<Vec<_>>()
-        };
+            let names = manager.theme_names();
+            write_space_separated(&names, out, cap)
+        }
         #[cfg(not(device_profile))]
-        let names: Vec<alloc::string::String> = Vec::new();
-        let refs: Vec<&str> = names.iter().map(alloc::string::String::as_str).collect();
-        write_space_separated(&refs, out, cap)
+        {
+            write_space_separated(&[], out, cap)
+        }
     })
 }
 
@@ -1098,7 +1130,9 @@ pub extern "C" fn rw_widget_list_add(widget_id: u64, text: *const c_char) -> c_u
     c_try!({
         let item = c_str_or_default(text);
         let added = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
-            crate::widget::capability::append_widget_list_item(widget, item.clone())
+            // Moved, not cloned: `with_widget_mut` takes an `FnOnce`, so the old `item.clone()`
+            // allocated a second string that was immediately dropped.
+            crate::widget::capability::append_widget_list_item(widget, item)
         })
         .unwrap_or(false);
         if !added {
@@ -1497,7 +1531,7 @@ fn encode_capability_value(
             if !want_text {
                 return (RW_VALUE_STRING, 0, None);
             }
-            let c_text = CString::new(text).unwrap_or_default().into_raw();
+            let c_text = to_c_string_or_empty(text);
             (RW_VALUE_STRING, 0, Some(c_text))
         }
         // Colours and rectangles travel as their CSS-style string form, which is the
@@ -1512,8 +1546,7 @@ fn encode_capability_value(
             if !want_text {
                 return (RW_VALUE_COLOR, 0, None);
             }
-            let c_text = CString::new(color.to_hex_rgba()).unwrap_or_default();
-            (RW_VALUE_COLOR, 0, Some(c_text.into_raw()))
+            (RW_VALUE_COLOR, 0, Some(to_c_string_or_empty(color.to_hex_rgba())))
         }
         CapabilityValue::Rect(rect) => {
             if !want_text {
@@ -1526,15 +1559,15 @@ fn encode_capability_value(
                 rect.width as i32,
                 rect.height as i32
             );
-            let c_text = CString::new(text).unwrap_or_default();
-            (RW_VALUE_RECT, 0, Some(c_text.into_raw()))
+            let c_text = to_c_string_or_empty(text);
+            (RW_VALUE_RECT, 0, Some(c_text))
         }
         CapabilityValue::IconSpec(spec) => {
             if !want_text {
                 return (RW_VALUE_ICON_SPEC, 0, None);
             }
-            let c_text = CString::new(encode_icon_spec(&spec)).unwrap_or_default();
-            (RW_VALUE_ICON_SPEC, 0, Some(c_text.into_raw()))
+            let c_text = to_c_string_or_empty(encode_icon_spec(&spec));
+            (RW_VALUE_ICON_SPEC, 0, Some(c_text))
         }
         // A tuple travels as a compact `kind:value;kind:value` string with its own kind, so a C
         // caller can tell a tuple from free text and can recover each component with its type.
@@ -1551,8 +1584,8 @@ fn encode_capability_value(
                 }
                 encode_tuple_component(item, &mut text);
             }
-            let c_text = CString::new(text).unwrap_or_default();
-            (RW_VALUE_TUPLE, items.len() as i64, Some(c_text.into_raw()))
+            let c_text = to_c_string_or_empty(text);
+            (RW_VALUE_TUPLE, items.len() as i64, Some(c_text))
         }
         // A record list travels as `name=kind:value;…` per record with `|` between records, so a C
         // caller can see each field's name and each value's own kind. `num` is the record count, which
@@ -1561,8 +1594,8 @@ fn encode_capability_value(
             if !want_text {
                 return (RW_VALUE_RECORDS, list.len() as i64, None);
             }
-            let c_text = CString::new(encode_record_list(&list)).unwrap_or_default();
-            (RW_VALUE_RECORDS, list.len() as i64, Some(c_text.into_raw()))
+            let c_text = to_c_string_or_empty(encode_record_list(&list));
+            (RW_VALUE_RECORDS, list.len() as i64, Some(c_text))
         }
     }
 }
@@ -2201,7 +2234,7 @@ pub unsafe extern "C" fn rw_poll_drop_event(
                 *target_out = event.target_widget_id;
             }
             if !mime_out.is_null() {
-                let cs = CString::new(event.mime).unwrap_or_else(|_| CString::new("").unwrap());
+                let cs = c_string_or_empty(event.mime);
                 *mime_out = cs.into_raw();
             }
             if !payload_out.is_null() && !payload_len_out.is_null() && !event.payload.is_empty() {
@@ -2408,49 +2441,56 @@ pub extern "C" fn rw_harmony_clear_node_bindings() {
         harmony_node_registry().lock().unwrap_or_else(|e| e.into_inner()).clear();
     })
 }
+/// Runs `f` with the widget id a Harmony node handle maps to.
+///
+/// The four `rw_harmony_on_node_*` entry points had the same "look up or return false" preamble;
+/// one helper keeps the mapping rule (an unmapped handle reports `false`, never `0`) in one place.
+fn with_harmony_widget(node_handle: u64, f: impl FnOnce(u64) -> CBool) -> CBool {
+    let Some(widget_id) = harmony_lookup_widget(node_handle) else {
+        return false;
+    };
+    f(widget_id)
+}
+
 /// Harmony callback alias: menu trigger by node handle.
 #[no_mangle]
 pub extern "C" fn rw_harmony_on_node_menu_item(node_handle: u64) -> CBool {
     c_try!({
-        let Some(widget_id) = harmony_lookup_widget(node_handle) else {
-            return false;
-        };
-        get_control_backend().inject_menu_trigger(widget_id)
+        with_harmony_widget(node_handle, |widget_id| {
+            get_control_backend().inject_menu_trigger(widget_id)
+        })
     })
 }
 /// Harmony callback alias: click trigger by node handle.
 #[no_mangle]
 pub extern "C" fn rw_harmony_on_node_click(node_handle: u64) -> CBool {
     c_try!({
-        let Some(widget_id) = harmony_lookup_widget(node_handle) else {
-            return false;
-        };
-        get_control_backend()
-            .inject_widget_trigger_event(widget_id, crate::platform::WidgetTriggerKind::Clicked)
+        with_harmony_widget(node_handle, |widget_id| {
+            get_control_backend()
+                .inject_widget_trigger_event(widget_id, crate::platform::WidgetTriggerKind::Clicked)
+        })
     })
 }
 /// Harmony callback alias: value-changed trigger by node handle.
 #[no_mangle]
 pub extern "C" fn rw_harmony_on_node_value_changed(node_handle: u64) -> CBool {
     c_try!({
-        let Some(widget_id) = harmony_lookup_widget(node_handle) else {
-            return false;
-        };
-        get_control_backend().inject_widget_trigger_event(
-            widget_id,
-            crate::platform::WidgetTriggerKind::ValueChanged,
-        )
+        with_harmony_widget(node_handle, |widget_id| {
+            get_control_backend().inject_widget_trigger_event(
+                widget_id,
+                crate::platform::WidgetTriggerKind::ValueChanged,
+            )
+        })
     })
 }
 /// Harmony callback alias: typed trigger by node handle and kind code.
 #[no_mangle]
 pub extern "C" fn rw_harmony_on_node_widget_event(node_handle: u64, kind_code: c_uint) -> CBool {
     c_try!({
-        let Some(widget_id) = harmony_lookup_widget(node_handle) else {
-            return false;
-        };
-        get_control_backend()
-            .inject_widget_trigger_event(widget_id, trigger_kind_from_code(kind_code))
+        with_harmony_widget(node_handle, |widget_id| {
+            get_control_backend()
+                .inject_widget_trigger_event(widget_id, trigger_kind_from_code(kind_code))
+        })
     })
 }
 #[no_mangle]
@@ -2926,7 +2966,7 @@ pub extern "C" fn rw_error_code(_handle: u64) -> c_int {
 pub extern "C" fn rw_error_message(_handle: u64) -> *mut c_char {
     c_try!({
         let message = crate::error::ffi::last_ffi_error().map(|e| e.message).unwrap_or_default();
-        CString::new(message).unwrap_or_default().into_raw()
+        c_string_or_empty(message).into_raw()
     })
 }
 #[no_mangle]
@@ -3427,7 +3467,7 @@ pub extern "C" fn rw_harmony_xcomponent_id() -> *mut c_char {
         #[cfg(all(feature = "xcomponent", not(alloc_frugal)))]
         {
             match crate::platform::harmony::xcomponent::component_id() {
-                Some(id) => CString::new(id).unwrap_or_default().into_raw(),
+                Some(id) => c_string_or_empty(id).into_raw(),
                 None => std::ptr::null_mut(),
             }
         }

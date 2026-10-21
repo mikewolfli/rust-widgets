@@ -995,8 +995,13 @@ fn draw_path_cpu_rgba8(pixels: &mut [u8], fb_width: u32, path: CpuPathDraw<'_>) 
         let min_y = clip_rect.y.max(points.iter().map(|&(_, y)| y).min().unwrap_or(0));
         let max_y = clip_rect.bottom().min(points.iter().map(|&(_, y)| y).max().unwrap_or(0) + 1);
         let n = points.len();
+        // One intersection buffer for the whole fill, cleared per scanline — the shape of the
+        // sibling `draw_path_non_zero_cpu_rgba8` just below. A fresh `Vec` per scanline meant one
+        // allocation per row of every filled outline (an icon, a vector decoration, a glyph
+        // fallback), which is hundreds of allocations for one picture (REND-08).
+        let mut intersections: Vec<i32> = Vec::with_capacity(n);
         for y in min_y..max_y {
-            let mut intersections = Vec::new();
+            intersections.clear();
             for i in 0..n {
                 let (x1, y1) = points[i];
                 let (x2, y2) = points[(i + 1) % n];

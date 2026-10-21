@@ -50,7 +50,7 @@ use winapi::um::winuser::{SW_HIDE, SW_SHOW};
 /// defined unconditionally rather than under `cfg(target_os = "windows")` so the value
 /// is visible to the loop body's readers on every host, which is where it belongs
 /// (principle #42: the value is a frame rate, not an OS fact).
-const FRAME_INTERVAL_MS: u64 = 16;
+const FRAME_INTERVAL_MS: u64 = crate::platform::types::FRAME_INTERVAL_MS;
 
 /// Reads `CF_UNICODETEXT` from the Win32 clipboard, or `None` when the clipboard holds no text.
 ///

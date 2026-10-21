@@ -3,8 +3,17 @@
 
 //! Platform abstraction types and capability contracts.
 
-use crate::compat::{format, String, Vec};
+use crate::compat::{format, OnceLock, String, Vec};
 use crate::core::{ObjectId, Orientation, PlatformFamily, Rect};
+
+/// The cadence every platform backend drives frames at, in milliseconds.
+///
+/// One definition for all hosts: the number handed to [`crate::drive_frame`] and the interval a
+/// backend sleeps must be the same, or every transition runs at the ratio between them. The
+/// backends used to declare `16` in nine separate files (with two different integer types), which
+/// is exactly the drift shape principle #54 forbids. A backend that later runs at the display's
+/// own rate changes this one value.
+pub(crate) const FRAME_INTERVAL_MS: u64 = 16;
 #[cfg(all(feature = "serde", widgets_unstripped))]
 use serde::{Deserialize, Serialize};
 
@@ -82,9 +91,15 @@ pub(crate) enum MousePhase {
 /// the rest.
 #[allow(dead_code)]
 pub(crate) fn unix_print_clients_available() -> bool {
-    ["lp", "lpr"].iter().any(|cmd| {
-        // Any `ExitStatus` at all proves the executable exists and ran.
-        std::process::Command::new(cmd).arg("--help").output().is_ok()
+    // The answer is fixed for the life of the process (either the client is on `PATH` or it is
+    // not), and each check spawns two child processes. `PrintDialog` asks this before offering
+    // the action, so caching turns a per-dialog spawn into one probe per process.
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        ["lp", "lpr"].iter().any(|cmd| {
+            // Any `ExitStatus` at all proves the executable exists and ran.
+            std::process::Command::new(cmd).arg("--help").output().is_ok()
+        })
     })
 }
 
@@ -102,11 +117,16 @@ pub(crate) fn unix_print_clients_available() -> bool {
 /// goes unused on the rest, so the gate expression is not duplicated here.
 #[allow(dead_code)]
 pub(crate) fn windows_shell_spawnable() -> bool {
-    // `is_ok()` means the process was created. That is the whole claim.
-    std::process::Command::new("powershell")
-        .args(["-NoProfile", "-Command", "exit 0"])
-        .output()
-        .is_ok()
+    // `is_ok()` means the process was created. That is the whole claim. Cached for the same
+    // reason as the unix probe: the capability cannot change while the process runs, and each
+    // check starts `powershell`.
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", "exit 0"])
+            .output()
+            .is_ok()
+    })
 }
 
 // ── Kernel-adaptive probes ──

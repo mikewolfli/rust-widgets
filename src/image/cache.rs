@@ -128,6 +128,13 @@ struct PixelEntry {
 /// hole, and it is the same hole every build system accepts.
 struct SourceEntry {
     bytes: Arc<Vec<u8>>,
+    /// The byte cache's own content key for the pixel layer.
+    ///
+    /// Hashing is `O(file length)`. The pixel lookup used to recompute this on every request —
+    /// including a hit — so an image view redrawing an icon paid a full-file FNV pass per frame.
+    /// The hash is computed once when the file is read (the only moment the bytes are already in
+    /// cache) and carried here.
+    pixels_key: u64,
     /// Bytes of file content held. Kept beside the vector rather than asked of it on every eviction
     /// comparison, matching [`PixelEntry`] and [`Entry`].
     size: usize,
@@ -216,7 +223,7 @@ impl DecodeCache {
         &mut self,
         path_key: &std::path::Path,
         stamp: SourceStamp,
-    ) -> Option<Arc<Vec<u8>>> {
+    ) -> Option<(Arc<Vec<u8>>, u64)> {
         self.tick += 1;
         let tick = self.tick;
         let entry = self.sources.get_mut(path_key)?;
@@ -229,15 +236,28 @@ impl DecodeCache {
             return None;
         }
         entry.used_at = tick;
-        Some(Arc::clone(&entry.bytes))
+        Some((Arc::clone(&entry.bytes), entry.pixels_key))
     }
 
     /// Stores `bytes` for `path_key`, with the same budgeting rules as [`Self::insert`].
+    #[cfg(test)]
     fn insert_source(
         &mut self,
         path_key: std::path::PathBuf,
         bytes: Arc<Vec<u8>>,
         stamp: SourceStamp,
+    ) {
+        let pixels_key = content_key(&bytes, PIXELS_TAG_RGBA8);
+        self.insert_source_with_key(path_key, bytes, stamp, pixels_key);
+    }
+
+    /// [`Self::insert_source`] with a caller-computed pixel key.
+    fn insert_source_with_key(
+        &mut self,
+        path_key: std::path::PathBuf,
+        bytes: Arc<Vec<u8>>,
+        stamp: SourceStamp,
+        pixels_key: u64,
     ) {
         let size = bytes.len();
         if size > self.budget_bytes {
@@ -249,7 +269,7 @@ impl DecodeCache {
         self.evict_until_fits(size);
         self.tick += 1;
         let used_at = self.tick;
-        self.sources.insert(path_key, SourceEntry { bytes, size, stamp, used_at });
+        self.sources.insert(path_key, SourceEntry { bytes, pixels_key, size, stamp, used_at });
         self.used_bytes += size;
     }
 
@@ -656,6 +676,17 @@ pub fn decode_to_rgba8_cached(data: &[u8]) -> Result<Arc<DecodedImage>, String> 
 /// later would otherwise stay "unreadable".
 #[cfg(all(feature = "image", not(alloc_frugal)))]
 pub fn cached_from_path(path: impl AsRef<std::path::Path>) -> Result<Arc<Vec<u8>>, std::io::Error> {
+    cached_from_path_with_key(path).map(|(bytes, _pixels_key)| bytes)
+}
+
+/// [`cached_from_path`] plus the pixel-layer content key stored with the bytes.
+///
+/// The key is computed when the file is read, so a later pixel lookup does not have to hash the
+/// whole file again — see [`SourceEntry::pixels_key`].
+#[cfg(all(feature = "image", not(alloc_frugal)))]
+fn cached_from_path_with_key(
+    path: impl AsRef<std::path::Path>,
+) -> Result<(Arc<Vec<u8>>, u64), std::io::Error> {
     let path = path.as_ref();
     let metadata = std::fs::metadata(path)?;
     let stamp = SourceStamp {
@@ -670,21 +701,24 @@ pub fn cached_from_path(path: impl AsRef<std::path::Path>) -> Result<Arc<Vec<u8>
     let path_key = path_key(path);
 
     FILE_REQUESTS.fetch_add(1, Ordering::Relaxed);
-    if let Some(bytes) = with_cache(|cache| cache.get_source(&path_key, stamp)) {
+    if let Some(hit) = with_cache(|cache| cache.get_source(&path_key, stamp)) {
         FILE_HITS.fetch_add(1, Ordering::Relaxed);
-        return Ok(bytes);
+        return Ok(hit);
     }
     FILE_MISSES.fetch_add(1, Ordering::Relaxed);
 
     let bytes = Arc::new(std::fs::read(path)?);
+    // Hashed only on a miss, when the bytes are already in hand. The hit path returns the key
+    // stored with them, so a redraw never re-hashes the file.
+    let pixels_key = content_key(&bytes, PIXELS_TAG_RGBA8);
     let stored = Arc::clone(&bytes);
     let (used, evictions) = with_cache(|cache| {
-        cache.insert_source(path_key, stored, stamp);
+        cache.insert_source_with_key(path_key, stored, stamp, pixels_key);
         (cache.used_bytes, cache.evictions)
     });
     STORED_BYTES.store(used, Ordering::Relaxed);
     EVICTIONS.store(evictions, Ordering::Relaxed);
-    Ok(bytes)
+    Ok((bytes, pixels_key))
 }
 
 /// The cache key for a path: the path itself, as a [`std::path::PathBuf`].
@@ -760,14 +794,14 @@ pub fn file_rgba8_sized_or_none(
     path: impl AsRef<std::path::Path>,
 ) -> Option<(Arc<Vec<u8>>, u32, u32)> {
     let path = path.as_ref();
-    let bytes = match cached_from_path(path) {
-        Ok(bytes) => bytes,
+    let (bytes, pixels_key) = match cached_from_path_with_key(path) {
+        Ok(loaded) => loaded,
         Err(error) => {
             log::warn!("image {path:?} could not be read ({error}); nothing is drawn for it");
             return None;
         }
     };
-    pixels_rgba8_sized_or_none(&bytes)
+    pixels_rgba8_sized_or_none_cached(&bytes, pixels_key)
 }
 
 /// The RGBA8 pixels of `data`, or `None` if it does not decode.
@@ -784,8 +818,16 @@ pub fn pixels_rgba8_or_none(data: &[u8]) -> Option<Arc<Vec<u8>>> {
 /// extent the entry was stored with.
 #[cfg(all(feature = "image", not(alloc_frugal)))]
 pub fn pixels_rgba8_sized_or_none(data: &[u8]) -> Option<(Arc<Vec<u8>>, u32, u32)> {
+    pixels_rgba8_sized_or_none_cached(data, content_key(data, PIXELS_TAG_RGBA8))
+}
+
+/// [`pixels_rgba8_sized_or_none`] with a content key the caller already has.
+///
+/// The file layer computes this key once when it reads the bytes; passing it in avoids hashing the
+/// whole file on every draw.
+#[cfg(all(feature = "image", not(alloc_frugal)))]
+fn pixels_rgba8_sized_or_none_cached(data: &[u8], key: u64) -> Option<(Arc<Vec<u8>>, u32, u32)> {
     REQUESTS.fetch_add(1, Ordering::Relaxed);
-    let key = content_key(data, PIXELS_TAG_RGBA8);
     if let Some(pixels) = with_cache(|cache| cache.get_pixels(key)) {
         HITS.fetch_add(1, Ordering::Relaxed);
         return Some(pixels);
@@ -1180,12 +1222,12 @@ mod tests {
 
         if same_file {
             // On Windows the two spellings name one file, so the second write replaced the first.
-            assert_eq!(&*cache.get_source(&slash, stamp).unwrap(), &[0xBB]);
+            assert_eq!(&*cache.get_source(&slash, stamp).unwrap().0, &[0xBB]);
         } else {
             // On Unix/macOS a backslash is an ordinary filename byte, so the two are distinct files
             // and each keeps its own bytes — the behaviour the old byte key destroyed.
-            assert_eq!(&*cache.get_source(&slash, stamp).unwrap(), &[0xAA]);
-            assert_eq!(&*cache.get_source(&backslash, stamp).unwrap(), &[0xBB]);
+            assert_eq!(&*cache.get_source(&slash, stamp).unwrap().0, &[0xAA]);
+            assert_eq!(&*cache.get_source(&backslash, stamp).unwrap().0, &[0xBB]);
         }
     }
 

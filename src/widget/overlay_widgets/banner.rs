@@ -531,7 +531,7 @@ impl Draw for Banner {
             return;
         }
 
-        let style = self.base.style().clone();
+        let style = self.base.style();
         // The fill layers two facts, in this order:
         //
         // 1. **a caller's explicit `background_color`** — if the caller styled the
@@ -567,7 +567,7 @@ impl Draw for Banner {
         if text_width > 0 {
             // The message face is the **effective font** at its role size — 0.3 of the banner height,
             // so the theme family and the user's text scale reach it (D09-STYLE-01).
-            let font = role_font(&style, (rect.height as f32 * 0.3).clamp(10.0, 16.0));
+            let font = role_font(style, (rect.height as f32 * 0.3).clamp(10.0, 16.0));
             // Centred through the shared primitive. The old origin was the banner's middle
             // line, and since the origin is the glyph box's top edge the message sat half a
             // line low — visible in `banner.svg`, where a 16 px line began at the middle of a
@@ -600,7 +600,7 @@ impl Draw for Banner {
             // `action_rect.x + width / 2` with a left origin also ran the label off the right
             // half of the button, so the two halves of a two-word label disagreed about where
             // the button was.
-            let action_font = role_font(&style, 12.0);
+            let action_font = role_font(style, 12.0);
             let action_line = context.text_line(action_rect, &action_font);
             context.draw_text_fitted(
                 action_line,

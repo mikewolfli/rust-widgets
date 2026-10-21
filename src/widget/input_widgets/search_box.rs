@@ -364,7 +364,7 @@ impl Draw for SearchBox {
         // it is now *derived* from the resolved colour — a focused box is the resolved
         // colour blended toward the accent, a disabled one is faded — so the states stay
         // distinguishable *and* follow the theme.
-        let style = self.style().clone();
+        let style = self.style();
         // Resolved once, because the three branches below all need it and re-resolving would
         // take the theme lock three times inside one draw.
         let themed = crate::style::resolved_theme_style("search_box");

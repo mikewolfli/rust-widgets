@@ -388,7 +388,7 @@ impl Draw for SplashScreen {
         //
         // The theme reads take and release the global manager's lock internally, so no
         // guard is held across the draw (the mutex is not re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("splash_screen");
         let surface = style
             .background_color
@@ -491,7 +491,7 @@ impl Draw for SplashScreen {
         context.draw_text(
             Point::new(centre_x, text_y),
             &self.title,
-            effective_font(&style),
+            effective_font(style),
             ink,
             HorizontalAlignment::Center,
         );
@@ -500,7 +500,7 @@ impl Draw for SplashScreen {
             context.draw_text(
                 Point::new(centre_x, text_y + BODY_GAP),
                 &self.subtitle,
-                effective_font(&style),
+                effective_font(style),
                 muted_ink,
                 HorizontalAlignment::Center,
             );
@@ -521,7 +521,7 @@ impl Draw for SplashScreen {
         // not use, which pushed the label below the button.
         if let Some(skip) = self.skip_rect() {
             context.draw_rect(skip, border);
-            let skip_font = effective_font(&style);
+            let skip_font = effective_font(style);
             let label_height = context.measure_text("Skip", skip_font).height as i32;
             context.draw_text(
                 Point::new(

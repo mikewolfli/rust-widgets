@@ -361,7 +361,16 @@ impl ViewEngine {
         // The root's own name seeds the ancestor chain, so a failure in a *direct* child still
         // reports where it sits ("window > no_such_widget#bad") rather than an empty chain.
         let root_chain = [root.widget.clone()];
-        self.mount_children_named(&root, root_id, &[], &root_chain, create, &mut report, resolver);
+        self.mount_children_named(
+            &root,
+            root_id,
+            &[],
+            0,
+            &root_chain,
+            create,
+            &mut report,
+            resolver,
+        );
         self.write_declared_properties(&root, root_id, &mut report, resolver);
         // Lifecycle: the whole tree now exists, so each node's `on_mount` runs -- children
         // before their parent's, which is the order a callback that touches its subtree needs.
@@ -866,10 +875,20 @@ impl ViewEngine {
         }
     }
 
-    /// Create and register a node's children, recursing.
+    /// Create and register a node's children, recursing. Returns the next free **slot**.
     ///
     /// The recursive half of this, carrying the ancestor **names** so a failure can be
     /// located in the declaration.
+    ///
+    /// # Slots, and why they are not the declared index
+    ///
+    /// A transparent node (`view::is_transparent_node`) produces no control, so its children
+    /// take its place in *this* parent's child list. `first_slot` is the position those
+    /// children start at, and the return value is the position after the last one, so a
+    /// caller that passes it back keeps the controls in declared order. Without the
+    /// distinction a `row > [label, spacer > [label], label]` would place the third label at
+    /// declared index 2 while only one control precedes it — out of order, or dropped by the
+    /// clamp in `move_child_to`.
     ///
     /// # Error boundary (BLUE23 §5A.5)
     ///
@@ -878,6 +897,11 @@ impl ViewEngine {
     /// made one misspelled widget name cost the entire window, which is the same shape as
     /// BLUE22's F-7 (`spacer` losing its subtree): "a node cannot be expressed" must not
     /// escalate to "everything disappears".
+    ///
+    /// A transparent node is **not** a failure. It used to take the `create` path, which
+    /// cannot resolve a pseudo-widget, so a mounted view with a spacer reported
+    /// `UnknownWidgetType` and lost everything declared inside it — while `apply` had
+    /// handled exactly that shape since BLUE22. The two paths are one predicate apart now.
     ///
     /// The chain starts with the **root's own widget name** (seeded by `mount`), so a
     /// failure in a direct child reports `window > no_such_widget#bad` rather than nothing.
@@ -889,14 +913,33 @@ impl ViewEngine {
         node: &Node,
         node_id: ObjectId,
         path: &[usize],
+        first_slot: usize,
         ancestor_names: &[String],
         create: &dyn Fn(&Node) -> Option<ObjectId>,
         report: &mut ApplyReport,
         resolver: Option<&dyn crate::widget::icon_source::IconResourceResolver>,
-    ) {
+    ) -> usize {
+        let mut slot = first_slot;
         for (index, child) in node.children.iter().enumerate() {
             let mut child_path = path.to_vec();
             child_path.push(index);
+            let mut child_names = ancestor_names.to_vec();
+            child_names.push(child.widget.clone());
+            if super::is_transparent_node(child) {
+                // No control, so nothing to register, move or write: only the declaration
+                // beneath it, which is hosted where the transparent node itself sits.
+                slot = self.mount_children_named(
+                    child,
+                    node_id,
+                    &child_path,
+                    slot,
+                    &child_names,
+                    create,
+                    report,
+                    resolver,
+                );
+                continue;
+            }
             let Some(child_id) = create(child).filter(|&id| id != 0) else {
                 report.errors.push(super::ViewError::UnknownWidgetType {
                     widget: child.widget.clone(),
@@ -916,23 +959,24 @@ impl ViewEngine {
             };
             self.layout.register_node(child_id, child.widget.clone(), key, host);
             if let Some(host) = host {
-                self.layout.move_child_to(host, child_id, index);
+                self.layout.move_child_to(host, child_id, slot);
             }
             self.id_of_path.insert(child_path.clone(), child_id);
             report.widgets_created += 1;
-            let mut child_names = ancestor_names.to_vec();
-            child_names.push(child.widget.clone());
             self.mount_children_named(
                 child,
                 child_id,
                 &child_path,
+                0,
                 &child_names,
                 create,
                 report,
                 resolver,
             );
             self.write_declared_properties(child, child_id, report, resolver);
+            slot += 1;
         }
+        slot
     }
 
     /// Write a node's declared properties to its control, reporting refusals.
@@ -1023,22 +1067,36 @@ impl ViewEngine {
         if let Some(root_id) = self.layout.root() {
             fresh.insert(Vec::new(), root_id);
         }
-        reindex_by_identity(next, &[], &self.layout, &mut fresh);
+        reindex_children(next, &[], self.layout.root(), 0, &self.layout, &mut fresh);
         self.id_of_path = fresh;
     }
 }
 
-/// Rebuild `out` by looking each node of `node`'s subtree up in `layout` by identity.
-fn reindex_by_identity(
+/// Rebuild `out` by looking each child of `node` up in `layout` by identity.
+///
+/// # Hosts and slots
+///
+/// `host` is the control the children are *mounted under* and `first_slot` is the position
+/// of the first of them in that control's child list. For an ordinary container the two
+/// are "the node's own id" and 0; they differ under a **transparent** node, whose children
+/// are hosted by the nearest ancestor that produced a control and start at the slot the
+/// transparent node itself would have occupied (`view::is_transparent_node`).
+///
+/// Getting this wrong is not a missing entry but a *mis-assigned* one: a slot computed as
+/// the declared index would name the control that follows the gap, so the next update would
+/// write the gap's child's properties onto its sibling.
+fn reindex_children(
     node: &Node,
     path: &[usize],
+    host: Option<crate::core::ObjectId>,
+    first_slot: usize,
     layout: &crate::json::BoundJsonLayout,
-    out: &mut crate::compat::HashMap<Vec<usize>, ObjectId>,
+    out: &mut crate::compat::HashMap<Vec<usize>, crate::core::ObjectId>,
 ) {
     // Address the children by their parent, using the key when the node declares one and the
     // position within the parent otherwise — the same two rules the diff matches by, so the
     // map and the diff cannot disagree about which control a path denotes.
-    let parent_id = out.get(path).copied();
+    let mut slot = first_slot;
     for (index, child) in node.children.iter().enumerate() {
         let mut child_path = path.to_vec();
         child_path.push(index);
@@ -1055,18 +1113,25 @@ fn reindex_by_identity(
             // a child of the declared root. Asking the layer is what keeps the portal reachable by
             // its declared path; without it the lookup failed and the node dropped out of the map.
             super::Host::Overlay => layout.overlay_root(),
-            super::Host::Declared => parent_id,
+            super::Host::Declared => host,
         };
         let resolved = match (child.key_str(), lookup_parent) {
             (Some(key), Some(parent)) => layout.child_by_key(Some(parent), key),
             (Some(key), None) => layout.child_by_key(None, key),
-            (None, Some(parent)) => layout.children(parent).get(index).copied(),
+            (None, Some(parent)) => layout.children(parent).get(slot).copied(),
             (None, None) => None,
         };
         if let Some(id) = resolved {
             out.insert(child_path.clone(), id);
         }
-        reindex_by_identity(child, &child_path, layout, out);
+        if super::is_transparent_node(child) {
+            // No control of its own: the declaration beneath it is hosted by *this* node's
+            // parent, starting where this node would have sat.
+            reindex_children(child, &child_path, lookup_parent, slot, layout, out);
+        } else {
+            reindex_children(child, &child_path, resolved, 0, layout, out);
+        }
+        slot += super::mounted_slots(child);
     }
 }
 
@@ -2382,5 +2447,134 @@ mod tests {
             engine.layout().child_by_key(engine.layout().root(), "sidebar").is_some(),
             "the wide branch exists after the change"
         );
+    }
+
+    // ── Transparent nodes (`spacer`) ─────────────────────────
+
+    /// A row that declares a gap between two labels, with a control inside the gap.
+    ///
+    /// The shape `apply` has always handled and `mount` did not: the gap creates no control,
+    /// so what it declares is hosted by the row and takes the gap's place in the row's child
+    /// list.
+    struct Gap(&'static str);
+
+    impl View for Gap {
+        fn build(&self) -> Node {
+            Node::new("window").key("root").child(
+                Node::new("row").key("row").children_of([
+                    Node::new("label").key("before").prop("text", s("before")),
+                    Node::new("spacer")
+                        .key("gap")
+                        .child(Node::new("label").key("inside").prop("text", s(self.0))),
+                    Node::new("label").key("after").prop("text", s("after")),
+                ]),
+            )
+        }
+    }
+
+    /// A gap is a *declaration*, not a widget: mounting it must create what it holds, in the
+    /// host's order, and report no failure.
+    ///
+    /// # The defect this closes
+    ///
+    /// `apply::insert_subtree` has handled `spacer` since BLUE22, and `view/diff.rs` documents
+    /// the contract in four places — but `mount_children_named` had no branch for it, so it
+    /// called `create`, which cannot resolve a pseudo-widget. The report carried an
+    /// `UnknownWidgetType` and the gap's whole subtree was **never created**: a view mounted
+    /// by the engine rendered differently from the same view applied as a patch batch.
+    #[test]
+    fn a_spacer_mounts_its_children_under_the_parent() {
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+        let report = engine.mount(&Gap("inside"), &ids.creator());
+        assert!(
+            !report
+                .errors
+                .iter()
+                .any(|e| matches!(e, super::super::ViewError::UnknownWidgetType { .. })),
+            "a gap is a declared pseudo-widget, not an unknown one: {report:?}"
+        );
+        // window=10, row=11, before=12, inside=13, after=14: the gap consumes no id.
+        assert_eq!(report.widgets_created, 5, "a gap creates no control of its own");
+
+        assert_eq!(engine.id_at(&[0]), Some(11), "row");
+        assert_eq!(engine.id_at(&[0, 0]), Some(12), "before");
+        assert_eq!(
+            engine.id_at(&[0, 1, 0]),
+            Some(13),
+            "the gap's child keeps its declared path: {report:?}"
+        );
+        assert_eq!(engine.id_at(&[0, 2]), Some(14), "after");
+
+        // The host's child list is the declared order with the gap collapsed out of it.
+        let layout = engine.layout();
+        let row = 11;
+        assert_eq!(
+            layout.children(row),
+            &[12, 13, 14],
+            "the gap's child takes the gap's place, between its siblings"
+        );
+    }
+
+    /// An update that changes nothing must not touch, move or rebuild anything — including
+    /// what a gap hosts. A view is re-evaluated every frame, so "nothing changed" is the
+    /// common case and the one that has to be free.
+    #[test]
+    fn an_unchanged_view_with_a_spacer_produces_no_patches() {
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+        engine.mount(&Gap("inside"), &ids.creator());
+        let report = engine.update(&Gap("inside"), &ids.creator());
+        assert_eq!(report.patch_count(), 0, "an idle rebuild wrote patches: {:?}", report.patches);
+        assert_eq!(engine.id_at(&[0, 1, 0]), Some(13), "and kept every control in place");
+    }
+
+    /// A change *inside* a gap is a property write against the control that hosts it, not a
+    /// rebuild of the gap — and the sibling after the gap keeps its id.
+    ///
+    /// Before this, `diff` saw the gap's path had no id and emitted `Insert` for the whole
+    /// subtree: a second live copy of the gap's contents appeared on every change and nothing
+    /// removed the first, while `after` was still recognised and left alone.
+    #[test]
+    fn a_change_inside_a_spacer_writes_the_child_and_keeps_every_id() {
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+        engine.mount(&Gap("before text"), &ids.creator());
+
+        let report = engine.update(&Gap("after text"), &ids.creator());
+        assert_eq!(report.patch_count(), 1, "one write, nothing structural: {:?}", report.patches);
+        assert_eq!(report.replaced_subtrees, 0, "nothing was rebuilt");
+        assert_eq!(report.written_properties(), ["text"]);
+        assert_eq!(engine.id_at(&[0, 1, 0]), Some(13), "the gap's child keeps its id");
+        assert_eq!(engine.id_at(&[0, 2]), Some(14), "and so does its sibling");
+        let layout = engine.layout();
+        assert_eq!(layout.children(11), &[12, 13, 14], "the change created no duplicate control");
+    }
+
+    /// A gap that disappears takes the controls it hosted with it.
+    ///
+    /// `Remove` is addressed by id, and a gap has no id — so the removal has to be emitted for
+    /// its children. Emitting nothing for the gap (what the old `(None, ..)` arm did) left
+    /// those controls mounted under a parent that no longer declares them.
+    #[test]
+    fn removing_a_spacer_removes_what_it_hosted() {
+        struct WithoutGap;
+        impl View for WithoutGap {
+            fn build(&self) -> Node {
+                Node::new("window").key("root").child(Node::new("row").key("row").children_of([
+                    Node::new("label").key("before").prop("text", s("before")),
+                    Node::new("label").key("after").prop("text", s("after")),
+                ]))
+            }
+        }
+
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+        engine.mount(&Gap("inside"), &ids.creator());
+        let report = engine.update(&WithoutGap, &ids.creator());
+        assert_eq!(report.patches_of_kind("Remove").len(), 1, "got {:?}", report.patches);
+        assert_eq!(engine.id_at(&[0, 1, 0]), None, "the gap's child is gone");
+        let layout = engine.layout();
+        assert_eq!(layout.children(11), &[12, 14], "and the row is left with its own children");
     }
 }

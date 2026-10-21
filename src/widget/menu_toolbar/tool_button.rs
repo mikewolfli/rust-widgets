@@ -741,7 +741,7 @@ impl Draw for ToolButton {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's
         // mutex is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("tool_button");
         let themed_bg = theme.as_ref().and_then(|resolved| resolved.background_color);
         let themed_text = theme.as_ref().and_then(|resolved| resolved.text_color);

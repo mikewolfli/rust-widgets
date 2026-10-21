@@ -349,16 +349,10 @@ pub fn marker_for_key(key: &str) -> Option<JsonTriggerMarker> {
 /// Asking here — once, at bind time — means the wiring never has to guess, and the answer travels
 /// with the binding so a test can assert it without a live control.
 pub fn json_event_binding(widget_type: &str, name: &str) -> JsonEventBinding {
-    let factory = crate::widget::capability::WidgetFactory::new_with_defaults();
-    let normalized = crate::widget::capability::normalize_key(name);
+    let factory = crate::widget::capability::WidgetFactory::shared();
     let has_payload = factory
         .capability(widget_type)
-        .and_then(|capability| {
-            capability
-                .events
-                .iter()
-                .find(|schema| crate::widget::capability::normalize_key(schema.name) == normalized)
-        })
+        .and_then(|capability| crate::widget::capability::find_event_schema(capability, name))
         .is_some_and(|schema| schema.payload.is_some());
     JsonEventBinding::Published {
         // The event's own spelling from the table, which is what `connect_event` accepts — a
@@ -374,14 +368,9 @@ pub fn json_event_binding(widget_type: &str, name: &str) -> JsonEventBinding {
 
 /// The published spelling of `name` on `widget_type`, or `None` when it is not published.
 pub fn published_event_name(widget_type: &str, name: &str) -> Option<&'static str> {
-    let factory = crate::widget::capability::WidgetFactory::new_with_defaults();
-    let normalized = crate::widget::capability::normalize_key(name);
+    let factory = crate::widget::capability::WidgetFactory::shared();
     factory.capability(widget_type).and_then(|capability| {
-        capability
-            .events
-            .iter()
-            .find(|schema| crate::widget::capability::normalize_key(schema.name) == normalized)
-            .map(|schema| schema.name)
+        crate::widget::capability::find_event_schema(capability, name).map(|schema| schema.name)
     })
 }
 

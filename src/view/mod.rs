@@ -167,6 +167,55 @@ pub(crate) fn is_generated_wire_prop(name: &str) -> bool {
 /// See [`is_generated_wire_prop`] for why this is not read from `crate::designer`.
 pub(crate) const GENERATED_WIRE_PROP_PREFIX: &str = "__wire_";
 
+/// Whether a node is **transparent**: it declares layout intent but produces no control.
+///
+/// # Why this is one predicate rather than three call sites
+///
+/// A transparent node's children are still created — they are hosted by the nearest
+/// ancestor that *did* produce a control, so they take the transparent node's place in
+/// that ancestor's child list. Three different layers have to agree about both halves of
+/// that rule:
+///
+/// - [`apply`](crate::view::apply) inserts a transparent node's children into the parent at
+///   the slot the node itself would have occupied;
+/// - [`ViewEngine::mount`](crate::view::ViewEngine::mount) creates them the same way, and
+///   [`ViewEngine::reindex_paths`](crate::view::ViewEngine) resolves their declared paths
+///   against that same host and slot;
+/// - [`diff`](crate::view::diff) compares them in place instead of re-inserting the
+///   subtree, which is what keeps an unchanged gap from being rebuilt on every frame.
+///
+/// Spelling the name at each of those sites is how one of them drifts — and it already had:
+/// `apply` knew about `spacer`, `mount` did not, so a spacer mounted through the engine
+/// reported `UnknownWidgetType` and lost the subtree its declaration describes.
+///
+/// # Why `spacer` only
+///
+/// The JSON front end's transparent node is `spacer` (`json/loader.rs`), and `apply` has
+/// always matched exactly that name. A "layout" name is not a node in either front end —
+/// layout is the `layout` *property* of a container — so accepting it here would invent a
+/// fourth vocabulary. A pseudo-widget nobody can declare is a name no caller can reach.
+pub(crate) fn is_transparent_node(node: &Node) -> bool {
+    node.widget.eq_ignore_ascii_case("spacer")
+}
+
+/// How many controls `node` contributes to its parent's child list: one, or — for a
+/// transparent node — the sum contributed by its children.
+///
+/// This is the arithmetic behind "a gap still occupies a slot": a declared index and a
+/// *mounted* slot differ exactly by the flattened size of the transparent siblings before
+/// them, so `move_child_to`, `Patch::Insert { index }` and the reindex walk all have to use
+/// the same sum. It is a free function rather than three private copies for that reason.
+///
+/// Recursion is bounded by the declaration: `spacer` inside `spacer` collapses the same way,
+/// and the deepest chain a view can express is its own nesting depth.
+pub(crate) fn mounted_slots(node: &Node) -> usize {
+    if is_transparent_node(node) {
+        node.children.iter().map(mounted_slots).sum()
+    } else {
+        1
+    }
+}
+
 /// A compile-time probe for the platform gate (BLUE18 rule #92 / #94).
 ///
 /// It exists so the gate has an **executable** criterion rather than a source grep:

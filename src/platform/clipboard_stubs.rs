@@ -1,8 +1,15 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! Platform-specific rich clipboard stubs.
-//! These will be replaced with real platform clipboard bindings.
+//! Rich clipboard formats (CF_HTML on Windows, and the platform-independent codec).
+//!
+//! # About the file name
+//!
+//! The module is still called `clipboard_stubs` because it is a public path; the name no longer
+//! describes it. What lives here is the **real** CF_HTML encoder/decoder (the byte-offset codec is
+//! platform-independent and unit-tested on hosts where the Windows backend does not compile), not
+//! a placeholder. A future release that can take the path break should rename it to
+//! `clipboard_formats`.
 
 /// The CF_HTML wire format used by the Windows clipboard's `HTML Format`.
 ///

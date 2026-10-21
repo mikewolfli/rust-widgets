@@ -518,6 +518,9 @@ impl DateEdit {
     /// moves a now-out-of-range value up to the boundary rather than leaving the
     /// widget holding a date below its own minimum.
     pub fn set_minimum_date(&mut self, date: Date) {
+        if self.minimum == date {
+            return;
+        }
         self.minimum = date;
         // Re-clamp the current value into the new range. Without this the widget could
         // hold a date below its own minimum, after which every `set_date` call silently
@@ -531,6 +534,9 @@ impl DateEdit {
     /// a now-out-of-range value down to the boundary rather than leaving the widget
     /// holding a date it would itself reject.
     pub fn set_maximum_date(&mut self, date: Date) {
+        if self.maximum == date {
+            return;
+        }
         self.maximum = date;
         self.clamp_to_range();
         self.base.request_redraw();
@@ -542,6 +548,9 @@ impl DateEdit {
     /// caller that swaps its arguments gets a working widget pinned at `min` rather
     /// than one where every subsequent [`DateEdit::set_date`] silently fails.
     pub fn set_date_range(&mut self, min: Date, max: Date) {
+        if self.minimum == min && self.maximum == max {
+            return;
+        }
         self.minimum = min;
         self.maximum = max;
         self.clamp_to_range();
@@ -560,6 +569,9 @@ impl DateEdit {
     /// The string is kept verbatim; no validation is performed. See
     /// [`DateEdit::display_format`] for the current limits on its use.
     pub fn set_display_format(&mut self, fmt: String) {
+        if self.display_format == fmt {
+            return;
+        }
         self.display_format = fmt;
         self.base.request_redraw();
     }
@@ -575,6 +587,9 @@ impl DateEdit {
     /// This used to be "purely stored state; changing it only triggers a redraw", which is exactly
     /// what it did -- a redraw of the same field.
     pub fn set_calendar_popup(&mut self, popup: bool) {
+        if self.calendar_popup == popup {
+            return;
+        }
         self.calendar_popup = popup;
         self.base.request_redraw();
     }
@@ -812,7 +827,7 @@ impl Draw for DateEdit {
         // resolved style supplies `text_color` and `border_color` but no
         // `background_color` (ThemeRole::Input resolves that to `None`), so the interior
         // is derived below from the theme's own background rather than left unset.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("date_edit");
         // Read as its own lock acquisition and copied out as values, so the guard is
         // dropped before anything else touches the theme.
@@ -875,7 +890,7 @@ impl Draw for DateEdit {
         // so deriving it here keeps the two from drifting.
         // The **effective font** — the resolved theme/caller font — so the value honours the theme
         // body font and the user's text scale (D09-STYLE-01).
-        let font = effective_font(&style);
+        let font = effective_font(style);
         let line = context.text_line(rect, font);
         context.draw_text_fitted(
             Rect {

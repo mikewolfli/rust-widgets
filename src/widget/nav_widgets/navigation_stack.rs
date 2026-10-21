@@ -314,7 +314,7 @@ impl Draw for NavigationStack {
         //
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("navigation_stack");
         // `navigation_stack` is absent from `WidgetRole::for_kind_name`'s table, so it
         // classifies as `Surface` and resolves to `theme.colors.background` — the window's
@@ -364,7 +364,7 @@ impl Draw for NavigationStack {
             // The **effective font** — the resolved theme/caller font — for the back label and the
             // title, rather than the fixed 13/15 px sans-serif faces this used to build
             // (D09-STYLE-01).
-            let back_font = effective_font(&style);
+            let back_font = effective_font(style);
             let back_color = self.base.disabled_ink_on(accent, surface);
             // The line box is derived from the *font in use*, not from a literal. `+ 14` was shared
             // by this 13 pt label and the 15 pt title below, so it was the correct descent for
@@ -382,7 +382,7 @@ impl Draw for NavigationStack {
         }
 
         // Title
-        let title_font = effective_font(&style);
+        let title_font = effective_font(style);
         let title = self.display_title();
         let text_color = self.base.disabled_ink_on(ink, surface);
         let metrics = context.measure_text(&title, title_font);

@@ -331,7 +331,7 @@ impl Draw for DropZone {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("drop_zone");
         let ink = style
             .text_color
@@ -442,7 +442,7 @@ impl Draw for DropZone {
         // the one fact a zone holds, so it is painted in the middle as the cue — without it the
         // census picture was an empty well, and a user had to guess whether a drag would be
         // accepted. The band is inset past the dashes so the text never sits on the outline.
-        let font = crate::widget::metrics::effective_font(&style);
+        let font = crate::widget::metrics::effective_font(style);
         if rect.width > 40 && rect.height > 24 {
             let hint = format!("Drop {} here", self.accepted_type);
             let inner = Rect::new(rect.x + 10, rect.y, rect.width.saturating_sub(20), rect.height);

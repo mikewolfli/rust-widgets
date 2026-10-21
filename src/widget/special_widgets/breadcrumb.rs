@@ -349,7 +349,7 @@ impl Draw for Breadcrumb {
         // `resolved_theme_style` (or the scoped block below), so none is held across
         // the draw or across another accessor — the global manager's mutex is not
         // re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("breadcrumb");
         // `breadcrumb` resolves to the `Text` role, which carries a foreground but no
         // surface — a text control sits on whatever it was placed on. So the surface
@@ -407,7 +407,7 @@ impl Draw for Breadcrumb {
             // separator: the box is also the click target, and D09-CTRL-02 is exactly the case where
             // ink and target disagreed. `estimate_text_width` sizes the box, so this only bites for a
             // caller font larger than the measured one — where eliding is still the correct answer.
-            let line = context.text_line(segment_rect, effective_font(&style));
+            let line = context.text_line(segment_rect, effective_font(style));
             let label_box = Rect::new(
                 segment_rect.x + self.segment_padding,
                 line.y,
@@ -417,7 +417,7 @@ impl Draw for Breadcrumb {
             context.draw_text_fitted(
                 label_box,
                 &segment.label,
-                effective_font(&style),
+                effective_font(style),
                 text_color,
                 HorizontalAlignment::Left,
             );
@@ -430,7 +430,7 @@ impl Draw for Breadcrumb {
                 context.draw_text(
                     Point::new(gap_x + 3, line.y),
                     ">",
-                    effective_font(&style),
+                    effective_font(style),
                     separator_color,
                     HorizontalAlignment::Left,
                 );

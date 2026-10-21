@@ -189,7 +189,7 @@ impl Draw for MobileDatePicker {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         // `mobile_date_picker` is not in the role table, so it classifies as `Surface` and its
         // resolved background is the window fill itself; the drum below therefore derives its own
         // distinct surface rather than painting the window's.
@@ -275,8 +275,8 @@ impl Draw for MobileDatePicker {
         // The font follows the row **as painted**, so a band clamped shorter than the nominal
         // five rows shrinks its type with it instead of overflowing the rows it sits in.
         let font_size = (row_height as f32 * 0.38).clamp(9.0, 15.0);
-        let font = role_font(&style, font_size);
-        let arrow_font = role_font(&style, (font_size * 1.3).max(10.0)).with_bold(true);
+        let font = role_font(style, font_size);
+        let arrow_font = role_font(style, (font_size * 1.3).max(10.0)).with_bold(true);
 
         // Prepare column data: (offset_into_items, visible_items_list)
         let year_items: Vec<String> =

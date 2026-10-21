@@ -594,7 +594,7 @@ impl Draw for DateTimeEdit {
         // resolved style supplies `text_color` and `border_color` but no
         // `background_color` (ThemeRole::Input resolves that to `None`), so the interior
         // is derived below from the theme's own background rather than left unset.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("date_time_edit");
         // Read as its own lock acquisition and copied out as values, so the guard is
         // dropped before anything else touches the theme.
@@ -657,7 +657,7 @@ impl Draw for DateTimeEdit {
         // glyph box's top edge on the field's middle line, so the value sat half a line low.
         // The **effective font** — the resolved theme/caller font — so the value honours the theme
         // body font and the user's text scale (D09-STYLE-01).
-        let font = effective_font(&style);
+        let font = effective_font(style);
         let line = context.text_line(rect, font);
         context.draw_text_fitted(
             Rect {

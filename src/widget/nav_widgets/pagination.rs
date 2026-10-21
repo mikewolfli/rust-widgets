@@ -487,7 +487,7 @@ impl Draw for Pagination {
             return;
         }
 
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let background = style.background_color.unwrap_or(Color::WHITE);
         let text_color = style.text_color.unwrap_or(Color::BLACK);
         let selected_background = style.border_color.unwrap_or(Color::rgb(60, 90, 160));
@@ -505,7 +505,7 @@ impl Draw for Pagination {
         // the bar-height-derived face this control has always used, so a themed font or text scale
         // reaches the page numbers (D09-STYLE-01).
         let fallback_font = Font::simple("Sans", font_size);
-        let font = effective_font(&style);
+        let font = effective_font(style);
         let font = if style.font.is_some() { font } else { &fallback_font };
 
         context.face_with_gradient(

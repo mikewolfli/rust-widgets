@@ -624,7 +624,7 @@ impl Draw for TableWidget {
         //
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("table");
         let mut surface = style
             .background_color
@@ -731,9 +731,9 @@ impl Draw for TableWidget {
                         let cell = crate::core::Rect::new(x, y, col_w, row_h as u32);
                         if !text.is_empty() {
                             context.draw_text_fitted(
-                                context.text_line(cell, effective_font(&style)),
+                                context.text_line(cell, effective_font(style)),
                                 &text,
-                                effective_font(&style),
+                                effective_font(style),
                                 ink,
                                 HorizontalAlignment::Left,
                             );

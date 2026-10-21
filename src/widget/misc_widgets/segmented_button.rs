@@ -401,7 +401,7 @@ impl Draw for SegmentedButton {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("segmented_button");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
@@ -450,7 +450,7 @@ impl Draw for SegmentedButton {
         // rounding rather than the 16 px radius a 120 px canvas produced.
         let track_rect = self.track_band();
         let corner_radius = (track_rect.height / 2).max(4);
-        let font = role_font(&style, 13.0);
+        let font = role_font(style, 13.0);
 
         // The track is painted before the early return on an empty segment list, so a freshly
         // constructed control is visible rather than reporting `ink = 0`. An empty track reads as

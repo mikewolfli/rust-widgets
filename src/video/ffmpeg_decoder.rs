@@ -85,7 +85,12 @@ impl Drop for TempFileGuard {
 pub fn decode_frames(data: &[u8]) -> Result<(Vec<VideoFrame>, VideoMetadata), String> {
     let mut decoder = FfmpegDecoder::new(data.to_vec())?;
     let metadata = decoder.metadata().clone();
-    let mut frames = Vec::with_capacity(metadata.total_frames as usize);
+    // `total_frames` is derived from the container's duration and frame rate, so a malformed or
+    // hostile header could name millions of frames. Reserving that count up front turned a bad
+    // header into a huge allocation before a single frame was decoded. Reserve a bounded working
+    // set instead and let the vector grow with the frames that really arrive.
+    const FRAME_PREALLOC_CAP: usize = 64;
+    let mut frames = Vec::with_capacity((metadata.total_frames as usize).min(FRAME_PREALLOC_CAP));
 
     loop {
         match decoder.read_frame() {

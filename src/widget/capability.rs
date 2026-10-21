@@ -210,6 +210,46 @@ pub(crate) fn kind_canonical_name(kind: crate::widget::WidgetKind) -> alloc::str
     name
 }
 
+/// Finds the event schema `name` refers to on `capability`, using the same normalisation as every
+/// other name lookup (`"value-changed"` and `"value_changed"` are the same event).
+///
+/// One implementation instead of four: the JSON binding, the JSON loader's publication check, the
+/// designer generator and `connect_event` each used to spell the same `normalize_key` comparison.
+/// An exact match is tried first, so the common already-canonical spelling allocates nothing.
+pub fn find_event_schema<'a>(
+    capability: &'a WidgetCapability,
+    name: &str,
+) -> Option<&'a EventSchema> {
+    if let Some(schema) = capability.events.iter().find(|schema| schema.name == name) {
+        return Some(schema);
+    }
+    let normalized = normalize_key(name);
+    capability.events.iter().find(|schema| normalize_key(schema.name) == normalized)
+}
+
+/// Runs `f` with the canonical name of `kind`, reusing one scratch buffer per thread.
+///
+/// The allocating form above is fine for one-shot use, but
+/// [`WidgetFactory::capability_by_kind`] is on the hover/property path and used it only to
+/// compare against each entry's `canonical_name`. A per-thread scratch buffer removes that
+/// allocation without interning the (bounded) set of kind names in a global map.
+#[cfg(full_widgets)]
+pub(crate) fn with_kind_canonical_name<R>(
+    kind: crate::widget::WidgetKind,
+    f: impl FnOnce(&str) -> R,
+) -> R {
+    thread_local! {
+        static SCRATCH: crate::compat::RefCell<alloc::string::String> =
+            const { crate::compat::RefCell::new(alloc::string::String::new()) };
+    }
+    SCRATCH.with(|scratch| {
+        let mut scratch = scratch.borrow_mut();
+        scratch.clear();
+        kind_canonical_name_into(kind, &mut scratch);
+        f(scratch.as_str())
+    })
+}
+
 /// Appends the canonical `snake_case` name of `kind` to `out`, without allocating.
 ///
 /// The allocation-free half of the allocating wrapper above, for callers that already
@@ -289,8 +329,7 @@ pub fn factory_name_for_kind(kind: crate::widget::WidgetKind) -> Option<&'static
         }
         #[cfg(full_widgets)]
         {
-            let factory = WidgetFactory::new_with_defaults();
-            if let Some(capability) = factory.capability_by_kind(kind) {
+            if let Some(capability) = WidgetFactory::shared().capability_by_kind(kind) {
                 return Some(capability.canonical_name);
             }
             alias_factory_name(kind)
@@ -627,6 +666,23 @@ impl WidgetFactory {
         factory
     }
 
+    /// The process-wide default factory, built once and then borrowed.
+    ///
+    /// # Why this exists
+    ///
+    /// `new_with_defaults` registers ~190 controls, each doing a `normalize_key` `String`
+    /// allocation and two `HashMap` inserts. That cost was paid on every property read/write
+    /// through a handle, every hover/press theme re-resolution, every view diff node, and every
+    /// JSON load — all read-only uses of a table that never changes after construction.
+    ///
+    /// The factory is immutable once built (`register` needs `&mut self`), so a shared `OnceLock`
+    /// is exact rather than approximate: a caller that needs to extend the table must build its
+    /// own with [`Self::new`] + [`Self::register`].
+    pub fn shared() -> &'static Self {
+        static SHARED: crate::compat::OnceLock<WidgetFactory> = crate::compat::OnceLock::new();
+        SHARED.get_or_init(Self::new_with_defaults)
+    }
+
     /// Registers one widget capability and constructor.
     ///
     /// # Overwriting is deliberate here, and why the checked form exists
@@ -843,12 +899,15 @@ impl WidgetFactory {
     /// preserves the previous behaviour for the unambiguous majority.
     pub fn capability_by_kind(&self, kind: WidgetKind) -> Option<&WidgetCapability> {
         let indices = self.kind_to_index.get(&kind)?;
-        let expected = kind_canonical_name(kind);
-        indices
-            .iter()
-            .filter_map(|index| self.capabilities.get(*index))
-            .find(|capability| capability.canonical_name == expected)
-            .or_else(|| self.capabilities.get(indices[0]))
+        // Compare through a per-thread scratch buffer: this used to allocate a `String` on every
+        // call, and the callers (hover state, theme application, JSON loading) are hot.
+        with_kind_canonical_name(kind, |expected| {
+            indices
+                .iter()
+                .filter_map(|index| self.capabilities.get(*index))
+                .find(|capability| capability.canonical_name == expected)
+                .or_else(|| self.capabilities.get(indices[0]))
+        })
     }
 
     /// Returns every capability registered for `kind`.
@@ -1194,11 +1253,7 @@ impl WidgetFactory {
 
         // Normalised, so `"value-changed"` and `"value_changed"` reach the same event
         // — the same tolerance `invoke_command` and `read_property` provide.
-        let normalized = normalize_key(event_name);
-        let canonical = capability
-            .events
-            .iter()
-            .find(|schema| normalize_key(schema.name) == normalized)
+        let canonical = find_event_schema(capability, event_name)
             .map(|schema| schema.name)
             .ok_or(CapabilityAccessError::UnknownCommand)?;
 

@@ -95,6 +95,9 @@ impl ToolBoxItem {
         &self.text
     }
     /// Sets text.
+    ///
+    /// This is the value-level setter only: it cannot request a repaint. A `ToolBoxItem` held by a
+    /// control should be changed through [`ToolBox::set_item_text`].
     pub fn set_text(&mut self, text: String) {
         self.text = text;
     }
@@ -297,8 +300,35 @@ impl ToolBox {
         self.items.get(index)
     }
     /// Returns mutable item at index.
+    ///
+    /// A mutation made through this reference is **not** followed by a repaint, because the item
+    /// has no back-reference to the control that paints it. Use [`Self::set_item_text`] or
+    /// [`Self::set_item_icon_source`] when the change must be visible.
     pub fn item_mut(&mut self, index: usize) -> Option<&mut ToolBoxItem> {
         self.items.get_mut(index)
+    }
+
+    /// Replaces an item's text and repaints the control.
+    ///
+    /// # Why this exists
+    ///
+    /// `ToolBoxItem::set_text` mutates a value that the strip paints, but the item cannot ask the
+    /// control for a repaint — so a text change made through [`Self::item_mut`] stayed invisible
+    /// until some unrelated repaint happened. This entry point closes the loop and short-circuits
+    /// an equal value, so setting the same text does not invalidate a frame.
+    ///
+    /// Returns whether the text changed.
+    pub fn set_item_text(&mut self, index: usize, text: impl Into<String>) -> bool {
+        let text = text.into();
+        let Some(item) = self.items.get_mut(index) else {
+            return false;
+        };
+        if item.text == text {
+            return false;
+        }
+        item.text = text;
+        self.base.request_redraw();
+        true
     }
     /// Assigns a typed icon source to an existing item index.
     pub fn set_item_icon_source(

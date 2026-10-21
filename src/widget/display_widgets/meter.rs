@@ -607,7 +607,7 @@ impl Draw for Meter {
         //
         // The threshold bands are deliberately *not* themed: a caller assigns each band its
         // own colour to encode a range, so those are data, not chrome.
-        let style = self.style().clone();
+        let style = self.style();
         let theme = crate::style::resolved_theme_style("meter");
         // The accent the gauge's value arc is drawn in. It is **not** read from
         // `style.background_color`: this control classifies as `WidgetRole::Accent`, so that field

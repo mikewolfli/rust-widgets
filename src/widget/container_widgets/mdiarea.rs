@@ -839,7 +839,7 @@ impl Draw for MdiArea {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("mdi_area");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
@@ -986,7 +986,7 @@ impl Draw for MdiArea {
                 );
                 // The **effective font** — the resolved theme/caller font — for the subwindow title
                 // (D09-STYLE-01).
-                let title_font = effective_font(&style);
+                let title_font = effective_font(style);
                 let title_line = context.text_line(title_bar_rect, title_font);
                 let text_color = if is_active { primary.contrast_color() } else { ink };
                 // ── Icon ──

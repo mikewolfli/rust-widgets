@@ -170,6 +170,22 @@ const HIGH_PHASE_BUDGET: Duration = Duration::from_millis(4);
 #[cfg(not(alloc_frugal))]
 const NORMAL_PHASE_BUDGET: Duration = Duration::from_millis(4);
 
+/// How long the thread waits for the next event when a turn dispatched nothing.
+///
+/// The wait is woken by `post_event`, so a busy loop still reacts immediately; the timeout only
+/// bounds how often the loop re-checks state that has no wake channel (the `running` flag, a
+/// gesture release, the native pump). It replaces a 1 ms sleep, which woke the thread 1000 times
+/// a second on a completely idle window.
+#[cfg(not(alloc_frugal))]
+const IDLE_WAIT: Duration = Duration::from_millis(16);
+
+/// The idle wait when a platform pump must be polled (Wayland `dispatch_pending`).
+///
+/// Such a pump has no file descriptor the loop can wait on, so its cadence is the loop's. Keeping
+/// the shorter interval avoids trading 1 ms of Wayland dispatch for idle CPU.
+#[cfg(not(alloc_frugal))]
+const NATIVE_PUMP_WAIT: Duration = Duration::from_millis(1);
+
 /// The request id carried by an animation-frame event, or `None` for any other event.
 ///
 /// The id lives in the payload as eight little-endian bytes (see
@@ -465,142 +481,202 @@ impl EventLoop {
                         gesture_engines.release(target);
                     }
                 }
-                // Phase 1a: Drain up to `PER_TURN_EVENT_DRAIN_CAP` events into per-priority
-                // buffers (D09-EVT-04). Draining a bounded prefix — rather than everything —
-                // keeps the transient buffer bounded under a sustained producer; the rest
-                // stays queued and is picked up next turn, so ordering is preserved.
-                let mut had_work = false;
-                let mut high_events: Vec<(ObjectId, Event)> = Vec::new();
-                let mut normal_events: Vec<(ObjectId, Event)> = Vec::new();
-                let mut idle_events: Vec<(ObjectId, Event)> = Vec::new();
-                let mut drained = 0usize;
-                while drained < PER_TURN_EVENT_DRAIN_CAP {
-                    let Some((target, event, priority)) = lock(&queue).dequeue() else { break };
-                    had_work = true;
-                    drained += 1;
-                    match priority {
-                        EventPriority::High => high_events.push((target, event)),
-                        EventPriority::Normal => normal_events.push((target, event)),
-                        EventPriority::Idle => idle_events.push((target, event)),
-                    }
-                }
+                // The dispatch closure borrows the gesture registry for its lifetime, so phase 1
+                // (including the idle wait that also dispatches) runs in its own scope: the
+                // gesture sweep below needs the registry back by name.
+                {
+                    // Phase 1a: Drain up to `PER_TURN_EVENT_DRAIN_CAP` events into per-priority
+                    // buffers (D09-EVT-04). Draining a bounded prefix — rather than everything —
+                    // keeps the transient buffer bounded under a sustained producer; the rest
+                    // stays queued and is picked up next turn, so ordering is preserved.
+                    let mut high_events: Vec<(ObjectId, Event)> = Vec::new();
+                    let mut normal_events: Vec<(ObjectId, Event)> = Vec::new();
+                    let mut idle_events: Vec<(ObjectId, Event)> = Vec::new();
+                    // One lock acquisition and one refill for the whole bounded prefix. The
+                    // per-event `dequeue` this replaces took the queue mutex n times a turn.
+                    let mut had_work = lock(&queue).drain_into(
+                        &mut high_events,
+                        &mut normal_events,
+                        &mut idle_events,
+                        PER_TURN_EVENT_DRAIN_CAP,
+                    ) > 0;
 
-                // One dispatch helper shared by the High and Normal phases, so both honour the
-                // same animation-frame cancellation and gesture-routing rules (and neither is a
-                // copy that can drift from the other). It borrows the gesture registry and the
-                // cancellation state; the phase loops below own only their event buffers.
-                let dispatch_fn_ref = &dispatch_fn;
-                let cancelled_ref = &cancelled_anim_frames;
-                #[cfg(feature = "touch")]
-                let gesture_ref = &mut gesture_engines;
-                // `mut` is only needed when the `touch` feature captures the gesture
-                // registry by `&mut`; without it the binding is immutable.
-                #[cfg_attr(not(feature = "touch"), allow(unused_mut))]
-                let mut dispatch_one = |target: ObjectId, event: &Event| {
-                    // A cancelled animation frame is discarded here, before any dispatch, so a
-                    // host that cancelled never sees the callback. See `cancel_animation_frame`
-                    // for why this is checked at dispatch rather than removed from the queue.
-                    let anim_id = animation_frame_id(event);
-                    let skip = match anim_id {
-                        Some(id) => lock(cancelled_ref).dispatched_and_cancelled(id),
-                        None => false,
-                    };
-                    if skip {
-                        return;
-                    }
-
+                    // One dispatch helper shared by the High and Normal phases, so both honour the
+                    // same animation-frame cancellation and gesture-routing rules (and neither is a
+                    // copy that can drift from the other). It borrows the gesture registry and the
+                    // cancellation state; the phase loops below own only their event buffers.
+                    let dispatch_fn_ref = &dispatch_fn;
+                    let cancelled_ref = &cancelled_anim_frames;
                     #[cfg(feature = "touch")]
-                    let maybe_gesture_event =
-                        if feeds_the_gesture_engine(event) || is_touch_cancel(event) {
-                            gesture_ref.process(target, event, now_ms())
-                        } else {
-                            None
+                    let gesture_ref = &mut gesture_engines;
+                    // `mut` is only needed when the `touch` feature captures the gesture
+                    // registry by `&mut`; without it the binding is immutable.
+                    #[cfg_attr(not(feature = "touch"), allow(unused_mut))]
+                    let mut dispatch_one = |target: ObjectId, event: &Event| {
+                        // A cancelled animation frame is discarded here, before any dispatch, so a
+                        // host that cancelled never sees the callback. See `cancel_animation_frame`
+                        // for why this is checked at dispatch rather than removed from the queue.
+                        let anim_id = animation_frame_id(event);
+                        let skip = match anim_id {
+                            Some(id) => lock(cancelled_ref).dispatched_and_cancelled(id),
+                            None => false,
                         };
-
-                    if let Some(dispatch) = dispatch_fn_ref {
-                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            dispatch(target, event);
-                            #[cfg(feature = "touch")]
-                            if let Some(ref gesture) = maybe_gesture_event {
-                                dispatch(target, gesture);
-                            }
-                        }));
-                        if let Err(e) = result {
-                            log::error!("[event-loop] Dispatch panicked: {e:?}");
+                        if skip {
+                            return;
                         }
-                    } else {
-                        log::warn!(
+
+                        #[cfg(feature = "touch")]
+                        let maybe_gesture_event =
+                            if feeds_the_gesture_engine(event) || is_touch_cancel(event) {
+                                gesture_ref.process(target, event, now_ms())
+                            } else {
+                                None
+                            };
+
+                        if let Some(dispatch) = dispatch_fn_ref {
+                            let result =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    dispatch(target, event);
+                                    #[cfg(feature = "touch")]
+                                    if let Some(ref gesture) = maybe_gesture_event {
+                                        dispatch(target, gesture);
+                                    }
+                                }));
+                            if let Err(e) = result {
+                                log::error!("[event-loop] Dispatch panicked: {e:?}");
+                            }
+                        } else {
+                            log::warn!(
                             "[event-loop] No dispatch_fn set — dropping event {event:?} for target {target:?}"
                         );
-                    }
-                };
+                        }
+                    };
 
-                // Phase 1b: Dispatch High-priority events first, within a time budget. Events
-                // the budget does not reach are re-queued (High) so they are delivered next
-                // turn rather than dropped; the buffer is already bounded by the drain cap.
-                let mut processed = 0usize;
-                let budget_start = std::time::Instant::now();
-                while processed < high_events.len() {
-                    if budget_start.elapsed() >= HIGH_PHASE_BUDGET {
-                        break;
-                    }
-                    let (target, event) = &high_events[processed];
-                    dispatch_one(*target, event);
-                    processed += 1;
-                }
-                if processed < high_events.len() {
-                    let sender = lock(&queue).sender();
-                    for (target, event) in high_events.drain(processed..) {
-                        let _ = sender.post_with_priority(target, event, EventPriority::High);
-                    }
-                }
-
-                // Phase 1c: Dispatch Normal-priority events second, also budgeted. A cancelled
-                // animation frame is discarded before any dispatch, so a host that cancelled
-                // never sees the callback (see `cancel_animation_frame`), and every delivered
-                // id is marked dispatched so a later cancel reports `false`.
-                let mut processed = 0usize;
-                let budget_start = std::time::Instant::now();
-                while processed < normal_events.len() {
-                    if budget_start.elapsed() >= NORMAL_PHASE_BUDGET {
-                        break;
-                    }
-                    let (target, event) = &normal_events[processed];
-                    dispatch_one(*target, event);
-                    processed += 1;
-                }
-                if processed < normal_events.len() {
-                    let sender = lock(&queue).sender();
-                    for (target, event) in normal_events.drain(processed..) {
-                        let _ = sender.post_with_priority(target, event, EventPriority::Normal);
-                    }
-                }
-
-                // Phase 1e: Process buffered idle events with a 5ms time budget.
-                // This prevents idle processing from starving frame-critical work. Whatever
-                // the budget does not allow is re-queued, not dropped: idle means deferred,
-                // not discarded.
-                if !idle_events.is_empty() {
-                    #[cfg(not(alloc_frugal))]
-                    let idle_budget_start = std::time::Instant::now();
-                    let mut processed = 0;
-                    while processed < idle_events.len() {
-                        #[cfg(not(alloc_frugal))]
-                        if idle_budget_start.elapsed().as_millis() >= 5 {
+                    // Phase 1b: Dispatch High-priority events first, within a time budget. Events
+                    // the budget does not reach are re-queued (High) so they are delivered next
+                    // turn rather than dropped; the buffer is already bounded by the drain cap.
+                    let mut processed = 0usize;
+                    let budget_start = std::time::Instant::now();
+                    while processed < high_events.len() {
+                        if budget_start.elapsed() >= HIGH_PHASE_BUDGET {
                             break;
                         }
-                        let (target, event) = &idle_events[processed];
-                        // Same cancellation and gesture rules the High/Normal phases apply; an
-                        // animation frame may be posted at any priority. `dispatch_one` owns
-                        // those rules, so idle events cannot drift from the others.
+                        let (target, event) = &high_events[processed];
                         dispatch_one(*target, event);
                         processed += 1;
                     }
-                    // Deliver the remainder on a later, quieter iteration, in order.
-                    if processed < idle_events.len() {
+                    if processed < high_events.len() {
                         let sender = lock(&queue).sender();
-                        for (target, event) in idle_events.drain(processed..) {
-                            let _ = sender.post_idle(target, event);
+                        for (target, event) in high_events.drain(processed..) {
+                            let _ = sender.post_with_priority(target, event, EventPriority::High);
+                        }
+                    }
+
+                    // Phase 1c: Dispatch Normal-priority events second, also budgeted. A cancelled
+                    // animation frame is discarded before any dispatch, so a host that cancelled
+                    // never sees the callback (see `cancel_animation_frame`), and every delivered
+                    // id is marked dispatched so a later cancel reports `false`.
+                    let mut processed = 0usize;
+                    let budget_start = std::time::Instant::now();
+                    while processed < normal_events.len() {
+                        if budget_start.elapsed() >= NORMAL_PHASE_BUDGET {
+                            break;
+                        }
+                        let (target, event) = &normal_events[processed];
+                        dispatch_one(*target, event);
+                        processed += 1;
+                    }
+                    if processed < normal_events.len() {
+                        let sender = lock(&queue).sender();
+                        for (target, event) in normal_events.drain(processed..) {
+                            let _ = sender.post_with_priority(target, event, EventPriority::Normal);
+                        }
+                    }
+
+                    // Phase 1e: Process buffered idle events with a 5ms time budget.
+                    // This prevents idle processing from starving frame-critical work. Whatever
+                    // the budget does not allow is re-queued, not dropped: idle means deferred,
+                    // not discarded.
+                    if !idle_events.is_empty() {
+                        #[cfg(not(alloc_frugal))]
+                        let idle_budget_start = std::time::Instant::now();
+                        let mut processed = 0;
+                        while processed < idle_events.len() {
+                            #[cfg(not(alloc_frugal))]
+                            if idle_budget_start.elapsed().as_millis() >= 5 {
+                                break;
+                            }
+                            let (target, event) = &idle_events[processed];
+                            // Same cancellation and gesture rules the High/Normal phases apply; an
+                            // animation frame may be posted at any priority. `dispatch_one` owns
+                            // those rules, so idle events cannot drift from the others.
+                            dispatch_one(*target, event);
+                            processed += 1;
+                        }
+                        // Deliver the remainder on a later, quieter iteration, in order.
+                        if processed < idle_events.len() {
+                            let sender = lock(&queue).sender();
+                            for (target, event) in idle_events.drain(processed..) {
+                                let _ = sender.post_idle(target, event);
+                            }
+                        }
+                    }
+
+                    // Phase 1e: Tick deferred idle tasks, under the same 5ms budget as
+                    // idle events so a task cannot starve frame-critical work either. A
+                    // task runs only once its `threshold_frames` have elapsed, which is
+                    // what makes it "idle" work rather than a per-frame callback.
+                    if !idle_tasks.is_empty() {
+                        #[cfg(not(alloc_frugal))]
+                        let task_budget_start = std::time::Instant::now();
+                        let task_count = idle_tasks.len();
+                        // Rotate the starting point each round so the tail is not starved by a slow
+                        // head task. The phase still breaks on the 5ms budget; the saved cursor is
+                        // where a later round resumes, and running the whole ring (at most once per
+                        // task) keeps the normal ordering and `threshold_frames` cooldown intact.
+                        let start_at = idle_task_cursor.load(Ordering::SeqCst) % task_count;
+                        let mut offset = 0;
+                        while offset < task_count {
+                            #[cfg(not(alloc_frugal))]
+                            if task_budget_start.elapsed().as_millis() >= 5 {
+                                break;
+                            }
+                            let index = (start_at + offset) % task_count;
+                            offset += 1;
+                            let task = &mut idle_tasks[index];
+                            // A panicking task must not take the loop down with it: the
+                            // rest of the queue is still valid work.
+                            let outcome =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    task.tick()
+                                }));
+                            match outcome {
+                                Ok(true) => had_work = true,
+                                Ok(false) => {}
+                                Err(e) => {
+                                    log::error!(
+                                        "[event-loop] Idle task {} panicked: {e:?}",
+                                        task.id
+                                    )
+                                }
+                            }
+                        }
+                        // Resume at the task after the last one attempted, wrapping around. A task
+                        // the budget cut off is `start_at + offset` (offset was incremented past
+                        // it), so the whole ring is covered across rounds even if every task is slow.
+                        idle_task_cursor.store((start_at + offset) % task_count, Ordering::SeqCst);
+                    }
+
+                    // Phase 2: If no events were dispatched, wait for the next one instead of
+                    // polling on a fixed 1 ms tick. The wait is woken by `post_event`, so a
+                    // producer is never delayed behind it; the timeout only re-checks state that
+                    // has no wake channel. A turn that dispatched nothing was previously a
+                    // 1000 Hz busy-poll on an idle window.
+                    if !had_work {
+                        let wait = if native_pump.is_some() { NATIVE_PUMP_WAIT } else { IDLE_WAIT };
+                        if let Some((target, event, _priority)) = lock(&queue).dequeue_timeout(wait)
+                        {
+                            dispatch_one(target, &event);
                         }
                     }
                 }
@@ -616,52 +692,6 @@ impl EventLoop {
                     if removed > 0 {
                         log::trace!("[event-loop] reclaimed {removed} idle gesture engine(s)");
                     }
-                }
-
-                // Phase 1e: Tick deferred idle tasks, under the same 5ms budget as
-                // idle events so a task cannot starve frame-critical work either. A
-                // task runs only once its `threshold_frames` have elapsed, which is
-                // what makes it "idle" work rather than a per-frame callback.
-                if !idle_tasks.is_empty() {
-                    #[cfg(not(alloc_frugal))]
-                    let task_budget_start = std::time::Instant::now();
-                    let task_count = idle_tasks.len();
-                    // Rotate the starting point each round so the tail is not starved by a slow
-                    // head task. The phase still breaks on the 5ms budget; the saved cursor is
-                    // where a later round resumes, and running the whole ring (at most once per
-                    // task) keeps the normal ordering and `threshold_frames` cooldown intact.
-                    let start_at = idle_task_cursor.load(Ordering::SeqCst) % task_count;
-                    let mut offset = 0;
-                    while offset < task_count {
-                        #[cfg(not(alloc_frugal))]
-                        if task_budget_start.elapsed().as_millis() >= 5 {
-                            break;
-                        }
-                        let index = (start_at + offset) % task_count;
-                        offset += 1;
-                        let task = &mut idle_tasks[index];
-                        // A panicking task must not take the loop down with it: the
-                        // rest of the queue is still valid work.
-                        let outcome =
-                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| task.tick()));
-                        match outcome {
-                            Ok(true) => had_work = true,
-                            Ok(false) => {}
-                            Err(e) => {
-                                log::error!("[event-loop] Idle task {} panicked: {e:?}", task.id)
-                            }
-                        }
-                    }
-                    // Resume at the task after the last one attempted, wrapping around. A task
-                    // the budget cut off is `start_at + offset` (offset was incremented past
-                    // it), so the whole ring is covered across rounds even if every task is slow.
-                    idle_task_cursor.store((start_at + offset) % task_count, Ordering::SeqCst);
-                }
-
-                // Phase 2: If no events were dispatched, sleep briefly to avoid
-                // busy-waiting. The idle budget already consumed any idle work.
-                if !had_work {
-                    std::thread::sleep(Duration::from_millis(1));
                 }
             }
         });
@@ -958,7 +988,7 @@ mod tests {
         assert_eq!(el.idle_task_count(), 1);
 
         el.start();
-        // The loop sleeps 1ms per iteration when idle, so a threshold of 2 frames plus
+        // The idle turn waits up to 16ms for an event, so a threshold of 2 frames plus
         // scheduling delay lands well inside this budget.
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(600);
         while runs.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {

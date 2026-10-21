@@ -789,7 +789,7 @@ impl Draw for MaskedEdit {
         // were still fixed literals until they were derived from the same resolved pair, so a
         // themed field carried unthemed text: `rgb(33,33,33)` on the dark theme's `rgb(69,69,69)`
         // field is ~1.35:1, which is present in the SVG and unreadable to a person.
-        let style = self.style().clone();
+        let style = self.style();
         let themed = crate::style::resolved_theme_style("masked_edit");
         let themed_bg = themed.as_ref().and_then(|resolved| resolved.background_color);
         let themed_border = themed.as_ref().and_then(|resolved| resolved.border_color);
@@ -1005,9 +1005,12 @@ impl Draw for MaskedEdit {
                 }
                 match seg {
                     MaskSegment::Literal { ch } => {
+                        // Drawn from the character's own UTF-8 bytes: `ch.to_string()` allocated a
+                        // `String` per mask segment per frame.
+                        let mut glyph = [0u8; 4];
                         context.draw_text(
                             Point::new(draw_x, inner_top),
-                            &ch.to_string(),
+                            ch.encode_utf8(&mut glyph),
                             &font,
                             mask_ink,
                             value_align,
@@ -1035,6 +1038,11 @@ impl Draw for MaskedEdit {
                         };
 
                         // Draw cursor if at this segment position
+                        // One stack buffer for both branches: each `draw_text` reads the bytes
+                        // immediately, and `to_string()` allocated one `String` per character (per
+                        // caret draw too).
+                        let mut glyph = [0u8; 4];
+                        let glyph = ch.encode_utf8(&mut glyph);
                         if self.focused && is_enabled && seg_idx == self.cursor_pos {
                             context.fill_rect(
                                 Rect::new(
@@ -1047,7 +1055,7 @@ impl Draw for MaskedEdit {
                             );
                             context.draw_text(
                                 Point::new(draw_x, inner_top),
-                                &ch.to_string(),
+                                glyph,
                                 &font,
                                 caret_ink,
                                 value_align,
@@ -1055,7 +1063,7 @@ impl Draw for MaskedEdit {
                         } else {
                             context.draw_text(
                                 Point::new(draw_x, inner_top),
-                                &ch.to_string(),
+                                glyph,
                                 &font,
                                 char_color,
                                 value_align,

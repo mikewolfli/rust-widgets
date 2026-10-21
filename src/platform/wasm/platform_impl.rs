@@ -29,7 +29,7 @@ use std::thread;
 /// backend's `run` returns immediately instead of sleeping, so the constant has no consumer
 /// there — and an ungated copy is the dead-code warning a build with `wasm` enabled produced.
 #[cfg(not(target_arch = "wasm32"))]
-const FRAME_INTERVAL_MS: u64 = 16;
+const FRAME_INTERVAL_MS: u64 = crate::platform::types::FRAME_INTERVAL_MS;
 
 /// Evaluates a CSS media query in the browser, or `None` on a host build.
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]

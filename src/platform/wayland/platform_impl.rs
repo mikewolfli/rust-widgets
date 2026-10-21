@@ -67,7 +67,7 @@ use crate::platform::wayland::types::{WaylandHandleKind, WaylandPlatform};
 /// Same value and same reason as the other backends' twin constants: the number handed to
 /// [`crate::drive_frame`] is what makes a transition take the time the theme said it should, so
 /// it must not differ between the loop and the pump callback — nor from the other hosts.
-const FRAME_INTERVAL_MS: u32 = 16;
+const FRAME_INTERVAL_MS: u32 = crate::platform::types::FRAME_INTERVAL_MS as u32;
 
 #[cfg(all(feature = "wayland-native", unix_desktop))]
 use wayland_client as wl_client;
@@ -890,7 +890,12 @@ impl WaylandPlatform {
             // which runs compositor callbacks, including a close handler that may open a new
             // window — can re-enter `native_session` without deadlocking on this non-recursive
             // mutex. It is returned at the end of the iteration.
-            let mut session = match self.native_session.lock().unwrap().take() {
+            let mut session = match self
+                .native_session
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
+            {
                 Some(session) => session,
                 None => {
                     // No native session yet (no window created): stay responsive to
@@ -953,7 +958,8 @@ impl WaylandPlatform {
             // re-enters `native_session` (positions a widget, opens a window) never
             // deadlocks on the mutex the dispatch above has already released.
             DISPATCHING_SESSION.with(|slot| *slot.borrow_mut() = None);
-            *self.native_session.lock().unwrap() = Some(session);
+            *self.native_session.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                Some(session);
 
             // One library frame after the protocol dispatch for this iteration.
             //
@@ -978,7 +984,9 @@ impl WaylandPlatform {
         // window can re-enter `native_session` without deadlocking (the same rule the
         // `run()` loop follows). Returned before the frame, which is the pump-callback
         // spelling of the same tick, animation step included.
-        let Some(mut session) = self.native_session.lock().unwrap().take() else {
+        let Some(mut session) =
+            self.native_session.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take()
+        else {
             crate::drive_frame(FRAME_INTERVAL_MS);
             return;
         };
@@ -987,7 +995,8 @@ impl WaylandPlatform {
         });
         let _ = session.event_queue.dispatch_pending(&mut session.state);
         DISPATCHING_SESSION.with(|slot| *slot.borrow_mut() = None);
-        *self.native_session.lock().unwrap() = Some(session);
+        *self.native_session.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Some(session);
         crate::drive_frame(FRAME_INTERVAL_MS);
     }
 
@@ -1075,7 +1084,7 @@ impl WaylandPlatform {
         }
 
         // Obtain or create the persistent Wayland session.
-        let mut guard = self.native_session.lock().unwrap();
+        let mut guard = self.native_session.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if guard.is_none() {
             *guard = connect_wayland(self.clipboard.clone(), self.ime.clone());
         }

@@ -1451,7 +1451,7 @@ extern "C" fn drain_triggers_impl(_this: &Object, _cmd: Sel, _timer: id) {
 /// The timer's interval and the delta handed to [`crate::drive_frame`] must be the same
 /// number, or every transition runs at the ratio between them; naming it once keeps
 /// them from drifting apart (see `platform/linux/platform_impl.rs`'s twin).
-const FRAME_INTERVAL_MS: u64 = 16;
+const FRAME_INTERVAL_MS: u64 = crate::platform::types::FRAME_INTERVAL_MS;
 
 /// Installs the resize delegate on `window` and tags it with `widget_id`.
 ///

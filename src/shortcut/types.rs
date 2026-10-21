@@ -391,6 +391,9 @@ impl Key {
             39 => Some(Key::Right),
             38 => Some(Key::Up),
             40 => Some(Key::Down),
+            // Function keys use the framework's private `1120..=1131` range (see
+            // `crate::event::key_codes::F1`): the Win32 `VK_F1` values `112..=123` collide with
+            // lowercase `'p'..='z'`, which made `F1` resolve as `Key::P`.
             1120 => Some(Key::F1),
             1121 => Some(Key::F2),
             1122 => Some(Key::F3),

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! TextArea widget — multi-line text input (BLUE13 R2.5).
-use crate::compat::{Box, Rc, RefCell, String, ToString};
+use crate::compat::{Box, Rc, RefCell, String, ToString, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 #[cfg(test)]
 use crate::event::FocusReason;
@@ -183,15 +183,53 @@ impl TextArea {
     /// The half-open byte range of one logical line, including its terminator, or `None` when the
     /// line does not exist.
     fn line_byte_range(&self, line: usize) -> Option<(usize, usize)> {
+        self.line_spans().get(line).map(|&(start, _, end)| (start, end))
+    }
+
+    /// Every logical line's byte range, as `(start, content_end, end)`.
+    ///
+    /// * `start` — the line's first byte.
+    /// * `content_end` — one past the line's **visible** text, excluding a `\n` (or `\r\n`)
+    ///   terminator. This is the same split [`str::lines`] makes, which is what the paint path
+    ///   draws.
+    /// * `end` — one past the terminator, i.e. the next line's `start`.
+    ///
+    /// # Why a table and not "the nth line"
+    ///
+    /// The paint path used to ask "which line is row N" once per visible row, and every answer
+    /// rescanned the document from byte 0 (`split_inclusive('\n').enumerate().nth(N)`, and
+    /// `lines().nth(N)`), so one frame cost O(rows × document).
+    ///
+    /// It also reset the running offset at the first **visible** line instead of counting from the
+    /// document's start, so a scrolled field measured its selection band from a byte the band does
+    /// not belong to — the highlight drifted away from the glyphs it was meant to cover. One table
+    /// answers both: the index is a lookup, and every offset is the document's own.
+    ///
+    /// The trailing empty line of a value that ends in a newline is part of the table, because
+    /// [`Self::line_count`] counts it (a caret can sit there) even though it paints nothing.
+    fn line_spans(&self) -> Vec<(usize, usize, usize)> {
+        let mut spans = Vec::new();
         let mut start = 0usize;
-        for (current, chunk) in self.text.split_inclusive('\n').enumerate() {
+        for chunk in self.text.split_inclusive('\n') {
             let end = start + chunk.len();
-            if current == line {
-                return Some((start, end));
-            }
+            let content_end = if chunk.ends_with("\r\n") {
+                end - 2
+            } else if chunk.ends_with('\n') {
+                end - 1
+            } else {
+                end
+            };
+            spans.push((start, content_end, end));
             start = end;
         }
-        None
+        // `split_inclusive` yields nothing for an empty value; its one (empty) line still exists.
+        if spans.is_empty() {
+            spans.push((0, 0, 0));
+        } else if start == self.text.len() && self.text.ends_with('\n') {
+            // A value ending in a terminator has an empty line after it.
+            spans.push((start, start, start));
+        }
+        spans
     }
 
     /// Collapses a zero-width anchor/caret pair to "no selection".
@@ -431,9 +469,13 @@ impl TextArea {
     }
 
     /// The logical line a caret at `offset` sits on.
+    ///
+    /// A binary search over [`Self::line_spans`], so a caret at the end of a long document does not
+    /// count every newline before it.
     fn line_index_of(&self, offset: usize) -> usize {
         let caret = floor_char_boundary(&self.text, offset.min(self.text.len()));
-        self.text[..caret].chars().filter(|&c| c == '\n').count()
+        let spans = self.line_spans();
+        spans.partition_point(|&(start, _, _)| start <= caret).saturating_sub(1)
     }
 
     /// Scrolls the viewport the minimum amount that brings the caret's line into view.
@@ -472,29 +514,19 @@ impl TextArea {
 
     /// The number of logical lines in the value, counting a trailing newline's empty line.
     pub fn line_count(&self) -> usize {
-        self.text.chars().filter(|&c| c == '\n').count() + 1
+        self.line_spans().len()
     }
 
     /// The byte offset of the character *before* the caret.
+    ///
+    /// Delegates to the shared [`crate::widget::text_utils::previous_char_boundary`] (WDGT-11).
     fn previous_char_boundary(&self) -> usize {
-        if self.cursor_pos == 0 {
-            return 0;
-        }
-        let caret = floor_char_boundary(&self.text, self.cursor_pos.min(self.text.len()));
-        self.text[..caret].char_indices().next_back().map(|(index, _)| index).unwrap_or(0)
+        crate::widget::text_utils::previous_char_boundary(&self.text, self.cursor_pos)
     }
 
     /// The byte offset one character after the caret.
     fn next_char_boundary(&self) -> usize {
-        if self.cursor_pos >= self.text.len() {
-            return self.text.len();
-        }
-        let caret = floor_char_boundary(&self.text, self.cursor_pos.min(self.text.len()));
-        self.text[caret..]
-            .char_indices()
-            .nth(1)
-            .map(|(index, _)| caret + index)
-            .unwrap_or(self.text.len())
+        crate::widget::text_utils::next_char_boundary(&self.text, self.cursor_pos)
     }
 
     /// The caret's own line start, in bytes.
@@ -794,19 +826,18 @@ impl TextArea {
         let line_index = self.first_visible_line + row;
         let x = pos.x - origin_x;
 
-        // Walk the value's own line splitting, so the answer is derived from the text rather than
-        // rebuilt from a second model of where the newlines are.
-        let mut line_start = 0usize;
-        for (current, chunk) in self.text.split_inclusive('\n').enumerate() {
-            let line = chunk.trim_end_matches('\n');
-            if current == line_index {
-                return line_start + self.column_at_x(line, x);
+        // Walk the table the paint path also reads, so the answer is the same line the glyphs are
+        // drawn on rather than a second model of where the newlines are. The per-click rescan this
+        // replaces re-derived both the index and the offsets.
+        let spans = self.line_spans();
+        match spans.get(line_index) {
+            Some(&(start, content_end, _)) => {
+                start + self.column_at_x(&self.text[start..content_end], x)
             }
-            line_start += chunk.len();
+            // The point is below every line the value has, or the value is empty: the caret belongs
+            // at the end.
+            None => self.text.len(),
         }
-        // The point is below every line the value has, or the value is empty: the caret belongs at
-        // the end.
-        self.text.len()
     }
 
     /// Reverts the most recent text mutation.
@@ -1210,18 +1241,18 @@ impl Draw for TextArea {
             // which is why the order here is load-bearing rather than incidental.
             if let Some((sel_start, sel_end)) = self.selection_range() {
                 let highlight = self.selection_color(&text_color, &field_bg);
-                let mut line_start = 0usize;
+                // One pass over the value, then an index per visible row. The loop this replaces
+                // re-split the document per row and counted its offsets from the first *visible*
+                // line, so a scrolled field highlighted a byte range that did not belong to the
+                // line it was drawing.
+                let spans = self.line_spans();
                 let mut y = text_top;
-                let mut row = 0usize;
-                while let Some(line_index) = self.visible_line_index(row) {
-                    let Some((_, line)) =
-                        self.text.split_inclusive('\n').enumerate().nth(line_index)
+                for row in 0.. {
+                    let Some(&(line_start, line_end, _)) =
+                        self.visible_line_index(row).and_then(|index| spans.get(index))
                     else {
                         break;
                     };
-                    let line = line.trim_end_matches('\n');
-                    let line_end = line_start + line.len();
-                    let _ = line_index;
                     // The overlap of `[sel_start, sel_end)` with this line's own content.
                     let from = sel_start.max(line_start).min(line_end);
                     let to = sel_end.min(line_end).max(from);
@@ -1238,9 +1269,7 @@ impl Draw for TextArea {
                             );
                         }
                     }
-                    line_start += line.len() + 1;
                     y += LINE_H;
-                    row += 1;
                 }
             }
 
@@ -1249,21 +1278,24 @@ impl Draw for TextArea {
             // rather than always showing its first line. `visible_line_index` is the one lookup of
             // "which logical line is on row n", shared with the pixel-to-offset map below, so a
             // click and the glyphs it lands on cannot disagree about the scroll.
-            let mut row = 0usize;
-            while let Some(line_index) = self.visible_line_index(row) {
-                let Some(line) = self.text.lines().nth(line_index) else { break };
+            let spans = self.line_spans();
+            for row in 0.. {
+                let Some(&(start, content_end, _)) =
+                    self.visible_line_index(row).and_then(|index| spans.get(index))
+                else {
+                    break;
+                };
                 if y + LINE_H > rect.y + rect.height as i32 {
                     break;
                 }
                 context.draw_text(
                     Point::new(origin_x, y),
-                    line,
+                    &self.text[start..content_end],
                     font,
                     text_color,
                     HorizontalAlignment::Left,
                 );
                 y += LINE_H;
-                row += 1;
             }
         }
 
@@ -2342,5 +2374,81 @@ mod tests {
         // Scroll further, then back, without touching the caret.
         ta.select_with_modifiers(target, crate::shortcut::Modifiers::NONE);
         assert_eq!(ta.cursor_pos(), caret, "the caret is where it was put");
+    }
+
+    /// The line table is one pass over the value, and it keeps the document's own line ranges.
+    ///
+    /// # What this pins
+    ///
+    /// The paint path used to ask for "the nth line" once per visible row and rescan the document
+    /// for every answer, and it counted those rows' byte offsets from the first **visible** line
+    /// rather than from the document's start. [`TextArea::line_spans`] is what the ink, the
+    /// selection band and the click map now index, so it has to agree with the `lines()` split the
+    /// painter was written against — including the two cases that are easy to get wrong: an empty
+    /// value (one empty line, which `split_inclusive` yields nothing for) and a value ending in a
+    /// terminator (an empty line after it, which `line_count` counts and a caret can sit on).
+    #[test]
+    fn the_line_table_agrees_with_str_lines() {
+        for text in ["", "a", "a\n", "a\n\nb", "alpha\r\nbeta\r\n", "你好\n世界"] {
+            let ta = TextArea::new(text.to_string(), Rect::new(0, 0, 200, 60));
+            let spans = ta.line_spans();
+
+            let expected_len =
+                text.lines().count() + usize::from(text.is_empty() || text.ends_with('\n'));
+            assert_eq!(spans.len(), expected_len, "one span per line of {text:?}");
+            assert_eq!(spans.len(), ta.line_count(), "and `line_count` reads the same table");
+
+            for (index, &(start, content_end, end)) in spans.iter().enumerate() {
+                let expected = text.lines().nth(index).unwrap_or("");
+                assert_eq!(&ta.text()[start..content_end], expected, "line {index} of {text:?}");
+                assert!(start <= content_end && content_end <= end, "the span is ordered");
+                assert_eq!(
+                    spans.get(index + 1).map(|next| next.0),
+                    (index + 1 < spans.len()).then_some(end),
+                    "each line ends where the next one starts"
+                );
+            }
+
+            // And the index arithmetic: every byte offset lands on the line that counting newlines
+            // before it would name, which is the answer the caret and the scroll offset use.
+            for offset in text.char_indices().map(|(index, _)| index).chain([text.len()]) {
+                let naive = text[..offset].chars().filter(|&c| c == '\n').count();
+                assert_eq!(
+                    ta.line_index_of(offset),
+                    naive,
+                    "offset {offset} in {text:?} belongs to line {naive}"
+                );
+            }
+        }
+    }
+
+    /// A selection that begins on a scrolled line still paints its band.
+    ///
+    /// # The defect this pins
+    ///
+    /// The paint loop accumulated each row's byte offsets as it walked the **visible** rows, starting
+    /// from zero. Once the field was scrolled, that offset belonged to the top of the viewport rather
+    /// than to the line being painted, so the overlap with the selection came out empty (`from ==
+    /// to`) and a scrolled field drew no highlight at all — the text a user dragged over was
+    /// invisible. The offsets now come from the document (see [`TextArea::line_spans`]).
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_selection_on_a_scrolled_line_still_paints_its_band() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut ta = tall_value(60);
+        let line9 = ta.text().find("line9").expect("the value has line9");
+        ta.set_cursor_pos(line9);
+        ta.select_with_modifiers(line9, crate::shortcut::Modifiers::NONE);
+        assert!(ta.first_visible_line() > 0, "the field is scrolled to line 9");
+
+        let unselected = crate::widget::svg::render_to_svg(&mut ta);
+        assert!(ta.select_line(9), "line 9 exists");
+        assert_eq!(ta.selected_text(), "line9\n", "the range includes the line's terminator");
+        let selected = crate::widget::svg::render_to_svg(&mut ta);
+
+        assert!(
+            selected.matches("<rect").count() > unselected.matches("<rect").count(),
+            "selecting a line while scrolled must paint its band"
+        );
     }
 }

@@ -488,7 +488,7 @@ impl Draw for Action {
             return;
         }
 
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("action");
         let ink = style
             .text_color

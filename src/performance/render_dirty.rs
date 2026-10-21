@@ -3,8 +3,9 @@
 
 //! Helper for rendering only dirty regions using clip rects.
 
+// The render path itself no longer collects into a `Vec`; the tests build fixtures with one.
+#[cfg(test)]
 use crate::compat::Vec;
-use crate::core::Rect;
 use crate::performance::DirtyRegionTracker;
 
 /// Fraction of the frame area above which repainting regions costs more than a full
@@ -88,8 +89,11 @@ pub fn render_dirty_regions(
     }
 
     // 5. Otherwise, redraw each dirty region separately
-    let regions: Vec<Rect> = tracker.regions().iter().map(|r| r.rect).collect();
-    for rect in regions {
+    //
+    // Iterated straight from the tracker: the copy into a `Vec` was there to keep the borrow out of
+    // the loop, and the loop only reads the rects — the `&mut` call comes after it (CORE-20).
+    for region in tracker.regions() {
+        let rect = region.rect;
         ctx.push_clip(rect.x, rect.y, rect.width, rect.height);
         render_all(ctx);
         ctx.pop_clip();

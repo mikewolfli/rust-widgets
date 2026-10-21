@@ -251,7 +251,7 @@ impl Draw for ColorHistory {
         // could not see the control at all (it was counting zero painted pixels).
         //
         // Precedence: explicit style, then theme, then the literal as last resort.
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let themed_background =
             crate::style::theme_manager().current_theme().map(|active| active.colors.background);
         let background =

@@ -769,6 +769,35 @@ pub enum PrintBackend {
 /// Global storage for Memory print backend output.
 use std::sync::Mutex;
 static MEMORY_PRINT_JOBS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+/// The most jobs the memory backend retains.
+///
+/// A bounded history rather than an unbounded `Vec`: the memory backend is a preview/test
+/// destination, and a long-running process that printed repeatedly grew without limit and had
+/// no API to read or clear what it had stored.
+const MEMORY_PRINT_JOB_LIMIT: usize = 32;
+
+/// The jobs the memory backend has stored, oldest first.
+///
+/// Each entry is `(label, rendered content)`. This is the retrieval half the backend never had:
+/// it stored jobs in a private `Vec` that no caller could read.
+pub fn memory_print_jobs() -> Vec<(String, String)> {
+    MEMORY_PRINT_JOBS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+}
+
+/// Removes and returns every stored memory job.
+pub fn take_memory_print_jobs() -> Vec<(String, String)> {
+    let mut jobs = MEMORY_PRINT_JOBS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    core::mem::take(&mut *jobs)
+}
+
+/// Clears the memory backend's history, returning how many jobs were removed.
+pub fn clear_memory_print_jobs() -> usize {
+    let mut jobs = MEMORY_PRINT_JOBS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let removed = jobs.len();
+    jobs.clear();
+    removed
+}
 impl PrintBackend {
     fn default_for_platform() -> Self {
         if std::env::var("RW_PRINT_BACKEND")
@@ -808,6 +837,11 @@ impl PrintBackend {
                 let label = format!("memory-job-{ts}");
                 if let Ok(mut jobs) = MEMORY_PRINT_JOBS.lock() {
                     jobs.push((label, content));
+                    // Evict the oldest instead of growing without bound; see
+                    // `MEMORY_PRINT_JOB_LIMIT`.
+                    if jobs.len() > MEMORY_PRINT_JOB_LIMIT {
+                        jobs.remove(0);
+                    }
                     log::info!(
                         "[print] Memory backend stored print job ({} commands)",
                         job.commands.len()
@@ -1751,6 +1785,30 @@ mod tests {
             self.drawn.lock().expect("test lock poisoned").push(page_num);
         }
     }
+    /// The memory backend's history must be readable and removable, and a taken job must not be
+    /// returned twice — the backend used to write into a private `Vec` nothing could read.
+    #[test]
+    fn memory_backend_jobs_are_readable_and_clearable() {
+        clear_memory_print_jobs();
+        MEMORY_PRINT_JOBS
+            .lock()
+            .expect("memory job store poisoned")
+            .push(("label".to_string(), "content".to_string()));
+
+        let jobs = memory_print_jobs();
+        assert!(
+            jobs.iter().any(|(label, _)| label == "label"),
+            "a stored job must be readable through the new API"
+        );
+
+        let taken = take_memory_print_jobs();
+        assert!(taken.iter().any(|(label, _)| label == "label"));
+        assert!(
+            !memory_print_jobs().iter().any(|(label, _)| label == "label"),
+            "take must remove what it returns"
+        );
+    }
+
     #[test]
     fn pagination_applies_range_descending_and_collated_copies() {
         let mut pagination = PrintPagination::new();

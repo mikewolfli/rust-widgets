@@ -420,7 +420,7 @@ impl Draw for CommandPalette {
         // `resolved_theme_style` takes and releases the global manager's lock
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
-        let style = self.base.style().clone();
+        let style = self.base.style();
         let theme = crate::style::resolved_theme_style("command_palette");
         let background = style
             .background_color
@@ -455,7 +455,7 @@ impl Draw for CommandPalette {
         // edge, so the row's midline put a 14 px query at 12..26 in a 24 px row.
         // The **effective font** — the resolved theme/caller font — for the query and the rows
         // (D09-STYLE-01).
-        let query_font = effective_font(&style);
+        let query_font = effective_font(style);
         let query_h = context.measure_text("M", query_font).height;
         context.draw_text_fitted(
             Rect::new(
@@ -493,7 +493,7 @@ impl Draw for CommandPalette {
                 context.draw_text(
                     Point::new(rect.x + 8, y + self.row_height as i32 / 2),
                     &line,
-                    effective_font(&style),
+                    effective_font(style),
                     text_color,
                     HorizontalAlignment::Left,
                 );
