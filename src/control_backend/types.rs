@@ -81,6 +81,13 @@ pub(crate) struct CustomControlState {
     /// Next menu-entry id to hand out; see [`FIRST_MENU_ENTRY_ID`].
     #[cfg(full_widgets)]
     pub(crate) next_menu_entry_id: ObjectId,
+    /// Menus whose `triggered_index` signal this backend has already wired.
+    ///
+    /// The signal must be connected exactly once per menu: a menu with five entries would
+    /// otherwise queue every selection five times. Keyed by menu widget id, so a menu that
+    /// is torn down and recreated under a new id is wired again.
+    #[cfg(full_widgets)]
+    pub(crate) wired_menu_signals: crate::compat::HashMap<ObjectId, ()>,
 }
 
 /// First id handed out by [`CustomControlState::next_menu_entry_id`].

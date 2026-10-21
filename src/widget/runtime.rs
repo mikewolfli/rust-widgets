@@ -550,6 +550,14 @@ pub fn unregister(id: ObjectId) -> bool {
             capture.release_capture();
         }
     });
+    // A destroyed popup cannot own the next outside press. The grab is keyed by registry id,
+    // so both id spaces are checked (a control that destroys itself reports its own id).
+    #[cfg(not(alloc_frugal))]
+    if let Some(grab) = popup_grab() {
+        if grab == id || registry_id_of(id) == Some(grab) {
+            clear_popup_grab();
+        }
+    }
     // The cached frame and any pending damage describe this widget, so both must go
     // with it: a reused id would otherwise start from the previous control's pixels,
     // and a stale damage rect would repaint a region that no longer exists.
@@ -917,11 +925,33 @@ pub fn widget_at(root: ObjectId, point: Point) -> Option<ObjectId> {
             return None;
         }
         // Topmost-first: a later sibling paints over an earlier one.
-        let deepest = children
-            .iter()
-            .rev()
-            .copied()
-            .find(|child| is_visible(*child) && widget_accepts_point(*child, point));
+        //
+        // Visibility, the overlay flag and the hit rule are asked in **one** registry visit. They
+        // used to be two separate `with_widget` calls per child, so every node cost three map
+        // lookups on a path that runs for every pointer event the host delivers.
+        //
+        // A child with an **open overlay** wins over a later sibling that happens to cover the
+        // same pixels: an open drop-down list is painted below its field, where the next form row
+        // may sit. Without the priority that row took the click and the list could not be used.
+        let mut deepest = None;
+        let mut open_popup = None;
+        for child in children.iter().rev().copied() {
+            let (visible, overlay, accepts) = with_widget(child, |widget| {
+                (widget.is_visible(), widget.has_open_popup(), widget.contains_point(point))
+            })
+            .unwrap_or((false, false, false));
+            if !visible || !accepts {
+                continue;
+            }
+            if overlay {
+                open_popup = Some(child);
+                break;
+            }
+            if deepest.is_none() {
+                deepest = Some(child);
+            }
+        }
+        let deepest = open_popup.or(deepest);
         match deepest {
             Some(child) => current = child,
             // No child claims the point, so this widget is the deepest hit.
@@ -937,11 +967,6 @@ pub fn widget_at(root: ObjectId, point: Point) -> Option<ObjectId> {
 /// than the bounding box. Returns `false` for an unmounted id.
 fn widget_accepts_point(id: ObjectId, point: Point) -> bool {
     with_widget(id, |widget| widget.contains_point(point)).unwrap_or(false)
-}
-
-/// Whether a mounted widget is visible. Unmounted ids report `false`.
-fn is_visible(id: ObjectId) -> bool {
-    with_widget(id, |widget| widget.is_visible()).unwrap_or(false)
 }
 
 /// Delivers `event` to whatever widget is under `point`.
@@ -967,6 +992,34 @@ fn is_visible(id: ObjectId) -> bool {
 ///
 /// Returns whether a widget accepted the event.
 pub fn dispatch_pointer_event(root: ObjectId, event: &Event, point: Point) -> bool {
+    // An open popup is modal for the gesture that dismisses it: a press outside the popup is
+    // delivered to the popup (which hides itself) and goes no further. Checking the grab before
+    // hit-testing is what keeps the press from reaching the control the popup covers.
+    #[cfg(not(alloc_frugal))]
+    if event.starts_pointer_gesture() {
+        if let Some(popup) = popup_grab() {
+            // A grab belongs to the window whose popup set it. A press in another window must
+            // be routed normally, not swallowed by this one — and the check also keeps two
+            // windows in one process (or two tests on one thread) from interfering.
+            if top_level_window_of(popup) == Some(root) {
+                let still_open = with_widget(popup, |widget| widget.is_visible()).unwrap_or(false);
+                if !still_open {
+                    // The popup closed itself (an item was chosen, Escape, a programmatic
+                    // close).
+                    clear_popup_grab();
+                } else if !widget_accepts_point(popup, point) {
+                    let handled = dispatch_event(popup, event);
+                    // The control's own outside-press arm hides it. Clearing here is what makes
+                    // the grab one-shot even when it chooses to stay open for a padded click.
+                    clear_popup_grab();
+                    return handled;
+                }
+            } else if !with_widget(popup, |widget| widget.is_visible()).unwrap_or(false) {
+                clear_popup_grab();
+            }
+        }
+    }
+
     let target = widget_at(root, point);
     dispatch_hover_transition(target, point);
     // A control that captured the pointer keeps receiving events even when the
@@ -2002,7 +2055,12 @@ fn take_frame_repaint_reasons() -> alloc::vec::Vec<(ObjectId, RepaintReason)> {
 /// animation bus would be complete for mounted trees and silently inert for owned ones.
 pub fn tick_animations(delta_ms: u32) -> bool {
     let mut still_animating = false;
-    for_each_mounted_widget(|_, widget| {
+    // Ids that advanced this sweep. Collected rather than invalidated in place: the sweep
+    // holds each widget out of the registry for its `tick`, and a repaint request walks the
+    // parent chain (and may call back into the registry), so doing it inside the loop would
+    // nest two registry drives.
+    let mut moved: alloc::vec::Vec<ObjectId> = alloc::vec::Vec::new();
+    for_each_mounted_widget(|id, widget| {
         // `is_animating` first, so a resting control (the common case) is not asked to
         // interpolate at all: this is what keeps a static frame free.
         if widget.is_animating() {
@@ -2011,8 +2069,29 @@ pub fn tick_animations(delta_ms: u32) -> bool {
             if widget.tick(delta_ms) || widget.is_animating() {
                 still_animating = true;
             }
+            // Submitted even on the settle frame, where `tick` has just placed the value at
+            // its target and both answers are now `false`. That frame is the one that paints
+            // the **finished** state; skipping it left the last drawn frame one step short —
+            // measured as a menu popup frozen at 70% of its height after the reveal had
+            // already settled in the model.
+            moved.push(id);
         }
     });
+
+    // # Why a tick must submit a repaint
+    //
+    // Advancing the model is only half a frame. Every backend's loop calls `drive_frame` on a
+    // timer and presents only when the host says a surface needs drawing; when the sweep moved
+    // a control and submitted nothing, the value advanced while the pixels stayed on the frame
+    // the change started in. Measured on the GTK demo: a menu's open reveal reached ~28% over
+    // four frames and then froze, because the click that opened it was the last thing that
+    // invalidated the window. The same split applied to every animated control in a painted
+    // window tree. Submitting the repaint here — with the cause named — is what makes
+    // `needs_another_frame` mean "another frame will be *drawn*", not just "another frame will
+    // be computed".
+    for id in moved {
+        request_repaint_subtree_because(id, RepaintReason::Animation);
+    }
     // The latch is written **both ways**, and that is the whole point.
     //
     // # The defect this replaces
@@ -2415,6 +2494,61 @@ thread_local! {
     static LENT_MUTATING: RefCell<IdSet> = RefCell::new(IdSet::new());
 }
 
+// The menu popup that currently owns the pointer's **outside press**.
+//
+// A popup is modal for one gesture: the click that dismisses it belongs to the menu, not to the
+// control that happens to be underneath. Routing only delivers an event to the widget under the
+// pointer, so without this the outside click went to the control below and the menu stayed open —
+// measured on the GTK demo, where clicking the canvas under an open File menu selected a list row
+// and left the menu painted.
+//
+// This is deliberately not pointer *capture*: capture makes the popup the target of every move
+// and release too, and the dispatcher releases capture when a new press starts. A grab is
+// one-shot — it claims the dismissing press, then it is gone.
+#[cfg(not(alloc_frugal))]
+thread_local! {
+    #[allow(clippy::missing_const_for_thread_local)]
+    static POPUP_GRAB: core::cell::Cell<Option<ObjectId>> = const { core::cell::Cell::new(None) };
+}
+
+/// Records `menu` as the popup that owns the next outside press.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn set_popup_grab(menu: ObjectId) {
+    // Two id spaces exist: `BaseWidget::id()` (what a control sees as its own id) and the
+    // registry key (what `with_widget`/hit-testing use). A control reports its own id while the
+    // dispatcher holds registry ids, so normalise here rather than making every call site know
+    // the difference. `open_context_menu` already passes a registry id, for which the lookup
+    // answers `None` and the fallback keeps it unchanged.
+    let menu = registry_id_of(menu).unwrap_or(menu);
+    let _ = POPUP_GRAB.try_with(|slot| slot.set(Some(menu)));
+}
+
+/// Forgets the popup grab, if there is one.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn clear_popup_grab() {
+    let _ = POPUP_GRAB.try_with(|slot| slot.set(None));
+}
+
+/// Forgets the popup grab **only when it belongs to `popup`**.
+///
+/// Used when a control closes itself: a popup that was already superseded by another must not
+/// clear the newer popup's grab on its way out.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn clear_popup_grab_for(popup: ObjectId) {
+    let popup = registry_id_of(popup).unwrap_or(popup);
+    let _ = POPUP_GRAB.try_with(|slot| {
+        if slot.get() == Some(popup) {
+            slot.set(None);
+        }
+    });
+}
+
+/// The current popup grab, if any.
+#[cfg(not(alloc_frugal))]
+fn popup_grab() -> Option<ObjectId> {
+    POPUP_GRAB.try_with(|slot| slot.get()).ok().flatten()
+}
+
 /// A host callback observing the IME pre-edit updates delivered to one widget.
 ///
 /// `&str` is the uncommitted composition and `usize` its cursor position (the same shape
@@ -2797,7 +2931,26 @@ pub fn report_state(id: ObjectId, fact: StateFact) -> bool {
 /// function that could only ever return `false`.
 #[cfg(full_widgets)]
 pub fn open_context_menu(menu_id: ObjectId, position: Point, viewport: Rect) -> bool {
-    with_widget_mut(menu_id, |widget| {
+    // Only one popup is open at a time. A bar click on another title must close the menu already
+    // showing; without this, every clicked title added another popup and they stacked. Clicking
+    // the **same** title again toggles its menu closed, which is what a menu-bar title does.
+    if let Some(previous) = popup_grab() {
+        clear_popup_grab();
+        if previous == menu_id {
+            if hide_popup(previous) {
+                request_repaint_subtree(previous);
+                return true;
+            }
+        } else if hide_popup(previous) {
+            request_repaint_subtree(previous);
+        }
+    }
+    // A popup must be the window's **last** child before it is shown: the renderer paints
+    // siblings in order and the hit test walks them in reverse, so a menu created before a
+    // later control would be painted underneath it and miss every click that overlapped it.
+    // Reparenting here rather than at creation keeps the caller's order irrelevant.
+    bring_popup_to_front(menu_id);
+    let opened = with_widget_mut(menu_id, |widget| {
         let Some(menu) = (widget as &mut dyn core::any::Any).downcast_mut::<crate::Menu>() else {
             log::warn!(
                 "widget::runtime: id {menu_id} is not a menu, so a context menu cannot be opened \
@@ -2811,7 +2964,64 @@ pub fn open_context_menu(menu_id: ObjectId, position: Point, viewport: Rect) -> 
     .unwrap_or_else(|| {
         log::warn!("widget::runtime: no widget is mounted as id {menu_id}");
         false
+    });
+    if opened {
+        // `Menu::open_at` changes visibility and geometry; nothing else submits the frame.
+        request_repaint_subtree(menu_id);
+        // The popup owns the click that dismisses it (see `POPUP_GRAB`).
+        set_popup_grab(menu_id);
+    }
+    opened
+}
+
+/// Hides `menu` if it is a mounted menu, reporting whether anything was hidden.
+#[cfg(full_widgets)]
+fn hide_popup(menu: ObjectId) -> bool {
+    with_widget_mut(menu, |widget| {
+        (widget as &mut dyn core::any::Any).downcast_mut::<crate::Menu>().map(|menu| menu.hide())
     })
+    .flatten()
+    .is_some()
+}
+
+/// Makes `popup` the last child of the window it belongs to, so it paints and hit-tests
+/// above every sibling.
+///
+/// Returns `false` when the id is not mounted, has no window above it, or cannot be
+/// detached from its current parent — a standalone popup mounted as its own surface has no
+/// sibling order to change, and changing nothing is reported rather than claimed.
+#[cfg(full_widgets)]
+fn bring_popup_to_front(popup: ObjectId) -> bool {
+    let Some(window) = top_level_window_of(popup) else {
+        return false;
+    };
+    if window == popup {
+        return false;
+    }
+    let Some(parent) = with_widget(popup, |widget| widget.parent()) else {
+        return false;
+    };
+    let already_last = parent == Some(window)
+        && with_widget(window, |widget| widget.children().last().copied() == Some(popup))
+            .unwrap_or(false);
+    if already_last {
+        return true;
+    }
+    if let Some(parent) = parent {
+        // A popup that was created under its invoker (a menu under a menu bar) must leave
+        // that child list first; otherwise two parents claim the same id and the tree walk
+        // paints it twice.
+        with_widget_mut(parent, |widget| widget.remove_child(popup));
+    }
+    let linked = with_widget_mut(window, |widget| {
+        widget.remove_child(popup);
+        widget.add_child(popup);
+    })
+    .is_some();
+    if !linked {
+        return false;
+    }
+    with_widget_mut(popup, |widget| widget.set_parent(Some(window))).is_some()
 }
 
 /// Opens the context menu at the pointer position of a secondary-button press.
@@ -2923,6 +3133,19 @@ pub fn request_repaint_subtree(id: ObjectId) {
         request_repaint_because(window, RepaintReason::Explicit);
     }
     request_repaint_because(id, RepaintReason::Explicit);
+}
+
+/// [`request_repaint_subtree`] with an explicit cause, for a caller that knows why.
+///
+/// The animation sweep uses this so a frame that advanced a control reports `Animation` in
+/// the frame ledger rather than the catch-all `Explicit`. The distinction is the whole point
+/// of [`RepaintReason`]: `Explicit` means "a caller asked and named no mechanism", and an
+/// interpolation step is a mechanism.
+fn request_repaint_subtree_because(id: ObjectId, reason: RepaintReason) {
+    if let Some(window) = top_level_window_of(id) {
+        request_repaint_because(window, reason);
+    }
+    request_repaint_because(id, reason);
 }
 
 /// Asks the platform to repaint a mounted widget, naming **why** it is being asked.
@@ -3850,6 +4073,32 @@ pub fn render_frame_at_geometry(id: ObjectId, clear: crate::core::Color) -> Opti
     render_frame(id, Size::new(geometry.width, geometry.height), clear)
 }
 
+/// Orders a window's children for painting: ordinary children first, open overlays last.
+///
+/// A drop-down list is painted by its own control, below the control's rectangle, and the window
+/// may have siblings declared after it that occupy the same pixels (the next form row). Declaration
+/// order would paint those siblings over the list — the same split the hit test had, where the row
+/// under the pointer took the click. Painting overlays last makes what the user sees agree with what
+/// the hit test already prefers (`has_open_popup`).
+///
+/// Only direct children are reordered: every popup control in this crate draws its list itself, so
+/// the popup is the direct child. Nested containers keep their own declaration order.
+fn ordered_root_children(children: Vec<ObjectId>) -> Vec<ObjectId> {
+    let mut ordinary = Vec::with_capacity(children.len());
+    let mut overlays = Vec::new();
+    for child in children {
+        let overlay = with_widget(child, |widget| widget.is_visible() && widget.has_open_popup())
+            .unwrap_or(false);
+        if overlay {
+            overlays.push(child);
+        } else {
+            ordinary.push(child);
+        }
+    }
+    ordinary.extend(overlays);
+    ordinary
+}
+
 /// Renders one frame of a widget **and its descendants**, returning RGBA bytes.
 ///
 /// # Why this exists
@@ -3863,7 +4112,9 @@ pub fn render_frame_at_geometry(id: ObjectId, clear: crate::core::Color) -> Opti
 ///
 /// This walks the child list depth-first and draws each child that implements
 /// [`Draw`][crate::widget::Draw], in tree order, so a later sibling paints over an earlier
-/// one — the same order a container's own `draw` would use.
+/// one — the same order a container's own `draw` would use. Direct children with an open
+/// overlay (a drop-down list) are painted last, so the list is not covered by a sibling that
+/// happens to occupy the same pixels.
 ///
 /// # Coordinates
 ///
@@ -3919,8 +4170,10 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
         // carried rectangle a container could only draw and place its content; the content
         // would then escape the viewport as soon as it was scrolled, which is exactly the
         // half-fix `ScrollArea` used to be.
-        let mut stack: Vec<(ObjectId, Option<Rect>)> =
-            root_children.into_iter().map(|child| (child, root_clip)).collect();
+        let mut stack: Vec<(ObjectId, Option<Rect>)> = ordered_root_children(root_children)
+            .into_iter()
+            .map(|child| (child, root_clip))
+            .collect();
         // Reversed so the traversal visits children in declaration order: `pop` takes the
         // last element, so pushing the children reversed makes the first one first.
         stack.reverse();

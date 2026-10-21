@@ -13,6 +13,12 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// Horizontal gap on each side of a menu-bar title.
+///
+/// Ten pixels is the macOS menu-bar spacing at body size: enough that adjacent titles read as
+/// separate targets, and included in `entry_width` so the hit box and the painted label agree.
+const MENU_ENTRY_TEXT_PADDING: u32 = 10;
 /// A top-level menu entry in the menu bar.
 ///
 /// Entries carry only a title and an enabled flag; the menu contents they open
@@ -95,6 +101,17 @@ pub struct MenuBar {
     /// emitted when the pointer moves to a different disabled entry, and not
     /// re-emitted while the pointer stays on the same entry.
     pub hovered_entry: Signal1<String>,
+    /// Emitted with the clicked entry's title **and** the rectangle it occupies.
+    ///
+    /// # Why the rectangle is part of the event
+    ///
+    /// A host that opens the matching drop-down needs to place it under the title that was
+    /// clicked. Asking the bar for `entry_rect` from inside a `triggered` handler cannot work:
+    /// the runtime lends the bar out exclusively for the duration of `handle_event`, so a nested
+    /// read answers `None` and the popup would silently open nowhere. Carrying the rectangle in
+    /// the event is the same rule as everywhere else — the emitter states the fact while it still
+    /// has it, rather than making the receiver guess it afterwards.
+    pub triggered_entry: Signal1<(String, Rect)>,
 }
 impl MenuBar {
     /// Creates an empty bar with no active or hovered entry.
@@ -109,6 +126,7 @@ impl MenuBar {
             hovered_index: None,
             triggered: Signal1::new(),
             hovered_entry: Signal1::new(),
+            triggered_entry: Signal1::new(),
         }
     }
     /// Returns the entries in visual order.
@@ -141,14 +159,26 @@ impl MenuBar {
     }
     /// Removes the entry at `index`; out-of-range indices are ignored.
     ///
-    /// Indices after the removal point shift down by one, but
-    /// [`MenuBar::active_index`] and [`MenuBar::hovered_index`] are **not**
-    /// adjusted, so a cursor can end up pointing at a different entry than the
-    /// one it was set for. The active entry can also be removed entirely,
-    /// leaving `active_index` out of range of the list.
+    /// The active and hovered cursors are adjusted with the list: a cursor pointing at the
+    /// removed entry is cleared, and one pointing past it moves down by one. Leaving them
+    /// untouched made `active_index` name a different title after a removal — or an index
+    /// that no longer existed at all — while the bar still reported it as the open menu.
     pub fn remove_menu(&mut self, index: usize) {
-        if index < self.entries.len() {
-            self.entries.remove(index);
+        if index >= self.entries.len() {
+            return;
+        }
+        self.entries.remove(index);
+        self.active_index = Self::shift_cursor(self.active_index, index);
+        self.hovered_index = Self::shift_cursor(self.hovered_index, index);
+        self.base.request_redraw();
+    }
+
+    /// Shifts one cursor after the entry at `removed` left the list.
+    fn shift_cursor(cursor: Option<usize>, removed: usize) -> Option<usize> {
+        match cursor {
+            Some(at) if at == removed => None,
+            Some(at) if at > removed => Some(at - 1),
+            other => other,
         }
     }
     /// Enables or disables the entry at `index`. Out-of-range indices are
@@ -191,22 +221,34 @@ impl MenuBar {
         // Measured with the **effective font** through the shared ruler rather than the old
         // "8 px per byte + 16" guess (D09-STYLE-01 / D09-STYLE-02): the byte count over-measured
         // non-ASCII titles and ignored the font entirely, so a scaled theme font did not widen an
-        // entry. Entries are one line tall, so this is the content width; the bar's own padding is
-        // folded into the estimate via the measured text plus the shared horizontal inset.
+        // entry.
+        //
+        // The padding must cover what `draw_text_fitted` insets: it reserves
+        // `TEXT_FIT_MARGIN` at **each** end, so an entry that only added
+        // `TOOLBAR_ITEM_INSET * 2` (4 px) gave the painter 2 px less than the measured title
+        // and truncated every label. Measured on the GTK demo before this: "File" painted as
+        // "…", "Edit" as "E…". The entry now reserves both the fit margin and a real gap.
         let font = effective_font(self.style());
-        estimate_text_width(title, font, 1.0) as f32 + dimensions::TOOLBAR_ITEM_INSET as f32 * 2.0
+        (estimate_text_width(title, font, 1.0)
+            + 2 * (crate::render::TEXT_FIT_MARGIN + MENU_ENTRY_TEXT_PADDING)) as f32
     }
-    fn _entry_rect(&self, index: usize) -> Rect {
+    /// The rectangle of the entry at `index`, in the coordinate space the bar's own geometry
+    /// uses — client coordinates for a bar placed in a window.
+    ///
+    /// This is the box `draw` paints and `hit_entry` tests, so a consumer that opens the
+    /// matching menu from a `triggered` title can place the popup flush under the entry it
+    /// came from instead of guessing an offset. Returns `None` for an out-of-range index.
+    pub fn entry_rect(&self, index: usize) -> Option<Rect> {
         let rect = self.band_rect();
         let mut x = rect.x;
         for (i, entry) in self.entries.iter().enumerate() {
             let w = self.entry_width(entry.title()) as i32;
             if i == index {
-                return Rect { x, y: rect.y, width: w as u32, height: rect.height };
+                return Some(Rect { x, y: rect.y, width: w as u32, height: rect.height });
             }
             x += w;
         }
-        Rect { x: 0, y: 0, width: 0, height: 0 }
+        None
     }
     fn hit_entry(&self, pos: Point) -> Option<usize> {
         // The **painted band**, so a click below a 28 px strip is not a click on the bar.
@@ -258,6 +300,17 @@ impl Widget for MenuBar {
             "triggered" => Some(EventSignalRef::mapped("triggered", &self.triggered, |v| {
                 CapabilityValue::String(v.clone())
             })),
+            "triggered_entry" => {
+                Some(EventSignalRef::mapped("triggered_entry", &self.triggered_entry, |v| {
+                    // The published shape is `Mixed`, so it must arrive as a structured carrier:
+                    // a subscriber reads the title and the rectangle as their own typed values
+                    // rather than re-parsing a debug spelling.
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::String(v.0.clone()),
+                        CapabilityValue::Rect(v.1),
+                    ]))
+                }))
+            }
             "hovered_entry" => {
                 Some(EventSignalRef::mapped("hovered_entry", &self.hovered_entry, |v| {
                     CapabilityValue::String(v.clone())
@@ -362,7 +415,11 @@ impl EventHandler for MenuBar {
                     if self.entries[idx].is_enabled() {
                         self.active_index = Some(idx);
                         let title = self.entries[idx].title().to_string();
-                        self.triggered.emit(title);
+                        let entry = self.entry_rect(idx);
+                        self.triggered.emit(title.clone());
+                        if let Some(entry) = entry {
+                            self.triggered_entry.emit((title, entry));
+                        }
                     }
                 }
             }
@@ -480,5 +537,35 @@ mod tests {
         menu_bar.set_menu_enabled(idx, false);
         assert_eq!(menu_bar.menu_enabled(idx), Some(false));
         assert_eq!(menu_bar.menu_enabled(99), None);
+    }
+
+    #[test]
+    fn removing_an_entry_keeps_the_cursors_pointing_at_the_same_titles() {
+        let mut menu_bar = MenuBar::new(Rect::new(0, 0, 300, 24));
+        menu_bar.add_menu("File");
+        menu_bar.add_menu("Edit");
+        menu_bar.add_menu("View");
+        menu_bar.active_index = Some(2);
+        menu_bar.hovered_index = Some(1);
+
+        // Removing "File" shifts both titles down by one...
+        menu_bar.remove_menu(0);
+        assert_eq!(menu_bar.entries()[menu_bar.active_index().unwrap()].title(), "View");
+        assert_eq!(menu_bar.entries()[menu_bar.hovered_index().unwrap()].title(), "Edit");
+
+        // ...and removing the entry a cursor was on clears that cursor rather than
+        // leaving it naming the title that took its place.
+        menu_bar.hovered_index = Some(1);
+        menu_bar.remove_menu(1);
+        assert_eq!(menu_bar.active_index(), None);
+        assert_eq!(menu_bar.hovered_index(), None);
+    }
+
+    #[test]
+    fn entry_rect_is_none_past_the_last_entry() {
+        let mut menu_bar = MenuBar::new(Rect::new(0, 0, 300, 24));
+        menu_bar.add_menu("File");
+        assert!(menu_bar.entry_rect(0).is_some());
+        assert!(menu_bar.entry_rect(1).is_none());
     }
 }

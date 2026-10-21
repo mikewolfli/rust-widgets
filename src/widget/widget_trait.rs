@@ -48,7 +48,16 @@ pub trait Widget: EventHandler + Any {
     fn cursor_icon_at(&self, _point: crate::core::Point) -> crate::platform::CursorIcon {
         self.cursor_icon()
     }
-    /// Get the cursor shape this control wants while hovered.
+    /// Whether this control currently paints an overlay **outside** its own rectangle.
+    ///
+    /// An open drop-down list is the case: the control's geometry is the field, while the list
+    /// hangs below it. The hit test must let such a control win over a later sibling that happens
+    /// to cover the same pixels, or the list is unclickable whenever another control sits under
+    /// it. Most controls answer `false`; a popup widget answers for its own open state.
+    fn has_open_popup(&self) -> bool {
+        false
+    }
+    /// Get cursor shape this control wants while hovered.
     ///
     /// BLUE28 B28.09: intent lives on the control; the runtime dispatches it once per hover
     /// change through [`Platform::set_cursor`]. The single match here is the default policy for

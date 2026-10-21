@@ -35,6 +35,9 @@ macro_rules! impl_properties_menu {
             // Governs the Left/Right arrow keys only: a list of entries runs downward in every
             // locale, but the horizontal pair steps along a line of reading order.
             PropertySchema::enumerated("direction", true, true, &["ltr", "rtl"]),
+            // Whether the popup paints its title heading. A menu owned by a menu bar answers
+            // `false` (the bar already shows the title); a context menu keeps it.
+            PropertySchema::new("show_heading", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

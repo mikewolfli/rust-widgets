@@ -612,8 +612,10 @@ const MENU_STRUCTURE: &[(&str, &[Command])] = &[
 
 /// 建立菜单栏，返回 `菜单项 id -> 命令` 的映射。
 ///
-/// 宿主必须在事件循环里轮询 `poll_menu_triggered()`，把返回的 id 喂给
-/// [`dispatch_menu_event`]，菜单才真正有作用——菜单不会自己调用 Rust 回调。
+/// 两部分分工：点击标题展开下拉菜单由本函数处理（`MenuBar::triggered` →
+/// `MenuHandle::open_at`），而**选中菜单项**的通知仍由事件泵轮询
+/// `poll_menu_triggered()` 后交给 [`dispatch_menu_event`]。自绘后端的菜单选择已经会
+/// 进入同一个队列（`Menu::triggered_index` → 后端队列），所以两种后端只有一条消费路径。
 fn build_menu_bar(
     win: &rust_widgets::app::WindowHandle,
     log: &Arc<EventLog>,
@@ -626,6 +628,7 @@ fn build_menu_bar(
     }
 
     let mut bindings = Vec::new();
+    let mut menus: Vec<(String, rust_widgets::app::MenuHandle)> = Vec::new();
     for (index, (title, items)) in MENU_STRUCTURE.iter().enumerate() {
         let menu = win.new_menu(&bar, title, 0, index as i32 * MENU_H as i32, 120, MENU_H);
         if menu.raw_id() == 0 {
@@ -634,6 +637,7 @@ fn build_menu_bar(
             ));
             continue;
         }
+        menus.push((title.to_string(), menu.clone()));
         for command in *items {
             // Typed shortcut: the platform renders the host's own notation, so
             // the menu reads `⌘Z` on macOS and `Ctrl+Z` on Windows/Linux from
@@ -647,6 +651,21 @@ fn build_menu_bar(
         }
         log.append(format!("[MenuBar] menu '{title}' with {} items", items.len()));
     }
+
+    // Opening the popup is the host's job (`MenuBar` owns the strip, not the drop-down).
+    // The event carries the entry rectangle, so the handler does not read the bar (it is
+    // lent out exclusively while its own event is dispatched).
+    bar.on_entry_triggered(move |title: String, entry: Rect| {
+        let Some(index) = menus.iter().position(|(name, _)| *name == title) else {
+            return;
+        };
+        menus[index].1.open_at(
+            entry.x,
+            entry.y + entry.height as i32,
+            Rect::new(0, 0, WINDOW_W, WINDOW_H),
+        );
+    });
+
     (bar.raw_id(), bindings)
 }
 

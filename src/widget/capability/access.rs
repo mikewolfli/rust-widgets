@@ -398,6 +398,7 @@ pub fn default_widget_property_default_value(
             "current_text" => CapabilityValue::String(String::new()),
             "editable" => CapabilityValue::Bool(false),
             "max_visible_items" => CapabilityValue::UInt(10),
+            "open" => CapabilityValue::Bool(false),
             // The direction the field runs in. `ComboBox::new` starts left-to-right, so the schema's
             // default has to say the same thing or a manifest reset would silently mirror a field
             // the caller had never asked to change.
@@ -733,6 +734,9 @@ pub fn default_widget_property_default_value(
             "item_count" => CapabilityValue::UInt(0),
             "hovered_index" => CapabilityValue::Null,
             "direction" => CapabilityValue::String("ltr".to_string()),
+            // A freshly constructed menu is a standalone popup and paints its heading; the
+            // menu-bar path clears the flag when it creates one (see `create_menu`).
+            "show_heading" => CapabilityValue::Bool(true),
             _ => return None,
         },
         WidgetKind::MenuBar => match property_name {

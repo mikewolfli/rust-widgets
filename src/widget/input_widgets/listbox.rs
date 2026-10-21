@@ -547,7 +547,13 @@ impl ListBox {
     fn visible_range(&self) -> (usize, usize) {
         let content = self.content_rect();
         let height = self.row_height();
-        let visible_items = (content.height as f32 / height).ceil().max(1.0) as usize;
+        // `floor`, not `ceil`: a row that only partly fits must not be drawn, because the paint
+        // path has no way to clip a glyph run to the content box on every backend (the SVG
+        // backend emits absolute coordinates). `ceil` counted that partial row, so the demo's
+        // 90 px list painted its fifth 20 px row below its own border. At least one row is kept
+        // for a control shorter than a single row, which is the only case where a row can still
+        // exceed the box.
+        let visible_items = (content.height as f32 / height).floor().max(1.0) as usize;
         let start = self.scroll_offset.min(self.items.len().saturating_sub(1));
         let end = self.items.len().min(start + visible_items);
         (start, end)
@@ -872,6 +878,14 @@ impl Draw for ListBox {
         // — `row_rect` insets them by `CONTENT_INSET` inside this stroke.
         context.draw_rect(rect, border);
 
+        // Partial rows are clipped to the content box. `visible_range` deliberately includes the
+        // row that is only partly visible (`ceil`), because a list that hid it would leave a band
+        // of empty surface above its bottom edge. What it must not do is paint past that edge,
+        // which is what happened when the last row's fixed height exceeded the remaining space:
+        // the demo's 90 px list drew its fifth 20 px row outside its own border.
+        let content = self.content_rect();
+        context.push_clip(content.x, content.y, content.width, content.height);
+
         let font = self.row_font();
         let text_inset = 6;
         // Read once so the loop body only compares integers.
@@ -934,6 +948,7 @@ impl Draw for ListBox {
                 );
             }
         }
+        context.pop_clip();
     }
 }
 
@@ -1284,5 +1299,28 @@ mod tests {
         let _ = &lb.item_selected;
         let _ = &lb.item_activated;
         let _ = &lb.selection_changed;
+    }
+
+    /// A row that is only partly visible is clipped to the control's content box.
+    ///
+    /// `visible_range` uses `ceil`, deliberately: a list whose last row was wholly hidden would
+    /// leave an empty band above its bottom edge. The row must then be *clipped*, not painted all
+    /// the way out — measured in the control demo, where a 90 px list drew its fifth 20 px row
+    /// below its own border.
+    #[test]
+    fn a_partial_last_row_is_clipped_to_the_content_box() {
+        let mut list = ListBox::new(Rect::new(0, 0, 200, 50));
+        for index in 0..4 {
+            list.add_item(format!("row {index}"));
+        }
+        let svg = crate::widget::svg::render_to_svg(&mut list);
+        let boxes = crate::widget::svg::text_ink_boxes(&svg);
+        assert!(!boxes.is_empty(), "the visible rows must paint text");
+        for (x, y, right, bottom) in boxes {
+            assert!(
+                bottom <= list.geometry().y + list.geometry().height as i32,
+                "text at ({x},{y})-({right},{bottom}) escaped the list's bottom edge"
+            );
+        }
     }
 }

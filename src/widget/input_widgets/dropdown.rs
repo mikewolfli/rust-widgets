@@ -200,14 +200,23 @@ impl Dropdown {
 
     /// Expands or collapses the dropdown list.
     pub fn set_expanded(&mut self, expanded: bool) {
+        if self.expanded == expanded {
+            return;
+        }
         self.expanded = expanded;
+        if expanded {
+            #[cfg(not(alloc_frugal))]
+            crate::widget::runtime::set_popup_grab(self.id());
+        } else {
+            #[cfg(not(alloc_frugal))]
+            crate::widget::runtime::clear_popup_grab_for(self.id());
+        }
         self.base.request_redraw();
     }
 
     /// Toggles the expanded / collapsed state.
     pub fn toggle(&mut self) {
-        self.expanded = !self.expanded;
-        self.base.request_redraw();
+        self.set_expanded(!self.expanded);
     }
 
     // ─── helpers ────────────────────────────────────────────────────────
@@ -258,6 +267,20 @@ impl Widget for Dropdown {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    /// The field **and** the expanded list accept the pointer.
+    ///
+    /// The list is painted below this control's own rectangle; the default hit rule would reject
+    /// every row, so a click on an item fell through to the window.
+    fn contains_point(&self, point: Point) -> bool {
+        self.base().contains_point_with_touch_expansion(point)
+            || (self.expanded
+                && (0..self.items.len()).any(|index| self.item_rect(index).contains_point(point)))
+    }
+
+    fn has_open_popup(&self) -> bool {
+        self.expanded
     }
 
     fn size_hint(&self) -> crate::core::Size {

@@ -3,33 +3,30 @@
 
 //! Menu widget.
 //!
-//! # The popup's rows are assembled by a layout
+//! # The popup's rows are derived, not painted ad hoc
 //!
 //! BLUE22 §B.8 lists `menu` / `menu_item`'s defect as "the check and arrow paddings written by
-//! hand". The *columns* of a row were already derived (see [`Menu::indicator_box`] and
-//! [`Menu::label_box`], which state the standard menu-item relations), but the *run* of rows was
-//! a `let mut y` inside `draw`. [`Menu::item_bands`] now asks a [`FlexLayout`] column where each
-//! row is, so the run is a layout answer rather than a second accumulator.
+//! hand". The *columns* of a row are derived (see [`Menu::indicator_box`] and
+//! [`Menu::label_box`], which state the standard menu-item relations), and the *run* of rows is
+//! one derivation in [`Menu::item_bands`] that the painter and every hit path share. The run used
+//! to be a `let mut y` inside `draw`; a `FlexLayout` column replaced it for a while, but every row
+//! has a fixed height the control owns, so the layout only rediscovered constants — on each draw,
+//! which is once per frame while the popup reveals.
 
 use crate::compat::Vec;
-use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
-use crate::layout::{
-    AlignItems, FlexDirection, FlexLayout, FlexWrap, JustifyContent, LayoutParams,
-};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::style::EdgeOffsets;
 use crate::widget::capability::coercion::{
-    expect_string, expect_text_direction, text_direction_to_str,
+    expect_bool, expect_string, expect_text_direction, text_direction_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::composite::CompositeBuilder;
 use crate::widget::menu_toolbar::popup_reveal::{PopupReveal, RevealDirection};
-use crate::widget::metrics::{dimensions, effective_font};
-use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetFactory, WidgetKind};
+use crate::widget::metrics::{dimensions, effective_font, estimate_text_width};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// A single item in a menu.
 #[derive(Debug, Clone)]
@@ -255,6 +252,13 @@ pub struct Menu {
     /// reverse, which is why `hide` does not empty the menu: a panel that lost its entries as it
     /// closed would animate nothing.
     reveal: PopupReveal,
+    /// Whether the popup paints its title heading above the entry rows.
+    ///
+    /// A menu opened **from a menu bar** must not repeat its title: the bar already shows it
+    /// two pixels above the popup, and a heading there makes the drop-down start with a copy of
+    /// the label the user just clicked. A standalone context menu has no such label above it, so
+    /// it keeps the heading. The flag is data rather than a second `Menu` type (principle #54).
+    show_heading: bool,
 }
 impl Menu {
     /// Creates a menu titled `title`, initially **hidden**.
@@ -278,6 +282,7 @@ impl Menu {
             about_to_hide: GenericSignal::new(),
             direction: crate::core::TextDirection::default(),
             reveal: PopupReveal::new(false),
+            show_heading: true,
         };
         // A menu is a popup, so it starts hidden. `BaseWidget` defaults to visible,
         // which is right for a control that owns part of the surface but wrong for
@@ -302,8 +307,17 @@ impl Menu {
     /// The popup is positioned by its top-left corner, so the menu appears to the
     /// lower-right of the pointer, matching the platform convention.
     pub fn open_at(&mut self, position: Point, viewport: Rect) {
-        let popup_h = self.popup_height() as i32;
-        let popup_w = self.geometry().width as i32;
+        // A menu created through `create_menu(.., width = 0, height = 0)` — the shape every
+        // documented call site uses — has a zero-width geometry. Opening it as-is painted a
+        // popup with no pixels at all, so the click that asked for it looked like a no-op.
+        // The popup takes the width it was given when that is usable, and the control's own
+        // size hint otherwise.
+        let rect = self.geometry();
+        let popup_w = rect.width.max(self.size_hint().width).max(1) as i32;
+        // The drawn popup is its heading strip **plus** the body; both are part of what must
+        // fit inside the viewport. Measuring only the body let the heading hang off the top
+        // edge when a menu was opened near it.
+        let popup_h = self.drawn_heading_height() as i32 + self.popup_height() as i32;
 
         // Clamp so the whole popup fits; never go negative, because a popup at a
         // negative coordinate is off-screen on every backend.
@@ -312,8 +326,10 @@ impl Menu {
         let x = position.x.clamp(viewport.x, max_x.max(viewport.x));
         let y = position.y.clamp(viewport.y, max_y.max(viewport.y));
 
-        let rect = self.geometry();
-        self.set_geometry(Rect::new(x, y, rect.width, rect.height));
+        // The geometry is the rectangle `contains_point`, the hit test and `render_frame`
+        // read, so it must be the rectangle `draw` paints rather than the caller-supplied
+        // 0x0 box.
+        self.set_geometry(Rect::new(x, y, popup_w as u32, popup_h.max(1) as u32));
         self.invoker_position = Some(position);
         // Pre-select the first actionable entry so keyboard navigation has a
         // starting point; a menu opened with no selection cannot be driven by
@@ -321,6 +337,23 @@ impl Menu {
         self.hovered_index =
             self.items.iter().position(|item| !item.is_separator() && item.is_enabled());
         self.show();
+        // A menu is a **command surface**, not a decoration: it must be on screen the moment the
+        // user asks for it. The reveal still animates on close, but an opening popup that grew
+        // over ~30 frames was reported as "菜单加载好慢" — and macOS shows a menu immediately.
+        // `jump_to` also guarantees the first painted frame contains every row, so a click that
+        // follows the opening press lands on the row the user can see.
+        self.reveal.jump_to(true);
+    }
+
+    /// The popup body's top edge: the geometry's `y` plus the heading strip.
+    ///
+    /// `draw` paints the heading first and lays the entry rows out below it. The pointer
+    /// handlers used to start their row walk at `geometry().y`, so every row was read as
+    /// `heading_height` pixels higher than it was drawn — a click on the lower half of one
+    /// row activated the row below it. One derivation, used by the painter and by the hit
+    /// paths, is what keeps them from drifting apart again.
+    fn body_top(&self) -> i32 {
+        self.geometry().y + self.drawn_heading_height() as i32
     }
 
     /// The pointer position this menu was opened at, if it was opened via
@@ -336,10 +369,13 @@ impl Menu {
     /// the "outside" test disagree with what the user sees.
     pub fn contains_point(&self, point: Point) -> bool {
         let rect = self.geometry();
+        // The drawn extent is the heading **plus** the body. Testing only `popup_height`
+        // from `rect.y` both accepted clicks on the heading and rejected clicks on the
+        // body's lower rows once the popup was taller than the heading.
         point.x >= rect.x
             && point.x < rect.x + rect.width as i32
             && point.y >= rect.y
-            && point.y < rect.y + self.popup_height() as i32
+            && point.y < self.body_top() + self.popup_height() as i32
     }
     /// The menu's title, drawn as its heading.
     pub fn title(&self) -> &str {
@@ -567,68 +603,56 @@ impl Menu {
         if self.items.is_empty() {
             return Vec::new();
         }
-        let factory = WidgetFactory::new_with_defaults();
-        let mut column = CompositeBuilder::new(
-            Box::new(FlexLayout::with_params(
-                FlexDirection::Column,
-                FlexWrap::NoWrap,
-                JustifyContent::FlexStart,
-                AlignItems::Stretch,
-                0,
-                0,
-            )),
-            EdgeOffsets::new(dimensions::MENU_POPUP_PADDING, 0, dimensions::MENU_POPUP_PADDING, 0),
-            Size::new(0, 0),
-        );
+        // Direct arithmetic, not a `FlexLayout` column: every row has a fixed height the control
+        // itself owns (`item_height` / `separator_height`), so a layout engine was asked to
+        // rediscover a constant on **every** draw — and during the open reveal that is once per
+        // frame. Measured as menu-open latency on the GTK demo. The relations the layout used to
+        // state are the same three lines below: the run starts at the popup's padding, each row
+        // follows the previous one, and the run is as tall as `popup_height` reports.
+        let padding = dimensions::MENU_POPUP_PADDING;
+        let width = self.geometry().width.saturating_sub(padding * 2);
+        let mut placed = Vec::with_capacity(self.items.len());
+        let mut y = padding as i32;
         for item in self.items.iter() {
-            let row_height = if item.is_separator() {
+            let height = if item.is_separator() {
                 Self::separator_height() as u32
             } else {
                 Self::item_height() as u32
             };
-            // The label text is passed so a row the layout reports is identifiable, not so the
-            // layout reads it: the row's height is the control's own `MENU_ROW_HEIGHT`, whatever the
-            // label says. A separator carries no text, which is also how it reads on screen.
-            let created = column.add_sized(
-                &factory,
-                "label",
-                item.text(),
-                Size::new(self.geometry().width, row_height),
-                LayoutParams::new(),
-            );
-            debug_assert!(created.is_some(), "a menu row is a core control");
-        }
-        let mut placed: Vec<Rect> = Vec::new();
-        // # Why the column is given a height it has to squeeze into
-        //
-        // This used to arrange inside `Rect::new(0, 0, width, self.popup_height())`, where
-        // `popup_height` is *the sum of the very row heights the loop above just registered*. The
-        // band therefore fit the children by construction, `compute_main_sizes` always saw
-        // `remaining >= 0`, and the shrink pass could only ever run when a caller docked the popup
-        // in less than `popup_height` — it had no way to notice, because the rect it was handed was
-        // not the caller's room. It also silently masked a real over-subscription: a menu of N
-        // rows whose title heading pushed the content past the control's own height would place
-        // the last rows past the popup's bottom edge, and (the SVG backend emits absolute
-        // coordinates, nothing clips here) they would be drawn outside it.
-        //
-        // Supplying the popup's actual extent makes the layout answer "what fits in the popup I
-        // have", which is the question the caller has. `popup_height` remains the *preference*
-        // reported to a parent by `hints()`; the two are different statements and were previously
-        // conflated into one number used as both.
-        let available = Rect::new(0, 0, self.geometry().width, self.geometry().height);
-        column.arrange(available, &mut |_, rect| placed.push(rect));
-        // `FlexLayout` emits one rectangle per registered item, so this is a guard against a
-        // future cap rather than a route. When it fires the row is placed at the column's leading
-        // edge with a zero extent, which is distinguishable from a placed box; the previous
-        // `Rect::new(0, 0, 0, 0)` was not.
-        while placed.len() < self.items.len() {
-            placed.push(Rect::new(available.x, available.y, 0, 0));
+            placed.push(Rect::new(padding as i32, y, width, height));
+            y += height as i32;
         }
         placed
     }
     /// The height of the title heading the menu draws above its popup body.
     fn heading_height() -> f32 {
         20.0
+    }
+
+    /// The heading height this menu actually paints: zero when the title is suppressed.
+    fn drawn_heading_height(&self) -> f32 {
+        if self.show_heading {
+            Self::heading_height()
+        } else {
+            0.0
+        }
+    }
+
+    /// Shows or hides the title heading above the entries.
+    ///
+    /// [`crate::create_menu`] clears it for a menu owned by a menu bar, whose title the bar
+    /// already paints; a context menu keeps it. Changing the flag invalidates the popup because
+    /// every row's drawn and clickable position moves by the strip's height.
+    pub fn set_show_heading(&mut self, show: bool) {
+        if self.show_heading != show {
+            self.show_heading = show;
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether the title heading is painted.
+    pub fn shows_heading(&self) -> bool {
+        self.show_heading
     }
     fn separator_height() -> f32 {
         6.0
@@ -670,7 +694,29 @@ impl Menu {
 
     /// The x where the trailing columns (shortcut, submenu arrow) begin.
     fn trailing_column_x(&self, row: Rect) -> i32 {
-        row.x + row.width as i32 - dimensions::MENU_ROW_TRAILING_WIDTH as i32
+        row.x + row.width as i32 - self.trailing_width() as i32
+    }
+
+    /// Width of the column the shortcut / submenu arrow occupies.
+    ///
+    /// The constant (`MENU_ROW_TRAILING_WIDTH`) is the *minimum*, sized for a submenu arrow.
+    /// A shortcut is text and can be wider than that — `Ctrl+Shift+Z` at body size is three
+    /// times the arrow's column — and the old fixed reserve handed `draw_text_fitted` a box
+    /// narrower than the string, so every shortcut in the demo painted as "…". Measuring the
+    /// widest shortcut in **this** menu keeps the column honest for the entries it actually
+    /// holds, and keeps the label box from stealing the text's room.
+    fn trailing_width(&self) -> u32 {
+        let font = effective_font(self.style());
+        let widest = self
+            .items
+            .iter()
+            .filter(|item| self.row_shows_shortcut(item))
+            .map(|item| {
+                estimate_text_width(item.shortcut(), font, 1.0) + 2 * crate::render::TEXT_FIT_MARGIN
+            })
+            .max()
+            .unwrap_or(0);
+        widest.max(dimensions::MENU_ROW_TRAILING_WIDTH)
     }
 
     /// The box the submenu arrow may occupy: what is left of the row after the label.
@@ -741,6 +787,10 @@ impl Widget for Menu {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    fn has_open_popup(&self) -> bool {
+        self.is_visible()
     }
 
     fn size_hint(&self) -> crate::core::Size {
@@ -829,6 +879,7 @@ impl WidgetProperties for Menu {
             "direction" => {
                 Ok(CapabilityValue::String(text_direction_to_str(self.direction()).to_string()))
             }
+            "show_heading" => Ok(CapabilityValue::Bool(self.shows_heading())),
             _ => base_property_get(self, name),
         }
     }
@@ -843,6 +894,10 @@ impl WidgetProperties for Menu {
                 self.set_direction(expect_text_direction(value)?);
                 Ok(())
             }
+            "show_heading" => {
+                self.set_show_heading(expect_bool(value)?);
+                Ok(())
+            }
             "hovered_index" => Err(CapabilityAccessError::ReadOnlyProperty),
             "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
@@ -850,7 +905,14 @@ impl WidgetProperties for Menu {
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["title", "item_count", "hovered_index", "direction", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "title",
+            "item_count",
+            "hovered_index",
+            "direction",
+            "show_heading",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `menu` publishes.
@@ -885,8 +947,7 @@ impl EventHandler for Menu {
         }
         match event {
             Event::MouseMove { pos } => {
-                let rect = self.geometry();
-                let mut y = rect.y as f32 + 2.0;
+                let mut y = self.body_top() as f32 + 2.0;
                 for (i, item) in self.items.iter().enumerate() {
                     let h = if item.is_separator() {
                         Self::separator_height()
@@ -901,8 +962,7 @@ impl EventHandler for Menu {
                 }
             }
             Event::MousePress { pos, button: 1, .. } => {
-                let rect = self.geometry();
-                let mut y = rect.y as f32 + 2.0;
+                let mut y = self.body_top() as f32 + 2.0;
                 for (index, item) in self.items.iter().enumerate() {
                     let h = if item.is_separator() {
                         Self::separator_height()
@@ -946,8 +1006,7 @@ impl EventHandler for Menu {
             }
             #[cfg(feature = "touch")]
             Event::Tap { pos } => {
-                let rect = self.geometry();
-                let mut y = rect.y as f32 + 2.0;
+                let mut y = self.body_top() as f32 + 2.0;
                 for (index, item) in self.items.iter().enumerate() {
                     let h = if item.is_separator() {
                         Self::separator_height()
@@ -1084,28 +1143,30 @@ impl Draw for Menu {
         // strip is drawn in both states, which reads as the popup's heading when open and as the
         // control's own idle label when closed — and makes `title()`'s documented "drawn as its
         // heading" contract true, which it previously was not: nothing on this type drew it.
-        let heading_h = Self::heading_height();
-        context.fill_rect(
-            Rect::new(rect.x, rect.y, rect.width, heading_h as u32),
-            face.blend(&ink, 0.10),
-        );
-        // The origin is the glyph's **top** edge, so the heading's vertical centre is half the
-        // difference between the strip and the line box. Passing the strip's midline put the
-        // glyph's top *at* the centre, so a 14 px label in a 20 px heading ended at y = 24 —
-        // four pixels below the strip it belongs to.
-        let heading_text_h = context.measure_text("M", font).height;
-        context.draw_text(
-            Point::new(rect.x + 8, rect.y + (heading_h as i32 - heading_text_h as i32) / 2),
-            &self.title,
-            font,
-            ink,
-            HorizontalAlignment::Left,
-        );
-        context.draw_line(
-            Point::new(rect.x, rect.y + heading_h as i32),
-            Point::new(rect.x + rect.width as i32, rect.y + heading_h as i32),
-            border,
-        );
+        let heading_h = self.drawn_heading_height();
+        if heading_h > 0.0 {
+            context.fill_rect(
+                Rect::new(rect.x, rect.y, rect.width, heading_h as u32),
+                face.blend(&ink, 0.10),
+            );
+            // The origin is the glyph's **top** edge, so the heading's vertical centre is half the
+            // difference between the strip and the line box. Passing the strip's midline put the
+            // glyph's top *at* the centre, so a 14 px label in a 20 px heading ended at y = 24 —
+            // four pixels below the strip it belongs to.
+            let heading_text_h = context.measure_text("M", font).height;
+            context.draw_text(
+                Point::new(rect.x + 8, rect.y + (heading_h as i32 - heading_text_h as i32) / 2),
+                &self.title,
+                font,
+                ink,
+                HorizontalAlignment::Left,
+            );
+            context.draw_line(
+                Point::new(rect.x, rect.y + heading_h as i32),
+                Point::new(rect.x + rect.width as i32, rect.y + heading_h as i32),
+                border,
+            );
+        }
 
         // # Why the body is painted while it is *either* open or still closing
         //
@@ -1214,7 +1275,7 @@ impl Draw for Menu {
                 let trailing = Rect::new(
                     self.trailing_column_x(row),
                     row.y,
-                    dimensions::MENU_ROW_TRAILING_WIDTH,
+                    self.trailing_width(),
                     row.height,
                 );
                 context.draw_text_fitted(
@@ -1596,8 +1657,16 @@ mod tests {
             sink.lock().expect("sink poisoned").push((*text).clone());
         });
 
-        // First entry sits just below the popup's 2px top padding.
-        menu.handle_event(&Event::MousePress { pos: Point::new(20, 14), button: 1, modifiers: 0 });
+        // The first entry is drawn below the heading strip and the body's 2px top
+        // padding. The test used to click at `y = 14`, inside the heading — it passed
+        // only because the hit path started its row walk at the popup's top edge while
+        // `draw` started it below the heading, i.e. because the two disagreed.
+        let body_top = menu.body_top();
+        menu.handle_event(&Event::MousePress {
+            pos: Point::new(20, body_top + 4),
+            button: 1,
+            modifiers: 0,
+        });
 
         assert_eq!(&*fired.lock().expect("sink poisoned"), &["Cut".to_string()]);
         assert!(!menu.is_visible(), "choosing an entry must close the menu");
@@ -1653,10 +1722,11 @@ mod tests {
     #[test]
     fn contains_point_follows_the_drawn_height() {
         let mut menu = context_menu();
-        // Geometry height is 100 but the four entries plus padding draw shorter.
+        // Geometry height is 100 but the four entries plus padding draw shorter, and the
+        // heading sits above them.
         menu.open_at(Point::new(0, 0), Rect::new(0, 0, 400, 400));
 
-        let drawn = menu.popup_height() as i32;
+        let drawn = menu.body_top() + menu.popup_height() as i32;
         assert!(menu.contains_point(Point::new(5, drawn - 1)));
         assert!(!menu.contains_point(Point::new(5, drawn)));
     }
@@ -1902,10 +1972,14 @@ mod tests {
             chosen_clone.fetch_add(1, Ordering::SeqCst);
         });
 
-        // A press on the first row, which is the branch. `open_at(0, 0)` puts the popup at the
-        // origin, and the rows begin just below its own top padding — the same coordinate the
-        // existing leaf test uses.
-        menu.handle_event(&Event::MousePress { pos: Point::new(20, 14), button: 1, modifiers: 0 });
+        // A press on the first row, which is the branch. The popup and its rows are drawn
+        // below the heading, so the press uses the same `body_top` derivation the painter does.
+        let row_y = menu.body_top() + 4;
+        menu.handle_event(&Event::MousePress {
+            pos: Point::new(20, row_y),
+            button: 1,
+            modifiers: 0,
+        });
 
         assert_eq!(opened.load(Ordering::SeqCst), 1, "the branch must be reported as opened");
         assert_eq!(
@@ -1938,7 +2012,11 @@ mod tests {
             chosen_clone.fetch_add(1, Ordering::SeqCst);
         });
 
-        menu.handle_event(&Event::MousePress { pos: Point::new(20, 14), button: 1, modifiers: 0 });
+        menu.handle_event(&Event::MousePress {
+            pos: Point::new(20, menu.body_top() + 4),
+            button: 1,
+            modifiers: 0,
+        });
 
         assert_eq!(chosen.load(Ordering::SeqCst), 1, "a leaf must commit");
         assert_eq!(opened.load(Ordering::SeqCst), 0, "a leaf must not ask for a submenu");
@@ -1992,5 +2070,23 @@ mod tests {
             big_ink > base_ink,
             "a larger font must widen the painted menu ink: {big_ink} vs {base_ink}"
         );
+    }
+
+    /// The open reveal must actually reach its end, or the popup stays a slit.
+    ///
+    /// This is the model half of the defect the GTK demo showed: the first screenshot after a
+    /// click had the heading and a sliver of body, which is exactly `reveal < 1`. Isolating the
+    /// tick here says whether the value arrives (a driver problem) or the value is right and the
+    /// painter/frame loop is not (a repaint problem).
+    #[test]
+    fn the_open_reveal_settles_after_a_second_of_frames() {
+        let mut menu = context_menu();
+        menu.open_at(Point::new(0, 0), Rect::new(0, 0, 400, 400));
+        for _ in 0..80 {
+            menu.tick(16);
+        }
+        assert_eq!(menu.reveal.value(), 1.0, "the reveal must reach fully open");
+        assert!(!menu.is_animating(), "a settled reveal owes no more frames");
+        assert_eq!(menu.item_bands().len(), menu.items().len());
     }
 }

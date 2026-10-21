@@ -767,8 +767,10 @@ fn cache_coverage(key: CoverageKey, coverage: crate::compat::Vec<u8>) {
 // Counts cache hits and misses for tests, so a test can prove the cache is on the path.
 #[cfg(test)]
 thread_local! {
+    #[allow(clippy::missing_const_for_thread_local)]
     static COVERAGE_CACHE_HITS: crate::compat::Cell<usize> =
         const { crate::compat::Cell::new(0) };
+    #[allow(clippy::missing_const_for_thread_local)]
     static COVERAGE_CACHE_MISSES: crate::compat::Cell<usize> =
         const { crate::compat::Cell::new(0) };
 }

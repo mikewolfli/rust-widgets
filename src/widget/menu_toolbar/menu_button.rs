@@ -324,6 +324,8 @@ impl MenuButton {
     pub fn open_menu(&mut self) {
         self.menu_open = true;
         self.reveal.set_open(true);
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::set_popup_grab(self.id());
         self.base.request_redraw();
     }
 
@@ -331,6 +333,8 @@ impl MenuButton {
     pub fn close_menu(&mut self) {
         self.menu_open = false;
         self.reveal.set_open(false);
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::clear_popup_grab_for(self.id());
         self.base.request_redraw();
     }
 
@@ -382,6 +386,19 @@ impl Widget for MenuButton {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    /// The button **and** its open menu accept the pointer.
+    ///
+    /// The menu is painted below the button's rectangle; without this override every click on a
+    /// menu item was rejected before `hit_test_item` could see it.
+    fn contains_point(&self, point: crate::core::Point) -> bool {
+        self.base().contains_point_with_touch_expansion(point)
+            || (self.menu_open && self.menu_rect().contains_point(point))
+    }
+
+    fn has_open_popup(&self) -> bool {
+        self.menu_open
     }
 
     fn size_hint(&self) -> crate::core::Size {

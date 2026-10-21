@@ -352,6 +352,8 @@ impl DropdownMenu {
         self.expanded = true;
         self.reveal.set_open(true);
         self.scroll_offset = 0;
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::set_popup_grab(self.id());
         self.base.request_redraw();
     }
 
@@ -359,6 +361,8 @@ impl DropdownMenu {
     pub fn collapse(&mut self) {
         self.expanded = false;
         self.reveal.set_open(false);
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::clear_popup_grab_for(self.id());
         self.base.request_redraw();
     }
 
@@ -439,6 +443,19 @@ impl Widget for DropdownMenu {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    /// The field **and** the expanded list accept the pointer.
+    ///
+    /// The list hangs below the field's own rectangle; without this override a click on a row was
+    /// rejected by the hit test and never reached `hit_test_item`.
+    fn contains_point(&self, point: crate::core::Point) -> bool {
+        self.base().contains_point_with_touch_expansion(point)
+            || (self.expanded && self.dropdown_rect().contains_point(point))
+    }
+
+    fn has_open_popup(&self) -> bool {
+        self.expanded
     }
 
     fn size_hint(&self) -> crate::core::Size {

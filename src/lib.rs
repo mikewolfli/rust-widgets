@@ -2380,11 +2380,18 @@ pub fn create_menu_bar(
         NO_SUCH_CONTROL
     }
 }
-/// Adds a top-level menu to a menu bar.
+/// Adds a menu under a menu bar (or another menu, for a submenu).
 ///
-/// `parent` must be the **menu bar**, not the window: a menu's parent is
-/// structurally its bar and several backends silently do nothing when given a
-/// window instead.
+/// `parent` must be the **menu bar** for a top-level menu, or a **menu** for a nested one:
+/// the parent determines both where the menu belongs structurally and, for a bar, the title
+/// that gets painted in the strip. A menu whose parent is a bar also appears in the bar's
+/// entry list; a context menu is created under the window it belongs to and starts hidden.
+///
+/// The menu is a popup and starts hidden. Open it with [`menu_open_at`] (or
+/// [`MenuHandle::open_at`](crate::app::MenuHandle::open_at)) when the host decides it should
+/// appear — including from the bar's
+/// [`triggered_entry`](crate::MenuBar::triggered_entry) event, whose payload carries the
+/// entry's rectangle.
 ///
 /// Returns `0` on a profile that does not ship menus.
 #[cfg(not(alloc_frugal))]
@@ -2489,6 +2496,67 @@ pub fn poll_menu_triggered() -> Option<crate::core::ObjectId> {
 #[cfg(not(alloc_frugal))]
 pub fn menu_item_shortcut(menu_item: crate::core::ObjectId) -> Option<String> {
     control_backend::get_control_backend().menu_item_shortcut(menu_item)
+}
+
+/// Shows a menu popup with its top-left corner at `position`.
+///
+/// `position` is in the **window's client coordinates** — the space a menu bar's
+/// [`MenuBar::entry_rect`](crate::MenuBar::entry_rect) reports — and the popup is clamped
+/// into `viewport` so it never opens partly off-screen. Opening also moves the menu to the
+/// end of its window's child list, so a popup paints above, and receives clicks before, any
+/// control created after it.
+///
+/// This is the self-drawn counterpart of a native `NSMenu`/`HMENU` popup: without it a
+/// [`create_menu`] widget starts hidden (a popup is not a panel) and has no public way to
+/// become visible. Use [`menu_close`] to dismiss it.
+///
+/// Returns `false` when `menu` is not a mounted menu, when the viewport is empty, or when
+/// the id addresses another kind of widget.
+///
+/// ```rust,no_run
+/// use rust_widgets::core::{Point, Rect};
+///
+/// let window = rust_widgets::create_window("Menu", 0, 0, 640, 480);
+/// let bar = rust_widgets::create_menu_bar(window, 0, 0, 640, 28);
+/// let file = rust_widgets::create_menu(bar, "File", 0, 0, 160, 0);
+/// rust_widgets::menu_add_item(file, "Open", Some("Ctrl+O"));
+/// assert!(rust_widgets::menu_open_at(file, 0, 28, Rect::new(0, 0, 640, 480)));
+/// assert!(rust_widgets::menu_close(file));
+/// ```
+#[cfg(full_widgets)]
+pub fn menu_open_at(
+    menu: crate::core::ObjectId,
+    x: i32,
+    y: i32,
+    viewport: crate::core::Rect,
+) -> bool {
+    if viewport.width == 0 || viewport.height == 0 {
+        return false;
+    }
+    crate::widget::runtime::open_context_menu(menu, crate::core::Point::new(x, y), viewport)
+}
+
+/// Hides an open menu popup.
+///
+/// Returns `false` when `menu` is not a mounted menu or another kind of widget. The
+/// menu's own `hidden`/`about_to_hide` signals fire through [`crate::Menu`]'s close path,
+/// so a caller that subscribed to them sees the same lifecycle fact a click-outside would
+/// produce.
+#[cfg(full_widgets)]
+pub fn menu_close(menu: crate::core::ObjectId) -> bool {
+    let hidden = crate::widget::runtime::with_widget_mut(menu, |widget| {
+        let Some(menu) = (widget as &mut dyn std::any::Any).downcast_mut::<crate::Menu>() else {
+            return false;
+        };
+        menu.hide();
+        true
+    })
+    .unwrap_or(false);
+    if hidden {
+        crate::widget::runtime::request_repaint_subtree(menu);
+        crate::widget::runtime::clear_popup_grab();
+    }
+    hidden
 }
 /// Returns the backend's opaque handle for a widget, when it has one.
 ///

@@ -8,8 +8,8 @@
 //! [`Platform::system_locale`](crate::platform::Platform::system_locale) returns
 //! `Option<&'static str>` because the style layer's environment snapshot stores the tag as a
 //! borrowed string and is read once per frame. A backend that leaked a fresh `String` on every
-//! call would grow the process for as long as it runs. Interning keeps exactly one leaked value
-//! alive and replaces it only when the host reports a **different** locale, which is a rare event.
+//! call would grow the process for as long as it runs. Interning keeps one leaked value per
+//! distinct tag alive for the process, so a repeated read is a lookup rather than an allocation.
 //!
 //! # Why the environment fallback lives here
 //!
@@ -20,17 +20,29 @@
 
 use crate::compat::{Mutex, OnceLock, String};
 
-/// The single interned locale, replaced when the host reports a different tag.
+/// The interned locale tags, keyed by their own leaked text.
+///
+/// # Why a map and not one "current" slot
+///
+/// The original interner held a single `Option<&'static str>` and replaced it whenever the host
+/// reported a different tag. Two threads (or a test suite running platform-locale tests in
+/// parallel) could then observe the same tag through two different pointers: one caller read the
+/// slot, another replaced it, and the first caller's next read returned a fresh leak. The
+/// contract — repeated reads of the **same tag** return the same pointer — is a property of the
+/// tag, not of the most recent call, so the map stores it per tag. The number of distinct locales
+/// a process sees is tiny, so the memory this keeps is bounded by real host behaviour rather than
+/// by call count.
 #[cfg_attr(alloc_frugal, allow(dead_code))]
-fn cache() -> &'static Mutex<Option<&'static str>> {
-    static CACHE: OnceLock<Mutex<Option<&'static str>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(None))
+fn cache() -> &'static Mutex<crate::compat::HashMap<&'static str, &'static str>> {
+    static CACHE: OnceLock<Mutex<crate::compat::HashMap<&'static str, &'static str>>> =
+        OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(crate::compat::HashMap::new()))
 }
 
 /// Interns `value`, returning the process-lifetime tag.
 ///
-/// The returned slice is valid for the rest of the process. Only a change of locale leaks a new
-/// one; repeated reads of the same tag return the same pointer.
+/// The returned slice is valid for the rest of the process. Each distinct tag is leaked once;
+/// repeated reads of the same tag return the same pointer, in any order and from any thread.
 #[cfg_attr(alloc_frugal, allow(dead_code))]
 pub(crate) fn intern(value: Option<String>) -> Option<&'static str> {
     let value = value?;
@@ -38,13 +50,11 @@ pub(crate) fn intern(value: Option<String>) -> Option<&'static str> {
         return None;
     }
     let mut guard = crate::compat::lock(cache());
-    if let Some(current) = *guard {
-        if current == value.as_str() {
-            return Some(current);
-        }
+    if let Some(existing) = guard.get(value.as_str()) {
+        return Some(*existing);
     }
     let leaked: &'static str = crate::compat::Box::leak(value.into_boxed_str());
-    *guard = Some(leaked);
+    guard.insert(leaked, leaked);
     Some(leaked)
 }
 
@@ -171,6 +181,15 @@ mod tests {
         assert_eq!(second, "fr-FR");
         let third = intern(Some(String::from("fr-FR"))).expect("a tag");
         assert_eq!(second.as_ptr(), third.as_ptr());
+        // A tag interned **before** another one intervened must still be the same pointer. The
+        // single-slot interner failed this: reading `en-US` again after `fr-FR` leaked a second
+        // copy, so two callers of the same tag compared unequal.
+        let first_again = intern(Some(String::from("en-US"))).expect("a tag");
+        assert_eq!(
+            first.as_ptr(),
+            first_again.as_ptr(),
+            "a tag's pointer must not depend on order"
+        );
         // Return the interner to the first value so later tests see a deterministic state.
         let _ = intern(Some(String::from("en-US")));
     }

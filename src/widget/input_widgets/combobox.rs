@@ -603,8 +603,14 @@ impl ComboBox {
         self.open = open;
         if open {
             self.scroll_to_current();
+            // The list owns the press that dismisses it, even when that press lands on a
+            // control below the list. See `runtime::POPUP_GRAB`.
+            #[cfg(not(alloc_frugal))]
+            crate::widget::runtime::set_popup_grab(self.id());
         } else {
             self.hovered_item = None;
+            #[cfg(not(alloc_frugal))]
+            crate::widget::runtime::clear_popup_grab_for(self.id());
         }
         self.popup_visibility_changed.emit(open);
         self.base.request_redraw();
@@ -806,6 +812,21 @@ impl Widget for ComboBox {
         &mut self.base
     }
 
+    /// The field **and** the open list accept the pointer.
+    ///
+    /// A combo box paints its list below its own rectangle. The default hit rule tests the
+    /// control's geometry only, so every click on a row landed on whatever was underneath and
+    /// the list could not be used with a pointer. The list is part of the control while it is
+    /// open, so it is part of the control's interactive area.
+    fn contains_point(&self, point: Point) -> bool {
+        self.base().contains_point_with_touch_expansion(point)
+            || (self.open && self.list_rect().contains_point(point))
+    }
+
+    fn has_open_popup(&self) -> bool {
+        self.open
+    }
+
     fn size_hint(&self) -> Size {
         // Find widest item.
         //
@@ -892,6 +913,7 @@ impl WidgetProperties for ComboBox {
             },
             "current_text" => Ok(CapabilityValue::String(self.current_text().to_string())),
             "editable" => Ok(CapabilityValue::Bool(self.is_editable())),
+            "open" => Ok(CapabilityValue::Bool(self.is_open())),
             "direction" => {
                 Ok(CapabilityValue::String(text_direction_to_str(self.direction()).to_string()))
             }
@@ -939,6 +961,10 @@ impl WidgetProperties for ComboBox {
                 self.set_editable(expect_bool(value)?);
                 Ok(())
             }
+            "open" => {
+                self.set_open(expect_bool(value)?);
+                Ok(())
+            }
             "direction" => {
                 self.set_direction(expect_text_direction(value)?);
                 Ok(())
@@ -964,6 +990,7 @@ impl WidgetProperties for ComboBox {
             "current_index",
             "current_text",
             "editable",
+            "open",
             "max_visible_items",
             "direction",
             "alignment",

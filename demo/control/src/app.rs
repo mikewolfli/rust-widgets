@@ -14,9 +14,9 @@
 //!   行 6-10 — Log:      事件日志标题与最近四条事件（随控件事件实时更新）
 //!   隐藏 — MessageBox（由 “Click Me” 打开）
 //!
-//! 菜单栏不在本 demo 中：`new_menu` 目前不会在 `MenuBar` 上生成可见条目，而
-//! `MenuBar` 只发布 `triggered`、由宿主负责打开下拉菜单。展示一个点不动的菜单
-//! 会让人以为功能已就绪，所以这里不画它（记在 log-20261020-1.md 的待办里）。
+//! 菜单栏（File / Edit / View）由 `new_menu_bar` + `new_menu` 创建：每个 `new_menu`
+//! 会把标题加进菜单栏，点击标题时宿主用 `MenuHandle::open_at` 在对应条目下方展开
+//! 弹出菜单；菜单项的选择通过 `MenuHandle::on_triggered` 进入日志。
 //!
 //! 本 demo 只演示**平台普通控件**；自绘型控件（如 `CodeEditor`、`TreeView`）
 //! 需要挂载面，归 `demo/code_editor` 演示。
@@ -191,6 +191,8 @@ struct Slot {
 /// height a property of the layout rather than a coordinate coincidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Band {
+    /// The menu bar, pinned to the top edge.
+    Menu,
     /// The resizable grid of controls.
     Content,
     /// The status bar, at the very bottom.
@@ -340,7 +342,8 @@ impl LayoutTrait for ControlGridLayout {
         let width = rect.width.max(1);
         let height = rect.height.max(1);
         let status_h = STATUS_HEIGHT.min(height);
-        let content_top = 0u32;
+        let menu_h = MENU_HEIGHT.min(height.saturating_sub(status_h));
+        let content_top = menu_h;
         let content_bottom = height.saturating_sub(status_h).max(content_top);
 
         let mut moved = 0usize;
@@ -351,6 +354,7 @@ impl LayoutTrait for ControlGridLayout {
         // ── Window chrome ────────────────────────────────────────────
         for slot in &self.slots {
             let placed = match slot.band {
+                Band::Menu => Some(Rect::new(0, 0, width, menu_h.max(1))),
                 Band::Status => Some(Rect::new(
                     0,
                     height.saturating_sub(status_h) as i32,
@@ -460,6 +464,8 @@ impl LayoutTrait for ControlGridLayout {
 
 /// Horizontal margin between the window edge and the grid, in pixels.
 const MARGIN: u32 = 20;
+/// Height of the menu bar band.
+const MENU_HEIGHT: u32 = 28;
 /// Height of the status bar band.
 const STATUS_HEIGHT: u32 = 26;
 /// Vertical gap between content rows.
@@ -1032,13 +1038,86 @@ fn build_all_controls(
 
 /// Creates the window's chrome and returns the slots that place it.
 ///
-/// The menu bar, toolbar and status bar are ordinary controls in the same flat drawing
+/// The menu bar and status bar are ordinary controls in the same flat drawing
 /// surface as the rest of the demo; the layout is what reserves their bands. Returning each
-/// handle's slot (instead of only logging its id) is what makes the toolbar stay under the
-/// menu bar and the status bar at the bottom as the window resizes.
+/// handle's slot (instead of only logging its id) is what keeps the menu bar pinned to the
+/// top and the status bar at the bottom as the window resizes.
 fn build_window_chrome(win: &WindowHandle, log: &Arc<EventLog>) -> Vec<Slot> {
     log.append("=== Window Chrome ===");
     let mut slots = Vec::new();
+
+    // ── Menu bar ─────────────────────────────────────────────────────
+    //
+    // `new_menu` appends its title to the bar (that is what made this menu bar worth
+    // drawing at all), and the host opens the matching popup when the title is chosen.
+    // `entry_rect` is read back rather than guessed so the popup sits flush under the
+    // entry the user clicked, in the same way AppKit places a menu.
+    let menu_bar = win.new_menu_bar(0, 0, 760, MENU_HEIGHT);
+    slots.push(Slot {
+        id: menu_bar.raw_id(),
+        band: Band::Menu,
+        row: 0,
+        weight: 1,
+        nominal: (0, 0, 760, MENU_HEIGHT),
+    });
+
+    let file = win.new_menu(&menu_bar, "File", 0, 0, 200, 0);
+    let edit = win.new_menu(&menu_bar, "Edit", 0, 0, 200, 0);
+    let view = win.new_menu(&menu_bar, "View", 0, 0, 200, 0);
+    for (menu, items) in [
+        (&file, [("New", "Ctrl+N"), ("Open", "Ctrl+O"), ("Save", "Ctrl+S")]),
+        (&edit, [("Cut", "Ctrl+X"), ("Copy", "Ctrl+C"), ("Paste", "Ctrl+V")]),
+        (&view, [("Zoom In", "Ctrl++"), ("Zoom Out", "Ctrl+-"), ("Actual Size", "Ctrl+0")]),
+    ] {
+        for (label, chord) in items {
+            win.new_menu_item(menu, label, Some(chord));
+        }
+        let l = Arc::clone(log);
+        menu.on_triggered(move |label: String| {
+            l.append(format!("[Menu] {label} chosen"));
+        });
+    }
+
+    // The popup follows the entry. `View` is the one menu with a real action: it flips
+    // the appearance, so the menu is not a row of inert labels.
+    let l = Arc::clone(log);
+    view.on_triggered(move |label: String| {
+        if label == "Toggle Appearance" {
+            match switch_appearance(!dark_active()) {
+                Some(name) => l.append(format!("[Menu] appearance '{name}'")),
+                None => l.append("[Menu] that appearance is not registered"),
+            }
+        }
+    });
+    // A view-menu item that really does something; inserted before the trigger handler
+    // above so a click on it runs the theme switch rather than only logging.
+    win.new_menu_item(&view, "Toggle Appearance", Some("Ctrl+Shift+D"));
+
+    let menus =
+        [("File".to_string(), file), ("Edit".to_string(), edit), ("View".to_string(), view)];
+    let window_id = win.raw_id();
+    let l = Arc::clone(log);
+    // The event carries the entry rectangle, so the handler does not have to read the bar
+    // (which is lent out exclusively while its own event is being dispatched).
+    menu_bar.on_entry_triggered(move |title: String, entry: Rect| {
+        let Some(index) = menus.iter().position(|(name, _)| *name == title) else {
+            return;
+        };
+        let (w, h) = rust_widgets::widget_geometry(window_id)
+            .map(|(_, _, w, h)| (w, h))
+            .unwrap_or((1180, 760));
+        // The popup's top-left is the entry's bottom-left: the macOS convention where
+        // the menu appears to hang from the title that opened it.
+        let opened =
+            menus[index].1.open_at(entry.x, entry.y + entry.height as i32, Rect::new(0, 0, w, h));
+        // Report the result and the entry count: an `on_triggered` that fires into a refused
+        // open would look exactly like a click that did nothing.
+        l.append(format!(
+            "[MenuBar] '{title}' popup opened={opened} items={}",
+            menus[index].1.item_count()
+        ));
+    });
+    log.append("[MenuBar] File / Edit / View (click a title to open it)");
 
     let status = win.new_status_bar("就绪", 0, 0, 760, STATUS_HEIGHT);
     slots.push(Slot {

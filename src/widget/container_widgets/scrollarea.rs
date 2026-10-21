@@ -216,6 +216,29 @@ fn scroll_bar_policy_to_str(policy: ScrollBarPolicy) -> &'static str {
         ScrollBarPolicy::AsNeeded => "as_needed",
     }
 }
+/// Translates a mounted subtree by `(-dx, -dy)`, depth-bounded against a corrupted parent chain.
+///
+/// Geometry is **absolute** in this crate (see `widget::runtime::frame_origin`), so moving a
+/// container's rectangle does not move the controls inside it. A scroll translation therefore has
+/// to visit the whole subtree; translating only the root would leave the container's own content
+/// at its old screen position.
+#[cfg(not(alloc_frugal))]
+fn shift_subtree(id: ObjectId, dx: i32, dy: i32, depth: u32) {
+    // A widget tree is a tree; 64 is far past any real depth and still a bound rather than a
+    // recursion that trusts the data (the same discipline `top_level_window_of` uses).
+    if depth > 64 {
+        return;
+    }
+    if let Some((x, y, width, height)) = crate::widget_geometry(id) {
+        crate::set_widget_geometry(id, x - dx, y - dy, width, height);
+    }
+    let children = crate::widget::runtime::with_widget(id, |widget| widget.children().to_vec())
+        .unwrap_or_default();
+    for child in children {
+        shift_subtree(child, dx, dy, depth + 1);
+    }
+}
+
 impl ScrollArea {
     /// Creates a scroll area.
     pub fn new(geometry: Rect) -> Self {
@@ -416,11 +439,47 @@ impl ScrollArea {
         if self.scroll_position == clamped {
             return;
         }
+        #[cfg(not(alloc_frugal))]
+        let (dx, dy) = (clamped.0 - self.scroll_position.0, clamped.1 - self.scroll_position.1);
         self.scroll_position = clamped;
         self.scroll_position_changed.emit(self.scroll_position);
         // The offset is part of the child's geometry, not an offset applied by its painter.
+        //
+        // # Why every mounted child moves, not only `self.widget`
+        //
+        // A scroll area is a viewport over whatever the host mounted inside it. The original
+        // implementation moved only the single `self.widget` id, so a host that mounted several
+        // rows directly (the control demo does) saw the bar travel while the rows stayed put —
+        // "滚动条动，但内容没动". Geometry in this crate is absolute, so moving a container does
+        // not move its descendants either; each subtree is translated here.
+        #[cfg(not(alloc_frugal))]
+        self.move_content_children(dx, dy);
         self.place_content();
         self.base.request_redraw();
+    }
+
+    /// Translates every mounted content child of the viewport by `(-dx, -dy)`.
+    ///
+    /// `self.widget` keeps its own placement derivation (`content_child_rect`, which already
+    /// includes the scroll offset), so only its descendants are translated here. Every other
+    /// direct child is content the host mounted itself and is translated as a whole.
+    #[cfg(not(alloc_frugal))]
+    fn move_content_children(&self, dx: i32, dy: i32) {
+        if dx == 0 && dy == 0 {
+            return;
+        }
+        for child in self.base.children().to_vec() {
+            if Some(child) == self.widget {
+                let descendants =
+                    crate::widget::runtime::with_widget(child, |widget| widget.children().to_vec())
+                        .unwrap_or_default();
+                for descendant in descendants {
+                    shift_subtree(descendant, dx, dy, 1);
+                }
+            } else {
+                shift_subtree(child, dx, dy, 0);
+            }
+        }
     }
 
     /// Sets the total content size (used for AsNeeded scroll bar calculation).

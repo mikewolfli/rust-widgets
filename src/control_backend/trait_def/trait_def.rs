@@ -298,6 +298,17 @@ pub trait ControlBackend: Send + Sync {
     ) -> ObjectId {
         0
     }
+    /// Reports that the entry at `index` of `menu` was chosen by the user.
+    ///
+    /// Backends that own a menu-trigger queue implement this so a **self-drawn** menu
+    /// selection reaches [`poll_menu_triggered`](Self::poll_menu_triggered), the same way a
+    /// native menu's selection does. The default is a no-op: a backend whose menus are host
+    /// objects (`NSMenu`, `HMENU`) already has the host feeding that queue.
+    ///
+    /// `index` is the entry's position in the menu's own entry list, which is what the menu's
+    /// `triggered_index` signal reports; the backend maps it back to the id it handed out from
+    /// [`Self::menu_add_item`].
+    fn note_menu_selection(&self, _menu: ObjectId, _index: usize) {}
     /// Whether the native menu bar behind this backend can present an icon on an item.
     ///
     /// Mirrors [`Platform::supports_menu_item_icons`](crate::platform::Platform::supports_menu_item_icons),

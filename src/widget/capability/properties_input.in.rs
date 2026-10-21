@@ -150,6 +150,9 @@ macro_rules! impl_properties_input {
             PropertySchema::new("current_text", PropertyValueKind::String, true, true),
             PropertySchema::new("editable", PropertyValueKind::Bool, true, true),
             PropertySchema::new("max_visible_items", PropertyValueKind::UInt, true, true),
+            // Whether the drop-down list is showing. Published so a host can read the state its
+            // `popup_visibility_changed` event describes, and a designer can drive it.
+            PropertySchema::new("open", PropertyValueKind::Bool, true, true),
             // The writing direction the field runs in. Published because it moves the indicator to
             // the other edge — a fact a host and a designer panel have to be able to read and set
             // rather than infer from the drawing.

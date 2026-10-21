@@ -356,7 +356,9 @@ impl SoftwareSurface {
 // from a re-computation.
 #[cfg(test)]
 thread_local! {
+    #[allow(clippy::missing_const_for_thread_local)]
     static TEXT_SHAPES_BUILT: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+    #[allow(clippy::missing_const_for_thread_local)]
     static TEXT_METRICS_BUILT: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
 }
 
