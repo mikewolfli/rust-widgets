@@ -86,7 +86,8 @@ pub(crate) fn apply_active_theme(widget: &mut dyn Widget) {
     // Asking the control is what makes the chain complete: the state is a fact the control owns,
     // and the theme is the consumer of it (the same division the touch target uses).
     let state = widget.widget_state();
-    let Some(theme_style) = crate::theme::resolved_theme_style_for_state(kind_name, state) else {
+    let Some(theme_style) = crate::theme::resolved_theme_style_for_state_shared(kind_name, state)
+    else {
         return;
     };
 
@@ -101,7 +102,7 @@ pub(crate) fn apply_active_theme(widget: &mut dyn Widget) {
     // unmarked, so its caller-set fields survive every later switch.
     let mut style = widget.style().clone();
     let caller_authored = !style.theme_derived && style != WidgetStyle::default();
-    refresh_state_style(&mut style, &theme_style, caller_authored);
+    refresh_state_style(&mut style, theme_style.as_ref(), caller_authored);
     widget.set_style(style);
 }
 

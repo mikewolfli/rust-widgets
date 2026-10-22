@@ -885,6 +885,8 @@ impl Draw for GridTableWidget {
 
         // ── Draw column headers ──
         {
+            use core::fmt::Write as _;
+            let mut header_scratch = String::new();
             let header_rect = Rect::new(rect.x, rect.y, rect.width, self.header_height);
             context.fill_rect(header_rect, header_bg);
             context.draw_rect(header_rect, grid_color);
@@ -917,17 +919,28 @@ impl Draw for GridTableWidget {
                 // header is drawn by a loop whose scope does not carry that binding, and a
                 // re-borrow of `self.data_source` is the same value either way.
                 let data_source = self.data_source.as_ref();
-                let header_text = match data_source.and_then(|source| source.column_name(ci)) {
+                let header_owned;
+                let header_text: &str = match data_source.and_then(|source| source.column_name(ci))
+                {
                     // A named column shows its name **alone**: the index is the fallback for a
                     // projection that has no names, not a suffix every header carries. Appending it
                     // unconditionally made a named column read "Name 3", which is the placeholder
                     // this control stopped printing once the source could be asked.
-                    Some(name) if !name.is_empty() => name,
-                    _ => alloc::format!("Column {}", ci + 1),
+                    Some(name) if !name.is_empty() => {
+                        header_owned = name;
+                        header_owned.as_str()
+                    }
+                    _ => {
+                        // Reused buffer instead of one `format!` allocation per visible
+                        // column per frame.
+                        header_scratch.clear();
+                        let _ = write!(header_scratch, "Column {}", ci + 1);
+                        header_scratch.as_str()
+                    }
                 };
                 context.draw_text_fitted(
                     context.text_line(cell_rect, effective_font(self.style())),
-                    &header_text,
+                    header_text,
                     effective_font(self.style()),
                     header_text_color,
                     HorizontalAlignment::Left,
@@ -959,6 +972,8 @@ impl Draw for GridTableWidget {
 
         // ── Draw row numbers ──
         {
+            use core::fmt::Write as _;
+            let mut row_scratch = String::new();
             for ri in 0..self.visible_rows.min(rows.saturating_sub(self.scroll_row)) {
                 let abs_row = self.scroll_row + ri;
                 let y = data_top + (ri as i32) * rh;
@@ -970,11 +985,15 @@ impl Draw for GridTableWidget {
                 context.fill_rect(cell_rect, header_bg);
                 context.draw_rect(cell_rect, grid_color);
 
+                // Reused buffer instead of `to_string()` per visible row per frame.
+                row_scratch.clear();
+                let _ = write!(row_scratch, "{}", abs_row);
+
                 // The row-number cell is the band; centring by hand drew the digits half a line
                 // low. Right alignment keeps the numbers flush with the gutter's inner edge.
                 context.draw_text_fitted(
                     context.text_line(cell_rect, effective_font(self.style())),
-                    &abs_row.to_string(),
+                    row_scratch.as_str(),
                     effective_font(self.style()),
                     header_text_color,
                     HorizontalAlignment::Right,

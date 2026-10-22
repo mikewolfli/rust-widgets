@@ -6,6 +6,7 @@
 use crate::widget::chart_widgets::types::*;
 // svg used for chart rendering
 use crate::core::{Color, Point, Rect};
+use alloc::borrow::Cow;
 
 /// A line chart: one polyline per series, drawn over shared cartesian axes.
 ///
@@ -335,7 +336,7 @@ pub fn draw_legend(
             item.color,
         );
         context.draw_text(
-            &truncate_legend_label(&item.name, max_label_chars),
+            truncate_legend_label(&item.name, max_label_chars).as_ref(),
             Point::from_f32(layout.legend_x + 26.0, cursor_y + 4.0),
             11.0,
             axis_chrome_color(0.45),
@@ -359,17 +360,19 @@ pub fn draw_legend(
 /// `max_chars`. When `max_chars` is 3 or fewer the result is exactly `"..."`,
 /// since there is no room to keep any of the label; the reserved space is still
 /// filled, so a zero-width column is not produced.
-pub fn truncate_legend_label(label: &str, max_chars: usize) -> String {
+pub fn truncate_legend_label(label: &str, max_chars: usize) -> Cow<'_, str> {
     let char_count = label.chars().count();
     if char_count <= max_chars {
-        return label.to_string();
+        // Borrowed: the common case is a label that fits, and it used to allocate a copy of
+        // every such label once per legend item per frame.
+        return Cow::Borrowed(label);
     }
     if max_chars <= 3 {
-        return "...".to_string();
+        return Cow::Borrowed("...");
     }
     let kept = max_chars - 3;
     let prefix = label.chars().take(kept).collect::<String>();
-    format!("{prefix}...")
+    Cow::Owned(format!("{prefix}..."))
 }
 
 /// Builds the vertex ring approximating a pie/donut sector.

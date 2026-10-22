@@ -341,6 +341,14 @@ pub struct SimpleJsEngine {
     variables: HashMap<String, JsValue>,
     /// Defined functions (name -> FunctionDef)
     functions: HashMap<String, JsValue>,
+    /// Parsed statement lists, keyed by the block text.
+    ///
+    /// `eval_block` splits a source string on top-level semicolons and allocates one `String`
+    /// per statement. Scripts evaluated repeatedly (a frame/tick handler) paid that parse on
+    /// every call. The split result is a pure function of the text, so it is cached; the cache
+    /// is bounded and cleared wholesale when it overflows, because an interpreter that keeps
+    /// every script it has ever seen would grow without limit.
+    block_cache: HashMap<String, Arc<Vec<String>>>,
 }
 impl SimpleJsEngine {
     /// Creates an engine with the five built-in functions pre-registered and no
@@ -354,7 +362,7 @@ impl SimpleJsEngine {
         functions.insert("String".to_string(), JsValue::Function("String".to_string()));
         functions.insert("Number".to_string(), JsValue::Function("Number".to_string()));
         functions.insert("Boolean".to_string(), JsValue::Function("Boolean".to_string()));
-        Self { variables: HashMap::new(), functions }
+        Self { variables: HashMap::new(), functions, block_cache: HashMap::new() }
     }
     /// Parses a literal: numbers, strings, booleans, `null`/`undefined`, array literals and
     /// a variable reference. **No operators** — see [`Self::eval_expression`], which is what
@@ -530,26 +538,39 @@ impl SimpleJsEngine {
         // `char_indices` rather than `block.chars().collect::<Vec<_>>()`: the collected
         // vector was one heap allocation per block (and blocks nest), only to recover byte
         // offsets that `char_indices` already gives.
-        let mut stmts = Vec::new();
-        let mut depth = 0usize;
-        let mut start = 0usize;
-        for (i, ch) in block.char_indices() {
-            match ch {
-                '{' | '[' | '(' => depth += 1,
-                '}' | ']' | ')' => depth = depth.saturating_sub(1),
-                ';' if depth == 0 => {
-                    stmts.push(block[start..i].trim().to_string());
-                    start = i + ch.len_utf8();
+        //
+        // The resulting statement list is cached: re-evaluating the same script (a tick
+        // handler, a polling expression) used to re-split and re-allocate every statement.
+        let stmts: Arc<Vec<String>> = if let Some(cached) = self.block_cache.get(block) {
+            Arc::clone(cached)
+        } else {
+            let mut parsed = Vec::new();
+            let mut depth = 0usize;
+            let mut start = 0usize;
+            for (i, ch) in block.char_indices() {
+                match ch {
+                    '{' | '[' | '(' => depth += 1,
+                    '}' | ']' | ')' => depth = depth.saturating_sub(1),
+                    ';' if depth == 0 => {
+                        parsed.push(block[start..i].trim().to_string());
+                        start = i + ch.len_utf8();
+                    }
+                    _ => { /* Other characters are not relevant */ }
                 }
-                _ => { /* Other characters are not relevant */ }
             }
-        }
-        let tail = block[start..].trim().to_string();
-        if !tail.is_empty() {
-            stmts.push(tail);
-        }
+            let tail = block[start..].trim().to_string();
+            if !tail.is_empty() {
+                parsed.push(tail);
+            }
+            let parsed = Arc::new(parsed);
+            if self.block_cache.len() >= 64 {
+                self.block_cache.clear();
+            }
+            self.block_cache.insert(block.to_string(), Arc::clone(&parsed));
+            parsed
+        };
         let mut last_val = JsValue::Undefined;
-        for stmt in &stmts {
+        for stmt in stmts.iter() {
             // A block whose only `;` is nested (inside `{…}`) produces exactly one
             // "statement" that is the whole input. Calling `evaluate` on it would re-enter
             // this function on the same text and recurse until the stack ran out — the
@@ -679,15 +700,26 @@ impl SimpleJsEngine {
                 self.evaluate(init, context)?;
             }
             // Loop
+            let mut completed = false;
             for _ in 0..10000 {
                 let cond_val = self.eval_expression(&loop_cond)?;
                 if !cond_val.is_truthy() {
+                    completed = true;
                     break;
                 }
                 last_val = self.eval_block(after_header, context)?;
                 if let Some(incr) = &loop_incr {
                     self.evaluate(incr, context)?;
                 }
+            }
+            if !completed {
+                // Silent truncation used to let a runaway script "finish" with a wrong
+                // result. The caller has to see that the loop was cut off.
+                return Err(JsError::at_offset(
+                    "for loop exceeded 10000 iterations".to_string(),
+                    stmt,
+                    stmt.len(),
+                ));
             }
             return Ok(last_val);
         }
@@ -1035,6 +1067,46 @@ fn starts_a_statement(script: &str) -> bool {
     STATEMENT_STARTS.iter().any(|prefix| script.starts_with(prefix))
 }
 
+/// Whether `script` is a top-level `name = value` assignment.
+///
+/// Assignments are statements, not expressions, so the router below must send them to
+/// `eval_stmt`. Without this, `i = 4` in a `for` increment was evaluated as a literal and
+/// never updated the variable, which made every such loop run to its iteration cap; the old
+/// silent truncation hid the defect behind a wrong (but `Ok`) result.
+fn is_assignment_expression(script: &str) -> bool {
+    let bytes = script.as_bytes();
+    let mut depth = 0i32;
+    let mut quote: Option<u8> = None;
+    for (index, &byte) in bytes.iter().enumerate() {
+        if let Some(open) = quote {
+            if byte == open {
+                quote = None;
+            }
+            continue;
+        }
+        match byte {
+            b'"' | b'\'' => quote = Some(byte),
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b'=' if depth == 0 => {
+                let before = index.checked_sub(1).map(|i| bytes[i]);
+                let after = bytes.get(index + 1).copied();
+                if after == Some(b'=') {
+                    continue;
+                }
+                if matches!(before, Some(b'<' | b'>' | b'!' | b'=')) {
+                    continue;
+                }
+                let name = script[..index].trim();
+                return !name.is_empty()
+                    && name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.');
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 impl JsEngine for SimpleJsEngine {
     /// Evaluates `script`, dispatching on its textual prefix.
     ///
@@ -1108,7 +1180,7 @@ impl JsEngine for SimpleJsEngine {
         // `1 =`. Routing on "does this contain a comparison operator" would be brittle, so
         // the expression evaluator is asked first and its verdict is used whenever the
         // script is not one of the statement forms `eval_stmt` owns.
-        if starts_a_statement(script) {
+        if starts_a_statement(script) || is_assignment_expression(script) {
             return self.eval_stmt(script, context);
         }
         self.eval_expression(script)

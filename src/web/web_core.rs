@@ -319,18 +319,17 @@ impl WebViewCore {
                     self.apply_http_outcome(generation, result);
                 }
             } else {
-                // file:// URL fallback — simulated progress.
+                // file:// URL fallback. This used to sleep 50 ms on the caller's thread
+                // to "simulate progress"; a UI navigation must never block the frame loop.
                 self.load_progress = 50;
-                std::thread::sleep(std::time::Duration::from_millis(50));
             }
         }
 
         // ── Simulated mode (no web-http feature) ──
         #[cfg(not(feature = "web-http"))]
         {
-            // Emit progress at 50%.
+            // Emit progress at 50% without sleeping: the caller may be the UI thread.
             self.load_progress = 50;
-            std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
         // When an asynchronous HTTP fetch is in flight, the load is *not* finished here: the 100%

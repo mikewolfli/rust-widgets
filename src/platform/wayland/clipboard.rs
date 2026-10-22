@@ -51,6 +51,11 @@ use wayland_client::{Connection, QueueHandle};
 const TEXT_MIMES: [&str; 4] = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING"];
 /// How long a read waits for the source application before answering the local copy.
 const READ_TIMEOUT_MS: i32 = 500;
+/// How long the caller waits for a typed clipboard read before giving up for this call.
+///
+/// The actual pipe read still uses [`READ_TIMEOUT_MS`] on a worker thread; this is the UI-facing
+/// bound. A source app that is slow to serve the MIME type must not freeze the frame loop.
+const TYPED_READ_WAIT_MS: u64 = 16;
 
 /// The clipboard state shared by the platform and the session's protocol dispatch.
 #[derive(Clone)]
@@ -225,18 +230,32 @@ impl WaylandClipboard {
     pub(crate) fn text(&self) -> Option<String> {
         let has_offer = lock(&self.inner).offer.is_some();
         if has_offer {
-            return Some(match self.read_contents() {
-                Some(ClipboardContent::Text(text)) => text,
-                Some(ClipboardContent::Html { plain, html }) => {
-                    if plain.is_empty() {
-                        html
-                    } else {
-                        plain
-                    }
+            // The first read queues a worker that drains the source pipe. Returning `None`
+            // immediately made the **first** paste after an external copy look empty even though
+            // the data was on its way. Paste is a user action, not a frame path, so wait for the
+            // worker for a bounded interval (the same 16 ms budget as the typed read) and then
+            // answer honestly.
+            for _ in 0..16 {
+                if let Some(content) = self.read_contents() {
+                    return Some(match content {
+                        ClipboardContent::Text(text) => text,
+                        ClipboardContent::Html { plain, html } => {
+                            if plain.is_empty() {
+                                html
+                            } else {
+                                plain
+                            }
+                        }
+                        // A live selection that is not text (an image or an application type).
+                        _ => String::new(),
+                    });
                 }
-                // A live selection that is not text (an image or an application type).
-                _ => String::new(),
-            });
+                if !lock(&self.inner).fetching {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            return Some(String::new());
         }
         let inner = lock(&self.inner);
         inner.local.as_ref().and_then(|content| match content {
@@ -398,7 +417,34 @@ impl RichClipboardBackend for WaylandClipboard {
         };
         if let (Some(offer), Some(conn)) = (offer, conn) {
             if mimes.iter().any(|mime| mime == content_type) {
-                if let Some(bytes) = read_mime(&offer, &conn, content_type) {
+                // The pipe read can wait up to `READ_TIMEOUT_MS` for the source app. Run it on
+                // a short-lived worker and bound the caller's wait, so a wedged source cannot
+                // stall the UI thread; a timeout is reported as "no typed payload" and the
+                // local copy below still answers.
+                let mime = content_type.to_string();
+                let worker_offer = offer.clone();
+                let worker_conn = conn.clone();
+                let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+                let spawned = std::thread::Builder::new()
+                    .name("rw-clipboard-typed".to_string())
+                    .spawn(move || {
+                        let _ = sender.send(read_mime(&worker_offer, &worker_conn, &mime));
+                    });
+                let read = match spawned {
+                    Ok(_) => receiver
+                        .recv_timeout(std::time::Duration::from_millis(TYPED_READ_WAIT_MS))
+                        .ok()
+                        .flatten(),
+                    // Thread creation can fail only on resource exhaustion; the synchronous
+                    // read is then the honest fallback rather than losing the paste.
+                    Err(error) => {
+                        log::debug!(
+                            "[wayland] typed clipboard worker could not start ({error}); reading inline"
+                        );
+                        read_mime(&offer, &conn, content_type)
+                    }
+                };
+                if let Some(bytes) = read {
                     return Some(bytes);
                 }
             }

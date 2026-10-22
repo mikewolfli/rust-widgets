@@ -321,19 +321,42 @@ impl SoftwareSurface {
         let x1 = x1.min(size.width);
         let y1 = y1.min(size.height);
         let frame = self.buffer.back_mut();
+
+        // Resolve the ramp once into a 256-entry table. Every pixel previously ran
+        // `Gradient::interpolate`, which searches the stops and lerps each channel; for a
+        // full-window gradient that was width×height stop searches per frame. Sampling a
+        // fixed table is both cheaper and consistent across the three gradient types.
+        const LUT_SIZE: usize = 256;
+        let mut lut = [Color::BLACK; LUT_SIZE];
+        for (index, slot) in lut.iter_mut().enumerate() {
+            *slot = gradient.interpolate(index as f32 / (LUT_SIZE - 1) as f32);
+        }
+        let lut_index = |pos: f32| -> usize {
+            ((pos.clamp(0.0, 1.0) * (LUT_SIZE - 1) as f32) as usize).min(LUT_SIZE - 1)
+        };
+
+        // Linear geometry is constant across the whole rectangle: hoist it and walk the
+        // projection with an increment per pixel instead of recomputing it from x/y.
+        let linear_dx = gradient.end_point.x as f32 - gradient.start_point.x as f32;
+        let linear_dy = gradient.end_point.y as f32 - gradient.start_point.y as f32;
+        let linear_dot = linear_dx * linear_dx + linear_dy * linear_dy;
+        let linear_step = if linear_dot == 0.0 { 0.0 } else { linear_dx / linear_dot };
+
         for y in y0..y1 {
+            let row_start = if linear_dot == 0.0 {
+                0.0
+            } else {
+                ((x0 as f32 - gradient.start_point.x as f32) * linear_dx
+                    + (y as f32 - gradient.start_point.y as f32) * linear_dy)
+                    / linear_dot
+            };
             for x in x0..x1 {
                 let pos = match gradient.gradient_type {
                     GradientType::Linear => {
-                        let dx = gradient.end_point.x as f32 - gradient.start_point.x as f32;
-                        let dy = gradient.end_point.y as f32 - gradient.start_point.y as f32;
-                        let dot_len = dx * dx + dy * dy;
-                        if dot_len == 0.0 {
+                        if linear_dot == 0.0 {
                             0.0
                         } else {
-                            let px = x as f32 - gradient.start_point.x as f32;
-                            let py = y as f32 - gradient.start_point.y as f32;
-                            ((px * dx + py * dy) / dot_len).clamp(0.0, 1.0)
+                            (row_start + (x - x0) as f32 * linear_step).clamp(0.0, 1.0)
                         }
                     }
                     GradientType::Radial => {
@@ -363,7 +386,7 @@ impl SoftwareSurface {
                         angle / core::f32::consts::TAU
                     }
                 };
-                let color = gradient.interpolate(pos);
+                let color = lut[lut_index(pos)];
                 if pixel_visible(clip, x as i32, y as i32) {
                     // Through the blend-aware write, so a gradient drawn under a `SetBlendMode`
                     // composites the same way an opaque fill does.

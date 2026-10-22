@@ -15,7 +15,6 @@ use crate::pdf::PdfDocument;
 use crate::pdf::PdfDocumentImpl;
 use std::collections::HashMap;
 use std::io::{Error, ErrorKind};
-use std::path::Path;
 
 /// PDF writer
 pub struct PdfWriter {
@@ -123,18 +122,18 @@ pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, 
             id
         } else {
             let file_obj_id = (objects.len() + 1) as u32;
-            let mut stream_prefix = String::new();
-            if let Some(path) = &font.source_path {
-                let normalized = Path::new(path).to_string_lossy();
-                stream_prefix.push_str(&format!("% font-source:{normalized}\\n"));
-            }
-            let mut stream_bytes = stream_prefix.into_bytes();
-            stream_bytes.extend_from_slice(&font.embedded_data);
-            let stream_text = String::from_utf8_lossy(&stream_bytes);
+            // The font program is binary. Pushing it through `String::from_utf8_lossy` replaced
+            // every non-UTF-8 byte with U+FFFD and then wrote a `/Length` that no longer matched
+            // the emitted bytes. ASCII85 is a PDF-native encoding for exactly this case: the
+            // object body stays valid ASCII (so `objects: Vec<String>` is still sound) and the
+            // reader decodes the original bytes back. The old prefix also embedded a literal
+            // `\\n` (backslash + n) and a `%` comment inside the stream, both of which corrupted
+            // the sfnt header.
+            let encoded = ascii85_encode(&font.embedded_data);
             objects.push(format!(
-                "<< /Length {} >>\\nstream\\n{}\\nendstream",
-                stream_bytes.len(),
-                stream_text
+                "<< /Length {} /Filter /ASCII85Decode >>\nstream\n{}\nendstream",
+                encoded.len(),
+                encoded
             ));
             let descriptor_obj_id = (objects.len() + 1) as u32;
             let mut descriptor = format!(
@@ -666,6 +665,39 @@ pub(crate) fn sanitize_pdf_font_name(name: &str) -> String {
         .chars()
         .map(|ch| if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' { ch } else { '-' })
         .collect()
+}
+
+/// Encodes `bytes` as PDF ASCII85 (`/Filter /ASCII85Decode`).
+///
+/// Binary font programs cannot live in a Rust `String`, and `from_utf8_lossy` corrupts them.
+/// ASCII85 keeps the stream body within printable ASCII while preserving every input byte, and
+/// the reader's `ASCII85Decode` filter restores it. The terminator is `~>`, as the PDF spec
+/// requires.
+fn ascii85_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 5 / 4 + 4);
+    for chunk in bytes.chunks(4) {
+        let mut block = [0u8; 4];
+        let count = chunk.len();
+        block[..count].copy_from_slice(chunk);
+        let value = u32::from_be_bytes(block);
+        if count == 4 && value == 0 {
+            out.push('z');
+            continue;
+        }
+        let mut digits = [0u8; 5];
+        let mut v = value;
+        for slot in digits.iter_mut().rev() {
+            *slot = (v % 85) as u8;
+            v /= 85;
+        }
+        // A partial final group emits only the characters that carry its bytes.
+        let emit = count + 1;
+        for &digit in digits.iter().take(emit) {
+            out.push((b'!' + digit) as char);
+        }
+    }
+    out.push_str("~>");
+    out
 }
 
 #[cfg(test)]

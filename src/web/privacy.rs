@@ -457,6 +457,12 @@ impl TrackingProtection {
         if blocked {
             self.blocked_count += 1;
         }
+        if self.attempts.len() >= 1000 {
+            // Bounded audit log: an unbounded Vec grows for the life of the instance, and this
+            // path is a per-request write. Dropping the oldest entry keeps the most recent
+            // 1000 verdicts, which is what an audit view can show anyway.
+            self.attempts.remove(0);
+        }
         self.attempts.push(attempt);
         blocked
     }

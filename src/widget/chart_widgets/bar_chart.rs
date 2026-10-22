@@ -410,6 +410,13 @@ impl Draw for BarChart {
         // the appearance it is drawn with does not.
         let label_font = role_font(self.base.style(), LABEL_FONT_SIZE);
         let label_line_height = context.measure_text("M", &label_font).height.max(1) as i32;
+        // The category label's face is also a property of the control, not of a bar. It used
+        // to be resolved (and `"M"` measured) inside the per-bar loop, which the value-label
+        // path above had already been fixed to avoid.
+        let category_font = role_font(self.base.style(), CATEGORY_FONT_SIZE);
+        let category_line_height = context.measure_text("M", &category_font).height.max(1) as i32;
+        // Reused across bars so a value label costs no heap allocation per frame.
+        let mut label = String::with_capacity(16);
 
         for (i, bar) in self.bars.iter().enumerate() {
             let bar_color = bar.color.unwrap_or(self.bar_color);
@@ -436,7 +443,8 @@ impl Draw for BarChart {
             // anchoring its bottom edge to the bar's top is what makes the gap actually four
             // pixels, and it scales with the label font.
             if self.show_values && is_enabled {
-                let label = format!("{:.1}", bar.value);
+                label.clear();
+                let _ = core::fmt::Write::write_fmt(&mut label, format_args!("{:.1}", bar.value));
                 let label_x = bar_x.max(plot_area.x) + (bar_width as i32 / 2).min(12);
                 let label_band = Rect {
                     x: label_x,
@@ -453,15 +461,13 @@ impl Draw for BarChart {
                 // Same treatment, anchored below the baseline: the line box starts where the
                 // axis label row starts, so the gap under the axis is `LABEL_ROW_TOP`, not a
                 // second hand-tuned offset that happened to equal it.
-                let font = role_font(self.base.style(), CATEGORY_FONT_SIZE);
-                let line_height = context.measure_text("M", &font).height.max(1) as i32;
                 let label_band = Rect {
                     x: label_x,
                     y: baseline_y + LABEL_ROW_TOP,
                     width: (plot_area.width as i32 - (label_x - plot_area.x)).max(0) as u32,
-                    height: line_height as u32,
+                    height: category_line_height as u32,
                 };
-                draw_label(context, &bar.label, label_band, &font);
+                draw_label(context, &bar.label, label_band, &category_font);
             }
         }
     }

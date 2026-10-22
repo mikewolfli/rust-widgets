@@ -757,7 +757,7 @@ fn build_all_controls(
     let cb = row!(win.new_checkbox("启用通知", 20, 64, 200, 24), 1, 1, (20, 64, 200, 24));
     let l = Arc::clone(log);
     let cb2 = cb.clone();
-    cb2.on_value_changed(move |_val: String| {
+    cb2.on_value_changed(move |_val: &str| {
         let checked = cb.is_checked();
         l.append(format!("[CheckBox] checked={}", checked));
     });
@@ -783,7 +783,7 @@ fn build_all_controls(
     le.set_max_length(32);
     let l = Arc::clone(log);
     let le2 = le.clone();
-    le2.on_value_changed(move |_val: String| {
+    le2.on_value_changed(move |_val: &str| {
         l.append(format!("[LineEdit] text='{}'", le.text()));
     });
     log.append("[LineEdit] placeholder + max_length=32");
@@ -806,7 +806,7 @@ fn build_all_controls(
     sb.set_step(5);
     let l = Arc::clone(log);
     let sb2 = sb.clone();
-    sb2.on_value_changed(move |_val: String| {
+    sb2.on_value_changed(move |_val: &str| {
         l.append(format!("[SpinBox] value={}", sb.value()));
     });
     log.append("[SpinBox] range=[0..100], value=50, step=5");
@@ -822,7 +822,7 @@ fn build_all_controls(
     cbx.set_current_index(0);
     let l = Arc::clone(log);
     let cbx2 = cbx.clone();
-    cbx2.on_value_changed(move |_val: String| {
+    cbx2.on_value_changed(move |_val: &str| {
         let idx = cbx.current_index().unwrap_or(0);
         let text = cbx.item_text(idx).unwrap_or_else(|| String::from("(none)"));
         l.append(format!("[ComboBox] selected '{}' (idx={})", text, idx));
@@ -837,7 +837,7 @@ fn build_all_controls(
     let l = Arc::clone(log);
     let lb2 = lb.clone();
     let lb3 = lb.clone();
-    lb2.on_value_changed(move |_val: String| {
+    lb2.on_value_changed(move |_val: &str| {
         let idx = lb3.current_index().unwrap_or(0);
         let text = lb3.item_text(idx).unwrap_or_else(|| String::from("(none)"));
         l.append(format!("[ListBox] selected '{}' (idx={})", text, idx));
@@ -855,7 +855,7 @@ fn build_all_controls(
     rb3.set_group("opts");
     let l = Arc::clone(log);
     let r2 = rb2.clone();
-    r2.on_value_changed(move |_val: String| {
+    r2.on_value_changed(move |_val: &str| {
         if rb2.is_selected() {
             l.append("[RadioButton] 选项 B 已选中");
         }
@@ -880,7 +880,7 @@ fn build_all_controls(
     let l = Arc::clone(log);
     let sl2 = sl.clone();
     let sl3 = sl.clone();
-    sl2.on_value_changed(move |_val: String| {
+    sl2.on_value_changed(move |_val: &str| {
         l.append(format!("[Slider] value={}", sl3.value()));
     });
     log.append(format!("[Slider] value=50 orientation={:?}", sl.orientation()));
@@ -891,7 +891,7 @@ fn build_all_controls(
     pb.set_value(75u32);
     let l = Arc::clone(log);
     let pb2 = pb.clone();
-    pb2.on_value_changed(move |_val: String| {
+    pb2.on_value_changed(move |_val: &str| {
         l.append(format!("[ProgressBar] value={}", pb.value()));
     });
     log.append("[ProgressBar] range=[0..100], value=75");
@@ -1128,7 +1128,7 @@ fn build_window_chrome(win: &WindowHandle, log: &Arc<EventLog>) -> Vec<Slot> {
         nominal: (0, 0, 760, STATUS_HEIGHT),
     });
     let l = Arc::clone(log);
-    status.on_value_changed(move |val: String| l.append(format!("[StatusBar] '{val}'")));
+    status.on_value_changed(move |val: &str| l.append(format!("[StatusBar] '{val}'")));
     log.append("[StatusBar] text='就绪'");
 
     slots

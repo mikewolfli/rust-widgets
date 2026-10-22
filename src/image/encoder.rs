@@ -1030,13 +1030,59 @@ fn encode_png(image: &DecodedImage) -> Result<Vec<u8>, String> {
     ihdr.push(0); // interlace
     write_png_chunk(&mut out, b"IHDR", &ihdr);
 
-    // IDAT chunk: zlib-compressed rows, each prefixed with filter type 0 (None).
-    let mut raw = Vec::with_capacity((1 + w as usize * 4) * h as usize);
+    // IDAT chunk: zlib-compressed rows, each with the filter that minimises the sum of
+    // absolute differences against the previous row. The encoder used to emit filter 0
+    // (None) on every row, which left the deflate stage with raw pixel deltas and produced
+    // files 2–5× larger than the same image needs. The heuristic is the one the PNG spec
+    // recommends; every filter here is decoded by this crate's own decoder.
+    const BPP: usize = 4;
+    let stride = w as usize * BPP;
+    let mut raw = Vec::with_capacity((1 + stride) * h as usize);
+    let mut previous: Vec<u8> = Vec::with_capacity(stride);
     for row in 0..h as usize {
-        raw.push(0); // filter type: None
-        let off = row * w as usize * 4;
-        let end = (off + w as usize * 4).min(pixels.len());
-        raw.extend_from_slice(&pixels[off..end]);
+        let off = row * stride;
+        let end = (off + stride).min(pixels.len());
+        let current = &pixels[off..end];
+        let len = current.len();
+
+        // Candidate buffers: None, Sub, Up, Average, Paeth.
+        let mut best_filter = 0u8;
+        let mut best_score = u64::MAX;
+        let mut best_row: Vec<u8> = Vec::with_capacity(len);
+        let mut candidate: Vec<u8> = Vec::with_capacity(len);
+        for filter in 0u8..=4 {
+            candidate.clear();
+            let mut score = 0u64;
+            for i in 0..len {
+                let left = if i >= BPP { current[i - BPP] } else { 0 };
+                let up = if row > 0 { previous.get(i).copied().unwrap_or(0) } else { 0 };
+                let up_left = if row > 0 && i >= BPP {
+                    previous.get(i - BPP).copied().unwrap_or(0)
+                } else {
+                    0
+                };
+                let predictor = match filter {
+                    1 => left,
+                    2 => up,
+                    3 => ((left as u16 + up as u16) / 2) as u8,
+                    4 => png_paeth(left, up, up_left),
+                    _ => 0,
+                };
+                let value = current[i].wrapping_sub(predictor);
+                candidate.push(value);
+                // Signed magnitude of the filtered byte, as the spec's heuristic defines it.
+                score += u64::from((value as i8).unsigned_abs());
+            }
+            if score < best_score {
+                best_score = score;
+                best_filter = filter;
+                std::mem::swap(&mut best_row, &mut candidate);
+            }
+        }
+        raw.push(best_filter);
+        raw.extend_from_slice(&best_row);
+        previous.clear();
+        previous.extend_from_slice(current);
     }
     // Level 6 (miniz_oxide's default) rather than 0. Level 0 emits stored blocks, so every
     // encoded PNG was roughly the size of its raw pixels — about ten times what the same image
@@ -1049,6 +1095,24 @@ fn encode_png(image: &DecodedImage) -> Result<Vec<u8>, String> {
     write_png_chunk(&mut out, b"IEND", &[]);
 
     Ok(out)
+}
+
+/// PNG Paeth predictor (filter type 4), matching the decoder's implementation.
+fn png_paeth(left: u8, up: u8, up_left: u8) -> u8 {
+    let a = i16::from(left);
+    let b = i16::from(up);
+    let c = i16::from(up_left);
+    let p = a + b - c;
+    let pa = (p - a).abs();
+    let pb = (p - b).abs();
+    let pc = (p - c).abs();
+    if pa <= pb && pa <= pc {
+        left
+    } else if pb <= pc {
+        up
+    } else {
+        up_left
+    }
 }
 
 fn write_png_chunk(out: &mut Vec<u8>, chunk_type: &[u8; 4], data: &[u8]) {

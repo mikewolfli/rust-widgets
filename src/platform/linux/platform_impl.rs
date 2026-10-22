@@ -689,6 +689,8 @@ impl Platform for LinuxPlatform {
         // The exit condition of this backend's own frame loop is `runtime.running`, an atomic
         // any thread may store, so a request from anywhere ends the *state* loop.
         self.runtime.running.store(false, Ordering::SeqCst);
+        // The loop may be parked in `pause_between_frames`; wake it so the stop is immediate.
+        crate::platform::frame_wait::wake();
         #[cfg(all(unix_desktop, feature = "gtk-native"))]
         {
             // GTK's stop is main-thread-only: `gtk_main_quit` walks the global main-loop stack

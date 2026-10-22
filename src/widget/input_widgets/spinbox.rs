@@ -1128,13 +1128,15 @@ impl Draw for SpinBox {
         // concatenated string instead put the `$` inside the value's glyph run, so the value's origin
         // included it — the caret would sit after the `$` at the start of the field, and a select-all
         // would copy the unit along with the number.
-        let slots = DecorationSlots {
-            prefix: self.prefix.clone(),
-            suffix: self.suffix.clone(),
-            ..Default::default()
-        };
-        let metrics =
-            DecorationMetrics::measure(&slots, |text| context.measure_text(text, font).width);
+        // Widths only: the slot strings are borrowed from the control and never copied. The
+        // old code built a `DecorationSlots` with two `String` clones per frame just to ask
+        // for two advances, and the empty slots here carry no support row/counter to lay out.
+        let prefix_width =
+            if self.prefix.is_empty() { 0 } else { context.measure_text(&self.prefix, font).width };
+        let suffix_width =
+            if self.suffix.is_empty() { 0 } else { context.measure_text(&self.suffix, font).width };
+        let metrics = DecorationMetrics { prefix_width, suffix_width };
+        let slots = DecorationSlots::default();
         let line_height = font.effective_line_height().max(1.0) as u32;
         let layout = DecorationLayout::compute(
             editable,

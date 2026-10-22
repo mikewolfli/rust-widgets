@@ -366,7 +366,9 @@ unsafe fn paint_canvas(hwnd: HWND) {
     // not re-rasterise every pixel on each `WM_PAINT`. The returned frame is complete
     // — the swap in `blit_frame` still walks it — because `StretchDIBits` presents a
     // whole bitmap; the saving is in what was drawn, not in what is converted.
-    let Some(frame) = crate::widget::runtime::render_frame_cached(
+    // `render_frame_cached_shared`: an unchanged frame is the cache's own `Rc`, so this
+    // paints it without duplicating the whole surface first.
+    let Some(frame) = crate::widget::runtime::render_frame_cached_shared(
         widget_id,
         crate::core::Size::new(width, height),
         crate::core::Color::WHITE,
@@ -379,7 +381,7 @@ unsafe fn paint_canvas(hwnd: HWND) {
         return;
     };
 
-    blit_frame(hdc, width, height, &frame);
+    blit_frame(hdc, width, height, frame.as_slice());
     EndPaint(hwnd, &paint);
 }
 

@@ -1071,11 +1071,11 @@ impl RustWidgetsObjc2CanvasView {
                 // A window's content view paints the window's own chrome and every child
                 // that implements `Draw`; a plain `render_frame_cached` would show the
                 // window over an empty client area.
-                crate::widget::runtime::render_frame_tree(widget, size, clear)
+                crate::widget::runtime::render_frame_tree_cached_shared(widget, size, clear)
             } else {
                 // A mounted surface is one self-drawn widget in its own box, which is
                 // what the cocoa backend's `draw_rect` blits.
-                crate::widget::runtime::render_frame_cached(widget_id, size, clear)
+                crate::widget::runtime::render_frame_cached_shared(widget_id, size, clear)
             };
             let Some(frame) = frame else {
                 // Not mounted (dropped while the view survived) or it refused to paint.

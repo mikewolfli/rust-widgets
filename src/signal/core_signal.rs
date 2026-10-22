@@ -203,17 +203,6 @@ struct SlotEntry<T: Clone + Send + 'static> {
     once: bool,
     blocked: bool,
     priority: Priority,
-    /// Monotonic connection order, used only to break ties between equal-priority slots.
-    ///
-    /// # Why the handle alone cannot order slots
-    ///
-    /// Slots live in a `HashMap`, whose iteration order is unspecified and can differ between runs
-    /// and between map layouts. Sorting by priority alone therefore left equal-priority slots in
-    /// whatever order the map happened to yield them, so "same priority fires in connection order" —
-    /// the module's documented contract — was not actually provided. The sequence is assigned from
-    /// the same monotonic counter as the handle, so it is unique and strictly increasing in
-    /// connection order.
-    sequence: u64,
 }
 
 // Marks a slot as currently executing **on this thread**, so a same-thread re-entrant emit skips it
@@ -225,6 +214,15 @@ struct SlotEntry<T: Clone + Send + 'static> {
 thread_local! {
     #[allow(clippy::missing_const_for_thread_local)]
     static EXECUTING_SLOTS: core::cell::RefCell<crate::compat::Vec<(usize, ConnectionHandle)>> =
+        core::cell::RefCell::new(crate::compat::Vec::new());
+}
+
+// Reused snapshot buffer for the multi-subscriber emit path. A nested emit (a callback that
+// emits the same or another signal) finds it busy and falls back to a local `Vec`, so the reuse
+// can never panic on a re-entrant borrow.
+thread_local! {
+    #[allow(clippy::missing_const_for_thread_local)]
+    static EMIT_SNAPSHOT: core::cell::RefCell<crate::compat::Vec<ConnectionHandle>> =
         core::cell::RefCell::new(crate::compat::Vec::new());
 }
 
@@ -256,12 +254,36 @@ impl Drop for SlotRunning {
 
 struct SignalInner<T: Clone + Send + 'static> {
     slots: RwLock<HashMap<ConnectionHandle, SlotEntry<T>>>,
+    /// Connection order per priority bucket (index = `Priority::rank`).
+    ///
+    /// Maintained on connect/disconnect/priority change/once-removal so `emit` can walk the
+    /// buckets directly. The old emit path built a snapshot of the `HashMap`, whose order is
+    /// unspecified, and sorted it on every emission; this makes the documented
+    /// "High → Normal → Low, then connection order" contract a property of the storage
+    /// rather than work repeated per frame.
+    order: RwLock<[Vec<ConnectionHandle>; 3]>,
 }
 
 impl<T: Clone + Send + 'static> SignalInner<T> {
     fn new() -> Self {
-        Self { slots: RwLock::new(HashMap::new()) }
+        Self {
+            slots: RwLock::new(HashMap::new()),
+            order: RwLock::new([Vec::new(), Vec::new(), Vec::new()]),
+        }
     }
+
+    fn push_order(&self, handle: ConnectionHandle, priority: Priority) {
+        write_lock(&self.order)[priority.rank() as usize].push(handle);
+    }
+
+    fn remove_order(&self, handle: ConnectionHandle, priority: Priority) {
+        let mut order = write_lock(&self.order);
+        let bucket = &mut order[priority.rank() as usize];
+        if let Some(position) = bucket.iter().position(|candidate| *candidate == handle) {
+            bucket.remove(position);
+        }
+    }
+
     fn disconnect(&self, handle: ConnectionHandle) -> bool {
         // Remove under the lock, but drop the removed entry **after** the lock is
         // released. The entry owns an `Arc<SlotSlot<T>>`, whose callback closure
@@ -273,6 +295,9 @@ impl<T: Clone + Send + 'static> SignalInner<T> {
         // lock. `removed` is destructured after the guard's scope ends, so the
         // user value is destroyed with no lock held.
         let removed = write_lock(&self.slots).remove(&handle);
+        if let Some(entry) = removed.as_ref() {
+            self.remove_order(handle, entry.priority);
+        }
         let present = removed.is_some();
         drop(removed);
         present
@@ -301,12 +326,20 @@ impl<T: Clone + Send + 'static> SignalInner<T> {
     }
 
     fn set_priority(&self, handle: ConnectionHandle, priority: Priority) -> bool {
-        if let Some(entry) = write_lock(&self.slots).get_mut(&handle) {
+        let previous = {
+            let mut slots = write_lock(&self.slots);
+            let Some(entry) = slots.get_mut(&handle) else {
+                return false;
+            };
+            let previous = entry.priority;
             entry.priority = priority;
-            true
-        } else {
-            false
+            previous
+        };
+        if previous != priority {
+            self.remove_order(handle, previous);
+            self.push_order(handle, priority);
         }
+        true
     }
 }
 
@@ -395,9 +428,9 @@ impl<T: Clone + Send + 'static> Signal<T> {
                 once: false,
                 blocked: false,
                 priority,
-                sequence,
             },
         );
+        self.inner.push_order(handle, priority);
         handle
     }
 
@@ -415,9 +448,9 @@ impl<T: Clone + Send + 'static> Signal<T> {
                 once: true,
                 blocked: false,
                 priority: Priority::Normal,
-                sequence,
             },
         );
+        self.inner.push_order(handle, Priority::Normal);
         handle
     }
 
@@ -455,6 +488,12 @@ impl<T: Clone + Send + 'static> Signal<T> {
         // self-deadlock. The guard is dropped at the end of the statement that
         // takes the map, and `drained` is destroyed with no lock held.
         let drained = core::mem::take(&mut *write_lock(&self.inner.slots));
+        {
+            let mut order = write_lock(&self.inner.order);
+            for bucket in order.iter_mut() {
+                bucket.clear();
+            }
+        }
         drop(drained);
     }
 
@@ -569,24 +608,43 @@ impl<T: Clone + Send + 'static> Signal<T> {
             return;
         }
 
-        // 1. Snapshot handles, priorities and connection order under a read lock.
-        let mut snapshot: Vec<(ConnectionHandle, Priority, u64)> = {
-            let slots = read_lock(&self.inner.slots);
-            slots.iter().map(|(h, e)| (*h, e.priority, e.sequence)).collect()
-        };
-
-        // 2. Sort by priority (High first), then by connection order within a priority.
+        // 1. Snapshot handles from the maintain-order buckets. No sort: `order` is kept in
+        //    High → Normal → Low, and connection order within each bucket.
         //
-        // The sequence is the tie-breaker that makes "same priority fires in connection order",
-        // the module's documented contract, actually hold: the snapshot comes from a `HashMap`,
-        // whose iteration order is unspecified, so without it the within-priority order was the
-        // map's and could change between runs. A list of one is already in order.
-        if snapshot.len() > 1 {
-            snapshot.sort_by_key(|a| (a.1.rank(), a.2));
+        // The snapshot buffer is reused per thread (see `EMIT_SNAPSHOT`), so a multi-subscriber
+        // emit does not allocate a `Vec` on every call. A re-entrant emit finds the buffer
+        // borrowed and takes the local-`Vec` fallback below.
+        let snapshot_is_reused = EMIT_SNAPSHOT.with(|cell| {
+            let Ok(mut snapshot) = cell.try_borrow_mut() else {
+                return false;
+            };
+            snapshot.clear();
+            {
+                let order = read_lock(&self.inner.order);
+                for bucket in order.iter() {
+                    snapshot.extend(bucket.iter().copied());
+                }
+            }
+
+            // 2. Invoke each slot, in order. The guard intentionally lives across the callbacks:
+            // a nested emit falls back to its own buffer rather than aliasing this one.
+            for &handle in snapshot.iter() {
+                self.deliver_to(identity, handle, &arc_value);
+            }
+            true
+        });
+        if snapshot_is_reused {
+            return;
         }
 
-        // 3. Invoke each slot, in order.
-        for (handle, _priority, _sequence) in snapshot {
+        let mut snapshot: Vec<ConnectionHandle> = Vec::new();
+        {
+            let order = read_lock(&self.inner.order);
+            for bucket in order.iter() {
+                snapshot.extend(bucket.iter().copied());
+            }
+        }
+        for handle in snapshot {
             self.deliver_to(identity, handle, &arc_value);
         }
     }
@@ -599,21 +657,28 @@ impl<T: Clone + Send + 'static> Signal<T> {
     /// cross-signal lock cycle (E-29) — and behind its own per-slot mutex, which is what lets a
     /// concurrent emit defer its value instead of dropping it (E-21).
     fn deliver_to(&self, identity: usize, handle: ConnectionHandle, arc_value: &Arc<T>) {
-        let slot = {
+        let (slot, removed_once, priority) = {
             let mut slots = write_lock(&self.inner.slots);
             let Some(entry) = slots.get(&handle) else {
                 return;
             };
             if entry.blocked {
-                None
+                (None, false, entry.priority)
             } else {
                 let slot = entry.slot.clone();
-                if entry.once {
+                let priority = entry.priority;
+                let removed_once = entry.once;
+                if removed_once {
                     slots.remove(&handle);
                 }
-                slot
+                (slot, removed_once, priority)
             }
         };
+        if removed_once {
+            // A once-slot leaves both the map and the order bucket, so a later emit does not
+            // walk a handle that no longer resolves.
+            self.inner.remove_order(handle, priority);
+        }
         let Some(slot) = slot else {
             // Blocked, or disconnected by a prior callback in this pass.
             return;

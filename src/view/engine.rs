@@ -111,6 +111,17 @@ pub trait View {
     fn build_with(&self, _ctx: &Context) -> Node {
         self.build()
     }
+
+    /// A revision that changes whenever [`Self::build`] would produce a different tree.
+    ///
+    /// Default `None` means "the engine cannot know", so every update rebuilds — the previous
+    /// behaviour and the only safe answer for a view that does not participate. A view that
+    /// keeps its state in a revision counter returns `Some(revision)`; the engine then reuses
+    /// the previous tree while the revision **and the viewport** are unchanged, instead of
+    /// calling `build` and diffing an identical tree every frame (REND-15).
+    fn state_revision(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// Holds a view's current tree and applies the differences between builds.
@@ -143,6 +154,8 @@ pub struct ViewEngine {
     /// tier is the honest "no information" answer (`Expanded`, i.e. render everything
     /// declared) rather than a guessed phone width.
     viewport: Option<crate::core::Size>,
+    /// The view revision and viewport of the last build, used to skip a redundant rebuild.
+    last_build_key: Option<(u64, Option<crate::core::Size>)>,
     /// Maps the previous tree's *shape* to live ids, so the diff can address controls.
     ///
     /// Populated when the engine mounts or applies an `Insert`: ids for nodes it created,
@@ -188,6 +201,7 @@ impl ViewEngine {
             current: None,
             layout: crate::json::BoundJsonLayout::new(),
             viewport: None,
+            last_build_key: None,
             id_of_path: crate::compat::HashMap::new(),
             overlay_layer: None,
             generation: 0,
@@ -223,12 +237,27 @@ impl ViewEngine {
     /// is a property of one function rather than of two call sites that must agree — the
     /// failure mode [`crate::view::Breakpoint::current`]'s documentation warns about, where a
     /// tier leaks from one build into the next.
-    fn build_in_force(&self, view: &dyn View, ctx: &Context) -> Node {
+    fn build_in_force(&mut self, view: &dyn View, ctx: &Context) -> Node {
+        let revision = view.state_revision();
+        if let (Some(revision), Some(previous)) = (revision, self.current.as_ref()) {
+            if self.last_build_key == Some((revision, self.viewport)) {
+                // The view says its state has not changed and the breakpoint input is the same,
+                // so `build` would describe the identical tree. Reusing it turns the update into
+                // a no-op diff instead of a full rebuild (REND-15).
+                return previous.clone();
+            }
+        }
         let tier = self
             .viewport
             .map(crate::view::Breakpoint::of)
             .unwrap_or_else(crate::view::Breakpoint::current);
-        crate::view::with_breakpoint(tier, || view.build_with(ctx))
+        let node = crate::view::with_breakpoint(tier, || view.build_with(ctx));
+        if let Some(revision) = revision {
+            self.last_build_key = Some((revision, self.viewport));
+        } else {
+            self.last_build_key = None;
+        }
+        node
     }
 
     /// The id of the overlay layer, or `None` when no portal node has needed one.
@@ -312,6 +341,10 @@ impl ViewEngine {
         create: &dyn Fn(&Node) -> Option<ObjectId>,
         resolver: Option<&dyn crate::widget::icon_source::IconResourceResolver>,
     ) -> ApplyReport {
+        // Mounting is authoritative: even when the view reports the same revision as a previous
+        // mount, the caller asked for a fresh tree. Clearing the build key forces `build` here,
+        // while `update` can still take the revision fast path.
+        self.last_build_key = None;
         let root = self.build_in_force(view, ctx);
         let mut report = ApplyReport::default();
 
@@ -469,11 +502,14 @@ impl ViewEngine {
         create: &dyn Fn(&Node) -> Option<ObjectId>,
         resolver: Option<&dyn crate::widget::icon_source::IconResourceResolver>,
     ) -> DiffReport {
-        let Some(previous) = self.current.take() else {
+        let Some(_) = self.current.as_ref() else {
             self.mount_with_optional_icon_resolver(view, ctx, create, resolver);
             return DiffReport::default();
         };
+        // Build before taking the previous tree: `build_in_force` needs `current` to answer the
+        // "revision unchanged" fast path (REND-15).
         let next = self.build_in_force(view, ctx);
+        let previous = self.current.take().expect("checked just above");
         let lookup = |path: &[usize], _index: usize| self.id_of_path.get(path).copied();
         let report = diff(&previous, &next, &lookup);
 
@@ -2576,5 +2612,39 @@ mod tests {
         assert_eq!(engine.id_at(&[0, 1, 0]), None, "the gap's child is gone");
         let layout = engine.layout();
         assert_eq!(layout.children(11), &[12, 14], "and the row is left with its own children");
+    }
+
+    /// A view that reports a state revision is not rebuilt while the revision and viewport are
+    /// unchanged (REND-15).
+    #[test]
+    fn unchanged_state_revision_reuses_the_previous_tree() {
+        struct Revisioned {
+            revision: Cell<u64>,
+            builds: Cell<usize>,
+        }
+        impl View for Revisioned {
+            fn build(&self) -> Node {
+                self.builds.set(self.builds.get() + 1);
+                Node::new("window")
+                    .key("root")
+                    .child(Node::new("label").key("value").prop("text", s("stable")))
+            }
+            fn state_revision(&self) -> Option<u64> {
+                Some(self.revision.get())
+            }
+        }
+
+        let view = Revisioned { revision: Cell::new(0), builds: Cell::new(0) };
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+        engine.mount(&view, &ids.creator());
+        assert_eq!(view.builds.get(), 1, "mount builds once");
+
+        engine.update(&view, &ids.creator());
+        assert_eq!(view.builds.get(), 1, "the same revision must reuse the tree");
+
+        view.revision.set(1);
+        engine.update(&view, &ids.creator());
+        assert_eq!(view.builds.get(), 2, "a new revision must rebuild");
     }
 }

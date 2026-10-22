@@ -134,16 +134,16 @@ impl FilterOperator {
             if cell.is_empty() {
                 return true;
             }
-            return !cell.to_lowercase().contains(&operand.to_lowercase());
+            return !contains_ignore_case(cell, operand);
         }
         if cell.is_empty() {
             return false;
         }
         match self {
-            FilterOperator::Contains => cell.to_lowercase().contains(&operand.to_lowercase()),
-            FilterOperator::Equals => cell.to_lowercase() == operand.to_lowercase(),
-            FilterOperator::StartsWith => cell.to_lowercase().starts_with(&operand.to_lowercase()),
-            FilterOperator::EndsWith => cell.to_lowercase().ends_with(&operand.to_lowercase()),
+            FilterOperator::Contains => contains_ignore_case(cell, operand),
+            FilterOperator::Equals => eq_ignore_case(cell, operand),
+            FilterOperator::StartsWith => starts_with_ignore_case(cell, operand),
+            FilterOperator::EndsWith => ends_with_ignore_case(cell, operand),
             FilterOperator::NotContains => true, // handled above
             FilterOperator::EqualsNumber
             | FilterOperator::GreaterThan
@@ -170,6 +170,52 @@ impl FilterOperator {
             }
         }
     }
+}
+
+/// Case-insensitive text predicates.
+///
+/// The ASCII fast path compares bytes in place and allocates nothing. These predicates run
+/// once per row per condition while a filter is active, so the previous
+/// `to_lowercase().contains(&operand.to_lowercase())` allocated two `String`s per row per
+/// frame. Non-ASCII text still takes the `to_lowercase` fallback, which is required for
+/// correct Unicode case folding.
+fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
+    if haystack.is_ascii() && needle.is_ascii() {
+        if needle.is_empty() {
+            return true;
+        }
+        let h = haystack.as_bytes();
+        let n = needle.as_bytes();
+        return h.windows(n.len()).any(|window| window.eq_ignore_ascii_case(n));
+    }
+    haystack.to_lowercase().contains(&needle.to_lowercase())
+}
+
+fn eq_ignore_case(left: &str, right: &str) -> bool {
+    if left.is_ascii() && right.is_ascii() {
+        return left.eq_ignore_ascii_case(right);
+    }
+    left.to_lowercase() == right.to_lowercase()
+}
+
+fn starts_with_ignore_case(haystack: &str, needle: &str) -> bool {
+    if haystack.is_ascii() && needle.is_ascii() {
+        return haystack
+            .as_bytes()
+            .get(..needle.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(needle.as_bytes()));
+    }
+    haystack.to_lowercase().starts_with(&needle.to_lowercase())
+}
+
+fn ends_with_ignore_case(haystack: &str, needle: &str) -> bool {
+    if haystack.is_ascii() && needle.is_ascii() {
+        return haystack
+            .as_bytes()
+            .get(haystack.len().saturating_sub(needle.len())..)
+            .is_some_and(|suffix| suffix.eq_ignore_ascii_case(needle.as_bytes()));
+    }
+    haystack.to_lowercase().ends_with(&needle.to_lowercase())
 }
 
 /// One condition: a column, an operator, and an operand.

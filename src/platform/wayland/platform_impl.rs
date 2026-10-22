@@ -472,6 +472,10 @@ impl Platform for WaylandPlatform {
 
     fn quit(&self) -> bool {
         self.runtime.running.store(false, std::sync::atomic::Ordering::SeqCst);
+        // The native loop blocks in `poll()` (and, when no session exists, in
+        // `pause_between_frames`), so storing the flag alone would delay the stop until the
+        // idle timeout expires. Waking the frame wait makes the request visible immediately.
+        crate::platform::frame_wait::wake();
         log::info!("[wayland] Platform quit.");
         // The loop reads `running` each tick, so the request is honoured from any thread.
         true
@@ -904,8 +908,12 @@ impl WaylandPlatform {
                     // run even in this session-less arm, or a transition that started before the
                     // window appeared would freeze instead of finishing (BLUE24 §0A.1
                     // measurement 1).
-                    crate::drive_frame(FRAME_INTERVAL_MS);
-                    std::thread::sleep(std::time::Duration::from_millis(FRAME_INTERVAL_MS as u64));
+                    let outcome = crate::drive_frame(FRAME_INTERVAL_MS);
+                    // Same wait entry point as every other backend: an owed frame wakes
+                    // immediately, an idle loop blocks until an event or the bounded timeout.
+                    // The raw `sleep(16)` was a busy-wait that also discarded the driver's
+                    // "another frame owed" answer.
+                    crate::platform::frame_wait::pause_between_frames(outcome.needs_another_frame);
                     continue;
                 }
             };
@@ -939,7 +947,7 @@ impl WaylandPlatform {
                     } else if rc < 0 {
                         let err = std::io::Error::last_os_error();
                         log::warn!("[wayland] poll failed: {err}");
-                        std::thread::sleep(std::time::Duration::from_millis(16));
+                        crate::platform::frame_wait::pause_between_frames(false);
                     }
                     // rc == 0: idle timeout, loop to re-check `running`.
                 }
@@ -1036,6 +1044,8 @@ impl WaylandPlatform {
                 text_input: None,
                 ime,
                 surfaces: std::collections::HashMap::new(),
+                shm: None,
+                shm_surfaces: std::collections::HashMap::new(),
                 frame_done_generation: 0,
                 wl_output: None,
                 dpi_scale: 1.0,
@@ -1128,6 +1138,7 @@ impl WaylandPlatform {
         // Keep the surface so `pre_present_notify` can request a `wl_surface.frame` callback for
         // this window (B28.42). A clone shares the same protocol object.
         session.state.surfaces.insert(id, surface.clone());
+        session.state.attach_placeholder_buffer(&surface, &qh, id, width, height);
         log::info!("[wayland] Window {} registered with state backend", id);
 
         // Record which window this `xdg_toplevel`'s configure events belong to. The
@@ -1240,6 +1251,16 @@ pub(crate) struct WaylandSessionState {
     pub(crate) ime: super::ime::WaylandIme,
     /// The `wl_surface` of every window this session created, for `pre_present_notify`.
     pub(crate) surfaces: std::collections::HashMap<u64, wl_client::protocol::wl_surface::WlSurface>,
+    /// Shared-memory global, used to give a window a mapped buffer.
+    ///
+    /// A Wayland toplevel with no attached buffer is never mapped, so it never receives
+    /// keyboard focus, so its `wl_data_device` never receives a `selection` event. That made the
+    /// clipboard advertise a live channel it could not actually read from. A minimal opaque
+    /// buffer makes the surface real for focus purposes; the library still paints through its
+    /// control backend.
+    pub(crate) shm: Option<wl_client::protocol::wl_shm::WlShm>,
+    /// Placeholder buffers kept alive for as long as their window exists.
+    pub(crate) shm_surfaces: std::collections::HashMap<u64, ShmSurface>,
     /// Bumped by every `wl_callback.done`; a frame callback landed.
     pub(crate) frame_done_generation: u64,
     /// wl_output proxy for DPI scale detection.
@@ -1264,6 +1285,30 @@ pub(crate) struct WaylandSessionState {
     pub(crate) output_generation: u64,
 }
 
+/// A mapped placeholder buffer: the shm pool and buffer proxies plus the mapping to release.
+#[cfg(all(feature = "wayland-native", unix_desktop))]
+pub(crate) struct ShmSurface {
+    _pool: wl_client::protocol::wl_shm_pool::WlShmPool,
+    _buffer: wl_client::protocol::wl_buffer::WlBuffer,
+    /// Address and length of the `mmap` that backs the pool. Stored as integers so the state
+    /// stays `Send`; the memory is only ever unmapped in `Drop`.
+    address: usize,
+    len: usize,
+}
+
+#[cfg(all(feature = "wayland-native", unix_desktop))]
+impl Drop for ShmSurface {
+    fn drop(&mut self) {
+        if self.address != 0 && self.len != 0 {
+            // SAFETY: `address`/`len` are exactly the mapping created in
+            // `attach_placeholder_buffer`, and this `Drop` runs once.
+            unsafe {
+                libc::munmap(self.address as *mut libc::c_void, self.len);
+            }
+        }
+    }
+}
+
 /// A persistent Wayland session containing the connection, event queue,
 /// and proxy state. Stored inside `WaylandPlatform.native_session`.
 ///
@@ -1281,6 +1326,102 @@ pub(crate) struct WaylandSession {
 
 #[cfg(all(feature = "wayland-native", unix_desktop))]
 impl WaylandSessionState {
+    /// Attaches a minimal opaque buffer so the toplevel is mapped and can take focus.
+    ///
+    /// # Why this is necessary for the clipboard
+    ///
+    /// Wayland sends `wl_data_device.selection` only to clients with keyboard focus, and a
+    /// toplevel with no buffer is never mapped, so it never gets focus. Without this the backend
+    /// advertised `clipboard: true` but could never read an external selection. The buffer is
+    /// deliberately a flat opaque fill: the host paints controls through the control backend, and
+    /// this surface exists for focus/selection semantics rather than pixels.
+    fn attach_placeholder_buffer(
+        &mut self,
+        surface: &wl_client::protocol::wl_surface::WlSurface,
+        qh: &wl_client::QueueHandle<WaylandSessionState>,
+        id: ObjectId,
+        width: u32,
+        height: u32,
+    ) -> bool {
+        use std::os::fd::{AsFd, FromRawFd, OwnedFd};
+
+        let Some(shm) = self.shm.clone() else {
+            return false;
+        };
+        let width = width.max(1);
+        let height = height.max(1);
+        let stride = (width * 4) as i32;
+        let len = (stride as usize) * height as usize;
+
+        // POSIX shared memory: create a uniquely named object, unlink it immediately (the fd is
+        // the only handle), size it, then map it for the compositor to read.
+        let name = format!("/rw-wl-{}-{id}", std::process::id());
+        let Ok(name) = std::ffi::CString::new(name) else {
+            return false;
+        };
+        // SAFETY: the name is a valid NUL-terminated string and the flags are a valid `open`
+        // combination for `shm_open`.
+        let fd = unsafe {
+            libc::shm_open(name.as_ptr(), libc::O_CREAT | libc::O_EXCL | libc::O_RDWR, 0o600)
+        };
+        if fd < 0 {
+            log::warn!("[wayland] shm_open failed for the placeholder buffer");
+            return false;
+        }
+        // SAFETY: `fd` is our fresh descriptor; unlinking the name after creation is the usual
+        // way to make it private without leaking a filesystem entry.
+        unsafe {
+            libc::shm_unlink(name.as_ptr());
+        }
+        // SAFETY: `fd` is valid and `len` is the requested size.
+        if unsafe { libc::ftruncate(fd, len as libc::off_t) } != 0 {
+            // SAFETY: `fd` is owned here and not wrapped anywhere yet.
+            unsafe { libc::close(fd) };
+            return false;
+        }
+        // SAFETY: `fd` is valid, `len` > 0, and the mapping is released in `ShmSurface::drop`.
+        let address = unsafe {
+            libc::mmap(
+                core::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                fd,
+                0,
+            )
+        };
+        if address == libc::MAP_FAILED {
+            // SAFETY: `fd` is owned here and not wrapped anywhere yet.
+            unsafe { libc::close(fd) };
+            return false;
+        }
+        // SAFETY: the mapping is `len` bytes and writable; filling it makes the surface opaque.
+        unsafe {
+            core::ptr::write_bytes(address as *mut u8, 0xFF, len);
+        }
+        // SAFETY: `fd` is a fresh descriptor whose ownership moves into `OwnedFd` exactly once.
+        let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+        let pool = shm.create_pool(owned.as_fd(), len as i32, qh, ());
+        let buffer = pool.create_buffer(
+            0,
+            width as i32,
+            height as i32,
+            stride,
+            wl_client::protocol::wl_shm::Format::Argb8888,
+            qh,
+            (),
+        );
+        surface.attach(Some(&buffer), 0, 0);
+        surface.damage(0, 0, width as i32, height as i32);
+        surface.commit();
+        self.shm_surfaces.insert(
+            id,
+            ShmSurface { _pool: pool, _buffer: buffer, address: address as usize, len },
+        );
+        log::debug!("[wayland] attached placeholder buffer {width}x{height} for window {id}");
+        true
+    }
+
     /// Creates the `wl_data_device` once both the seat and the manager are known.
     ///
     /// The registry may deliver either global first, so both arms call this after binding; it is
@@ -1428,6 +1569,16 @@ impl wl_client::Dispatch<wl_client::protocol::wl_registry::WlRegistry, ()> for W
                     state.ensure_text_input(_qh, _conn);
                     log::info!("[wayland] Bound wl_seat (v{})", version);
                 }
+                "wl_shm" => {
+                    let shm = registry.bind::<wl_client::protocol::wl_shm::WlShm, _, _>(
+                        name,
+                        version.min(1),
+                        _qh,
+                        (),
+                    );
+                    state.shm = Some(shm);
+                    log::info!("[wayland] Bound wl_shm (v{})", version);
+                }
                 "wl_data_device_manager" => {
                     let manager = registry
                         .bind::<wl_client::protocol::wl_data_device_manager::WlDataDeviceManager, _, _>(
@@ -1522,6 +1673,49 @@ impl wl_client::Dispatch<wl_client::protocol::wl_output::WlOutput, ()> for Wayla
                 log::trace!("[wayland] wl_output unhandled event: {:?}", event);
             }
         }
+    }
+}
+
+// --- wl_shm / wl_shm_pool / wl_buffer (placeholder mapping) ---
+
+#[cfg(all(feature = "wayland-native", unix_desktop))]
+impl wl_client::Dispatch<wl_client::protocol::wl_shm::WlShm, ()> for WaylandSessionState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &wl_client::protocol::wl_shm::WlShm,
+        _event: wl_client::protocol::wl_shm::Event,
+        _data: &(),
+        _conn: &wl_client::Connection,
+        _qh: &wl_client::QueueHandle<WaylandSessionState>,
+    ) {
+        log::trace!("[wayland] wl_shm event: {_event:?}");
+    }
+}
+
+#[cfg(all(feature = "wayland-native", unix_desktop))]
+impl wl_client::Dispatch<wl_client::protocol::wl_shm_pool::WlShmPool, ()> for WaylandSessionState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &wl_client::protocol::wl_shm_pool::WlShmPool,
+        _event: wl_client::protocol::wl_shm_pool::Event,
+        _data: &(),
+        _conn: &wl_client::Connection,
+        _qh: &wl_client::QueueHandle<WaylandSessionState>,
+    ) {
+    }
+}
+
+#[cfg(all(feature = "wayland-native", unix_desktop))]
+impl wl_client::Dispatch<wl_client::protocol::wl_buffer::WlBuffer, ()> for WaylandSessionState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &wl_client::protocol::wl_buffer::WlBuffer,
+        event: wl_client::protocol::wl_buffer::Event,
+        _data: &(),
+        _conn: &wl_client::Connection,
+        _qh: &wl_client::QueueHandle<WaylandSessionState>,
+    ) {
+        log::trace!("[wayland] wl_buffer event: {event:?}");
     }
 }
 
@@ -1652,6 +1846,13 @@ impl wl_client::Dispatch<wl_client::protocol::wl_data_device::WlDataDevice, ()>
             _ => log::trace!("[wayland] wl_data_device event: {:?}", event),
         }
     }
+
+    // A `selection`/`data_offer` event creates a child `wl_data_offer`. Without this override
+    // the generated default panics ("Missing event_created_child specialization"), which is
+    // exactly what a real compositor hit as soon as it delivered an external selection.
+    wl_client::event_created_child!(WaylandSessionState, wl_client::protocol::wl_data_device::WlDataDevice, [
+        0 => (wl_client::protocol::wl_data_offer::WlDataOffer, ()),
+    ]);
 }
 
 // --- wl_data_offer (advertised MIME types) ---

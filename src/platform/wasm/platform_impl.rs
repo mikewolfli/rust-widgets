@@ -521,6 +521,8 @@ impl Platform for WasmPlatform {
         // request from any thread lands and is honoured; `true` reports that fact rather
         // than merely that the call was made.
         self.runtime.running.store(false, Ordering::SeqCst);
+        // The loop may be parked in `pause_between_frames`; wake it so the stop is immediate.
+        crate::platform::frame_wait::wake();
         true
     }
 

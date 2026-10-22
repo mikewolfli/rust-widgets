@@ -33,14 +33,32 @@ use crate::platform::ime::{ImeBridge, ImeCandidatePosition, ImeComposition};
 /// is what turns the bridge from a state model into a real IME client.
 #[cfg(feature = "linux-a11y")]
 struct IbusConnection {
-    /// Active zbus session connection.
-    connection: zbus::Connection,
+    /// Active zbus session connection. Held (not read) to keep the input context alive: IBus
+    /// destroys the context when the owning bus connection drops.
+    _connection: zbus::Connection,
     /// Object path of the input context owned by this connection.
     ///
     /// IBus destroys the context when the owning bus connection drops, which is
     /// why the connection is held here for the bridge's lifetime.
     input_context_path: String,
+    /// Serialises DBus calls onto one worker thread.
+    ///
+    /// The UI thread used to run `pollster::block_on` for every keystroke, so a busy IBus
+    /// daemon froze typing. Calls are now handed to this worker; the caller waits at most
+    /// [`IBUS_REPLY_TIMEOUT`] and otherwise falls back to in-process handling.
+    worker: std::sync::mpsc::Sender<IbusJob>,
 }
+
+/// A DBus call executed on the IBus worker thread.
+#[cfg(feature = "linux-a11y")]
+type IbusJob = Box<dyn FnOnce(&zbus::Connection) + Send + 'static>;
+
+/// How long the caller waits for an IBus reply before falling back.
+///
+/// One frame at 60 Hz. A healthy IBus answers in well under a millisecond; this bound only
+/// matters when the daemon is busy or wedged, and it keeps the input path responsive.
+#[cfg(feature = "linux-a11y")]
+const IBUS_REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(16);
 
 /// IBus input-context interface name.
 #[cfg(feature = "linux-a11y")]
@@ -89,7 +107,20 @@ impl IbusConnection {
 
         log::info!("[Linux IME] IBus connected (owner: {owner}); input context: {context_path}");
 
-        Some(IbusConnection { connection: conn, input_context_path: context_path })
+        // One worker owns the calls. `Connection` is clonable and `Send`; the worker holds its
+        // own handle, so a dropped bridge closes the channel and the thread exits.
+        let worker_conn = conn.clone();
+        let (worker, jobs) = std::sync::mpsc::channel::<IbusJob>();
+        std::thread::Builder::new()
+            .name("rw-ibus-worker".to_string())
+            .spawn(move || {
+                while let Ok(job) = jobs.recv() {
+                    job(&worker_conn);
+                }
+            })
+            .ok()?;
+
+        Some(IbusConnection { _connection: conn, input_context_path: context_path, worker })
     }
 
     /// Send a method call straight over the session connection.
@@ -100,29 +131,35 @@ impl IbusConnection {
     /// interface, so `Connection::call_method` is the direct route.
     fn call_input_context<B>(&self, method: &str, body: &B) -> Option<zbus::Message>
     where
-        B: serde::Serialize + zbus::zvariant::DynamicType,
+        B: serde::Serialize + zbus::zvariant::DynamicType + Clone + Send + 'static,
     {
-        let conn = self.connection.clone();
         let path = self.input_context_path.clone();
         let method = method.to_string();
-        pollster::block_on(async move {
-            match conn
-                .call_method(
+        let body = body.clone();
+        let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
+        let job: IbusJob = Box::new(move |conn| {
+            let reply = pollster::block_on(async {
+                conn.call_method(
                     Some("org.freedesktop.IBus"),
                     path.as_str(),
                     Some(IBUS_IC_INTERFACE),
                     method.as_str(),
-                    body,
+                    &body,
                 )
                 .await
-            {
-                Ok(reply) => Some(reply),
-                Err(e) => {
-                    log::warn!("[Linux IME] IBus {method} call failed: {e}");
-                    None
-                }
+                .ok()
+            });
+            if reply.is_none() {
+                log::warn!("[Linux IME] IBus {method} call failed or returned no reply");
             }
-        })
+            // A send error means the caller already timed out and dropped the receiver; the
+            // reply is no longer observable, which is the documented fallback path.
+            let _ = reply_tx.send(reply);
+        });
+        if self.worker.send(job).is_err() {
+            return None;
+        }
+        reply_rx.recv_timeout(IBUS_REPLY_TIMEOUT).ok().flatten()
     }
 
     /// Invoke a void method on this connection's input context with no arguments.

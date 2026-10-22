@@ -106,7 +106,7 @@ struct RowCache {
     interior_width: u32,
     line_wrap: bool,
     font: Font,
-    rows: Vec<RowSpan>,
+    rows: Rc<Vec<RowSpan>>,
 }
 
 impl TextEdit {
@@ -489,7 +489,7 @@ impl TextEdit {
     /// would be a second implementation of the break rule, free to disagree with the one that
     /// painted. The table is built once per frame by the paint path and read by the pointer path, so
     /// there is one rule and two readers.
-    pub fn layout_rows(&self) -> Vec<RowSpan> {
+    pub fn layout_rows(&self) -> Rc<Vec<RowSpan>> {
         let rect = self.geometry();
         let padding = 4;
         let font = self.text_font();
@@ -500,7 +500,9 @@ impl TextEdit {
                 && cache.text == self.text
                 && cache.font == *font
             {
-                return cache.rows.clone();
+                // A cache hit used to clone the whole table. Callers only read it, so a
+                // refcount bump is both sufficient and free.
+                return Rc::clone(&cache.rows);
             }
         }
         // # One measurement surface for the whole document
@@ -510,7 +512,7 @@ impl TextEdit {
         // `layout_rows()` of a 10 000-character document therefore built 10 000 measurement
         // backends — and a single Up key built that table four times. The surface is created once
         // here, and the glyph's own UTF-8 bytes are measured straight out of a stack buffer.
-        let rows = Self::with_measurement(|context| {
+        let rows = Rc::new(Self::with_measurement(|context| {
             self.rows_for(interior_width, font, |ch| {
                 // One measurement per character, matching the painter — and taken from the
                 // **renderer's** own metrics rather than an estimate model.
@@ -527,13 +529,13 @@ impl TextEdit {
                 let mut glyph = [0u8; 4];
                 context.measure_text(ch.encode_utf8(&mut glyph), font).width
             })
-        });
+        }));
         *self.row_cache.borrow_mut() = Some(RowCache {
             text: self.text.clone(),
             interior_width,
             line_wrap: self.line_wrap,
             font: font.clone(),
-            rows: rows.clone(),
+            rows: Rc::clone(&rows),
         });
         rows
     }
@@ -1320,7 +1322,7 @@ impl Draw for TextEdit {
         // read the table, so every frame laid the document out twice and the two could disagree
         // about where a row ended. It is empty for the placeholder, which is not the document and
         // therefore has no table of its own.
-        let rows = if self.text.is_empty() { Vec::new() } else { self.layout_rows() };
+        let rows = if self.text.is_empty() { Rc::new(Vec::new()) } else { self.layout_rows() };
         if !display_text.is_empty() {
             // The placeholder is de-emphasised from the control's own ink rather than being a
             // fixed grey that a dark theme would render illegible.

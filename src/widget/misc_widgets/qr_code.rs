@@ -74,17 +74,23 @@ pub struct QRCode {
     module_size: u32,
     /// Quiet zone (white border) around the matrix in modules.
     quiet_zone: u32,
+    /// The matrix is a function of `data` only, so it is materialised by `set_data`
+    /// instead of being regenerated (hash + 441 cells) on every painted frame.
+    matrix: [[bool; MATRIX_SIZE as usize]; MATRIX_SIZE as usize],
 }
 
 impl QRCode {
     /// Creates a new QRCode widget with the given geometry.
     pub fn new(geometry: Rect) -> Self {
-        Self {
+        let mut widget = Self {
             base: BaseWidget::new(WidgetKind::QRCode, geometry, "QRCode"),
             data: String::new(),
             module_size: 4,
             quiet_zone: 2,
-        }
+            matrix: [[false; MATRIX_SIZE as usize]; MATRIX_SIZE as usize],
+        };
+        widget.matrix = widget.generate_matrix();
+        widget
     }
 
     /// Returns a reference to the current data string.
@@ -98,6 +104,7 @@ impl QRCode {
             return;
         }
         self.data = data.to_string();
+        self.matrix = self.generate_matrix();
         self.base.request_redraw();
     }
 
@@ -319,7 +326,7 @@ impl Draw for QRCode {
         // Draw the quiet-zone surface for the entire symbol area.
         context.fill_rect(Rect::new(symbol_x, symbol_y, symbol_side, symbol_side), surface);
 
-        let matrix = self.generate_matrix();
+        let matrix = self.matrix;
 
         // Draw each module.
         for row in 0..MATRIX_SIZE {

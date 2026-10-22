@@ -313,6 +313,8 @@ impl Platform for HarmonyPlatform {
         // request from any thread lands and is honoured; `true` reports that fact rather
         // than merely that the call was made.
         self.runtime.running.store(false, Ordering::SeqCst);
+        // The loop may be parked in `pause_between_frames`; wake it so the stop is immediate.
+        crate::platform::frame_wait::wake();
         true
     }
 
@@ -333,7 +335,19 @@ impl Platform for HarmonyPlatform {
             );
             return 0;
         }
+        if let Some(host_id) = self.host_window_id() {
+            log::debug!("[harmony] create_window: host-bound ArkTS window id {host_id}");
+        }
         self.insert_widget(HarmonyHandleKind::Window, title, x, y, width, height)
+    }
+
+    /// The ArkTS window id the host bound through `rw_harmony_set_window_id`, when any.
+    ///
+    /// Kept as a semantic accessor rather than exposing the static: the FFI setter and this
+    /// reader are the two halves of one contract, and the reader is what makes the written id
+    /// observable to the backend's diagnostics instead of write-only state.
+    pub(crate) fn host_window_id(&self) -> Option<i32> {
+        super::host_facts::window_id()
     }
 
     /// OpenHarmony's host model is one XComponent with one window.

@@ -577,19 +577,17 @@ impl WgpuRenderer {
     ///
     /// Uses the WGSL vertex shader (`FILL_RECT_VS`) with a vertex buffer and the
     /// fragment shader (`FILL_RECT_FS`) with a per-rect uniform color.
-    pub fn render_fill_rect_gpu(
+    /// Encodes the fill-rect pass into the cached target and submits it.
+    ///
+    /// Split out from [`Self::render_fill_rect_gpu`] so a compositor can use the rendered
+    /// texture directly (REND-02) instead of paying for a full `copy_texture_to_buffer` and a
+    /// blocking map. The readback buffer is deliberately **not** ensured here.
+    fn encode_fill_rects(
         &self,
         width: u32,
         height: u32,
         rects: &[(i32, i32, u32, u32, [f64; 4])],
-    ) -> Result<Vec<u8>, String> {
-        // Reject zero/overflowing dimensions up front so the empty-rects fast
-        // path cannot allocate a wrapped-around buffer either (N-S-66).
-        let expected_len = rgba_buffer_len(width, height)?;
-        if rects.is_empty() {
-            return Ok(vec![0u8; expected_len]);
-        }
-
+    ) -> Result<(), String> {
         let w = width as f32;
         let h = height as f32;
 
@@ -603,8 +601,6 @@ impl WgpuRenderer {
             // Convert pixel coordinates to NDC: [-1, 1]
             // WebGPU/wgpu NDC: y = +1 maps to top of viewport, y = -1 to bottom
             // (OpenGL convention, not Vulkan).
-            // ndc_x = (pixel_x / width) * 2 - 1
-            // ndc_y = 1 - (pixel_y / height) * 2
             let x0 = (x as f32 / w) * 2.0 - 1.0;
             let y0 = 1.0 - (y as f32 / h) * 2.0;
             let x1 = ((x.saturating_add(rw as i32)) as f32 / w) * 2.0 - 1.0;
@@ -623,21 +619,15 @@ impl WgpuRenderer {
             ]);
         }
 
-        let frame_bytes = readback_frame_bytes(width, height)?;
-        let padded_bytes_per_row = padded_row_bytes(width)?;
-
         // Cached resources for the whole call: one colour arena, one bind group, one vertex
-        // buffer, one target and one readback buffer (REND-02).
+        // buffer and one target (REND-02).
         let mut cache = self.cache.borrow_mut();
         cache.ensure_uniform(&self.device, &self.bind_group_layout, colours.len())?;
         cache.ensure_target(&self.device, width, height);
         cache.ensure_vertices(&self.device, vertex_bytes.len() as u64);
-        cache.ensure_readback(&self.device, frame_bytes);
         let uniform = cache.uniform.as_ref().expect("the arena was just ensured");
         let target = cache.target.as_ref().expect("the target was just ensured");
         let vertices = cache.vertices.as_ref().expect("the vertices were just ensured");
-        let readback = cache.readback.as_ref().expect("the readback was just ensured");
-        // The stride the arena was actually built with — device-derived, not assumed.
         let stride = uniform.stride as usize;
 
         // One upload for every colour, laid out at the dynamic-offset stride.
@@ -652,7 +642,6 @@ impl WgpuRenderer {
         self.queue.write_buffer(&uniform.buffer, 0, &uniform_bytes);
         self.queue.write_buffer(&vertices.buffer, 0, &vertex_bytes);
 
-        // Encode render pass: draw all rects with their respective colors
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("gpu_rect_encoder"),
         });
@@ -685,6 +674,67 @@ impl WgpuRenderer {
             }
         }
 
+        self.queue.submit(Some(encoder.finish()));
+        Ok(())
+    }
+
+    /// Renders filled rectangles into the cached target and hands the **view** to `f`.
+    ///
+    /// This is the texture/view frame path REND-02 asked for: a caller that composites the
+    /// result on the GPU never pays for `copy_texture_to_buffer` or a blocking `map_async`.
+    /// [`Self::render_fill_rect_gpu`] remains for callers that genuinely need pixels (tests,
+    /// screenshots, a host with no GPU compositor).
+    pub fn with_fill_rect_texture<R>(
+        &self,
+        width: u32,
+        height: u32,
+        rects: &[(i32, i32, u32, u32, [f64; 4])],
+        f: impl FnOnce(&wgpu::TextureView) -> R,
+    ) -> Result<R, String> {
+        rgba_buffer_len(width, height)?;
+        if rects.is_empty() {
+            return Err("with_fill_rect_texture needs at least one rectangle".to_string());
+        }
+        self.encode_fill_rects(width, height, rects)?;
+        let cache = self.cache.borrow();
+        let target = cache.target.as_ref().ok_or_else(|| "render target missing".to_string())?;
+        Ok(f(&target.view))
+    }
+
+    /// Render filled rectangles using the GPU pipeline with vertex buffer shaders.
+    ///
+    /// Each rect is defined as `(x, y, width, height, [r, g, b, a])` where:
+    /// - `(x, y)` is the top-left corner in pixel coordinates
+    /// - `(width, height)` is the rectangle size in pixels
+    /// - `color` is an RGBA float array with values in `[0.0, 1.0]`
+    ///
+    /// Uses the WGSL vertex shader (`FILL_RECT_VS`) with a vertex buffer and the
+    /// fragment shader (`FILL_RECT_FS`) with a per-rect uniform color.
+    pub fn render_fill_rect_gpu(
+        &self,
+        width: u32,
+        height: u32,
+        rects: &[(i32, i32, u32, u32, [f64; 4])],
+    ) -> Result<Vec<u8>, String> {
+        // Reject zero/overflowing dimensions up front so the empty-rects fast
+        // path cannot allocate a wrapped-around buffer either (N-S-66).
+        let expected_len = rgba_buffer_len(width, height)?;
+        if rects.is_empty() {
+            return Ok(vec![0u8; expected_len]);
+        }
+
+        self.encode_fill_rects(width, height, rects)?;
+
+        let frame_bytes = readback_frame_bytes(width, height)?;
+        let padded_bytes_per_row = padded_row_bytes(width)?;
+        let mut cache = self.cache.borrow_mut();
+        cache.ensure_readback(&self.device, frame_bytes);
+        let target = cache.target.as_ref().expect("the target was just ensured");
+        let readback = cache.readback.as_ref().expect("the readback was just ensured");
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("gpu_rect_readback"),
+        });
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: &target.texture,
@@ -702,7 +752,6 @@ impl WgpuRenderer {
             },
             wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         );
-
         self.queue.submit(Some(encoder.finish()));
         self.read_back(&readback.buffer, width, height, expected_len)
     }
@@ -1046,6 +1095,17 @@ mod tests {
     fn pixel(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
         let start = ((y * width + x) * 4) as usize;
         [pixels[start], pixels[start + 1], pixels[start + 2], pixels[start + 3]]
+    }
+
+    /// The texture/view path renders without asking for pixels back (REND-02).
+    #[test]
+    fn texture_path_renders_a_view_without_readback() {
+        let Some(renderer) = renderer() else { return };
+        let rects = [(0, 0, 4, 4, [1.0, 0.0, 0.0, 1.0])];
+        let seen = renderer
+            .with_fill_rect_texture(4, 4, &rects, |_view| true)
+            .expect("the texture path must render");
+        assert!(seen, "the closure receives the rendered view");
     }
 
     /// A clear must fill every pixel with the requested colour.

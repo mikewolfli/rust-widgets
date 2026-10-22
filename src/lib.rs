@@ -2013,7 +2013,16 @@ pub fn create_widget_of_kind(
     let widget = widget.or_else(|| {
         #[cfg(all(device_profile, full_widgets))]
         {
-            widget::WidgetFactory::shared().create(&kind_name(kind), rect, text)
+            // Direct kind lookup: `create(&kind_name(..))` resolved the kind to a canonical
+            // name (allocating a `String`), then `create` normalised that name and looked the
+            // capability up again. `create_by_kind` uses the same constructor without the
+            // round trip; the name path is only the fallback for a kind the registry lists by
+            // name but not by kind.
+            let factory = widget::WidgetFactory::shared();
+            factory.create_by_kind(kind, rect, text).or_else(|| {
+                let name = widget::capability::factory_name_for_kind(kind)?;
+                factory.create(name, rect, text)
+            })
         }
         #[cfg(not(all(device_profile, full_widgets)))]
         {
@@ -2068,30 +2077,6 @@ pub fn create_widget_of_kind(
         }
     }
 }
-
-/// The canonical factory name for a [`WidgetKind`].
-///
-/// Derived from the widget capability registry (the same table the factory
-/// dispatches on) rather than from `Debug` output, so the two can never disagree.
-/// Only the registry-backed arm exists where the registry does; every other build
-/// derives the name from the variant, which is the same convention the registry
-/// uses.
-#[cfg(all(not(alloc_frugal), full_widgets))]
-fn kind_name(kind: widget::WidgetKind) -> alloc::string::String {
-    use alloc::string::ToString;
-    if let Some(capability) = widget::WidgetFactory::shared().capability_by_kind(kind) {
-        return capability.canonical_name.to_string();
-    }
-    widget::capability::factory_name_for_kind(kind).unwrap_or_default().to_string()
-}
-
-// A second `kind_name` used to live here, gated `not(full_widgets)` and marked
-// `#[allow(dead_code)]`. Its only caller is gated `device_profile`, and `build.rs`
-// derives `full_widgets` and `device_profile` from the same `has_profile`
-// predicate, so the two gates could never both hold: the ~20-line `Debug`-derived
-// snake_case converter was unreachable in *every* configuration, and the allow was
-// hiding that rather than expressing a `cfg`-gated keep-alive. Deleted, because a
-// registry-backed arm that cannot be called is not a fallback (principle #4).
 
 /// Stub for mini mode (no platform runtime, no windows).
 #[cfg(alloc_frugal)]

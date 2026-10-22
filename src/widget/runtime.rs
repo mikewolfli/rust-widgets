@@ -861,7 +861,11 @@ thread_local! {
 /// that re-entered a tree walk would find the buffer busy — that case reads the widget's own slice
 /// instead of panicking, which is why this cannot assume the borrow succeeds.
 fn with_child_ids<R>(widget_id: ObjectId, f: impl FnOnce(&[ObjectId]) -> R) -> Option<R> {
-    with_widget(widget_id, |widget| {
+    // Read-only: every caller only inspects the child list. `with_widget` takes the widget out
+    // of the mounted registry and puts it back (remove + insert + two loan guards per node),
+    // which during a window resize meant ~10 hash operations per node for a pure read. The
+    // shared borrow of `read_widget` is enough and leaves the registry untouched.
+    read_widget(widget_id, |widget| {
         CHILD_IDS.with(|cell| match cell.try_borrow_mut() {
             Ok(mut scratch) => {
                 scratch.clear();
@@ -1996,17 +2000,6 @@ pub(crate) fn note_frame_repaint_reason(surface: ObjectId, reason: RepaintReason
     }
 
     let _ = FRAME_REPAINTS.try_with(|count| count.set(count.get().saturating_add(1)));
-}
-
-/// Records that this frame submitted one repaint, naming no surface.
-///
-/// The pre-BLUE24 shape, kept for the callers that genuinely have no surface to name — a
-/// repaint whose target the platform resolved itself. It records [`RepaintReason::Explicit`]
-/// against a synthetic surface, so a bare submission still appears in the ledger rather than
-/// being anonymous.
-#[allow(dead_code)]
-pub(crate) fn note_frame_repaint() {
-    note_frame_repaint_reason(0, RepaintReason::Explicit);
 }
 
 /// Takes (and clears) the number of repaints submitted since the last call.
@@ -4629,7 +4622,7 @@ mod tests {
         DRAINED.with(|flag| flag.set(false));
         crate::app::handle_set_widget_value_callback(
             id,
-            std::rc::Rc::new(RefCell::new(|_text: String| DRAINED.with(|flag| flag.set(true)))),
+            std::rc::Rc::new(RefCell::new(|_text: &str| DRAINED.with(|flag| flag.set(true)))),
         );
 
         // A quiescent frame first, so `before` is this test's own baseline rather than a number that

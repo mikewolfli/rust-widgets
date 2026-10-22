@@ -20,10 +20,21 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::{Draw, Widget, WidgetKind};
+use std::cell::RefCell;
 
 /// Enhanced web view widget.
 pub struct WebViewEnhanced {
     core: WebViewCore,
+    /// Fonts are constructed once rather than three times per painted frame. A `Font` owns
+    /// its family name, so `Font::new` in `draw` was three heap allocations per frame.
+    url_font: Font,
+    title_font: Font,
+    content_font: Font,
+    placeholder_font: Font,
+    /// Content-preview cache. Keyed by `(len, first, last)` — the preview is a fixed 200-byte
+    /// prefix, so a content edit is almost always visible in that key, and a hit avoids
+    /// rebuilding the `String` on every frame.
+    snippet_cache: RefCell<Option<(usize, u8, u8, String)>>,
 }
 
 impl WebViewEnhanced {
@@ -37,6 +48,11 @@ impl WebViewEnhanced {
     pub fn new(geometry: Rect) -> Self {
         Self {
             core: WebViewCore::new(WidgetKind::WebEngineView, geometry, "WebView", "about:blank"),
+            url_font: Font::new("Arial", 12.0, false, false),
+            title_font: Font::bold("Arial", 14.0),
+            content_font: Font::new("monospace", 10.0, false, false),
+            placeholder_font: Font::new("Arial", 13.0, false, false),
+            snippet_cache: RefCell::new(None),
         }
     }
 
@@ -275,7 +291,7 @@ impl Draw for WebViewEnhanced {
         context.draw_text(
             Point::new(addr_rect.x + 6, addr_rect.y + 8),
             &self.core.url,
-            &Font::new("Arial", 12.0, false, false),
+            &self.url_font,
             url_color,
             HorizontalAlignment::Left,
         );
@@ -304,7 +320,7 @@ impl Draw for WebViewEnhanced {
                 context.draw_text(
                     Point::new(content_rect.x + 4, content_rect.y + 4),
                     &self.core.title,
-                    &Font::bold("Arial", 14.0),
+                    &self.title_font,
                     title_color,
                     HorizontalAlignment::Left,
                 );
@@ -312,20 +328,37 @@ impl Draw for WebViewEnhanced {
 
             // Content snippet preview (first line of HTML content)
             if !self.core.content.is_empty() {
-                let snippet = if self.core.content.len() > 200 {
-                    let boundary =
-                        crate::widget::text_utils::floor_char_boundary(&self.core.content, 197);
-                    format!("{}...", &self.core.content[..boundary])
-                } else {
-                    self.core.content.clone()
-                };
+                let content = &self.core.content;
+                let key = (
+                    content.len(),
+                    content.as_bytes().first().copied().unwrap_or(0),
+                    content.as_bytes().last().copied().unwrap_or(0),
+                );
+                let cached = self.snippet_cache.borrow();
+                match cached.as_ref() {
+                    Some((len, first, last, _)) if (*len, *first, *last) == key => {}
+                    _ => {
+                        drop(cached);
+                        let text = if content.len() > 200 {
+                            let boundary =
+                                crate::widget::text_utils::floor_char_boundary(content, 197);
+                            format!("{}...", &content[..boundary])
+                        } else {
+                            content.clone()
+                        };
+                        *self.snippet_cache.borrow_mut() = Some((key.0, key.1, key.2, text));
+                    }
+                }
+                let snippet_guard = self.snippet_cache.borrow();
+                let snippet =
+                    snippet_guard.as_ref().map(|(_, _, _, text)| text.as_str()).unwrap_or("");
                 let text_color =
                     if enabled { Color::rgb(80, 80, 80) } else { Color::rgb(190, 190, 190) };
                 let text_y = content_rect.y + (if self.core.title.is_empty() { 4 } else { 24 });
                 context.draw_text(
                     Point::new(content_rect.x + 4, text_y),
-                    &snippet,
-                    &Font::new("monospace", 10.0, false, false),
+                    snippet,
+                    &self.content_font,
                     text_color,
                     HorizontalAlignment::Left,
                 );
@@ -337,7 +370,7 @@ impl Draw for WebViewEnhanced {
                 context.draw_text(
                     Point::new(content_rect.x + 4, content_rect.y + 4),
                     "about:blank",
-                    &Font::new("Arial", 13.0, false, false),
+                    &self.placeholder_font,
                     placeholder_color,
                     HorizontalAlignment::Left,
                 );

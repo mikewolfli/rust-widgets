@@ -203,7 +203,10 @@ pub enum WidgetKind {
     /// Modal dialog for choosing a directory from the filesystem.
     #[cfg(widgets_unstripped)]
     DirectoryDialog,
-    /// View that renders model items using one of several switchable display modes.
+    /// Single-column virtual scrolling list.
+    ///
+    /// `DataView` is a type alias for [`VirtualList`](crate::widget::view_widgets::virtual_list),
+    /// so it renders one column of model rows and has no display-mode switching.
     #[cfg(widgets_unstripped)]
     DataView,
     /// Shell for choosing a glyph, with the glyph table supplied by the caller.

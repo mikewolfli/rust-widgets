@@ -622,11 +622,11 @@ impl Draw for FontDialog {
         // different constants for the header, the preview band and the column width.
         let layout = self.layout();
         let rect = layout.rect;
-        let style = self.style().clone();
+        let style = self.style();
         // The **effective font** — the resolved theme/caller font — for the title, the column
         // headers and the buttons. The preview sample keeps `self.current_font`, which is the
         // user's selected font and deliberately not the theme's (D09-STYLE-01).
-        let font = effective_font(&style);
+        let font = effective_font(style);
 
         // Chrome colours resolve explicit style first, then the theme's resolved style
         // for this control, and only then fall back to a literal. The style step alone
@@ -839,14 +839,16 @@ impl Draw for FontDialog {
         let row =
             super::message_box::action_row_geometry(context, font, &labels, button_band, true);
         let ok_rect = row.buttons[0];
-        self.ok_button = ok_rect;
         context.fill_rect(ok_rect, accent);
         context.draw_text_line(ok_rect, &labels[0], font, accent_ink, HorizontalAlignment::Center);
         let cancel_rect = row.buttons[1];
-        self.cancel_button = cancel_rect;
         context.fill_rect(cancel_rect, surface.blend(&ink, 0.1));
         context.draw_rect(cancel_rect, border);
         context.draw_text_line(cancel_rect, &labels[1], font, ink, HorizontalAlignment::Center);
+        // Cached for hit-testing only; assigned after the last use of the borrowed style/font so
+        // the read-only borrow can end instead of forcing a `WidgetStyle` clone.
+        self.ok_button = ok_rect;
+        self.cancel_button = cancel_rect;
     }
 }
 

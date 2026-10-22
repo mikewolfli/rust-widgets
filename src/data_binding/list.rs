@@ -107,11 +107,9 @@ impl<T: Clone + Send + 'static> ObservableList<T> {
     }
 
     fn notify(&mut self, operation: &str) {
-        let keys: Vec<String> = self.listeners.keys().cloned().collect();
-        for key in &keys {
-            if let Some(listener) = self.listeners.get_mut(key) {
-                listener.on_value_changed(key, operation);
-            }
+        // Key and listener come from the same entry, so no key clone is needed.
+        for (key, listener) in self.listeners.iter_mut() {
+            listener.on_value_changed(key, operation);
         }
     }
 }

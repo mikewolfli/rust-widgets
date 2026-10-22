@@ -1008,11 +1008,11 @@ impl Carousel {
         page_rect: Rect,
         is_enabled: bool,
     ) {
-        let (color, title, has_content) = {
+        let (color, has_content) = {
             let Some(page) = self.pages.get(index) else {
                 return;
             };
-            (page.color, page.title.clone(), page.content.is_some())
+            (page.color, page.content.is_some())
         };
 
         let (panel, mark, _border) = self.chrome_colors();
@@ -1060,17 +1060,20 @@ impl Carousel {
         }
 
         // ── Title text (centered) ───────────────────────────────
-        // The glyph origin is the box's top edge, so centring is half the difference of the
-        // line boxes; the old `h/2 - height/2 + ascent` began the box a full ascent below the
-        // page's middle.
+        // Borrowed, not cloned: the title is read-only here and the page table is not mutated
+        // on this path, so the old `String` clone was one heap allocation per page per frame.
+        let title = match self.pages.get(index) {
+            Some(page) => page.title.as_str(),
+            None => return,
+        };
         let font = crate::core::Font::with_weight("Arial", 18.0, 600, false);
-        let metrics = context.measure_text(&title, &font);
+        let metrics = context.measure_text(title, &font);
         let text_x = page_rect.x + (page_rect.width as i32 - metrics.width as i32) / 2;
         let text_y = page_rect.y + (page_rect.height as i32 - metrics.height as i32) / 2;
         let text_color = self.base.disabled_ink_on(mark, panel);
         context.draw_text(
             Point::new(text_x, text_y),
-            &title,
+            title,
             &font,
             text_color,
             HorizontalAlignment::Left,

@@ -444,11 +444,6 @@ impl AdaptivePerformanceMonitor {
             FrameQuality::Neutral
         }
     }
-    /// Checks if a frame is considered "bad".
-    #[allow(dead_code)]
-    fn is_frame_bad(&self, sample: &PerformanceSample) -> bool {
-        sample.frame_duration > self.thresholds.degrade_duration()
-    }
     /// Checks if quality should be degraded
     pub fn should_degrade(&self) -> bool {
         if self.consecutive_bad_frames >= self.thresholds.degrade_frame_count {

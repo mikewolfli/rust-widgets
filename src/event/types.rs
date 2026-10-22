@@ -89,6 +89,13 @@ impl FocusReason {
 }
 
 /// Screen orientation enum.
+///
+/// This is the **event payload** vocabulary: the four states a host reports to the event
+/// loop. It is deliberately not the same type as
+/// [`crate::platform::ScreenOrientation`], which models the platform's physical device
+/// orientation (iOS' four interface orientations) and is consumed by lifecycle queries.
+/// The two sets of names differ (`Landscape` vs `LandscapeLeft`/`LandscapeRight`), so they
+/// are separate types with separate mappings rather than one enum (principle #49).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScreenOrientation {
     /// Device in portrait orientation.

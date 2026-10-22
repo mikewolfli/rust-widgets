@@ -246,6 +246,36 @@ pub fn convert_between_color_spaces(
             Ok((ImageData::Rgba8(out), width, height))
         }
         (_, ColorSpace::Grayscale) => to_grayscale(data, width, height),
+        // Grayscale -> sRGB / linear RGB. This direction used to fall into the `_` arm and
+        // return `Err`, even though `to_rgba8` already knows how to expand a gray sample.
+        (ColorSpace::Grayscale, ColorSpace::Srgb | ColorSpace::LinearRgb) => {
+            let expected = total_pixels
+                .checked_mul(data.bytes_per_pixel())
+                .ok_or("grayscale byte count overflow")?;
+            if data.as_bytes().len() != expected {
+                return Err(format!(
+                    "grayscale input is {width}x{height} at {} bytes per pixel, which needs \
+                     {expected} bytes, but the buffer holds {}",
+                    data.bytes_per_pixel(),
+                    data.as_bytes().len()
+                ));
+            }
+            let rgba = data.to_rgba8(width, height);
+            if target == ColorSpace::Srgb {
+                return Ok((rgba, width, height));
+            }
+            let ImageData::Rgba8(bytes) = rgba else {
+                return Err("grayscale expansion did not produce RGBA8".to_string());
+            };
+            let mut out = Vec::with_capacity(bytes.len());
+            for px in bytes.as_chunks::<4>().0 {
+                out.push(srgb_to_linear(px[0]));
+                out.push(srgb_to_linear(px[1]));
+                out.push(srgb_to_linear(px[2]));
+                out.push(px[3]);
+            }
+            Ok((ImageData::Rgba8(out), width, height))
+        }
         _ => Err(format!("Unsupported color space conversion: {source:?} -> {target:?}")),
     }
 }

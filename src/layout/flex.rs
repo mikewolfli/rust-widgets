@@ -3,7 +3,7 @@
 
 //! Flex layout manager — CSS Flexbox-style layout with grow, shrink, and alignment.
 use super::{Layout, LayoutContext};
-use crate::compat::{Any, Vec};
+use crate::compat::{Any, Rc, Vec};
 use crate::core::{ObjectId, Rect, Size};
 use crate::layout::hints::ChildInfo;
 use core::cell::RefCell;
@@ -139,7 +139,7 @@ pub struct FlexLayout {
 #[derive(Debug, Clone)]
 struct FlexCache {
     key: u64,
-    rects: Vec<(Option<ObjectId>, Rect)>,
+    rects: Rc<Vec<(Option<ObjectId>, Rect)>>,
 }
 
 impl FlexLayout {
@@ -282,17 +282,17 @@ impl FlexLayout {
     }
 
     /// The boxes cached under `key`, if the last arrangement was produced under the same key.
-    fn cached_arrangement(&self, key: u64) -> Option<Vec<(Option<ObjectId>, Rect)>> {
+    fn cached_arrangement(&self, key: u64) -> Option<Rc<Vec<(Option<ObjectId>, Rect)>>> {
         self.cache
             .borrow()
             .as_ref()
             .filter(|entry| entry.key == key)
-            .map(|entry| entry.rects.clone())
+            .map(|entry| Rc::clone(&entry.rects))
     }
 
     /// Records the boxes produced under `key`.
     fn store_arrangement(&self, key: u64, rects: &[(Option<ObjectId>, Rect)]) {
-        *self.cache.borrow_mut() = Some(FlexCache { key, rects: rects.to_vec() });
+        *self.cache.borrow_mut() = Some(FlexCache { key, rects: Rc::new(rects.to_vec()) });
     }
 
     /// The key of the cached arrangement, for tests that pin the invalidation contract.
@@ -970,7 +970,7 @@ impl Layout for FlexLayout {
 
         let key = self.flex_cache_key(0, rect, 1.0, None, None);
         if let Some(results) = self.cached_arrangement(key) {
-            for (widget_id, child_rect) in results {
+            for &(widget_id, child_rect) in results.iter() {
                 if let Some(wid) = widget_id {
                     widgets(wid, child_rect);
                 }
@@ -1128,7 +1128,7 @@ impl FlexLayout {
             Some(children),
         );
         if let Some(placed) = self.cached_arrangement(key) {
-            for (widget_id, child_rect) in placed {
+            for &(widget_id, child_rect) in placed.iter() {
                 if let Some(wid) = widget_id {
                     out(wid, child_rect);
                 }

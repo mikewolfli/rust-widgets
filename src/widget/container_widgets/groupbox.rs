@@ -337,8 +337,11 @@ impl GroupBox {
     }
 
     /// The font the group's title is drawn with: the resolved theme/caller font (D09-STYLE-01).
-    fn title_font(&self) -> crate::core::Font {
-        effective_font(self.style()).clone()
+    ///
+    /// Borrowed from the style: `effective_font` already returns a reference, and the old
+    /// `.clone()` copied `Font.family` (a `String`) on every call — up to three times per frame.
+    fn title_font(&self) -> &crate::core::Font {
+        effective_font(self.style())
     }
 
     /// The top edge the frame's content begins at, below the title band and its gap.
@@ -563,7 +566,7 @@ impl Draw for GroupBox {
         // guarding nothing: measuring an empty string is cheap and yields `0`, which is exactly the
         // honest answer, so an empty title now caches `Some(0)` and the `.unwrap_or_else` fallbacks
         // stop being reached from a `draw`ed control at all.
-        let metrics = context.measure_text(&self.title, &self.title_font());
+        let metrics = context.measure_text(&self.title, self.title_font());
         self.cached_title_width = Some(metrics.width);
         // Draw base widget
         let rect = self.geometry();
@@ -688,7 +691,7 @@ impl Draw for GroupBox {
             context.draw_text(
                 Point::from_f32(title_rect.x as f32, title_rect.y as f32),
                 &self.title,
-                &self.title_font(),
+                self.title_font(),
                 text_color,
                 HorizontalAlignment::Left,
             );

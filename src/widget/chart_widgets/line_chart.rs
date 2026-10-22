@@ -437,31 +437,36 @@ impl Draw for LineChart {
 
         let line_color = if is_enabled { self.line_color } else { disabled_color };
 
-        let points: Vec<Point> = self
-            .data
-            .iter()
-            .map(|(x, y)| Self::map_to_pixel(*x, *y, x_min, x_max, y_min, y_max, plot_area))
-            .collect();
+        // Two passes over `data.windows(2)` instead of collecting every mapped point into a
+        // `Vec`. The old allocation was one `Point` per sample per frame, and the pixel
+        // mapping is a pure function of the pair, so it can be recomputed without changing
+        // the output.
+        let map = |x: f64, y: f64| Self::map_to_pixel(x, y, x_min, x_max, y_min, y_max, plot_area);
 
         // ── Filled area under the line ──
         if self.fill_area {
             let fill_color =
                 if is_enabled { self.fill_color } else { Color::rgba(200, 200, 200, 60) };
             let baseline_y = plot_area.y + plot_area.height as i32;
-            for i in 0..points.len() - 1 {
-                let left_x = points[i].x;
-                let right_x = points[i + 1].x;
-                let strip_width = (right_x - left_x).max(1) as u32;
-                let top_y = points[i].y.min(points[i + 1].y);
+            for pair in self.data.windows(2) {
+                let left = map(pair[0].0, pair[0].1);
+                let right = map(pair[1].0, pair[1].1);
+                let strip_width = (right.x - left.x).max(1) as u32;
+                let top_y = left.y.min(right.y);
                 let strip_height = (baseline_y - top_y).max(1) as u32;
-                context.fill_rect(Rect::new(left_x, top_y, strip_width, strip_height), fill_color);
+                context.fill_rect(Rect::new(left.x, top_y, strip_width, strip_height), fill_color);
             }
         }
 
         // ── Line connecting the points ──
         let stroke_w = self.stroke_width as u32;
-        for i in 0..points.len() - 1 {
-            context.draw_line_stroke_aa(points[i], points[i + 1], line_color, stroke_w.max(1));
+        for pair in self.data.windows(2) {
+            context.draw_line_stroke_aa(
+                map(pair[0].0, pair[0].1),
+                map(pair[1].0, pair[1].1),
+                line_color,
+                stroke_w.max(1),
+            );
         }
     }
 }

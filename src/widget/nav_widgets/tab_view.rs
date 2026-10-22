@@ -7,7 +7,7 @@
 //! below showing the selected tab's content. Supports add/remove/clear
 //! operations on tabs and emits a `tab_changed` signal on selection.
 
-use crate::core::{Color, HorizontalAlignment, ObjectId, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -45,6 +45,21 @@ pub struct TabView {
     /// through. Without it a `TabPage::content` would be stored and never shown — the
     /// content area is otherwise a flat fill.
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
+    /// Memoised measured width per tab, keyed by the inputs the measurement reads.
+    ///
+    /// `tab_widths` is asked by the paint path and by every pointer move's hit test. Each
+    /// answer used to run `estimate_text_width` per tab. The key is the effective font plus a
+    /// hash of `(title, icon-drawability)` in strip order, so adding/removing a tab or changing
+    /// a caption/font re-measures without an invalidation list to keep in sync.
+    tab_width_cache: RefCell<TabWidthCache>,
+}
+
+/// The measurement cache behind [`TabView::tab_widths`].
+#[derive(Default)]
+struct TabWidthCache {
+    font: Option<Font>,
+    fingerprint: u64,
+    widths: crate::compat::Vec<i32>,
 }
 
 impl TabView {
@@ -56,6 +71,7 @@ impl TabView {
             selected_index: 0,
             tab_changed: Signal1::new(),
             registry: None,
+            tab_width_cache: RefCell::new(TabWidthCache::default()),
         }
     }
 
@@ -240,10 +256,29 @@ impl TabView {
     /// does not crowd out its siblings. This is the same derivation `TabWidget::tab_widths`
     /// uses, with the same constants, so the two tab strips in this crate cannot disagree.
     fn tab_widths(&self) -> crate::compat::Vec<i32> {
+        use std::hash::{Hash, Hasher};
+
         // Measured with the **effective font** — the same font the caption is painted with — so the
         // tab's reserved width and its ink cannot disagree (D09-STYLE-02).
         let font = effective_font(self.style());
-        self.tabs
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for tab in &self.tabs {
+            tab.title.hash(&mut hasher);
+            tab.icon
+                .as_deref()
+                .is_some_and(crate::widget::icon_token_is_drawable)
+                .hash(&mut hasher);
+        }
+        let fingerprint = hasher.finish();
+        {
+            let cache = self.tab_width_cache.borrow();
+            if cache.font.as_ref() == Some(font) && cache.fingerprint == fingerprint {
+                return cache.widths.clone();
+            }
+        }
+
+        let widths: crate::compat::Vec<i32> = self
+            .tabs
             .iter()
             .map(|tab| {
                 // The label's width comes from the shared estimate -- the same model the renderer
@@ -260,7 +295,11 @@ impl TabView {
                     })
                 .clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH)
             })
-            .collect()
+            .collect();
+
+        *self.tab_width_cache.borrow_mut() =
+            TabWidthCache { font: Some(font.clone()), fingerprint, widths: widths.clone() };
+        widths
     }
 
     /// The tab boxes, in strip order, derived from the measured widths in one pass.
@@ -529,7 +568,10 @@ impl Draw for TabView {
             // is what lets a host still passing an emoji or symbol keep the result it had.
             let line = context.text_line(tab_rect, font);
             let mut label = tab_rect;
-            let mut display_text = tab.title.clone();
+            // Borrowed unless the icon is undrawable and must be spelled out as text. The old
+            // form cloned the title on every path, then formatted a second string for the icon
+            // fallback; the common (no-icon or drawable-icon) path now allocates nothing.
+            let mut prefixed: Option<String> = None;
             if let Some(icon_name) = tab.icon.as_deref() {
                 let side = TAB_VIEW_ICON_SIDE.min(line.height.max(1));
                 let icon_rect = Rect {
@@ -543,9 +585,10 @@ impl Draw for TabView {
                     label.x += allowance as i32;
                     label.width = label.width.saturating_sub(allowance);
                 } else {
-                    display_text = format!("{} {}", icon_name, tab.title);
+                    prefixed = Some(format!("{} {}", icon_name, tab.title));
                 }
             }
+            let display_text = prefixed.as_deref().unwrap_or(tab.title.as_str());
 
             // The caption is centred on **both** axes through the shared line box. The previous
             // form computed `rect.y + (tab_bar_height - metrics.height) / 2` by hand and passed
@@ -556,7 +599,7 @@ impl Draw for TabView {
             // a long title is elided rather than running over its neighbour.
             context.draw_text_fitted(
                 context.text_line(label, font),
-                &display_text,
+                display_text,
                 font,
                 text_color,
                 HorizontalAlignment::Center,

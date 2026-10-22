@@ -55,8 +55,8 @@ impl AudioEngine {
     /// is ~100 MB of PCM and hundreds of milliseconds of decode, which is a visible stall on the
     /// frame loop. This method starts the same decode on a worker and returns immediately; the
     /// caller either polls [`AudioEngine::poll_load`] once per frame or blocks once with
-    /// [`AudioEngine::wait_for_load`]. `load` remains the synchronous shorthand and is now
-    /// implemented in terms of these two.
+    /// [`AudioEngine::wait_for_load`]. `load` remains the synchronous shorthand and decodes
+    /// directly on the calling thread; it is **not** implemented in terms of these two.
     ///
     /// If no thread can be spawned, the decode runs synchronously and the result is still
     /// delivered through the same channel, so the failure mode is "slower", never "nothing

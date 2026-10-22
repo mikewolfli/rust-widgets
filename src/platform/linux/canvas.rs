@@ -84,13 +84,16 @@ pub(crate) fn mount_canvas(
         // (or `Adaptive` below its area threshold) does not re-rasterise the whole
         // surface on every expose. The returned frame is complete either way, because
         // `blit_rgba` presents a whole surface — the saving is in what was drawn.
-        match crate::widget::runtime::render_frame_cached(
+        // `render_frame_cached_shared` rather than the owned form: an unchanged frame is
+        // returned as the cache's own `Rc`, so presenting it costs a refcount bump instead of
+        // duplicating a full-surface buffer.
+        match crate::widget::runtime::render_frame_cached_shared(
             id,
             Size::new(width, height),
             Color::WHITE,
         ) {
             Some(frame) => {
-                blit_rgba(context, width, height, &frame);
+                blit_rgba(context, width, height, frame.as_slice());
             }
             None => {
                 log::error!(

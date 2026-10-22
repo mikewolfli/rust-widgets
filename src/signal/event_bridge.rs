@@ -471,7 +471,11 @@ impl EventSignalBinder {
         // helper is documented as reporting how many events it wired.
         #[cfg(full_widgets)]
         {
-            let factory = crate::widget::capability::WidgetFactory::new_with_defaults();
+            // `shared()` rather than a fresh table: this is a public forwarding entry point
+            // called by hosts, and rebuilding the ~190-entry registry here made every call
+            // pay the full registration cost. The table is immutable once built, so the
+            // shared instance answers identically.
+            let factory = crate::widget::capability::WidgetFactory::shared();
             let Some(capability) = factory.capability_for_kind_instance(widget) else {
                 return 0;
             };

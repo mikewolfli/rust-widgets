@@ -90,7 +90,9 @@ impl AudioOutput {
         // played through a 48 kHz stereo device would run at half speed with
         // only one of the two channels populated.
         let prepared = prepare_buffer(buffer, config.sample_rate.0, config.channels as u8);
-        let samples = prepared.samples.clone();
+        // `prepare_buffer` returns a fresh owned buffer and `prepared` is not used again, so
+        // moving the samples avoids a full PCM copy (≈100 MB for a 5-minute stereo track).
+        let samples = prepared.samples;
         let volume = Arc::clone(&self.volume);
         let finished = Arc::clone(&self.finished);
         finished.store(false, Ordering::Relaxed);

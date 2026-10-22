@@ -37,9 +37,6 @@ struct ParsedRule {
 struct RegisteredSheet {
     /// Name for debugging.
     name: String,
-    /// Raw CSS text, kept so the registration is inspectable and so an error can be re-reported.
-    #[allow(dead_code)]
-    css: String,
     /// Priority (higher overrides lower).
     priority: u8,
     /// The sheet's rules, in source order.
@@ -84,13 +81,7 @@ impl StyleSheetManager {
             ),
             Err(error) => (Vec::new(), Some(error)),
         };
-        self.sheets.push(RegisteredSheet {
-            name: name.to_string(),
-            css: css.to_string(),
-            priority,
-            rules,
-            parse_error,
-        });
+        self.sheets.push(RegisteredSheet { name: name.to_string(), priority, rules, parse_error });
         // Keep the list in apply order, so `apply_to` neither sorts nor allocates per call.
         self.sheets.sort_by_key(|sheet| sheet.priority);
     }

@@ -335,15 +335,14 @@ impl TimerManager {
                 return;
             }
 
-            let keys: Vec<(ObjectId, u32)> = guard.timers.keys().copied().collect();
-            for key in keys {
-                if let Some(entry) = guard.timers.get_mut(&key) {
-                    if now >= entry.next_fire {
-                        due_events.push(key);
-                        if entry.repeating {
-                            // Reset based on current time to avoid cumulative drift.
-                            entry.next_fire = Instant::now() + entry.interval;
-                        }
+            // Iterate the timer map directly instead of first copying every key into a second
+            // `Vec`. Only the due set has to outlive the lock, so one buffer is enough.
+            for (key, entry) in guard.timers.iter_mut() {
+                if now >= entry.next_fire {
+                    due_events.push(*key);
+                    if entry.repeating {
+                        // Reset based on current time to avoid cumulative drift.
+                        entry.next_fire = Instant::now() + entry.interval;
                     }
                 }
             }

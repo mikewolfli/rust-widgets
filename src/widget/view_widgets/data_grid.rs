@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use crate::compat::Rc;
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::Event;
 use crate::impl_widget_property_hooks;
@@ -54,13 +55,14 @@ pub struct ColumnFilter {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Cached window of source cells, shared with every reader instead of copied per frame.
 struct GridWindowCache {
     row_start: usize,
     row_len: usize,
     column_start: usize,
     column_len: usize,
     revision: u64,
-    cells: Vec<Vec<Option<String>>>,
+    cells: Rc<Vec<Vec<Option<String>>>>,
 }
 
 /// Virtualized data grid with windowed pull from incremental table data source.
@@ -374,15 +376,24 @@ impl DataGrid {
 
     /// Fetches visible cells, applying filters and sort rules in window scope.
     pub fn fetch_visible_cells(&mut self) -> Vec<Vec<Option<String>>> {
+        (*self.fetch_visible_cells_shared()).clone()
+    }
+
+    /// The draw path's form: a cache hit with no filter/sort is the cached matrix itself.
+    ///
+    /// The owned form used to deep-copy the whole window on every frame, then run `retain`
+    /// and `sort_by` over the copy. With no filter/sort in effect the projection is the
+    /// cached matrix, so returning its `Rc` makes a hit a refcount bump.
+    pub fn fetch_visible_cells_shared(&mut self) -> Rc<Vec<Vec<Option<String>>>> {
         self.normalize_projection_state();
 
         let Some(source) = self.data_source.as_ref() else {
-            return Vec::new();
+            return Rc::new(Vec::new());
         };
 
         let (row_start, row_len, col_start, col_len) = self.visible_window();
         if row_len == 0 || col_len == 0 {
-            return Vec::new();
+            return Rc::new(Vec::new());
         }
 
         let revision = source.revision();
@@ -394,12 +405,15 @@ impl DataGrid {
                     && cache.column_len == col_len
                     && cache.revision == revision
                 {
-                    return self.apply_filter_sort(cache.cells.clone());
+                    if self.filter_expr.is_noop() && self.sort_specs.is_empty() {
+                        return Rc::clone(&cache.cells);
+                    }
+                    return Rc::new(self.apply_filter_sort((*cache.cells).clone()));
                 }
             }
         }
 
-        let cells = source.fetch_window(row_start, row_len, col_start, col_len);
+        let cells = Rc::new(source.fetch_window(row_start, row_len, col_start, col_len));
         if revision > 0 {
             self.window_cache = Some(GridWindowCache {
                 row_start,
@@ -407,13 +421,17 @@ impl DataGrid {
                 column_start: col_start,
                 column_len: col_len,
                 revision,
-                cells: cells.clone(),
+                cells: Rc::clone(&cells),
             });
         } else {
             self.window_cache = None;
         }
 
-        self.apply_filter_sort(cells)
+        if self.filter_expr.is_noop() && self.sort_specs.is_empty() {
+            cells
+        } else {
+            Rc::new(self.apply_filter_sort((*cells).clone()))
+        }
     }
 
     fn apply_filter_sort(&self, mut cells: Vec<Vec<Option<String>>>) -> Vec<Vec<Option<String>>> {
@@ -796,7 +814,7 @@ impl Draw for DataGrid {
         );
         context.draw_rect(rect, border);
 
-        let rows = self.fetch_visible_cells();
+        let rows = self.fetch_visible_cells_shared();
         if rows.is_empty() {
             return;
         }

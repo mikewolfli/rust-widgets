@@ -19,6 +19,11 @@ use crate::widget::text_utils::floor_char_boundary;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+/// One logical line: `(start, content_end, end)` byte offsets.
+type LineSpan = (usize, usize, usize);
+/// A line table shared between readers.
+type LineSpanTable = Rc<Vec<LineSpan>>;
+
 /// Multi-line text input widget.
 ///
 /// Supports multi-line text storage with a byte-index cursor, character-level
@@ -75,6 +80,14 @@ pub struct TextArea {
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
     restoring_history: bool,
+    /// Lazily rebuilt line table, shared with every reader of the current text.
+    ///
+    /// The paint path asks for the table twice when a selection is visible (once for the
+    /// highlight bands, once for the glyphs), and a click asks again. Without a cache that was
+    /// two or three O(document) scans and Vec allocations per frame. The cache is invalidated
+    /// by the one funnel every text mutation passes through, so a hit is always the current
+    /// text's table; the `Rc` makes a hit a refcount bump rather than a copy.
+    line_spans_cache: RefCell<Option<LineSpanTable>>,
 }
 
 impl TextArea {
@@ -97,6 +110,7 @@ impl TextArea {
             undo_stack: UndoStack::new(),
             history_target,
             restoring_history: false,
+            line_spans_cache: RefCell::new(None),
         }
     }
 
@@ -207,7 +221,10 @@ impl TextArea {
     ///
     /// The trailing empty line of a value that ends in a newline is part of the table, because
     /// [`Self::line_count`] counts it (a caret can sit there) even though it paints nothing.
-    fn line_spans(&self) -> Vec<(usize, usize, usize)> {
+    fn line_spans(&self) -> LineSpanTable {
+        if let Some(cached) = self.line_spans_cache.borrow().as_ref() {
+            return Rc::clone(cached);
+        }
         let mut spans = Vec::new();
         let mut start = 0usize;
         for chunk in self.text.split_inclusive('\n') {
@@ -229,6 +246,8 @@ impl TextArea {
             // A value ending in a terminator has an empty line after it.
             spans.push((start, start, start));
         }
+        let spans = Rc::new(spans);
+        *self.line_spans_cache.borrow_mut() = Some(Rc::clone(&spans));
         spans
     }
 
@@ -277,6 +296,9 @@ impl TextArea {
         if self.restoring_history {
             return;
         }
+        // Every mutating path funnels through here, so this is also the single place the
+        // line table is invalidated (see `line_spans_cache`).
+        self.line_spans_cache.borrow_mut().take();
         *self.history_target.borrow_mut() = self.text.clone();
         self.undo_stack.push(Box::new(ValueCommand::new(
             self.history_target.clone(),
@@ -315,6 +337,7 @@ impl TextArea {
         };
         let before = self.text.clone();
         self.text = next;
+        self.line_spans_cache.borrow_mut().take();
         if !self.restoring_history {
             *self.history_target.borrow_mut() = self.text.clone();
             self.undo_stack.push(Box::new(ValueCommand::new(
@@ -628,6 +651,7 @@ impl TextArea {
         if max > 0 && self.text.len() > max {
             let boundary = floor_char_boundary(&self.text, max);
             self.text.truncate(boundary);
+            self.line_spans_cache.borrow_mut().take();
             // The caret must stay on a boundary inside what is left.
             self.cursor_pos = floor_char_boundary(&self.text, self.cursor_pos.min(self.text.len()));
             // A shrinking limit makes every longer value unreachable, so the
@@ -699,6 +723,7 @@ impl TextArea {
         }
         self.cursor_pos = floor_char_boundary(&self.text, at + text.len());
         self.selection_anchor = None;
+        self.line_spans_cache.borrow_mut().take();
         if replaced || self.text != before {
             self.record_edit(before);
         }
@@ -881,6 +906,7 @@ impl TextArea {
     fn restore_history_text(&mut self) {
         self.restoring_history = true;
         self.text = self.history_target.borrow().clone();
+        self.line_spans_cache.borrow_mut().take();
         self.cursor_pos = self.cursor_pos.min(self.text.len());
         self.restoring_history = false;
         self.changed.emit();

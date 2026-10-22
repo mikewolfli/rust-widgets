@@ -260,6 +260,7 @@ impl Platform for OrbitalPlatform {
 
     fn quit(&self) -> bool {
         self.running.store(false, Ordering::SeqCst);
+        crate::platform::frame_wait::wake();
         true
     }
 

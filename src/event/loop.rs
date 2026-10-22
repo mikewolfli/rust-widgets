@@ -466,6 +466,12 @@ impl EventLoop {
         let idle_task_cursor = Arc::clone(&self.idle_task_cursor);
         #[cfg(all(feature = "touch", not(alloc_frugal)))]
         let gesture_releases = Arc::clone(&self.gesture_releases);
+        // The three per-priority dispatch buffers live for the whole loop and are cleared each
+        // turn. Declaring them inside the `while` body made every non-empty turn allocate from
+        // empty, which during animations meant one to three heap allocations per frame.
+        let mut high_events: Vec<(ObjectId, Event)> = Vec::new();
+        let mut normal_events: Vec<(ObjectId, Event)> = Vec::new();
+        let mut idle_events: Vec<(ObjectId, Event)> = Vec::new();
         let handle = thread::spawn(move || {
             while *lock(&running) {
                 // Phase 0: Pump native platform events (e.g., Wayland dispatch)
@@ -495,9 +501,9 @@ impl EventLoop {
                     // buffers (D09-EVT-04). Draining a bounded prefix — rather than everything —
                     // keeps the transient buffer bounded under a sustained producer; the rest
                     // stays queued and is picked up next turn, so ordering is preserved.
-                    let mut high_events: Vec<(ObjectId, Event)> = Vec::new();
-                    let mut normal_events: Vec<(ObjectId, Event)> = Vec::new();
-                    let mut idle_events: Vec<(ObjectId, Event)> = Vec::new();
+                    high_events.clear();
+                    normal_events.clear();
+                    idle_events.clear();
                     // One lock acquisition and one refill for the whole bounded prefix. The
                     // per-event `dequeue` this replaces took the queue mutex n times a turn.
                     let mut had_work = lock(&queue).drain_into(

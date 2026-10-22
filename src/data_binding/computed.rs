@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use crate::compat::{Box, HashMap, MiniToString, String, Vec};
+use crate::compat::{Box, HashMap, MiniToString, String};
 use crate::data_binding::traits::*;
 
 /// A computed/derived value that auto-updates when its dependencies change.
@@ -88,11 +88,10 @@ impl<T: Clone + Send + 'static> Computed<T> {
     }
 
     fn notify_listeners(&mut self) {
-        let keys: Vec<String> = self.listeners.keys().cloned().collect();
-        for key in &keys {
-            if let Some(listener) = self.listeners.get_mut(key) {
-                listener.on_value_changed(key, "invalidate");
-            }
+        // `iter_mut` yields the key and its listener together, so the notification no longer
+        // clones every key into a temporary `Vec` first.
+        for (key, listener) in self.listeners.iter_mut() {
+            listener.on_value_changed(key, "invalidate");
         }
     }
 }

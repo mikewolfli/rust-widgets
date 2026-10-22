@@ -862,9 +862,9 @@ extern "C" fn draw_rect(this: &Object, _cmd: Sel, _rect: NSRect) {
                     );
                     return;
                 };
-                crate::widget::runtime::render_frame_tree_cached(widget, size, Color::WHITE)
+                crate::widget::runtime::render_frame_tree_cached_shared(widget, size, Color::WHITE)
             } else {
-                crate::widget::runtime::render_frame_cached(widget_id, size, Color::WHITE)
+                crate::widget::runtime::render_frame_cached_shared(widget_id, size, Color::WHITE)
             };
             let Some(frame) = frame else {
                 // The widget is not mounted (dropped while the view survived) or

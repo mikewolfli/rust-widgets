@@ -297,27 +297,29 @@ impl Draw for Sparkline {
         let y_top = rect.y + inset;
         let y_bottom = rect.y + rect.height as i32 - 1 - inset;
         let plot_height = (y_bottom - y_top).max(1) as f64;
-        let mapped: Vec<Point> = self
-            .data
-            .iter()
-            .enumerate()
-            .map(|(i, val)| {
-                let px = if n > 1 { x0 + (x1 - x0) * i as i32 / (n - 1) as i32 } else { x0 };
-                let py = y_bottom - ((val - y_min) / (y_max - y_min) * plot_height) as i32;
-                Point::new(px, py.max(y_top))
-            })
-            .collect();
+        // Pixel mapping is pure, so it is recomputed per segment instead of materialising a
+        // `Vec<Point>` once per frame. The highlight dot maps the last sample directly.
+        let map_at = |i: usize, val: f64| -> Point {
+            let px = if n > 1 { x0 + (x1 - x0) * i as i32 / (n - 1) as i32 } else { x0 };
+            let py = y_bottom - ((val - y_min) / (y_max - y_min) * plot_height) as i32;
+            Point::new(px, py.max(y_top))
+        };
 
         // ── Draw line segments ──
-        for i in 0..mapped.len().saturating_sub(1) {
-            context.draw_line_stroke_aa(mapped[i], mapped[i + 1], line_color, stroke_w.max(1));
+        for (i, pair) in self.data.windows(2).enumerate() {
+            context.draw_line_stroke_aa(
+                map_at(i, pair[0]),
+                map_at(i + 1, pair[1]),
+                line_color,
+                stroke_w.max(1),
+            );
         }
 
         // ── Draw last-point highlight dot ──
-        if self.show_last_point && !mapped.is_empty() {
+        if self.show_last_point {
             let dot_color =
                 if is_enabled { self.last_point_color } else { Color::DISABLED_FOREGROUND };
-            let last = mapped[mapped.len() - 1];
+            let last = map_at(n - 1, self.data[n - 1]);
             context.fill_circle(last, dot_radius, dot_color);
         }
     }

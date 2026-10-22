@@ -285,8 +285,8 @@ pub fn diff(
         return DiffReport::default();
     }
     let mut report = DiffReport::default();
-    let root_path = Vec::new();
-    diff_node(old, new, &root_path, None, 0, id_of, &mut report);
+    let mut root_path = Vec::new();
+    diff_node(old, new, &mut root_path, None, 0, id_of, &mut report);
     report
 }
 
@@ -406,7 +406,7 @@ impl<'a> PositionalKeys<'a> {
 fn diff_node(
     old: &Node,
     new: &Node,
-    path: &[usize],
+    path: &mut Vec<usize>,
     parent_id: Option<crate::core::ObjectId>,
     index: usize,
     id_of: &dyn Fn(&[usize], usize) -> Option<crate::core::ObjectId>,
@@ -568,20 +568,20 @@ fn insert_new(node: &Node, parent: crate::core::ObjectId, slot: usize, report: &
 /// removal is addressed by the **old** tree's position and nothing else.
 fn remove_node(
     node: &Node,
-    path: &[usize],
+    path: &mut Vec<usize>,
     id_of: &dyn Fn(&[usize], usize) -> Option<crate::core::ObjectId>,
     report: &mut DiffReport,
 ) {
     if super::is_transparent_node(node) {
         for (index, child) in node.children.iter().enumerate() {
-            let mut child_path = path.to_vec();
-            child_path.push(index);
-            remove_node(child, &child_path, id_of, report);
+            path.push(index);
+            remove_node(child, path, id_of, report);
+            path.pop();
         }
         return;
     }
     let index = path.last().copied().unwrap_or(0);
-    if let Some(id) = id_of(path, index) {
+    if let Some(id) = id_of(path.as_slice(), index) {
         report.patches.push(Patch::Remove { id });
     }
 }
@@ -656,7 +656,7 @@ fn children_to_move(matches: &[Option<usize>]) -> std::collections::HashSet<usiz
 fn diff_children(
     old: &Node,
     new: &Node,
-    path: &[usize],
+    path: &mut Vec<usize>,
     parent_id: crate::core::ObjectId,
     base: usize,
     id_of: &dyn Fn(&[usize], usize) -> Option<crate::core::ObjectId>,
@@ -828,8 +828,7 @@ fn diff_children(
                 if !moved && unchanged {
                     continue;
                 }
-                let mut old_child_path = path.to_vec();
-                old_child_path.push(old_index);
+                path.push(old_index);
                 if moved {
                     if super::is_transparent_node(&old.children[old_index]) {
                         // A gap has no id, so there is nothing a `Move` could name — emitting
@@ -837,17 +836,19 @@ fn diff_children(
                         // Its children are hosted by *this* container, so the honest
                         // description of "the gap's contents moved" is to take them out and
                         // put them back at their new slots.
-                        remove_node(&old.children[old_index], &old_child_path, id_of, report);
+                        remove_node(&old.children[old_index], path, id_of, report);
                         insert_new(child, parent_id, slot, report);
+                        path.pop();
                         continue;
                     }
                     report.patches.push(Patch::Move {
-                        id: id_of(&old_child_path, old_index).unwrap_or(0),
+                        id: id_of(path.as_slice(), old_index).unwrap_or(0),
                         parent: parent_id,
                         index: slot,
                     });
                 }
                 if unchanged {
+                    path.pop();
                     continue;
                 }
                 // Recurse against the child's **old** index path.
@@ -873,12 +874,13 @@ fn diff_children(
                 diff_node(
                     &old.children[old_index],
                     child,
-                    &old_child_path,
+                    path,
                     Some(parent_id),
                     slot,
                     id_of,
                     report,
                 );
+                path.pop();
             }
             None => insert_new(child, parent_id, slot, report),
         }
@@ -889,9 +891,9 @@ fn diff_children(
         if consumed[i] {
             continue;
         }
-        let mut p = path.to_vec();
-        p.push(i);
-        remove_node(child, &p, id_of, report);
+        path.push(i);
+        remove_node(child, path, id_of, report);
+        path.pop();
     }
 }
 

@@ -67,7 +67,7 @@ pub trait ListModel {
 pub type ClickCallback = Rc<RefCell<dyn FnMut()>>;
 
 /// Boxed callback invoked when a widget value changes.
-pub type ValueChangedCallback = Rc<RefCell<dyn FnMut(String)>>;
+pub type ValueChangedCallback = Rc<RefCell<dyn FnMut(&str)>>;
 
 // ══════════════════════════════════════════════════
 // Widget surface mounting
@@ -215,7 +215,7 @@ impl WidgetHandle for SurfaceHandle {
     }
 
     /// See [`SurfaceHandle::on_click`]; the same reasoning applies.
-    fn on_value_changed<F: FnMut(String) + 'static>(&self, _f: F) {
+    fn on_value_changed<F: FnMut(&str) + 'static>(&self, _f: F) {
         log::debug!(
             "SurfaceHandle::on_value_changed ignored for id={}: the widget \
              emits its own signals",
@@ -620,7 +620,7 @@ pub trait WidgetHandle: Sized {
     ///
     /// The closure receives the widget's current text at the time of
     /// the [`WidgetTriggerKind::ValueChanged`] event.
-    fn on_value_changed<F: FnMut(String) + 'static>(&self, f: F);
+    fn on_value_changed<F: FnMut(&str) + 'static>(&self, f: F);
 
     /// Register an observer for the uncommitted IME **pre-edit** text.
     ///
@@ -1064,6 +1064,64 @@ pub fn remove_callbacks(id: ObjectId) {
     // The IME pre-edit observers are stored by the widget runtime (they are per-widget state like
     // focus and hover), so an explicit "remove every callback for this id" must clear them too.
     crate::widget::runtime::clear_ime_preedit_callbacks(id);
+    // Mirror state tables are caches of property values, not authoritative data; a closed
+    // widget's entry can never be read again, so keeping it was an unbounded leak in a
+    // create/destroy loop. The callbacks above had this cleanup already; the mirrors did not.
+    SLIDER_STATES.with(|map| {
+        if let Ok(mut map) = map.try_borrow_mut() {
+            map.remove(&id);
+        }
+    });
+    PROGRESS_BAR_STATES.with(|map| {
+        if let Ok(mut map) = map.try_borrow_mut() {
+            map.remove(&id);
+        }
+    });
+    CHECKBOX_STATES.with(|map| {
+        if let Ok(mut map) = map.try_borrow_mut() {
+            map.remove(&id);
+        }
+    });
+    RADIO_BUTTON_STATES.with(|map| {
+        if let Ok(mut map) = map.try_borrow_mut() {
+            map.remove(&id);
+        }
+    });
+    LINE_EDIT_STATES.with(|map| {
+        if let Ok(mut map) = map.try_borrow_mut() {
+            map.remove(&id);
+        }
+    });
+    SCROLL_AREA_STATES.with(|map| {
+        if let Ok(mut map) = map.try_borrow_mut() {
+            map.remove(&id);
+        }
+    });
+    LIST_VIEW_STATES.with(|map| {
+        if let Ok(mut map) = map.try_borrow_mut() {
+            map.remove(&id);
+        }
+    });
+    SPINBOX_STATES.with(|map| {
+        if let Ok(mut map) = map.try_borrow_mut() {
+            map.remove(&id);
+        }
+    });
+    PANEL_STATES.with(|map| {
+        if let Ok(mut map) = map.try_borrow_mut() {
+            map.remove(&id);
+        }
+    });
+    WINDOW_STATES.with(|map| {
+        if let Ok(mut map) = map.try_borrow_mut() {
+            map.remove(&id);
+        }
+    });
+    WINDOW_CLOSE_CALLBACKS.with(|map| {
+        if let Ok(mut map) = map.try_borrow_mut() {
+            map.remove(&id);
+        }
+    });
     // Disconnect the signal subscriptions this widget's handles made. The
     // handles are taken out of the table first so a re-entrant removal cannot see
     // the same handles twice, then applied against the live widget.
@@ -1220,7 +1278,7 @@ pub fn dispatch_trigger(widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
             };
             for callback in guard.callbacks.as_ref().expect("set just above") {
                 if let Ok(mut f) = callback.try_borrow_mut() {
-                    f(text.clone());
+                    f(text.as_str());
                 } else {
                     log::warn!(
                         "the value callback for widget {widget_id} is already running; \
@@ -1497,7 +1555,7 @@ impl WidgetHandle for WindowHandle {
         register_click_callback(self.id, f);
     }
 
-    fn on_value_changed<F: FnMut(String) + 'static>(&self, f: F) {
+    fn on_value_changed<F: FnMut(&str) + 'static>(&self, f: F) {
         register_value_callback(self.id, Rc::new(RefCell::new(f)));
     }
 }
@@ -2157,7 +2215,7 @@ macro_rules! impl_handle {
                 register_click_callback(self.id, f);
             }
 
-            fn on_value_changed<F: FnMut(String) + 'static>(&self, f: F) {
+            fn on_value_changed<F: FnMut(&str) + 'static>(&self, f: F) {
                 register_value_callback(self.id, Rc::new(RefCell::new(f)));
             }
         }
@@ -2441,7 +2499,7 @@ impl WidgetHandle for MessageBoxHandle {
         register_click_callback(self.id, f);
     }
 
-    fn on_value_changed<F: FnMut(String) + 'static>(&self, f: F) {
+    fn on_value_changed<F: FnMut(&str) + 'static>(&self, f: F) {
         register_value_callback(self.id, Rc::new(RefCell::new(f)));
     }
 }
@@ -5303,7 +5361,7 @@ mod tests {
 
         VALUE_CALLBACKS.with(|map| {
             map.borrow_mut().entry(id).or_default().push(Rc::new(RefCell::new(
-                move |_text: String| {
+                move |_text: &str| {
                     *counter.borrow_mut() += 1;
                     panic!("value callback body panics on purpose");
                 },
@@ -5721,7 +5779,7 @@ mod tests {
         VALUE_CALLBACKS.with(|map| {
             map.borrow_mut().insert(
                 id,
-                alloc::vec![alloc::rc::Rc::new(core::cell::RefCell::new(move |_text: String| {
+                alloc::vec![alloc::rc::Rc::new(core::cell::RefCell::new(move |_text: &str| {
                     counter.set(counter.get() + 1);
                     // Remove the subscription from inside the dispatch.
                     remove_callbacks(id);
@@ -5752,7 +5810,7 @@ mod tests {
         VALUE_CALLBACKS.with(|map| {
             map.borrow_mut().insert(
                 id,
-                alloc::vec![alloc::rc::Rc::new(core::cell::RefCell::new(move |_text: String| {
+                alloc::vec![alloc::rc::Rc::new(core::cell::RefCell::new(move |_text: &str| {
                     counter.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
                     panic!("intentional");
                 }))],

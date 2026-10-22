@@ -119,7 +119,8 @@ pub(crate) use manager::invalidate_resolved_style_cache;
 pub use manager::theme_test_guard;
 pub use manager::{
     global_high_contrast, global_theme_manager, resolved_semantic_border, resolved_theme_style,
-    resolved_theme_style_for, resolved_theme_style_for_state, semantic_color,
+    resolved_theme_style_for, resolved_theme_style_for_state,
+    resolved_theme_style_for_state_shared, resolved_theme_style_shared, semantic_color,
     set_global_high_contrast, SemanticColor, ThemeManager,
 };
 pub use preset_states::preset_state_key_count;

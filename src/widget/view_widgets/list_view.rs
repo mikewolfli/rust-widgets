@@ -597,7 +597,7 @@ impl ListView {
     /// A count rather than a predicate, because a caller wants to know "how many rows are visible"
     /// as often as it wants "is row `i` visible", and deriving one from the other at each call site
     /// is the shape this crate keeps deleting.
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn visible_row_count(&self) -> usize {
         let layout = self.list_layout();
         (layout.content.height / layout.row_height.max(1)) as usize

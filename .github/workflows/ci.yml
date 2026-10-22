@@ -833,11 +833,13 @@ jobs:
       # the `image` feature pulled in by `wayland-native`'s test feature set.
       # Both are available as distro packages on the runner, so the rootless
       # download-and-patch fallback used on developer machines is not needed.
-      - name: Install weston + dav1d
+      - name: Install weston + dav1d + cage + wl-clipboard
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq weston libdav1d-dev
+          sudo apt-get install -y -qq weston libdav1d-dev cage wl-clipboard xvfb
           weston --version
+          cage --version || true
+          wl-copy --version || true
 
       - name: Verify Wayland backend against a live compositor
         shell: bash
@@ -845,6 +847,12 @@ jobs:
           chmod +x tools/run_wayland_compositor_tests.sh
           # In auto mode the script prefers the system weston installed above.
           WESTON_MODE=system ./tools/run_wayland_compositor_tests.sh
+
+      - name: External copy -> first paste (PLAT-12)
+        shell: bash
+        run: |
+          chmod +x tools/run_wayland_clipboard_paste.sh
+          xvfb-run -a ./tools/run_wayland_clipboard_paste.sh
 
   # ── Apple native verification (macOS host) ──
   # The developer/macOS host is the only place where AppKit and UIKit can be

@@ -16,7 +16,7 @@ use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::ControlMetrics;
+use crate::widget::metrics::{effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::collections::HashMap;
@@ -508,7 +508,9 @@ impl Draw for PropertiesPanel {
         // ── Background ──
         context.fill_rect(geom, background);
 
-        let font = crate::core::Font::simple("sans-serif", 12.0);
+        // The panel's own effective font rather than a per-frame `Font::simple` (which also
+        // allocated the family `String` and ignored the theme's typeface).
+        let font = effective_font(self.style());
         let categories = self.properties_by_category();
         // Rows scroll inside the panel's own content box, not from its literal top edge: the
         // first category header used to start at `geom.y`, so its glyph box began on the
@@ -531,7 +533,7 @@ impl Draw for PropertiesPanel {
             // `y + ROW_HEIGHT / 2 + 4`: the `+ 4` was meant to compensate for the top-edge
             // origin but only halved the error, so a 12 px label in a 26 px row occupied
             // `17..29` and its descenders crossed the divider drawn at `y + ROW_HEIGHT - 1`.
-            let header_line = context.text_line(header_rect, &font);
+            let header_line = context.text_line(header_rect, font);
             context.draw_text_fitted(
                 Rect {
                     x: header_rect.x + CATEGORY_PADDING,
@@ -540,7 +542,7 @@ impl Draw for PropertiesPanel {
                     height: header_line.height,
                 },
                 category,
-                &font,
+                font,
                 text_color,
                 HorizontalAlignment::Left,
             );
@@ -557,7 +559,7 @@ impl Draw for PropertiesPanel {
 
                 // Alternate row background
                 context.fill_rect(row_rect, row_background);
-                let row_line = context.text_line(row_rect, &font);
+                let row_line = context.text_line(row_rect, font);
 
                 // Property name. Guarded on the text being non-empty so a nameless entry
                 // emits no `<text …></text>`.
@@ -571,7 +573,7 @@ impl Draw for PropertiesPanel {
                             height: row_line.height,
                         },
                         &entry.name,
-                        &font,
+                        font,
                         text_color,
                         HorizontalAlignment::Left,
                     );
@@ -586,7 +588,7 @@ impl Draw for PropertiesPanel {
                 );
                 let display = Self::value_display_text(&entry.value);
                 context.fill_rect(value_rect, value_background);
-                let value_line = context.text_line(value_rect, &font);
+                let value_line = context.text_line(value_rect, font);
                 if !display.is_empty() {
                     context.draw_text_fitted(
                         Rect {
@@ -596,7 +598,7 @@ impl Draw for PropertiesPanel {
                             height: value_line.height,
                         },
                         &display,
-                        &font,
+                        font,
                         if entry.editable { value_color } else { readonly_value_color },
                         HorizontalAlignment::Left,
                     );

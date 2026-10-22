@@ -639,6 +639,9 @@ pub fn runtime_gui_mode_for(platform: &dyn Platform) -> RuntimeGuiMode {
     //
     // `macos-objc2-preview` is deliberately absent. It reports the name it does because it is
     // a preview, and the name is the honest statement of that.
+    // `matches!` cannot express two arms whose value is `cfg!`-dependent; the macro suggestion
+    // would report true for a wayland/gtk build without the corresponding native feature.
+    #[allow(clippy::match_like_matches_macro)]
     let native_capable = match platform.backend_name() {
         "cocoa" | "WindowsPlatform" => true,
         "wayland" => cfg!(all(unix_desktop, feature = "wayland-native")),

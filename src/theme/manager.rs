@@ -3,7 +3,7 @@
 
 use super::{AppearanceMode, Borders, Colors, Fonts, Spacing, Theme, ThemeOverrides, WidgetRole};
 use crate::compat::atomic::{AtomicU64, Ordering};
-use crate::compat::{HashMap, Vec};
+use crate::compat::{HashMap, Rc, Vec};
 use crate::core::{Color, Font};
 use crate::signal::Signal;
 use crate::style::{HighContrastMode, Margin, Padding, ThemeMode, WidgetState, WidgetStyle};
@@ -835,7 +835,7 @@ pub fn theme_test_guard() -> crate::compat::MutexGuard<'static, ()> {
 // 256 entries cannot thrash for a normal application, and an application that somehow produces
 // more names simply clears and refills rather than growing without limit.
 thread_local! {
-    static RESOLVED_STYLE_CACHE: crate::compat::RefCell<HashMap<String, (u64, WidgetStyle)>> =
+    static RESOLVED_STYLE_CACHE: crate::compat::RefCell<HashMap<String, (u64, Rc<WidgetStyle>)>> =
         crate::compat::RefCell::new(HashMap::new());
 }
 
@@ -857,7 +857,7 @@ pub(crate) fn invalidate_resolved_style_cache() {
 ///
 /// The two-level shape is what lets a cache hit borrow the kind name instead of allocating a
 /// composite `"kind:state"` key on every lookup.
-type StateStyleCache = HashMap<String, HashMap<Option<WidgetState>, (u64, WidgetStyle)>>;
+type StateStyleCache = HashMap<String, HashMap<Option<WidgetState>, (u64, Rc<WidgetStyle>)>>;
 
 // The same cache for the `(kind, state)` resolver.
 //
@@ -891,14 +891,20 @@ const RESOLVED_STATE_STYLE_CACHE_LIMIT: usize = 256;
 /// (including its `Font`, a heap `String`) — measured at ~2.5µs, i.e. several hundred µs of pure
 /// theme resolution in a 100-widget frame. The result changes only when the theme registry does,
 /// which is what [`THEME_REVISION`] records, so a cache hit is exact rather than approximate.
-pub fn resolved_theme_style(widget_name: &str) -> Option<WidgetStyle> {
+/// Resolves the active theme's style for `widget_name`, sharing the cached value.
+///
+/// The hot callers (theme application on hover/press) only read the style while merging it into
+/// a control. They used the owned-returning [`resolved_theme_style`], so every cache **hit**
+/// still deep-cloned `WidgetStyle` — `Font.family` and gradient stops included — defeating the
+/// cache. This variant returns the cache entry itself; a hit is a refcount bump.
+pub fn resolved_theme_style_shared(widget_name: &str) -> Option<Rc<WidgetStyle>> {
     let revision = THEME_REVISION.load(Ordering::Relaxed);
     if let Some(style) = RESOLVED_STYLE_CACHE.with(|cache| {
         cache
             .borrow()
             .get(widget_name)
             .filter(|(cached_revision, _)| *cached_revision == revision)
-            .map(|(_, style)| style.clone())
+            .map(|(_, style)| Rc::clone(style))
     }) {
         return Some(style);
     }
@@ -908,14 +914,26 @@ pub fn resolved_theme_style(widget_name: &str) -> Option<WidgetStyle> {
         manager.current_theme()?;
         manager.resolve_style(widget_name)
     };
+    let style = Rc::new(style);
     RESOLVED_STYLE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         if cache.len() >= RESOLVED_STYLE_CACHE_LIMIT {
-            cache.clear();
+            // Evict one entry rather than clearing the table. A clear turned a single new kind
+            // name past the bound into a full re-resolution of every control in the frame.
+            if let Some(oldest) = cache.keys().next().cloned() {
+                cache.remove(&oldest);
+            }
         }
-        cache.insert(widget_name.to_string(), (revision, style.clone()));
+        cache.insert(widget_name.to_string(), (revision, Rc::clone(&style)));
     });
     Some(style)
+}
+
+/// The owned-returning form of [`resolved_theme_style_shared`], kept for callers that store or
+/// mutate the style. A cache hit copies the value, so hot read-only paths should use the shared
+/// variant instead.
+pub fn resolved_theme_style(widget_name: &str) -> Option<WidgetStyle> {
+    resolved_theme_style_shared(widget_name).map(|style| (*style).clone())
 }
 
 /// Resolves a theme style from a widget **kind** name plus an optional CSS **class**.
@@ -942,10 +960,10 @@ pub fn resolved_theme_style_for(kind_name: &str, class_name: Option<&str>) -> Op
 /// A control in [`WidgetState::Normal`] resolves exactly as [`resolved_theme_style`] would: the
 /// resting state has no `"{kind}:normal"` override in the shipped presets, and applying one is
 /// harmless when it exists.
-pub fn resolved_theme_style_for_state(
+pub fn resolved_theme_style_for_state_shared(
     kind_name: &str,
     state: crate::style::WidgetState,
-) -> Option<WidgetStyle> {
+) -> Option<Rc<WidgetStyle>> {
     let revision = THEME_REVISION.load(Ordering::Relaxed);
     let cached = RESOLVED_STATE_STYLE_CACHE.with(|cache| {
         cache
@@ -953,7 +971,7 @@ pub fn resolved_theme_style_for_state(
             .get(kind_name)
             .and_then(|states| states.get(&Some(state)))
             .filter(|(cached_revision, _)| *cached_revision == revision)
-            .map(|(_, style)| style.clone())
+            .map(|(_, style)| Rc::clone(style))
     });
     if let Some(style) = cached {
         return Some(style);
@@ -961,18 +979,29 @@ pub fn resolved_theme_style_for_state(
 
     let manager = global_theme_manager();
     manager.current_theme()?;
-    let style = manager.resolve_style_for_state(kind_name, Some(state));
+    let style = Rc::new(manager.resolve_style_for_state(kind_name, Some(state)));
     RESOLVED_STATE_STYLE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         if cache.len() >= RESOLVED_STATE_STYLE_CACHE_LIMIT {
-            cache.clear();
+            // Evict one kind instead of dropping the whole table (see the resolved-style cache).
+            if let Some(oldest) = cache.keys().next().cloned() {
+                cache.remove(&oldest);
+            }
         }
         cache
             .entry(kind_name.to_string())
             .or_default()
-            .insert(Some(state), (revision, style.clone()));
+            .insert(Some(state), (revision, Rc::clone(&style)));
     });
     Some(style)
+}
+
+/// The owned-returning form of [`resolved_theme_style_for_state_shared`].
+pub fn resolved_theme_style_for_state(
+    kind_name: &str,
+    state: crate::style::WidgetState,
+) -> Option<WidgetStyle> {
+    resolved_theme_style_for_state_shared(kind_name, state).map(|style| (*style).clone())
 }
 
 /// The border colour a control's [`SemanticState`](crate::style::SemanticState) asks for, or

@@ -45,9 +45,8 @@ fn bump() {
 
 /// The bound ArkTS window id, when the host supplied one.
 ///
-/// Kept for the native `OH_WindowManager` query a later binding will make; the current backend
-/// does not call that API, so the accessor has no caller yet.
-#[allow(dead_code)]
+/// Read by `create_window` so the id the host bound is visible in the backend's diagnostics;
+/// the native `OH_WindowManager` query needs it when the ArkTS bridge supplies a window object.
 pub(crate) fn window_id() -> Option<i32> {
     let id = WINDOW_ID.load(Ordering::Relaxed);
     (id >= 0).then_some(id)

@@ -34,6 +34,11 @@ pub struct MobileDatePicker {
     year: i32,
     month: u32,
     day: u32,
+    /// The three drum columns, rebuilt only when the date changes. They used to be built
+    /// (roughly 48 `String` allocations) inside `Draw::draw`, i.e. every frame.
+    year_items: Vec<String>,
+    month_items: Vec<String>,
+    day_items: Vec<String>,
     /// Emitted with a "YYYY-MM-DD" string when the date changes.
     pub date_changed: Signal1<String>,
 }
@@ -48,8 +53,25 @@ impl MobileDatePicker {
             year: 2025,
             month: 1,
             day: 1,
+            year_items: Vec::new(),
+            month_items: Vec::new(),
+            day_items: Vec::new(),
             date_changed: Signal1::new(),
         }
+        .with_rebuilt_items()
+    }
+
+    /// Rebuilds the cached drum columns for the current date.
+    fn rebuild_drum_items(&mut self) {
+        self.year_items = (self.year - 2..=self.year + 2).map(|y| y.to_string()).collect();
+        self.month_items = MONTH_NAMES.iter().map(|&n| n.to_string()).collect();
+        let max_day = days_in_month(self.year, self.month);
+        self.day_items = (1..=max_day).map(|d| format!("{d:02}")).collect();
+    }
+
+    fn with_rebuilt_items(mut self) -> Self {
+        self.rebuild_drum_items();
+        self
     }
 
     /// Sets the date, clamping month to 1..=12 and day to the valid range
@@ -63,6 +85,7 @@ impl MobileDatePicker {
             self.year = year;
             self.month = clamped_month;
             self.day = clamped_day;
+            self.rebuild_drum_items();
             self.date_changed.emit(self.date_string());
             self.base.request_redraw();
         }
@@ -278,22 +301,16 @@ impl Draw for MobileDatePicker {
         let font = role_font(style, font_size);
         let arrow_font = role_font(style, (font_size * 1.3).max(10.0)).with_bold(true);
 
-        // Prepare column data: (offset_into_items, visible_items_list)
-        let year_items: Vec<String> =
-            (self.year - 2..=self.year + 2).map(|y| y.to_string()).collect();
+        // Prepare column data: (offset_into_items, visible_items_list). The lists are cached
+        // fields rebuilt by `set_date`, not rebuilt here.
         let year_offset: i32 = 2; // current year is always at index 2
-
-        let month_items: Vec<String> = MONTH_NAMES.iter().map(|&n| n.to_string()).collect();
         let month_offset = (self.month as usize - 1) as i32;
-
-        let max_day = days_in_month(self.year, self.month);
-        let day_items: Vec<String> = (1..=max_day).map(|d| format!("{d:02}")).collect();
         let day_offset = (self.day as usize - 1) as i32;
 
-        let columns: [(i32, Vec<String>, &str); 3] = [
-            (year_offset, year_items, "Year"),
-            (month_offset, month_items, "Month"),
-            (day_offset, day_items, "Day"),
+        let columns: [(i32, &[String], &str); 3] = [
+            (year_offset, self.year_items.as_slice(), "Year"),
+            (month_offset, self.month_items.as_slice(), "Month"),
+            (day_offset, self.day_items.as_slice(), "Day"),
         ];
 
         for (col_idx, (sel_offset, items, _label)) in columns.iter().enumerate() {

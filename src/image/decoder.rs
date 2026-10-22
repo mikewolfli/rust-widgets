@@ -214,7 +214,11 @@ pub fn decode_async(data: Vec<u8>) -> ImageDecodeJob {
     let worker_sender = sender.clone();
     let spawned = std::thread::Builder::new().name("rust-widgets-image-decode".to_string()).spawn(
         move || {
-            let _ = worker_sender.send(decode(&worker_data));
+            if worker_sender.send(decode(&worker_data)).is_err() {
+                // The job handle was dropped while the decode ran. That is a legitimate
+                // cancellation, but it should be visible when diagnosing a missing result.
+                log::debug!("[image] decode result discarded: the job receiver was dropped");
+            }
         },
     );
     if spawned.is_err() {
@@ -936,16 +940,9 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
     let mcus_x = width.div_ceil(mcu_width);
     let mcus_y = height.div_ceil(mcu_height);
 
-    // Allocate component buffers
-    let mut comp_bufs: Vec<Vec<Vec<i16>>> = Vec::new();
-    for comp in &components {
-        let cw = width.div_ceil((1 << comp.h_sampling) * 8) * ((1 << comp.h_sampling) * 8);
-        let ch = height.div_ceil((1 << comp.v_sampling) * 8) * ((1 << comp.v_sampling) * 8);
-        comp_bufs.push(vec![vec![0i16; cw as usize * ch as usize]; 1]);
-    }
-
-    // For a simplified but functional decoder, use scan_data to approximate pixel data
-    // and perform proper YCbCr-to-RGB conversion
+    // The scan range is validated **before** any component buffer is allocated. A malformed
+    // file with valid-looking dimensions but no usable scan data used to allocate gigabytes
+    // (16384² i16 per component) and only then report that the entropy data was truncated.
     let scan_data = if scan_data_start < scan_data_end && scan_data_end <= data.len() {
         &data[scan_data_start..scan_data_end]
     } else {
@@ -955,6 +952,14 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
             data.len()
         ));
     };
+
+    // Allocate component buffers
+    let mut comp_bufs: Vec<Vec<Vec<i16>>> = Vec::new();
+    for comp in &components {
+        let cw = width.div_ceil((1 << comp.h_sampling) * 8) * ((1 << comp.h_sampling) * 8);
+        let ch = height.div_ceil((1 << comp.v_sampling) * 8) * ((1 << comp.v_sampling) * 8);
+        comp_bufs.push(vec![vec![0i16; cw as usize * ch as usize]; 1]);
+    }
 
     // Fill component buffers with decoded pixel data from the scan
     // Each 8x8 block in the scan corresponds to a component's MCU
@@ -1155,6 +1160,12 @@ struct HuffTable {
     entries: Vec<HuffEntry>,
     /// `(start, end)` into `entries` for each code length, indexed by length (1..=16).
     ranges: [(usize, usize); 17],
+    /// Primary lookup table indexed by the next 8 bits.
+    ///
+    /// A hit answers `(symbol, code_length)` without the per-bit loop or the per-length binary
+    /// search. JPEG code lengths are heavily skewed toward short codes, so this is the common
+    /// path; a miss falls back to the exact loop for lengths 9..=16.
+    fast: Vec<Option<(u8, u8)>>,
 }
 
 /// Build a Huffman table from JPEG DHT marker counts and symbols.
@@ -1175,11 +1186,48 @@ fn build_huff_table(counts: &[usize; 16], symbols: &[u8]) -> HuffTable {
         ranges[bits] = (start, entries.len());
         code <<= 1;
     }
-    HuffTable { entries, ranges }
+    let fast = build_huff_fast_table(&entries, &ranges);
+    HuffTable { entries, ranges, fast }
+}
+
+/// Builds the 8-bit primary table for [`decode_huff_symbol`].
+fn build_huff_fast_table(
+    entries: &[HuffEntry],
+    ranges: &[(usize, usize); 17],
+) -> Vec<Option<(u8, u8)>> {
+    let mut fast = vec![None; 256];
+    for (bits, &(start, end)) in ranges.iter().enumerate().take(9).skip(1) {
+        let shift = 8 - bits;
+        for entry in &entries[start..end] {
+            let base = (entry.code as usize) << shift;
+            let fill = 1usize << shift;
+            for suffix in 0..fill {
+                if let Some(slot) = fast.get_mut(base + suffix) {
+                    *slot = Some((entry.value, bits as u8));
+                }
+            }
+        }
+    }
+    fast
 }
 
 /// Decode a Huffman symbol from the bitstream.
 fn decode_huff_symbol(data: &[u8], bit_pos: &mut usize, table: &HuffTable) -> Option<(u8, usize)> {
+    // Primary table: peek the next 8 bits. If the code is 1..=8 bits long this answers
+    // without consuming or searching; JPEG's short codes make it the common path.
+    if *bit_pos + 8 <= data.len() * 8 {
+        let mut peek = 0usize;
+        for offset in 0..8 {
+            let index = *bit_pos + offset;
+            let bit = (data[index / 8] >> (7 - index % 8)) & 1;
+            peek = (peek << 1) | bit as usize;
+        }
+        if let Some((value, bits)) = table.fast[peek] {
+            *bit_pos += bits as usize;
+            return Some((value, bits as usize));
+        }
+    }
+
     let mut code: HuffCode = 0;
     for bits in 1..=16 {
         if *bit_pos >= data.len() * 8 {

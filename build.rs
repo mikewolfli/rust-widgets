@@ -535,10 +535,9 @@ fn check_pkg(name: &str, dev_pkg: &str, install_cmd: &str) {
         .map(|o| o.status.success())
         .unwrap_or(false);
 
-    if ok {
-        // Keep successful dependency probes silent; Cargo warnings are for
-        // actionable missing dependencies only.
-    } else {
+    // Keep successful dependency probes silent; Cargo warnings are for actionable missing
+    // dependencies only. Written as a single guarded branch rather than an empty `if` arm.
+    if !ok {
         warn(&format!("Missing system library: {name} ({dev_pkg})"));
         warn(&format!("  Install: {install_cmd}"));
     }
@@ -567,10 +566,9 @@ fn check_ffmpeg() {
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false);
-        if ok {
-            // Keep successful dependency probes silent; missing libraries are
-            // reported below with an actionable installation command.
-        } else {
+        // Successful probes stay silent; a missing library is reported below with an
+        // actionable installation command.
+        if !ok {
             println!("cargo:warning=  ❌ Missing: {lib}");
             all_ok = false;
         }

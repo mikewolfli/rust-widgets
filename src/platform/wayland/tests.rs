@@ -289,6 +289,56 @@ fn clipboard_roundtrip() {
     assert_eq!(backend.get_clipboard_text(), "", "Empty clipboard should match");
 }
 
+/// PLAT-12 end-to-end: an **external** selection (set by `wl-copy` after this process owns a
+/// focused window) must be readable on the very first paste.
+///
+/// Env-gated by `RW_WL_COPY` (the path to `wl-copy`), because it needs a live compositor with a
+/// seat. The harness runs it; normal test runs skip it without pretending it ran.
+#[test]
+fn first_paste_reads_an_external_source() {
+    let Ok(wl_copy) = std::env::var("RW_WL_COPY") else {
+        return;
+    };
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    let expected = format!("external-paste-{}", std::process::id());
+    let backend = WaylandPlatform::new();
+    backend.init();
+    let window = backend.create_window("ExternalClipTest", 0, 0, 200, 120);
+    assert!(window > 0, "the external-clipboard probe needs a live compositor window");
+    backend.show_widget(window);
+
+    // Pump the backend's native loop so the window is mapped and focused, then let an **external**
+    // process take the selection and read it on this thread.
+    let first = std::thread::scope(|scope| {
+        scope.spawn(|| backend.run());
+        std::thread::sleep(std::time::Duration::from_millis(250));
+
+        let mut child = Command::new(&wl_copy)
+            .arg("--foreground")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn wl-copy");
+        child
+            .stdin
+            .take()
+            .expect("wl-copy stdin")
+            .write_all(expected.as_bytes())
+            .expect("write the external clipboard payload");
+        std::thread::sleep(std::time::Duration::from_millis(150));
+
+        let value = backend.get_clipboard_text();
+        let _ = child.kill();
+        let _ = child.wait();
+        backend.quit();
+        value
+    });
+    assert_eq!(first, expected, "the first paste after an external copy must not be empty");
+}
+
 #[test]
 fn menu_system() {
     let backend = WaylandPlatform::new();

@@ -822,22 +822,20 @@ impl Platform for WindowsPlatform {
     /// meant a path containing `'` (e.g. `C:\tmp\it's.pdf`) would terminate the
     /// literal and the remainder would execute as PowerShell code.
     fn spawn_print_job(&self, job_file: &std::path::Path) -> Result<(), String> {
-        let status = std::process::Command::new("powershell")
+        // `spawn` rather than `status`: the platform contract is "launch the print verb", and
+        // `status()` blocked the print worker until PowerShell exited (PLAT-03). The async print
+        // path already reports completion through its handle; a launch failure is still an
+        // `Err`, and the child is reaped by the OS once PowerShell exits.
+        std::process::Command::new("powershell")
             .arg("-NoProfile")
             .arg("-Command")
             .arg("Start-Process -FilePath $args[0] -Verb Print -PassThru | Out-Null")
             .arg(job_file)
-            .status();
-        if let Ok(status) = status {
-            if status.success() {
-                return Ok(());
-            }
-        }
-        Err(format!(
-            "no Windows print command could submit job file '{}'; every candidate \
-             PowerShell/spooler invocation failed",
-            job_file.display()
-        ))
+            .spawn()
+            .map(|_child| ())
+            .map_err(|error| {
+                format!("could not launch the Windows print verb for {job_file:?}: {error}")
+            })
     }
 
     /// Whether this process can reach a print spooler.
@@ -1343,6 +1341,9 @@ impl Platform for WindowsPlatform {
         // to wake) and it is thread-affine, posting to the *calling* thread's queue, so from
         // another thread it wakes nothing; the flag above is what ends the loop in that case.
         self.runtime_running.store(false, Ordering::SeqCst);
+        // The Win32 pump may be waiting on `MsgWaitForMultipleObjectsEx`; the library's frame
+        // wait must learn about the stop immediately rather than after the idle interval.
+        crate::platform::frame_wait::wake();
         #[cfg(target_os = "windows")]
         unsafe {
             use winapi::um::winuser::PostQuitMessage;

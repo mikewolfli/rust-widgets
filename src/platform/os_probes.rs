@@ -21,10 +21,17 @@
 //! # Cost
 //!
 //! Every function reads a small virtual file. That is the same cost the five
-//! inline copies had; these are not called per frame, and a platform probe that
-//! returned a cached figure would be lying about a live measurement.
+//! inline copies had. `process_memory_utilization` adds a short (1 s) TTL cache
+//! because a performance monitor may sample it per frame, and a hard guarantee
+//! here is preferable to asking every caller to throttle. The TTL is short enough
+//! that a displayed figure still tracks reality.
 
 use crate::compat::{fmt, format, String, ToString};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+/// How long a sampled memory ratio stays valid.
+const MEMORY_SAMPLE_TTL: Duration = Duration::from_secs(1);
 
 /// Reads `MemTotal` from `/proc/meminfo`, in mebibytes.
 ///
@@ -69,6 +76,16 @@ pub fn is_on_battery() -> bool {
 /// file reports a low figure — that is the intended reading, and why this is a
 /// *utilization* rather than a "memory pressure" metric.
 pub fn process_memory_utilization() -> Option<f32> {
+    static CACHE: OnceLock<Mutex<Option<(Instant, f32)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some((sampled_at, value)) = *guard {
+            if sampled_at.elapsed() < MEMORY_SAMPLE_TTL {
+                return Some(value);
+            }
+        }
+    }
+
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     let mut vmrss_kb: u64 = 0;
     let mut vmsize_kb: u64 = 0;
@@ -82,7 +99,11 @@ pub fn process_memory_utilization() -> Option<f32> {
     if vmsize_kb == 0 {
         return None;
     }
-    Some((vmrss_kb as f32 / vmsize_kb as f32).clamp(0.0, 1.0))
+    let value = (vmrss_kb as f32 / vmsize_kb as f32).clamp(0.0, 1.0);
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some((Instant::now(), value));
+    }
+    Some(value)
 }
 
 /// CPU utilization is **not** reliably measurable from a one-shot `/proc/self/status` read, so this

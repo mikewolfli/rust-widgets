@@ -123,7 +123,7 @@ fn staged() {
     let seen = Arc::clone(&values);
     field.on_value_changed(move |text| {
         if let Ok(mut values) = seen.lock() {
-            values.push(text);
+            values.push(text.to_string());
         }
     });
     // The uncommitted composition is a separate observation seam: `on_value_changed` only sees

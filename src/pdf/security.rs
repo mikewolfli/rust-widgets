@@ -433,9 +433,12 @@ fn compute_hash(password: &str, salt1: &[u8], salt2: &[u8]) -> Vec<u8> {
 }
 
 /// Hex-encode bytes to lowercase hex string.
+///
+/// Delegates to the PDF reader's table-driven encoder instead of collecting one
+/// `format!` temporary per byte.
 #[cfg(feature = "pdf-encryption")]
 fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    super::reader::hex_encode_lower(bytes)
 }
 
 /// Encrypt plaintext with AES-128-CBC using the given key and IV.

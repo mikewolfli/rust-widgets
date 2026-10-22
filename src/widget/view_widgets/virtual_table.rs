@@ -30,6 +30,10 @@ pub struct VirtualTable {
     overscan_rows: usize,
     overscan_columns: usize,
     window_cache: Option<Arc<Vec<Vec<Option<String>>>>>,
+    /// Revision of the data source that produced `window_cache`. A source can change in
+    /// place without any setter running (it bumps `revision()`), so a cache validated only
+    /// by scroll position would keep painting stale cells.
+    window_revision: u64,
     /// Emitted when visible window changes `(row_start,row_len,col_start,col_len)`.
     pub visible_window_changed: Signal1<(usize, usize, usize, usize)>,
 }
@@ -47,6 +51,7 @@ impl VirtualTable {
             overscan_rows: 2,
             overscan_columns: 1,
             window_cache: None,
+            window_revision: 0,
             visible_window_changed: Signal1::new(),
         }
     }
@@ -235,11 +240,13 @@ impl VirtualTable {
     /// fetch count is unchanged (misses still hit the source), so only the per-redraw copies are
     /// removed.
     fn visible_window_cells(&mut self) -> Option<&Arc<Vec<Vec<Option<String>>>>> {
-        if self.window_cache.is_none() {
+        let revision = self.data_source.as_ref()?.revision();
+        if self.window_cache.is_none() || self.window_revision != revision {
             let source = self.data_source.as_ref()?;
             let (row_start, row_len, col_start, col_len) = self.visible_window();
             let data = source.fetch_window(row_start, row_len, col_start, col_len);
             self.window_cache = Some(Arc::new(data));
+            self.window_revision = revision;
         }
         self.window_cache.as_ref()
     }
@@ -486,7 +493,10 @@ impl WidgetProperties for VirtualTable {
                 Ok(())
             }
             "fetch_visible_window" => {
-                let _ = self.fetch_visible_window();
+                // This is a query with no result channel. Warming the cache is the only
+                // useful effect here; the owned fetch copied the whole window and then
+                // discarded it.
+                let _ = self.visible_window_cells();
                 Ok(())
             }
             "set_data_source"

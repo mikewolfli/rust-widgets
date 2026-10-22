@@ -536,6 +536,9 @@ impl Platform for MacOSPlatform {
     /// learn that its stop request will not take effect and arrange its own ending. It used to
     /// log and return `()`, so the same caller could not tell "asked" from "will stop".
     fn quit(&self) -> bool {
+        // Wake the frame wait before the thread check: `wake()` is safe from any thread and
+        // stops a loop parked on the idle interval from waiting out its timeout.
+        crate::platform::frame_wait::wake();
         if !super::types::is_main_thread() {
             log::debug!("[macos] quit refused: NSApplication stop is main-thread-only");
             return false;
