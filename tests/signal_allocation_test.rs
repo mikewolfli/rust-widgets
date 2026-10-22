@@ -12,11 +12,14 @@
 //!
 //! These tests pin both halves with a counting allocator: "zero" cannot be observed through
 //! the public API, and asserting only the delivered value would pass for an implementation
-//! that still allocates. The counter is process-global and `cargo test` runs a file's tests
-//! on several threads, so every test takes [`exclusive`] and the window is closed before the
-//! result is read — the same technique `tests/icon_shared_pixels_budget_test.rs` uses.
+//! that still allocates. The counter is **thread-local**: a process-global counter also counted
+//! whatever the test harness allocated on its own thread while the window was open, which was
+//! measured as an intermittent extra allocation (one run in fifteen). Counting only the thread
+//! that runs the operation is the property these tests actually assert, and it also lets the
+//! file's tests run in parallel again.
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use rust_widgets::action::Action;
@@ -24,8 +27,12 @@ use rust_widgets::signal::{GenericSignal, Signal};
 
 struct CountingAllocator;
 
-static COUNTING: AtomicBool = AtomicBool::new(false);
-static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    /// Whether *this thread* is inside a measuring window.
+    static COUNTING: Cell<bool> = const { Cell::new(false) };
+    /// Allocations this thread made while counting.
+    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+}
 
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
@@ -33,8 +40,8 @@ static ALLOCATOR: CountingAllocator = CountingAllocator;
 // SAFETY: every operation delegates to `System` with the caller's own layout and pointer.
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if COUNTING.load(Ordering::Relaxed) {
-            ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        if COUNTING.with(Cell::get) {
+            ALLOCATIONS.with(|count| count.set(count.get() + 1));
         }
         // SAFETY: `layout` comes from the allocator caller and is passed through unchanged.
         unsafe { System.alloc(layout) }
@@ -46,20 +53,23 @@ unsafe impl GlobalAlloc for CountingAllocator {
     }
 }
 
-/// Serialises this file's tests: the counter is process-global, so a test running on another
-/// thread would otherwise be counted inside the measuring window.
+/// Serialises this file's tests so their thread-local windows cannot overlap.
 fn exclusive() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Runs `body` with counting on and reports how many allocations it made.
+/// Runs `body` with counting on and reports how many allocations it made on this thread.
 fn allocations_during<R>(body: impl FnOnce() -> R) -> (R, usize) {
-    ALLOCATIONS.store(0, Ordering::SeqCst);
-    COUNTING.store(true, Ordering::SeqCst);
+    // Touch both thread-locals **before** the window opens: the first access initialises the
+    // TLS block, and that setup must not be counted as the operation's cost.
+    let _ = COUNTING.with(Cell::get);
+    let _ = ALLOCATIONS.with(Cell::get);
+    ALLOCATIONS.with(|count| count.set(0));
+    COUNTING.with(|flag| flag.set(true));
     let value = body();
-    COUNTING.store(false, Ordering::SeqCst);
-    (value, ALLOCATIONS.load(Ordering::SeqCst))
+    COUNTING.with(|flag| flag.set(false));
+    (value, ALLOCATIONS.with(Cell::get))
 }
 
 /// A payload-carrying signal whose only subscriber reads the value allocates nothing.
