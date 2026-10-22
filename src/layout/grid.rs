@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 //! Grid layout manager — arranges items in a fixed row/column grid.
+use super::ChildInfo;
 use super::Layout;
-use crate::compat::{vec, Any, Vec};
-use crate::core::{ObjectId, Rect};
+use crate::compat::{vec, Any, HashMap, Vec};
+use crate::core::{Alignment, ObjectId, Rect};
+use crate::style::EdgeOffsets;
 /// How a grid decides each row's height.
 ///
 /// The distinction exists because the two are both correct for different callers,
@@ -54,6 +56,24 @@ pub struct GridLayout {
     margin: u32,
     column_stretches: Vec<u32>,
     row_stretches: Vec<u32>,
+    /// Per-column minimum widths, applied as a floor to the computed column width.
+    ///
+    /// Qt's `QGridLayout::setColumnMinimumWidth` and wx's per-column minimum are the
+    /// equivalent: a column holding a control with a natural width must not be squeezed
+    /// below it just because the other columns have larger stretch factors.
+    column_minimums: Vec<u32>,
+    /// Per-row minimum heights; see [`Self::column_minimums`].
+    row_minimums: Vec<u32>,
+    /// Per-widget alignment inside its cell.
+    ///
+    /// Qt's `QLayout::setAlignment(widget, Qt::Alignment)` is the counterpart, and it is what
+    /// makes a per-cell alignment possible at all: a grid cell is the slot a child is given,
+    /// and without this the child always fills it. Only the hint-aware path
+    /// ([`Layout::arrange`]) can act on it, because placing a child at its preferred size
+    /// requires the child's own statement of that size.
+    cell_alignments: HashMap<ObjectId, Alignment>,
+    /// Four-way margins. `None` means the uniform [`Self::margin`] is used on every side.
+    margins: Option<EdgeOffsets>,
     row_sizing: RowSizing,
     cells: Vec<Option<GridPlacement>>,
 }
@@ -84,6 +104,10 @@ impl GridLayout {
             margin,
             column_stretches: vec![1; safe_cols as usize],
             row_stretches: vec![1; safe_rows as usize],
+            column_minimums: vec![0; safe_cols as usize],
+            row_minimums: vec![0; safe_rows as usize],
+            cell_alignments: HashMap::new(),
+            margins: None,
             row_sizing: RowSizing::Fill,
             cells: vec![None; cell_count],
         }
@@ -114,6 +138,151 @@ impl GridLayout {
     pub fn with_row_sizing(mut self, sizing: RowSizing) -> Self {
         self.row_sizing = sizing;
         self
+    }
+
+    /// Sets the minimum width of `col`.
+    ///
+    /// Returns `false` when `col` is not a column of this grid. The minimum is a floor on
+    /// the width the stretch calculation produces; when the floors together exceed the
+    /// container, the grid overflows and the parent clips, which is the same choice
+    /// [`RowSizing::Fixed`] makes rather than silently shrinking a column below its floor.
+    pub fn set_column_minimum_width(&mut self, col: u32, width: u32) -> bool {
+        match self.column_minimums.get_mut(col as usize) {
+            Some(slot) => {
+                *slot = width;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The minimum width of `col`, or `0` when `col` is not a column of this grid.
+    pub fn column_minimum_width(&self, col: u32) -> u32 {
+        self.column_minimums.get(col as usize).copied().unwrap_or(0)
+    }
+
+    /// Sets the minimum height of `row`; see [`Self::set_column_minimum_width`].
+    pub fn set_row_minimum_height(&mut self, row: u32, height: u32) -> bool {
+        match self.row_minimums.get_mut(row as usize) {
+            Some(slot) => {
+                *slot = height;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The minimum height of `row`, or `0` when `row` is not a row of this grid.
+    pub fn row_minimum_height(&self, row: u32) -> u32 {
+        self.row_minimums.get(row as usize).copied().unwrap_or(0)
+    }
+
+    /// Aligns `widget_id` inside its cell, or clears the alignment with `None`.
+    ///
+    /// Returns `false` when the widget is not a child of this grid: an alignment stored for an
+    /// id that is not placed would never be read, and accepting it would hide the mistake.
+    ///
+    /// The alignment only has an effect on the hint-aware path ([`Layout::arrange`]) and only on
+    /// the axes the alignment names: [`Alignment::Left`]/[`Alignment::Right`] shrink the child
+    /// horizontally and leave its height alone, [`Alignment::Top`]/[`Alignment::Bottom`] do the
+    /// opposite, and [`Alignment::Center`] centres on both axes. A child that did not state a
+    /// preferred extent on an axis keeps the full cell on that axis, because there is no size to
+    /// centre.
+    pub fn set_cell_alignment(
+        &mut self,
+        widget_id: ObjectId,
+        alignment: Option<Alignment>,
+    ) -> bool {
+        if !self.has_child(widget_id) {
+            return false;
+        }
+        match alignment {
+            Some(alignment) => {
+                self.cell_alignments.insert(widget_id, alignment);
+            }
+            None => {
+                self.cell_alignments.remove(&widget_id);
+            }
+        }
+        true
+    }
+
+    /// The alignment set for `widget_id`, if any.
+    pub fn cell_alignment(&self, widget_id: ObjectId) -> Option<Alignment> {
+        self.cell_alignments.get(&widget_id).copied()
+    }
+
+    /// Applies per-track floors, then withdraws their overflow from the tracks that can still
+    /// give it up.
+    ///
+    /// A floor alone is not enough: raising column 0 to 180 in a 300 px, three-column grid leaves
+    /// 180 + 100 + 100 = 380 px of tracks, so the last column would be placed past the parent's
+    /// right edge. Withdrawing the excess from every track *above* its own floor keeps the sum at
+    /// or under `available`, and only overflows when the floors themselves do not fit — the one
+    /// case where no answer exists, which the parent's clip then owns.
+    fn enforce_floors(
+        tracks: &mut [u32],
+        floors: &[u32],
+        extra_floors: Option<&[u32]>,
+        available: u32,
+    ) {
+        let floor_at = |index: usize| {
+            let configured = floors.get(index).copied().unwrap_or(0);
+            let hinted = extra_floors.and_then(|extra| extra.get(index).copied()).unwrap_or(0);
+            configured.max(hinted)
+        };
+        for (index, track) in tracks.iter_mut().enumerate() {
+            *track = (*track).max(floor_at(index));
+        }
+        let mut excess = tracks.iter().sum::<u32>().saturating_sub(available);
+        while excess > 0 {
+            let Some((index, surplus)) = tracks
+                .iter()
+                .enumerate()
+                .map(|(index, track)| (index, track.saturating_sub(floor_at(index))))
+                .filter(|(_, surplus)| *surplus > 0)
+                .max_by_key(|(_, surplus)| *surplus)
+            else {
+                // Every track is at its floor and the floors do not fit: nothing else can
+                // give, so the parent's clip owns the overflow (documented on the setters).
+                break;
+            };
+            let take = excess.min(surplus);
+            tracks[index] -= take;
+            excess -= take;
+        }
+    }
+
+    /// Sets four-way margins, overriding the uniform [`Self::margin`].
+    ///
+    /// `margin` stays the fallback so a document that only knows the uniform key keeps working;
+    /// this is the Qt `setContentsMargins(l, t, r, b)` shape, which a layout needs as soon as a
+    /// panel is flush with three edges and inset from one.
+    pub fn set_margins(&mut self, margins: EdgeOffsets) {
+        self.margins = Some(margins);
+    }
+
+    /// The four-way margins, or `None` when the uniform [`Self::margin`] applies.
+    pub fn margins(&self) -> Option<EdgeOffsets> {
+        self.margins
+    }
+
+    /// The left/top/right/bottom insets for `rect`, clamped to half the axis each.
+    fn insets(&self, rect: Rect) -> (u32, u32, u32, u32) {
+        let limit_x = rect.width / 2;
+        let limit_y = rect.height / 2;
+        match self.margins {
+            Some(margins) => (
+                margins.left.min(limit_x),
+                margins.top.min(limit_y),
+                margins.right.min(limit_x),
+                margins.bottom.min(limit_y),
+            ),
+            None => {
+                let uniform = self.margin.min(limit_x.min(limit_y));
+                (uniform, uniform, uniform, uniform)
+            }
+        }
     }
 
     /// Sets how rows are sized, in place.
@@ -409,83 +578,25 @@ impl GridLayout {
     pub fn row_stretches(&self) -> &[u32] {
         &self.row_stretches
     }
-}
-impl Layout for GridLayout {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-    /// Auto-placement: the next free cell, one cell in size. A child that wants an explicit
-    /// cell or a span is placed with `set_widget`/`set_widget_spanning` before the layout runs;
-    /// the declarative loader does exactly that for `col`/`row`/`col_span`/`row_span`.
-    ///
-    /// # Why this grows the grid
-    ///
-    /// A grid of `columns` columns and one row grows as children arrive, so a sixth child in a
-    /// two-column grid needs a third row to exist. Without the growth the cell it should occupy
-    /// is outside the array, and the child would be reported in `child_ids` (which reads the
-    /// array, so no) — it would simply disappear from the arrangement. The growth is here rather
-    /// than in the caller because auto-placement is the one path that *chooses* the cell.
-    fn add_widget(&mut self, widget_id: ObjectId, _stretch: u32) {
-        if let Some(index) = self.cells.iter().position(|cell| cell.is_none()) {
-            self.cells[index] = Some(GridPlacement { widget_id, col_span: 1, row_span: 1 });
-            return;
-        }
-        // Every existing cell is taken: append a fresh row and use its first cell. The new row
-        // is one cell wide per column, so the widget lands at `(rows - 1, 0)` after the grow.
-        let grown = self.grow_to_fit(self.rows, 0);
-        if !grown {
-            log::warn!(
-                "GridLayout: no free cell for widget {widget_id} and the grid cannot grow past its \
-                 cell cap; the widget was not placed"
-            );
-            return;
-        }
-        let index = self.rows.saturating_sub(1).saturating_mul(self.cols) as usize;
-        if let Some(slot) = self.cells.get_mut(index) {
-            *slot = Some(GridPlacement { widget_id, col_span: 1, row_span: 1 });
-        }
-    }
-    fn remove_widget(&mut self, widget_id: ObjectId) {
-        // Every cell the widget occupies is cleared, not just its origin: a spanning widget
-        // would otherwise leave its other cells holding a placement for a widget that is no
-        // longer a child, so the cell would never be offered to an auto-placed sibling.
-        for cell in &mut self.cells {
-            if cell.is_some_and(|placement| placement.widget_id == widget_id) {
-                *cell = None;
-            }
-        }
-    }
-    fn child_ids(&self) -> Vec<ObjectId> {
-        // One id per **widget**, not per occupied cell: a spanning widget covers several cells
-        // and must not be reported several times, which is what turns a child count into a
-        // number larger than the number of children.
-        let mut ids: Vec<ObjectId> = Vec::new();
-        for cell in self.cells.iter().flatten() {
-            if !ids.contains(&cell.widget_id) {
-                ids.push(cell.widget_id);
-            }
-        }
-        ids
-    }
-    fn has_child(&self, id: ObjectId) -> bool {
-        self.cells.iter().flatten().any(|placement| placement.widget_id == id)
-    }
-    fn clear(&mut self) {
-        self.cells.fill(None);
-    }
-    fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
+
+    /// The one placement body. `hint_floors` are the per-column/per-row minima derived from
+    /// the children's own size hints; `None` means the layout's configured minimums alone.
+    fn place(
+        &self,
+        rect: Rect,
+        hint_floors: Option<(&[u32], &[u32])>,
+        children: Option<&[ChildInfo]>,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
         // The margins and the inter-cell spacing are honoured only as far as the rect can
         // pay for them. When it cannot, the spacing is reduced *before* the available
         // extent is derived, so the cursor walk and the extent can never disagree: the
         // previous version saturated `available_width` to zero while still stepping by the
         // full spacing, which placed later columns outside a parent that had allocated
         // nothing for them. A control resized small is the case this exists for.
-        let margin = self.margin.min((rect.width / 2).min(rect.height / 2));
-        let inner_width = rect.width.saturating_sub(margin * 2);
-        let inner_height = rect.height.saturating_sub(margin * 2);
+        let (left, top, right, bottom) = self.insets(rect);
+        let inner_width = rect.width.saturating_sub(left).saturating_sub(right);
+        let inner_height = rect.height.saturating_sub(top).saturating_sub(bottom);
         let spacing_x =
             if self.cols > 1 { self.spacing.min(inner_width / (self.cols - 1)) } else { 0 };
         let spacing_y =
@@ -516,6 +627,16 @@ impl Layout for GridLayout {
             current_x += cell_width as i32 + spacing_x as i32;
         }
 
+        // Apply the per-column floors after the stretch pass, so a minimum is not diluted by
+        // the other columns' weights, then take back any overflow from the columns that are
+        // still above their floor.
+        Self::enforce_floors(
+            &mut col_widths,
+            &self.column_minimums,
+            hint_floors.map(|(cols, _)| cols),
+            available_width,
+        );
+
         // Precompute cumulative row height sums for y-offsets (fraction-aware)
         let mut row_heights: Vec<u32> = Vec::with_capacity(self.rows as usize);
         let mut row_y_offsets: Vec<i32> = Vec::with_capacity(self.rows as usize);
@@ -545,6 +666,15 @@ impl Layout for GridLayout {
             row_y_offsets.push(current_y);
             current_y += cell_height as i32 + spacing_y as i32;
         }
+
+        // Same floor for rows. In `Fixed` mode this is a floor on the explicit height; in
+        // `Fill` mode it is a floor on the share the stretch pass produced.
+        Self::enforce_floors(
+            &mut row_heights,
+            &self.row_minimums,
+            hint_floors.map(|(_, rows)| rows),
+            available_height,
+        );
 
         // Distribute the remainder width/height across columns/rows (biggest-bucket algorithm)
         let total_width: u32 = col_widths.iter().sum::<u32>() + spacing_x * (self.cols - 1);
@@ -628,11 +758,160 @@ impl Layout for GridLayout {
                 let cell_height: u32 =
                     (row..=last_row).map(|r| row_heights[r as usize]).sum::<u32>()
                         + spacing_y * (last_row - row);
-                let x = rect.x + margin as i32 + col_x_offsets[col as usize];
-                let y = rect.y + margin as i32 + row_y_offsets[row as usize];
-                widgets(placement.widget_id, Rect::new(x, y, cell_width, cell_height));
+                let x = rect.x + left as i32 + col_x_offsets[col as usize];
+                let y = rect.y + top as i32 + row_y_offsets[row as usize];
+                // Per-cell alignment (Qt's `setAlignment`): a cell is the slot, the hint's
+                // preferred extent is what the child wants inside it. An axis the alignment
+                // does not name keeps the full cell, and an unconstrained axis has no size to
+                // shrink to.
+                let (mut x, mut y) = (x, y);
+                let (mut width, mut height) = (cell_width, cell_height);
+                if let Some(alignment) = self.cell_alignments.get(&placement.widget_id) {
+                    if let Some(info) =
+                        children.and_then(|infos| ChildInfo::find(infos, placement.widget_id))
+                    {
+                        let prefers_horizontal = matches!(
+                            alignment,
+                            Alignment::Left | Alignment::Right | Alignment::Center
+                        );
+                        if prefers_horizontal && info.hints.width.pref > 0 {
+                            width = info.hints.width.pref.min(cell_width);
+                            x += match alignment {
+                                Alignment::Center => (cell_width - width) / 2,
+                                Alignment::Right => cell_width - width,
+                                _ => 0,
+                            } as i32;
+                        }
+                        let prefers_vertical = matches!(
+                            alignment,
+                            Alignment::Top | Alignment::Bottom | Alignment::Center
+                        );
+                        if prefers_vertical && info.hints.height.pref > 0 {
+                            height = info.hints.height.pref.min(cell_height);
+                            y += match alignment {
+                                Alignment::Center => (cell_height - height) / 2,
+                                Alignment::Bottom => cell_height - height,
+                                _ => 0,
+                            } as i32;
+                        }
+                    }
+                }
+                widgets(placement.widget_id, Rect::new(x, y, width, height));
             }
         }
+    }
+}
+
+impl Layout for GridLayout {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+    /// Auto-placement: the next free cell, one cell in size. A child that wants an explicit
+    /// cell or a span is placed with `set_widget`/`set_widget_spanning` before the layout runs;
+    /// the declarative loader does exactly that for `col`/`row`/`col_span`/`row_span`.
+    ///
+    /// # Why this grows the grid
+    ///
+    /// A grid of `columns` columns and one row grows as children arrive, so a sixth child in a
+    /// two-column grid needs a third row to exist. Without the growth the cell it should occupy
+    /// is outside the array, and the child would be reported in `child_ids` (which reads the
+    /// array, so no) — it would simply disappear from the arrangement. The growth is here rather
+    /// than in the caller because auto-placement is the one path that *chooses* the cell.
+    fn add_widget(&mut self, widget_id: ObjectId, _stretch: u32) {
+        if let Some(index) = self.cells.iter().position(|cell| cell.is_none()) {
+            self.cells[index] = Some(GridPlacement { widget_id, col_span: 1, row_span: 1 });
+            return;
+        }
+        // Every existing cell is taken: append a fresh row and use its first cell. The new row
+        // is one cell wide per column, so the widget lands at `(rows - 1, 0)` after the grow.
+        let grown = self.grow_to_fit(self.rows, 0);
+        if !grown {
+            log::warn!(
+                "GridLayout: no free cell for widget {widget_id} and the grid cannot grow past its \
+                 cell cap; the widget was not placed"
+            );
+            return;
+        }
+        let index = self.rows.saturating_sub(1).saturating_mul(self.cols) as usize;
+        if let Some(slot) = self.cells.get_mut(index) {
+            *slot = Some(GridPlacement { widget_id, col_span: 1, row_span: 1 });
+        }
+    }
+    fn remove_widget(&mut self, widget_id: ObjectId) {
+        // Every cell the widget occupies is cleared, not just its origin: a spanning widget
+        // would otherwise leave its other cells holding a placement for a widget that is no
+        // longer a child, so the cell would never be offered to an auto-placed sibling.
+        for cell in &mut self.cells {
+            if cell.is_some_and(|placement| placement.widget_id == widget_id) {
+                *cell = None;
+            }
+        }
+        // The alignment belongs to the placement, so a removed widget must not leave a stale
+        // entry behind that would apply to a later widget reusing the id.
+        self.cell_alignments.remove(&widget_id);
+    }
+    fn child_ids(&self) -> Vec<ObjectId> {
+        // One id per **widget**, not per occupied cell: a spanning widget covers several cells
+        // and must not be reported several times, which is what turns a child count into a
+        // number larger than the number of children.
+        let mut ids: Vec<ObjectId> = Vec::new();
+        for cell in self.cells.iter().flatten() {
+            if !ids.contains(&cell.widget_id) {
+                ids.push(cell.widget_id);
+            }
+        }
+        ids
+    }
+    fn has_child(&self, id: ObjectId) -> bool {
+        self.cells.iter().flatten().any(|placement| placement.widget_id == id)
+    }
+    fn clear(&mut self) {
+        self.cells.fill(None);
+    }
+    fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
+        self.place(rect, None, None, widgets);
+    }
+
+    /// The hint-aware path: a column's size hint becomes a floor under its stretched share,
+    /// so a grid of controls is as wide as its widest cell in each column (LAY-N01).
+    ///
+    /// By default a child fills its cell: the cell is the slot the grid gave it. A child whose
+    /// placement was given an alignment through [`GridLayout::set_cell_alignment`] is instead
+    /// laid out at its preferred extent on the axes that alignment names, which is the per-cell
+    /// half of LAY-N10.
+    fn arrange(&self, rect: Rect, children: &[ChildInfo], out: &mut dyn FnMut(ObjectId, Rect)) {
+        let mut column_floors = vec![0u32; self.cols as usize];
+        let mut row_floors = vec![0u32; self.rows as usize];
+        for info in children {
+            let Some((row, col)) = self.cell_of(info.id) else {
+                continue;
+            };
+            // A spanning placement contributes its share of the span, rounded up, so a widget
+            // spanning two columns still raises each of them by what it needs.
+            let (col_span, row_span) = self
+                .cells
+                .get((row * self.cols + col) as usize)
+                .copied()
+                .flatten()
+                .map(|placement| (placement.col_span.max(1), placement.row_span.max(1)))
+                .unwrap_or((1, 1));
+            let per_col = info.hints.width.pref.div_ceil(col_span);
+            let per_row = info.hints.height.pref.div_ceil(row_span);
+            for offset in 0..col_span {
+                if let Some(slot) = column_floors.get_mut((col + offset) as usize) {
+                    *slot = (*slot).max(per_col);
+                }
+            }
+            for offset in 0..row_span {
+                if let Some(slot) = row_floors.get_mut((row + offset) as usize) {
+                    *slot = (*slot).max(per_row);
+                }
+            }
+        }
+        self.place(rect, Some((&column_floors, &row_floors)), Some(children), out);
     }
 }
 
@@ -1039,5 +1318,121 @@ mod tests {
             bottom.y + bottom.height as i32 <= rect.y + rect.height as i32,
             "bottom row: {bottom:?}"
         );
+    }
+
+    /// A column minimum raises that column above its stretched share, and the other columns
+    /// share what is left.
+    #[test]
+    fn a_column_minimum_is_a_floor_under_the_stretched_width() {
+        let mut layout = GridLayout::new(1, 3, 0, 0);
+        for col in 0..3 {
+            layout.set_widget(0, col, col as ObjectId + 1);
+        }
+        assert!(layout.set_column_minimum_width(0, 180));
+        assert_eq!(layout.column_minimum_width(0), 180);
+
+        let out = placed(&layout, Rect::new(0, 0, 300, 40));
+        let first = rect_of(&out, 1);
+        assert!(first.width >= 180, "the floor must win over the equal share: {first:?}");
+        assert!(
+            first.width + rect_of(&out, 2).width + rect_of(&out, 3).width <= 300,
+            "the columns must still fit the container"
+        );
+    }
+
+    /// A row minimum raises a `Fill` row above its stretch share.
+    #[test]
+    fn a_row_minimum_is_a_floor_under_the_stretched_height() {
+        let mut layout = GridLayout::new(2, 1, 0, 0);
+        layout.set_widget(0, 0, 1);
+        layout.set_widget(1, 0, 2);
+        assert!(layout.set_row_minimum_height(0, 50));
+        assert_eq!(layout.row_minimum_height(0), 50);
+
+        let out = placed(&layout, Rect::new(0, 0, 40, 100));
+        assert!(rect_of(&out, 1).height >= 50, "the floor must win: {:?}", rect_of(&out, 1));
+    }
+
+    /// An out-of-range minimum is refused rather than silently stored.
+    #[test]
+    fn a_minimum_outside_the_grid_is_refused() {
+        let mut layout = GridLayout::new(2, 2, 0, 0);
+        assert!(!layout.set_column_minimum_width(2, 40));
+        assert!(!layout.set_row_minimum_height(2, 40));
+        assert_eq!(layout.column_minimum_width(2), 0);
+        assert_eq!(layout.row_minimum_height(2), 0);
+    }
+
+    /// A child's width hint becomes a column floor in the hint-aware path.
+    #[test]
+    fn arrange_raises_a_column_to_its_widest_child() {
+        let mut layout = GridLayout::new(1, 2, 0, 0);
+        layout.set_widget(0, 0, 1);
+        layout.set_widget(0, 1, 2);
+
+        let children = [
+            ChildInfo::new(1, crate::layout::Hints::fixed(150, 10)),
+            ChildInfo::new(2, crate::layout::Hints::fixed(50, 10)),
+        ];
+        let mut out = Vec::new();
+        layout.arrange(Rect::new(0, 0, 200, 20), &children, &mut |id, rect| out.push((id, rect)));
+
+        let width_of = |id: ObjectId| out.iter().find(|(i, _)| *i == id).unwrap().1.width;
+        assert_eq!(width_of(1), 150, "the first column takes its child's preferred width");
+        assert_eq!(width_of(2), 50, "the second column keeps the remainder");
+    }
+
+    // ── LAY-N10: per-cell alignment ────────────────────────────────────────────────
+
+    #[test]
+    fn cell_alignment_centres_a_child_inside_its_cell() {
+        let mut layout = GridLayout::new(1, 1, 0, 0);
+        layout.set_widget(0, 0, 1);
+        assert!(layout.set_cell_alignment(1, Some(Alignment::Center)));
+        assert_eq!(layout.cell_alignment(1), Some(Alignment::Center));
+
+        let children = [ChildInfo::new(1, crate::layout::Hints::fixed(20, 10))];
+        let mut out = Vec::new();
+        layout.arrange(Rect::new(0, 0, 100, 50), &children, &mut |id, rect| out.push((id, rect)));
+
+        assert_eq!(rect_of(&out, 1), Rect::new(40, 20, 20, 10));
+    }
+
+    #[test]
+    fn a_horizontal_cell_alignment_leaves_the_height_filled() {
+        let mut layout = GridLayout::new(1, 1, 0, 0);
+        layout.set_widget(0, 0, 1);
+        layout.set_cell_alignment(1, Some(Alignment::Right));
+
+        let children = [ChildInfo::new(1, crate::layout::Hints::fixed(20, 10))];
+        let mut out = Vec::new();
+        layout.arrange(Rect::new(0, 0, 100, 50), &children, &mut |id, rect| out.push((id, rect)));
+
+        // `Right` names the horizontal axis only: width shrinks to 20 and moves to x=80, while
+        // the cell's full height is kept.
+        assert_eq!(rect_of(&out, 1), Rect::new(80, 0, 20, 50));
+    }
+
+    #[test]
+    fn a_child_without_an_alignment_still_fills_its_cell() {
+        let mut layout = GridLayout::new(1, 1, 0, 0);
+        layout.set_widget(0, 0, 1);
+
+        let children = [ChildInfo::new(1, crate::layout::Hints::fixed(20, 10))];
+        let mut out = Vec::new();
+        layout.arrange(Rect::new(0, 0, 100, 50), &children, &mut |id, rect| out.push((id, rect)));
+
+        assert_eq!(rect_of(&out, 1), Rect::new(0, 0, 100, 50));
+    }
+
+    #[test]
+    fn cell_alignment_is_rejected_for_a_non_child_and_cleared_on_removal() {
+        let mut layout = GridLayout::new(1, 1, 0, 0);
+        assert!(!layout.set_cell_alignment(9, Some(Alignment::Center)));
+
+        layout.set_widget(0, 0, 1);
+        layout.set_cell_alignment(1, Some(Alignment::Center));
+        layout.remove_widget(1);
+        assert_eq!(layout.cell_alignment(1), None, "a stale alignment must not outlive the child");
     }
 }

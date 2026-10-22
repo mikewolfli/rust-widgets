@@ -74,10 +74,14 @@ impl AudioEngine {
         let worker_sender = sender.clone();
         let spawned =
             thread::Builder::new().name("rust-widgets-audio-decode".to_string()).spawn(move || {
-                let _ = worker_sender.send(decode(&worker_data));
+                if worker_sender.send(decode(&worker_data)).is_err() {
+                    // A superseding `load_async` drops the receiver on purpose. Visible at debug
+                    // level so a missing track can be told apart from a decode failure.
+                    log::debug!("[audio] decode result discarded: a newer load replaced this one");
+                }
             });
-        if spawned.is_err() {
-            let _ = sender.send(decode(&data));
+        if spawned.is_err() && sender.send(decode(&data)).is_err() {
+            log::debug!("[audio] synchronous decode result discarded: the load was replaced");
         }
         self.pending_load = Some(receiver);
     }

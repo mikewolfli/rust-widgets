@@ -212,6 +212,13 @@ impl App {
         // which every profile that can create a control needs.
         crate::platform::profile::runtime_init();
 
+        // Menu effect policy runs one hardware probe (GPU / memory / battery). Doing it
+        // here, at startup, keeps the first menu draw from paying for it. The policy is
+        // on by default, so menus adapt to this host; a host that wants the pre-adaptive
+        // rendering calls `menu_config::set_enabled(false)` (see `MenuConfig`).
+        #[cfg(feature = "advanced-widgets")]
+        crate::menu_config::init();
+
         if self.config.enable_i18n {
             crate::platform::profile::init_optional_subsystems();
         } else {

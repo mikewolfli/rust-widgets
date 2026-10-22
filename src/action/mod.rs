@@ -18,6 +18,7 @@ mod tests {
     use super::*;
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
     #[test]
     fn shortcut_triggers_action() {
         let mut mgr = ActionManager::new();
@@ -309,5 +310,27 @@ mod tests {
             PlatformShortcutStyle::Desktop => (Key::Y, Modifiers::PRIMARY),
         };
         assert!(shortcut_manager.handle_key_event(redo_key, redo_mods));
+    }
+
+    /// The read-only variant observes the same state changes as the `Arc` form, without the
+    /// caller having to unwrap a shared payload.
+    #[test]
+    fn read_only_action_subscribers_see_state_changes() {
+        let mut action = crate::action::Action::new("bold", "Bold");
+        action.set_checkable(true);
+
+        let toggled = Arc::new(Mutex::new(Vec::new()));
+        let enabled = Arc::new(Mutex::new(Vec::new()));
+        let t = Arc::clone(&toggled);
+        let e = Arc::clone(&enabled);
+        action.connect_toggled_ref(move |value: &bool| t.lock().unwrap().push(*value));
+        action.connect_enabled_changed_ref(move |value: &bool| e.lock().unwrap().push(*value));
+
+        action.set_checked(true);
+        action.set_checked(false);
+        action.set_enabled(false);
+
+        assert_eq!(*toggled.lock().unwrap(), vec![true, false]);
+        assert_eq!(*enabled.lock().unwrap(), vec![false]);
     }
 }

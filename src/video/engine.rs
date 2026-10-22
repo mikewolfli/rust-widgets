@@ -318,12 +318,7 @@ impl VideoEngine {
     /// process on a `seek` call rather than reporting a decode failure. The helper
     /// ignores the unusable bound and clamps only against the floor.
     pub fn seek(&mut self, time: f64) -> Result<(), String> {
-        let time = ordered_clamp_f64(time, 0.0, self.metadata.duration);
-        // Every seek starts a new generation, so frames already decoded for the previous position
-        // are recognisable as stale and are dropped rather than shown at the new one.
-        self.generation = self.generation.wrapping_add(1);
-        let generation = self.generation;
-        self.worker.send(DecodeCommand::Seek { time, generation })?;
+        let (generation, time) = self.request_seek(time)?;
         // Wait for the decoder's answer. Frames from older generations are drained here — they are
         // exactly the frames the seek makes obsolete, and leaving them in the bounded queue would
         // keep the worker blocked on a full channel.
@@ -344,15 +339,58 @@ impl VideoEngine {
                 }
             };
         result?;
+        // Only a successful seek moves the reported position: a caller that got an error must not
+        // observe a clock it never reached.
+        self.apply_seek_state(time);
+        Ok(())
+    }
+
+    /// Requests a seek and returns without waiting for the decoder.
+    ///
+    /// # Why this exists
+    ///
+    /// [`Self::seek`] blocks until the decode thread answers, and that answer cannot arrive before
+    /// the `read_frame` already in flight finishes — 10–30 ms for 1080p, plus the codec's own
+    /// keyframe search. A progress bar that calls `seek` on every pointer move therefore
+    /// serialises the drag on the decoder (MEDIA-N05). Scrubbing calls this instead; the answer is
+    /// consumed by the ordinary frame path, where a stale generation is dropped anyway.
+    ///
+    /// The optimistic state here is what makes the drag feel immediate: the clock and the reported
+    /// position move at once, and a frame decoded for the previous position has already been
+    /// invalidated by the new generation, so it can never be shown at the new time. The cost of
+    /// that optimism is that a decoder-side seek failure is not reported by this call; it resurfaces
+    /// as a decode failure on the next frame request.
+    pub fn seek_async(&mut self, time: f64) -> Result<(), String> {
+        let (_, time) = self.request_seek(time)?;
+        self.apply_seek_state(time);
+        Ok(())
+    }
+
+    /// Sends the seek command and returns `(generation, clamped time)`.
+    ///
+    /// Deliberately does not touch the clock or `current_time`: the synchronous path must not show
+    /// a position the decoder refused, and the asynchronous path applies it itself.
+    fn request_seek(&mut self, time: f64) -> Result<(u64, f64), String> {
+        let time = ordered_clamp_f64(time, 0.0, self.metadata.duration);
+        // Every seek starts a new generation, so frames already decoded for the previous position
+        // are recognisable as stale and are dropped rather than shown at the new one.
+        self.generation = self.generation.wrapping_add(1);
+        let generation = self.generation;
+        self.worker.send(DecodeCommand::Seek { time, generation })?;
+        Ok((generation, time))
+    }
+
+    /// Moves the reported position and the clock to a seek target.
+    ///
+    /// A frame decoded before the seek is a frame from where playback *was*; showing it after the
+    /// seek would put one stale picture in the middle of the jump, so the parked frame is dropped.
+    /// The clock moves with the decoder: if they disagreed, the first frame after a seek would be
+    /// judged against the pre-seek position and dropped as "overdue" — a seek that stutters.
+    fn apply_seek_state(&mut self, time: f64) {
         self.ended = false;
         self.current_time = time;
-        // A frame decoded before the seek is a frame from where playback *was*; showing it after the
-        // seek would put one stale picture in the middle of the jump.
         self.pending = None;
-        // The clock moves with the decoder. If they disagreed, the first frame after a seek would be
-        // judged against the pre-seek position and dropped as "overdue" — a seek that stutters.
         self.clock.seek(time);
-        Ok(())
     }
 
     /// The master timeline, so a caller can read the position or state the rate.
@@ -679,6 +717,55 @@ mod tests {
         assert!(failing.seek(1.0).is_err(), "a failing decoder seek is reported, not swallowed");
         assert_eq!(failing.current_time(), 0.0, "a failed seek does not move current time");
         assert_eq!(failing.clock().position(), 0.0, "a failed seek does not move the clock");
+    }
+
+    /// A scrub must not wait for the decoder: `seek_async` returns after the send, and the
+    /// reported position/clock move immediately.
+    ///
+    /// The decoder here sleeps in `seek`, which is the shape of the real cost (an in-flight
+    /// `read_frame` plus the codec's keyframe search). If `seek_async` ever regressed to waiting,
+    /// this call would take ~400 ms instead of returning at once.
+    #[test]
+    fn seek_async_returns_before_the_decoder_answers() {
+        struct SlowSeekDecoder {
+            metadata: VideoMetadata,
+        }
+
+        impl VideoDecoder for SlowSeekDecoder {
+            fn read_frame(&mut self) -> Result<Option<VideoFrame>, String> {
+                Ok(None)
+            }
+
+            fn seek(&mut self, _time: f64) -> Result<(), String> {
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                Ok(())
+            }
+
+            fn close(&mut self) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn metadata(&self) -> &VideoMetadata {
+                &self.metadata
+            }
+        }
+
+        let metadata = VideoMetadata::new_with_format(ContainerFormat::Mjpeg, 320, 240, 10.0);
+        let mut engine = VideoEngine::with_decoder(Box::new(SlowSeekDecoder { metadata }));
+
+        let start = std::time::Instant::now();
+        engine.seek_async(4.0).expect("the request is accepted");
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_millis(150),
+            "seek_async waited for the decoder ({elapsed:?}); a scrub would serialise on it"
+        );
+        assert_eq!(engine.current_time(), 4.0, "the reported position moves immediately");
+        assert!(
+            (engine.clock().position() - 4.0).abs() < 1e-9,
+            "and the clock moves with it, so the first frame is not judged overdue"
+        );
     }
 
     /// A decoder that always fails to seek, used to assert the engine reports seek

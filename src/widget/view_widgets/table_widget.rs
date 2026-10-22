@@ -46,6 +46,24 @@ pub trait TableModel: Send + Sync {
     fn column_count(&self) -> usize;
     /// Data for row and column index, if present.
     fn data(&self, row: usize, column: usize) -> Option<String>;
+    /// Writes the cell at `row`/`column` into `out`, returning whether it exists.
+    ///
+    /// # Why this exists
+    ///
+    /// [`Self::data`] hands out an owned `String`, so a paint loop over a window allocates one
+    /// string per cell per frame. A consumer that only reads the cell can reuse a single buffer
+    /// through this method. The default delegates to `data`, so existing implementors compile and
+    /// behave unchanged (principle #21); a model that stores its cells overrides it and allocates
+    /// nothing.
+    fn fill_data(&self, row: usize, column: usize, out: &mut String) -> bool {
+        match self.data(row, column) {
+            Some(value) => {
+                out.push_str(&value);
+                true
+            }
+            None => false,
+        }
+    }
     /// Optional signal emitted when model data projection changes.
     fn data_changed_signal(&self) -> Option<&GenericSignal> {
         None
@@ -705,6 +723,10 @@ impl Draw for TableWidget {
             let row_count = model.row_count();
             let col_count = model.column_count();
             let current_row = self.focused_row;
+            // Resolved once for the grid instead of twice per cell, and cell text goes through a
+            // reusable buffer so a model that can lend its cells allocates nothing per frame.
+            let font = effective_font(style);
+            let mut cell_text = String::new();
             for r in 0..row_count {
                 // The row box comes from `row_rect`, the same derivation the hit test reads. It was
                 // a local `let row_h = 20` here and a second one in the press arm, measured from
@@ -722,18 +744,19 @@ impl Draw for TableWidget {
                     // an x belongs to.
                     let col_w = self.resolved_column_width(c, content.width);
                     let x = content.x + self.column_offset(c, content.width) as i32;
-                    if let Some(text) = model.data(r, c) {
+                    cell_text.clear();
+                    if model.fill_data(r, c, &mut cell_text) {
                         // The cell is the band: a text origin of `y + row_h / 2` would put the
                         // glyph box's *top* edge on the row's middle line and draw every label
                         // half a line low. `text_line` derives the centred line box instead, and
                         // it also bounds the label so a long cell value cannot run into the next
                         // column.
                         let cell = crate::core::Rect::new(x, y, col_w, row_h as u32);
-                        if !text.is_empty() {
+                        if !cell_text.is_empty() {
                             context.draw_text_fitted(
-                                context.text_line(cell, effective_font(style)),
-                                &text,
-                                effective_font(style),
+                                context.text_line(cell, font),
+                                &cell_text,
+                                font,
                                 ink,
                                 HorizontalAlignment::Left,
                             );

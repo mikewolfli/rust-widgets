@@ -38,7 +38,15 @@ pub enum JsValue {
         /// Parameter names, in declaration order; position determines which
         /// argument is bound to which parameter.
         params: Vec<String>,
-        /// The function body as raw source text, re-parsed on each call.
+        /// The function body as raw source text.
+        ///
+        /// The body is *not* re-parsed on every call: `eval_block` caches the statement
+        /// split in `block_cache`, keyed by this text, so a tick handler pays one map
+        /// lookup instead of a re-split. What remains per call is the copy of this
+        /// string (and of `params`) needed to release the immutable borrow before the
+        /// body runs against `&mut self`. Storing `Arc<str>` here would remove that copy
+        /// but changes this public variant's field type, so the copy is the documented
+        /// residual rather than a hidden re-parse.
         body: String,
     },
 }

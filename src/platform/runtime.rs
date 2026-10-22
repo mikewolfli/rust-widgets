@@ -48,8 +48,16 @@ use crate::platform::linux::LinuxPlatform;
 use crate::platform::macos::macos_bridge::SelectedMacOSPlatform;
 #[cfg(all(not(embedded_surface), feature = "mobile-api"))]
 use crate::platform::mobile;
+// The trait has to be nameable here because both arms of `mobile_attach_to_native_view`
+// call one of its methods, including the trait-object arm. It used to arrive through the
+// `types::*` wildcard this module no longer forwards (HX-07).
+#[cfg(all(feature = "mobile-api", not(alloc_frugal)))]
+use crate::platform::types::MobilePlatformExtension;
+// This module used to forward `platform::types::*`. Nothing outside reached it —
+// `contract` is a private module and `runtime` is `pub(crate)` — so the wildcard only
+// widened an internal surface without an owner (HX-07). Names are imported where used.
 #[cfg(not(alloc_frugal))]
-pub use crate::platform::types::*;
+use crate::platform::types::PlatformCapabilities;
 #[cfg(all(
     unix_desktop,
     not(target_env = "ohos"),

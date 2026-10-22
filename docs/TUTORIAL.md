@@ -4,14 +4,15 @@
 
 ## Prerequisites
 
-- Rust 1.87 or newer
-- A platform backend: macOS (Cocoa), Windows (Win32), or Linux (GTK)
+- Rust 1.88 or newer
+- A platform backend: macOS (Cocoa), Windows (Win32), Linux (GTK or Wayland), or the
+  mobile backends (Android, iOS, HarmonyOS)
 
 ## Step 1: Add Dependency
 
 ```toml
 [dependencies]
-rust_widgets = "0.9"
+rust_widgets = "2.8.14"
 ```
 
 ## Step 2: Create a Window
@@ -20,11 +21,10 @@ rust_widgets = "0.9"
 use rust_widgets::app::App;
 
 fn main() {
-    let app = App::new();
-    let window = app.new_window()
-        .title("Hello, Widgets!")
-        .size(400, 300)
-        .build();
+    let mut app = App::new();
+    app.init();
+    let window = app.new_window("Hello, Widgets!", 100, 100, 400, 300);
+    window.set_title("Hello, Widgets!");
     app.run();
 }
 ```
@@ -33,55 +33,37 @@ fn main() {
 
 ```rust
 use rust_widgets::app::App;
-use rust_widgets::widget::Button;
-use rust_widgets::core::Rect;
 
 fn main() {
-    let app = App::new();
-    let mut window = app.new_window()
-        .title("Hello, Widgets!")
-        .size(400, 300)
-        .build();
+    let mut app = App::new();
+    app.init();
+    let window = app.new_window("Hello, Widgets!", 100, 100, 400, 300);
 
-    let mut button = Button::new("Click Me!".to_string(), Rect::new(50, 50, 120, 36));
-    button.clicked_signal().connect(|| {
-        println!("Button clicked!");
-    });
-    window.add_widget(Box::new(button));
+    let button = window.new_button("Click me", 20, 20, 120, 36);
+    button.on_click(|| println!("Button clicked!"));
+
     app.run();
 }
 ```
 
-## Step 4: Try a Switch Widget (BLUE11)
+## Step 4: Try a Switch Widget
 
 ```rust
-use rust_widgets::app::App;
-use rust_widgets::widget::Switch;
 use rust_widgets::core::Rect;
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use rust_widgets::widget::Switch;
 
 fn main() {
-    let app = App::new();
-    let mut window = app.new_window()
-        .title("Switch Demo")
-        .size(300, 200)
-        .build();
-
-    let mut sw = Switch::new(Rect::new(50, 50, 60, 30));
-    let state = Arc::new(AtomicBool::new(false));
-    let s = state.clone();
-    sw.toggled.connect(move |val: Arc<bool>| {
-        s.store(*val, Ordering::SeqCst);
-        println!("Switch toggled: {}", val);
-    });
-    window.add_widget(Box::new(sw));
-    app.run();
+    let mut sw = Switch::new(Rect::new(0, 0, 60, 30));
+    // `connect_ref` hands the callback `&T`, so the emit allocates no `Arc`.
+    sw.toggled.connect_ref(|checked: &bool| println!("Switch toggled: {checked}"));
+    let svg = rust_widgets::widget::svg::render_to_svg(&mut sw);
+    println!("switch svg bytes={}", svg.len());
 }
 ```
 
 ## Step 5: Mobile Widgets
 
-New in BLUE11, mobile-first widgets:
+Mobile-first widgets are available in the default build:
 
 ```rust
 use rust_widgets::widget::{

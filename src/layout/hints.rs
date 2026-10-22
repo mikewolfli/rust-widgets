@@ -295,6 +295,28 @@ impl ChildInfo {
             preferred.height.saturating_add(self.params.margins.vertical_total()),
         )
     }
+
+    /// The box this child should be laid out in, with `fallback` standing in for any axis
+    /// the child left unconstrained.
+    ///
+    /// # Why a fallback is needed at all
+    ///
+    /// [`AxisHints::unconstrained`] is the default, and its `pref` is `0` — "I have no
+    /// opinion", not "I want no room". A layout that read the preferred size directly would
+    /// collapse every child that has not migrated to the hint channel to zero. The fallback is
+    /// what the layout already knew about that child (a `set_child_size` hint, a widget's own
+    /// [`size_hint`](crate::widget::Widget::size_hint)), so a partially-migrated caller keeps
+    /// its previous geometry while a described child gets its stated wish.
+    ///
+    /// The margins that [`bounds`](Self::bounds) adds are kept: they are the child's own
+    /// declaration of the gap around it, which is the same reading the flex layout uses.
+    pub fn resolved_size(&self, fallback: Size) -> Size {
+        let bounds = self.bounds();
+        Size::new(
+            if self.hints.width.pref > 0 { bounds.width } else { fallback.width },
+            if self.hints.height.pref > 0 { bounds.height } else { fallback.height },
+        )
+    }
 }
 
 /// The total room `children` ask for along an axis, including each child's own margins.
@@ -558,5 +580,19 @@ mod tests {
         assert!(params.fill);
         assert_eq!(params.stretch, 3);
         assert_eq!(params.margins.horizontal_total(), 16);
+    }
+
+    /// A layout asks for this size; an axis the child did not describe falls back to what the
+    /// layout already knew, while a described axis uses the hint's preferred extent. Margins are
+    /// part of the room the child occupies.
+    #[test]
+    fn resolved_size_falls_back_per_axis() {
+        let info =
+            ChildInfo::new(1, Hints { width: AxisHints::fixed(40), height: AxisHints::default() });
+        assert_eq!(info.resolved_size(Size::new(7, 9)), Size::new(40, 9));
+
+        let margined = ChildInfo::new(2, Hints::fixed(40, 20))
+            .with_params(LayoutParams::new().with_margins(EdgeOffsets::symmetric(5, 3)));
+        assert_eq!(margined.resolved_size(Size::new(0, 0)), Size::new(46, 30));
     }
 }

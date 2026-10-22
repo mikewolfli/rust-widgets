@@ -42,6 +42,10 @@ pub enum ParamKind {
     Axis,
     /// A border region token (`"north"`, `"south"`, `"west"`, `"east"`, `"center"`).
     Region,
+    /// A decimal number (a ratio, a fraction).
+    Float,
+    /// A JSON boolean (`true` / `false`).
+    Bool,
 }
 
 impl ParamKind {
@@ -52,6 +56,8 @@ impl ParamKind {
             Self::Int => "int",
             Self::Axis => "axis",
             Self::Region => "region",
+            Self::Float => "float",
+            Self::Bool => "bool",
         }
     }
 }
@@ -216,6 +222,31 @@ pub static LAYOUT_KIND_SCHEMAS: &[LayoutKindSchema] = &[
         params: &[
             param("spacing", ParamKind::UInt, false, true),
             param("margin", ParamKind::UInt, false, true),
+        ],
+    },
+    LayoutKindSchema {
+        type_token: "center",
+        aliases: &["Center"],
+        params: &[
+            param("width_factor", ParamKind::Float, false, true),
+            param("height_factor", ParamKind::Float, false, true),
+        ],
+    },
+    LayoutKindSchema {
+        type_token: "aspect_ratio",
+        aliases: &["aspectRatio", "aspect-ratio"],
+        params: &[
+            param("ratio", ParamKind::Float, false, true),
+            param("respect_parent", ParamKind::Bool, false, true),
+        ],
+    },
+    LayoutKindSchema {
+        type_token: "keyboard_aware",
+        aliases: &["keyboardAware", "keyboard-aware"],
+        params: &[
+            param("spacing", ParamKind::UInt, false, true),
+            param("margin", ParamKind::UInt, false, true),
+            param("animation_duration", ParamKind::UInt, false, true),
         ],
     },
 ];
@@ -472,6 +503,18 @@ fn value_matches_kind(value: &str, kind: ParamKind) -> bool {
         }
         ParamKind::Axis => is_axis_token(value),
         ParamKind::Region => crate::layout::BorderRegion::from_token(value).is_some(),
+        ParamKind::Float => {
+            // An optional sign, then digits with at most one decimal point. Exponents are
+            // not accepted: the parser reads the value through `serde_json`, whose number
+            // grammar a document is expected to follow, and the diagnostic here is for a
+            // *typo* (`"ratio": "16:9"`), not for a full JSON grammar re-implementation.
+            let body = value.strip_prefix('-').unwrap_or(value);
+            !body.is_empty()
+                && body != "."
+                && body.matches('.').count() <= 1
+                && body.bytes().all(|byte| byte.is_ascii_digit() || byte == b'.')
+        }
+        ParamKind::Bool => value == "true" || value == "false",
     }
 }
 

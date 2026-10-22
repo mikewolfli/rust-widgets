@@ -80,6 +80,13 @@ FILES = [
     "README.zh-CN.md",
     "docs/plans/codemap.md",
     "docs/plans/platform_capability_matrix.md",
+    # The generated gallery states the enum count too. It is not hand-edited, but the
+    # *generator* can regress to a literal — which it had, at 180 while the enum was 181.
+    # Listing it here means the generated page is checked like any other document.
+    "control.md",
+    # A pointer page, kept only so existing links resolve. It carries no counts; listing
+    # it makes a future hand-written "N kinds" claim inside it fail this gate.
+    "docs/WIDGET_GALLERY.md",
 ]
 for lang in ("en", "zh-CN", "zh-TW"):
     FILES += [

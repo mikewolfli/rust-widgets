@@ -1,3 +1,5 @@
+> ⚠️ **历史快照（archive）**：0.5.0 的发布说明，不代表当前版本（见 `Cargo.toml`）。
+
 # rust_widgets 0.5.0
 
 Release date: 2026-03-02

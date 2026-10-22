@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use crate::compat::{format, String};
+use crate::compat::String;
 
 /// RGBA color value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -389,11 +389,25 @@ impl Color {
     }
     /// Returns canonical uppercase `#RRGGBB` serialization.
     pub fn to_hex_rgb(&self) -> String {
-        format!("#{:02X}{:02X}{:02X}", self.r, self.g, self.b)
+        let mut out = String::with_capacity(7);
+        self.write_hex_rgb(&mut out);
+        out
+    }
+    /// Appends canonical uppercase `#RRGGBB` to `out`.
+    pub fn write_hex_rgb(&self, out: &mut String) {
+        use core::fmt::Write as _;
+        let _ = write!(out, "#{:02X}{:02X}{:02X}", self.r, self.g, self.b);
     }
     /// Returns canonical uppercase `#RRGGBBAA` serialization.
     pub fn to_hex_rgba(&self) -> String {
-        format!("#{:02X}{:02X}{:02X}{:02X}", self.r, self.g, self.b, self.a)
+        let mut out = String::with_capacity(9);
+        self.write_hex_rgba(&mut out);
+        out
+    }
+    /// Appends canonical uppercase `#RRGGBBAA` to `out`.
+    pub fn write_hex_rgba(&self, out: &mut String) {
+        use core::fmt::Write as _;
+        let _ = write!(out, "#{:02X}{:02X}{:02X}{:02X}", self.r, self.g, self.b, self.a);
     }
     /// Packs color channels into `0xRRGGBBAA` for stable transport/serialization.
     pub const fn to_rgba_u32(&self) -> u32 {

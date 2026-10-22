@@ -5,6 +5,11 @@ use crate::gpu::GpuType;
 /// User override settings for menu features.
 #[derive(Debug, Clone, Default)]
 pub struct UserOverrides {
+    /// Master switch: whether the adaptive menu configuration is applied at all.
+    ///
+    /// `None` keeps the default (off). Everything else in this struct is irrelevant
+    /// while the switch is off.
+    pub enabled: Option<bool>,
     /// User override for animations.
     pub animations: Option<bool>,
     /// User override for transparency.
@@ -19,7 +24,29 @@ pub struct UserOverrides {
     pub max_visible_items: Option<u32>,
     /// User override for hardware acceleration.
     pub hardware_acceleration: Option<bool>,
+    /// User override for the per-widget text-measurement cache.
+    pub caching: Option<bool>,
 }
+impl HardwareCapabilities {
+    /// A fixed capability record for verification paths (snapshots, census, tests).
+    ///
+    /// Hardware detection is deliberately **not** used here: a committed SVG must not
+    /// differ between a laptop and a workstation. The values describe a mid-range host,
+    /// which is also the profile the pinned effect policy models.
+    pub fn verification() -> Self {
+        Self {
+            gpu_type: GpuType::Integrated,
+            gpu_memory_mb: None,
+            gpu_memory_is_measured: false,
+            gpu_performance_score: 60,
+            system_ram_mb: Some(8192),
+            cpu_performance_score: 60,
+            on_battery: false,
+            performance_level: PerformanceLevel::Medium,
+        }
+    }
+}
+
 /// Hardware capabilities detected at runtime.
 #[derive(Debug, Clone)]
 pub struct HardwareCapabilities {

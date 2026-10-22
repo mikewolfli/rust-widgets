@@ -28,6 +28,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+. "$ROOT_DIR/tools/lib_timeout.sh"
 
 CAGE_BIN="${CAGE_BIN:-$(command -v cage || true)}"
 WL_COPY="${WL_COPY:-$(command -v wl-copy || true)}"
@@ -59,5 +60,5 @@ export XDG_RUNTIME_DIR="$RUNTIME"
 # cage owns the compositor socket; the child inherits WAYLAND_DISPLAY automatically.
 
 echo "PLAT-12: backend=$WLR_BACKENDS cage=$CAGE_BIN wl-copy=$WL_COPY"
-RW_WL_COPY="$WL_COPY" "$CAGE_BIN" -- cargo test --lib --features wayland-native \
+rw_run_bounded "${RW_GATE_TIMEOUT:-600}" env RW_WL_COPY="$WL_COPY" "$CAGE_BIN" -- cargo test --lib --features wayland-native \
   platform::wayland::tests::first_paste_reads_an_external_source -- --nocapture

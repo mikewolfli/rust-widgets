@@ -3,7 +3,15 @@
 
 //! Wrap layout manager — auto-wrap flow layout that places items in rows or columns,
 //! breaking to the next line/column when the available space is exhausted.
-use super::{Layout, LayoutContext};
+//!
+//! # One line breaker
+//!
+//! [`break_lines`] and [`place_lines`] are the crate's only implementation of "where does a
+//! wrapped line end and where do its items sit". [`WrapLayout`] calls them with the sizes it was
+//! told; [`FlowLayout`](crate::layout::FlowLayout) calls them with the sizes its children report.
+//! The two layouts keep their own size sources and configuration surfaces, but not two
+//! algorithms — see LAY-N08.
+use super::{ChildInfo, Layout, LayoutContext};
 use crate::compat::{Any, Vec};
 use crate::core::{ObjectId, Rect, Size};
 
@@ -50,6 +58,12 @@ pub struct WrapLayout {
     alignment: WrapAlignment,
     /// Spacing between items and between lines.
     spacing: i32,
+    /// Spacing between wrap lines, when it differs from [`Self::spacing`].
+    ///
+    /// Flutter's `Wrap` separates `spacing` (within a run) from `runSpacing` (between runs);
+    /// the two were one value here, so a row of buttons could not be tight horizontally and
+    /// airy between rows.
+    run_spacing: Option<i32>,
     /// Outer padding.
     padding: i32,
     /// Managed children with size tracking.
@@ -68,7 +82,7 @@ impl Default for WrapLayout {
 /// # The model
 ///
 /// Both alignments distribute only what is left **after** the base gap, which is what
-/// keeps the wrap decision and the drawing in agreement (`layout_horizontal` charges each
+/// keeps the wrap decision and the drawing in agreement ([`break_lines`] charges each
 /// pair the configured spacing when it decides where a line breaks).
 ///
 /// * `SpaceBetween::gap` = base + leftover / (n - 1), no leading gap.
@@ -106,6 +120,197 @@ fn spacing_for(
     }
 }
 
+/// The extent a child occupies on the axis its line runs along.
+fn main_extent(size: Size, direction: WrapDirection) -> i32 {
+    match direction {
+        WrapDirection::Horizontal => size.width as i32,
+        WrapDirection::Vertical => size.height as i32,
+    }
+}
+
+/// The extent a child occupies on the axis lines are stacked across.
+fn cross_extent(size: Size, direction: WrapDirection) -> i32 {
+    match direction {
+        WrapDirection::Horizontal => size.height as i32,
+        WrapDirection::Vertical => size.width as i32,
+    }
+}
+
+/// Breaks `sizes` into lines along `direction`.
+///
+/// # Why this is a free function
+///
+/// Two layouts break lines: [`WrapLayout`] and
+/// [`FlowLayout`](crate::layout::FlowLayout). They differ in where a child's size comes from
+/// (a `set_child_size` table, or the child widget's own `size_hint`), not in where a line ends.
+/// Keeping the arithmetic in one place is what stops the two from disagreeing about which
+/// children share a line — the previous copies had already drifted in whether the gap was
+/// counted in the wrap decision.
+///
+/// `wrap == false` keeps every child on one line, which is `FlowLayoutConfig::wrap`'s
+/// contract; running that case through the same arithmetic keeps a no-wrap layout and a
+/// wrapping one in agreement about the line they would have formed.
+///
+/// An empty line never wraps: a single child wider than the box is placed where it is and
+/// allowed to overflow, which is the documented behaviour of both layouts.
+pub(crate) fn break_lines(
+    sizes: &[Size],
+    direction: WrapDirection,
+    spacing: i32,
+    available: i32,
+    wrap: bool,
+) -> Vec<Vec<usize>> {
+    let mut lines: Vec<Vec<usize>> = Vec::new();
+    // The running extent of the current line, kept instead of re-summing the line for every
+    // child: the previous form was O(n²) in the length of a run (each candidate re-walked the
+    // items already on the line), which is the common shape of a wrapped toolbar.
+    let mut used = 0i32;
+    let mut count = 0usize;
+    for (index, size) in sizes.iter().enumerate() {
+        let candidate = main_extent(*size, direction);
+        let needs_wrap = wrap && count > 0 && used > 0 && used + spacing + candidate > available;
+        if needs_wrap {
+            lines.push(Vec::new());
+            used = 0;
+            count = 0;
+        }
+        if lines.is_empty() {
+            lines.push(Vec::new());
+        }
+        lines
+            .last_mut()
+            .expect("a line was just pushed above, so the list is non-empty")
+            .push(index);
+        used += candidate + if count > 0 { spacing } else { 0 };
+        count += 1;
+    }
+    lines
+}
+
+/// Places every child on the lines [`break_lines`] produced.
+///
+/// The returned vector is indexed by the child's position in `sizes`, not by paint order, so a
+/// caller can zip it with its own child list. Only the caller knows whether a line's extent is
+/// the one the wrap decision assumed; both layouts charge `spacing` when breaking and this
+/// function charges the same `spacing`, with `SpaceBetween`/`SpaceAround` adding only what is
+/// left over.
+pub(crate) fn place_lines(
+    sizes: &[Size],
+    lines: &[Vec<usize>],
+    direction: WrapDirection,
+    alignment: WrapAlignment,
+    spacing: i32,
+    run_spacing: i32,
+    content: Rect,
+) -> Vec<Rect> {
+    let mut rects = vec![Rect::new(content.x, content.y, 0, 0); sizes.len()];
+    if sizes.is_empty() {
+        return rects;
+    }
+    let horizontal = direction == WrapDirection::Horizontal;
+    let (available_main, available_cross) = if horizontal {
+        (content.width as i32, content.height as i32)
+    } else {
+        (content.height as i32, content.width as i32)
+    };
+    let line_cross: Vec<i32> = lines
+        .iter()
+        .map(|line| {
+            line.iter().map(|&index| cross_extent(sizes[index], direction)).max().unwrap_or(0)
+        })
+        .collect();
+
+    // The block's own footprint on the cross axis: every line's tallest member plus the gap
+    // between lines. A single short line in a tall box leaves most of the box empty, not "the
+    // block is as tall as the box", so the alignment offsets are measured from this.
+    let used_cross: i32 =
+        line_cross.iter().sum::<i32>() + (lines.len() as i32 - 1).max(0) * run_spacing;
+
+    if horizontal {
+        // Clamping the block to the box keeps the centred case inside it; the end-aligned case
+        // still lands flush with the trailing edge when the content overflows.
+        let total_cross = used_cross.min(available_cross);
+        let mut cursor_cross = content.y
+            + match alignment {
+                WrapAlignment::Start => 0,
+                WrapAlignment::Center => (available_cross - total_cross).max(0) / 2,
+                WrapAlignment::End => (available_cross - total_cross).max(0),
+                _ => 0,
+            };
+
+        for (line_index, line) in lines.iter().enumerate() {
+            let sizes_sum: i32 = line.iter().map(|&index| sizes[index].width as i32).sum::<i32>();
+            let line_total = sizes_sum + (line.len() as i32 - 1).max(0) * spacing;
+            let max_cross = line_cross[line_index];
+            let spacing = spacing_for(alignment, available_main, sizes_sum, line.len(), spacing);
+            let start_main = match alignment {
+                WrapAlignment::Start => content.x,
+                WrapAlignment::Center => content.x + (available_main - line_total).max(0) / 2,
+                WrapAlignment::End => content.x + (available_main - line_total).max(0),
+                WrapAlignment::SpaceBetween => content.x,
+                // `SpaceAround` gives every item an equal share of the leftover space, so half
+                // a slot belongs before the first one. The slack is measured from what will be
+                // painted (the per-item gaps included), so truncating the gap cannot push the
+                // run off centre.
+                WrapAlignment::SpaceAround => {
+                    let painted = sizes_sum + (line.len() as i32 - 1) * spacing.gap;
+                    content.x + (available_main - painted).max(0) / 2
+                }
+            };
+
+            let mut cursor_main = start_main;
+            for (slot, &index) in line.iter().enumerate() {
+                if slot > 0 {
+                    cursor_main += spacing.gap;
+                }
+                let size = sizes[index];
+                rects[index] = Rect::new(cursor_main, cursor_cross, size.width, size.height);
+                cursor_main += size.width as i32;
+            }
+            cursor_cross += max_cross + run_spacing;
+        }
+    } else {
+        let total_cross = used_cross;
+        let mut cursor_cross = content.x
+            + match alignment {
+                WrapAlignment::Start => 0,
+                WrapAlignment::Center => (available_cross - total_cross).max(0) / 2,
+                WrapAlignment::End => (available_cross - total_cross).max(0),
+                _ => 0,
+            };
+
+        for (line_index, line) in lines.iter().enumerate() {
+            let sizes_sum: i32 = line.iter().map(|&index| sizes[index].height as i32).sum::<i32>();
+            let line_total = sizes_sum + (line.len() as i32 - 1).max(0) * spacing;
+            let max_cross = line_cross[line_index];
+            let spacing = spacing_for(alignment, available_main, sizes_sum, line.len(), spacing);
+            let start_main = match alignment {
+                WrapAlignment::Start => content.y,
+                WrapAlignment::Center => content.y + (available_main - line_total).max(0) / 2,
+                WrapAlignment::End => content.y + (available_main - line_total).max(0),
+                WrapAlignment::SpaceBetween => content.y,
+                WrapAlignment::SpaceAround => {
+                    let painted = sizes_sum + (line.len() as i32 - 1) * spacing.gap;
+                    content.y + (available_main - painted).max(0) / 2
+                }
+            };
+
+            let mut cursor_main = start_main;
+            for (slot, &index) in line.iter().enumerate() {
+                if slot > 0 {
+                    cursor_main += spacing.gap;
+                }
+                let size = sizes[index];
+                rects[index] = Rect::new(cursor_cross, cursor_main, size.width, size.height);
+                cursor_main += size.height as i32;
+            }
+            cursor_cross += max_cross + run_spacing;
+        }
+    }
+
+    rects
+}
+
 impl WrapLayout {
     /// Create a new wrap layout with the given parameters.
     pub fn new(
@@ -117,7 +322,20 @@ impl WrapLayout {
         // S-47: negative padding is undefined, so reject it at construction. Without this
         // `content_rect` reached `2 * padding as u32`, which overflowed in debug builds.
         let padding = padding.max(0);
-        Self { direction, alignment, spacing, padding, children: Vec::new() }
+        Self { direction, alignment, spacing, run_spacing: None, padding, children: Vec::new() }
+    }
+
+    /// Sets the gap between wrap lines, independently of the gap between items.
+    ///
+    /// `None` (the default) means the item spacing is used on both axes, which is the
+    /// behaviour this layout had before the two were separable.
+    pub fn set_run_spacing(&mut self, spacing: Option<i32>) {
+        self.run_spacing = spacing;
+    }
+
+    /// The gap between wrap lines: the configured run spacing, or the item spacing.
+    pub fn run_spacing(&self) -> i32 {
+        self.run_spacing.unwrap_or(self.spacing)
     }
 
     /// Create a wrap layout with default settings.
@@ -167,201 +385,28 @@ impl WrapLayout {
         )
     }
 
-    /// Layout items horizontally, wrapping to new rows.
-    fn layout_horizontal(&self, content: Rect) -> Vec<(ObjectId, Rect)> {
-        if self.children.is_empty() {
-            return Vec::new();
-        }
-
-        let gap = self.spacing;
-        let avail_w = content.width as i32;
-
-        // Group children into lines.
-        let mut lines: Vec<Vec<(ObjectId, Size)>> = Vec::new();
-        let mut current_line: Vec<(ObjectId, Size)> = Vec::new();
-        let mut line_width = 0i32;
-
-        for child in &self.children {
-            let cw = child.size.width as i32;
-            let need = if current_line.is_empty() { cw } else { cw + gap };
-            if !current_line.is_empty() && line_width + need > avail_w {
-                // Wrap to next line.
-                lines.push(core::mem::take(&mut current_line));
-                current_line.push((child.widget_id, child.size));
-                line_width = cw;
-            } else {
-                current_line.push((child.widget_id, child.size));
-                line_width += need;
-            }
-        }
-        if !current_line.is_empty() {
-            lines.push(current_line);
-        }
-
-        // Compute row heights and total used height.
-        let row_height: Vec<i32> = lines
-            .iter()
-            .map(|line| line.iter().map(|(_, s)| s.height as i32).max().unwrap_or(0))
-            .collect();
-
-        // The sum of the row heights is the block's height only while it still fits; a
-        // single row of ten-pixel items in a two-hundred-pixel box leaves most of the box
-        // empty, not "the block is two hundred tall". Clamping keeps the centred case
-        // inside the box and leaves the end-aligned case pinned to the bottom.
-        let avail_h = content.height as i32;
-        let content_used_h: i32 =
-            row_height.iter().sum::<i32>() + (lines.len() as i32 - 1).max(0) * gap;
-        let total_height: i32 = content_used_h.min(avail_h);
-
-        // Apply vertical alignment to the whole content.
-        let start_y = content.y
-            + match self.alignment {
-                WrapAlignment::Start => 0,
-                WrapAlignment::Center => (avail_h - total_height).max(0) / 2,
-                WrapAlignment::End => (avail_h - total_height).max(0),
-                _ => 0,
-            };
-
-        let mut results = Vec::new();
-        let mut cur_y = start_y;
-
-        for (line_idx, line) in lines.iter().enumerate() {
-            // The wrap decision above charged every line the **configured** spacing, so
-            // the drawing must too, with the alignment adding whatever is left over -- see
-            // `spacing_between`. Deriving the gap from the alignment alone (the old shape)
-            // made `SpaceAround` paint a wider gap than the one the wrap assumed, so the
-            // items ran off the trailing edge.
-            let sizes_sum_w: i32 = line.iter().map(|(_, s)| s.width as i32).sum::<i32>();
-            let line_total_w = sizes_sum_w + (line.len() as i32 - 1).max(0) * gap;
-            let max_h = row_height[line_idx];
-
-            let spacing = spacing_for(self.alignment, avail_w, sizes_sum_w, line.len(), gap);
-            let start_x = match self.alignment {
-                WrapAlignment::Start => content.x,
-                WrapAlignment::Center => content.x + (avail_w - line_total_w).max(0) / 2,
-                WrapAlignment::End => content.x + (avail_w - line_total_w).max(0),
-                WrapAlignment::SpaceBetween => content.x,
-                // `SpaceAround` gives every item an equal share of the leftover space, so
-                // the leading half-gap is the first thing it must paint. Without this it
-                // started flush at `content.x` and was indistinguishable from
-                // `SpaceBetween` with fewer gaps -- the items were spread, but nothing was
-                // "around" the first one, so the line was not centred in its run.
-                //
-                // The slack is measured from what will actually be painted (the pieces
-                // between the items included), not from `available - used`, so truncating
-                // the per-item gap cannot push the run off centre.
-                WrapAlignment::SpaceAround => {
-                    let painted = sizes_sum_w + (line.len() as i32 - 1) * spacing.gap;
-                    content.x + (avail_w - painted).max(0) / 2
-                }
-            };
-
-            let mut cur_x = start_x;
-            for (i, (wid, sz)) in line.iter().enumerate() {
-                if i > 0 {
-                    cur_x += spacing.gap;
-                }
-                results.push((*wid, Rect::new(cur_x, cur_y, sz.width, sz.height)));
-                cur_x += sz.width as i32;
-            }
-
-            cur_y += max_h + gap;
-        }
-
-        results
-    }
-
-    /// Layout items vertically, wrapping to new columns.
-    fn layout_vertical(&self, content: Rect) -> Vec<(ObjectId, Rect)> {
-        if self.children.is_empty() {
-            return Vec::new();
-        }
-
-        let gap = self.spacing;
-        let avail_h = content.height as i32;
-
-        // Group children into columns.
-        let mut cols: Vec<Vec<(ObjectId, Size)>> = Vec::new();
-        let mut current_col: Vec<(ObjectId, Size)> = Vec::new();
-        let mut col_height = 0i32;
-
-        for child in &self.children {
-            let ch = child.size.height as i32;
-            let need = if current_col.is_empty() { ch } else { ch + gap };
-            if !current_col.is_empty() && col_height + need > avail_h {
-                cols.push(core::mem::take(&mut current_col));
-                current_col.push((child.widget_id, child.size));
-                col_height = ch;
-            } else {
-                current_col.push((child.widget_id, child.size));
-                col_height += need;
-            }
-        }
-        if !current_col.is_empty() {
-            cols.push(current_col);
-        }
-
-        let col_width: Vec<i32> = cols
-            .iter()
-            .map(|col| col.iter().map(|(_, s)| s.width as i32).max().unwrap_or(0))
-            .collect();
-
-        let total_width: i32 = col_width.iter().sum::<i32>() + (cols.len() as i32 - 1).max(0) * gap;
-
-        let avail_w = content.width as i32;
-        let start_x = content.x
-            + match self.alignment {
-                WrapAlignment::Start => 0,
-                WrapAlignment::Center => (avail_w - total_width).max(0) / 2,
-                WrapAlignment::End => (avail_w - total_width).max(0),
-                _ => 0,
-            };
-
-        let mut results = Vec::new();
-        let mut cur_x = start_x;
-
-        for (col_idx, col) in cols.iter().enumerate() {
-            // Same shape as the horizontal path: the column is charged the configured
-            // spacing when the wrap decision is taken, so the gap painted here is that
-            // spacing plus whatever the alignment distributes on top.
-            let sizes_sum_h: i32 = col.iter().map(|(_, s)| s.height as i32).sum::<i32>();
-            let col_total_h = sizes_sum_h + (col.len() as i32 - 1).max(0) * gap;
-            let max_w = col_width[col_idx];
-
-            let spacing = spacing_for(self.alignment, avail_h, sizes_sum_h, col.len(), gap);
-            let start_y = match self.alignment {
-                WrapAlignment::Start => content.y,
-                WrapAlignment::Center => content.y + (avail_h - col_total_h).max(0) / 2,
-                WrapAlignment::End => content.y + (avail_h - col_total_h).max(0),
-                WrapAlignment::SpaceBetween => content.y,
-                // See the horizontal path: `SpaceAround` also centres its run.
-                WrapAlignment::SpaceAround => {
-                    let painted = sizes_sum_h + (col.len() as i32 - 1) * spacing.gap;
-                    content.y + (avail_h - painted).max(0) / 2
-                }
-            };
-
-            let mut cur_y = start_y;
-            for (i, (wid, sz)) in col.iter().enumerate() {
-                if i > 0 {
-                    cur_y += spacing.gap;
-                }
-                results.push((*wid, Rect::new(cur_x, cur_y, sz.width, sz.height)));
-                cur_y += sz.height as i32;
-            }
-
-            cur_x += max_w + gap;
-        }
-
-        results
-    }
-
     /// Compute rects for all children within the content area.
+    ///
+    /// The line breaking and placement live in [`break_lines`] and [`place_lines`], shared with
+    /// [`FlowLayout`](crate::layout::FlowLayout); this method only converts the layout's child
+    /// table into the size slice those functions take and zips the ids back on.
     fn compute_rects(&self, content: Rect) -> Vec<(ObjectId, Rect)> {
-        match self.direction {
-            WrapDirection::Horizontal => self.layout_horizontal(content),
-            WrapDirection::Vertical => self.layout_vertical(content),
-        }
+        let sizes: Vec<Size> = self.children.iter().map(|child| child.size).collect();
+        let available_main = match self.direction {
+            WrapDirection::Horizontal => content.width,
+            WrapDirection::Vertical => content.height,
+        } as i32;
+        let lines = break_lines(&sizes, self.direction, self.spacing, available_main, true);
+        let rects = place_lines(
+            &sizes,
+            &lines,
+            self.direction,
+            self.alignment,
+            self.spacing,
+            self.run_spacing(),
+            content,
+        );
+        self.children.iter().zip(rects).map(|(child, rect)| (child.widget_id, rect)).collect()
     }
 }
 
@@ -405,6 +450,48 @@ impl Layout for WrapLayout {
         }
     }
 
+    /// Lays the children out from their own hints (LAY-N01).
+    ///
+    /// [`update`](Self::update) can only be *told* a child's size through
+    /// [`set_child_size`](Self::set_child_size); this path asks each child instead. The fallback
+    /// is the size the layout was already given, so a caller that has migrated only some of its
+    /// children keeps the geometry of the ones it has not described (see
+    /// [`ChildInfo::resolved_size`](crate::layout::ChildInfo::resolved_size)).
+    ///
+    /// A hint's preferred extent is the size the child would like, and this layout places each
+    /// child at that size — a *wrapping* container does not stretch its items to the line, which
+    /// is `Wrap`'s contract in Flutter and the behaviour every existing caller of `update` gets.
+    fn arrange(&self, rect: Rect, children: &[ChildInfo], out: &mut dyn FnMut(ObjectId, Rect)) {
+        let sized: Vec<WrapChild> = self
+            .children
+            .iter()
+            .map(|child| WrapChild {
+                widget_id: child.widget_id,
+                size: match ChildInfo::find(children, child.widget_id) {
+                    Some(info) => info.resolved_size(child.size),
+                    None => child.size,
+                },
+            })
+            .collect();
+        // Reuse `compute_rects` rather than a second solver: scaling, alignment and the line
+        // arithmetic must stay in one place (see the module's `break_lines` note).
+        let sized = WrapLayout {
+            direction: self.direction,
+            alignment: self.alignment,
+            spacing: self.spacing,
+            run_spacing: self.run_spacing,
+            padding: self.padding,
+            children: sized,
+        };
+        let content = sized.content_rect(rect);
+        if content.width == 0 || content.height == 0 {
+            return;
+        }
+        for (wid, child_rect) in sized.compute_rects(content) {
+            out(wid, child_rect);
+        }
+    }
+
     fn update_with_context(
         &self,
         rect: Rect,
@@ -429,6 +516,7 @@ impl Layout for WrapLayout {
             direction: self.direction,
             alignment: self.alignment,
             spacing: (self.spacing as f32 * scale) as i32,
+            run_spacing: self.run_spacing.map(|spacing| (spacing as f32 * scale) as i32),
             padding: scaled_padding,
             children: self.children.clone(),
         };
@@ -460,6 +548,7 @@ impl Layout for WrapLayout {
 mod tests {
     use super::*;
     use crate::compat::HashMap;
+    use crate::layout::Hints;
 
     #[test]
     fn wrap_layout_default_creates_empty() {
@@ -821,5 +910,68 @@ mod tests {
         // 34 that is left is split evenly: 17 above and 17 below.
         assert_eq!(out[0].1.y, 17, "the run is centred vertically");
         assert_eq!(160 - (out[2].1.y + 20), 17, "and symmetrically so");
+    }
+
+    /// `run_spacing` separates wrapped rows without changing the gap inside a row.
+    #[test]
+    fn run_spacing_separates_rows_without_widening_the_items() {
+        let mut layout = WrapLayout::new(WrapDirection::Horizontal, WrapAlignment::Start, 0, 0);
+        for id in 1..=4 {
+            layout.add_widget(id, 0);
+            layout.set_child_size(id, Size::new(40, 10));
+        }
+        layout.set_run_spacing(Some(20));
+        assert_eq!(layout.run_spacing(), 20);
+
+        let mut placed = HashMap::new();
+        layout.update(Rect::new(0, 0, 100, 100), &mut |id, rect| {
+            placed.insert(id, rect);
+        });
+
+        // 40 + 40 fits; the third item wraps, so rows are {1,2} and {3,4}.
+        assert_eq!(placed[&1].y, 0);
+        assert_eq!(placed[&2].y, 0);
+        assert_eq!(placed[&2].x, 40, "the in-row gap is still the item spacing (0)");
+        assert_eq!(placed[&3].y, 30, "10 px row height plus 20 px run spacing");
+        assert_eq!(placed[&4].y, 30);
+    }
+
+    /// LAY-N01: the hint-aware path places children at the size they ask for, and wraps on
+    /// that size — the question `update` can only answer when told through `set_child_size`.
+    #[test]
+    fn arrange_lays_children_out_from_their_hints() {
+        let mut layout = WrapLayout::new(WrapDirection::Horizontal, WrapAlignment::Start, 0, 0);
+        for id in 1..=3 {
+            layout.add_widget(id, 0);
+        }
+        let children: Vec<ChildInfo> =
+            (1..=3).map(|id| ChildInfo::new(id, Hints::fixed(40, 10))).collect();
+
+        let mut placed = HashMap::new();
+        layout.arrange(Rect::new(0, 0, 90, 100), &children, &mut |id, rect| {
+            placed.insert(id, rect);
+        });
+
+        // 40 + 40 fits in 90; the third child wraps to the next row.
+        assert_eq!(placed[&1], Rect::new(0, 0, 40, 10));
+        assert_eq!(placed[&2], Rect::new(40, 0, 40, 10));
+        assert_eq!(placed[&3], Rect::new(0, 10, 40, 10));
+    }
+
+    /// A partially-migrated caller must not lose the children it has not described: an
+    /// unconstrained hint means "no opinion" and falls back to the registered size.
+    #[test]
+    fn arrange_falls_back_to_the_registered_size() {
+        let mut layout = WrapLayout::new(WrapDirection::Horizontal, WrapAlignment::Start, 0, 0);
+        layout.add_widget(1, 0);
+        layout.set_child_size(1, Size::new(30, 12));
+        let children = [ChildInfo::new(1, Hints::default())];
+
+        let mut placed = HashMap::new();
+        layout.arrange(Rect::new(0, 0, 100, 50), &children, &mut |id, rect| {
+            placed.insert(id, rect);
+        });
+
+        assert_eq!(placed[&1], Rect::new(0, 0, 30, 12));
     }
 }

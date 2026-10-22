@@ -3,9 +3,17 @@
 
 //! Core signal implementation with thread-safe slot storage.
 //!
-//! Provides [`Signal<T>`] — a typed signal that delivers `Arc<T>` payloads to
-//! registered slots.  Slots are stored in a `RwLock`-protected `HashMap` for
+//! Provides [`Signal<T>`] — a typed signal that delivers its payload to registered slots in
+//! one of two calling conventions: `connect` hands the callback an `Arc<T>`, `connect_ref`
+//! hands it `&T`. Slots are stored in a `RwLock`-protected `HashMap` for
 //! concurrent read (emit) and exclusive write (connect/disconnect/block).
+//!
+//! # Why two conventions
+//!
+//! `connect` predates the borrowed path: it allocates an `Arc<T>` per emit, and a deferred
+//! delivery allocated a second one. `connect_ref` reads the payload by reference, so an emit
+//! whose slots are all borrowed allocates nothing; `emit` materialises the shared `Arc`
+//! lazily, and only when it actually reaches an `Arc`-payload slot.
 //!
 //! # Architecture
 //!
@@ -14,7 +22,7 @@
 //!   └── Arc<SignalInner<T>>
 //!         └── RwLock<HashMap<ConnectionHandle, SlotEntry<T>>>
 //!               ├── slot: Arc<SlotSlot<T>>
-//!               │     ├── callback: Mutex<FnMut(Arc<T>)>
+//!               │     ├── callback: Mutex<SlotCallback<T>>  — Owned or Borrowed
 //!               │     └── pending: Mutex<VecDeque<T>>
 //!               ├── once: bool          — auto-disconnect after first emit
 //!               ├── blocked: bool       — skip this slot on emit
@@ -57,7 +65,76 @@ pub struct ConnectionHandle(pub u64);
 
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
 
-type SlotFn<T> = Box<dyn FnMut(Arc<T>) + Send + Sync + 'static>;
+/// A connected slot's callback, in one of two calling conventions.
+///
+/// Both live in the same slot map so a signal can mix them:
+///
+/// * [`SlotCallback::Owned`] is the published `connect(FnMut(Arc<T>))` form. It needs a
+///   shared `Arc<T>`, which `emit` allocates **lazily and once**, and only when at least
+///   one such slot is actually reached.
+/// * [`SlotCallback::Borrowed`] is the `connect_ref(FnMut(&T))` form. It is handed a
+///   reference to the value `emit` already owns, so a signal whose slots are all borrowed
+///   allocates nothing per emit. This is the hot path: every control signal is emitted
+///   through the event bridge, which only reads its payload.
+///
+enum SlotCallback<T: Clone + Send + 'static> {
+    Owned(Box<dyn FnMut(Arc<T>) + Send + Sync + 'static>),
+    Borrowed(Box<dyn FnMut(&T) + Send + Sync + 'static>),
+}
+
+impl<T: Clone + Send + 'static> SlotCallback<T> {
+    /// Invokes the callback with the value carried by the emit pass.
+    ///
+    /// An `Owned` callback materialises the shared `Arc` on demand; once materialised the
+    /// same `Arc` serves every remaining slot in the pass.
+    fn call(&mut self, value: &mut EmitValue<'_, T>) {
+        match self {
+            Self::Borrowed(callback) => callback(value.as_ref()),
+            Self::Owned(callback) => callback(value.shared().clone()),
+        }
+    }
+
+    /// Invokes the callback with a value the drain loop already owns.
+    ///
+    /// Separate from [`Self::call`] so an `Owned` callback can move the queued `T` into the
+    /// `Arc` it needs, instead of cloning it out of a borrow first.
+    fn call_owned(&mut self, value: T) {
+        match self {
+            Self::Borrowed(callback) => callback(&value),
+            Self::Owned(callback) => callback(Arc::new(value)),
+        }
+    }
+}
+
+/// The value an emit pass hands to its slots.
+///
+/// `emit` starts with a borrow of the value it owns on its stack. Only an `Owned` slot
+/// forces the `Shared` form, so an all-borrowed signal never allocates an `Arc`.
+enum EmitValue<'a, T: Clone> {
+    Borrowed(&'a T),
+    Shared(Arc<T>),
+}
+
+impl<T: Clone> EmitValue<'_, T> {
+    fn as_ref(&self) -> &T {
+        match self {
+            Self::Borrowed(value) => value,
+            Self::Shared(value) => value,
+        }
+    }
+
+    /// Returns the shared form, materialising it from the borrow on first use.
+    fn shared(&mut self) -> &Arc<T> {
+        if matches!(self, Self::Borrowed(_)) {
+            let owned = self.as_ref().clone();
+            *self = Self::Shared(Arc::new(owned));
+        }
+        match self {
+            Self::Shared(value) => value,
+            Self::Borrowed(_) => unreachable!("materialised above"),
+        }
+    }
+}
 
 /// A slot's callback and its deferred-delivery queue, so concurrent emits neither drop a value nor
 /// hold a lock across a callback that may emit another signal.
@@ -77,7 +154,7 @@ type SlotFn<T> = Box<dyn FnMut(Arc<T>) + Send + Sync + 'static>;
 ///   releases. No lock is ever held while acquiring another slot's lock, so no lock-order cycle can
 ///   form, and no value is dropped.
 struct SlotSlot<T: Clone + Send + 'static> {
-    callback: Mutex<SlotFn<T>>,
+    callback: Mutex<SlotCallback<T>>,
     /// Values deferred by a concurrent emit whose `try_lock` found the callback busy.
     ///
     /// Stored as owned `T` rather than `Arc<T>` so this type is `Send + Sync` from `T: Send` alone,
@@ -104,7 +181,7 @@ struct SlotSlot<T: Clone + Send + 'static> {
 }
 
 impl<T: Clone + Send + 'static> SlotSlot<T> {
-    fn new(callback: SlotFn<T>) -> Self {
+    fn new(callback: SlotCallback<T>) -> Self {
         Self {
             callback: Mutex::new(callback),
             pending: Mutex::new(VecDeque::new()),
@@ -115,7 +192,7 @@ impl<T: Clone + Send + 'static> SlotSlot<T> {
     /// Runs `value` on this slot if the callback is free, otherwise defers it.
     ///
     /// Returns `true` if the callback ran here (the caller then owns draining the queue).
-    fn deliver(&self, value: Arc<T>) -> bool {
+    fn deliver(&self, value: &mut EmitValue<'_, T>) -> bool {
         let Some(mut callback) = crate::compat::try_lock_recover(&self.callback) else {
             // Busy: defer rather than block (which could cycle) or drop (which loses the value).
             self.defer(value);
@@ -123,7 +200,7 @@ impl<T: Clone + Send + 'static> SlotSlot<T> {
         };
         // We hold the callback mutex, so we own the drain phase for this pass.
         *lock(&self.draining) = true;
-        callback(value);
+        callback.call(value);
         // Deliver everything another thread queued while we held the callback, before releasing it.
         // The pending mutex and the `draining` flag are coordinated so a deferrer racing our exit
         // cannot leave a value in a queue nobody owns (E-21).
@@ -131,7 +208,7 @@ impl<T: Clone + Send + 'static> SlotSlot<T> {
             let mut pending = lock(&self.pending);
             if let Some(queued) = pending.pop_front() {
                 drop(pending);
-                callback(Arc::new(queued));
+                callback.call_owned(queued);
                 continue;
             }
             // Queue is empty: publish that no drainer is active, still under the same lock, so a
@@ -143,11 +220,11 @@ impl<T: Clone + Send + 'static> SlotSlot<T> {
     }
 
     /// Enqueues `value`, taking over the drain loop if no other thread owns it.
-    fn defer(&self, value: Arc<T>) {
+    fn defer(&self, value: &EmitValue<'_, T>) {
         // Push under the pending lock; ownership is decided under the `draining` flag, which the
         // active drainer also consults under the same lock, so the two cannot disagree about who
         // is responsible for the value we just queued.
-        lock(&self.pending).push_back((*value).clone());
+        lock(&self.pending).push_back(value.as_ref().clone());
         // If a drainer is active it re-checks `pending` under this same lock and will deliver our
         // value. Otherwise we become the drainer.
         self.drain_if_orphaned();
@@ -183,12 +260,12 @@ impl<T: Clone + Send + 'static> SlotSlot<T> {
     }
 
     /// Drains `pending` through `callback`, then releases ownership of the drain phase.
-    fn finish_drain<D: core::ops::DerefMut<Target = SlotFn<T>>>(&self, callback: &mut D) {
+    fn finish_drain<D: core::ops::DerefMut<Target = SlotCallback<T>>>(&self, callback: &mut D) {
         loop {
             let mut pending = lock(&self.pending);
             if let Some(queued) = pending.pop_front() {
                 drop(pending);
-                callback(Arc::new(queued));
+                callback.call_owned(queued);
                 continue;
             }
             *lock(&self.draining) = false;
@@ -413,25 +490,40 @@ impl<T: Clone + Send + 'static> Signal<T> {
         self.connect_with_priority(slot, Priority::Normal)
     }
 
-    /// Connect a slot with a specific priority.
+    /// Connect a slot that reads its payload by reference.
+    ///
+    /// # Why this exists
+    ///
+    /// [`Self::connect`] hands every callback an `Arc<T>`, so each emit allocates one (and a
+    /// deferred delivery allocates another). A callback that only *reads* the value — the event
+    /// bridge forwarding a control event is the canonical case — can take `&T` instead and let
+    /// `emit` pass a borrow of the value it already owns. An emit whose slots are all borrowed
+    /// allocates nothing.
+    ///
+    /// This is additive: `connect` keeps its published signature and behaviour, and a signal may
+    /// mix both kinds (see [`SlotCallback`]).
+    pub fn connect_ref<F>(&self, slot: F) -> ConnectionHandle
+    where
+        F: FnMut(&T) + Send + Sync + 'static,
+    {
+        self.connect_with_priority_ref(slot, Priority::Normal)
+    }
+
+    /// Connect an owned-payload slot with a specific priority.
     /// High-priority slots fire before Normal, Normal before Low.
     pub fn connect_with_priority<F>(&self, slot: F, priority: Priority) -> ConnectionHandle
     where
         F: FnMut(Arc<T>) + Send + Sync + 'static,
     {
-        let sequence = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
-        let handle = ConnectionHandle(sequence);
-        write_lock(&self.inner.slots).insert(
-            handle,
-            SlotEntry {
-                slot: Some(Arc::new(SlotSlot::new(Box::new(slot)))),
-                once: false,
-                blocked: false,
-                priority,
-            },
-        );
-        self.inner.push_order(handle, priority);
-        handle
+        self.insert_slot(SlotCallback::Owned(Box::new(slot)), false, priority)
+    }
+
+    /// Connect a borrowed-payload slot with a specific priority.
+    pub fn connect_with_priority_ref<F>(&self, slot: F, priority: Priority) -> ConnectionHandle
+    where
+        F: FnMut(&T) + Send + Sync + 'static,
+    {
+        self.insert_slot(SlotCallback::Borrowed(Box::new(slot)), false, priority)
     }
 
     /// Connect a slot that is invoked once and then disconnected automatically.
@@ -439,18 +531,36 @@ impl<T: Clone + Send + 'static> Signal<T> {
     where
         F: FnMut(Arc<T>) + Send + Sync + 'static,
     {
+        self.insert_slot(SlotCallback::Owned(Box::new(slot)), true, Priority::Normal)
+    }
+
+    /// Connect a borrowed-payload once-slot.
+    pub fn connect_once_ref<F>(&self, slot: F) -> ConnectionHandle
+    where
+        F: FnMut(&T) + Send + Sync + 'static,
+    {
+        self.insert_slot(SlotCallback::Borrowed(Box::new(slot)), true, Priority::Normal)
+    }
+
+    /// Inserts one slot entry and records its place in the priority order.
+    fn insert_slot(
+        &self,
+        callback: SlotCallback<T>,
+        once: bool,
+        priority: Priority,
+    ) -> ConnectionHandle {
         let sequence = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
         let handle = ConnectionHandle(sequence);
         write_lock(&self.inner.slots).insert(
             handle,
             SlotEntry {
-                slot: Some(Arc::new(SlotSlot::new(Box::new(slot)))),
-                once: true,
+                slot: Some(Arc::new(SlotSlot::new(callback))),
+                once,
                 blocked: false,
-                priority: Priority::Normal,
+                priority,
             },
         );
-        self.inner.push_order(handle, Priority::Normal);
+        self.inner.push_order(handle, priority);
         handle
     }
 
@@ -464,12 +574,32 @@ impl<T: Clone + Send + 'static> Signal<T> {
         handle
     }
 
+    /// Connect a borrowed-payload slot bound to a connection scope.
+    pub fn connect_ref_scoped<F>(&self, owner: &ConnectionScope, slot: F) -> ConnectionHandle
+    where
+        F: FnMut(&T) + Send + Sync + 'static,
+    {
+        let handle = self.connect_ref(slot);
+        self.track_owner(owner, handle);
+        handle
+    }
+
     /// Connect a once-slot bound to a connection scope.
     pub fn connect_once_scoped<F>(&self, owner: &ConnectionScope, slot: F) -> ConnectionHandle
     where
         F: FnMut(Arc<T>) + Send + Sync + 'static,
     {
         let handle = self.connect_once(slot);
+        self.track_owner(owner, handle);
+        handle
+    }
+
+    /// Connect a borrowed-payload once-slot bound to a connection scope.
+    pub fn connect_once_ref_scoped<F>(&self, owner: &ConnectionScope, slot: F) -> ConnectionHandle
+    where
+        F: FnMut(&T) + Send + Sync + 'static,
+    {
+        let handle = self.connect_once_ref(slot);
         self.track_owner(owner, handle);
         handle
     }
@@ -583,11 +713,13 @@ impl<T: Clone + Send + 'static> Signal<T> {
     /// mutex, so a concurrent emit defers its value to that slot and the running thread delivers it
     /// after the current callback; it never holds a signal-global lock (BLUE-issues E-21 and E-29).
     pub fn emit(&self, value: T) {
-        self.emit_inner(Arc::new(value));
+        // A borrow, not `Arc::new(value)`: the emit pass hands each slot a reference, and only
+        // materialises a shared `Arc` if it reaches a legacy `connect(FnMut(Arc<T>))` slot.
+        self.emit_inner(EmitValue::Borrowed(&value));
     }
 
     /// The emit pass: snapshot the slot list, then invoke each slot in priority order.
-    fn emit_inner(&self, arc_value: Arc<T>) {
+    fn emit_inner(&self, mut value: EmitValue<'_, T>) {
         let identity = self.identity();
 
         // Fast path: a signal with exactly one subscriber has no order to compute, so the
@@ -604,7 +736,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
             }
         };
         if let Some(handle) = single_subscriber {
-            self.deliver_to(identity, handle, &arc_value);
+            self.deliver_to(identity, handle, &mut value);
             return;
         }
 
@@ -629,7 +761,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
             // 2. Invoke each slot, in order. The guard intentionally lives across the callbacks:
             // a nested emit falls back to its own buffer rather than aliasing this one.
             for &handle in snapshot.iter() {
-                self.deliver_to(identity, handle, &arc_value);
+                self.deliver_to(identity, handle, &mut value);
             }
             true
         });
@@ -645,7 +777,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
             }
         }
         for handle in snapshot {
-            self.deliver_to(identity, handle, &arc_value);
+            self.deliver_to(identity, handle, &mut value);
         }
     }
 
@@ -656,7 +788,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
     /// callback. The callback itself runs with **no signal lock held** — that is what removes the
     /// cross-signal lock cycle (E-29) — and behind its own per-slot mutex, which is what lets a
     /// concurrent emit defer its value instead of dropping it (E-21).
-    fn deliver_to(&self, identity: usize, handle: ConnectionHandle, arc_value: &Arc<T>) {
+    fn deliver_to(&self, identity: usize, handle: ConnectionHandle, value: &mut EmitValue<'_, T>) {
         let (slot, removed_once, priority) = {
             let mut slots = write_lock(&self.inner.slots);
             let Some(entry) = slots.get(&handle) else {
@@ -701,7 +833,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
         // free, and otherwise **defers** the value to the thread already running it. No lock is
         // held while another slot's lock is acquired, so a mutual cross-signal forward cannot
         // dead-lock, and a concurrent emit cannot drop its value (BLUE-issues E-21, E-29).
-        let _ = slot.deliver(arc_value.clone());
+        let _ = slot.deliver(value);
     }
 
     /// Return number of currently connected slots.
@@ -1707,5 +1839,66 @@ mod drop_outside_lock_tests {
         assert!(signal.is_connected(handle));
         assert!(signal.disconnect(handle), "a known handle must report true");
         assert!(!signal.is_connected(handle));
+    }
+
+    /// `connect_ref` is the borrowed-payload form: it must observe exactly the value
+    /// `emit` carried, and — the reason it exists — it must share the emit pass with the
+    /// legacy `Arc`-payload form without either kind missing a delivery (CORE-N02).
+    #[test]
+    fn borrowed_and_owned_slots_both_receive_every_emit() {
+        let signal = Signal::<String>::new();
+        let borrowed = Arc::new(crate::compat::Mutex::new(alloc::vec::Vec::new()));
+        let owned = Arc::new(core::sync::atomic::AtomicUsize::new(0));
+
+        let borrowed_sink = Arc::clone(&borrowed);
+        signal.connect_ref(move |value: &String| {
+            lock(&borrowed_sink).push(value.clone());
+        });
+        signal.connect({
+            let owned = Arc::clone(&owned);
+            move |value: Arc<String>| {
+                assert!(!value.is_empty());
+                owned.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+
+        signal.emit(String::from("first"));
+        signal.emit(String::from("second"));
+
+        assert_eq!(
+            lock(&borrowed).as_slice(),
+            &[String::from("first"), String::from("second")],
+            "a borrowed slot must see every emitted value, in order"
+        );
+        assert_eq!(
+            owned.load(Ordering::SeqCst),
+            2,
+            "an owned slot sharing the same emit pass must receive both values"
+        );
+    }
+
+    /// `connect_once_ref` must run once and then release the slot, the same contract as
+    /// the `Arc`-payload `connect_once`.
+    #[test]
+    fn a_once_ref_slot_runs_exactly_once() {
+        let signal = Signal::<u32>::new();
+        let calls = Arc::new(core::sync::atomic::AtomicUsize::new(0));
+        let seen = Arc::new(crate::compat::Mutex::new(alloc::vec::Vec::new()));
+
+        {
+            let calls = Arc::clone(&calls);
+            let seen = Arc::clone(&seen);
+            signal.connect_once_ref(move |value: &u32| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                lock(&seen).push(*value);
+            });
+        }
+
+        signal.emit(7);
+        signal.emit(8);
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "a once-slot must run once");
+        assert_eq!(lock(&seen).as_slice(), &[7]);
+        assert_eq!(signal.slot_count(), 0, "the once-slot must leave the map");
     }
 }

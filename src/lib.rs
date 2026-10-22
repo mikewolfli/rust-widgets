@@ -1119,6 +1119,29 @@ macro_rules! tr {
         $key.to_string()
     }};
 }
+#[cfg(not(feature = "i18n"))]
+/// `tr_into!` appends a translation to a caller-provided buffer.
+///
+/// This build has no catalogue, so it logs the missing-feature warning that [`tr!`] logs and
+/// appends the key. It accepts the same arities as the `i18n` build's macro so call sites need
+/// no `cfg` of their own.
+#[macro_export]
+macro_rules! tr_into {
+    ($key:expr, $out:expr) => {{
+        log::warn!("i18n tr_into! called but the i18n feature is disabled, key={}", $key);
+        $out.push_str($key);
+    }};
+    ($key:expr, $count:expr, $out:expr) => {{
+        log::warn!("i18n tr_into! called but the i18n feature is disabled, key={}", $key);
+        let _ = $count;
+        $out.push_str($key);
+    }};
+    ($key:expr, $context:expr, $count:expr, $out:expr) => {{
+        log::warn!("i18n tr_into! called but the i18n feature is disabled, key={}", $key);
+        let _ = ($context, $count);
+        $out.push_str($key);
+    }};
+}
 /// Application lifecycle wrapper and type-safe widget handles (not available in mini mode).
 ///
 /// Same condition as `crate::json`: `full_widgets`.
@@ -1141,6 +1164,9 @@ pub fn init() {
     trace_runtime_route("init");
     platform::profile::runtime_init();
     platform::profile::init_optional_subsystems();
+    // One-time menu policy probe, at startup rather than on the first menu draw.
+    #[cfg(feature = "advanced-widgets")]
+    crate::menu_config::init();
 }
 /// Run platform main event loop.
 pub fn run() {
@@ -2676,6 +2702,26 @@ pub fn poll_widget_triggered() -> Option<crate::core::ObjectId> {
 #[cfg(not(alloc_frugal))]
 pub fn poll_widget_trigger_event() -> Option<WidgetTriggerEvent> {
     control_backend::get_control_backend().poll_widget_trigger_event()
+}
+
+/// Blocks the calling thread until the framework signals work, or `timeout` elapses.
+///
+/// # Why hosts need this
+///
+/// The trigger queues are pull-based ([`poll_menu_triggered`],
+/// [`poll_widget_trigger_event`]), and a host that drains them used to sleep a fixed
+/// interval between polls. That cost up to one interval of latency and woke the thread
+/// at that rate even while the window was still. Enqueuing a trigger (and every event
+/// post) now wakes the framework's wait channel, so a host can block here and be
+/// scheduled as soon as work exists. The timeout is the backstop for state that has no
+/// wake source, such as a client-size change observed by polling.
+///
+/// Returns `true` when a wake was observed, `false` on timeout.
+#[cfg(not(alloc_frugal))]
+pub fn wait_for_host_events(timeout: std::time::Duration) -> bool {
+    let observed = platform::frame_wait::generation();
+    platform::frame_wait::wait_after(observed, timeout);
+    platform::frame_wait::generation() != observed
 }
 
 /// Delivers every queued widget trigger, in order, until the queue is empty.

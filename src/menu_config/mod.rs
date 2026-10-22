@@ -8,7 +8,12 @@
 //!
 //! # Reachability
 //!
-//! **State:** Reserved: a menu-configuration helper with no production consumer; `menu_toolbar` covers the runtime menu model. Removal condition: when a consumer needs file-driven menu definitions.
+//! **State:** Wired. `App::init` (and [`crate::init`]) start the process-wide manager,
+//! the menu family reads its policy through the menu toolbar's `effects::current`
+//! boundary, and the master switch defaults to **on**. A host that wants the
+//! pre-adaptive rendering calls [`set_enabled`]`(false)`; verification paths install
+//! [`MenuConfig::verification`] through [`use_verification_policy`] so committed
+//! snapshots stay host-independent.
 mod config;
 mod dialog;
 mod manager;
@@ -16,8 +21,13 @@ mod persistence;
 #[cfg(test)]
 mod tests;
 mod types;
+/// The effect snapshot the menu controls consume.
+pub use crate::style::MenuEffects;
 pub use config::MenuConfig;
 pub use dialog::MenuConfigDialog;
-pub use manager::MenuConfigManager;
+pub use manager::{
+    apply_overrides, current_effects, init, install_policy, manager, set_enabled,
+    use_verification_policy, MenuConfigManager,
+};
 pub use persistence::{ConfigLoadError, ConfigPersistence};
 pub use types::{HardwareCapabilities, PerformanceLevel, UserOverrides};

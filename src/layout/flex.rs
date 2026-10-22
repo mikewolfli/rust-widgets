@@ -68,6 +68,35 @@ pub enum AlignItems {
     Baseline,
 }
 
+/// How the *lines* of a wrapping flex container are distributed along the cross axis.
+///
+/// CSS calls this `align-content`, and it is separate from [`AlignItems`]: `align_items`
+/// aligns the children *within* a line, this distributes the lines themselves. It has no
+/// effect while the layout does not wrap, or while the lines already fill the cross axis.
+///
+/// # The default
+///
+/// CSS's initial value is `stretch`, but this layout has always packed wrapped lines at the
+/// cross start and left any leftover cross space unused. Keeping [`Self::FlexStart`] as the
+/// default is what makes adopting this field a no-op for existing callers; `Stretch` (each
+/// line grown to share the leftover) is opt-in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AlignContent {
+    /// Pack the lines at the cross start (the historical behaviour).
+    #[default]
+    FlexStart,
+    /// Pack the lines at the cross end.
+    FlexEnd,
+    /// Centre the block of lines.
+    Center,
+    /// Equal space *between* lines, none at the edges.
+    SpaceBetween,
+    /// Equal space around every line, half a slot at the edges.
+    SpaceAround,
+    /// Grow every line so the block fills the cross axis.
+    Stretch,
+}
+
 /// A single item managed by the flex layout.
 #[derive(Debug, Clone)]
 pub struct FlexItem {
@@ -109,8 +138,21 @@ pub struct FlexLayout {
     pub justify_content: JustifyContent,
     /// Cross-axis alignment.
     pub align_items: AlignItems,
+    /// Distribution of the wrapped lines along the cross axis.
+    pub align_content: AlignContent,
     /// Gap between items in pixels.
+    ///
+    /// This is the fallback for both axes: [`row_gap`](Self::row_gap) and
+    /// [`column_gap`](Self::column_gap) override it per axis, which is the CSS
+    /// `gap` / `row-gap` / `column-gap` split.
     pub gap: i32,
+    /// Gap between rows, when it differs from [`gap`](Self::gap).
+    ///
+    /// "Row" keeps its CSS meaning: the gap between lines is the *cross-axis* gap for a
+    /// row-direction layout, and the *main-axis* gap for a column-direction one.
+    pub row_gap: Option<i32>,
+    /// Gap between columns, when it differs from [`gap`](Self::gap).
+    pub column_gap: Option<i32>,
     /// Outer padding in pixels.
     pub padding: i32,
     /// Managed items.
@@ -150,7 +192,10 @@ impl FlexLayout {
             wrap: FlexWrap::default(),
             justify_content: JustifyContent::default(),
             align_items: AlignItems::default(),
+            align_content: AlignContent::default(),
             gap: 0,
+            row_gap: None,
+            column_gap: None,
             padding: 0,
             items: Vec::new(),
             child_sizes: Vec::new(),
@@ -173,7 +218,10 @@ impl FlexLayout {
             wrap,
             justify_content,
             align_items,
+            align_content: AlignContent::default(),
             gap,
+            row_gap: None,
+            column_gap: None,
             // S-47: negative padding is undefined, so reject it at construction.
             padding: padding.max(0),
             items: Vec::new(),
@@ -204,6 +252,28 @@ impl FlexLayout {
 
     fn is_row(&self) -> bool {
         matches!(self.direction, FlexDirection::Row | FlexDirection::RowReverse)
+    }
+
+    /// The gap between items on the main axis.
+    ///
+    /// `row_gap`/`column_gap` keep their CSS meaning (a *row* gap separates lines of a
+    /// row-direction layout, i.e. the cross axis), so the axis picks which override applies
+    /// and [`gap`](Self::gap) remains the fallback for both.
+    pub fn main_gap(&self) -> i32 {
+        if self.is_row() {
+            self.column_gap.unwrap_or(self.gap)
+        } else {
+            self.row_gap.unwrap_or(self.gap)
+        }
+    }
+
+    /// The gap between items on the cross axis (between wrapped lines).
+    pub fn cross_gap(&self) -> i32 {
+        if self.is_row() {
+            self.row_gap.unwrap_or(self.gap)
+        } else {
+            self.column_gap.unwrap_or(self.gap)
+        }
     }
 
     /// A stable hash of every input an arrangement depends on.
@@ -242,7 +312,10 @@ impl FlexLayout {
         mix(self.wrap as u64);
         mix(self.justify_content as u64);
         mix(self.align_items as u64);
+        mix(self.align_content as u64);
         mix(self.gap as u64);
+        mix(self.row_gap.map(|gap| gap as u64 + 1).unwrap_or(0));
+        mix(self.column_gap.map(|gap| gap as u64 + 1).unwrap_or(0));
         mix(self.padding as u64);
         mix(self.items.len() as u64);
         for item in &self.items {
@@ -674,20 +747,18 @@ impl FlexLayout {
     }
 
     /// Compute the rects for all items within the content area.
-    /// `scaled_gap` overrides `self.gap` when Some (used for HiDPI/context-aware scaling).
-    fn compute_rects(
-        &self,
-        content_rect: Rect,
-        scaled_gap: Option<i32>,
-    ) -> Vec<(Option<ObjectId>, Rect)> {
+    ///
+    /// The gaps come from [`main_gap`](Self::main_gap) / [`cross_gap`](Self::cross_gap), which
+    /// fall back to [`gap`](Self::gap) when no per-axis override is set.
+    fn compute_rects(&self, content_rect: Rect) -> Vec<(Option<ObjectId>, Rect)> {
         if self.items.is_empty() {
             return Vec::new();
         }
 
-        let gap = scaled_gap.unwrap_or(self.gap);
+        let gap = self.main_gap();
 
         if !matches!(self.wrap, FlexWrap::NoWrap) {
-            return self.compute_wrapped_rects(content_rect, gap);
+            return self.compute_wrapped_rects(content_rect, gap, self.cross_gap());
         }
 
         let (available_main, start_main, available_cross, cross_origin) = if self.is_row() {
@@ -727,7 +798,12 @@ impl FlexLayout {
         results
     }
 
-    fn compute_wrapped_rects(&self, content_rect: Rect, gap: i32) -> Vec<(Option<ObjectId>, Rect)> {
+    fn compute_wrapped_rects(
+        &self,
+        content_rect: Rect,
+        gap: i32,
+        cross_gap: i32,
+    ) -> Vec<(Option<ObjectId>, Rect)> {
         let is_row = self.is_row();
         let available_main =
             if is_row { content_rect.width as i32 } else { content_rect.height as i32 };
@@ -807,11 +883,48 @@ impl FlexLayout {
         }
         let cross_origin = if is_row { content_rect.y } else { content_rect.x };
         let mut results = Vec::with_capacity(self.items.len());
-        let mut cross_cursor = if self.wrap == FlexWrap::WrapReverse {
-            cross_origin + available_cross
-        } else {
-            cross_origin
+
+        // `align-content` distributes the lines themselves, not the items inside them.
+        //
+        // `Stretch` changes each line's cross size first (the CSS meaning: every line grows by
+        // an equal share of the leftover), after which there is nothing left for the offsets to
+        // distribute. Nothing here runs for a single line under `Stretch` when the line already
+        // fills the axis, which is why the default behaviour of a full layout is unchanged.
+        let line_count = lines.len() as i32;
+        if self.align_content == AlignContent::Stretch && !line_cross_sizes.is_empty() {
+            let used = line_cross_sizes.iter().sum::<i32>() + (line_count - 1).max(0) * cross_gap;
+            let leftover = (available_cross - used).max(0);
+            let per_line = leftover / line_count;
+            let remainder = leftover % line_count;
+            for (index, size) in line_cross_sizes.iter_mut().enumerate() {
+                *size += per_line + if (index as i32) < remainder { 1 } else { 0 };
+            }
+        }
+        let used = line_cross_sizes.iter().sum::<i32>() + (line_count - 1).max(0) * cross_gap;
+        let leftover = (available_cross - used).max(0);
+        let (start, inter_extra) = match self.align_content {
+            AlignContent::FlexStart | AlignContent::Stretch => (0, 0),
+            AlignContent::FlexEnd => (leftover, 0),
+            AlignContent::Center => (leftover / 2, 0),
+            AlignContent::SpaceBetween => {
+                (0, if line_count > 1 { leftover / (line_count - 1) } else { 0 })
+            }
+            // Half a slot before the first line, a full slot between lines: the same reading
+            // `justify_content: SpaceAround` uses on the main axis.
+            AlignContent::SpaceAround => {
+                if line_count > 0 {
+                    (leftover / line_count / 2, leftover / line_count)
+                } else {
+                    (0, 0)
+                }
+            }
         };
+        let mut line_offsets = Vec::with_capacity(lines.len());
+        let mut offset_cursor = start;
+        for size in &line_cross_sizes {
+            line_offsets.push(offset_cursor);
+            offset_cursor += size + cross_gap + inter_extra;
+        }
 
         for (line_index, line) in lines.iter().enumerate() {
             let intrinsic_total = line.iter().map(|&index| item_main(index)).sum::<i32>();
@@ -845,9 +958,14 @@ impl FlexLayout {
                 gap,
             );
             let line_cross = line_cross_sizes[line_index];
-            if self.wrap == FlexWrap::WrapReverse {
-                cross_cursor -= line_cross;
-            }
+            // The block is measured from the cross start in forward order; `WrapReverse`
+            // mirrors each line inside that block, so `FlexStart` still means "the edge the
+            // lines start from" rather than "the top, always".
+            let line_base = if self.wrap == FlexWrap::WrapReverse {
+                cross_origin + available_cross - line_offsets[line_index] - line_cross
+            } else {
+                cross_origin + line_offsets[line_index]
+            };
             for (slot, &index) in line.iter().enumerate() {
                 let align = self.items[index].align_self.unwrap_or(self.align_items);
                 let child_cross = item_cross(index);
@@ -878,7 +996,7 @@ impl FlexLayout {
                     AlignItems::Center => ((line_cross - child_cross) / 2, child_cross),
                 };
                 let main_pos = positions[slot];
-                let cross_pos = cross_cursor + cross_offset;
+                let cross_pos = line_base + cross_offset;
                 let child_rect = if is_row {
                     Rect::new(
                         main_pos,
@@ -895,11 +1013,6 @@ impl FlexLayout {
                     )
                 };
                 results.push((self.items[index].widget_id, child_rect));
-            }
-            if self.wrap == FlexWrap::WrapReverse {
-                cross_cursor -= gap;
-            } else {
-                cross_cursor += line_cross + gap;
             }
         }
         results
@@ -978,7 +1091,7 @@ impl Layout for FlexLayout {
             return;
         }
 
-        let results = self.compute_rects(content_rect, None);
+        let results = self.compute_rects(content_rect);
         self.store_arrangement(key, &results);
         for (widget_id, child_rect) in results {
             if let Some(wid) = widget_id {
@@ -1103,8 +1216,9 @@ impl FlexLayout {
 
         // The gap between children is scaled with the device, matching `update_with_context`'s
         // reading (the larger of the two scales). Both entry points run through this body, so the
-        // reading is stated once.
-        let scaled_gap = (self.gap as f32 * scale).round() as i32;
+        // reading is stated once. The per-axis overrides are scaled too, or a `row_gap` would
+        // stay nominal on a HiDPI screen while `gap` grew.
+        let scaled_gap = (self.main_gap() as f32 * scale).round() as i32;
 
         let content_rect = Rect::new(
             rect.x.saturating_add(scaled_padding),
@@ -1205,7 +1319,10 @@ impl FlexLayout {
             wrap: self.wrap,
             justify_content: self.justify_content,
             align_items: self.align_items,
+            align_content: self.align_content,
             gap: self.gap,
+            row_gap: self.row_gap,
+            column_gap: self.column_gap,
             padding: self.padding,
             items: self.items.clone(),
             child_sizes: sizes.clone(),
@@ -1237,6 +1354,54 @@ impl FlexLayout {
                     info.hints.height.min.saturating_add(info.params.margins.vertical_total()),
                 );
             }
+        }
+
+        // ── Wrapping goes through the wrapped solver ──
+        //
+        // The single-line packing below cannot honour `wrap`: it computes one band of main
+        // positions, so every child of a wrapping layout landed on one line. That was invisible
+        // while only programmatic callers used `arrange`, but `update_with_context` forwards
+        // here (so a window layout gets the device context), which made a wrapping window layout
+        // stop wrapping on every device-aware pass.
+        //
+        // The solver is the same one `update` uses (`compute_rects` → the wrap path), given the
+        // hint-derived outer sizes and the device-scaled gaps. Its boxes are *outer* boxes, so
+        // each child's own margins are removed before the box is handed out — the same unit
+        // conversion the single-line path performs.
+        if !matches!(self.wrap, FlexWrap::NoWrap) {
+            solver.gap = scaled_gap;
+            solver.row_gap = self.row_gap.map(|gap| (gap as f32 * scale).round() as i32);
+            solver.column_gap = self.column_gap.map(|gap| (gap as f32 * scale).round() as i32);
+            let mut placed: Vec<(Option<ObjectId>, Rect)> = Vec::with_capacity(sizes.len());
+            for (index, (widget_id, outer)) in
+                solver.compute_rects(content_rect).into_iter().enumerate()
+            {
+                let (left, top, right, bottom) = inset(index);
+                let child_rect = Rect::new(
+                    outer.x.saturating_add(left),
+                    outer.y.saturating_add(top),
+                    outer.width.saturating_sub((left + right).max(0) as u32),
+                    outer.height.saturating_sub((top + bottom).max(0) as u32),
+                );
+                if let Some(widget_id) = widget_id {
+                    let floored = if !apply_touch_floor || size_is_stated(index) {
+                        child_rect
+                    } else {
+                        crate::layout::types::grow_to_min_touch_size(
+                            child_rect,
+                            context.min_touch_size,
+                        )
+                    };
+                    placed.push((Some(widget_id), floored));
+                }
+            }
+            self.store_arrangement(key, &placed);
+            for (widget_id, child_rect) in placed {
+                if let Some(wid) = widget_id {
+                    out(wid, child_rect);
+                }
+            }
+            return;
         }
         let (solved_main, _total_grow, _total_main) =
             solver.compute_main_sizes(available_main, scaled_gap);
@@ -1568,7 +1733,7 @@ impl FlexLayout {
     ///
     /// This method cannot carry the `children` hints — its signature is the trait's and takes ids
     /// — so it is not the entry the composite builder calls. Its body therefore used to be a second
-    /// implementation of the same arrangement: `compute_rects(content, Some(scaled_gap))` plus the
+    /// implementation of the same arrangement: `compute_rects(content)` plus the
     /// touch floor. Once `arrange_body` grew the same two steps (so `arrange` and
     /// `arrange_with_context` would stop disagreeing), keeping this copy meant two solvers for one
     /// question — and the floor existed in only one of them, which is how a composite's children
@@ -2962,5 +3127,187 @@ mod tests {
         });
         assert_eq!(rects.get(&1).map(|r| r.x), Some(0));
         assert_eq!(rects.get(&1).map(|r| r.y), Some(0));
+    }
+
+    // ── LAY-N05: `align-content` and the per-axis gaps ──────────────────────────────
+
+    /// Three items of 60 in a 100-wide row each get their own line (20 tall), so the block is
+    /// 60 tall in a 100-tall box and leaves 40 to distribute between the lines.
+    fn three_wrapped_lines(align_content: AlignContent) -> HashMap<ObjectId, Rect> {
+        let mut layout = FlexLayout::with_params(
+            FlexDirection::Row,
+            FlexWrap::Wrap,
+            JustifyContent::FlexStart,
+            AlignItems::FlexStart,
+            0,
+            0,
+        );
+        layout.align_content = align_content;
+        for id in 1..=3 {
+            layout.add_widget(id, 0);
+        }
+        layout.set_child_sizes(vec![Size::new(60, 20); 3]);
+        let mut rects = HashMap::new();
+        layout.update(Rect::new(0, 0, 100, 100), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+        rects
+    }
+
+    #[test]
+    fn align_content_flex_start_is_the_historical_behaviour() {
+        let rects = three_wrapped_lines(AlignContent::FlexStart);
+        assert_eq!(rects[&1].y, 0);
+        assert_eq!(rects[&2].y, 20);
+        assert_eq!(rects[&3].y, 40);
+    }
+
+    #[test]
+    fn align_content_space_between_spreads_the_lines() {
+        let rects = three_wrapped_lines(AlignContent::SpaceBetween);
+        // 40 px leftover over two gaps: 20 px between lines, none at the edges.
+        assert_eq!(rects[&1].y, 0);
+        assert_eq!(rects[&2].y, 40);
+        assert_eq!(rects[&3].y, 80);
+    }
+
+    #[test]
+    fn align_content_center_centres_the_block_of_lines() {
+        let rects = three_wrapped_lines(AlignContent::Center);
+        assert_eq!(rects[&1].y, 20);
+        assert_eq!(rects[&2].y, 40);
+        assert_eq!(rects[&3].y, 60);
+    }
+
+    #[test]
+    fn align_content_space_around_puts_half_a_slot_at_the_edges() {
+        let rects = three_wrapped_lines(AlignContent::SpaceAround);
+        // 40 / 3 = 13 between lines, 6 before the first.
+        assert_eq!(rects[&1].y, 6);
+        assert_eq!(rects[&2].y, 39);
+        assert_eq!(rects[&3].y, 72);
+    }
+
+    /// `Stretch` grows the lines themselves: 40 / 3 = 13 each, and the first line takes the
+    /// one-pixel remainder so the block ends flush with the box.
+    #[test]
+    fn align_content_stretch_grows_every_line() {
+        let rects = three_wrapped_lines(AlignContent::Stretch);
+        assert_eq!(rects[&1].y, 0);
+        assert_eq!(rects[&2].y, 34);
+        assert_eq!(rects[&3].y, 67);
+    }
+
+    /// CSS `row-gap` is the gap *between lines*, i.e. the cross axis of a row layout; the item
+    /// gap on the main axis is untouched.
+    #[test]
+    fn row_gap_separates_lines_without_widening_the_items() {
+        let mut layout = FlexLayout::with_params(
+            FlexDirection::Row,
+            FlexWrap::Wrap,
+            JustifyContent::FlexStart,
+            AlignItems::FlexStart,
+            10,
+            0,
+        );
+        layout.row_gap = Some(25);
+        for id in 1..=4 {
+            layout.add_widget(id, 0);
+        }
+        layout.set_child_sizes(vec![Size::new(40, 10); 4]);
+
+        let mut rects = HashMap::new();
+        layout.update(Rect::new(0, 0, 100, 90), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+
+        assert_eq!(rects[&2].x, 50, "the main-axis gap stays 10");
+        assert_eq!(rects[&3].y, 35, "10 px line height plus the 25 px row gap");
+        assert_eq!(rects[&4].y, 35);
+    }
+
+    /// `column-gap` overrides the main-axis gap of a row layout.
+    #[test]
+    fn column_gap_overrides_the_main_axis_gap() {
+        let mut layout = FlexLayout::with_params(
+            FlexDirection::Row,
+            FlexWrap::NoWrap,
+            JustifyContent::FlexStart,
+            AlignItems::FlexStart,
+            10,
+            0,
+        );
+        layout.column_gap = Some(4);
+        layout.add_widget(1, 0);
+        layout.add_widget(2, 0);
+        layout.set_child_sizes(vec![Size::new(40, 10); 2]);
+
+        assert_eq!(layout.main_gap(), 4);
+        assert_eq!(layout.cross_gap(), 10);
+
+        let mut rects = HashMap::new();
+        layout.update(Rect::new(0, 0, 200, 50), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+        assert_eq!(rects[&2].x, 44);
+    }
+
+    /// The hint-aware path must wrap: a three-item row whose items are 60 wide does not fit in
+    /// 100, and the single-line packing `arrange` used before placed all three at the same
+    /// origin.
+    #[test]
+    fn arrange_wraps_when_the_children_do_not_fit() {
+        let mut layout = FlexLayout::with_params(
+            FlexDirection::Row,
+            FlexWrap::Wrap,
+            JustifyContent::FlexStart,
+            AlignItems::FlexStart,
+            0,
+            0,
+        );
+        for id in 1..=3 {
+            layout.add_widget(id, 0);
+        }
+        let children: Vec<ChildInfo> =
+            (1..=3).map(|id| ChildInfo::new(id, Hints::fixed(60, 20))).collect();
+
+        let mut placed = HashMap::new();
+        layout.arrange(Rect::new(0, 0, 100, 100), &children, &mut |id, rect| {
+            placed.insert(id, rect);
+        });
+
+        assert_eq!(placed[&1], Rect::new(0, 0, 60, 20));
+        assert_eq!(placed[&2], Rect::new(0, 20, 60, 20));
+        assert_eq!(placed[&3], Rect::new(0, 40, 60, 20));
+    }
+
+    /// `update_with_context` is the window-layout entry, and it forwards to the hints path. A
+    /// wrapping layout must still wrap there — otherwise every device-aware pass silently put
+    /// the children back on one line.
+    #[test]
+    fn update_with_context_keeps_the_wrap() {
+        let mut layout = FlexLayout::with_params(
+            FlexDirection::Row,
+            FlexWrap::Wrap,
+            JustifyContent::FlexStart,
+            AlignItems::FlexStart,
+            0,
+            0,
+        );
+        for id in 1..=3 {
+            layout.add_widget(id, 0);
+        }
+        layout.set_child_sizes(vec![Size::new(60, 20); 3]);
+        let context =
+            LayoutContext { layout_scale: 1.0, font_scale: 1.0, min_touch_size: Size::new(0, 0) };
+
+        let mut placed = HashMap::new();
+        layout.update_with_context(Rect::new(0, 0, 100, 100), &context, &mut |id, rect| {
+            placed.insert(id, rect);
+        });
+
+        assert_eq!(placed[&1].y, 0);
+        assert_eq!(placed[&2].y, 20);
+        assert_eq!(placed[&3].y, 40);
     }
 }

@@ -142,13 +142,36 @@ pub fn init_with_options(options: InitOptions) -> InitReport {
 }
 /// Translate a key to the current language
 pub fn translate(key: &str) -> String {
+    let mut out = String::new();
+    translate_into(key, &mut out);
+    out
+}
+/// Translate a key into `out` without allocating.
+///
+/// The zero-allocation counterpart of [`translate`]: the resolved message is appended to the
+/// caller's buffer. `translate` itself must allocate because its signature returns `String`;
+/// a draw loop that reuses one buffer should call this instead.
+pub fn translate_into(key: &str, out: &mut String) {
     let mut guard = crate::compat::lock(&GLOBAL_I18N);
     if !ensure_initialized(&mut guard) {
-        return key.to_string();
+        out.push_str(key);
+        return;
     }
     match *guard {
-        Some(ref mut manager) => manager.translate(key),
-        None => key.to_string(),
+        Some(ref mut manager) => manager.translate_into(key, out),
+        None => out.push_str(key),
+    }
+}
+/// Translate a key with context and plural count into `out` without allocating.
+pub fn translate_into_with_context(key: &str, context: Option<&str>, count: u32, out: &mut String) {
+    let mut guard = crate::compat::lock(&GLOBAL_I18N);
+    if !ensure_initialized(&mut guard) {
+        out.push_str(key);
+        return;
+    }
+    match *guard {
+        Some(ref mut manager) => manager.translate_with_context_into(key, context, count, out),
+        None => out.push_str(key),
     }
 }
 /// Translate a key with optional context and plural count

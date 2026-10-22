@@ -157,6 +157,15 @@ camera_preview video-surface true The preview surface is the camera frame, not c
 # Both entries were reported by the gate itself on the next run, which is the behaviour
 # this table wants: an exemption is only valid while the exempted thing dominates.
 
+# ── Carousel: the page fill is the caller's colour ────────────────────────────
+# A carousel page is identified by the colour the application gave it, so it is data, not
+# chrome (the control's own `draw_page` documents the same split). When a page is showing it
+# covers most of the rectangle, so it is the census's **dominant** colour in both
+# appearances. What must not regress is the chrome around it — the panel, the indicator strip
+# and its marks, and the border — and that is asserted directly by
+# `carousel::tests::the_chrome_follows_the_appearance_beneath_a_data_coloured_page`.
+carousel page-identity true The page fill is the colour the caller gave that page; it identifies which page is showing, so remapping it by theme would change the data.
+
 # ── Sparkline: the line is the whole control ───────────────────────────────
 # A sparkline IS its line. It paints no background, no border and no axis: the only
 # colour it draws with is `line_color` / `last_point_color`, and those are **fields the

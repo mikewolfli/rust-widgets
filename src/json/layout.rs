@@ -11,8 +11,8 @@ use crate::core::Orientation;
 #[cfg(test)]
 use crate::core::Rect;
 use crate::layout::{
-    BorderLayout, BorderRegion, BoxLayout, FormLayout, GridLayout, Layout, SplitterLayout,
-    StackLayout,
+    AspectRatioLayout, BorderLayout, BorderRegion, BoxLayout, CenterLayout, FormLayout, GridLayout,
+    KeyboardAwareLayout, Layout, SplitterLayout, StackLayout,
 };
 
 // ── Layout kind enum ─────────────────────────────────────────
@@ -106,6 +106,35 @@ pub enum DeclarativeLayoutKind {
         /// Outer inset in logical pixels on all four sides.
         margin: u32,
     },
+    /// Center layout: one child, centred, optionally at a fraction of the parent.
+    Center {
+        /// Fraction of the parent's width the child uses (`0.0..=1.0`).
+        width_factor: f32,
+        /// Fraction of the parent's height the child uses (`0.0..=1.0`).
+        height_factor: f32,
+    },
+    /// Aspect-ratio layout: one child whose width/height ratio is fixed.
+    AspectRatio {
+        /// `width / height`. Must be finite and positive; the parser rejects the rest.
+        ratio: f32,
+        /// Whether the child is also bounded by the parent on both axes.
+        respect_parent: bool,
+    },
+    /// Keyboard-aware wrapper: a vertical box whose children slide up while the
+    /// on-screen keyboard is visible.
+    ///
+    /// The inner layout is a vertical box built from `spacing`/`margin`, because a
+    /// keyboard-aware container is what a form is; a document that wants another inner
+    /// layout can nest it as the box's child.
+    KeyboardAware {
+        /// Gap in logical pixels between the inner box's children.
+        spacing: u32,
+        /// Outer inset in logical pixels on all four sides.
+        margin: u32,
+        /// Slide duration in milliseconds. `0` applies the offset immediately, which is
+        /// what a host with no frame loop wants.
+        animation_duration: u64,
+    },
 }
 
 impl DeclarativeLayoutKind {
@@ -128,6 +157,9 @@ impl DeclarativeLayoutKind {
         "wrap",
         "flex",
         "border",
+        "center",
+        "aspect_ratio",
+        "keyboard_aware",
     ];
 }
 
@@ -222,6 +254,35 @@ pub fn parse_layout_kind(value: &Value) -> Result<DeclarativeLayoutKind, String>
             Ok(DeclarativeLayoutKind::Flex { gap })
         }
         "border" | "Border" => Ok(DeclarativeLayoutKind::Border { spacing, margin }),
+        "center" | "Center" => Ok(DeclarativeLayoutKind::Center {
+            width_factor: json_f32(obj.get("width_factor"), 1.0),
+            height_factor: json_f32(obj.get("height_factor"), 1.0),
+        }),
+        "aspect_ratio" | "aspectRatio" | "aspect-ratio" => {
+            let ratio = json_f32(obj.get("ratio"), 1.0);
+            // `AspectRatioLayout::new` panics on a non-positive or non-finite ratio, so a
+            // document must not be able to reach it: report the bad value instead of
+            // aborting the loader.
+            if !(ratio.is_finite() && ratio > 0.0) {
+                return Err(format!(
+                    "layout 'aspect_ratio' needs a finite, positive 'ratio'; got {ratio}"
+                ));
+            }
+            Ok(DeclarativeLayoutKind::AspectRatio {
+                ratio,
+                respect_parent: obj.get("respect_parent").and_then(Value::as_bool).unwrap_or(true),
+            })
+        }
+        "keyboard_aware" | "keyboardAware" | "keyboard-aware" => {
+            Ok(DeclarativeLayoutKind::KeyboardAware {
+                spacing,
+                margin,
+                animation_duration: obj
+                    .get("animation_duration")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+            })
+        }
         _ => Err(format!(
             "unknown layout type '{type_str}'; supported types are {}",
             DeclarativeLayoutKind::SUPPORTED_TYPES.join(", ")
@@ -251,6 +312,16 @@ fn json_i32(value: Option<&Value>, default: i32) -> i32 {
         let clamp = if raw > 0 { i32::MAX } else { i32::MIN };
         i32::try_from(raw).unwrap_or(clamp)
     })
+}
+
+/// Reads a JSON number as an `f32`, falling back to `default` when absent or non-numeric.
+///
+/// `as f32` is a narrowing conversion, so an out-of-range `f64` becomes infinity. That is
+/// acceptable here because every caller validates the result (an infinite aspect ratio is
+/// rejected), and because the alternative — silently clamping to `f32::MAX` — would turn a
+/// document's mistake into a plausible-looking ratio.
+fn json_f32(value: Option<&Value>, default: f32) -> f32 {
+    value.and_then(Value::as_f64).map(|raw| raw as f32).unwrap_or(default)
 }
 
 /// Every `orientation` token this crate understands, and the axis it names.
@@ -316,6 +387,15 @@ pub fn create_layout_from_kind(kind: &DeclarativeLayoutKind) -> Box<dyn Layout> 
             Box::new(FormLayout::new(spacing, margin))
         }
         DeclarativeLayoutKind::Flow { spacing, padding, orientation } => {
+            // `flow` and `wrap` share one line-breaking implementation (`wrap::break_lines` /
+            // `wrap::place_lines`), so there is no second algorithm here to drift (LAY-N08).
+            //
+            // The *type* stays `FlowLayout` because the declarative runtime calls
+            // `Layout::update`, which has no hint channel: `WrapLayout` would have no size to
+            // read (its `arrange` path needs `ChildInfo`, and `apply_layout` has only ids), and
+            // every child would be placed at 0x0. `FlowLayout` keeps the `100x100` default for
+            // children added by id, which is the size source the declarative path relies on
+            // until `apply_layout` can hand the layouts their children's hints.
             let config = crate::layout::FlowLayoutConfig {
                 direction: match orientation {
                     Orientation::Horizontal => crate::layout::FlowDirection::Horizontal,
@@ -360,6 +440,18 @@ pub fn create_layout_from_kind(kind: &DeclarativeLayoutKind) -> Box<dyn Layout> 
         }
         DeclarativeLayoutKind::Border { spacing, margin } => {
             Box::new(BorderLayout::new(spacing, margin))
+        }
+        DeclarativeLayoutKind::Center { width_factor, height_factor } => {
+            Box::new(CenterLayout::with_factors(width_factor, height_factor))
+        }
+        DeclarativeLayoutKind::AspectRatio { ratio, respect_parent } => {
+            Box::new(AspectRatioLayout::new(ratio, respect_parent))
+        }
+        DeclarativeLayoutKind::KeyboardAware { spacing, margin, animation_duration } => {
+            Box::new(KeyboardAwareLayout::new(
+                Box::new(BoxLayout::new(Orientation::Vertical, spacing, margin)),
+                animation_duration,
+            ))
         }
     }
 }

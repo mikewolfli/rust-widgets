@@ -31,6 +31,12 @@ jobs:
       - name: Cargo check examples
         run: cargo check --examples
 
+      # `check --examples` only proves the README samples *compile*. Their assertions are
+      # the part that proves the samples still describe working behaviour (a rendered SVG,
+      # a child actually placed by the layout), so they must run, not just type-check.
+      - name: Run README sample checks
+        run: cargo run --example readme_check
+
   validation-gates:
     name: Validation gates (profiles + ABI)
     runs-on: ubuntu-latest
@@ -66,6 +72,16 @@ jobs:
         run: |
           chmod +x tools/check_version_consistency.sh
           ./tools/check_version_consistency.sh
+
+      # The three cookbook locales are built from the same API, and a sample that no
+      # longer compiles ships documentation that fails on the reader's first command.
+      # This gate was only ever run by hand (a PR-template checkbox), so it is wired into
+      # the same job that owns the other document/contract gates.
+      - name: Run cookbook gate
+        shell: bash
+        run: |
+          chmod +x tools/check_cookbook.sh
+          ./tools/check_cookbook.sh
 
       # A release note is the one document a reader cannot check against the code, so two
       # copies that can drift silently is the failure this catches.

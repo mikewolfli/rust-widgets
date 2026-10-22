@@ -74,6 +74,8 @@ pub mod environment;
 /// Position-varying colour ramps, used where a constant colour would be a
 /// special case of a gradient.
 pub mod gradient;
+/// The menu subsystem's effect snapshot (policy ↔ painting boundary).
+pub mod menu_effects;
 /// The base style value types — colour, padding, margin, border, font — that the
 /// rest of the style system composes and resolves. Contains no matching or
 /// inheritance logic, which lives in the layers above.
@@ -93,6 +95,7 @@ pub use css_trace::*;
 pub use css_watcher::*;
 pub use environment::*;
 pub use gradient::*;
+pub use menu_effects::MenuEffects;
 pub use primitives::*;
 pub use selector::*;
 /// Serialises tests that touch the process-wide stylesheet manager.

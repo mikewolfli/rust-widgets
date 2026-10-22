@@ -17,6 +17,19 @@ pub enum SizePolicy {
     Expanding,
 }
 /// Min/max limits applied during layout calculation.
+///
+/// # Adapter, not the source of truth (LAY-N03)
+///
+/// The crate grew three answers to "how much room does this child want": this type plus
+/// [`SizePolicy`] (box layout), [`Hints`](crate::layout::Hints) (the hint-aware `arrange`
+/// channel), and `FlexItem`'s own min/max. `Hints` is the converged form: it carries both
+/// axes, and it is what `CompositeWidget` feeds every layout through `ChildInfo`.
+///
+/// These two remain because a caller that builds a `BoxLayout` directly has no `ChildInfo`
+/// to supply — they are that layout's adapter, and `BoxLayout::arrange` reads the hint's
+/// main-axis bounds when a hint *is* present (see its implementation). Removing them would
+/// break the programmatic API for no behavioural gain; keeping them undocumented as an
+/// adapter is how the three vocabularies drift again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayoutConstraints {
     /// Minimum major-axis size.

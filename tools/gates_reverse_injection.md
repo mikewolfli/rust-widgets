@@ -423,3 +423,24 @@ header, not a defect).
 > iceberg scan and returns nothing else. Which is the lesson worth keeping: a cross gate that checks
 > **one** ABI is a gate that can hide a break in the other, exactly as `check_ios_cross.sh` records
 > for the device/simulator split.
+
+## Structural-rules round (2026-10-22): HX-02 / HX-03 / HX-07
+
+Two gates were added with the structural issues, and both were injected before being
+recorded here. Each injection is a line of source that is a defect by the gate's own rule,
+removed immediately after the run so the working tree is unchanged.
+
+| gate | injected | reported |
+|---|---|---|
+| `check_wildcard_exports.sh` | re-added `pub use crate::platform::types::*;` to `src/platform/contract.rs` (the exact cross-module wildcard HX-07 removed) | `❌ src/platform/contract.rs:101 forwards \`crate::platform::types::*\`, but \`types\` is not a module declared in this file. Declare it here or re-export the specific names (\`pub use crate::platform::types::{A, B};\`) so this file's surface stays its own.` / `check_wildcard_exports: FAILED (1 unowned wildcard(s))` |
+| `check_source_structure.sh` | added `pub(crate) fn _probe() {}` to `src/widget/advanced_widgets/mod.rs`, a `mod.rs` that had just been cleaned to declarations only | `❌ src/widget/advanced_widgets/mod.rs: defines 1 item(s) in a \`mod.rs\` (first: \`pub(crate) fn _probe() {}\`). Principle #8: declare and re-export here, define in a sibling file.` / `check_source_structure: FAILED (1 finding(s))` |
+
+> **What these injections do not prove.** Neither gate was injected in its *second*
+> direction (the stale-allowlist one: an entry that stays in `MOD_RS_PENDING` or
+> `TOO_LONG_PENDING` after the file is fixed). That branch shipped with a live proof
+> instead — `src/widget/advanced_widgets/mod.rs` was extracted to `range.rs`, its
+> allowlist entry was deleted in the same edit, and the gate's own message for the
+> opposite case is the one it would have printed had the deletion been forgotten:
+> "no longer defines items — remove it from MOD_RS_PENDING (a stale allowlist entry
+> excuses nothing and hides the next regression)". Recorded as a gap rather than claimed
+> as a pass.

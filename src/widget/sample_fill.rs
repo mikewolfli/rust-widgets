@@ -44,9 +44,13 @@
 //! wrong shape — and [`apply`] reports how many it filled so the count can be checked rather than assumed.
 
 use crate::compat::Arc;
+use crate::core::{Color, ObjectId, Point, Rect, Size};
+use crate::widget::base_widgets::label::Label;
 use crate::widget::capability::coercion::widget_as_mut;
 use crate::widget::sample_data as sample;
 use crate::widget::Widget;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use crate::compat::{String, Vec};
 use crate::widget::advanced_widgets::calendar::Calendar;
@@ -54,15 +58,24 @@ use crate::widget::advanced_widgets::dial::Dial;
 use crate::widget::advanced_widgets::pie_menu::PieMenu;
 use crate::widget::advanced_widgets::ribbon_bar::RibbonBar;
 use crate::widget::advanced_widgets::tab_bar::TabBar;
+use crate::widget::container_widgets::carousel::Carousel;
 use crate::widget::container_widgets::groupbox::GroupBox;
-use crate::widget::cupertino::core::MaterialNavigationRail;
+use crate::widget::container_widgets::mdiarea::MdiArea;
+use crate::widget::container_widgets::scrollarea::ScrollArea;
+use crate::widget::container_widgets::splitter::Splitter;
+use crate::widget::container_widgets::stackedwidget::StackedWidget;
+use crate::widget::container_widgets::toolbox::ToolBox;
+use crate::widget::cupertino::core::{MaterialNavigationRail, MaterialSnackbar};
+use crate::widget::cupertino::segmented_control::CupertinoSegmentedControl;
 use crate::widget::dialog::bottom_sheet::BottomSheet;
 use crate::widget::dialog::dialog_widget::Dialog;
 use crate::widget::dialog::input_dialog::InputDialog;
 use crate::widget::dialog::message_box::MessageBox;
 use crate::widget::dialog::modal_bottom_sheet::ModalBottomSheet;
+use crate::widget::dialog::popover::Popover;
 use crate::widget::dialog::progress_dialog::ProgressDialog;
 use crate::widget::dialog::wizard::WizardDialog;
+use crate::widget::display_widgets::mini_canvas::MiniCanvas;
 use crate::widget::display_widgets::slider::{Slider, TickPosition};
 use crate::widget::display_widgets::switch::Switch;
 use crate::widget::input_widgets::cascader::{Cascader, CascaderOption};
@@ -74,11 +87,17 @@ use crate::widget::input_widgets::listbox::ListBox;
 use crate::widget::input_widgets::multi_select_combo_box::{MultiSelectComboBox, MultiSelectItem};
 use crate::widget::input_widgets::shortcut_editor::{ShortcutEditor, ShortcutEntry};
 use crate::widget::menu_toolbar::menu::Menu;
+use crate::widget::menu_toolbar::menu_bar::MenuBar;
 use crate::widget::menu_toolbar::menu_button::{MenuButton, MenuItem};
+use crate::widget::menu_toolbar::tool_bar::ToolBar;
 use crate::widget::misc_widgets::segmented_button::{Segment, SegmentedButton};
 use crate::widget::nav_widgets::bottom_navigation_bar::BottomNavigationBar;
+use crate::widget::nav_widgets::navigation_drawer::NavigationDrawer;
+use crate::widget::nav_widgets::tab_view::TabView;
 use crate::widget::overlay_widgets::refresh_control::RefreshControl;
+use crate::widget::overlay_widgets::swipe_to_dismiss::SwipeToDismiss;
 use crate::widget::special_widgets::breadcrumb::{Breadcrumb, BreadcrumbSegment};
+use crate::widget::special_widgets::canvas::Canvas;
 use crate::widget::special_widgets::chip::{Chip, ChipItem};
 use crate::widget::special_widgets::command_palette::{CommandEntry, CommandPalette};
 use crate::widget::special_widgets::finance::candlestick_chart::CandlestickChart;
@@ -89,6 +108,7 @@ use crate::widget::special_widgets::finance::quote_board::QuoteBoard;
 use crate::widget::special_widgets::finance::volume_chart::VolumeChart;
 use crate::widget::special_widgets::finance::{Bar, BookLevel, OrderBook, PriceSeries, Quote};
 use crate::widget::special_widgets::gantt_widget::{GanttTask, GanttWidget};
+use crate::widget::special_widgets::grid::GridWidget;
 use crate::widget::special_widgets::kanban_board::{KanbanBoard, KanbanCard, KanbanColumn};
 use crate::widget::special_widgets::notification_center::{
     NotificationCenter, NotificationItem, NotificationLevel,
@@ -96,13 +116,21 @@ use crate::widget::special_widgets::notification_center::{
 use crate::widget::special_widgets::segmented_control::{SegmentItem, SegmentedControl};
 use crate::widget::special_widgets::snackbar::Snackbar;
 use crate::widget::special_widgets::timeline_widget::{TimelineItem, TimelineWidget};
+use crate::widget::special_widgets::toast::{ToastItem, ToastLevel, ToastStack};
 use crate::widget::view_widgets::data_grid::DataGrid;
 use crate::widget::view_widgets::data_source::IncrementalTableDataSource;
 use crate::widget::view_widgets::grid_table::GridTableWidget;
 use crate::widget::view_widgets::list_view::{ListView, VecListModel};
+use crate::widget::view_widgets::properties_panel::{
+    PropertiesPanel, PropertyEntry, PropertyValue,
+};
 use crate::widget::view_widgets::table_widget::{TableModel, TableWidget};
+use crate::widget::view_widgets::tree_table::TreeTable;
 use crate::widget::view_widgets::tree_view::{TreeView, VecTreeModel};
+use crate::widget::view_widgets::virtual_list::VirtualList;
 use crate::widget::view_widgets::virtual_table::VirtualTable;
+use crate::widget::web_widgets::web_engine::WebEngineView;
+use crate::widget::{Draw, SimpleRegistry};
 
 /// Fills `widget` with this crate's sample data, returning `true` when it wrote something.
 ///
@@ -869,6 +897,289 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
         },
 
         // Everything else has no data concept, or is already seeded by its own constructor (the charts).
+        // ── View controls with a lightweight data entry (VIEW-N05 unblocked these) ──
+        //
+        // `data_view` is an alias of `virtual_list` in the capability table, so one arm
+        // serves both canonical names. Without it both snapshots were a bare frame.
+        "virtual_list" | "data_view" => match widget_as_mut::<VirtualList>(widget) {
+            Some(list) => {
+                list.set_rows(sample_list_rows());
+                list.select_row(0);
+                true
+            }
+            None => false,
+        },
+        "tree_table" => match widget_as_mut::<TreeTable>(widget) {
+            Some(table) => {
+                table.set_rows(sample_list_rows());
+                true
+            }
+            None => false,
+        },
+
+        // ── Panels and strips whose content is a list of labels ──
+        "properties_panel" => match widget_as_mut::<PropertiesPanel>(widget) {
+            Some(panel) => {
+                panel.add_property(PropertyEntry::new(
+                    "Width",
+                    PropertyValue::Number(240.0),
+                    Some("Layout"),
+                    None,
+                    true,
+                ));
+                panel.add_property(PropertyEntry::new(
+                    "Height",
+                    PropertyValue::Number(120.0),
+                    Some("Layout"),
+                    None,
+                    true,
+                ));
+                panel.add_property(PropertyEntry::new(
+                    "Visible",
+                    PropertyValue::Bool(true),
+                    Some("State"),
+                    None,
+                    true,
+                ));
+                panel.add_property(PropertyEntry::new(
+                    "Title",
+                    PropertyValue::Text("Hello".to_string()),
+                    Some("State"),
+                    None,
+                    false,
+                ));
+                true
+            }
+            None => false,
+        },
+        "tab_view" => match widget_as_mut::<TabView>(widget) {
+            Some(tabs) => {
+                tabs.add_tab(
+                    "General",
+                    Some(Box::new(Label::new(
+                        "General page".to_string(),
+                        Rect::new(0, 0, 200, 64),
+                    ))),
+                    None::<String>,
+                );
+                tabs.add_tab(
+                    "Advanced",
+                    Some(Box::new(Label::new(
+                        "Advanced options".to_string(),
+                        Rect::new(0, 0, 200, 64),
+                    ))),
+                    None::<String>,
+                );
+                tabs.add_tab("About", None, None::<String>);
+                tabs.set_current_index(0);
+                true
+            }
+            None => false,
+        },
+        "menu_bar" => match widget_as_mut::<MenuBar>(widget) {
+            Some(bar) => {
+                bar.add_menu("File");
+                bar.add_menu("Edit");
+                bar.add_menu("View");
+                true
+            }
+            None => false,
+        },
+        "tool_bar" => match widget_as_mut::<ToolBar>(widget) {
+            Some(bar) => {
+                bar.add_action("open", "Open");
+                bar.add_action("save", "Save");
+                bar.add_separator();
+                bar.add_action("run", "Run");
+                true
+            }
+            None => false,
+        },
+        "tool_box" => match widget_as_mut::<ToolBox>(widget) {
+            Some(toolbox) => {
+                toolbox.add_item("General".to_string(), None);
+                toolbox.add_item("Editor".to_string(), None);
+                toolbox.add_item("Files".to_string(), None);
+                toolbox.set_current_index(0);
+                true
+            }
+            None => false,
+        },
+        "carousel" => match widget_as_mut::<Carousel>(widget) {
+            Some(carousel) => {
+                carousel.add_page("Welcome", Color::rgb(33, 150, 243));
+                carousel.add_page("Features", Color::rgb(156, 39, 176));
+                carousel.add_page("Pricing", Color::rgb(0, 150, 136));
+                carousel.set_current(0);
+                true
+            }
+            None => false,
+        },
+        "toast_stack" => match widget_as_mut::<ToastStack>(widget) {
+            Some(stack) => {
+                stack.push(ToastItem::new("1", "Saved successfully", ToastLevel::Success, 3000));
+                stack.push(ToastItem::new("2", "Check your connection", ToastLevel::Warning, 3000));
+                stack.select_index(0);
+                true
+            }
+            None => false,
+        },
+        "grid" => match widget_as_mut::<GridWidget>(widget) {
+            Some(grid) => {
+                grid.set_rows(4);
+                grid.set_columns(6);
+                grid.set_spacing(2);
+                grid.set_line_color(Some(Some(Color::rgb(120, 120, 120))));
+                true
+            }
+            None => false,
+        },
+
+        // ── Immediate-mode surfaces: a shape is the content ──
+        "canvas" => match widget_as_mut::<Canvas>(widget) {
+            Some(canvas) => {
+                canvas.fill_rect(Rect::new(12, 16, 80, 40), Color::rgb(33, 150, 243));
+                canvas.draw_line(
+                    Point::new(12, 72),
+                    Point::new(228, 72),
+                    Color::rgb(200, 200, 200),
+                );
+                canvas.fill_circle(Point::new(160, 60), 18, Color::rgb(255, 152, 0));
+                true
+            }
+            None => false,
+        },
+        "mini_canvas" => match widget_as_mut::<MiniCanvas>(widget) {
+            Some(canvas) => {
+                canvas.fill_rect(Rect::new(12, 16, 70, 32), Color::rgb(33, 150, 243));
+                canvas.draw_line(
+                    Point::new(12, 70),
+                    Point::new(220, 70),
+                    Color::rgb(200, 200, 200),
+                );
+                canvas.fill_circle(Point::new(170, 56), 14, Color::rgb(255, 152, 0));
+                true
+            }
+            None => false,
+        },
+
+        // ── Overlays that must be shown to be reviewable ──
+        "popover" => match widget_as_mut::<Popover>(widget) {
+            Some(popover) => {
+                popover.set_content(Box::new(Label::new(
+                    "Popover content".to_string(),
+                    Rect::new(0, 0, 180, 60),
+                )));
+                popover.show(Rect::new(20, 20, 80, 30));
+                true
+            }
+            None => false,
+        },
+        "material_snackbar" => match widget_as_mut::<MaterialSnackbar>(widget) {
+            Some(snackbar) => {
+                snackbar.set_message("Message sent");
+                snackbar.set_action_text("Undo");
+                snackbar.show();
+                true
+            }
+            None => false,
+        },
+        "cupertino_segmented_control" => match widget_as_mut::<CupertinoSegmentedControl>(widget) {
+            Some(control) => {
+                control.set_segments(vec![
+                    "Day".to_string(),
+                    "Week".to_string(),
+                    "Month".to_string(),
+                ]);
+                control.set_selected_index(1);
+                true
+            }
+            None => false,
+        },
+        "navigation_drawer" => match widget_as_mut::<NavigationDrawer>(widget) {
+            Some(drawer) => {
+                drawer.add_item("H", "Home");
+                drawer.add_item("S", "Search");
+                drawer.add_item("G", "Settings");
+                drawer.set_selected_index(0);
+                drawer.open();
+                true
+            }
+            None => false,
+        },
+        "web_engine_view" => match widget_as_mut::<WebEngineView>(widget) {
+            Some(view) => {
+                view.load_html("<h1>Web content</h1>");
+                true
+            }
+            None => false,
+        },
+        "swipe_to_dismiss" => match widget_as_mut::<SwipeToDismiss>(widget) {
+            Some(swipe) => {
+                swipe.set_child(Box::new(Label::new(
+                    "Swipe me".to_string(),
+                    Rect::new(0, 0, 200, 44),
+                )));
+                swipe.set_action_text("Delete");
+                swipe.set_dismiss_threshold(0.4);
+                true
+            }
+            None => false,
+        },
+
+        // ── Containers: a registered child is the content ──
+        //
+        // These four draw through `SimpleRegistry`, so a child is composed here exactly
+        // the way a host composes one (register + attach). The label owns its geometry;
+        // the registry carries no geometry callback because a snapshot never resizes.
+        "mdi_area" => match widget_as_mut::<MdiArea>(widget) {
+            Some(area) => {
+                let registry = sample_registry();
+                register_sample_label(&registry, 1, Rect::new(16, 16, 160, 56), "Document 1");
+                register_sample_label(&registry, 2, Rect::new(48, 48, 160, 56), "Document 2");
+                area.set_registry(registry);
+                area.add_sub_window(1, Rect::new(16, 16, 160, 56));
+                area.add_sub_window(2, Rect::new(48, 48, 160, 56));
+                true
+            }
+            None => false,
+        },
+        "splitter" => match widget_as_mut::<Splitter>(widget) {
+            Some(splitter) => {
+                let registry = sample_registry();
+                register_sample_label(&registry, 1, Rect::new(0, 0, 100, 80), "Left pane");
+                register_sample_label(&registry, 2, Rect::new(100, 0, 140, 80), "Right pane");
+                splitter.set_registry(registry);
+                splitter.add_pane(1, 1);
+                splitter.add_pane(2, 1);
+                true
+            }
+            None => false,
+        },
+        "scroll_area" => match widget_as_mut::<ScrollArea>(widget) {
+            Some(area) => {
+                let registry = sample_registry();
+                register_sample_label(&registry, 1, Rect::new(0, 0, 160, 24), "Scrollable content");
+                area.set_registry(registry);
+                area.set_content_size(Size::new(160, 240));
+                true
+            }
+            None => false,
+        },
+        "stacked_widget" => match widget_as_mut::<StackedWidget>(widget) {
+            Some(stack) => {
+                let registry = sample_registry();
+                register_sample_label(&registry, 1, Rect::new(0, 0, 200, 80), "Page one");
+                register_sample_label(&registry, 2, Rect::new(0, 0, 200, 80), "Page two");
+                stack.set_registry(registry);
+                stack.add_widget(1);
+                stack.add_widget(2);
+                stack.set_current_index(0);
+                true
+            }
+            None => false,
+        },
+
         _ => false,
     }
 }
@@ -899,6 +1210,33 @@ fn settle(widget: &mut dyn Widget, mut step: impl FnMut(&mut dyn Widget) -> bool
 // ---------------------------------------------------------------------------
 // The sample sources
 // ---------------------------------------------------------------------------
+
+/// The rows the list-shaped controls share, so their snapshots differ by layout.
+fn sample_list_rows() -> Vec<String> {
+    ["Alpha", "Bravo", "Charlie", "Delta", "Echo"]
+        .iter()
+        .map(|label| (*label).to_string())
+        .collect()
+}
+
+/// A registry for a composed container snapshot.
+fn sample_registry() -> Rc<RefCell<SimpleRegistry>> {
+    Rc::new(RefCell::new(SimpleRegistry::new()))
+}
+
+/// Registers a label as a container child.
+///
+/// The draw closure owns the label and draws it at the rect it was constructed with.
+/// A snapshot never resizes its children, so no geometry callback is registered.
+fn register_sample_label(
+    registry: &Rc<RefCell<SimpleRegistry>>,
+    id: ObjectId,
+    rect: Rect,
+    text: &str,
+) {
+    let mut label = Label::new(text.to_string(), rect);
+    registry.borrow_mut().register(id, move |context| label.draw(context), |_| {});
+}
 
 // `CheckBox` is imported here rather than with the other control types because it belongs to the
 // `base_widgets` family and the arms above are its only use in this module.
@@ -1010,6 +1348,17 @@ impl TableModel for SampleTableModel {
     fn data(&self, row: usize, column: usize) -> Option<String> {
         sample::ROWS.get(row).and_then(|cells| cells.get(column)).map(|cell| (*cell).to_string())
     }
+
+    /// The sample rows are `&'static str`, so the paint path can copy them into its own buffer.
+    fn fill_data(&self, row: usize, column: usize, out: &mut String) -> bool {
+        match sample::ROWS.get(row).and_then(|cells| cells.get(column)) {
+            Some(cell) => {
+                out.push_str(cell);
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 /// An `IncrementalTableDataSource` over the same rows, for the two controls that read from one.
@@ -1031,12 +1380,62 @@ impl IncrementalTableDataSource for SampleTableSource {
     fn data(&self, row: usize, column: usize) -> Option<String> {
         SampleTableModel.data(row, column)
     }
+
+    fn fill_cell(&self, row: usize, column: usize, out: &mut String) -> bool {
+        SampleTableModel.fill_data(row, column, out)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::widget::WidgetFactory;
+
+    /// The names [`apply`] actually handles, derived from its own source.
+    ///
+    /// # Why this is parsed rather than listed
+    ///
+    /// The previous literal list had drifted exactly once, and the drift was invisible:
+    /// four arms (`bottom_sheet`, `modal_bottom_sheet`, `dialog`, `message_box`) were
+    /// added without a name in the list, so nothing asserted their downcast still matched
+    /// (SNAP-N02). Reading the arm patterns means "which names are handled" and "which
+    /// names are tested" are the same fact, so a new arm cannot be untested by omission.
+    ///
+    /// The scan is bounded to the body of `apply`: it starts at its signature and stops at
+    /// the first column-zero `}`, so the helper functions and the test module below are not
+    /// parsed. Arm patterns are the only lines before an `=>` that contain quoted names.
+    fn declared_arm_names() -> Vec<&'static str> {
+        const SOURCE: &str = include_str!("sample_fill.rs");
+        let mut names = Vec::new();
+        let mut in_apply = false;
+        for line in SOURCE.lines() {
+            if line.starts_with("pub fn apply(name: &str") {
+                in_apply = true;
+                continue;
+            }
+            if !in_apply {
+                continue;
+            }
+            if line == "}" {
+                break;
+            }
+            let trimmed = line.trim();
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            let Some((pattern, _)) = trimmed.split_once("=>") else { continue };
+            let mut rest = pattern;
+            while let Some(start) = rest.find('"') {
+                let after = &rest[start + 1..];
+                let Some(end) = after.find('"') else { break };
+                names.push(&after[..end]);
+                rest = &after[end + 1..];
+            }
+        }
+        names.sort_unstable();
+        names.dedup();
+        names
+    }
 
     /// Every name [`apply`] claims to know actually reaches a control that exists.
     ///
@@ -1053,55 +1452,12 @@ mod tests {
     #[test]
     fn every_filled_name_downcasts_to_the_type_the_registry_builds() {
         let factory = WidgetFactory::new_with_defaults();
-        // The names `apply` handles, listed here so a name whose arm stops matching is caught. The list is
-        // deliberately literal rather than derived: it is the claim being checked.
-        let claimed = [
-            "table",
-            "table_widget",
-            "virtual_table",
-            "data_grid",
-            "grid_table",
-            "list_box",
-            "combo_box",
-            "editable_combo_box",
-            "dropdown",
-            "font_combo_box",
-            "multi_select_combo_box",
-            "cascader",
-            "list_view",
-            "tree_view",
-            "menu",
-            "context_menu",
-            "menu_button",
-            "command_palette",
-            "tab_bar",
-            "segmented_control",
-            "calendar",
-            "ribbon_bar",
-            "pie_menu",
-            "kanban_board",
-            "timeline_widget",
-            "gantt_widget",
-            "breadcrumb",
-            "snackbar",
-            "notification_center",
-            "shortcut_editor",
-            "wizard_dialog",
-            "progress_dialog",
-            "input_dialog",
-            "dial",
-            "segmented_button",
-            "chip",
-            "candlestick_chart",
-            "volume_chart",
-            "indicator_chart",
-            "depth_chart",
-            "order_book",
-            "quote_board",
-            "bottom_navigation_bar",
-            "material_navigation_rail",
-            "refresh_control",
-        ];
+        let claimed = declared_arm_names();
+        assert!(
+            claimed.len() >= 60,
+            "the arm scan found {} names, which is too few to be the real table",
+            claimed.len()
+        );
         for name in claimed {
             let Some(mut widget) =
                 factory.create(name, crate::widget::census::CENSUS_RECT, "Sample")

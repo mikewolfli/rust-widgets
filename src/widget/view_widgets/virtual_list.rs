@@ -17,7 +17,8 @@ use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
-use super::data_source::IncrementalTableDataSource;
+use super::data_source::{IncrementalTableDataSource, ListModelDataSource};
+use super::list_view::VecListModel;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WindowCache {
@@ -86,6 +87,21 @@ impl VirtualList {
         self.emit_visible_window_changed();
         self.base.request_layout();
         self.base.request_redraw();
+    }
+
+    /// Binds a flat list of rows without requiring a trait implementation.
+    ///
+    /// # Why this exists
+    ///
+    /// [`Self::set_data_source`] is the only fill entry, and it takes a full
+    /// [`IncrementalTableDataSource`] implementation plus its signal wiring. A host or a
+    /// snapshot that has three strings therefore had to implement a trait to show them, which
+    /// is why these controls were the blank ones (VIEW-N05). This builds the in-memory model
+    /// and delegates to `set_data_source`, so invalidation, scrolling and signals behave
+    /// exactly as they do for any other source.
+    pub fn set_rows(&mut self, rows: crate::compat::Vec<String>) {
+        let source = ListModelDataSource::new(Arc::new(VecListModel::new(rows)));
+        self.set_data_source(Arc::new(source));
     }
 
     /// Clears bound data source.

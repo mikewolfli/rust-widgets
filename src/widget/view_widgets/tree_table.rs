@@ -34,6 +34,35 @@ pub trait TreeTableModel: Send + Sync {
     }
 }
 
+/// A single-column, flat model used by [`TreeTable::set_rows`].
+///
+/// Every row is a root with no children, which is the honest shape for "here are some
+/// lines": a caller that has a tree supplies its own [`TreeTableModel`].
+struct FlatTreeTableModel {
+    rows: Vec<String>,
+}
+
+impl TreeTableModel for FlatTreeTableModel {
+    fn root_count(&self) -> usize {
+        self.rows.len()
+    }
+
+    fn child_count(&self, _path: &[usize]) -> usize {
+        0
+    }
+
+    fn column_count(&self) -> usize {
+        1
+    }
+
+    fn data(&self, path: &[usize], column: usize) -> Option<String> {
+        if column != 0 {
+            return None;
+        }
+        path.first().and_then(|&index| self.rows.get(index)).cloned()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct VisibleRow {
     path: Vec<usize>,
@@ -77,6 +106,16 @@ impl TreeTable {
             projection_changed: Signal1::new(),
             selection_changed: Signal1::new(),
         }
+    }
+
+    /// Binds flat, single-column rows without requiring a trait implementation.
+    ///
+    /// The lightweight counterpart of [`Self::set_model`]: a host or snapshot that only
+    /// has lines of text no longer has to implement [`TreeTableModel`] to show them
+    /// (VIEW-N05). It delegates to `set_model`, so expansion state, selection signalling
+    /// and projection rebuilds behave exactly as for any other model.
+    pub fn set_rows(&mut self, rows: Vec<String>) {
+        self.set_model(Arc::new(FlatTreeTableModel { rows }));
     }
 
     /// Binds model and rebuilds visible projection.

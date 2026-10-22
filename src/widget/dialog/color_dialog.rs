@@ -7,7 +7,6 @@ use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::tr;
 
 use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -46,6 +45,12 @@ pub struct ColorDialog {
     /// The selected color is **not** rolled back, so the caller must decide
     /// whether to keep the pre-dialog value.
     pub rejected: GenericSignal,
+    /// Reused buffer for the labels this dialog translates while drawing.
+    ///
+    /// The draw pass used to allocate two `String`s per frame (`tr!` returns an owned
+    /// string, and the preview line was a `format!`). Appending into one buffer here
+    /// keeps a steady-state frame allocation-free.
+    draw_text_buf: String,
 }
 impl ColorDialog {
     /// Distance from the dialog's top edge to the picker's top edge: the title bar's
@@ -132,6 +137,7 @@ impl ColorDialog {
             color_selected: Signal1::new(),
             accepted: GenericSignal::new(),
             rejected: GenericSignal::new(),
+            draw_text_buf: String::new(),
         }
     }
     /// Returns whether the dialog is modal. Defaults to `true`.
@@ -491,6 +497,8 @@ impl Draw for ColorDialog {
         context.fill_rect(title_bar_band, title_bar);
         let title_font = font;
         let title_line = context.text_line(title_bar_band, title_font);
+        self.draw_text_buf.clear();
+        crate::tr_into!("color_dialog.title", &mut self.draw_text_buf);
         context.draw_text_fitted(
             Rect::new(
                 rect.x + 8,
@@ -498,7 +506,7 @@ impl Draw for ColorDialog {
                 rect.width.saturating_sub(16),
                 title_line.height.max(1),
             ),
-            &tr!("color_dialog.title"),
+            &self.draw_text_buf,
             title_font,
             ink,
             HorizontalAlignment::Left,
@@ -519,8 +527,13 @@ impl Draw for ColorDialog {
         // title bar and the button row; on a shorter dialog the picker takes that space
         // instead, which is the trade the fit test in `preview_row_top` makes.
         let preview_font = font;
-        let preview_text =
-            format!("{} {}", tr!("color_dialog.current_color"), self.current_color.to_hex_rgba());
+        // One buffer for both the translated prefix and the hex readout; `write_hex_rgba`
+        // appends the colour without allocating its own `String`.
+        self.draw_text_buf.clear();
+        crate::tr_into!("color_dialog.current_color", &mut self.draw_text_buf);
+        self.draw_text_buf.push(' ');
+        self.current_color.write_hex_rgba(&mut self.draw_text_buf);
+        let preview_text = &self.draw_text_buf;
         if let Some(preview_y) = self.preview_row_top() {
             let preview_rect = Rect::new(rect.x + 10, preview_y, 60, Self::PREVIEW_HEIGHT as u32);
             context.fill_rect(preview_rect, self.current_color);
@@ -539,7 +552,7 @@ impl Draw for ColorDialog {
             let line = context.text_line(band, preview_font);
             context.draw_text_fitted(
                 Rect::new(band.x, line.y, band.width.max(1), line.height.max(1)),
-                &preview_text,
+                preview_text,
                 preview_font,
                 ink,
                 HorizontalAlignment::Left,

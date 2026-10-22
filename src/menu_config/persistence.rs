@@ -100,6 +100,9 @@ impl ConfigPersistence {
     pub fn save(&self, config: &MenuConfig) -> io::Result<()> {
         self.ensure_dir()?;
         let mut data = HashMap::new();
+        if let Some(enabled) = config.user_overrides().enabled {
+            data.insert("enabled".to_string(), enabled.to_string());
+        }
         if let Some(animations) = config.user_overrides().animations {
             data.insert("animations_enabled".to_string(), animations.to_string());
         }
@@ -120,6 +123,9 @@ impl ConfigPersistence {
         }
         if let Some(hw_accel) = config.user_overrides().hardware_acceleration {
             data.insert("hardware_acceleration".to_string(), hw_accel.to_string());
+        }
+        if let Some(caching) = config.user_overrides().caching {
+            data.insert("caching_enabled".to_string(), caching.to_string());
         }
         let mut content = String::new();
         content.push_str("# Rust Widgets Menu Configuration\n");
@@ -177,6 +183,9 @@ impl ConfigPersistence {
                 let key = key.trim();
                 let value = value.trim();
                 match key {
+                    "enabled" => {
+                        overrides.enabled = Some(Self::parse_field(key, value, line_number)?)
+                    }
                     "animations_enabled" => {
                         overrides.animations = Some(Self::parse_field(key, value, line_number)?)
                     }
@@ -200,6 +209,9 @@ impl ConfigPersistence {
                     "hardware_acceleration" => {
                         overrides.hardware_acceleration =
                             Some(Self::parse_field(key, value, line_number)?)
+                    }
+                    "caching_enabled" => {
+                        overrides.caching = Some(Self::parse_field(key, value, line_number)?)
                     }
                     _ => { /* Unknown key: ignored so files can carry forward extensions. */ }
                 }

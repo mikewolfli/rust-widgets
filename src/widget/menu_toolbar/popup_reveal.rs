@@ -56,6 +56,12 @@ pub enum RevealDirection {
 #[derive(Debug, Clone, Copy)]
 pub struct PopupReveal {
     progress: PropertyDriver,
+    /// The state the driver is moving toward, so a disabled animation can jump to it.
+    target_open: bool,
+    /// Whether `menu_config` asked for the reveal to animate at all.
+    motion_enabled: bool,
+    /// Multiplier applied to the caller's frame delta.
+    motion_speed: f32,
 }
 
 impl Default for PopupReveal {
@@ -67,7 +73,14 @@ impl Default for PopupReveal {
 impl PopupReveal {
     /// A reveal already settled at `open`, so a control that starts closed owes no frames.
     pub fn new(open: bool) -> Self {
-        Self { progress: PropertyDriver::at(if open { 1.0 } else { 0.0 }, MotionSlot::Fast) }
+        Self {
+            progress: PropertyDriver::at(if open { 1.0 } else { 0.0 }, MotionSlot::Fast),
+            target_open: open,
+            // Constructor defaults are the pre-wiring behaviour; `set_open` refreshes
+            // them from the effect policy before the animation starts.
+            motion_enabled: true,
+            motion_speed: 1.0,
+        }
     }
 
     /// The current fraction, in `0.0..=1.0`.
@@ -76,19 +89,44 @@ impl PopupReveal {
     }
 
     /// Aims at `open`. The next [`tick`](Self::tick) starts the movement.
+    ///
+    /// The effect policy is read here rather than in the callers: `menu_config` turns the
+    /// animation on/off and scales its speed for **every** popup in the family (menu,
+    /// dropdown, menu button), so a control that forgets to consult the policy cannot
+    /// drift from the others. When animations are disabled the reveal settles at once,
+    /// which is the honest meaning of "no animation" rather than a faster one.
     pub fn set_open(&mut self, open: bool) {
-        self.progress.set_target(if open { 1.0 } else { 0.0 });
+        self.target_open = open;
+        let effects = super::effects::current();
+        self.motion_enabled = effects.animations;
+        self.motion_speed = effects.animation_speed.clamp(0.1, 3.0);
+        if self.motion_enabled {
+            self.progress.set_target(if open { 1.0 } else { 0.0 });
+        } else {
+            self.progress.jump_to(if open { 1.0 } else { 0.0 });
+        }
     }
 
     /// Jumps to `open` with no animation, for a popup that must appear at once (a context menu
     /// opened by a keyboard accelerator, or a control being re-anchored).
     pub fn jump_to(&mut self, open: bool) {
+        self.target_open = open;
         self.progress.jump_to(if open { 1.0 } else { 0.0 });
     }
 
     /// Advances by `delta_ms`; `true` while it still owes frames.
+    ///
+    /// The delta is scaled by the configured speed, so the theme's own duration remains
+    /// the single clock and only its rate changes.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
-        self.progress.tick(delta_ms)
+        if !self.motion_enabled {
+            // A policy change mid-flight (the config was disabled while a popup was
+            // closing) must still land on the target rather than freeze half-open.
+            self.jump_to(self.target_open);
+            return false;
+        }
+        let scaled = ((delta_ms as f32) * self.motion_speed).round().max(1.0) as u32;
+        self.progress.tick(scaled)
     }
 
     /// Whether it is between the two ends. Answers only, never advances.
@@ -257,5 +295,54 @@ mod tests {
     fn the_travel_cap_is_bounded() {
         assert_eq!(PopupReveal::travel_cap_for(Size::new(1, 3)), 6, "a tiny panel still moves");
         assert_eq!(PopupReveal::travel_cap_for(Size::new(1, 900)), 24, "and a tall one is capped");
+    }
+
+    /// "No animation" means the reveal settles at once, not that it moves faster.
+    #[test]
+    fn disabling_animations_settles_the_reveal_at_once() {
+        use super::super::effects::with_test_effects;
+
+        let mut effects = crate::style::MenuEffects::legacy();
+        effects.enabled = true;
+        effects.animations = false;
+        with_test_effects(effects, || {
+            let mut reveal = PopupReveal::new(false);
+            reveal.set_open(true);
+            assert_eq!(reveal.value(), 1.0, "the policy disabled the movement");
+            assert!(!reveal.tick(16), "a settled reveal owes no frames");
+
+            reveal.set_open(false);
+            assert_eq!(reveal.value(), 0.0);
+        });
+    }
+
+    /// The configured speed scales the clock, so the same frame delta moves further.
+    #[test]
+    fn animation_speed_scales_the_clock() {
+        use super::super::effects::with_test_effects;
+
+        let mut fast = crate::style::MenuEffects::legacy();
+        fast.enabled = true;
+        fast.animation_speed = 2.0;
+        let mut slow = crate::style::MenuEffects::legacy();
+        slow.enabled = true;
+        slow.animation_speed = 1.0;
+
+        let fast_value = with_test_effects(fast, || {
+            let mut reveal = PopupReveal::new(false);
+            reveal.set_open(true);
+            reveal.tick(4);
+            reveal.value()
+        });
+        let slow_value = with_test_effects(slow, || {
+            let mut reveal = PopupReveal::new(false);
+            reveal.set_open(true);
+            reveal.tick(4);
+            reveal.value()
+        });
+        assert!(
+            fast_value > slow_value,
+            "2x must advance further than 1x (fast {fast_value}, slow {slow_value})"
+        );
     }
 }

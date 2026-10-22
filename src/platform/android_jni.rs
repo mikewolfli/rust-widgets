@@ -2300,6 +2300,8 @@ mod tests {
     #[test]
     fn reported_entry_point_count_matches_the_exports() {
         const PREFIX: &str = "pub extern \"system\" fn Java_rust_1widgets_RustWidgets_";
+        // The test reads its own source file: `include_str!` is resolved relative to the
+        // file that contains the macro, which is this one.
         let source = include_str!("android_jni.rs");
         let exported = source.matches(PREFIX).count();
         assert_eq!(

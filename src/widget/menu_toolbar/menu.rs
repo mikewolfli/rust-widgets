@@ -259,6 +259,18 @@ pub struct Menu {
     /// the label the user just clicked. A standalone context menu has no such label above it, so
     /// it keeps the heading. The flag is data rather than a second `Menu` type (principle #54).
     show_heading: bool,
+    /// Index of the first entry the popup paints when the configured cap is smaller than
+    /// the list.
+    ///
+    /// Only `menu_config` sets a cap; with the policy off this stays `0` and every entry
+    /// is painted, exactly as before the wiring.
+    scroll_offset: usize,
+    /// Cached heading line height, keyed by the font size's bit pattern.
+    ///
+    /// `menu_config`'s `caching` flag controls whether this is used. The heading is one
+    /// shaped measurement per frame; a menu that is open while an animation runs paid it
+    /// on every frame of the reveal.
+    heading_line_cache: core::cell::Cell<Option<(u32, u32)>>,
 }
 impl Menu {
     /// Creates a menu titled `title`, initially **hidden**.
@@ -283,6 +295,8 @@ impl Menu {
             direction: crate::core::TextDirection::default(),
             reveal: PopupReveal::new(false),
             show_heading: true,
+            scroll_offset: 0,
+            heading_line_cache: core::cell::Cell::new(None),
         };
         // A menu is a popup, so it starts hidden. `BaseWidget` defaults to visible,
         // which is right for a control that owns part of the surface but wrong for
@@ -331,6 +345,10 @@ impl Menu {
         // 0x0 box.
         self.set_geometry(Rect::new(x, y, popup_w as u32, popup_h.max(1) as u32));
         self.invoker_position = Some(position);
+        // A newly opened popup starts at the top of its list; the previous open may have
+        // left it scrolled.
+        self.scroll_offset = 0;
+        self.clamp_scroll();
         // Pre-select the first actionable entry so keyboard navigation has a
         // starting point; a menu opened with no selection cannot be driven by
         // arrow keys without a first press that has no visible effect.
@@ -438,6 +456,7 @@ impl Menu {
             let candidate = &self.items[index as usize];
             if !candidate.is_separator() && candidate.is_enabled() {
                 self.hovered_index = Some(index as usize);
+                self.ensure_hovered_visible();
                 self.base.request_redraw();
                 return true;
             }
@@ -521,10 +540,12 @@ impl Menu {
     /// something else invalidates it.
     pub fn add_item(&mut self, item: MenuEntry) {
         self.items.push(item);
+        self.clamp_scroll();
     }
     /// Appends a separator entry.
     pub fn add_separator(&mut self) {
         self.items.push(MenuEntry::separator());
+        self.clamp_scroll();
     }
     /// Appends a plain action labeled `text` and returns its index.
     ///
@@ -588,9 +609,54 @@ impl Menu {
     /// visible owner of this menu is re-laid out as empty rather than closed.
     pub fn clear(&mut self) {
         self.items.clear();
+        self.scroll_offset = 0;
     }
     fn item_height() -> f32 {
         22.0
+    }
+
+    /// The configured cap on visible entries, or `usize::MAX` when the policy is off.
+    ///
+    /// Reading the policy per call is deliberate: a menu draws once per frame and the
+    /// read is an uncontended lock plus a small copy, while caching it in the widget
+    /// would make a mid-session policy change invisible until something else invalidated
+    /// the menu.
+    fn visible_capacity() -> usize {
+        super::effects::current()
+            .max_visible_items
+            .map(|value| value.max(1) as usize)
+            .unwrap_or(usize::MAX)
+    }
+
+    /// Clamps the scroll offset to the list, so removing entries (or a lower cap) cannot
+    /// leave a menu scrolled past its own content.
+    fn clamp_scroll(&mut self) {
+        let capacity = Self::visible_capacity();
+        let max_offset = self.items.len().saturating_sub(capacity);
+        self.scroll_offset = self.scroll_offset.min(max_offset);
+    }
+
+    /// The entries the popup paints, in list order.
+    fn visible_range(&self) -> core::ops::Range<usize> {
+        let capacity = Self::visible_capacity();
+        let start = self.scroll_offset.min(self.items.len());
+        let end = start.saturating_add(capacity).min(self.items.len());
+        start..end
+    }
+
+    /// Keeps the highlighted entry inside the visible window after keyboard navigation.
+    fn ensure_hovered_visible(&mut self) {
+        let Some(index) = self.hovered_index else { return };
+        let capacity = Self::visible_capacity();
+        if capacity == usize::MAX {
+            return;
+        }
+        if index < self.scroll_offset {
+            self.scroll_offset = index;
+        } else if index >= self.scroll_offset.saturating_add(capacity) {
+            self.scroll_offset = index.saturating_add(1).saturating_sub(capacity);
+        }
+        self.clamp_scroll();
     }
 
     /// The box of every entry, separators included, in popup coordinates.
@@ -615,7 +681,22 @@ impl Menu {
         let padding = dimensions::MENU_POPUP_PADDING;
         let width = self.geometry().width.saturating_sub(padding * 2);
         let mut placed = Vec::with_capacity(self.items.len());
-        let mut y = padding as i32;
+        // Rows above the window are laid out too (with negative `y`) rather than omitted:
+        // the painter, the hit test and the keyboard all address an entry by its **list**
+        // index, so a band that disappeared would shift every index below it.
+        let skipped: i32 = self
+            .items
+            .iter()
+            .take(self.scroll_offset)
+            .map(|item| {
+                if item.is_separator() {
+                    Self::separator_height() as i32
+                } else {
+                    Self::item_height() as i32
+                }
+            })
+            .sum();
+        let mut y = padding as i32 - skipped;
         for item in self.items.iter() {
             let height = if item.is_separator() {
                 Self::separator_height() as u32
@@ -766,7 +847,8 @@ impl Menu {
         Rect { x: 0, y: 0, width: 0, height: 0 }
     }
     fn popup_height(&self) -> f32 {
-        self.items
+        let range = self.visible_range();
+        self.items[range]
             .iter()
             .map(
                 |item| {
@@ -780,12 +862,41 @@ impl Menu {
             .sum::<f32>()
             + 4.0
     }
+
+    /// Paints the popup's elevation shadow.
+    ///
+    /// `blur` in [`crate::style::MenuEffects`] is the shadow's blur radius: the renderer has
+    /// no way to sample the backdrop, so a backdrop blur is not available (the same boundary
+    /// `Material::Translucent` documents). Without hardware acceleration the shadow is a flat
+    /// offset rect; the blurred path is the expensive one that flag gates.
+    /// The entry drawn at `pos`, if any.
+    ///
+    /// Uses the same bands the painter uses, which is what keeps a click on the row the user
+    /// can see from landing on the row above it after a scroll.
+    fn item_index_at(&self, pos: Point) -> Option<usize> {
+        if !self.contains_point(pos) {
+            return None;
+        }
+        let bands = self.item_bands();
+        let body_top = self.body_top();
+        for index in self.visible_range() {
+            let Some(row) = bands.get(index) else { continue };
+            let top = body_top + row.y;
+            if pos.y >= top && pos.y < top + row.height as i32 {
+                return Some(index);
+            }
+        }
+        None
+    }
 }
 impl Widget for Menu {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
     fn set_state_theme_hook(&mut self) {
+        // The cached heading line height is a function of the resolved font; a theme switch
+        // can change the family/weight at the same size, so the cache is dropped with it.
+        self.heading_line_cache.set(None);
         crate::style::reapply_active_theme_state(self);
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
@@ -801,6 +912,11 @@ impl Widget for Menu {
     }
 
     fn show(&mut self) {
+        // Every open path starts at the top of the list. A menu bar reopens with `show()`
+        // rather than `open_at`, so this is the one place both paths share; resetting on
+        // close instead would jump the rows while the closing animation is still painting.
+        self.scroll_offset = 0;
+        self.clamp_scroll();
         self.about_to_show.emit();
         self.reveal.set_open(true);
         self.base.show();
@@ -950,33 +1066,16 @@ impl EventHandler for Menu {
         }
         match event {
             Event::MouseMove { pos } => {
-                let mut y = self.body_top() as f32 + 2.0;
-                for (i, item) in self.items.iter().enumerate() {
-                    let h = if item.is_separator() {
-                        Self::separator_height()
-                    } else {
-                        Self::item_height()
-                    };
-                    if !item.is_separator() && pos.y >= y as i32 && pos.y < (y + h) as i32 {
-                        self.hovered_index = Some(i);
-                        break;
+                if let Some(index) = self.item_index_at(*pos) {
+                    if !self.items[index].is_separator() {
+                        self.hovered_index = Some(index);
                     }
-                    y += h;
                 }
             }
             Event::MousePress { pos, button: 1, .. } => {
-                let mut y = self.body_top() as f32 + 2.0;
-                for (index, item) in self.items.iter().enumerate() {
-                    let h = if item.is_separator() {
-                        Self::separator_height()
-                    } else {
-                        Self::item_height()
-                    };
-                    if !item.is_separator()
-                        && item.is_enabled()
-                        && pos.y >= y as i32
-                        && pos.y < (y + h) as i32
-                    {
+                if let Some(index) = self.item_index_at(*pos) {
+                    let item = &self.items[index];
+                    if !item.is_separator() && item.is_enabled() {
                         // A submenu parent is a branch, not a leaf: report it as one and leave the
                         // popup open rather than firing a command the user did not choose (G-3).
                         // A click is the *first* way a user meets this defect -- they click `Cut >`
@@ -985,15 +1084,13 @@ impl EventHandler for Menu {
                             let text = item.text().to_string();
                             self.submenu_requested.emit(text);
                             self.base.request_redraw();
-                            break;
+                        } else {
+                            let text = item.text().to_string();
+                            self.triggered.emit(text);
+                            self.triggered_index.emit(index);
+                            self.hide();
                         }
-                        let text = item.text().to_string();
-                        self.triggered.emit(text);
-                        self.triggered_index.emit(index);
-                        self.hide();
-                        break;
                     }
-                    y += h;
                 }
                 // A press inside the popup that missed every entry still belongs to
                 // the menu (a click on its padding), so it must not dismiss it.
@@ -1009,37 +1106,36 @@ impl EventHandler for Menu {
             }
             #[cfg(feature = "touch")]
             Event::Tap { pos } => {
-                let mut y = self.body_top() as f32 + 2.0;
-                for (index, item) in self.items.iter().enumerate() {
-                    let h = if item.is_separator() {
-                        Self::separator_height()
-                    } else {
-                        Self::item_height()
-                    };
-                    if !item.is_separator()
-                        && item.is_enabled()
-                        && pos.y >= y as i32
-                        && pos.y < (y + h) as i32
-                    {
-                        // A submenu parent is a branch, not a leaf: report it as one and leave the
-                        // popup open rather than firing a command the user did not choose (G-3).
+                if let Some(index) = self.item_index_at(*pos) {
+                    let item = &self.items[index];
+                    if !item.is_separator() && item.is_enabled() {
                         if item.has_submenu() {
                             let text = item.text().to_string();
                             self.submenu_requested.emit(text);
                             self.base.request_redraw();
-                            break;
+                        } else {
+                            let text = item.text().to_string();
+                            self.triggered.emit(text);
+                            self.triggered_index.emit(index);
+                            self.hide();
                         }
-                        let text = item.text().to_string();
-                        self.triggered.emit(text);
-                        self.triggered_index.emit(index);
-                        self.hide();
-                        break;
                     }
-                    y += h;
                 }
                 // Touch has no outside-press event: a tap outside the popup is the
                 // dismissal gesture, and it is not routed to this widget at all once
                 // the menu is no longer topmost, so nothing further is needed here.
+            }
+            Event::Wheel { delta, .. } => {
+                let capacity = Self::visible_capacity();
+                if capacity < self.items.len() {
+                    let max_offset = self.items.len() - capacity;
+                    if delta.y > 0 {
+                        self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                    } else if delta.y < 0 {
+                        self.scroll_offset = (self.scroll_offset + 1).min(max_offset);
+                    }
+                    self.base.request_redraw();
+                }
             }
             Event::KeyPress { key, .. } => {
                 // Key codes are the framework convention (see `Key::from_key_code`): 27 Escape,
@@ -1086,6 +1182,9 @@ impl EventHandler for Menu {
 impl Draw for Menu {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
+        // The effect policy is read once per frame. With `menu_config` disabled this is
+        // `MenuEffects::legacy()`, so every paint below takes the pre-wiring path.
+        let effects = super::effects::current();
 
         // Chrome colours resolve the explicit style first, then the theme's resolved style for
         // this control, and only then a literal. Every colour below used to be a literal, so a
@@ -1148,15 +1247,30 @@ impl Draw for Menu {
         // heading" contract true, which it previously was not: nothing on this type drew it.
         let heading_h = self.drawn_heading_height();
         if heading_h > 0.0 {
-            context.fill_rect(
-                Rect::new(rect.x, rect.y, rect.width, heading_h as u32),
-                face.blend(&ink, 0.10),
-            );
+            let heading_fill = if effects.transparency {
+                face.blend(&ink, 0.10).with_alpha(230)
+            } else {
+                face.blend(&ink, 0.10)
+            };
+            context
+                .fill_rect(Rect::new(rect.x, rect.y, rect.width, heading_h as u32), heading_fill);
             // The origin is the glyph's **top** edge, so the heading's vertical centre is half the
             // difference between the strip and the line box. Passing the strip's midline put the
             // glyph's top *at* the centre, so a 14 px label in a 20 px heading ended at y = 24 —
             // four pixels below the strip it belongs to.
-            let heading_text_h = context.measure_text("M", font).height;
+            let heading_text_h = if effects.caching {
+                let key = font.size().to_bits();
+                match self.heading_line_cache.get() {
+                    Some((cached_key, height)) if cached_key == key => height,
+                    _ => {
+                        let height = context.measure_text("M", font).height;
+                        self.heading_line_cache.set(Some((key, height)));
+                        height
+                    }
+                }
+            } else {
+                context.measure_text("M", font).height
+            };
             context.draw_text(
                 Point::new(rect.x + 8, rect.y + (heading_h as i32 - heading_text_h as i32) / 2),
                 &self.title,
@@ -1194,19 +1308,26 @@ impl Draw for Menu {
             RevealDirection::Down,
             PopupReveal::travel_cap_for(crate::core::Size::new(body.width, body.height)),
         );
-        let clipped = !self.reveal.is_closed();
-        if clipped {
-            context.push_clip(revealed.x, revealed.y, revealed.width, revealed.height);
+        // The shadow is painted **before** the clip: it extends outside the body by design,
+        // so clipping it to the panel would hide the only part a user can see.
+        if effects.shadows {
+            super::effects::paint_popup_shadow(context, revealed, &effects);
         }
-        context.fill_rect(
-            Rect::new(rect.x, popup_y, rect.width, popup_h as u32),
-            face.blend(&ink, 0.22),
-        );
+        // The clip is unconditional now: with scrolling a row can sit outside the body even
+        // when the reveal has settled, and the clip is what keeps it invisible.
+        context.push_clip(revealed.x, revealed.y, revealed.width, revealed.height);
+        let body_fill = if effects.transparency {
+            face.blend(&ink, 0.22).with_alpha(230)
+        } else {
+            face.blend(&ink, 0.22)
+        };
+        context.fill_rect(Rect::new(rect.x, popup_y, rect.width, popup_h as u32), body_fill);
         context.draw_rect(Rect::new(rect.x, popup_y, rect.width, popup_h as u32), border);
         // The run of rows, placed by the layout. `bands` is in popup coordinates, so it is offset by
         // the popup's own top edge once here rather than accumulated per row.
         let bands = self.item_bands();
-        for (i, item) in self.items.iter().enumerate() {
+        for i in self.visible_range() {
+            let Some(item) = self.items.get(i) else { continue };
             let Some(row) = bands.get(i).copied() else { continue };
             let row = Rect::new(rect.x + row.x, popup_y + row.y, row.width, row.height);
             if item.is_separator() {
@@ -1308,9 +1429,7 @@ impl Draw for Menu {
         }
         // Popped on the same path it was pushed, so the reveal cannot leak a clip onto whatever
         // the host draws after this menu.
-        if clipped {
-            context.pop_clip();
-        }
+        context.pop_clip();
     }
 }
 
@@ -2091,5 +2210,38 @@ mod tests {
         assert_eq!(menu.reveal.value(), 1.0, "the reveal must reach fully open");
         assert!(!menu.is_animating(), "a settled reveal owes no more frames");
         assert_eq!(menu.item_bands().len(), menu.items().len());
+    }
+
+    /// A configured cap windows the rows, and both the wheel and the hit test address the
+    /// **visible** entry rather than its position in the whole list.
+    #[test]
+    fn a_configured_cap_windows_the_rows() {
+        use crate::widget::menu_toolbar::effects::with_test_effects;
+
+        let mut menu = Menu::new("File", Rect::new(0, 0, 200, 200));
+        for index in 0..12 {
+            menu.add_action(format!("Item {index}"));
+        }
+        let mut effects = crate::style::MenuEffects::legacy();
+        effects.enabled = true;
+        effects.max_visible_items = Some(5);
+
+        with_test_effects(effects, || {
+            menu.open_at(Point::new(0, 0), Rect::new(0, 0, 800, 600));
+            assert_eq!(menu.visible_range(), 0..5);
+            assert_eq!(menu.popup_height(), 5.0 * 22.0 + 4.0);
+
+            // Wheel down scrolls one row at a time and stops at the last page.
+            for _ in 0..20 {
+                menu.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+            }
+            assert_eq!(menu.scroll_offset, 7, "12 rows - 5 visible = 7");
+            assert_eq!(menu.visible_range(), 7..12);
+
+            // The first painted row is entry 7, not entry 0.
+            let first_row_y = menu.body_top() + 2 + 4;
+            let hit = menu.item_index_at(Point::new(menu.geometry().x + 4, first_row_y));
+            assert_eq!(hit, Some(7), "the hit test must follow the scrolled window");
+        });
     }
 }

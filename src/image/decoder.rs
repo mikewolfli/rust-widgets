@@ -1216,12 +1216,14 @@ fn decode_huff_symbol(data: &[u8], bit_pos: &mut usize, table: &HuffTable) -> Op
     // Primary table: peek the next 8 bits. If the code is 1..=8 bits long this answers
     // without consuming or searching; JPEG's short codes make it the common path.
     if *bit_pos + 8 <= data.len() * 8 {
-        let mut peek = 0usize;
-        for offset in 0..8 {
-            let index = *bit_pos + offset;
-            let bit = (data[index / 8] >> (7 - index % 8)) & 1;
-            peek = (peek << 1) | bit as usize;
-        }
+        // Read the 8-bit window in one big-endian load instead of eight shift-and-mask
+        // steps. `window << shift >> 8` keeps exactly the bits starting at `shift`; the
+        // high bits it shifts out are the ones *before* the window, which are not wanted.
+        let byte = *bit_pos / 8;
+        let shift = (*bit_pos % 8) as u32;
+        let hi = data[byte] as u16;
+        let lo = if byte + 1 < data.len() { data[byte + 1] as u16 } else { 0 };
+        let peek = (((hi << 8) | lo) << shift >> 8) as usize;
         if let Some((value, bits)) = table.fast[peek] {
             *bit_pos += bits as usize;
             return Some((value, bits as usize));

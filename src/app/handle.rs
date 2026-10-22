@@ -2270,9 +2270,12 @@ impl MenuBarHandle {
             (widget as &mut dyn core::any::Any)
                 .downcast_mut::<crate::widget::menu_toolbar::menu_bar::MenuBar>()
                 .map(|bar| {
-                    bar.triggered.connect(move |title: std::sync::Arc<String>| {
+                    // Borrowed slot: the callback needs an owned `String` anyway, so cloning
+                    // here moves the copy from an `Arc` allocation per emit to one clone that
+                    // the user callback would have performed regardless.
+                    bar.triggered.connect_ref(move |title: &String| {
                         if let Ok(mut callback) = held.lock() {
-                            callback((*title).clone());
+                            callback(title.clone());
                         } else {
                             log::warn!(
                                 "the menu-triggered callback for widget {id} could not be locked; \
@@ -2310,7 +2313,7 @@ impl MenuBarHandle {
             (widget as &mut dyn core::any::Any)
                 .downcast_mut::<crate::widget::menu_toolbar::menu_bar::MenuBar>()
                 .map(|bar| {
-                    bar.triggered_entry.connect(move |payload: std::sync::Arc<(String, Rect)>| {
+                    bar.triggered_entry.connect_ref(move |payload: &(String, Rect)| {
                         if let Ok(mut callback) = held.lock() {
                             callback(payload.0.clone(), payload.1);
                         } else {
@@ -2380,9 +2383,9 @@ impl MenuHandle {
             (widget as &mut dyn core::any::Any)
                 .downcast_mut::<crate::widget::menu_toolbar::menu::Menu>()
                 .map(|menu| {
-                    menu.triggered.connect(move |title: std::sync::Arc<String>| {
+                    menu.triggered.connect_ref(move |title: &String| {
                         if let Ok(mut callback) = held.lock() {
-                            callback((*title).clone());
+                            callback(title.clone());
                         } else {
                             log::warn!(
                                 "the menu-triggered callback for widget {id} could not be locked; \
@@ -5914,6 +5917,8 @@ mod tests {
             ),
         ];
 
+        // The test reads its own source file: `include_str!` is resolved relative to the
+        // file that contains the macro, which is this one.
         let source = include_str!("handle.rs");
         let struct_body = source
             .split_once("struct WindowState {")

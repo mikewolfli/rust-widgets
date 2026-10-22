@@ -328,8 +328,30 @@ impl I18nManager {
     /// A `Some(ctx)` lookup still rejects an entry with a *different* `Some(other)`: that entry
     /// belongs to another context and would be the wrong message.
     pub fn translate_with_context(&self, key: &str, context: Option<&str>, count: u32) -> String {
-        if let Some(resolved) = self.lookup_in(&self.current_language, key, context, count) {
-            return resolved;
+        let mut out = String::new();
+        self.translate_with_context_into(key, context, count, &mut out);
+        out
+    }
+
+    /// Zero-allocation counterpart of [`Self::translate`]: appends the resolved message to `out`.
+    pub fn translate_into(&self, key: &str, out: &mut String) {
+        self.translate_with_context_into(key, None, 1, out);
+    }
+
+    /// Zero-allocation counterpart of [`Self::translate_with_context`].
+    ///
+    /// `out` receives the active-language entry, else the `en` fallback entry, else the key
+    /// itself — exactly the precedence of `translate_with_context`. The buffer is appended to,
+    /// never cleared, so a caller can compose several translations in one `String`.
+    pub fn translate_with_context_into(
+        &self,
+        key: &str,
+        context: Option<&str>,
+        count: u32,
+        out: &mut String,
+    ) {
+        if self.lookup_into(&self.current_language, key, context, count, out) {
+            return;
         }
         // No entry in the active language. Fall back to `en`, which is embedded at build
         // time (`language/en.json`), before giving up and echoing the key: a user of a
@@ -337,45 +359,48 @@ impl I18nManager {
         // raw identifier. `en` is skipped when it *is* the active language, so this
         // cannot loop or repeat the same miss.
         const FALLBACK_LANGUAGE: &str = "en";
-        if self.current_language != FALLBACK_LANGUAGE {
-            if let Some(resolved) = self.lookup_in(FALLBACK_LANGUAGE, key, context, count) {
-                return resolved;
-            }
+        if self.current_language != FALLBACK_LANGUAGE
+            && self.lookup_into(FALLBACK_LANGUAGE, key, context, count, out)
+        {
+            return;
         }
         // Last resort: the key itself. Documented behaviour, and the caller can see the
         // miss because the returned text equals the key.
-        key.to_string()
+        out.push_str(key);
     }
 
-    /// Resolve `key` inside one language, honouring context and plural rules.
-    ///
-    /// Returns `None` when the language has no such key, or when the entry it has belongs to a
-    /// different context.
-    fn lookup_in(
+    /// Resolves `key` inside one language and appends it to `out` when found.
+    fn lookup_into(
         &self,
         language: &str,
         key: &str,
         context: Option<&str>,
         count: u32,
-    ) -> Option<String> {
-        let translation = self.translations.get(language)?.translations.get(key)?;
+        out: &mut String,
+    ) -> bool {
+        let Some(translation) =
+            self.translations.get(language).and_then(|file| file.translations.get(key))
+        else {
+            return false;
+        };
         if let Some(ctx) = context {
             // `None` on the entry means "unambiguous", so it satisfies any context. A
             // `Some(other)` belongs to another context and must not be served here.
             if let Some(trans_ctx) = &translation.context {
                 if trans_ctx != ctx {
-                    return None;
+                    return false;
                 }
             }
         }
         // A plural entry whose category is absent has no string for this count; fall
         // through to the singular rather than reporting a miss.
-        if let Some(plural) = &translation.plural {
-            if let Some(plural_form) = plural.get(&count) {
-                return Some(plural_form.clone());
-            }
+        if let Some(plural_form) = translation.plural.as_ref().and_then(|plural| plural.get(&count))
+        {
+            out.push_str(plural_form);
+            return true;
         }
-        Some(translation.message.clone())
+        out.push_str(&translation.message);
+        true
     }
 }
 crate::impl_default_via_new!(I18nManager);

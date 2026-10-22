@@ -104,6 +104,8 @@ struct TrackAllocation {
 pub struct BorderLayout {
     spacing: u32,
     margin: u32,
+    /// Four-way margins. `None` means the uniform [`Self::margin`] is used on every side.
+    margins: Option<crate::style::EdgeOffsets>,
     north: Vec<BorderItem>,
     south: Vec<BorderItem>,
     west: Vec<BorderItem>,
@@ -137,6 +139,32 @@ impl BorderLayout {
     /// Updates the outer margin.
     pub fn set_margin(&mut self, margin: u32) {
         self.margin = margin;
+    }
+
+    /// Sets four-way margins, overriding the uniform [`Self::margin`].
+    pub fn set_margins(&mut self, margins: crate::style::EdgeOffsets) {
+        self.margins = Some(margins);
+    }
+
+    /// The four-way margins, or `None` when the uniform [`Self::margin`] applies.
+    pub fn margins(&self) -> Option<crate::style::EdgeOffsets> {
+        self.margins
+    }
+
+    /// Left/top/right/bottom insets, scaled by `scale`.
+    fn insets(&self, scale: f32) -> (u32, u32, u32, u32) {
+        match self.margins {
+            Some(margins) => (
+                (margins.left as f32 * scale).round() as u32,
+                (margins.top as f32 * scale).round() as u32,
+                (margins.right as f32 * scale).round() as u32,
+                (margins.bottom as f32 * scale).round() as u32,
+            ),
+            None => {
+                let uniform = (self.margin as f32 * scale).round() as u32;
+                (uniform, uniform, uniform, uniform)
+            }
+        }
     }
 
     /// Adds a widget to `region` with a fixed `extent` and a stretch factor of 1.
@@ -281,21 +309,26 @@ impl BorderLayout {
         &self,
         rect: Rect,
         spacing: u32,
-        margin: u32,
+        insets: (u32, u32, u32, u32),
         scale: f32,
         widgets: &mut dyn FnMut(ObjectId, Rect),
     ) {
         if rect.width == 0 || rect.height == 0 {
             return;
         }
-        // The margin is honoured only as far as the rect can pay for it, so a control
+        // Each inset is honoured only as far as the rect can pay for it, so a control
         // resized smaller than twice the margin still produces a non-negative area.
-        let margin = margin.min((rect.width / 2).min(rect.height / 2));
+        let limit_x = rect.width / 2;
+        let limit_y = rect.height / 2;
+        let left = insets.0.min(limit_x);
+        let top = insets.1.min(limit_y);
+        let right = insets.2.min(limit_x);
+        let bottom = insets.3.min(limit_y);
         let inner = Rect::new(
-            rect.x + margin as i32,
-            rect.y + margin as i32,
-            rect.width.saturating_sub(margin * 2),
-            rect.height.saturating_sub(margin * 2),
+            rect.x + left as i32,
+            rect.y + top as i32,
+            rect.width.saturating_sub(left).saturating_sub(right),
+            rect.height.saturating_sub(top).saturating_sub(bottom),
         );
 
         let north = allocate_tracks(&self.north, inner.height, spacing, scale);
@@ -480,7 +513,7 @@ impl Layout for BorderLayout {
     }
 
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
-        self.arrange(rect, self.spacing, self.margin, 1.0, widgets);
+        self.arrange(rect, self.spacing, self.insets(1.0), 1.0, widgets);
     }
 
     fn update_with_context(
@@ -493,8 +526,8 @@ impl Layout for BorderLayout {
         // device whose text is larger needs more room between tracks at the same DPI.
         let scale = context.layout_scale.max(context.font_scale);
         let spacing = (self.spacing as f32 * scale).round() as u32;
-        let margin = (self.margin as f32 * scale).round() as u32;
-        self.arrange(rect, spacing, margin, scale, widgets);
+        let insets = self.insets(scale);
+        self.arrange(rect, spacing, insets, scale, widgets);
     }
 }
 

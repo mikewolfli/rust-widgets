@@ -58,11 +58,31 @@ struct HttpLoadOutcome {
 /// This is the only part that blocks, and it runs on a helper thread — never on the UI thread — so a
 /// slow server cannot freeze the caller. Keeping it a free function makes it obvious that it touches
 /// no view state; the thread's only output is the returned `Result`, delivered over a channel.
+/// Maximum bytes read from one HTTP response body.
+///
+/// A web view substitutes for a browser, but its fetcher is not a browser: an
+/// unbounded `read_to_string` against a hostile or misconfigured server could
+/// allocate until the process is killed. 16 MiB is larger than any HTML document a
+/// browser would keep as a page (larger payloads are downloads, not documents).
+#[cfg(all(not(alloc_frugal), feature = "web-http"))]
+const HTTP_BODY_LIMIT: u64 = 16 * 1024 * 1024;
+
+/// Wall-clock budget for one fetch (connect + headers + body).
+///
+/// Without it a stalled server blocked the helper thread — and therefore the load —
+/// indefinitely; the fetch has no cancellation channel of its own.
+#[cfg(all(not(alloc_frugal), feature = "web-http"))]
+const HTTP_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(30);
+
 #[cfg(all(not(alloc_frugal), feature = "web-http"))]
 fn fetch_http_content(url: &str) -> Result<String, String> {
-    match ureq::get(url).call() {
-        Ok(response) => response
-            .into_body()
+    let agent =
+        ureq::Agent::config_builder().timeout_global(Some(HTTP_TIMEOUT)).build().new_agent();
+    match agent.get(url).call() {
+        Ok(mut response) => response
+            .body_mut()
+            .with_config()
+            .limit(HTTP_BODY_LIMIT)
             .read_to_string()
             .map_err(|e| format!("Failed to read response body from '{url}': {e}")),
         Err(e) => Err(format!("HTTP request failed for '{url}': {e}")),

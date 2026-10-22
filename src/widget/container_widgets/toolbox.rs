@@ -793,14 +793,21 @@ impl Draw for ToolBox {
         // rectangles in the snapshot were byte-identical, so an empty toolbox read as a bare
         // border with a hole in it. `splitter`, `stacked_widget`, `mdi_area` and `carousel`
         // all detect exactly this case and re-derive a visible step; this one did not.
-        let window_fill = crate::style::theme_manager()
+        let (window_fill, accent) = crate::style::theme_manager()
             .current_theme()
-            .map(|active| active.colors.background)
-            .unwrap_or(Color::WHITE);
+            .map(|active| (active.colors.background, active.colors.accent))
+            .unwrap_or((Color::WHITE, Color::rgb(100, 100, 200)));
         let page = match style.background_color {
             Some(resolved) if resolved != window_fill => resolved,
             _ => window_fill.blend(&style.text_color.unwrap_or(Color::BLACK), 0.08),
         };
+        // The selected tab is a state highlight derived from the theme's accent token rather
+        // than a hardcoded light-blue literal. The literal was invisible-proof in a light
+        // theme (it is what the no-theme fallback still uses) but painted a glaring pale block
+        // inside a dark one. A tint of the accent over the page keeps the selection visible in
+        // both appearances, and the accent itself draws the selected frame.
+        let selected_background = page.blend(&accent, 0.18);
+        let selected_border = accent;
         // Draw content background
         context.fill_rect(
             Rect::new(content_rect.x, content_rect.y, content_rect.width, content_rect.height),
@@ -820,6 +827,10 @@ impl Draw for ToolBox {
         // reach into the strip, and the tabs are the control's chrome rather than its content.
         if let Some(widget_id) = self.current_widget() {
             if let Some(ref reg) = self.registry {
+                // Two acquisitions are deliberate, not an oversight: the guard must not be held
+                // across `draw_widget`, because a nested container on the page borrows the same
+                // registry to draw its own children and would panic as an aliased `RefCell`
+                // borrow. Each acquisition is O(1), so there is nothing to merge here (VIEW-N04).
                 reg.borrow_mut().set_widget_geometry(widget_id, content_rect);
                 context.push_clip(
                     content_rect.x,
@@ -846,7 +857,7 @@ impl Draw for ToolBox {
                 let bg_color = if !is_enabled {
                     style.background_color.unwrap_or(Color::rgb(240, 240, 240))
                 } else if is_current {
-                    Color::rgb(220, 220, 255)
+                    selected_background
                 } else {
                     style.background_color.unwrap_or(Color::rgb(240, 240, 240))
                 };
@@ -858,7 +869,7 @@ impl Draw for ToolBox {
                 let border_color = if !is_enabled {
                     style.border_color.unwrap_or(Color::rgb(200, 200, 200))
                 } else if is_current {
-                    Color::rgb(100, 100, 200)
+                    selected_border
                 } else {
                     style.border_color.unwrap_or(Color::rgb(200, 200, 200))
                 };

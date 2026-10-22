@@ -38,6 +38,24 @@ pub trait IncrementalTableDataSource: Send + Sync {
     }
     /// Returns cell text for a row/column if available.
     fn data(&self, row: usize, column: usize) -> Option<String>;
+    /// Writes cell text for a row/column into `out`, returning whether the cell exists.
+    ///
+    /// # Why this exists
+    ///
+    /// [`Self::data`] returns an owned `String`, so a draw pass over an R×C window allocated
+    /// one string per cell per frame. A consumer that only reads a cell (the grid's paint loop,
+    /// for example) reuses a single buffer through this method instead. The default keeps
+    /// existing implementors working unchanged: it delegates to `data` and copies. An implementor
+    /// that already holds its cells can override it and allocate nothing.
+    fn fill_cell(&self, row: usize, column: usize, out: &mut String) -> bool {
+        match self.data(row, column) {
+            Some(value) => {
+                out.push_str(&value);
+                true
+            }
+            None => false,
+        }
+    }
     /// Optional monotonic revision for cache invalidation.
     fn revision(&self) -> u64 {
         0
@@ -111,6 +129,14 @@ impl IncrementalTableDataSource for ListModelDataSource {
         }
     }
 
+    fn fill_cell(&self, row: usize, column: usize, out: &mut String) -> bool {
+        if column == 0 {
+            self.model.fill_data(row, out)
+        } else {
+            false
+        }
+    }
+
     fn data_changed_signal(&self) -> Option<&GenericSignal> {
         self.model.data_changed_signal()
     }
@@ -150,6 +176,14 @@ impl IncrementalTableDataSource for TreeModelDataSource {
         }
     }
 
+    fn fill_cell(&self, row: usize, column: usize, out: &mut String) -> bool {
+        if column == 0 {
+            self.model.fill_node_path(row, out)
+        } else {
+            false
+        }
+    }
+
     fn data_changed_signal(&self) -> Option<&GenericSignal> {
         self.model.data_changed_signal()
     }
@@ -183,6 +217,10 @@ impl IncrementalTableDataSource for TableModelDataSource {
 
     fn data(&self, row: usize, column: usize) -> Option<String> {
         self.model.data(row, column)
+    }
+
+    fn fill_cell(&self, row: usize, column: usize, out: &mut String) -> bool {
+        self.model.fill_data(row, column, out)
     }
 
     fn data_changed_signal(&self) -> Option<&GenericSignal> {
@@ -256,6 +294,30 @@ mod tests {
         assert_eq!(window.len(), 2);
         assert_eq!(window[0][0], Some("B".to_string()));
         assert_eq!(window[1][0], Some("C".to_string()));
+    }
+
+    /// `fill_cell` is the zero-allocation counterpart of `data`: it must report the same
+    /// presence and write the same text, so a paint loop can switch to it safely (VW-N02).
+    #[test]
+    fn fill_cell_agrees_with_data() {
+        let source = ListModelDataSource::new(Arc::new(StaticList));
+        let mut out = String::new();
+
+        assert!(source.fill_cell(1, 0, &mut out));
+        assert_eq!(out, "B");
+
+        out.clear();
+        assert!(!source.fill_cell(9, 0, &mut out));
+        assert!(out.is_empty(), "an absent cell must not append anything");
+
+        out.clear();
+        assert!(!source.fill_cell(0, 1, &mut out));
+        assert!(out.is_empty(), "a column the adapter does not project is absent");
+
+        let table = TableModelDataSource::new(Arc::new(StaticTable));
+        out.clear();
+        assert!(table.fill_cell(1, 2, &mut out));
+        assert_eq!(out, "1:2");
     }
 
     #[test]

@@ -4,9 +4,9 @@
 
 本页共 **188** 张控件快照名（每个两种外观，共 **376** 张 SVG）。
 这些名字来自控件注册表（`factory.widget_names()`），其中包含少量**别名**
-（如 `wizard_dialog` 同时以 `wizard` 注册），因此快照名数多于 `WidgetKind` 的枚举数（**180**）。
+（如 `wizard_dialog` 同时以 `wizard` 注册），因此快照名数多于 `WidgetKind` 的枚举数（**181**）。
 
-此外还有 **8** 张**状态快照**（下表），它们不是额外的控件，而是某个控件在用户可切换到的状态下的样子。
+此外还有 **10** 张**状态快照**（下表），它们不是额外的控件，而是某个控件在用户可切换到的状态下的样子。
 
 | 状态快照 | 控件 | 说明 |
 |---|---|---|
@@ -16,6 +16,8 @@
 | `snapshots/svg/group_box_checked.svg` | `group_box` | `group_box` 的 `checked` 态（默认外观） |
 | `snapshots/svg/icon_info.svg` | `icon` | `icon` 的 `info` 态（默认外观） |
 | `snapshots/svg/radio_button_checked.svg` | `radio_button` | `radio_button` 的 `checked` 态（默认外观） |
+| `snapshots/svg/skeleton_loader_circle.svg` | `skeleton_loader` | `skeleton_loader` 的 `circle` 态（默认外观） |
+| `snapshots/svg/skeleton_loader_textline.svg` | `skeleton_loader` | `skeleton_loader` 的 `textline` 态（默认外观） |
 | `snapshots/svg/toggle_button_checked.svg` | `toggle_button` | `toggle_button` 的 `checked` 态（默认外观） |
 | `snapshots/svg/tooltip_shown.svg` | `tooltip` | `tooltip` 的 `shown` 态（默认外观） |
 

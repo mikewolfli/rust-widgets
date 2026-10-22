@@ -1502,6 +1502,30 @@ mod tests {
         (rgba[index], rgba[index + 1], rgba[index + 2], rgba[index + 3])
     }
 
+    /// A filled page is the caller's colour, so the census key it by its **dominant**
+    /// colour and cannot see the chrome around it. This is the evidence behind the
+    /// `carousel` data-colour exemption: the panel, marks and border still follow the
+    /// appearance even when a data-coloured page is showing.
+    #[test]
+    fn the_chrome_follows_the_appearance_beneath_a_data_coloured_page() {
+        let _guard = crate::style::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+
+        let chrome = |appearance| {
+            crate::theme::global_theme_manager().set_appearance(appearance);
+            let mut carousel = default_carousel();
+            carousel.set_current(0);
+            carousel.chrome_colors()
+        };
+
+        let (light_panel, light_mark, light_border) = chrome(crate::theme::AppearanceMode::Light);
+        let (dark_panel, dark_mark, dark_border) = chrome(crate::theme::AppearanceMode::Dark);
+
+        assert_ne!(light_panel, dark_panel, "the panel behind the page is chrome");
+        assert_ne!(light_mark, dark_mark, "the indicator marks are chrome");
+        assert_ne!(light_border, dark_border, "the border is chrome");
+    }
+
     #[test]
     fn carousel_creation_defaults() {
         let c = Carousel::new(Rect::new(0, 0, 300, 200));

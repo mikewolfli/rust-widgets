@@ -26,6 +26,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT_DIR/tools/lib_timeout.sh"
 cd "$ROOT_DIR"
 . "$ROOT_DIR/tools/lib_python.sh"
 . "$ROOT_DIR/tools/lib_jdk.sh"
@@ -130,7 +131,7 @@ NDK_BIN="$NDK_PREBUILT/bin"
 export CARGO_TARGET_$(echo "$RUST_TARGET" | tr 'a-z-' 'A-Z_')_LINKER="$NDK_BIN/${NDK_TRIPLE}24-clang"
 export "CC_${RUST_TARGET//-/_}=$NDK_BIN/${NDK_TRIPLE}24-clang"
 export "AR_${RUST_TARGET//-/_}=$NDK_BIN/llvm-ar"
-cargo build --lib --target "$RUST_TARGET" --no-default-features \
+rw_run_bounded "${RW_GATE_TIMEOUT:-1800}" cargo build --lib --target "$RUST_TARGET" --no-default-features \
   --features "android-jni jni mobile controls-custom controls-native serde serde_json"
 
 echo "[2/5] Compiling Java sources"

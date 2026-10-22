@@ -216,15 +216,13 @@ macro_rules! impl_menu_widgets {
                         (widget as &mut dyn std::any::Any)
                             .downcast_mut::<crate::widget::menu_toolbar::menu::Menu>()
                             .map(|menu| {
-                                menu.triggered_index.connect(
-                                    move |chosen: std::sync::Arc<usize>| {
-                                        // The global backend is the one production callers poll; a
-                                        // backend instance created by a test keeps its own queue and
-                                        // is not the one `crate::poll_menu_triggered` drains.
-                                        crate::control_backend::get_control_backend()
-                                            .note_menu_selection(parent_menu, *chosen);
-                                    },
-                                )
+                                menu.triggered_index.connect_ref(move |chosen: &usize| {
+                                    // The global backend is the one production callers poll; a
+                                    // backend instance created by a test keeps its own queue and
+                                    // is not the one `crate::poll_menu_triggered` drains.
+                                    crate::control_backend::get_control_backend()
+                                        .note_menu_selection(parent_menu, *chosen);
+                                })
                             })
                     });
                 }

@@ -34,7 +34,6 @@ use crate::platform::types::{FRAME_INTERVAL_MS, IDLE_FRAME_INTERVAL_MS};
 #[cfg(not(alloc_frugal))]
 mod inner {
     use core::sync::atomic::{AtomicU64, Ordering};
-    #[cfg(not(windows))]
     use core::time::Duration;
     use std::sync::{Condvar, Mutex, OnceLock};
 
@@ -69,12 +68,34 @@ mod inner {
 
     /// Blocks until [`wake`] or `timeout`, whichever happens first.
     ///
-    /// Win32 has no caller for this: [`pause_between_frames`](super::pause_between_frames)
-    /// blocks in its own message queue there, which is what keeps input latency at zero.
-    #[cfg(not(windows))]
+    /// Win32 is included: the backend loop pumps its own message queue in
+    /// [`pause_between_frames`](super::pause_between_frames), but the event loop runs on its own
+    /// thread and may block here just like any other waiter.
     pub(crate) fn wait_timeout(timeout: Duration) {
         let state = state();
         let observed = state.generation.load(Ordering::SeqCst);
+        let guard = state.mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.generation.load(Ordering::SeqCst) != observed {
+            return;
+        }
+        let _ = state.ready.wait_timeout(guard, timeout);
+    }
+
+    /// The current wake generation. Pair with [`wait_after`].
+    pub(crate) fn generation() -> u64 {
+        state().generation.load(Ordering::SeqCst)
+    }
+
+    /// Blocks until a [`wake`] happens **after** `observed`, or `timeout` elapses.
+    ///
+    /// # Why the generation is passed in
+    ///
+    /// A caller that checks its own queue and then waits has a window between the check and the
+    /// wait. Taking the generation *before* the check closes it: a post that lands in the window
+    /// has already bumped the generation, so this returns at once instead of sleeping until the
+    /// timeout (the lost-wakeup delay the plain [`wait_timeout`] would pay).
+    pub(crate) fn wait_after(observed: u64, timeout: Duration) {
+        let state = state();
         let guard = state.mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if state.generation.load(Ordering::SeqCst) != observed {
             return;
@@ -98,6 +119,11 @@ mod inner {
 }
 
 pub(crate) use inner::wake;
+
+/// The wake generation and the generation-guarded wait are only meaningful where a wake
+/// channel exists; the allocation-frugal profile's host loop has none and does not call them.
+#[cfg(not(alloc_frugal))]
+pub(crate) use inner::{generation, wait_after};
 
 /// Waits for the next iteration of a backend loop.
 ///

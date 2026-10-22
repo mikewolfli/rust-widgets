@@ -1,6 +1,9 @@
 # Rust Widgets — Architecture Overview
 
-> Last updated: 2026-06-09 (BLUE11)
+> Last updated: 2026-10-22
+>
+> This is a snapshot of the current tree, not a roadmap. Every status below is checked by a CI
+> job (named in parentheses), so a sentence that drifts from the code is a defect in this file.
 
 ## High-Level Architecture
 
@@ -10,7 +13,7 @@
 │  (app, json_engine, c_abi)                              │
 ├─────────────────────────────────────────────────────────┤
 │                    Widget Layer                          │
-│  ~80 widget structs + 10 new mobile widgets             │
+│  ~188 registered controls                                 │
 │  Each: Widget + Draw + EventHandler + Signals           │
 │  Sub-modules: base, input, container, display,          │
 │               special, view, advanced, web, menu,       │
@@ -33,10 +36,10 @@
 │  ControlRoutePreference: NativePreferred / CustomRequired│
 ├─────────────────────────────────────────────────────────┤
 │                  Platform Layer                          │
-│  Windows (Win32) │ macOS (Cocoa 0.24) │ Linux (GTK)     │
-│  macOS (objc2 WIP) │ Wayland (WIP)                      │
-│  iOS (state-only) │ Android (JNI) │ HarmonyOS (state)   │
-│  Embedded (stub)                                          │
+│  Windows (Win32) │ macOS (Cocoa / objc2) │ Linux (GTK) │
+│  Wayland (verified against weston — wayland-compositor)  │
+│  iOS (Simulator app — apple-native) │ Android (JNI)      │
+│  HarmonyOS (state) │ wasm32 (browser) │ Embedded (engine)│
 ├─────────────────────────────────────────────────────────┤
 │                  Core Infrastructure                    │
 │  ObjectId, Rect/Size/Point, Color, Font, Signal, Error  │

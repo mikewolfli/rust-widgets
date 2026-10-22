@@ -2,15 +2,24 @@
 // SPDX-License-Identifier: MIT
 
 //! Box layout manager — arranges items in a single row or column.
-use super::{Layout, LayoutConstraints, LayoutContext, Orientation, SizePolicy};
+use super::{ChildInfo, Layout, LayoutConstraints, LayoutContext, Orientation, SizePolicy};
 use crate::compat::{Any, Vec};
+use crate::core::Alignment;
 use crate::core::{ObjectId, Rect};
+use crate::style::EdgeOffsets;
 #[derive(Debug)]
 struct BoxLayoutItem {
     widget_id: Option<ObjectId>,
     stretch: u32,
     constraints: LayoutConstraints,
     policy: SizePolicy,
+    /// Cross-axis alignment for this item.
+    ///
+    /// `None` means the item is stretched to the full cross extent, which is what the
+    /// layout has always done and what a CSS/Qt box does by default. A value shrinks the
+    /// item to the cross size it *asks for* (from [`ChildInfo::hints`]) and places it
+    /// within the cross extent — the same split Flutter's `crossAxisAlignment` makes.
+    align: Option<Alignment>,
 }
 /// Linear layout that arranges items in one direction.
 #[derive(Debug)]
@@ -18,12 +27,43 @@ pub struct BoxLayout {
     orientation: Orientation,
     spacing: u32,
     margin: u32,
+    /// Four-way margins. `None` means the uniform [`Self::margin`] is used on every side.
+    margins: Option<EdgeOffsets>,
     items: Vec<BoxLayoutItem>,
 }
 impl BoxLayout {
     /// Create a box layout with orientation, spacing and margin.
     pub fn new(orientation: Orientation, spacing: u32, margin: u32) -> Self {
-        Self { orientation, spacing, margin, items: Vec::new() }
+        Self { orientation, spacing, margin, margins: None, items: Vec::new() }
+    }
+
+    /// Sets four-way margins, overriding the uniform [`Self::margin`].
+    ///
+    /// `margin` stays the fallback so a JSON document that only knows the uniform key keeps
+    /// working. Radii are scaled by the device context on the same path as the uniform value.
+    pub fn set_margins(&mut self, margins: EdgeOffsets) {
+        self.margins = Some(margins);
+    }
+
+    /// The four-way margins, or `None` when the uniform [`Self::margin`] applies.
+    pub fn margins(&self) -> Option<EdgeOffsets> {
+        self.margins
+    }
+
+    /// Left/top/right/bottom insets, scaled by `scale`.
+    fn scaled_insets(&self, scale: f32) -> (u32, u32, u32, u32) {
+        match self.margins {
+            Some(margins) => (
+                (margins.left as f32 * scale).round() as u32,
+                (margins.top as f32 * scale).round() as u32,
+                (margins.right as f32 * scale).round() as u32,
+                (margins.bottom as f32 * scale).round() as u32,
+            ),
+            None => {
+                let uniform = (self.margin as f32 * scale).round() as u32;
+                (uniform, uniform, uniform, uniform)
+            }
+        }
     }
     /// Returns layout orientation.
     pub fn orientation(&self) -> Orientation {
@@ -33,6 +73,27 @@ impl BoxLayout {
     pub fn spacing(&self) -> u32 {
         self.spacing
     }
+    /// Sets or clears the cross-axis alignment of `widget_id`.
+    ///
+    /// Returns `false` when `widget_id` is not an item of this layout. `None` restores the
+    /// default stretch. The item is placed at the cross size it asks for through
+    /// [`ChildInfo::hints`] only when it is aligned; a stretched item ignores the hint on
+    /// that axis, exactly as a CSS box's `align-self: stretch` does.
+    pub fn set_item_alignment(&mut self, widget_id: ObjectId, align: Option<Alignment>) -> bool {
+        match self.items.iter_mut().find(|item| item.widget_id == Some(widget_id)) {
+            Some(item) => {
+                item.align = align;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The cross-axis alignment of `widget_id`, or `None` when it stretches.
+    pub fn item_alignment(&self, widget_id: ObjectId) -> Option<Alignment> {
+        self.items.iter().find(|item| item.widget_id == Some(widget_id)).and_then(|item| item.align)
+    }
+
     /// Updates inter-item spacing.
     pub fn set_spacing(&mut self, spacing: u32) {
         self.spacing = spacing;
@@ -56,6 +117,27 @@ impl BoxLayout {
             stretch: stretch.max(1),
             constraints: LayoutConstraints::new(0, None),
             policy: SizePolicy::Expanding,
+            align: None,
+        });
+    }
+
+    /// Adds an empty spacer that is exactly `size` pixels on the major axis.
+    ///
+    /// [`Self::add_spacer`] is elastic by construction (`stretch.max(1)` with an
+    /// `Expanding` policy), so it cannot express Qt's `QSpacerItem(w, h, Fixed)` or wx's
+    /// `AddSpacer(size)`. A fixed spacer is the "push these two items `size` apart and
+    /// give the leftover to the others" shape, which is common in toolbars and dialog
+    /// button rows. The minor axis is unconstrained; a spacer paints nothing.
+    ///
+    /// The cap is expressed through the item's own constraints, so the allocator is the
+    /// one that enforces it (the same path that honours `set_constraints`).
+    pub fn add_fixed_spacer(&mut self, size: u32) {
+        self.items.push(BoxLayoutItem {
+            widget_id: None,
+            stretch: 1,
+            constraints: LayoutConstraints::new(size, Some(size)),
+            policy: SizePolicy::Fixed,
+            align: None,
         });
     }
     /// Sets size constraints for an existing widget item.
@@ -282,32 +364,25 @@ impl Layout for BoxLayout {
         // the theme's font token) and left every gap at its nominal size.
         let scale = context.layout_scale.max(context.font_scale);
         let scaled_spacing = (self.spacing as f32 * scale).round() as u32;
-        let scaled_margin = (self.margin as f32 * scale).round() as u32;
+        let (left, top, right, bottom) = self.scaled_insets(scale);
         let gaps = (self.items.len().saturating_sub(1)) as u32;
         let primary = match self.orientation {
-            Orientation::Horizontal => rect.width,
-            Orientation::Vertical => rect.height,
+            Orientation::Horizontal => rect.width.saturating_sub(left).saturating_sub(right),
+            Orientation::Vertical => rect.height.saturating_sub(top).saturating_sub(bottom),
         }
-        .saturating_sub(scaled_margin * 2)
         .saturating_sub(gaps * scaled_spacing);
+        let cross = match self.orientation {
+            Orientation::Horizontal => rect.height.saturating_sub(top).saturating_sub(bottom),
+            Orientation::Vertical => rect.width.saturating_sub(left).saturating_sub(right),
+        };
         let majors = self.allocate_major_lengths(primary);
-        let mut cursor_x = rect.x + scaled_margin as i32;
-        let mut cursor_y = rect.y + scaled_margin as i32;
+        let mut cursor_x = rect.x + left as i32;
+        let mut cursor_y = rect.y + top as i32;
         for (index, item) in self.items.iter().enumerate() {
             let major = majors.get(index).copied().unwrap_or(0);
             let child_rect = match self.orientation {
-                Orientation::Horizontal => Rect::new(
-                    cursor_x,
-                    cursor_y,
-                    major,
-                    rect.height.saturating_sub(scaled_margin * 2),
-                ),
-                Orientation::Vertical => Rect::new(
-                    cursor_x,
-                    cursor_y,
-                    rect.width.saturating_sub(scaled_margin * 2),
-                    major,
-                ),
+                Orientation::Horizontal => Rect::new(cursor_x, cursor_y, major, cross),
+                Orientation::Vertical => Rect::new(cursor_x, cursor_y, cross, major),
             };
             if let Some(widget_id) = item.widget_id {
                 // Grown to the device class's minimum touch area, as the flex layout does — the two
@@ -325,6 +400,82 @@ impl Layout for BoxLayout {
             match self.orientation {
                 Orientation::Horizontal => cursor_x += (major + scaled_spacing) as i32,
                 Orientation::Vertical => cursor_y += (major + scaled_spacing) as i32,
+            }
+        }
+    }
+
+    /// The hint-aware path: an aligned item is placed at the cross size it asks for.
+    ///
+    /// This is the first layout to consume `ChildInfo` (LAY-N01). The main axis keeps its
+    /// stretch allocation — a box divides the axis it owns — while the cross axis becomes
+    /// the child's own answer when the caller asked for an alignment. A layout that ignored
+    /// `children` would have had to be told each child's size in advance, which is the
+    /// workaround `FlexLayout::set_child_sizes` exists for.
+    fn arrange(&self, rect: Rect, children: &[ChildInfo], out: &mut dyn FnMut(ObjectId, Rect)) {
+        if self.items.is_empty() {
+            return;
+        }
+        let (left, top, right, bottom) = self.scaled_insets(1.0);
+        let gaps = (self.items.len().saturating_sub(1)) as u32;
+        let primary = match self.orientation {
+            Orientation::Horizontal => rect.width.saturating_sub(left).saturating_sub(right),
+            Orientation::Vertical => rect.height.saturating_sub(top).saturating_sub(bottom),
+        }
+        .saturating_sub(gaps * self.spacing);
+        let cross_extent = match self.orientation {
+            Orientation::Horizontal => rect.height.saturating_sub(top).saturating_sub(bottom),
+            Orientation::Vertical => rect.width.saturating_sub(left).saturating_sub(right),
+        };
+        let majors = self.allocate_major_lengths(primary);
+        let mut cursor_x = rect.x + left as i32;
+        let mut cursor_y = rect.y + top as i32;
+        for (index, item) in self.items.iter().enumerate() {
+            let cross_virtual = self.orientation == Orientation::Horizontal;
+            let info = item.widget_id.and_then(|id| ChildInfo::find(children, id));
+            let mut major = majors.get(index).copied().unwrap_or(0);
+            // N03: the hint's main-axis bounds are the converged form of
+            // `LayoutConstraints`/`SizePolicy`. Applying them here means the hint-aware path
+            // has one source for "how much room does this child want", not two that can
+            // disagree; the struct fields stay as the adapter used when no hint is supplied.
+            if let Some(info) = info {
+                let main = crate::layout::hints::axis(&info.hints, !cross_virtual);
+                major = major.max(main.min);
+                if main.max > 0 {
+                    major = major.min(main.max.max(main.min));
+                }
+            }
+            let mut cross = cross_extent;
+            let mut cross_offset = 0;
+            if let Some(align) = item.align {
+                if let Some(info) = info {
+                    let requested = crate::layout::hints::axis(&info.hints, cross_virtual).pref;
+                    // A hint larger than the box is clamped: the box cannot give what it
+                    // does not have, and overflowing the cross axis would paint outside
+                    // the parent.
+                    cross = requested.min(cross_extent);
+                    cross_offset = match align {
+                        Alignment::Center => (cross_extent - cross) / 2,
+                        Alignment::Right | Alignment::Bottom => cross_extent - cross,
+                        // Left/Top are the start of either cross axis; so is any
+                        // unspecified alignment.
+                        _ => 0,
+                    };
+                }
+            }
+            let child_rect = match self.orientation {
+                Orientation::Horizontal => {
+                    Rect::new(cursor_x, cursor_y.saturating_add(cross_offset as i32), major, cross)
+                }
+                Orientation::Vertical => {
+                    Rect::new(cursor_x.saturating_add(cross_offset as i32), cursor_y, cross, major)
+                }
+            };
+            if let Some(widget_id) = item.widget_id {
+                out(widget_id, child_rect);
+            }
+            match self.orientation {
+                Orientation::Horizontal => cursor_x += (major + self.spacing) as i32,
+                Orientation::Vertical => cursor_y += (major + self.spacing) as i32,
             }
         }
     }
@@ -347,6 +498,7 @@ impl Layout for BoxLayout {
             stretch: stretch.max(1),
             constraints: LayoutConstraints::new(0, None),
             policy: SizePolicy::Expanding,
+            align: None,
         });
     }
     fn remove_widget(&mut self, widget_id: ObjectId) {
@@ -357,27 +509,24 @@ impl Layout for BoxLayout {
             return;
         }
         let gaps = (self.items.len().saturating_sub(1)) as u32;
+        let (left, top, right, bottom) = self.scaled_insets(1.0);
         let primary = match self.orientation {
-            Orientation::Horizontal => rect.width,
-            Orientation::Vertical => rect.height,
+            Orientation::Horizontal => rect.width.saturating_sub(left).saturating_sub(right),
+            Orientation::Vertical => rect.height.saturating_sub(top).saturating_sub(bottom),
         }
-        .saturating_sub(self.margin * 2)
         .saturating_sub(gaps * self.spacing);
+        let cross = match self.orientation {
+            Orientation::Horizontal => rect.height.saturating_sub(top).saturating_sub(bottom),
+            Orientation::Vertical => rect.width.saturating_sub(left).saturating_sub(right),
+        };
         let majors = self.allocate_major_lengths(primary);
-        let mut cursor_x = rect.x + self.margin as i32;
-        let mut cursor_y = rect.y + self.margin as i32;
+        let mut cursor_x = rect.x + left as i32;
+        let mut cursor_y = rect.y + top as i32;
         for (index, item) in self.items.iter().enumerate() {
             let major = majors.get(index).copied().unwrap_or(0);
             let child_rect = match self.orientation {
-                Orientation::Horizontal => Rect::new(
-                    cursor_x,
-                    cursor_y,
-                    major,
-                    rect.height.saturating_sub(self.margin * 2),
-                ),
-                Orientation::Vertical => {
-                    Rect::new(cursor_x, cursor_y, rect.width.saturating_sub(self.margin * 2), major)
-                }
+                Orientation::Horizontal => Rect::new(cursor_x, cursor_y, major, cross),
+                Orientation::Vertical => Rect::new(cursor_x, cursor_y, cross, major),
             };
             if let Some(widget_id) = item.widget_id {
                 widgets(widget_id, child_rect);
@@ -589,5 +738,86 @@ mod tests {
         assert_eq!(a.width, 30, "the capped item stops at its max");
         assert_eq!(b.width, 70, "the roomy neighbour takes the leftover");
         assert_eq!(a.width + b.width, 100, "the parent is exactly filled");
+    }
+
+    /// Four-way margins inset each side independently; the uniform margin stays the fallback.
+    #[test]
+    fn four_way_margins_inset_each_side_independently() {
+        let mut layout = BoxLayout::new(Orientation::Vertical, 0, 0);
+        layout.add_widget(1, 1);
+        layout.set_margins(crate::style::EdgeOffsets { top: 5, right: 20, bottom: 0, left: 10 });
+
+        let out = placed(&layout, Rect::new(0, 0, 100, 100));
+        let child = rect_of(&out, 1);
+        assert_eq!(child.x, 10, "left inset");
+        assert_eq!(child.y, 5, "top inset");
+        assert_eq!(child.width, 70, "width pays both horizontal insets");
+        assert_eq!(child.height, 95, "height pays both vertical insets");
+
+        // Clearing back to the uniform margin restores symmetric insets.
+        let mut uniform = BoxLayout::new(Orientation::Vertical, 0, 4);
+        uniform.add_widget(1, 1);
+        let out = placed(&uniform, Rect::new(0, 0, 100, 100));
+        assert_eq!(rect_of(&out, 1), Rect::new(4, 4, 92, 92));
+    }
+
+    /// A fixed spacer takes exactly its size; the elastic items share what is left.
+    #[test]
+    fn a_fixed_spacer_does_not_stretch() {
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        layout.add_widget(1, 1);
+        layout.add_fixed_spacer(40);
+        layout.add_widget(2, 1);
+
+        let out = placed(&layout, Rect::new(0, 0, 200, 10));
+        let first = rect_of(&out, 1);
+        let second = rect_of(&out, 2);
+        assert_eq!(second.x - (first.x + first.width as i32), 40, "the gap is the fixed size");
+        assert_eq!(first.width, 80, "the elastic items split the remainder");
+        assert_eq!(second.width, 80);
+    }
+
+    /// An aligned item takes the cross size it asks for and is placed within the box.
+    #[test]
+    fn an_aligned_item_is_placed_at_its_requested_cross_size() {
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        layout.add_widget(1, 1);
+        assert!(layout.set_item_alignment(1, Some(Alignment::Center)));
+        assert_eq!(layout.item_alignment(1), Some(Alignment::Center));
+
+        let children = [ChildInfo::new(
+            1,
+            crate::layout::Hints {
+                width: crate::layout::AxisHints::unconstrained(),
+                height: crate::layout::AxisHints::fixed(20),
+            },
+        )];
+        let mut placed = Vec::new();
+        layout.arrange(Rect::new(0, 0, 100, 100), &children, &mut |id, rect| {
+            placed.push((id, rect));
+        });
+
+        let (id, rect) = placed[0];
+        assert_eq!(id, 1);
+        assert_eq!(rect.height, 20, "the hint's cross size, not the box's");
+        assert_eq!(rect.y, 40, "centred in the 100 px cross extent");
+        assert_eq!(rect.width, 100, "the main axis is still the box's allocation");
+    }
+
+    /// A stretched item (no alignment) keeps filling the cross axis, as before.
+    #[test]
+    fn an_unaligned_item_still_stretches() {
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        layout.add_widget(1, 1);
+        let children = [ChildInfo::new(
+            1,
+            crate::layout::Hints {
+                width: crate::layout::AxisHints::unconstrained(),
+                height: crate::layout::AxisHints::fixed(20),
+            },
+        )];
+        let mut placed = Vec::new();
+        layout.arrange(Rect::new(0, 0, 100, 100), &children, &mut |_, rect| placed.push(rect));
+        assert_eq!(placed[0], Rect::new(0, 0, 100, 100));
     }
 }

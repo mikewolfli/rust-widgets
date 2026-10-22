@@ -2,15 +2,54 @@
 // SPDX-License-Identifier: MIT
 
 //! Form layout manager — two-column label/field row pairs.
-use super::Layout;
+use super::{ChildInfo, Layout};
 use crate::compat::{Any, Vec};
 use crate::core::{ObjectId, Rect};
+use crate::style::EdgeOffsets;
+
+/// How a form decides the width of its field column.
+///
+/// The equivalent of Qt's `QFormLayout::FieldGrowthPolicy`. The default keeps this layout's
+/// historical behaviour (the field takes whatever the label column left), so introducing the
+/// enum changes no existing document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FieldGrowthPolicy {
+    /// Every field that is not fixed takes the rest of the row width. The default.
+    #[default]
+    AllNonFixed,
+    /// A field stays at the width it asks for; the rest of the row is left unused.
+    FieldsStayAtSize,
+    /// Fields grow, but only within the row they were given. Bounded by the same remainder
+    /// as [`Self::AllNonFixed`] in this implementation: the crate has no per-field
+    /// `SizePolicy` on form rows (unlike `BoxLayout`), so the two differ only once one
+    /// exists. Documented rather than silently treated as an alias.
+    ExpandingFieldsGrow,
+}
+
+/// When a form puts its field on a row of its own.
+///
+/// The equivalent of Qt's `QFormLayout::RowWrapPolicy`. The default is `DontWrapRows`, which
+/// is what this layout has always done.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RowWrapPolicy {
+    /// Label and field always share a row, however narrow it is. The default.
+    #[default]
+    DontWrapRows,
+    /// A row wraps when the label and the field's preferred widths do not fit together.
+    WrapLongRows,
+    /// Every field goes on its own row, below its label.
+    WrapAllRows,
+}
 
 /// Two-column form layout storing `(label, field)` row pairs
 /// plus standalone items added via the `Layout` trait.
 pub struct FormLayout {
     spacing: u32,
     margin: u32,
+    /// Four-way margins. `None` means the uniform [`Self::margin`] is used on every side.
+    margins: Option<EdgeOffsets>,
+    growth_policy: FieldGrowthPolicy,
+    row_wrap_policy: RowWrapPolicy,
     rows: Vec<(ObjectId, ObjectId)>,
     /// Standalone items added via the `Layout` trait (widget_id, stretch).
     items: Vec<(ObjectId, u32)>,
@@ -19,7 +58,63 @@ pub struct FormLayout {
 impl FormLayout {
     /// Create a two-column form layout.
     pub fn new(spacing: u32, margin: u32) -> Self {
-        Self { spacing, margin, rows: Vec::new(), items: Vec::new() }
+        Self {
+            spacing,
+            margin,
+            margins: None,
+            growth_policy: FieldGrowthPolicy::default(),
+            row_wrap_policy: RowWrapPolicy::default(),
+            rows: Vec::new(),
+            items: Vec::new(),
+        }
+    }
+
+    /// Sets how much of the row's width a field takes.
+    pub fn set_field_growth_policy(&mut self, policy: FieldGrowthPolicy) {
+        self.growth_policy = policy;
+    }
+
+    /// The field growth policy.
+    pub fn field_growth_policy(&self) -> FieldGrowthPolicy {
+        self.growth_policy
+    }
+
+    /// Sets when a field moves onto its own row.
+    pub fn set_row_wrap_policy(&mut self, policy: RowWrapPolicy) {
+        self.row_wrap_policy = policy;
+    }
+
+    /// The row wrap policy.
+    pub fn row_wrap_policy(&self) -> RowWrapPolicy {
+        self.row_wrap_policy
+    }
+
+    /// Sets four-way margins, overriding the uniform [`Self::margin`].
+    pub fn set_margins(&mut self, margins: EdgeOffsets) {
+        self.margins = Some(margins);
+    }
+
+    /// The four-way margins, or `None` when the uniform [`Self::margin`] applies.
+    pub fn margins(&self) -> Option<EdgeOffsets> {
+        self.margins
+    }
+
+    /// Left/top/right/bottom insets for `rect`, each clamped to half its axis.
+    fn insets(&self, rect: Rect) -> (u32, u32, u32, u32) {
+        let limit_x = rect.width / 2;
+        let limit_y = rect.height / 2;
+        match self.margins {
+            Some(margins) => (
+                margins.left.min(limit_x),
+                margins.top.min(limit_y),
+                margins.right.min(limit_x),
+                margins.bottom.min(limit_y),
+            ),
+            None => {
+                let uniform = self.margin.min(limit_x.min(limit_y));
+                (uniform, uniform, uniform, uniform)
+            }
+        }
     }
 
     /// Add one form row as `(label, field)` pair.
@@ -52,22 +147,6 @@ impl FormLayout {
     /// Returns the outer margin.
     pub fn margin(&self) -> u32 {
         self.margin
-    }
-
-    /// The total pixel cost of paying `value` on **both** sides of an axis, saturated into a
-    /// `u32` pixel budget.
-    ///
-    /// D09-LAYOUT-02: the inner box is the parent minus two margins, and the multiplication has
-    /// to reach `u64` before it is subtracted; a doubled `u32` margin that does not fit means
-    /// the margin alone consumes the axis, so this returns [`u32::MAX`] and the caller's
-    /// `saturating_sub` yields an empty inner box rather than a wrapped one.
-    fn pixel_budget(value: u32) -> u32 {
-        let doubled = value as u64 * 2;
-        if doubled > u32::MAX as u64 {
-            u32::MAX
-        } else {
-            doubled as u32
-        }
     }
 
     /// The total spacing consumed between `entries` addressable slots, saturated into a `u32`.
@@ -139,6 +218,101 @@ impl Layout for FormLayout {
         self.items.push((widget_id, stretch));
     }
 
+    /// The hint-aware path: applies [`FieldGrowthPolicy`] and [`RowWrapPolicy`].
+    ///
+    /// `update` keeps the historical two-column behaviour; this method is where the policies
+    /// take effect, because both of them ask "how wide does this child want to be?" — the
+    /// question `ChildInfo` exists to answer (LAY-N01).
+    ///
+    /// Height is still shared evenly across entries, which is the model `update` uses: a form
+    /// gives every row the same height, and a wrapping row costs two entries.
+    fn arrange(&self, rect: Rect, children: &[ChildInfo], out: &mut dyn FnMut(ObjectId, Rect)) {
+        if self.rows.is_empty() && self.items.is_empty() {
+            return;
+        }
+        let (left, top, right, bottom) = self.insets(rect);
+        let inner_width = rect.width.saturating_sub(left).saturating_sub(right);
+        let available_height = rect.height.saturating_sub(top).saturating_sub(bottom);
+        if inner_width == 0 || available_height == 0 {
+            return;
+        }
+
+        // Whether each pair occupies two rows. `WrapLongRows` asks the two children how wide
+        // they want to be; a missing hint counts as zero, which keeps the row unwrapped (the
+        // lenient answer, matching the rest of this parser).
+        let wraps: Vec<bool> = self
+            .rows
+            .iter()
+            .map(|(label, field)| match self.row_wrap_policy {
+                RowWrapPolicy::DontWrapRows => false,
+                RowWrapPolicy::WrapAllRows => true,
+                RowWrapPolicy::WrapLongRows => {
+                    let wanted = |id: ObjectId| {
+                        ChildInfo::find(children, id).map(|c| c.hints.width.pref).unwrap_or(0)
+                    };
+                    wanted(*label).saturating_add(self.spacing).saturating_add(wanted(*field))
+                        > inner_width
+                }
+            })
+            .collect();
+
+        let entries = self
+            .rows
+            .iter()
+            .zip(&wraps)
+            .map(|(_, wrapped)| if *wrapped { 2 } else { 1 })
+            .sum::<usize>()
+            + self.items.len();
+        if entries == 0 {
+            return;
+        }
+        let spacing_total = Self::spacing_budget(entries, self.spacing);
+        let entry_height = (available_height.saturating_sub(spacing_total) / entries as u32).max(1);
+
+        let label_width = inner_width / 3;
+        let gap = self.spacing.min(inner_width.saturating_sub(label_width));
+        let remaining_field_width = inner_width.saturating_sub(Self::sum_budget(label_width, gap));
+        let origin_x = rect.x.saturating_add(left as i32);
+        let spacing = Self::clamped_i32(gap);
+        let entry_height_i32 = entry_height as i32;
+        let mut cursor_y = rect.y.saturating_add(top as i32);
+
+        for ((label, field), wrapped) in self.rows.iter().zip(&wraps) {
+            let row_y = cursor_y;
+            if *wrapped {
+                out(*label, Rect::new(origin_x, row_y, inner_width, entry_height));
+                let field_y = row_y.saturating_add(entry_height_i32).saturating_add(spacing);
+                out(*field, Rect::new(origin_x, field_y, inner_width, entry_height));
+                cursor_y = field_y.saturating_add(entry_height_i32).saturating_add(spacing);
+            } else {
+                out(*label, Rect::new(origin_x, row_y, label_width, entry_height));
+                let field_width = match self.growth_policy {
+                    FieldGrowthPolicy::AllNonFixed | FieldGrowthPolicy::ExpandingFieldsGrow => {
+                        remaining_field_width
+                    }
+                    FieldGrowthPolicy::FieldsStayAtSize => ChildInfo::find(children, *field)
+                        .map(|c| c.hints.width.pref.min(remaining_field_width))
+                        .unwrap_or(remaining_field_width),
+                };
+                out(
+                    *field,
+                    Rect::new(
+                        origin_x.saturating_add(label_width as i32).saturating_add(spacing),
+                        row_y,
+                        field_width,
+                        entry_height,
+                    ),
+                );
+                cursor_y = row_y.saturating_add(entry_height_i32).saturating_add(spacing);
+            }
+        }
+
+        for (id, _stretch) in &self.items {
+            out(*id, Rect::new(origin_x, cursor_y, inner_width, entry_height));
+            cursor_y = cursor_y.saturating_add(entry_height_i32).saturating_add(spacing);
+        }
+    }
+
     fn remove_widget(&mut self, widget_id: ObjectId) {
         self.rows.retain(|(label, field)| *label != widget_id && *field != widget_id);
         self.items.retain(|(id, _)| *id != widget_id);
@@ -191,8 +365,9 @@ impl Layout for FormLayout {
         //   return below) instead of receiving a negative/wrapped box;
         // * a spacing budget that does not fit `u32` is saturated at the maximum, so it can
         //   never wrap into a small number and hand entries a larger height than they earned.
-        let inner_width = rect.width.saturating_sub(Self::pixel_budget(self.margin));
-        let available_height = rect.height.saturating_sub(Self::pixel_budget(self.margin));
+        let (left, top, right, bottom) = self.insets(rect);
+        let inner_width = rect.width.saturating_sub(left).saturating_sub(right);
+        let available_height = rect.height.saturating_sub(top).saturating_sub(bottom);
         if available_height == 0 || inner_width == 0 {
             return;
         }
@@ -217,7 +392,8 @@ impl Layout for FormLayout {
         // `label_width + gap` is `u32 + u32` too, so it takes the same widened treatment as the
         // other products here (D09-LAYOUT-02).
         let field_width = inner_width.saturating_sub(Self::sum_budget(label_width, gap));
-        let margin = Self::clamped_i32(self.margin);
+        let margin = Self::clamped_i32(left);
+        let margin_top = Self::clamped_i32(top);
         // `spacing` positions the field and advances the rows. Clamped to the inner box so a huge
         // value cannot wrap the painted `x`/`y` (D09-LAYOUT-02).
         let spacing = Self::clamped_i32(gap);
@@ -230,7 +406,7 @@ impl Layout for FormLayout {
 
         let mut index: i32 = 0;
         for (label, field) in &self.rows {
-            let y = rect.y.saturating_add(margin).saturating_add(index.saturating_mul(stride));
+            let y = rect.y.saturating_add(margin_top).saturating_add(index.saturating_mul(stride));
             widgets(*label, Rect::new(origin_x, y, label_width, entry_height));
             widgets(
                 *field,
@@ -247,7 +423,7 @@ impl Layout for FormLayout {
         // Layout standalone items: each gets the full inner width, sharing the same box
         // the label/field pairs use.
         for (id, _stretch) in &self.items {
-            let y = rect.y.saturating_add(margin).saturating_add(index.saturating_mul(stride));
+            let y = rect.y.saturating_add(margin_top).saturating_add(index.saturating_mul(stride));
             widgets(*id, Rect::new(origin_x, y, inner_width, entry_height));
             index = index.saturating_add(1);
         }
@@ -402,5 +578,46 @@ mod tests {
                 "{id} escapes the parent's right edge: {rect:?}"
             );
         }
+    }
+
+    /// `WrapLongRows` puts the field on its own row when the pair does not fit.
+    #[test]
+    fn wrap_long_rows_moves_the_field_below_the_label() {
+        let mut layout = FormLayout::new(8, 0);
+        layout.add_row_pair(1, 2);
+        layout.set_row_wrap_policy(RowWrapPolicy::WrapLongRows);
+
+        let children = [
+            ChildInfo::new(1, crate::layout::Hints::fixed(150, 20)),
+            ChildInfo::new(2, crate::layout::Hints::fixed(150, 20)),
+        ];
+        let mut out = Vec::new();
+        layout.arrange(Rect::new(0, 0, 200, 100), &children, &mut |id, rect| out.push((id, rect)));
+
+        let label = out.iter().find(|(id, _)| *id == 1).unwrap().1;
+        let field = out.iter().find(|(id, _)| *id == 2).unwrap().1;
+        assert_eq!(label.width, 200, "a wrapped label takes the whole row");
+        assert_eq!(field.width, 200, "and so does the field below it");
+        assert!(field.y > label.y, "the field is on the next row");
+    }
+
+    /// `FieldsStayAtSize` gives the field its preferred width instead of the remainder.
+    #[test]
+    fn fields_stay_at_size_uses_the_requested_width() {
+        let mut layout = FormLayout::new(8, 0);
+        layout.add_row_pair(1, 2);
+        layout.set_field_growth_policy(FieldGrowthPolicy::FieldsStayAtSize);
+
+        let children = [
+            ChildInfo::new(1, crate::layout::Hints::fixed(120, 20)),
+            ChildInfo::new(2, crate::layout::Hints::fixed(60, 20)),
+        ];
+        let mut out = Vec::new();
+        layout.arrange(Rect::new(0, 0, 200, 100), &children, &mut |id, rect| out.push((id, rect)));
+
+        let field = out.iter().find(|(id, _)| *id == 2).unwrap().1;
+        assert_eq!(field.width, 60, "the field keeps its own width");
+        // The default policy would have given it the rest of the row.
+        assert!(field.width < 200 - 200 / 3);
     }
 }

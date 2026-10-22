@@ -342,6 +342,18 @@ impl DropdownMenu {
         self.items.len()
     }
 
+    /// The configured visible-item cap, falling back to this control's historical
+    /// constant when `menu_config` is off.
+    fn max_visible_items(&self) -> usize {
+        super::effects::current().visible_items_or(MAX_VISIBLE_ITEMS as u32).max(1) as usize
+    }
+
+    /// Clamps the scroll offset after the list or the cap changed.
+    fn clamp_scroll(&mut self) {
+        let max_offset = self.items.len().saturating_sub(self.max_visible_items());
+        self.scroll_offset = self.scroll_offset.min(max_offset);
+    }
+
     /// Returns whether the dropdown is currently expanded.
     pub fn is_expanded(&self) -> bool {
         self.expanded
@@ -352,6 +364,7 @@ impl DropdownMenu {
         self.expanded = true;
         self.reveal.set_open(true);
         self.scroll_offset = 0;
+        self.clamp_scroll();
         #[cfg(not(alloc_frugal))]
         crate::widget::runtime::set_popup_grab(self.id());
         self.base.request_redraw();
@@ -397,7 +410,7 @@ impl DropdownMenu {
     /// Computes the dropdown list rectangle below the text field.
     fn dropdown_rect(&self) -> Rect {
         let geom = self.geometry();
-        let item_count = self.items.len().min(MAX_VISIBLE_ITEMS);
+        let item_count = self.items.len().min(self.max_visible_items());
         let height = (item_count as u32 * ITEM_HEIGHT as u32).min(DEFAULT_DROPDOWN_HEIGHT);
         Rect::new(geom.x, geom.y + geom.height as i32, geom.width, height)
     }
@@ -422,7 +435,7 @@ impl DropdownMenu {
         if !drop.contains_point(pos) {
             return None;
         }
-        let visible_end = (self.scroll_offset + MAX_VISIBLE_ITEMS).min(self.items.len());
+        let visible_end = (self.scroll_offset + self.max_visible_items()).min(self.items.len());
         for i in self.scroll_offset..visible_end {
             let ir = self.item_rect(i);
             if ir.contains_point(pos) && self.items[i].enabled {
@@ -575,6 +588,9 @@ impl Draw for DropdownMenu {
     fn draw(&mut self, context: &mut RenderContext) {
         let geom = self.geometry();
         let is_enabled = self.base.is_enabled();
+        // The effect policy is read once per frame; with `menu_config` disabled this is
+        // `MenuEffects::legacy()` and every paint below takes the pre-wiring path.
+        let effects = super::effects::current();
 
         // Chrome colours resolve explicit style first, then the theme's resolved
         // style for this control, and only then a literal. The theme step is what
@@ -710,14 +726,20 @@ impl Draw for DropdownMenu {
                 PopupReveal::travel_cap_for(crate::core::Size::new(drop.width, drop.height)),
             );
             if !self.reveal.is_closed() {
+                // The shadow extends past the panel, so it is painted before the clip.
+                if effects.shadows {
+                    super::effects::paint_popup_shadow(context, revealed, &effects);
+                }
                 context.push_clip(revealed.x, revealed.y, revealed.width, revealed.height);
             }
             // Dropdown background with shadow
-            context.fill_rounded_rect(drop, 4, background);
+            let panel_fill =
+                if effects.transparency { background.with_alpha(230) } else { background };
+            context.fill_rounded_rect(drop, 4, panel_fill);
             context.draw_rounded_rect_stroke(drop, 4, border, 2);
 
             // Draw visible items
-            let end = (self.scroll_offset + MAX_VISIBLE_ITEMS).min(self.items.len());
+            let end = (self.scroll_offset + self.max_visible_items()).min(self.items.len());
             for i in self.scroll_offset..end {
                 let item = &self.items[i];
                 let ir = self.item_rect(i);
@@ -879,8 +901,9 @@ impl EventHandler for DropdownMenu {
                 }
             }
             Event::Wheel { delta, modifiers: _ } => {
-                if self.expanded && self.items.len() > MAX_VISIBLE_ITEMS {
-                    let max_offset = self.items.len() - MAX_VISIBLE_ITEMS;
+                let capacity = self.max_visible_items();
+                if self.expanded && self.items.len() > capacity {
+                    let max_offset = self.items.len() - capacity;
                     if delta.y > 0 {
                         self.scroll_offset = self.scroll_offset.saturating_sub(1);
                     } else if delta.y < 0 {

@@ -35,6 +35,7 @@
 //! (`"cascader"`), from a CSS selector (`Cascader`), and through the typed
 //! `create_cascader` on `ControlBackend`.
 
+use crate::compat::RefCell;
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -219,6 +220,13 @@ pub struct Cascader {
     filter: String,
     /// Emitted when the committed selection changes, with the selected path.
     pub selection_changed: Signal1<Vec<usize>>,
+    /// The rendered selection text, memoised until the path, the tree or the separator
+    /// changes.
+    ///
+    /// The draw path needs a `&str`, and `display_text()` builds a `Vec<String>` of every
+    /// label on the path before joining it. That was one allocation per label per frame
+    /// (WDGT-06), for a value that only changes when the user picks something.
+    display_cache: RefCell<Option<String>>,
 }
 
 impl Cascader {
@@ -236,6 +244,7 @@ impl Cascader {
             filterable: false,
             filter: String::new(),
             selection_changed: Signal1::new(),
+            display_cache: RefCell::new(None),
         }
     }
 
@@ -252,6 +261,7 @@ impl Cascader {
         self.options = options;
         self.expanded_path.clear();
         self.filter.clear();
+        *self.display_cache.borrow_mut() = None;
         if !self.selected_path.is_empty() && self.resolve(&self.selected_path).is_none() {
             self.selected_path.clear();
         }
@@ -278,6 +288,7 @@ impl Cascader {
             return;
         }
         self.separator = separator.to_string();
+        *self.display_cache.borrow_mut() = None;
         self.base.request_redraw();
     }
 
@@ -514,6 +525,7 @@ impl Cascader {
             return true;
         }
         self.selected_path = path;
+        *self.display_cache.borrow_mut() = None;
         self.selection_changed.emit(self.selected_path.clone());
         self.base.request_redraw();
         true
@@ -525,6 +537,7 @@ impl Cascader {
             return;
         }
         self.selected_path.clear();
+        *self.display_cache.borrow_mut() = None;
         self.selection_changed.emit(Vec::new());
         self.base.request_redraw();
     }
@@ -545,7 +558,21 @@ impl Cascader {
 
     /// The selected path rendered as text, joined by the separator.
     pub fn display_text(&self) -> String {
-        self.selected_labels().join(&self.separator)
+        self.cached_display_text().clone()
+    }
+
+    /// The rendered selection, borrowed from the memo.
+    ///
+    /// Recomputing is O(path length) allocations; the draw path runs once per frame and
+    /// reads the same value every time until the selection changes.
+    fn cached_display_text(&self) -> core::cell::Ref<'_, String> {
+        if self.display_cache.borrow().is_none() {
+            let text = self.selected_labels().join(&self.separator);
+            *self.display_cache.borrow_mut() = Some(text);
+        }
+        core::cell::Ref::map(self.display_cache.borrow(), |cached| {
+            cached.as_ref().expect("just filled above")
+        })
     }
 
     /// The rectangle of the closed control's own box.
@@ -786,7 +813,7 @@ impl Cascader {
         context.fill_rounded_rect(rect, 4, background);
         context.draw_rounded_rect_stroke(rect, 4, border, 1);
 
-        let text = self.display_text();
+        let text = self.cached_display_text();
         let is_empty = text.is_empty();
         let display: &str = if is_empty { "Select…" } else { text.as_str() };
         // A placeholder is dimmer than a real value, so an empty field cannot be

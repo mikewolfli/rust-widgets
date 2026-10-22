@@ -19,6 +19,7 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
 
 /// How a property is represented and edited inside a [`PropertiesPanel`].
@@ -129,6 +130,20 @@ pub struct PropertiesPanel {
     scroll_offset: i32,
     /// Emitted when a property value changes, provides (name, new_value).
     pub property_changed: Signal1<(String, PropertyValue)>,
+    /// Category grouping as indices into `properties`, rebuilt only when the
+    /// entry list or the filter changes.
+    ///
+    /// The draw pass and the hit test used to call `properties_by_category`,
+    /// which cloned every category name and allocated a `HashMap` plus one
+    /// `Vec` per category on every frame. The grouping is stable between edits,
+    /// so it is cached here and rebuilt on the mutations that can change it.
+    grouped_cache: RefCell<Option<Vec<(String, Vec<usize>)>>>,
+    /// Display text per entry (same index as `properties`), rebuilt when a
+    /// value changes.
+    ///
+    /// `value_display_text` allocated a `String` per visible row per frame;
+    /// formatting is now done once per value change instead of once per paint.
+    display_cache: RefCell<Option<Vec<String>>>,
 }
 
 impl PropertiesPanel {
@@ -140,7 +155,20 @@ impl PropertiesPanel {
             filter_text: String::new(),
             scroll_offset: 0,
             property_changed: Signal1::new(),
+            grouped_cache: RefCell::new(None),
+            display_cache: RefCell::new(None),
         }
+    }
+
+    /// Drops the cached grouping. Called by every mutation that can change
+    /// which entries are shown or which category they belong to.
+    fn invalidate_grouping(&mut self) {
+        *self.grouped_cache.get_mut() = None;
+    }
+
+    /// Drops the cached display texts. Called whenever a value changes.
+    fn invalidate_display(&mut self) {
+        *self.display_cache.get_mut() = None;
     }
 
     // ── Property management ──
@@ -148,6 +176,8 @@ impl PropertiesPanel {
     /// Adds a property entry to the panel.
     pub fn add_property(&mut self, entry: PropertyEntry) {
         self.properties.push(entry);
+        self.invalidate_grouping();
+        self.invalidate_display();
         self.base.request_redraw();
     }
 
@@ -157,6 +187,8 @@ impl PropertiesPanel {
         self.properties.retain(|p| p.name != name);
         let removed = self.properties.len() < len_before;
         if removed {
+            self.invalidate_grouping();
+            self.invalidate_display();
             self.base.request_redraw();
         }
         removed
@@ -165,6 +197,8 @@ impl PropertiesPanel {
     /// Removes all properties.
     pub fn clear_properties(&mut self) {
         self.properties.clear();
+        self.invalidate_grouping();
+        self.invalidate_display();
         self.base.request_redraw();
     }
 
@@ -178,6 +212,7 @@ impl PropertiesPanel {
         if let Some(entry) = self.properties.iter_mut().find(|p| p.name == name) {
             if entry.value != value {
                 entry.value = value.clone();
+                self.invalidate_display();
                 self.property_changed.emit((name.to_string(), value));
                 self.base.request_redraw();
             }
@@ -202,6 +237,7 @@ impl PropertiesPanel {
         }
         self.filter_text = text.to_string();
         self.scroll_offset = 0;
+        self.invalidate_grouping();
         self.base.request_redraw();
     }
 
@@ -211,6 +247,10 @@ impl PropertiesPanel {
     }
 
     /// Returns the filtered properties that match the current filter text.
+    ///
+    /// Test-only: the draw path and the public accessor read the cached grouping instead, so
+    /// this helper's per-call `Vec` is confined to the tests that assert filter semantics.
+    #[cfg(test)]
     fn filtered_properties(&self) -> Vec<&PropertyEntry> {
         if self.filter_text.is_empty() {
             return self.properties.iter().collect();
@@ -223,16 +263,64 @@ impl PropertiesPanel {
 
     /// Returns properties grouped by category. Properties without a category
     /// are placed under "General".
+    ///
+    /// The grouping is cached; this accessor materialises borrowed entries for
+    /// callers outside the draw path. The draw pass and the hit test read
+    /// [`Self::grouped_indices`] directly and allocate nothing.
     pub fn properties_by_category(&self) -> Vec<(String, Vec<&PropertyEntry>)> {
-        let filtered = self.filtered_properties();
-        let mut grouped: HashMap<String, Vec<&PropertyEntry>> = HashMap::new();
-        for entry in filtered {
-            let cat = entry.category.clone().unwrap_or_else(|| "General".to_string());
-            grouped.entry(cat).or_default().push(entry);
+        self.grouped_indices()
+            .iter()
+            .map(|(category, indices)| {
+                (
+                    category.clone(),
+                    indices.iter().filter_map(|&index| self.properties.get(index)).collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// The cached category grouping, as indices into `properties`.
+    ///
+    /// Rebuilt on the first read after [`Self::invalidate_grouping`]. Categories
+    /// are sorted by name and entries keep their insertion order within a
+    /// category, which is the same shape the previous per-frame HashMap build
+    /// produced (the map was drained and sorted, and each bucket was filled in
+    /// insertion order).
+    fn grouped_indices(&self) -> Ref<'_, Vec<(String, Vec<usize>)>> {
+        if self.grouped_cache.borrow().is_none() {
+            let lower = (!self.filter_text.is_empty()).then(|| self.filter_text.to_lowercase());
+            let mut grouped: HashMap<String, Vec<usize>> = HashMap::new();
+            for (index, entry) in self.properties.iter().enumerate() {
+                if let Some(lower) = lower.as_ref() {
+                    if !entry.name.to_lowercase().contains(lower) {
+                        continue;
+                    }
+                }
+                let category = entry.category.clone().unwrap_or_else(|| "General".to_string());
+                grouped.entry(category).or_default().push(index);
+            }
+            let mut result: Vec<_> = grouped.into_iter().collect();
+            result.sort_by(|a, b| a.0.cmp(&b.0));
+            *self.grouped_cache.borrow_mut() = Some(result);
         }
-        let mut result: Vec<_> = grouped.into_iter().collect();
-        result.sort_by(|a, b| a.0.cmp(&b.0));
-        result
+        Ref::map(self.grouped_cache.borrow(), |cache| {
+            cache.as_ref().expect("grouping was rebuilt above")
+        })
+    }
+
+    /// The cached display text for every entry, indexed like `properties`.
+    fn display_texts(&self) -> Ref<'_, Vec<String>> {
+        if self.display_cache.borrow().is_none() {
+            let texts = self
+                .properties
+                .iter()
+                .map(|entry| Self::value_display_text(&entry.value))
+                .collect();
+            *self.display_cache.borrow_mut() = Some(texts);
+        }
+        Ref::map(self.display_cache.borrow(), |cache| {
+            cache.as_ref().expect("display texts were rebuilt above")
+        })
     }
 
     // ── Scroll ──
@@ -276,7 +364,7 @@ impl PropertiesPanel {
     /// The total number of visual rows the panel paints: one header plus one row per entry,
     /// over the currently filtered grouping.
     fn visual_row_count(&self) -> usize {
-        self.properties_by_category().iter().map(|(_, entries)| 1 + entries.len()).sum()
+        self.grouped_indices().iter().map(|(_, entries)| 1 + entries.len()).sum()
     }
 
     /// The first visual row that is entirely above the content box, i.e. how many rows the
@@ -334,13 +422,14 @@ impl PropertiesPanel {
         }
         let mut row = 0usize;
         let target = offset as usize / ROW_HEIGHT as usize;
-        for (_, entries) in self.properties_by_category() {
+        for (_, indices) in self.grouped_indices().iter() {
             if row == target {
                 return None; // a category header
             }
             row += 1;
-            for entry in entries {
+            for &index in indices {
                 if row == target {
+                    let entry = self.properties.get(index)?;
                     return entry.editable.then(|| entry.name.clone());
                 }
                 row += 1;
@@ -511,7 +600,10 @@ impl Draw for PropertiesPanel {
         // The panel's own effective font rather than a per-frame `Font::simple` (which also
         // allocated the family `String` and ignored the theme's typeface).
         let font = effective_font(self.style());
-        let categories = self.properties_by_category();
+        // Both caches are borrowed (not rebuilt) on a steady-state frame: the grouping only
+        // changes on add/remove/filter, and the display text only when a value changes.
+        let grouped = self.grouped_indices();
+        let displays = self.display_texts();
         // Rows scroll inside the panel's own content box, not from its literal top edge: the
         // first category header used to start at `geom.y`, so its glyph box began on the
         // frame's own stroke. `content_box` reserves the panel's margin and the scroll offset
@@ -524,7 +616,7 @@ impl Draw for PropertiesPanel {
         // to precede it and let the columns disagree about where the panel's margin was.
         let mut row = self.first_visible_row();
 
-        for (category, entries) in &categories {
+        for (category, indices) in grouped.iter() {
             // ── Category header ──
             let header_rect = self.row_rect_for(row);
             row += 1;
@@ -547,7 +639,8 @@ impl Draw for PropertiesPanel {
                 HorizontalAlignment::Left,
             );
 
-            for entry in entries {
+            for &index in indices {
+                let Some(entry) = self.properties.get(index) else { continue };
                 let row_rect = self.row_rect_for(row);
                 row += 1;
                 if row_rect.y >= bottom {
@@ -586,7 +679,7 @@ impl Draw for PropertiesPanel {
                     content.width.saturating_sub(VALUE_COL_LEFT as u32),
                     ROW_HEIGHT,
                 );
-                let display = Self::value_display_text(&entry.value);
+                let display = displays.get(index).map(String::as_str).unwrap_or("");
                 context.fill_rect(value_rect, value_background);
                 let value_line = context.text_line(value_rect, font);
                 if !display.is_empty() {
@@ -597,7 +690,7 @@ impl Draw for PropertiesPanel {
                             width: value_rect.width.saturating_sub(4),
                             height: value_line.height,
                         },
-                        &display,
+                        display,
                         font,
                         if entry.editable { value_color } else { readonly_value_color },
                         HorizontalAlignment::Left,
@@ -1022,5 +1115,46 @@ mod tests {
         let svg = render_to_svg(&mut panel);
         assert!(svg.starts_with("<svg"), "SVG should start with <svg, got: {svg:.60}");
         assert!(svg.ends_with("</svg>"), "SVG should end with </svg>");
+    }
+
+    /// The grouping cache must not outlive the mutations it depends on (VIEW-N03): adding,
+    /// removing and filtering each change what the next frame paints.
+    #[test]
+    fn grouping_cache_follows_every_structural_mutation() {
+        let mut panel = PropertiesPanel::new(Rect::new(0, 0, 300, 400));
+        panel.add_property(make_text_property("alpha", "a", Some("One")));
+        assert_eq!(panel.properties_by_category().len(), 1);
+
+        // A second category changes the grouping.
+        panel.add_property(make_text_property("beta", "b", Some("Two")));
+        let grouped = panel.properties_by_category();
+        assert_eq!(grouped.len(), 2);
+        assert_eq!(grouped[0].0, "One");
+        assert_eq!(grouped[1].0, "Two");
+
+        // Filtering shrinks the grouping without touching the property list.
+        panel.set_filter("alp");
+        let grouped = panel.properties_by_category();
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(grouped[0].1.len(), 1);
+        assert_eq!(grouped[0].1[0].name, "alpha");
+
+        // Removing drops it from the grouping.
+        panel.set_filter("");
+        panel.remove_property("alpha");
+        let grouped = panel.properties_by_category();
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(grouped[0].1[0].name, "beta");
+    }
+
+    /// The display cache is keyed on the entries' values, so a value change must rebuild it.
+    #[test]
+    fn display_cache_reflects_a_value_change() {
+        let mut panel = PropertiesPanel::new(Rect::new(0, 0, 300, 400));
+        panel.add_property(make_text_property("greeting", "Hello", None));
+        assert_eq!(panel.display_texts().as_slice(), &[String::from("Hello")]);
+
+        panel.set_property_value("greeting", PropertyValue::Text("Hi".to_string()));
+        assert_eq!(panel.display_texts().as_slice(), &[String::from("Hi")]);
     }
 }

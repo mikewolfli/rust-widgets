@@ -37,6 +37,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+. "$ROOT_DIR/tools/lib_timeout.sh"
 
 FEATURES="desktop,wayland-native"
 if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists gtk+-3.0 2>/dev/null; then
@@ -63,7 +64,11 @@ check_freebsd() {
   # build script otherwise refuses to emit flags for a target it does not
   # recognise. No library is linked by `cargo check`, so probing the host's GTK
   # headers is exactly the type-check this gate wants.
-  PKG_CONFIG_ALLOW_CROSS=1 \
+  #
+  # `env` carries the assignment to the child: a bare `VAR=x rw_run_bounded ...`
+  # would leave the variable set for the rest of this bash script (assignments before a
+  # function call persist in bash), which is not what the FreeBSD arm intends.
+  rw_run_bounded "${RW_GATE_TIMEOUT:-900}" env PKG_CONFIG_ALLOW_CROSS=1 \
     cargo check --lib --target "$triple" --no-default-features --features "$FEATURES"
   checked=$((checked + 1))
 }
@@ -86,7 +91,8 @@ check_netbsd() {
     return
   fi
   echo "--- $triple"
-  CC_x86_64_unknown_netbsd=clang \
+  rw_run_bounded "${RW_GATE_TIMEOUT:-900}" env \
+    CC_x86_64_unknown_netbsd=clang \
     AR_x86_64_unknown_netbsd=llvm-ar \
     C_INCLUDE_PATH=/usr/include/x86_64-linux-gnu:/usr/include \
     PKG_CONFIG_ALLOW_CROSS=1 \

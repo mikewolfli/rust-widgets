@@ -167,6 +167,7 @@ impl EventSignalBinder {
         };
         // The slot outlives this call, so it must own the name rather than borrow it.
         let name = alloc::string::String::from(event_name);
+        // Borrowed-payload slot: forwarding only reads the event, so it does not need an `Arc`.
         let handle = signal.connect(move || hub.emit(&name));
         let probe = signal.clone();
         self.forwards.push(Forwarded {
@@ -513,8 +514,10 @@ impl EventSignalBinder {
             return;
         };
         let name = alloc::string::String::from(event_name);
-        let handle = signal.connect(move |value: Arc<T>| {
-            observe(&value);
+        // Borrowed-payload slot: `observe` takes `&T` and the hub only needs the event name, so
+        // the forward costs no `Arc` allocation per emit.
+        let handle = signal.connect_ref(move |value: &T| {
+            observe(value);
             hub.emit(&name);
         });
         // `Signal<T>` is generic, so its disconnect cannot be stored type-erased the way

@@ -4,6 +4,8 @@
 //! Menu and toolbar widgets.
 pub mod action;
 pub mod dropdown_menu;
+/// Effect-policy boundary shared by the menu family.
+pub(crate) mod effects;
 pub mod menu;
 pub mod menu_bar;
 pub mod menu_button;

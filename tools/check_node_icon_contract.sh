@@ -33,6 +33,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+. "$ROOT_DIR/tools/lib_timeout.sh"
 
 BINDING_DIR="bindings/nodejs"
 PROBE="$BINDING_DIR/verify_icon_contract.js"
@@ -82,7 +83,7 @@ esac
 LIBRARY="target/debug/librust_widgets.$LIBRARY_EXT"
 if [ ! -f "$LIBRARY" ]; then
   echo "[1/2] building the cdylib the binding loads"
-  cargo build --no-default-features --features desktop
+  rw_run_bounded "${RW_GATE_TIMEOUT:-900}" cargo build --no-default-features --features desktop
 fi
 # Asserted rather than assumed: a wrong extension must fail here, naming the path, instead of
 # surfacing later as "the binding failed the icon contract" with the real cause buried in a dlopen

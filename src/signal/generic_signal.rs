@@ -13,39 +13,47 @@ impl GenericSignal {
         Self { inner: Signal::new() }
     }
     /// Connect zero-argument slot and return connection handle.
+    ///
+    /// # Why this is allocation-free
+    ///
+    /// A unit signal always has a `()` payload, so there is never anything to hand over. The
+    /// wrapper therefore stores a **borrowed** slot ([`Signal::connect_ref`]) and discards the
+    /// reference it receives: `emit` passes `&()` instead of allocating an `Arc<()>`. This is
+    /// the shape of the hottest signals in the crate (`redraw_requested`, `layout_requested`,
+    /// `clicked`, `closed`), so the saving applies without any call-site change.
     pub fn connect<F>(&self, mut slot: F) -> ConnectionHandle
     where
         F: FnMut() + Send + Sync + 'static,
     {
-        self.inner.connect(move |_| slot())
+        self.inner.connect_ref(move |_| slot())
     }
-    /// Connect zero-argument slot with priority and return connection handle.
+    /// Connect a zero-argument slot with priority and return connection handle.
     pub fn connect_with_priority<F>(&self, mut slot: F, priority: Priority) -> ConnectionHandle
     where
         F: FnMut() + Send + Sync + 'static,
     {
-        self.inner.connect_with_priority(move |_| slot(), priority)
+        self.inner.connect_with_priority_ref(move |_| slot(), priority)
     }
     /// Connect zero-argument once-slot and return connection handle.
     pub fn connect_once<F>(&self, mut slot: F) -> ConnectionHandle
     where
         F: FnMut() + Send + Sync + 'static,
     {
-        self.inner.connect_once(move |_| slot())
+        self.inner.connect_once_ref(move |_| slot())
     }
     /// Connect zero-argument slot bound to an owner scope.
     pub fn connect_scoped<F>(&self, owner: &ConnectionScope, mut slot: F) -> ConnectionHandle
     where
         F: FnMut() + Send + Sync + 'static,
     {
-        self.inner.connect_scoped(owner, move |_| slot())
+        self.inner.connect_ref_scoped(owner, move |_| slot())
     }
     /// Connect zero-argument once-slot bound to an owner scope.
     pub fn connect_once_scoped<F>(&self, owner: &ConnectionScope, mut slot: F) -> ConnectionHandle
     where
         F: FnMut() + Send + Sync + 'static,
     {
-        self.inner.connect_once_scoped(owner, move |_| slot())
+        self.inner.connect_once_ref_scoped(owner, move |_| slot())
     }
     /// Disconnect slot by handle.
     pub fn disconnect(&self, handle: ConnectionHandle) -> bool {

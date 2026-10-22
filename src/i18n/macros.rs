@@ -16,6 +16,23 @@ macro_rules! tr {
     };
 }
 
+/// `tr_into!` appends a translation to a caller-provided buffer.
+///
+/// This is the zero-allocation counterpart of [`tr!`]: a draw loop that reuses one `String`
+/// avoids a heap allocation per label per frame. Accepts the same arities as `tr!`.
+#[macro_export]
+macro_rules! tr_into {
+    ($key:expr, $out:expr) => {
+        $crate::i18n::translate_into($key, $out)
+    };
+    ($key:expr, $count:expr, $out:expr) => {
+        $crate::i18n::translate_into_with_context($key, None, $count, $out)
+    };
+    ($key:expr, $context:expr, $count:expr, $out:expr) => {
+        $crate::i18n::translate_into_with_context($key, Some($context), $count, $out)
+    };
+}
+
 #[cfg(test)]
 mod tests {
     /// Serialize access to the global i18n state across test threads.

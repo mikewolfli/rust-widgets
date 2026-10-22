@@ -1,5 +1,19 @@
 # cargo-deny configuration for rust-widgets
 # See https://embarkstudios.github.io/cargo-deny/ for details
+#
+# # One file, and it is the one cargo-deny reads
+#
+# `cargo-deny-action@v2` reads `deny.toml` at the repository root. A second
+# `.cargo/deny.toml` used to declare licence and duplicate-version policy, but nothing read
+# it: it was orphaned configuration, and the policy therefore was never enforced. Its
+# content is merged here (in the current v2 schema; the old file used the removed v1 keys
+# `unlicensed` / `copyleft` / `default`) and the orphan is deleted.
+#
+# `multiple-versions` is `warn` rather than the orphan's `deny`: the lockfile currently
+# contains 42 duplicate crate names (pulled in by optional backends), so `deny` would fail
+# on the first run and say nothing about a *new* duplicate. `warn` reports them without
+# turning a configuration that was never active into an immediate red gate; tightening to
+# `deny` requires pruning that list first.
 
 [advisories]
 ignore = [
@@ -13,3 +27,22 @@ ignore = [
     "RUSTSEC-2024-0436",
 ]
 
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "MIT OR Apache-2.0",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "0BSD",
+    "CC0-1.0",
+]
+confidence-threshold = 0.8
+exceptions = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"

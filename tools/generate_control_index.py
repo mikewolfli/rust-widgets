@@ -41,7 +41,27 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SNAPSHOTS = ROOT / "snapshots" / "svg"
 WIDGET_SRC = ROOT / "src" / "widget"
+KIND_SRC = ROOT / "src" / "widget" / "kind.rs"
 DEFAULT_OUTPUT = ROOT / "control.md"
+
+
+def widget_kind_count() -> int:
+    """The number of `WidgetKind` variants, parsed from the enum itself.
+
+    # Why this is parsed rather than written
+
+    The page header used to state a literal `180`. `WidgetKind` had grown to 181 by the
+    time anyone looked, so the *generated* page carried a hand-maintained number — the
+    exact silent-drift defect this page exists to avoid. `tools/check_widget_kind_count.sh`
+    parses the enum with the same rules, so the two cannot disagree.
+    """
+    source = KIND_SRC.read_text(encoding="utf-8")
+    match = re.search(r"pub enum WidgetKind \{(.*?)\n\}", source, re.S)
+    if not match:
+        raise SystemExit(f"could not locate the WidgetKind enum in {KIND_SRC}")
+    body = re.sub(r"//[^\n]*", "", match.group(1))
+    body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
+    return len(re.findall(r"^\s*([A-Z][A-Za-z0-9_]*)\s*(?:\([^)]*\))?\s*,", body, re.M))
 
 # The families, in the order a reader wants them: the controls a form is built from first,
 # then the chrome around them, then the specialised families. Anything not listed keeps its
@@ -376,7 +396,7 @@ def main() -> int:
     out.append(
         f"本页共 **{len(names)}** 张控件快照名（每个两种外观，共 **{len(names) * 2}** 张 SVG）。\n"
         "这些名字来自控件注册表（`factory.widget_names()`），其中包含少量**别名**\n"
-        "（如 `wizard_dialog` 同时以 `wizard` 注册），因此快照名数多于 `WidgetKind` 的枚举数（**180**）。"
+        f"（如 `wizard_dialog` 同时以 `wizard` 注册），因此快照名数多于 `WidgetKind` 的枚举数（**{widget_kind_count()}**）。"
     )
     if extras:
         out.append("")

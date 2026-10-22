@@ -108,6 +108,19 @@ pub trait ListModel: Send + Sync {
     fn row_count(&self) -> usize;
     /// Data for row index, if present.
     fn data(&self, row: usize) -> Option<String>;
+    /// Writes the row's text into `out`, returning whether the row exists.
+    ///
+    /// The zero-allocation counterpart of [`Self::data`]; see [`crate::widget::view_widgets::table_widget::TableModel::fill_data`]
+    /// for the rationale. The default keeps existing implementors working unchanged.
+    fn fill_data(&self, row: usize, out: &mut String) -> bool {
+        match self.data(row) {
+            Some(value) => {
+                out.push_str(&value);
+                true
+            }
+            None => false,
+        }
+    }
     /// Optional signal emitted when model data projection changes.
     fn data_changed_signal(&self) -> Option<&GenericSignal> {
         None
@@ -154,6 +167,16 @@ impl ListModel for VecListModel {
     }
     fn data(&self, row: usize) -> Option<String> {
         self.items.get(row).cloned()
+    }
+    /// The model already owns its rows, so a paint pass can borrow them instead of cloning.
+    fn fill_data(&self, row: usize, out: &mut String) -> bool {
+        match self.items.get(row) {
+            Some(item) => {
+                out.push_str(item);
+                true
+            }
+            None => false,
+        }
     }
     fn data_changed_signal(&self) -> Option<&GenericSignal> {
         Some(&self.data_changed)
@@ -997,6 +1020,7 @@ impl Draw for ListView {
             // back to the row's number is to make the whole grid arithmetic `u32`, so the sole cast is
             // at the two ends. `index / columns` reports the line, `index % columns` the column within
             // it, and truncating division is what makes the two agree for the last partial line.
+            let mut cell_text = String::new();
             for i in 0..row_count {
                 let Some(cell) = self.item_rect(i) else { break };
                 // Hover is painted *under* focus: a row that is both hovered and focused keeps the
@@ -1007,47 +1031,50 @@ impl Draw for ListView {
                 } else if Some(i) == self.hovered_row {
                     context.fill_rect(cell, hovered_bg);
                 }
-                if let Some(text) = self.model.as_ref().and_then(|model| model.data(i)) {
-                    if !text.is_empty() {
-                        // A tile's caption is one line drawn *under* its picture, so its band is a
-                        // one-line strip at the cell's foot; giving `text_line` the whole cell would
-                        // centre the caption on the tile's middle line, over the picture it names.
-                        // A beside-label mode hands it the cell and lets it centre there, which for
-                        // the single-column modes is the pre-existing geometry exactly.
-                        let (band, align) = if layout.label_below {
-                            let caption = cell.height.min(layout.caption_height()).max(1);
-                            (
-                                Rect::new(
-                                    cell.x + layout.text_inset,
-                                    cell.y + (cell.height - caption) as i32,
-                                    cell.width.saturating_sub(layout.text_inset as u32),
-                                    caption,
-                                ),
-                                HorizontalAlignment::Center,
-                            )
-                        } else {
-                            (
-                                Rect::new(
-                                    cell.x + layout.text_inset,
-                                    cell.y,
-                                    cell.width.saturating_sub(layout.text_inset as u32),
-                                    cell.height,
-                                ),
-                                // A beside-label is a single run in a single-column row, so it is the
-                                // one placement the control's own alignment governs. The caption modes
-                                // below centre their label as part of their tile geometry, which is a
-                                // per-tile decision rather than a row one.
-                                self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
-                            )
-                        };
-                        context.draw_text_fitted(
-                            context.text_line(band, font),
-                            &text,
-                            font,
-                            ink,
-                            align,
-                        );
-                    }
+                cell_text.clear();
+                let has_text = match self.model.as_ref() {
+                    Some(model) => model.fill_data(i, &mut cell_text),
+                    None => false,
+                };
+                if has_text && !cell_text.is_empty() {
+                    // A tile's caption is one line drawn *under* its picture, so its band is a
+                    // one-line strip at the cell's foot; giving `text_line` the whole cell would
+                    // centre the caption on the tile's middle line, over the picture it names.
+                    // A beside-label mode hands it the cell and lets it centre there, which for
+                    // the single-column modes is the pre-existing geometry exactly.
+                    let (band, align) = if layout.label_below {
+                        let caption = cell.height.min(layout.caption_height()).max(1);
+                        (
+                            Rect::new(
+                                cell.x + layout.text_inset,
+                                cell.y + (cell.height - caption) as i32,
+                                cell.width.saturating_sub(layout.text_inset as u32),
+                                caption,
+                            ),
+                            HorizontalAlignment::Center,
+                        )
+                    } else {
+                        (
+                            Rect::new(
+                                cell.x + layout.text_inset,
+                                cell.y,
+                                cell.width.saturating_sub(layout.text_inset as u32),
+                                cell.height,
+                            ),
+                            // A beside-label is a single run in a single-column row, so it is the
+                            // one placement the control's own alignment governs. The caption modes
+                            // below centre their label as part of their tile geometry, which is a
+                            // per-tile decision rather than a row one.
+                            self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
+                        )
+                    };
+                    context.draw_text_fitted(
+                        context.text_line(band, font),
+                        &cell_text,
+                        font,
+                        ink,
+                        align,
+                    );
                 }
             }
         }

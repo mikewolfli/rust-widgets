@@ -27,6 +27,7 @@
 use super::{ConnectionHandle, GenericSignal, Signal1};
 use crate::compat::Box;
 use crate::widget::capability::CapabilityValue;
+#[cfg(test)]
 use alloc::sync::Arc;
 
 /// A subscriber that receives an event's payload.
@@ -138,7 +139,7 @@ impl EventSignalRef {
                 // more than once; the alternative — requiring the caller to hand over ownership —
                 // would make a second subscription impossible from one reference.
                 let convert = convert.clone();
-                source.connect(move |value: Arc<T>| slot(&convert(&value)))
+                source.connect_ref(move |value: &T| slot(&convert(value)))
             }),
             disconnect: Box::new(move |handle| for_disconnect.disconnect(handle)),
             slot_count: Box::new(move || for_count.slot_count()),

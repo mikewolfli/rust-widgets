@@ -150,6 +150,12 @@ const EXTRA_APPEARANCES: &[(&str, &str, &str)] = &[
     // `tests/tooltip_paint_probe.rs`. The defect was invisible to the snapshot set precisely
     // because the snapshot set had no shown tooltip in it.
     ("tooltip", "_shown", "shown"),
+    // A skeleton's `Rect` shape is the constructor's default, so the other two declared
+    // shapes (`Circle`, `TextLine`) had no snapshot at all even though `set_shape`
+    // publishes them (SNAP §16.2-3). They are shapes, not states, so they are exported
+    // as extra appearances rather than as `sample_fill` arms.
+    ("skeleton_loader", "_circle", "circle"),
+    ("skeleton_loader", "_textline", "textline"),
 ];
 
 /// Applies the state an extra appearance depicts. Returns `false` when the control does not have
@@ -233,6 +239,34 @@ fn apply_extra_state(
                 None => false,
             }
         }
+        ("skeleton_loader", "_circle") => {
+            use rust_widgets::widget::display_widgets::skeleton_loader::{
+                SkeletonLoader, SkeletonShape,
+            };
+            match rust_widgets::widget::capability::coercion::widget_as_mut::<SkeletonLoader>(
+                widget,
+            ) {
+                Some(skeleton) => {
+                    skeleton.set_shape(SkeletonShape::Circle(18));
+                    true
+                }
+                None => false,
+            }
+        }
+        ("skeleton_loader", "_textline") => {
+            use rust_widgets::widget::display_widgets::skeleton_loader::{
+                SkeletonLoader, SkeletonShape,
+            };
+            match rust_widgets::widget::capability::coercion::widget_as_mut::<SkeletonLoader>(
+                widget,
+            ) {
+                Some(skeleton) => {
+                    skeleton.set_shape(SkeletonShape::TextLine(160));
+                    true
+                }
+                None => false,
+            }
+        }
         _ => false,
     }
 }
@@ -242,6 +276,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // this cannot observe a half-switched palette.
     let _guard = theme_test_guard();
     install_preset_appearances();
+
+    // The menu family reads a process-wide, hardware-adaptive effect policy. A committed SVG
+    // must not depend on the GPU or battery of the machine that regenerated it, so the
+    // exporter installs the deterministic verification policy before any control exists.
+    #[cfg(feature = "advanced-widgets")]
+    rust_widgets::menu_config::use_verification_policy();
 
     // The snapshots are user-facing pictures, so the widget layer must see the same catalogue a
     // running application has. Without this the action buttons drew their catalogue **keys**

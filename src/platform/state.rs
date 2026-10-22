@@ -1011,6 +1011,9 @@ where
         // cannot outlive the id it names.
         lock(&self.widget_events).push_back(WidgetTriggerEvent { widget_id, kind });
         drop(widgets);
+        // A new host-visible trigger is a reason to run one: a host blocked in
+        // `wait_for_host_events` must observe it immediately rather than at the backstop.
+        crate::platform::frame_wait::wake();
         true
     }
 
@@ -1025,6 +1028,8 @@ where
         }
         lock(&self.menu_events).push_back(menu_item_id);
         drop(widgets);
+        // See `inject_widget_trigger_event`: wake a host blocked in the wait channel.
+        crate::platform::frame_wait::wake();
         true
     }
     /// Pop widget trigger event.

@@ -1245,7 +1245,8 @@ fn write_c_string(text: &str, out: *mut c_char, cap: c_uint) -> c_uint {
 /// Creates a layout for `parent` and stores it, replacing any previous layout.
 ///
 /// `kind_name` is one of `"hbox"` / `"vbox"` / `"grid"` / `"uniform_grid"` /
-/// `"stack"` / `"form"` / `"flow"` / `"wrap"` / `"flex"` / `"splitter"`; it matches
+/// `"stack"` / `"splitter"` / `"form"` / `"flow"` / `"wrap"` / `"flex"` /
+/// `"border"` / `"center"` / `"aspect_ratio"` / `"keyboard_aware"`; it matches
 /// the spelling a declarative document uses, so the same name works in JSON and
 /// here. `spacing` and `margin` are applied where the kind uses them, and are
 /// ignored by the kinds that do not.

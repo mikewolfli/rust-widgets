@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
+use super::hints::ChildInfo;
+use super::types::LayoutContext;
 use super::Layout;
 use crate::compat::{Any, Box, Vec};
 use crate::core::{ObjectId, Rect, Size};
@@ -168,219 +170,83 @@ impl FlowLayout {
     /// the remaining space is still placed at the next slot and is allowed to
     /// overflow when `wrap` is off.
     pub fn layout(&self, available_rect: Rect) -> Vec<Rect> {
+        let sizes: Vec<Size> = self.children.iter().map(|child| child.size_hint()).collect();
+        self.layout_sized(available_rect, &sizes)
+    }
+    /// Lays `sizes` out, one entry per child, in flow order.
+    ///
+    /// # Why the sizes are a parameter
+    ///
+    /// [`layout`](Self::layout) reads them from the children's own `size_hint`; the hint-aware
+    /// [`Layout::arrange`] path reads them from the caller's `ChildInfo`. Both then run the
+    /// same line breaker — `wrap::break_lines` and `wrap::place_lines`, the implementation
+    /// `WrapLayout` uses too — so "where does this line end" has one answer in the crate
+    /// (LAY-N08).
+    fn layout_sized(&self, available_rect: Rect, sizes: &[Size]) -> Vec<Rect> {
+        self.layout_sized_with(available_rect, sizes, self.config.spacing, self.config.padding)
+    }
+    /// The body of [`layout_sized`](Self::layout_sized) with the gap and padding as parameters.
+    ///
+    /// Splitting them out is what lets [`Layout::update_with_context`] scale the device-sensitive
+    /// numbers without a second copy of the solver (the previous shape had no context-aware path
+    /// at all, so a flow inside a scaled window kept nominal gaps).
+    fn layout_sized_with(
+        &self,
+        available_rect: Rect,
+        sizes: &[Size],
+        spacing: i32,
+        padding: i32,
+    ) -> Vec<Rect> {
         // S-47: clamp a negative padding (which a directly-mutated config could still hold)
         // before the `* 2 as u32` so the inset arithmetic can never overflow; a huge positive
         // padding saturates the content rect to zero instead of folding the error into a
         // bogus geometry.
-        let padding = self.config.padding.max(0);
+        let padding = padding.max(0);
         let content_rect = Rect::new(
             available_rect.x.saturating_add(padding),
             available_rect.y.saturating_add(padding),
             available_rect.width.saturating_sub(2 * padding as u32),
             available_rect.height.saturating_sub(2 * padding as u32),
         );
-        match self.config.direction {
-            FlowDirection::Horizontal => self.layout_horizontal(&content_rect),
-            FlowDirection::Vertical => self.layout_vertical(&content_rect),
-        }
-    }
-    fn layout_horizontal(&self, content_rect: &Rect) -> Vec<Rect> {
-        let mut positions = Vec::new();
-        // The index at which each flow line begins. Recorded as the lines are formed rather
-        // than recovered later from coordinates: with a legal negative `spacing` a later item
-        // on the *same* line sits before the content origin, so the old "major <= origin means
-        // a new line" heuristic split one line into two and mis-aligned it (D08-L-01).
-        let mut line_starts = vec![0usize];
-        let mut current_x = content_rect.x;
-        let mut current_y = content_rect.y;
-        let mut row_height = 0i32;
-        for child in &self.children {
-            let size = child.size_hint();
-            let child_width = size.width as i32;
-            let child_height = size.height as i32;
-            if self.config.wrap
-                && current_x + child_width > content_rect.x + content_rect.width as i32
-            {
-                current_x = content_rect.x;
-                current_y += row_height + self.config.spacing;
-                row_height = 0;
-                line_starts.push(positions.len());
-            }
-            positions.push(Rect::new(
-                current_x,
-                current_y,
-                child_width as u32,
-                child_height as u32,
-            ));
-            current_x += child_width + self.config.spacing;
-            row_height = row_height.max(child_height);
-        }
-        self.apply_alignment(&mut positions, &line_starts, content_rect);
-        positions
-    }
-    fn layout_vertical(&self, content_rect: &Rect) -> Vec<Rect> {
-        let mut positions = Vec::new();
-        let mut line_starts = vec![0usize];
-        let mut current_x = content_rect.x;
-        let mut current_y = content_rect.y;
-        let mut column_width = 0i32;
-        for child in &self.children {
-            let size = child.size_hint();
-            let child_width = size.width as i32;
-            let child_height = size.height as i32;
-            if self.config.wrap
-                && current_y + child_height > content_rect.y + content_rect.height as i32
-            {
-                current_y = content_rect.y;
-                current_x += column_width + self.config.spacing;
-                column_width = 0;
-                line_starts.push(positions.len());
-            }
-            positions.push(Rect::new(
-                current_x,
-                current_y,
-                child_width as u32,
-                child_height as u32,
-            ));
-            current_y += child_height + self.config.spacing;
-            column_width = column_width.max(child_width);
-        }
-        self.apply_alignment(&mut positions, &line_starts, content_rect);
-        positions
-    }
-    /// Align the items **within each flow line**, not the whole child set.
-    ///
-    /// # Why per line
-    ///
-    /// The flow pass already decided where each line breaks, so an alignment can only
-    /// redistribute the free space of *that* line. The previous version summed every
-    /// child's extent and moved every child by that single offset, which is only correct
-    /// when nothing wrapped: with more than one line the rows were pushed by a number
-    /// computed from the other rows, and `End` could drive the early rows off the left
-    /// (or top) edge entirely. With wrapping off there is exactly one line, so the old
-    /// behaviour is preserved exactly.
-    ///
-    /// The minor axis handling is per **block**: `Center`/`End` shift every item by the
-    /// remaining minor extent, measured as the sum of each line's tallest member plus the
-    /// gaps between lines (S-45). This is what centres a single line by its max height and a
-    /// wrapped block by its real line footprint.
-    fn apply_alignment(&self, positions: &mut [Rect], line_starts: &[usize], content_rect: &Rect) {
-        if self.config.alignment == FlowAlignment::Start {
-            return;
-        }
-
-        // Recover the line groups from the boundaries the layout pass recorded. A coordinate
-        // heuristic cannot do this correctly for a negative `spacing`, because a same-line item
-        // may legitimately sit before the content origin (D08-L-01).
-        let major_is_x = self.config.direction == FlowDirection::Horizontal;
-        let origin = if major_is_x { content_rect.x } else { content_rect.y };
-        let mut lines: Vec<core::ops::Range<usize>> = Vec::with_capacity(line_starts.len());
-        for (i, &start) in line_starts.iter().enumerate() {
-            let end = line_starts.get(i + 1).copied().unwrap_or(positions.len());
-            if start < end {
-                lines.push(start..end);
-            }
-        }
-        if lines.is_empty() && !positions.is_empty() {
-            lines.push(0..positions.len());
-        }
-
-        for line in &lines {
-            let items = &mut positions[line.start..line.end];
-            if items.is_empty() {
-                continue;
-            }
-            let available =
-                if major_is_x { content_rect.width as i32 } else { content_rect.height as i32 };
-            let sizes: i32 = if major_is_x {
-                items.iter().map(|r| r.width as i32).sum()
-            } else {
-                items.iter().map(|r| r.height as i32).sum()
-            };
-            let n = items.len() as i32;
-
-            // The gap **between** items (start and end gaps are handled separately).
-            let gap = match self.config.alignment {
-                FlowAlignment::Center | FlowAlignment::End => self.config.spacing,
-                FlowAlignment::SpaceBetween => {
-                    if n > 1 {
-                        (available - sizes) / (n - 1)
-                    } else {
-                        self.config.spacing
-                    }
-                }
-                FlowAlignment::SpaceAround => {
-                    if n > 1 {
-                        self.config.spacing
-                            + (available - sizes - (n - 1) * self.config.spacing) / n
-                    } else {
-                        self.config.spacing
-                    }
-                }
-                FlowAlignment::Start => self.config.spacing,
-            };
-
-            let painted = sizes + (n - 1) * gap;
-            let slack = available - painted;
-            let start_offset = match self.config.alignment {
-                // Centred / end-aligned: the whole slack moves to one side. `SpaceBetween`
-                // leaves none at either end; `SpaceAround` splits it evenly, which is what
-                // makes it differ from `SpaceBetween` for a single item too.
-                FlowAlignment::Center => slack.max(0) / 2,
-                FlowAlignment::End => slack,
-                FlowAlignment::SpaceBetween => 0,
-                FlowAlignment::SpaceAround => {
-                    // The leading offset is half of what the run did *not* paint. The old form
-                    // subtracted `(n - 1) * (gap - spacing)` a second time, which double-counted
-                    // the very gap increment `painted` had already included (S-44).
-                    slack.max(0) / 2
-                }
-                FlowAlignment::Start => 0,
-            };
-
-            let mut cursor = origin + start_offset;
-            for item in items.iter_mut() {
-                if major_is_x {
-                    item.x = cursor;
-                    cursor += item.width as i32 + gap;
-                } else {
-                    item.y = cursor;
-                    cursor += item.height as i32 + gap;
-                }
-            }
-        }
-
-        // The minor axis: `Center`/`End` shift every item by the remaining extent. The
-        // extent is the **block's** footprint — each line's tallest member plus the gap
-        // between lines — not the sum of every sibling's extent. Summing every sibling
-        // pushed a single-line block off-centre and a wrapped block by a number computed
-        // from the other lines (S-45).
-        let minor_total: i32 = lines
-            .iter()
-            .map(|line| {
-                positions[line.start..line.end]
-                    .iter()
-                    .map(|r| if major_is_x { r.height as i32 } else { r.width as i32 })
-                    .max()
-                    .unwrap_or(0)
-            })
-            .sum::<i32>()
-            + (lines.len().saturating_sub(1) as i32) * self.config.spacing;
-        let minor_available =
-            if major_is_x { content_rect.height as i32 } else { content_rect.width as i32 };
-        let minor_offset = match self.config.alignment {
-            FlowAlignment::Center => (minor_available - minor_total) / 2,
-            FlowAlignment::End => minor_available - minor_total,
-            _ => 0,
+        let direction = match self.config.direction {
+            FlowDirection::Horizontal => crate::layout::WrapDirection::Horizontal,
+            FlowDirection::Vertical => crate::layout::WrapDirection::Vertical,
         };
-        if minor_offset != 0 {
-            for pos in positions.iter_mut() {
-                if major_is_x {
-                    pos.y += minor_offset;
-                } else {
-                    pos.x += minor_offset;
-                }
-            }
+        let available_main = match direction {
+            crate::layout::WrapDirection::Horizontal => content_rect.width,
+            crate::layout::WrapDirection::Vertical => content_rect.height,
+        } as i32;
+        let lines = crate::layout::wrap::break_lines(
+            sizes,
+            direction,
+            spacing,
+            available_main,
+            self.config.wrap,
+        );
+        crate::layout::wrap::place_lines(
+            sizes,
+            &lines,
+            direction,
+            self.wrap_alignment(),
+            spacing,
+            // A flow has one spacing for both axes; `run_spacing` is the wrap layout's split of
+            // the two, and a flow is the `None` case.
+            spacing,
+            content_rect,
+        )
+    }
+    /// The flow alignment expressed in the shared wrap vocabulary.
+    ///
+    /// The two enums carry the same five names; keeping the conversion in one place means a
+    /// future variant has one compiler error to point at instead of silently falling through a
+    /// `_` arm to `Start`.
+    fn wrap_alignment(&self) -> crate::layout::WrapAlignment {
+        match self.config.alignment {
+            FlowAlignment::Start => crate::layout::WrapAlignment::Start,
+            FlowAlignment::Center => crate::layout::WrapAlignment::Center,
+            FlowAlignment::End => crate::layout::WrapAlignment::End,
+            FlowAlignment::SpaceBetween => crate::layout::WrapAlignment::SpaceBetween,
+            FlowAlignment::SpaceAround => crate::layout::WrapAlignment::SpaceAround,
         }
     }
     /// Returns the size the layout would like for its children, including
@@ -457,6 +323,56 @@ impl Layout for FlowLayout {
         for (i, child_rect) in positions.iter().enumerate() {
             if let Some(child) = self.children.get(i) {
                 widgets(child.widget_id, *child_rect);
+            }
+        }
+    }
+
+    /// Lays the children out from their own hints (LAY-N01).
+    ///
+    /// [`update`](Self::update) reads each child widget's
+    /// [`size_hint`](crate::widget::Widget::size_hint); this path prefers the caller's
+    /// [`ChildInfo`] and falls back to that same `size_hint` for an axis the child left
+    /// unconstrained. A declarative flow (whose children were added by id and therefore have no
+    /// widget to ask) keeps its `100x100` default in both paths.
+    fn arrange(&self, rect: Rect, children: &[ChildInfo], out: &mut dyn FnMut(ObjectId, Rect)) {
+        let sizes: Vec<Size> = self
+            .children
+            .iter()
+            .map(|child| {
+                let fallback = child.size_hint();
+                ChildInfo::find(children, child.widget_id)
+                    .map_or(fallback, |info| info.resolved_size(fallback))
+            })
+            .collect();
+        for (index, child_rect) in self.layout_sized(rect, &sizes).into_iter().enumerate() {
+            if let Some(child) = self.children.get(index) {
+                out(child.widget_id, child_rect);
+            }
+        }
+    }
+
+    /// The device-aware path (BLUE22 §B.6 rule 7 for this layout).
+    ///
+    /// Gap and padding follow the **larger** of the layout scale and the text scale, the same
+    /// reading [`WrapLayout`](crate::layout::WrapLayout) uses: a HiDPI screen needs more logical
+    /// spacing, and a larger text preference needs more room between controls even at the same
+    /// DPI. `FlowLayout` had no context-aware path at all, so a flow inside a scaled window kept
+    /// nominal gaps while every sibling layout grew its own.
+    fn update_with_context(
+        &self,
+        rect: Rect,
+        context: &LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let scale = context.layout_scale.max(context.font_scale);
+        let spacing = (self.config.spacing as f32 * scale).round() as i32;
+        let padding = (self.config.padding.max(0) as f32 * scale).round() as i32;
+        let sizes: Vec<Size> = self.children.iter().map(|child| child.size_hint()).collect();
+        for (index, child_rect) in
+            self.layout_sized_with(rect, &sizes, spacing, padding).into_iter().enumerate()
+        {
+            if let Some(child) = self.children.get(index) {
+                widgets(child.widget_id, child_rect);
             }
         }
     }
@@ -973,5 +889,129 @@ mod tests {
         // A repeat clear is a no-op, not a panic or a re-emission.
         layout.clear();
         assert!(layout.child_ids().is_empty());
+    }
+
+    // ── LAY-N01 / LAY-N08 ─────────────────────────────────────────────────────────
+
+    /// The hint-aware path takes the child's stated size, including wrapping on it.
+    #[test]
+    fn arrange_lays_children_out_from_their_hints() {
+        let mut layout = FlowLayout::new();
+        layout.config.padding = 0;
+        layout.config.spacing = 0;
+        // The same `wrap` flag `update` honours: the hint channel changes where a size comes
+        // from, not whether the layout wraps.
+        layout.config.wrap = true;
+        for id in 1..=3u64 {
+            layout.add_widget(id, 0);
+        }
+        let children: Vec<crate::layout::ChildInfo> = (1..=3u64)
+            .map(|id| crate::layout::ChildInfo::new(id, crate::layout::Hints::fixed(40, 10)))
+            .collect();
+
+        let mut placed = crate::compat::HashMap::new();
+        layout.arrange(Rect::new(0, 0, 90, 100), &children, &mut |id, rect| {
+            placed.insert(id, rect);
+        });
+
+        // The declarative 100x100 default is replaced by the stated 40x10, so three of them no
+        // longer fit in one 90 px row and the third wraps.
+        assert_eq!(placed[&1], Rect::new(0, 0, 40, 10));
+        assert_eq!(placed[&2], Rect::new(40, 0, 40, 10));
+        assert_eq!(placed[&3], Rect::new(0, 10, 40, 10));
+    }
+
+    /// LAY-N08: `FlowLayout` and `WrapLayout` are two front-ends over one line breaker. For the
+    /// same sizes, spacing, alignment, padding and box they must produce the same rectangles —
+    /// anything else means a second line-breaking implementation survived the convergence.
+    #[test]
+    fn flow_and_wrap_agree_on_the_same_sizes() {
+        use crate::layout::{WrapAlignment, WrapDirection, WrapLayout};
+
+        let sizes = [(1u64, 40u32, 20u32), (2, 30, 35), (3, 55, 15), (4, 10, 10)];
+        let alignments = [
+            (FlowAlignment::Start, WrapAlignment::Start),
+            (FlowAlignment::Center, WrapAlignment::Center),
+            (FlowAlignment::End, WrapAlignment::End),
+            (FlowAlignment::SpaceBetween, WrapAlignment::SpaceBetween),
+            (FlowAlignment::SpaceAround, WrapAlignment::SpaceAround),
+        ];
+        let rect = Rect::new(0, 0, 70, 80);
+
+        for (flow_alignment, wrap_alignment) in alignments {
+            for horizontal in [true, false] {
+                for spacing in [0i32, 5, -3] {
+                    let mut flow = FlowLayout::new();
+                    flow.config.direction = if horizontal {
+                        FlowDirection::Horizontal
+                    } else {
+                        FlowDirection::Vertical
+                    };
+                    flow.config.alignment = flow_alignment;
+                    flow.config.spacing = spacing;
+                    flow.config.padding = 6;
+                    flow.config.wrap = true;
+
+                    let mut wrap = WrapLayout::new(
+                        if horizontal {
+                            WrapDirection::Horizontal
+                        } else {
+                            WrapDirection::Vertical
+                        },
+                        wrap_alignment,
+                        spacing,
+                        6,
+                    );
+                    for &(id, width, height) in &sizes {
+                        flow.add_child(Box::new(TestWidget::new(id, width, height)));
+                        wrap.add_widget(id, 0);
+                        wrap.set_child_size(id, Size::new(width, height));
+                    }
+
+                    let mut flow_rects = crate::compat::HashMap::new();
+                    for (index, child_rect) in flow.layout(rect).into_iter().enumerate() {
+                        flow_rects.insert(sizes[index].0, child_rect);
+                    }
+                    let mut wrap_rects = crate::compat::HashMap::new();
+                    wrap.update(rect, &mut |id, child_rect| {
+                        wrap_rects.insert(id, child_rect);
+                    });
+
+                    for &(id, _, _) in &sizes {
+                        assert_eq!(
+                            flow_rects.get(&id),
+                            wrap_rects.get(&id),
+                            "{flow_alignment:?} horizontal={horizontal} spacing={spacing}: \
+                             child {id} differs"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The device-aware path scales both the gap and the padding, the same reading the wrap
+    /// layout uses.
+    #[test]
+    fn update_with_context_scales_flow_spacing_and_padding() {
+        let mut layout = FlowLayout::new();
+        layout.config.padding = 8;
+        layout.config.spacing = 8;
+        layout.add_child(Box::new(TestWidget::new(1, 30, 20)));
+        layout.add_child(Box::new(TestWidget::new(2, 30, 20)));
+
+        let context = crate::layout::LayoutContext {
+            layout_scale: 2.0,
+            font_scale: 1.0,
+            min_touch_size: Size::new(0, 0),
+        };
+        let mut placed = crate::compat::HashMap::new();
+        layout.update_with_context(Rect::new(0, 0, 200, 100), &context, &mut |id, rect| {
+            placed.insert(id, rect);
+        });
+
+        // Padding 8 -> 16, spacing 8 -> 16.
+        assert_eq!(placed[&1], Rect::new(16, 16, 30, 20));
+        assert_eq!(placed[&2], Rect::new(16 + 30 + 16, 16, 30, 20));
     }
 }

@@ -25,6 +25,15 @@ impl MenuConfigDialog {
     pub fn config_mut(&mut self) -> &mut MenuConfig {
         &mut self.config
     }
+    /// Whether the adaptive configuration is applied.
+    pub fn is_enabled(&self) -> bool {
+        self.config.is_enabled()
+    }
+    /// Toggles the adaptive configuration on or off.
+    pub fn toggle_enabled(&mut self) {
+        let new_value = !self.config.is_enabled();
+        self.config.set_enabled(new_value);
+    }
     /// Toggles animations on/off.
     pub fn toggle_animations(&mut self) {
         let new_value = !self.config.animations_enabled();

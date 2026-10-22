@@ -184,28 +184,53 @@ if [[ "$COMMITTED" -ne "$EXPECTED" ]]; then
 fi
 echo "  PASS  $CONTROLS controls x 2 appearances + $EXTRAS extra x 2 + $SHEETS icon sheet(s) = $COMMITTED files"
 
-echo "[3b/5] every file has a drawing element, not just an svg skeleton"
+echo "[3b/5] every snapshot contains content, not just a skeleton"
 EMPTY="$("$PYTHON" - <<'PY'
-import pathlib
+import pathlib, re
 
-DRAWING = ("<rect", "<circle", "<line", "<path", "<polygon", "<polyline", "<text", "<ellipse")
+# One drawing element is enough to satisfy "not empty", but it is not enough to be a
+# **reviewable** control: a bare frame plus one rect was the "light-board" class the
+# survey (issue §16.1/§16.5) identified. The floor is therefore three elements, with an
+# explicit whitelist for controls whose content *is* a single shape or a single text run.
+DRAWING = re.compile(r"<(?:rect|circle|line|path|polygon|polyline|text|ellipse|image)\b")
+SHAPE_ONLY = {
+    # Issue §16.5 A1 residuals: a line, an icon, a label, an empty window or a single
+    # arc *is* the whole of these controls; asking for more would demand invented content.
+    "action", "avatar", "command_link", "divider", "frame", "icon", "label",
+    "line", "progress_circle", "window",
+    # An icon's extra appearance is still one icon.
+    "icon_info",
+    # Skeleton placeholders are one shape by definition; the extra appearances prove the
+    # other two shapes exist rather than adding a second element.
+    "skeleton_loader", "skeleton_loader_circle",
+    # A transparent swipe wrapper's content is its child label; the wrapper itself paints
+    # no chrome until it is swiped.
+    "swipe_to_dismiss",
+}
 bad = []
 for path in sorted(pathlib.Path("snapshots/svg").glob("*.svg")):
     text = path.read_text(encoding="utf-8")
+    stem = path.stem.removesuffix(".light")
+    count = len(DRAWING.findall(text))
     if "<svg" not in text:
         bad.append(f"{path}: no <svg> element")
-    elif not any(tag in text for tag in DRAWING):
+    elif count == 0:
         bad.append(f"{path}: an empty skeleton with no drawing element")
+    elif count < 3 and stem not in SHAPE_ONLY:
+        bad.append(
+            f"{path}: {count} drawing element(s); a reviewable control needs 3 "
+            "unless it is in the shape-only whitelist"
+        )
 if bad:
     print("\n".join(bad))
 PY
 )"
 if [[ -n "$EMPTY" ]]; then
-    echo "  FAIL  these snapshots contain no drawing:"
+    echo "  FAIL  these snapshots are not reviewable:"
     printf '%s\n' "$EMPTY"
     exit 1
 fi
-echo "  PASS  every snapshot contains at least one drawing element"
+echo "  PASS  every snapshot has content (>=3 elements, or a documented shape-only control)"
 
 echo "[4/5] the appearances differ for every control, or the control is recorded as exempt"
 SAME="$("$PYTHON" - <<'PY'

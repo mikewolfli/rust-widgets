@@ -684,10 +684,24 @@ impl EventLoop {
                     // producer is never delayed behind it; the timeout only re-checks state that
                     // has no wake channel. A turn that dispatched nothing was previously a
                     // 1000 Hz busy-poll on an idle window.
+                    //
+                    // The wait happens **outside** the queue mutex. The previous form held the
+                    // queue lock across `dequeue_timeout`, so any other reader (or a test) blocked
+                    // for up to the whole timeout. The generation is read before the empty check,
+                    // so a post racing the check/wait window returns at once instead of sleeping
+                    // until the timeout (see `frame_wait::wait_after`).
                     if !had_work {
                         let wait = if native_pump.is_some() { NATIVE_PUMP_WAIT } else { IDLE_WAIT };
-                        if let Some((target, event, _priority)) = lock(&queue).dequeue_timeout(wait)
-                        {
+                        let generation = crate::platform::frame_wait::generation();
+                        let queued = lock(&queue).dequeue();
+                        let event = match queued {
+                            Some(event) => Some(event),
+                            None => {
+                                crate::platform::frame_wait::wait_after(generation, wait);
+                                lock(&queue).dequeue()
+                            }
+                        };
+                        if let Some((target, event, _priority)) = event {
                             dispatch_one(target, &event);
                         }
                     }

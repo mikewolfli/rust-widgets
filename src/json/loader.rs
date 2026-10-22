@@ -2476,6 +2476,8 @@ mod tests {
     /// listing it here fails.
     #[test]
     fn every_arm_consumed_key_is_either_published_or_loader_owned() {
+        // The test reads its own source file: `include_str!` is resolved relative to the
+        // file that contains the macro, which is this one.
         let source = include_str!("loader.rs");
         let start = source
             .find("    fn create_widget(")

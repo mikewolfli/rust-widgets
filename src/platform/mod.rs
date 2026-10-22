@@ -276,9 +276,13 @@ mod teardown_tests;
 #[cfg(all(test, not(alloc_frugal)))]
 mod tests;
 /// Virtual keyboard controller for touch text input (BLUE8 P4-7).
-// Re-exports: everything that was previously defined directly in mod.rs
-pub use crate::platform::contract::{negotiate_capability_contract, CapabilityContract};
-pub use crate::platform::contract::{EmbeddedCapabilityContract, NativeCapabilityContract};
+// Re-exports: everything that was previously defined directly in mod.rs.
+//
+// `contract` publishes only what it *defines* — the negotiation entry point — plus the
+// extension-trait path the Android/iOS backends use. The contract *types* are owned by
+// `platform::types`, so they are re-exported from there rather than laundered through
+// `contract` (HX-07: a module must not republish another module's surface).
+pub use crate::platform::contract::negotiate_capability_contract;
 pub use crate::platform::portable::{FrameBuffer, SurfaceGeometry};
 pub use crate::platform::runtime::RuntimeGuiMode;
 #[cfg(not(alloc_frugal))]
@@ -300,40 +304,14 @@ pub use crate::platform::runtime::{
 };
 pub use crate::platform::stub::StubPlatform;
 pub use crate::platform::types::*;
+pub use crate::platform::types::{
+    CapabilityContract, EmbeddedCapabilityContract, NativeCapabilityContract,
+};
 
 pub mod a11y_wiring;
 
 #[cfg(not(alloc_frugal))]
 pub use a11y_wiring::wire_focus_manager_to_a11y;
 
-/// Platform facts accessor usable in every profile, including `mini`.
-///
-/// Upper layers (print, GPU adaptation, menu hardware detection) need to ask the
-/// backend about OS facts — total memory, battery state, spooler availability.
-/// The `mini` profile is deliberately alloc-free and has **no platform
-/// singleton** (`get_platform` is `not(mini)`), so a direct call would fail to
-/// compile there.
-///
-/// Every build's platform-facts accessor, including `mini`.
-///
-/// Upper layers (print, GPU adaptation, menu hardware detection) need to ask the
-/// backend about OS facts — total memory, battery state, spooler availability.
-/// The `mini` profile is deliberately alloc-frugal and has **no platform
-/// singleton** (`get_platform` is `not(alloc_frugal)`), so a direct call would
-/// fail to compile there.
-///
-/// Both arms return the *same kind* of value: a host that reports, for every
-/// capability it does not have, the honest absence (`None` / `false` / empty)
-/// rather than a made-up figure (principle #37). Outside `mini` that is whichever
-/// OS backend this target has; inside `mini` it is the portable host. Call sites
-/// stay free of `cfg` branching (principle #35).
-pub fn platform_facts() -> &'static dyn Platform {
-    #[cfg(not(alloc_frugal))]
-    {
-        runtime::get_platform()
-    }
-    #[cfg(alloc_frugal)]
-    {
-        crate::platform::portable::instance()
-    }
-}
+mod facts;
+pub use facts::platform_facts;

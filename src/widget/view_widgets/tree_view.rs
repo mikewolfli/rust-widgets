@@ -128,6 +128,19 @@ pub trait TreeModel: Send + Sync {
     fn node_count(&self) -> usize;
     /// Node path by model index, if present.
     fn node_path(&self, index: usize) -> Option<String>;
+    /// Writes the node's label into `out`, returning whether the node exists.
+    ///
+    /// The zero-allocation counterpart of [`Self::node_path`]; the default delegates to it so
+    /// existing implementors keep working unchanged.
+    fn fill_node_path(&self, index: usize, out: &mut String) -> bool {
+        match self.node_path(index) {
+            Some(value) => {
+                out.push_str(&value);
+                true
+            }
+            None => false,
+        }
+    }
     /// The shape of node `index`: its label, depth, whether it has children, and its initial
     /// expansion state.
     ///
@@ -199,6 +212,16 @@ impl TreeModel for VecTreeModel {
     }
     fn node_path(&self, index: usize) -> Option<String> {
         self.nodes.get(index).map(|node| node.label.clone())
+    }
+    /// The model already owns its labels, so drawing can borrow them instead of cloning.
+    fn fill_node_path(&self, index: usize, out: &mut String) -> bool {
+        match self.nodes.get(index) {
+            Some(node) => {
+                out.push_str(&node.label);
+                true
+            }
+            None => false,
+        }
     }
     fn node(&self, index: usize) -> Option<NodeView> {
         self.nodes.get(index).cloned()

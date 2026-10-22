@@ -46,6 +46,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT_DIR/tools/lib_timeout.sh"
 cd "$ROOT_DIR"
 . "$ROOT_DIR/tools/lib_python.sh"
 
@@ -253,13 +254,13 @@ echo "[5/5] Running Wayland tests against the live compositor"
 export WAYLAND_DISPLAY="$WESTON_SOCKET"
 
 # Positive path: the compositor is reachable, so the backend must bind it.
-cargo test --lib --features "$WESTON_FEATURES" platform::wayland -- --nocapture
+rw_run_bounded "${RW_GATE_TIMEOUT:-900}" cargo test --lib --features "$WESTON_FEATURES" platform::wayland -- --nocapture
 
 echo
 # Negative control: with no compositor the backend must degrade to state-only.
 # Clear the display variable so the fallback branch is genuinely exercised.
 echo "[5b/5] Negative control (no compositor → state-only fallback)"
-env -u WAYLAND_DISPLAY cargo test --lib --features "$WESTON_FEATURES" \
+rw_run_bounded "${RW_GATE_TIMEOUT:-900}" env -u WAYLAND_DISPLAY cargo test --lib --features "$WESTON_FEATURES" \
   platform::wayland::tests::native_session_stays_empty_without_compositor -- --nocapture
 
 echo

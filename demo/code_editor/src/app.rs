@@ -58,12 +58,12 @@ fn apply_appearance(default_dark: bool) {
     rust_widgets::reapply_active_theme();
 }
 
-/// 事件泵的轮询间隔。
+/// 事件泵的最长阻塞等待（兜底）。
 ///
-/// 约 60 Hz：快得人眼看不到延迟，又慢得不会把一个核心跑满。菜单与控件触发都是**队列**
-/// （`poll_menu_triggered` / `poll_widget_trigger_event`），所以这个间隔只影响**延迟**，
-/// 不影响**是否丢失**事件。
-const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
+/// 菜单与控件触发入队时会唤醒框架的等待通道（`wait_for_host_events`），所以有事件时
+/// 这里**立即**返回；这个时长只是没有唤醒源的状态（窗口尺寸需要轮询）的兜底。早期实现
+/// 是 16 ms 固定睡眠，空闲时每秒唤醒 60 次。
+const IDLE_BACKSTOP: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// 一次事件都没有的连续空闲超过这个时长，事件泵就记录一条诊断，但**不退出**。
 ///
@@ -87,7 +87,7 @@ const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
 /// 反而掩盖“窗口没关”的真实情况。不依赖不可移植的跨线程退出，只观察主线程给出的
 /// `done`。
 ///
-/// # 它必须由 `POLL_INTERVAL` 算出来，不能写成拍脑袋的 tick 数
+/// # 它必须由 `IDLE_BACKSTOP` 算出来，不能写成拍脑袋的 tick 数
 ///
 /// 这里原本写的是 `idle_ticks > 30 * 60 * 2`，注释却写着「超过 30 秒」。按 16 ms 一 tick
 /// 算，`30 * 60 * 2 = 3600` tick 实际是 **57.6 秒**；而 `30 * 60` 也不是秒数，
@@ -95,10 +95,10 @@ const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
 /// 现在把两个常数分开：上限说「多长时间」，`ticks()` 把它换算成 tick，二者不会漂移。
 const IDLE_REPORT_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// [`IDLE_REPORT_AFTER`] 换算成多少个 `POLL_INTERVAL` tick。
+/// [`IDLE_REPORT_AFTER`] 换算成多少个 `IDLE_BACKSTOP` tick。
 fn idle_ticks_before_report() -> u32 {
-    // 向上取整，并保证至少 1：一个比轮询间隔还短的上限会立刻刷屏，那不是「空闲太久」。
-    let interval = POLL_INTERVAL.as_millis().max(1) as u64;
+    // 向上取整，并保证至少 1：一个比等待间隔还短的上限会立刻刷屏，那不是「空闲太久」。
+    let interval = IDLE_BACKSTOP.as_millis().max(1) as u64;
     let ticks = (IDLE_REPORT_AFTER.as_millis() as u64).div_ceil(interval);
     ticks.clamp(1, u64::from(u32::MAX)) as u32
 }
@@ -1120,7 +1120,9 @@ fn run_loop(
                     idle_ticks = 0;
                 }
             }
-            std::thread::sleep(POLL_INTERVAL);
+            // 有事件入队时框架会唤醒这里，因此触发延迟不再是「最多一个轮询间隔」；
+            // 超时只用来复查窗口尺寸（它没有唤醒源）。
+            rust_widgets::wait_for_host_events(IDLE_BACKSTOP);
         }
         poll_log.append(format!("[App] 轮询结束（处理 {handled} 个事件）"));
     });

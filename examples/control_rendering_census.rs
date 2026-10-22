@@ -46,6 +46,11 @@ fn main() {
     let _guard = theme_test_guard();
     install_preset_appearances();
 
+    // A census row is a measurement, so the menu family must be measured against the
+    // same policy on every host. See `MenuConfig::verification`.
+    #[cfg(feature = "advanced-widgets")]
+    rust_widgets::menu_config::use_verification_policy();
+
     let rows = census_all_controls();
 
     println!(

@@ -32,7 +32,8 @@ mod tests;
 mod types;
 mod watcher;
 pub use global::{
-    check_and_reload_all, get_manager, init, init_with_options, translate, translate_with_context,
+    check_and_reload_all, get_manager, init, init_with_options, translate, translate_into,
+    translate_into_with_context, translate_with_context,
 };
 #[cfg(test)]
 pub(crate) use global::{global_i18n_test_lock, init_call_count, GLOBAL_I18N};

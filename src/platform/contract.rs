@@ -11,7 +11,19 @@
 use crate::core::RuntimeProfile;
 #[cfg(not(alloc_frugal))]
 use crate::platform::runtime::get_platform;
-pub use crate::platform::types::*;
+use crate::platform::types::{
+    default_capabilities_for, CapabilityContract, NativeCapabilityContract,
+};
+// Only the embedded fallback reads this, and that fallback does not exist under
+// `alloc_frugal`; importing it unconditionally warned in the `mini` build.
+#[cfg(not(alloc_frugal))]
+use crate::platform::types::EmbeddedCapabilityContract;
+
+// The Android/iOS backends name the extension trait through this module
+// (`crate::platform::contract::MobilePlatformExtension`). It is the *only* name this
+// module republishes: it used to forward `platform::types::*`, which silently made every
+// type in that module reachable through a second path that no one owned (HX-07).
+pub use crate::platform::types::MobilePlatformExtension;
 
 /// The contract a `Full`-profile backend gets when it publishes none.
 ///
@@ -41,7 +53,7 @@ fn fallback_native_capability_contract() -> NativeCapabilityContract {
 /// rather than hardcoding keeps this consistent with the runtime path above.
 #[cfg(alloc_frugal)]
 fn fallback_native_capability_contract() -> NativeCapabilityContract {
-    crate::platform::types::default_capabilities_for(crate::core::PlatformFamily::Embedded)
+    default_capabilities_for(crate::core::PlatformFamily::Embedded)
 }
 /// Fallback contract for embedded profiles without a published backend contract.
 ///

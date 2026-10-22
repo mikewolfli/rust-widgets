@@ -1007,6 +1007,11 @@ impl Draw for GridTableWidget {
         };
 
         let mut cy = data_top;
+        // The font is resolved once for the whole cell grid rather than twice per cell, and the
+        // cell text is written into one reusable buffer: `data()` allocated a `String` per cell
+        // per frame, which the fill path avoids for sources that override `fill_cell`.
+        let font = effective_font(self.style());
+        let mut cell_text = String::new();
         for ri in 0..self.visible_rows.min(rows.saturating_sub(self.scroll_row)) {
             let abs_row = self.scroll_row + ri;
             if cy + rh > rect.y + rect.height as i32 {
@@ -1037,15 +1042,16 @@ impl Draw for GridTableWidget {
                 context.draw_rect(cell_rect, grid_color);
 
                 // Cell text
-                if let Some(text) = source.data(abs_row, ci) {
+                cell_text.clear();
+                if source.fill_cell(abs_row, ci, &mut cell_text) {
                     // The cell is the band. `cy + rh / 2` as a `draw_text` origin put the glyph
                     // box's *top* edge on the cell's middle line, drawing every value half a line
                     // low; `text_line` derives the centred box, and fitting keeps a long value
                     // inside its column instead of running under the next one.
                     context.draw_text_fitted(
-                        context.text_line(cell_rect, effective_font(self.style())),
-                        &text,
-                        effective_font(self.style()),
+                        context.text_line(cell_rect, font),
+                        &cell_text,
+                        font,
                         cell_text_color,
                         HorizontalAlignment::Left,
                     );

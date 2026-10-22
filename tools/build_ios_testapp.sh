@@ -22,6 +22,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT_DIR/tools/lib_timeout.sh"
 cd "$ROOT_DIR"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -73,7 +74,7 @@ echo "[1/4] Building librust_widgets.a for $RUST_TARGET"
 #
 # `ios-uikit-ffi` selects the Apple-mobile backend; `controls-custom` is the one creation
 # mechanism (every `WidgetKind` is library-painted).
-cargo rustc --lib --target "$RUST_TARGET" --no-default-features \
+rw_run_bounded "${RW_GATE_TIMEOUT:-1800}" cargo rustc --lib --target "$RUST_TARGET" --no-default-features \
   --crate-type staticlib \
   --features "mobile,ios-uikit-ffi,controls-custom,controls-native"
 

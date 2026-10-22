@@ -3,9 +3,20 @@
 
 use super::{HardwareCapabilities, PerformanceLevel, UserOverrides};
 use crate::gpu::{GpuAdapter, GpuType};
+use crate::style::MenuEffects;
 /// Menu system configuration with hardware-adaptive features.
 #[derive(Debug, Clone)]
 pub struct MenuConfig {
+    /// Master switch: whether this configuration is applied to the menu controls.
+    ///
+    /// # Why it defaults to on
+    ///
+    /// The module exists to make menus adapt to the host, so its policy is the product
+    /// default. The switch remains as a host escape hatch: a host that wants the exact
+    /// pre-adaptive rendering can turn the policy off in one call instead of resetting
+    /// eight effects. (Verification paths pin a deterministic policy instead; see
+    /// [`MenuConfig::verification`].)
+    enabled: bool,
     /// Whether animations are enabled.
     animations_enabled: bool,
     /// Whether transparency effects are enabled.
@@ -28,10 +39,43 @@ pub struct MenuConfig {
     pub(crate) hardware_caps: HardwareCapabilities,
 }
 impl MenuConfig {
-    /// Creates a new menu configuration with auto-detection.
+    /// The deterministic policy used by verification paths.
+    ///
+    /// # Why a pinned policy is required
+    ///
+    /// [`MenuConfig::new`] adapts to the host, and the snapshot set is committed: if the
+    /// exported SVG depended on the exporter's GPU or battery, two contributors would
+    /// regenerate different bytes from the same source. The snapshot/ census paths
+    /// therefore install this record, whose values model a mid-range desktop.
+    pub fn verification() -> Self {
+        let mut config = Self {
+            enabled: true,
+            animations_enabled: false,
+            transparency_enabled: false,
+            shadows_enabled: false,
+            blur_enabled: false,
+            animation_speed: 1.0,
+            max_visible_items: 20,
+            hardware_acceleration: false,
+            caching_enabled: false,
+            user_overrides: UserOverrides::default(),
+            hardware_caps: HardwareCapabilities::verification(),
+        };
+        // Derived rather than restated: the pinned policy is exactly what the pinned
+        // capability record implies, so the two cannot drift apart.
+        config.apply_hardware_defaults();
+        config
+    }
+
+    /// Creates a new menu configuration from the host's detected capabilities.
+    ///
+    /// The master switch starts **on**: the adaptive policy is the product default. Use
+    /// [`Self::verification`] instead wherever the result must not depend on the host
+    /// (snapshot export, rendering census).
     pub fn new() -> Self {
         let hardware_caps = Self::detect_hardware_capabilities();
         let mut config = Self {
+            enabled: true,
             animations_enabled: false,
             transparency_enabled: false,
             shadows_enabled: false,
@@ -199,6 +243,9 @@ impl MenuConfig {
     }
     /// Applies user overrides to the configuration.
     pub fn apply_user_overrides(&mut self) {
+        if let Some(enabled) = self.user_overrides.enabled {
+            self.enabled = enabled;
+        }
         if let Some(animations) = self.user_overrides.animations {
             self.animations_enabled = animations;
         }
@@ -228,11 +275,18 @@ impl MenuConfig {
         if let Some(hw_accel) = self.user_overrides.hardware_acceleration {
             self.hardware_acceleration = hw_accel;
         }
+        if let Some(caching) = self.user_overrides.caching {
+            self.caching_enabled = caching;
+        }
     }
     /// Resets to hardware defaults, clearing user overrides.
+    ///
+    /// The master switch returns to its own default (**on**): resetting the policy is
+    /// not the same as opting out of it.
     pub fn reset_to_defaults(&mut self) {
         self.user_overrides = UserOverrides::default();
         self.apply_hardware_defaults();
+        self.enabled = true;
     }
     /// Replaces the override set and re-applies it over a fresh hardware baseline.
     ///
@@ -262,6 +316,38 @@ impl MenuConfig {
     /// detected performance level, or overridden by the user.
     pub fn animations_enabled(&self) -> bool {
         self.animations_enabled
+    }
+
+    /// Whether the adaptive configuration is applied at all.
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Turns the adaptive configuration on or off, recording it as a user override.
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        self.user_overrides.enabled = Some(enabled);
+    }
+
+    /// The effect decisions a menu draw pass consumes.
+    ///
+    /// When the master switch is off this is [`MenuEffects::legacy`] — the exact
+    /// pre-wiring rendering. When it is on, every field is the configured value.
+    pub fn effects(&self) -> MenuEffects {
+        if !self.enabled {
+            return MenuEffects::legacy();
+        }
+        MenuEffects {
+            enabled: true,
+            animations: self.animations_enabled,
+            animation_speed: self.animation_speed,
+            transparency: self.transparency_enabled,
+            shadows: self.shadows_enabled,
+            blur: self.blur_enabled,
+            max_visible_items: Some(self.max_visible_items.max(1)),
+            hardware_acceleration: self.hardware_acceleration,
+            caching: self.caching_enabled,
+        }
     }
     /// Whether transparent menu surfaces are enabled. Requires backend support;
     /// the flag alone does not make a surface transparent.
@@ -298,6 +384,12 @@ impl MenuConfig {
     /// Disabled at the low performance level.
     pub fn caching_enabled(&self) -> bool {
         self.caching_enabled
+    }
+
+    /// Enables or disables the per-widget text-measurement cache.
+    pub fn set_caching_enabled(&mut self, enabled: bool) {
+        self.caching_enabled = enabled;
+        self.user_overrides.caching = Some(enabled);
     }
     /// Returns the hardware facts probed when this configuration was created.
     /// These are a snapshot and are not re-probed by any setter.
@@ -364,6 +456,7 @@ impl MenuConfig {
     pub fn settings_summary(&self) -> String {
         format!(
             "Menu Settings:\n\
+             - Configuration: {}\n\
              - Animations: {}\n\
              - Transparency: {}\n\
              - Shadows: {}\n\
@@ -372,6 +465,7 @@ impl MenuConfig {
              - Max Visible Items: {}\n\
              - Hardware Acceleration: {}\n\
              - Performance Level: {:?}",
+            if self.enabled { "On" } else { "Off" },
             if self.animations_enabled { "On" } else { "Off" },
             if self.transparency_enabled { "On" } else { "Off" },
             if self.shadows_enabled { "On" } else { "Off" },
@@ -384,13 +478,15 @@ impl MenuConfig {
     }
     /// Returns true if any user overrides are active.
     pub fn has_user_overrides(&self) -> bool {
-        self.user_overrides.animations.is_some()
+        self.user_overrides.enabled.is_some()
+            || self.user_overrides.animations.is_some()
             || self.user_overrides.transparency.is_some()
             || self.user_overrides.shadows.is_some()
             || self.user_overrides.blur.is_some()
             || self.user_overrides.animation_speed.is_some()
             || self.user_overrides.max_visible_items.is_some()
             || self.user_overrides.hardware_acceleration.is_some()
+            || self.user_overrides.caching.is_some()
     }
     pub(crate) fn apply_battery_adaptive_reduction(&mut self) {
         if self.user_overrides.animations.is_none() {

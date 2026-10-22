@@ -11,6 +11,117 @@ fn test_menu_config_default() {
     assert!(!config.has_user_overrides());
 }
 
+/// The adaptive policy is the product default: the master switch starts on, and every
+/// effect read reflects the values the hardware baseline decided.
+#[test]
+fn the_master_switch_defaults_on_and_effects_follow_the_policy() {
+    let config = MenuConfig::new();
+    assert!(config.is_enabled(), "the adaptive policy is the product default");
+    assert!(!config.has_user_overrides(), "the default is not an override");
+
+    let effects = config.effects();
+    assert!(effects.enabled);
+    assert_eq!(effects.animations, config.animations_enabled());
+    assert_eq!(effects.animation_speed, config.animation_speed());
+    assert_eq!(effects.transparency, config.transparency_enabled());
+    assert_eq!(effects.shadows, config.shadows_enabled());
+    assert_eq!(effects.blur, config.blur_enabled());
+    assert_eq!(effects.max_visible_items, Some(config.max_visible_items()));
+    assert_eq!(effects.hardware_acceleration, config.hardware_acceleration());
+    assert_eq!(effects.caching, config.caching_enabled());
+}
+
+/// The verification policy must be identical on every host: the SVG snapshot set is
+/// committed, so a policy derived from the exporter's GPU or battery would make two
+/// contributors regenerate different bytes from the same source.
+#[test]
+fn the_verification_policy_is_host_independent() {
+    let first = MenuConfig::verification();
+    let second = MenuConfig::verification();
+
+    assert!(first.is_enabled());
+    assert!(!first.has_user_overrides());
+    assert_eq!(first.animations_enabled(), second.animations_enabled());
+    assert_eq!(first.transparency_enabled(), second.transparency_enabled());
+    assert_eq!(first.shadows_enabled(), second.shadows_enabled());
+    assert_eq!(first.blur_enabled(), second.blur_enabled());
+    assert_eq!(first.animation_speed(), second.animation_speed());
+    assert_eq!(first.max_visible_items(), second.max_visible_items());
+    assert_eq!(first.hardware_acceleration(), second.hardware_acceleration());
+    assert_eq!(first.caching_enabled(), second.caching_enabled());
+
+    let caps = first.hardware_caps();
+    let expected = HardwareCapabilities::verification();
+    assert_eq!(caps.on_battery, expected.on_battery);
+    assert_eq!(caps.gpu_performance_score, expected.gpu_performance_score);
+    assert_eq!(caps.cpu_performance_score, expected.cpu_performance_score);
+    assert_eq!(caps.system_ram_mb, expected.system_ram_mb);
+}
+
+/// The switch is still the host's escape hatch: turning it off restores the exact
+/// pre-adaptive rendering, whatever the rest of the policy says.
+#[test]
+fn disabling_the_switch_restores_the_legacy_rendering() {
+    let mut config = MenuConfig::verification();
+    config.set_enabled(false);
+    assert_eq!(config.effects(), MenuEffects::legacy());
+}
+
+/// Re-detection must keep the product default and must not manufacture an override.
+///
+/// Recording `enabled = Some(true)` here (the previous behaviour) made
+/// `has_user_overrides()` true, which silently blocked every later refresh.
+#[test]
+fn refresh_hardware_detection_keeps_the_default_and_records_no_override() {
+    let mut manager = MenuConfigManager::new();
+    assert!(manager.config().is_enabled());
+    assert!(!manager.config().has_user_overrides());
+
+    manager.refresh_hardware_detection();
+
+    assert!(manager.config().is_enabled());
+    assert!(!manager.config().has_user_overrides());
+}
+
+/// Enabling the switch exposes every configured value, including the ones whose default is
+/// off. This is the contract the menu controls read through `MenuEffects`.
+#[test]
+fn enabling_exposes_every_configured_value() {
+    let mut config = MenuConfig::new();
+    config.set_enabled(true);
+    config.set_animations_enabled(false);
+    config.set_transparency_enabled(true);
+    config.set_shadows_enabled(true);
+    config.set_blur_enabled(true);
+    config.set_animation_speed(1.5);
+    config.set_max_visible_items(12);
+    config.set_hardware_acceleration(true);
+    config.set_caching_enabled(true);
+
+    let effects = config.effects();
+    assert!(effects.enabled);
+    assert!(!effects.animations);
+    assert!(effects.transparency);
+    assert!(effects.shadows);
+    assert!(effects.blur);
+    assert_eq!(effects.animation_speed, 1.5);
+    assert_eq!(effects.max_visible_items, Some(12));
+    assert!(effects.hardware_acceleration);
+    assert!(effects.caching);
+}
+
+/// Resetting restores the product default, which is **on**: resetting the policy is not
+/// the same as opting out of it.
+#[test]
+fn resetting_restores_the_master_switch_to_on() {
+    let mut config = MenuConfig::verification();
+    config.set_enabled(false);
+    config.reset_to_defaults();
+    assert!(config.is_enabled());
+    assert!(config.effects().enabled);
+    assert!(!config.has_user_overrides());
+}
+
 /// The config directory must follow the host OS convention, which is why it is
 /// derived from `dirs::config_dir()` instead of a hand-built `~/.config` path.
 ///
@@ -231,7 +342,7 @@ fn test_gpu_memory_override_is_used_when_present_and_absent_means_unknown() {
 ///
 /// # Why this is a real test and not a probe
 ///
-/// `UserOverrides` has seven fields and the loader has seven `match` arms; a field
+/// `UserOverrides` has nine fields and the loader has nine `match` arms; a field
 /// added to the struct without an arm would be persisted and then silently dropped on
 /// read-back, which is the failure mode a user experiences as "my settings reset on
 /// restart". The setter/clamping tests above never touch persistence, so this is the
@@ -245,6 +356,8 @@ fn persistence_round_trips_every_user_override() {
     let persistence = ConfigPersistence::with_dir(temp_dir.path().to_path_buf());
 
     let mut config = MenuConfig::new();
+    config.set_enabled(true);
+    config.set_caching_enabled(true);
     config.set_animation_speed(1.25);
     config.set_max_visible_items(12);
     config.set_animations_enabled(false);
@@ -256,6 +369,8 @@ fn persistence_round_trips_every_user_override() {
     assert_eq!(loaded.max_visible_items, Some(12), "max_visible_items must round-trip");
     assert_eq!(loaded.animations, Some(false), "animations must round-trip");
     assert_eq!(loaded.hardware_acceleration, Some(true), "hardware_acceleration must round-trip");
+    assert_eq!(loaded.enabled, Some(true), "the master switch must round-trip");
+    assert_eq!(loaded.caching, Some(true), "caching must round-trip");
 
     // `clear` must actually remove the file, or a "reset to defaults" would be undone
     // by the next launch.

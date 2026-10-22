@@ -101,12 +101,35 @@ impl Action {
     {
         self.toggled.connect(slot)
     }
+    /// Connects a read-only callback for checked-state changes.
+    ///
+    /// The reference is only valid for the duration of the call. This is the counterpart of
+    /// [`connect_toggled`](Self::connect_toggled): that form hands out an `Arc<bool>` because its
+    /// published signature promises the callback may keep the payload (store it, send it to
+    /// another thread, compare it with `Arc::ptr_eq`), which costs one allocation per change. A
+    /// callback that only reads the new value takes this form and pays nothing.
+    pub fn connect_toggled_ref<F>(&self, slot: F) -> ConnectionHandle
+    where
+        F: FnMut(&bool) + Send + Sync + 'static,
+    {
+        self.toggled.connect_ref(slot)
+    }
     /// Connects a callback for enabled-state changes.
     pub fn connect_enabled_changed<F>(&self, slot: F) -> ConnectionHandle
     where
         F: FnMut(Arc<bool>) + Send + Sync + 'static,
     {
         self.enabled_changed.connect(slot)
+    }
+    /// Connects a read-only callback for enabled-state changes.
+    ///
+    /// See [`connect_toggled_ref`](Self::connect_toggled_ref) for why this form exists and what
+    /// the reference's lifetime is.
+    pub fn connect_enabled_changed_ref<F>(&self, slot: F) -> ConnectionHandle
+    where
+        F: FnMut(&bool) + Send + Sync + 'static,
+    {
+        self.enabled_changed.connect_ref(slot)
     }
     /// Triggers the action when enabled and returns whether it fired.
     pub fn trigger(&mut self) -> bool {

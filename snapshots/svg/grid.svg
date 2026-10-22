@@ -4,4 +4,12 @@
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
   <rect x="0" y="0" width="240" height="120" rx="4" ry="4" fill="rgba(30,30,33,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
+  <line x1="39" y1="0" x2="39" y2="118" stroke="rgba(120,120,120,1.00)" stroke-width="1" />
+  <line x1="79" y1="0" x2="79" y2="118" stroke="rgba(120,120,120,1.00)" stroke-width="1" />
+  <line x1="119" y1="0" x2="119" y2="118" stroke="rgba(120,120,120,1.00)" stroke-width="1" />
+  <line x1="159" y1="0" x2="159" y2="118" stroke="rgba(120,120,120,1.00)" stroke-width="1" />
+  <line x1="199" y1="0" x2="199" y2="118" stroke="rgba(120,120,120,1.00)" stroke-width="1" />
+  <line x1="0" y1="29" x2="238" y2="29" stroke="rgba(120,120,120,1.00)" stroke-width="1" />
+  <line x1="0" y1="59" x2="238" y2="59" stroke="rgba(120,120,120,1.00)" stroke-width="1" />
+  <line x1="0" y1="89" x2="238" y2="89" stroke="rgba(120,120,120,1.00)" stroke-width="1" />
 </svg>

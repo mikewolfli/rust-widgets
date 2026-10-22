@@ -1240,23 +1240,3 @@ required-features = ["designer"]
 [[example]]
 name = "embedded_host"
 path = "examples/embedded_host.rs"
-
-# Diagnostic probes kept as regression evidence for the "controls render invisibly"
-# defect (log-20260921-1.md §3): `style_probe4` prints the pixel colours a window's
-# tree produces, `style_probe3` does the same for a single control. Both are how the
-# coordinate-space mismatch was located, and both are re-runnable on any host.
-[[example]]
-name = "style_probe3"
-required-features = ["desktop"]
-
-[[example]]
-name = "style_probe4"
-required-features = ["desktop"]
-
-[[example]]
-name = "style_probe6"
-required-features = ["desktop"]
-
-[[example]]
-name = "style_probe7"
-required-features = ["desktop"]

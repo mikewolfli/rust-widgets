@@ -10,7 +10,16 @@ lint = "clippy --all-targets --no-default-features --features desktop -- -D warn
 fmt-check = "fmt --all -- --check"
 
 # System dependencies installation helpers
-install-deps = "run -p rust_widgets -- build.rs --help 2>/dev/null; echo 'See scripts/ for platform-specific install scripts'"
+#
+# Cargo aliases are argument lists, not shell commands: `;`, redirection and quoting
+# are passed through as literal arguments, so an alias cannot run a script. The
+# platform installers are plain scripts and must be invoked directly:
+#
+#   bash scripts/install-deps-linux.sh
+#   bash scripts/install-deps-macos.sh
+#
+# (The former `install-deps` alias wrapped those scripts in a shell one-liner and
+# therefore always failed.)
 
 # MIRI configuration for unsafe code audit (BLUE11 R3.9)
 [target.'cfg(miri)']
@@ -22,11 +31,11 @@ runner = "cargo miri run"
 # Note: wasm32-unknown-unknown (browser wasm) has no runner-based libtest
 # support — use wasip1 for actually executing the test suite.
 [target.wasm32-wasip1]
-runner = "wasmtime --dir=/home/mikeli/workspace/rust-widgets"
+runner = "wasmtime --dir=."
 
 # The -threads variant enables the wasi threads proposal (spawn, atomics).
 [target.wasm32-wasip1-threads]
-runner = "wasmtime --wasm threads=y --dir=/home/mikeli/workspace/rust-widgets"
+runner = "wasmtime --wasm threads=y --dir=."
 
 [env]
 # Enable runtime tracing for MIRI validation
