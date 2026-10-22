@@ -795,14 +795,18 @@ impl Draw for GridTableWidget {
         //
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
-        let style = self.base.style().clone();
+        // `WidgetStyle` carries a font-family `String` and a gradient `Vec`; cloning it to read
+        // two `Copy` colour fields allocated both on every frame (WDGT-08). Copy the fields
+        // under one short borrow instead.
+        let (background_color, text_color) = {
+            let style = self.base.style();
+            (style.background_color, style.text_color)
+        };
         let theme = crate::style::resolved_theme_style("grid_table");
-        let mut surface = style
-            .background_color
+        let mut surface = background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
             .unwrap_or(Color::WHITE);
-        let ink = style
-            .text_color
+        let ink = text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
             .unwrap_or(Color::BLACK);
         // `grid_table` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
@@ -922,9 +926,9 @@ impl Draw for GridTableWidget {
                     _ => alloc::format!("Column {}", ci + 1),
                 };
                 context.draw_text_fitted(
-                    context.text_line(cell_rect, effective_font(&style)),
+                    context.text_line(cell_rect, effective_font(self.style())),
                     &header_text,
-                    effective_font(&style),
+                    effective_font(self.style()),
                     header_text_color,
                     HorizontalAlignment::Left,
                 );
@@ -969,9 +973,9 @@ impl Draw for GridTableWidget {
                 // The row-number cell is the band; centring by hand drew the digits half a line
                 // low. Right alignment keeps the numbers flush with the gutter's inner edge.
                 context.draw_text_fitted(
-                    context.text_line(cell_rect, effective_font(&style)),
+                    context.text_line(cell_rect, effective_font(self.style())),
                     &abs_row.to_string(),
-                    effective_font(&style),
+                    effective_font(self.style()),
                     header_text_color,
                     HorizontalAlignment::Right,
                 );
@@ -1020,9 +1024,9 @@ impl Draw for GridTableWidget {
                     // low; `text_line` derives the centred box, and fitting keeps a long value
                     // inside its column instead of running under the next one.
                     context.draw_text_fitted(
-                        context.text_line(cell_rect, effective_font(&style)),
+                        context.text_line(cell_rect, effective_font(self.style())),
                         &text,
-                        effective_font(&style),
+                        effective_font(self.style()),
                         cell_text_color,
                         HorizontalAlignment::Left,
                     );

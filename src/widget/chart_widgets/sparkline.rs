@@ -97,6 +97,9 @@ impl Sparkline {
 
     /// Sets the line color.
     pub fn set_color(&mut self, color: Color) {
+        if self.line_color == color && self.last_point_color == color {
+            return;
+        }
         self.line_color = color;
         self.last_point_color = color;
         self.base.request_redraw();
@@ -109,7 +112,11 @@ impl Sparkline {
 
     /// Sets the stroke width of the line.
     pub fn set_stroke_width(&mut self, width: f32) {
-        self.stroke_width = width.max(0.5);
+        let width = width.max(0.5);
+        if self.stroke_width == width {
+            return;
+        }
+        self.stroke_width = width;
         self.base.request_redraw();
     }
 
@@ -120,6 +127,9 @@ impl Sparkline {
 
     /// Sets whether the last point is highlighted with a colored dot.
     pub fn set_show_last_point(&mut self, show: bool) {
+        if self.show_last_point == show {
+            return;
+        }
         self.show_last_point = show;
         self.base.request_redraw();
     }
@@ -131,6 +141,9 @@ impl Sparkline {
 
     /// Sets the color used for the last-point highlight dot.
     pub fn set_last_point_color(&mut self, color: Color) {
+        if self.last_point_color == color {
+            return;
+        }
         self.last_point_color = color;
         self.base.request_redraw();
     }
@@ -161,6 +174,9 @@ impl Sparkline {
     /// Sets manual min/max values for the Y range.
     /// Pass `None` for auto-compute.
     pub fn set_range(&mut self, min: Option<f64>, max: Option<f64>) {
+        if self.min == min && self.max == max {
+            return;
+        }
         self.min = min;
         self.max = max;
         self.base.request_redraw();

@@ -113,6 +113,9 @@ impl SwipeToDismiss {
 
     /// Sets the action text displayed behind the child.
     pub fn set_action_text(&mut self, text: &str) {
+        if self.action_text == text {
+            return;
+        }
         self.action_text = text.to_string();
         self.base.request_redraw();
     }

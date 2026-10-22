@@ -120,6 +120,9 @@ impl VolumeChart {
 
     /// Sets the colour policy.
     pub fn set_color_mode(&mut self, mode: VolumeColorMode) {
+        if self.color_mode == mode {
+            return;
+        }
         self.color_mode = mode;
         self.base.request_redraw();
     }

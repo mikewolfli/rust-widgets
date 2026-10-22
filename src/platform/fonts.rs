@@ -21,6 +21,7 @@
 use crate::compat::{OnceLock, RwLock, String, ToString, Vec};
 use crate::platform::SystemFont;
 use alloc::boxed::Box;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 /// The current snapshot. `None` means "not queried yet".
 ///
@@ -29,6 +30,9 @@ use alloc::boxed::Box;
 /// because that is the published return type, so each accepted snapshot is leaked once — see
 /// [`refresh_system_fonts`] for why the leak is bounded by real changes rather than calls.
 static SNAPSHOT: OnceLock<RwLock<Option<&'static [SystemFont]>>> = OnceLock::new();
+
+/// Whether a background warm-up query is currently in flight.
+static WARMING: AtomicBool = AtomicBool::new(false);
 
 fn slot() -> &'static RwLock<Option<&'static [SystemFont]>> {
     SNAPSHOT.get_or_init(|| RwLock::new(None))
@@ -86,6 +90,54 @@ pub fn system_fonts() -> &'static [SystemFont] {
             fresh
         }
     })
+}
+
+/// The snapshot if it has already been queried, without touching the operating system.
+pub fn cached_system_fonts() -> Option<&'static [SystemFont]> {
+    read_snapshot()
+}
+
+/// The installed-font count already known to the process, or `None` when the snapshot is not ready.
+pub fn cached_system_font_count() -> Option<usize> {
+    read_snapshot().map(<[SystemFont]>::len)
+}
+
+/// Start populating the snapshot on a background thread, if that has not happened yet.
+///
+/// Enumerating system fonts (`fc-list` on Unix, the platform font store on macOS/Windows) can take
+/// hundreds of milliseconds. Running it on the UI thread at first use froze the caller; this moves
+/// the one-time cost off it. Safe to call repeatedly: an installed snapshot or an in-flight query
+/// makes it a no-op.
+pub fn prewarm_system_fonts() {
+    if read_snapshot().is_some() {
+        return;
+    }
+    if WARMING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let spawned = std::thread::Builder::new().name("system-fonts".to_string()).spawn(|| {
+        system_fonts();
+        WARMING.store(false, Ordering::SeqCst);
+    });
+    if let Err(e) = spawned {
+        WARMING.store(false, Ordering::SeqCst);
+        log::warn!("[fonts] failed to start the system-font warm-up worker: {e}");
+    }
+}
+
+/// The installed-font count without ever blocking on the OS query.
+///
+/// Returns `0` and starts the background warm-up when the snapshot is not ready yet. A host that
+/// sees `0` for that reason should retry later; this is the non-blocking counterpart of
+/// [`system_fonts`].
+pub fn system_font_count_nonblocking() -> usize {
+    match cached_system_font_count() {
+        Some(count) => count,
+        None => {
+            prewarm_system_fonts();
+            0
+        }
+    }
 }
 
 /// Drops the snapshot so the next [`system_fonts`] call queries the OS again.

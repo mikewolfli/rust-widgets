@@ -105,7 +105,11 @@ impl BottomSheet {
     /// The sheet is drawn at the bottom of the geometry rect using this height.
     /// Clamped to the geometry height.
     pub fn set_content_height(&mut self, height: u32) {
-        self.content_height = height.min(self.base.geometry.height);
+        let height = height.min(self.base.geometry.height);
+        if self.content_height == height {
+            return;
+        }
+        self.content_height = height;
         self.base.request_redraw();
     }
 

@@ -214,6 +214,9 @@ impl MaterialSnackbar {
 
     /// Sets the message text displayed in the snackbar.
     pub fn set_message(&mut self, message: &str) {
+        if self.message == message {
+            return;
+        }
         self.message = message.to_string();
         self.base.request_redraw();
     }
@@ -225,6 +228,9 @@ impl MaterialSnackbar {
 
     /// Sets the action button text. Pass an empty string to hide the action button.
     pub fn set_action_text(&mut self, text: &str) {
+        if self.action_text == text {
+            return;
+        }
         self.action_text = text.to_string();
         self.base.request_redraw();
     }
@@ -573,6 +579,9 @@ impl CupertinoAlertDialog {
 
     /// Sets the title text.
     pub fn set_title(&mut self, title: &str) {
+        if self.title == title {
+            return;
+        }
         self.title = title.to_string();
         self.base.request_redraw();
     }
@@ -584,6 +593,9 @@ impl CupertinoAlertDialog {
 
     /// Sets the message text.
     pub fn set_message(&mut self, message: &str) {
+        if self.message == message {
+            return;
+        }
         self.message = message.to_string();
         self.base.request_redraw();
     }
@@ -595,12 +607,18 @@ impl CupertinoAlertDialog {
 
     /// Sets the confirm button text.
     pub fn set_confirm_text(&mut self, text: &str) {
+        if self.confirm_text == text {
+            return;
+        }
         self.confirm_text = text.to_string();
         self.base.request_redraw();
     }
 
     /// Sets the cancel button text. Empty string hides the cancel button.
     pub fn set_cancel_text(&mut self, text: &str) {
+        if self.cancel_text == text {
+            return;
+        }
         self.cancel_text = text.to_string();
         self.base.request_redraw();
     }

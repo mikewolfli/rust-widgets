@@ -539,14 +539,18 @@ impl Draw for VirtualTable {
         //
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
-        let style = self.base.style().clone();
+        // `WidgetStyle` carries a font-family `String` and a gradient `Vec`; cloning it to read
+        // three `Copy` colour fields allocated both on every frame (WDGT-08). Copy the fields
+        // under one short borrow instead.
+        let (background_color, text_color, border_color) = {
+            let style = self.base.style();
+            (style.background_color, style.text_color, style.border_color)
+        };
         let theme = crate::style::resolved_theme_style("virtual_table");
-        let mut surface = style
-            .background_color
+        let mut surface = background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
             .unwrap_or(Color::WHITE);
-        let ink = style
-            .text_color
+        let ink = text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
             .unwrap_or(Color::BLACK);
         // `virtual_table` is absent from `WidgetRole::for_kind_name`'s table, so it classifies
@@ -561,8 +565,7 @@ impl Draw for VirtualTable {
         if surface == window_fill {
             surface = window_fill.blend(&ink, 0.08);
         }
-        let border = style
-            .border_color
+        let border = border_color
             .or_else(|| theme.as_ref().and_then(|t| t.border_color))
             .filter(|resolved| *resolved != surface)
             .unwrap_or_else(|| surface.blend(&ink, 0.20));
@@ -630,9 +633,9 @@ impl Draw for VirtualTable {
                     // a line low; `text_line` derives the centred box. Fitting keeps a wide value
                     // from spilling into the next column.
                     context.draw_text_fitted(
-                        context.text_line(cell_rect, effective_font(&style)),
+                        context.text_line(cell_rect, effective_font(self.style())),
                         value,
-                        effective_font(&style),
+                        effective_font(self.style()),
                         ink,
                         HorizontalAlignment::Left,
                     );

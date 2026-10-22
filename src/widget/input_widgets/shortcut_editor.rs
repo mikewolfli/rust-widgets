@@ -12,7 +12,7 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
+use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -22,55 +22,6 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static NEXT_SHORTCUT_EDITOR_COMMAND_ID: AtomicU64 = AtomicU64::new(1);
-
-struct ShortcutEditorCommand {
-    id: CommandId,
-    target: Rc<RefCell<Vec<ShortcutEntry>>>,
-    before: Vec<ShortcutEntry>,
-    after: Vec<ShortcutEntry>,
-}
-
-impl ShortcutEditorCommand {
-    fn new(
-        target: Rc<RefCell<Vec<ShortcutEntry>>>,
-        before: Vec<ShortcutEntry>,
-        after: Vec<ShortcutEntry>,
-    ) -> Self {
-        Self {
-            id: CommandId(NEXT_SHORTCUT_EDITOR_COMMAND_ID.fetch_add(1, Ordering::Relaxed)),
-            target,
-            before,
-            after,
-        }
-    }
-}
-
-impl UndoCommand for ShortcutEditorCommand {
-    fn id(&self) -> CommandId {
-        self.id
-    }
-
-    fn description(&self) -> CommandDescription {
-        CommandDescription {
-            text: "Edit shortcut list".to_string(),
-            timestamp_ms: 0,
-            command_type: "shortcut_editor",
-        }
-    }
-
-    fn execute(&mut self) -> Result<(), String> {
-        *self.target.borrow_mut() = self.after.clone();
-        Ok(())
-    }
-
-    fn undo(&mut self) -> Result<(), String> {
-        *self.target.borrow_mut() = self.before.clone();
-        Ok(())
-    }
-}
 
 /// A single shortcut entry in the editor.
 ///
@@ -328,10 +279,12 @@ impl ShortcutEditor {
         }
         let after = self.shortcuts.clone();
         *self.history_target.borrow_mut() = after.clone();
-        self.undo_stack.push(Box::new(ShortcutEditorCommand::new(
+        self.undo_stack.push(Box::new(ValueCommand::new(
             self.history_target.clone(),
             before,
             after,
+            "Edit shortcut list",
+            "shortcut_editor",
         )));
     }
 

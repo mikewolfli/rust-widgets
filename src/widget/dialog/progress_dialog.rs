@@ -110,12 +110,20 @@ impl ProgressDialog {
     }
     /// Sets the title bar text and requests a redraw.
     pub fn set_title(&mut self, t: impl Into<String>) {
-        self.title = t.into();
+        let t = t.into();
+        if self.title == t {
+            return;
+        }
+        self.title = t;
         self.base.request_redraw();
     }
     /// Sets the label shown above the progress bar and requests a redraw.
     pub fn set_label_text(&mut self, t: impl Into<String>) {
-        self.label_text = t.into();
+        let t = t.into();
+        if self.label_text == t {
+            return;
+        }
+        self.label_text = t;
         self.base.request_redraw();
     }
     /// Sets the lower bound of the progress range.
@@ -125,6 +133,9 @@ impl ProgressDialog {
     /// [`ProgressDialog::set_value`] call clamps it. A `min` above `max` makes
     /// [`ProgressDialog::progress_fraction`] report full progress.
     pub fn set_minimum(&mut self, min: i32) {
+        if self.minimum == min {
+            return;
+        }
         self.minimum = min;
         self.base.request_redraw();
     }
@@ -132,12 +143,18 @@ impl ProgressDialog {
     /// [`ProgressDialog::set_minimum`], the current value is not re-clamped
     /// until the next `set_value`.
     pub fn set_maximum(&mut self, max: i32) {
+        if self.maximum == max {
+            return;
+        }
         self.maximum = max;
         self.base.request_redraw();
     }
     /// Sets both minimum and maximum in one call.
     /// This is a convenience writer; query bounds via `minimum()` and `maximum()`.
     pub fn set_range(&mut self, min: i32, max: i32) {
+        if self.minimum == min && self.maximum == max {
+            return;
+        }
         self.minimum = min;
         self.maximum = max;
         self.base.request_redraw();
@@ -145,6 +162,9 @@ impl ProgressDialog {
     /// Toggles automatic hiding at completion; requests a redraw. See
     /// [`ProgressDialog::auto_close`].
     pub fn set_auto_close(&mut self, v: bool) {
+        if self.auto_close == v {
+            return;
+        }
         self.auto_close = v;
         self.base.request_redraw();
     }
@@ -156,12 +176,19 @@ impl ProgressDialog {
     /// [`ProgressDialog::reset`] is an explicit call. The intended consumer is a
     /// caller coordinating restarts.
     pub fn set_auto_reset(&mut self, v: bool) {
+        if self.auto_reset == v {
+            return;
+        }
         self.auto_reset = v;
         self.base.request_redraw();
     }
     /// Sets the caption of the cancel button and requests a redraw.
     pub fn set_cancel_button_text(&mut self, t: impl Into<String>) {
-        self.cancel_button_text = t.into();
+        let t = t.into();
+        if self.cancel_button_text == t {
+            return;
+        }
+        self.cancel_button_text = t;
         self.base.request_redraw();
     }
     /// Returns whether the dialog is modal (blocks interaction with the widgets
@@ -174,6 +201,9 @@ impl ProgressDialog {
     }
     /// Sets the modality intent. See [`ProgressDialog::is_modal`].
     pub fn set_modal(&mut self, modal: bool) {
+        if self.modal == modal {
+            return;
+        }
         self.modal = modal;
         self.base.request_redraw();
     }
@@ -184,7 +214,11 @@ impl ProgressDialog {
     /// value is set before hiding, so [`ProgressDialog::value`] still reports
     /// the maximum afterwards. A redraw is requested in all cases.
     pub fn set_value(&mut self, value: i32) {
-        self.value = ordered_clamp_i32(value, self.minimum, self.maximum);
+        let value = ordered_clamp_i32(value, self.minimum, self.maximum);
+        if self.value == value {
+            return;
+        }
+        self.value = value;
         if self.auto_close && self.value >= self.maximum {
             self.hide();
         }

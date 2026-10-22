@@ -10,10 +10,10 @@
 
 mod command;
 mod stack;
-mod text_command;
 mod types;
+mod value_command;
 
 pub use command::*;
 pub use stack::*;
-pub(crate) use text_command::TextSnapshotCommand;
 pub use types::*;
+pub(crate) use value_command::ValueCommand;

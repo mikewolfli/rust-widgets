@@ -2,7 +2,7 @@
 
 本章提供完整的、按模組劃分的 `rust_widgets` 公開 API 參考文件。當您需要為任務查找正確的型別、函式或特徵時，可將其用作快速查閱手冊。
 
-此處記載的函式庫版本為 **2.8.13**。程式碼範例假設使用 `use rust_widgets::*;` 或如所示使用顯式路徑。
+此處記載的函式庫版本為 **2.8.14**。程式碼範例假設使用 `use rust_widgets::*;` 或如所示使用顯式路徑。
 
 ---
 
@@ -40,9 +40,10 @@
 30. [GPU 加速 (`gpu`, `wgpu_backend`)](#gpu-加速-gpu-wgpu_backend)
 31. [嵌入式支援 (`embedded`)](#嵌入式支援-embedded)
 32. [語言繫結 (`bindings`)](#語言繫結-bindings)
-33. [功能旗標參考](#功能旗標參考)
-34. [錯誤碼參考](#錯誤碼參考)
-35. [FFI / C ABI 參考](#ffi--c-abi-參考)
+33. [媒體模組 (`audio`、`video`、`image`)](#媒體模組-audio-video-image)
+34. [功能旗標參考](#功能旗標參考)
+35. [錯誤碼參考](#錯誤碼參考)
+36. [FFI / C ABI 參考](#ffi--c-abi-參考)
 
 ---
 
@@ -2805,6 +2806,96 @@ pub mod java_jni;
 
 ---
 
+## 媒體模組 (`audio`、`video`、`image`)
+
+這三個模組分別由 `audio`、`video`、`image` 功能旗標啟用。`desktop`、`tablet`、`mobile` 會啟用全部三個；
+`mini` 與 `embedded` 不包含。
+
+自 2.8.14 起，所有接收整塊資料的入口都把解碼放在工作執行緒上，影格迴圈不會被長音訊或大圖片阻塞。
+每個入口都保留同步形式；所有非同步入口在執行緒無法建立時退回同步解碼——失敗模式是「更慢」，
+而不是「永遠載入不出來」。
+
+### 音訊（`audio`）
+
+`AudioEngine` 持有一個已解碼緩衝與一個可選的裝置輸出。
+
+```rust
+use rust_widgets::audio::AudioEngine;
+
+let mut engine = AudioEngine::new();
+engine.load(&wav_bytes)?;       // 同步：在呼叫執行緒解碼
+engine.play();
+let played = engine.tick(1024); // 推進位置，回傳消耗的取樣數
+
+// 或在背景下解碼，完成後安裝結果：
+engine.load_async(wav_bytes);   // 立即回傳
+// 每幀輪詢一次：
+if let Some(result) = engine.poll_load() {
+    result?;                    // 本次呼叫完成安裝
+}
+// 或一次性阻塞：
+engine.wait_for_load()?;
+```
+
+| 方法 | 簽名 | 說明 |
+|---|---|---|
+| `new` | `fn() -> Self` | 空引擎 |
+| `load` | `fn(&mut self, data: &[u8]) -> Result<(), String>` | 同步解碼 |
+| `load_async` | `fn(&mut self, data: Vec<u8>)` | 背景下解碼；新呼叫會取代上一次載入 |
+| `is_loading` | `fn(&self) -> bool` | 背景下載仍在進行 |
+| `poll_load` | `fn(&mut self) -> Option<Result<(), String>>` | 安裝已完成的載入；仍在進行時為 `None` |
+| `wait_for_load` | `fn(&mut self) -> Result<(), String>` | 阻塞直到載入完成 |
+| `play` / `pause` / `stop` | `fn(&mut self)` | 播放狀態 |
+| `set_volume` / `volume` | `fn(&mut self, f32)` / `fn(&self) -> f32` | 鉗制到 `0.0..=1.0` |
+| `tick` | `fn(&mut self, samples: usize) -> usize` | 推進位置，到末尾飽和 |
+| `current_samples` | `fn(&self, count: usize) -> Vec<f32>` | 当前位置下的取樣 |
+| `duration_seconds` | `fn(&self) -> f64` | 未載入時為 `0.0` |
+| `play_to_device` | `fn(&mut self) -> Result<(), String>` | 需要 `audio-output`（cpal） |
+
+格式支援由 `AudioFormat` 描述；`symphonia-codecs` 增加 FLAC、OGG Vorbis、AAC 與 Opus 解碼。
+
+### 影片（`video`）
+
+`VideoEngine` 驅動一個 `VideoDecoder` 並持有主時間軸。影格在背景執行緒解碼，因此 `tick_frame`
+從有界預讀佇列取幀，而不是在影格迴圈裡解碼。每次 seek 開啟一個新的世代：為舊位置解碼的影格會被
+丟棄而不是顯示。
+
+```rust
+use rust_widgets::video::VideoEngine;
+
+let mut engine = VideoEngine::open(mp4_bytes)?; // 根據容器選擇解碼器
+engine.play();
+let frame = engine.tick_frame(16, 0.008)?;      // 一個顯示幀；到期時回傳 Some(frame)
+```
+
+| 方法 | 簽名 | 說明 |
+|---|---|---|
+| `open` | `fn(Vec<u8>) -> Result<Self, String>` | 識別容器；H.264 等需要 `video-codecs` |
+| `with_decoder` | `fn(Box<dyn VideoDecoder + Send>) -> Self` | 自帶解碼器 |
+| `metadata` / `duration` | `fn(&self) -> &VideoMetadata` / `fn(&self) -> f64` | 容器資訊 |
+| `play` / `pause` / `stop` | `fn(&mut self)` | 結束後 `play` 從第一幀重新開始 |
+| `seek` | `fn(&mut self, time: f64) -> Result<(), String>` | 舊位置的影格被丟棄 |
+| `tick_frame` | `fn(&mut self, delta_ms: u32, tolerance: f64) -> Result<Option<VideoFrame>, String>` | `None` 表示本幀沒有到期畫面 |
+| `next_frame` / `step_frame` | `fn(&mut self) -> Result<Option<VideoFrame>, String>` | 走同一個單幀槽位 |
+| `take_dropped_frames` | `fn(&mut self) -> u64` | 為追趕進度而丟棄的影格數 |
+| `clock` / `clock_mut` | 時間軸存取器 | 主 `MediaClock` |
+
+### 圖片（`image`）
+
+```rust
+use rust_widgets::image::{decode, decode_async};
+
+let image = decode(&png_bytes)?;   // 同步
+let job = decode_async(png_bytes); // 背景下；回傳 ImageDecodeJob
+let image = job.wait()?;           // 或每幀一次 job.try_take()
+```
+
+`decode` 回傳 `DecodedImage`（`format`、`data`、`width`、`height`、`exif`、`color_space`）。
+`decode_to_rgba8` 一步完成轉換，`decode_animation` 回傳 GIF/WebP 的每一幀及其延遲。
+`ImageDecodeJob::try_take` 在解碼仍在進行時回傳 `None`，`wait` 則阻塞到完成。
+
+---
+
 ## 功能旗標參考
 
 此函式庫使用**三軸功能系統** — 從每個軸各選一個：
@@ -2852,6 +2943,15 @@ pub mod java_jni;
 | `controls-native` | 原生 OS 風格控制項渲染 |
 | `controls-custom` | 自訂（主題化）控制項渲染 |
 | `advanced-widgets` | 進階控制項（日曆、日期/時間選擇器、功能區列等） |
+| `image` | 圖片解碼/編碼模組 |
+| `video` | 影片引擎模組（容器識別、影格解碼、播放） |
+| `audio` | 音訊引擎模組（格式識別、解碼、緩衝） |
+| `audio-output` | 透過 cpal 輸出至系統裝置 |
+| `symphonia-codecs` | FLAC / OGG Vorbis / AAC / Opus 音訊解碼 |
+| `video-codecs` | FFmpeg 影片解碼 |
+| `pdf-encryption` | 加密 PDF 輸出 |
+| `js-engine` | 內嵌 JavaScript 引擎（boa） |
+| `web-http` | Web 能力的 HTTP 用戶端（ureq） |
 | `unstable-pipeline-routing` | 實驗性管線路由 |
 | `unstable-special-widgets` | 實驗性特殊控制項 |
 

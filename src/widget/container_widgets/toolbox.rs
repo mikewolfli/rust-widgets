@@ -98,8 +98,8 @@ impl ToolBoxItem {
     ///
     /// This is the value-level setter only: it cannot request a repaint. A `ToolBoxItem` held by a
     /// control should be changed through [`ToolBox::set_item_text`].
-    pub fn set_text(&mut self, text: String) {
-        self.text = text;
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        self.text = text.into();
     }
     /// Returns the typed icon source, if one is assigned.
     pub fn icon_source(&self) -> Option<IconSource> {
@@ -239,7 +239,13 @@ impl ToolBox {
     pub fn count(&self) -> usize {
         self.items.len()
     }
+    /// Returns the selected item index, or `None` when the toolbox is empty.
+    pub fn selected_index(&self) -> Option<usize> {
+        self.items.get(self.current_index).map(|_| self.current_index)
+    }
+
     /// Returns current item index.
+    #[deprecated(note = "use `selected_index` (Option) — WDGT-13")]
     pub fn current_index(&self) -> usize {
         self.current_index
     }
@@ -350,6 +356,9 @@ impl ToolBox {
     }
     /// Sets orientation.
     pub fn set_orientation(&mut self, orientation: Orientation) {
+        if self.orientation == orientation {
+            return;
+        }
         self.orientation = orientation;
         // The other axis has a different extent and a different tab size, so an offset that was
         // legal in one is not necessarily legal in the other.
@@ -621,7 +630,7 @@ impl WidgetProperties for ToolBox {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "item_count" => Ok(CapabilityValue::UInt(self.count() as u64)),
-            "current_index" => Ok(CapabilityValue::UInt(self.current_index() as u64)),
+            "current_index" => Ok(CapabilityValue::UInt(self.selected_index().unwrap_or(0) as u64)),
             "orientation" => {
                 Ok(CapabilityValue::String(orientation_to_str(self.orientation()).to_string()))
             }
@@ -960,7 +969,7 @@ mod tests {
     fn toolbox_creation_defaults() {
         let tb = ToolBox::new(Rect::new(0, 0, 200, 160));
         assert_eq!(tb.count(), 0, "should have no items");
-        assert_eq!(tb.current_index(), 0, "current index should be 0");
+        assert_eq!(tb.selected_index().unwrap_or(0), 0, "current index should be 0");
         assert_eq!(tb.current_widget(), None, "no current widget");
         assert_eq!(tb.orientation(), Orientation::Vertical, "default orientation");
         assert!(tb.is_visible(), "should be visible");
@@ -1055,11 +1064,11 @@ mod tests {
         tb.add_item("A".to_string(), None);
         tb.add_item("B".to_string(), None);
 
-        assert_eq!(tb.current_index(), 0, "starts at 0");
+        assert_eq!(tb.selected_index().unwrap_or(0), 0, "starts at 0");
         tb.set_current_index(1);
-        assert_eq!(tb.current_index(), 1);
+        assert_eq!(tb.selected_index().unwrap_or(0), 1);
         tb.set_current_index(0);
-        assert_eq!(tb.current_index(), 0);
+        assert_eq!(tb.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
@@ -1067,7 +1076,7 @@ mod tests {
         let mut tb = ToolBox::new(Rect::new(0, 0, 200, 160));
         tb.add_item("Only".to_string(), None);
         tb.set_current_index(5); // out of bounds
-        assert_eq!(tb.current_index(), 0, "should remain 0");
+        assert_eq!(tb.selected_index().unwrap_or(0), 0, "should remain 0");
     }
 
     #[test]
@@ -1075,7 +1084,7 @@ mod tests {
         let mut tb = ToolBox::new(Rect::new(0, 0, 200, 160));
         tb.add_item("A".to_string(), None);
         tb.set_current_index(0); // already 0, should not emit signal
-        assert_eq!(tb.current_index(), 0);
+        assert_eq!(tb.selected_index().unwrap_or(0), 0);
     }
 
     // ── 4. Item count ─────────────────────────────────────────────────────
@@ -1124,13 +1133,13 @@ mod tests {
 
         // Remove item at index 0 (< current_index), current decrements to 1
         tb.remove_item(0);
-        assert_eq!(tb.current_index(), 1);
+        assert_eq!(tb.selected_index().unwrap_or(0), 1);
 
         // Removing last item leaves empty -> current_index resets to 0
         tb.remove_item(1);
         tb.remove_item(0);
         assert_eq!(tb.count(), 0);
-        assert_eq!(tb.current_index(), 0);
+        assert_eq!(tb.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
@@ -1141,7 +1150,7 @@ mod tests {
         tb.set_current_index(0);
         // Remove item at index 1 (> current_index 0), current stays 0
         tb.remove_item(1);
-        assert_eq!(tb.current_index(), 0);
+        assert_eq!(tb.selected_index().unwrap_or(0), 0);
     }
 
     // ── 6. Clear all items ────────────────────────────────────────────────
@@ -1159,7 +1168,7 @@ mod tests {
         tb.remove_item(0);
 
         assert_eq!(tb.count(), 0);
-        assert_eq!(tb.current_index(), 0);
+        assert_eq!(tb.selected_index().unwrap_or(0), 0);
         assert!(tb.children().is_empty(), "all child widgets should be removed");
         assert_eq!(tb.current_widget(), None);
     }
@@ -1369,12 +1378,12 @@ mod tests {
         tb.add_item("First".to_string(), None);
         tb.add_item("Second".to_string(), None);
 
-        assert_eq!(tb.current_index(), 0);
+        assert_eq!(tb.selected_index().unwrap_or(0), 0);
 
         // Default orientation is Vertical; item_rect(1) has y = 0 + 32*1 = 32
         // Click on item 1 at (10, 40) which is within vertical item 1: (0, 32, 200, 32)
         tb.handle_event(&Event::MousePress { pos: Point::new(10, 40), button: 1, modifiers: 0 });
-        assert_eq!(tb.current_index(), 1, "clicking item should select it");
+        assert_eq!(tb.selected_index().unwrap_or(0), 1, "clicking item should select it");
     }
 
     #[test]
@@ -1388,22 +1397,26 @@ mod tests {
             item.set_enabled(false);
         }
 
-        assert_eq!(tb.current_index(), 0);
+        assert_eq!(tb.selected_index().unwrap_or(0), 0);
         // Click on item 1 (y=32), should not select because item is disabled
         tb.handle_event(&Event::MousePress { pos: Point::new(10, 40), button: 1, modifiers: 0 });
-        assert_eq!(tb.current_index(), 0, "clicking disabled item should not change current");
+        assert_eq!(
+            tb.selected_index().unwrap_or(0),
+            0,
+            "clicking disabled item should not change current"
+        );
     }
 
     #[test]
     fn toolbox_mouse_click_on_empty_region_is_noop() {
         let mut tb = ToolBox::new(Rect::new(0, 0, 200, 160));
         tb.add_item("A".to_string(), None);
-        assert_eq!(tb.current_index(), 0);
+        assert_eq!(tb.selected_index().unwrap_or(0), 0);
 
         // Click far below items (y=200, but geometry only goes to 160)
         // Since item_at_position returns None for out-of-bounds, no change
         tb.handle_event(&Event::MousePress { pos: Point::new(10, 200), button: 1, modifiers: 0 });
-        assert_eq!(tb.current_index(), 0);
+        assert_eq!(tb.selected_index().unwrap_or(0), 0);
     }
 
     // ── 14. Disabled state blocks events ──────────────────────────────────
@@ -1421,7 +1434,11 @@ mod tests {
         // Try clicking on item 1
         tb.handle_event(&Event::MousePress { pos: Point::new(10, 40), button: 1, modifiers: 0 });
         // current_index should remain 0 because event handling returns early when disabled
-        assert_eq!(tb.current_index(), 0, "disabled toolbox should not process mouse events");
+        assert_eq!(
+            tb.selected_index().unwrap_or(0),
+            0,
+            "disabled toolbox should not process mouse events"
+        );
     }
 
     #[test]
@@ -1432,12 +1449,16 @@ mod tests {
 
         tb.set_enabled(false);
         tb.handle_event(&Event::MousePress { pos: Point::new(10, 40), button: 1, modifiers: 0 });
-        assert_eq!(tb.current_index(), 0);
+        assert_eq!(tb.selected_index().unwrap_or(0), 0);
 
         // Re-enable and click again
         tb.set_enabled(true);
         tb.handle_event(&Event::MousePress { pos: Point::new(10, 40), button: 1, modifiers: 0 });
-        assert_eq!(tb.current_index(), 1, "after re-enable, mouse clicks should work");
+        assert_eq!(
+            tb.selected_index().unwrap_or(0),
+            1,
+            "after re-enable, mouse clicks should work"
+        );
     }
 
     // ── 16. Keyboard navigation (vertical) ────────────────────────────────
@@ -1448,13 +1469,13 @@ mod tests {
         tb.add_item("A".to_string(), None);
         tb.add_item("B".to_string(), None);
         tb.add_item("C".to_string(), None);
-        assert_eq!(tb.current_index(), 0);
+        assert_eq!(tb.selected_index().unwrap_or(0), 0);
 
         tb.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
-        assert_eq!(tb.current_index(), 1);
+        assert_eq!(tb.selected_index().unwrap_or(0), 1);
 
         tb.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
-        assert_eq!(tb.current_index(), 2);
+        assert_eq!(tb.selected_index().unwrap_or(0), 2);
     }
 
     #[test]
@@ -1465,7 +1486,7 @@ mod tests {
         tb.set_current_index(1);
 
         tb.handle_event(&Event::KeyPress { key: 38, modifiers: 0 });
-        assert_eq!(tb.current_index(), 0);
+        assert_eq!(tb.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
@@ -1475,11 +1496,11 @@ mod tests {
 
         // Already at first item, Up should stay
         tb.handle_event(&Event::KeyPress { key: 38, modifiers: 0 });
-        assert_eq!(tb.current_index(), 0);
+        assert_eq!(tb.selected_index().unwrap_or(0), 0);
 
         // Already at last item, Down should stay
         tb.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
-        assert_eq!(tb.current_index(), 0);
+        assert_eq!(tb.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
@@ -1490,15 +1511,15 @@ mod tests {
         tb.add_item("B".to_string(), None);
         tb.add_item("C".to_string(), None);
 
-        assert_eq!(tb.current_index(), 0);
+        assert_eq!(tb.selected_index().unwrap_or(0), 0);
 
         // Right arrow advances
         tb.handle_event(&Event::KeyPress { key: 39, modifiers: 0 });
-        assert_eq!(tb.current_index(), 1);
+        assert_eq!(tb.selected_index().unwrap_or(0), 1);
 
         // Left arrow goes back
         tb.handle_event(&Event::KeyPress { key: 37, modifiers: 0 });
-        assert_eq!(tb.current_index(), 0);
+        assert_eq!(tb.selected_index().unwrap_or(0), 0);
     }
 
     // ── 17. Clear method ──────────────────────────────────────────────────
@@ -1514,7 +1535,7 @@ mod tests {
         tb.clear();
 
         assert_eq!(tb.count(), 0);
-        assert_eq!(tb.current_index(), 0);
+        assert_eq!(tb.selected_index().unwrap_or(0), 0);
         assert!(tb.children().is_empty(), "child widgets should be removed");
     }
 

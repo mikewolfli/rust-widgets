@@ -9,14 +9,193 @@ use crate::video::frame::VideoFrame;
 use crate::video::metadata::VideoMetadata;
 use crate::video::player::PlaybackState;
 use crate::widget::numeric::ordered_clamp_f64;
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError};
+use std::thread::{self, JoinHandle};
 
 #[cfg(feature = "video-codecs")]
 use crate::video::ffmpeg_decoder::FfmpegDecoder;
 
+/// A command from the engine to the decode thread.
+///
+/// `generation` is the engine's epoch token. The worker stamps every event it produces with it,
+/// so a frame decoded before a seek can be recognised and discarded instead of shown at the new
+/// position (MEDIA-03).
+enum DecodeCommand {
+    /// Seek to `time` and answer with [`DecodeEvent::Seeked`].
+    Seek { time: f64, generation: u64 },
+    /// Release the decoder and stop the thread.
+    Close,
+}
+
+/// One event from the decode thread, tagged with the generation that produced it.
+enum DecodeEvent {
+    Frame { generation: u64, frame: VideoFrame },
+    End { generation: u64 },
+    Failed { generation: u64, message: String },
+    Seeked { generation: u64, result: Result<(), String> },
+}
+
+/// Depth of the decoded-frame queue.
+///
+/// Small on purpose: the queue is the read-ahead window, and a decoded 1080p RGBA frame is ~8 MiB.
+/// Eight frames is enough to absorb a stall of a few display frames without letting a fast
+/// decoder fill memory with a whole film.
+const DECODE_QUEUE_DEPTH: usize = 8;
+
+/// Owns the decode thread and the two channels to it.
+///
+/// # Why the decoder lives on its own thread (MEDIA-03)
+///
+/// `VideoEngine::tick_frame` used to call `decoder.read_frame()` on the frame loop's thread, so a
+/// software H.264 decode (10–30 ms for 1080p) blocked the UI for every due frame. The decoder is
+/// `Send`, so it now runs on a worker that reads ahead into a bounded queue; the engine pulls from
+/// the queue and never blocks once the window is primed.
+///
+/// The blocking contract is deliberately conservative: an empty queue still blocks the *first*
+/// read of a tick, which is exactly the old behaviour. That keeps start-up and a decoder that
+/// cannot keep up no worse than before, while steady-state playback costs a channel receive.
+struct DecodeWorker {
+    commands: Sender<DecodeCommand>,
+    events: Option<Receiver<DecodeEvent>>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl DecodeWorker {
+    fn spawn(mut decoder: Box<dyn VideoDecoder + Send>) -> Self {
+        let (commands, command_rx) = mpsc::channel::<DecodeCommand>();
+        let (event_tx, events) = mpsc::sync_channel::<DecodeEvent>(DECODE_QUEUE_DEPTH);
+        let handle = thread::Builder::new()
+            .name("rust-widgets-video-decode".to_string())
+            .spawn(move || decode_loop(decoder.as_mut(), &command_rx, &event_tx));
+        match handle {
+            Ok(handle) => Self { commands, events: Some(events), handle: Some(handle) },
+            // A host that cannot spawn a thread gets the old behaviour: the error surfaces on the
+            // first read rather than a decoder that silently produces nothing.
+            Err(_) => Self { commands, events: Some(events), handle: None },
+        }
+    }
+
+    /// Blocks until the next event, or `None` when the worker is gone.
+    fn recv(&mut self) -> Option<DecodeEvent> {
+        self.events.as_ref()?.recv().ok()
+    }
+
+    /// Takes an event only if one is already queued.
+    fn try_recv(&mut self) -> Result<DecodeEvent, TryRecvError> {
+        match self.events.as_ref() {
+            Some(events) => events.try_recv(),
+            None => Err(TryRecvError::Disconnected),
+        }
+    }
+
+    fn send(&self, command: DecodeCommand) -> Result<(), String> {
+        self.commands.send(command).map_err(|_| {
+            "the video decode thread has stopped; the source can no longer be read".to_string()
+        })
+    }
+}
+
+impl Drop for DecodeWorker {
+    fn drop(&mut self) {
+        // Dropping the receiver first is what unblocks a worker parked in `send` on a full
+        // queue; the `Close` then reaches it (or fails, if it already noticed the disconnect).
+        self.events.take();
+        let _ = self.commands.send(DecodeCommand::Close);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// The decode thread.
+///
+/// It reads frames continuously, tagging each with the generation that was current when the read
+/// began. Commands are checked before each read, so a seek takes effect at the next frame
+/// boundary; the engine ignores events from older generations until the new one arrives.
+fn decode_loop(
+    decoder: &mut (dyn VideoDecoder + Send),
+    commands: &Receiver<DecodeCommand>,
+    events: &SyncSender<DecodeEvent>,
+) {
+    let mut generation = 0u64;
+    loop {
+        // Commands first: a seek must not be starved by a long read-ahead.
+        loop {
+            match commands.try_recv() {
+                Ok(DecodeCommand::Seek { time, generation: requested }) => {
+                    generation = requested;
+                    let result = decoder.seek(time);
+                    if events.send(DecodeEvent::Seeked { generation, result }).is_err() {
+                        return;
+                    }
+                }
+                Ok(DecodeCommand::Close) => {
+                    let _ = decoder.close();
+                    return;
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => return,
+            }
+        }
+
+        match decoder.read_frame() {
+            Ok(Some(frame)) => {
+                if events.send(DecodeEvent::Frame { generation, frame }).is_err() {
+                    return;
+                }
+            }
+            Ok(None) => {
+                if events.send(DecodeEvent::End { generation }).is_err() {
+                    return;
+                }
+                // Park until a seek or close arrives; spinning here would burn a core while the
+                // caller holds the last frame on screen.
+                match commands.recv() {
+                    Ok(DecodeCommand::Seek { time, generation: requested }) => {
+                        generation = requested;
+                        let result = decoder.seek(time);
+                        if events.send(DecodeEvent::Seeked { generation, result }).is_err() {
+                            return;
+                        }
+                    }
+                    Ok(DecodeCommand::Close) | Err(_) => {
+                        let _ = decoder.close();
+                        return;
+                    }
+                }
+            }
+            Err(message) => {
+                if events.send(DecodeEvent::Failed { generation, message }).is_err() {
+                    return;
+                }
+                // Park like the end-of-stream path: a failed read does not recover by retrying.
+                match commands.recv() {
+                    Ok(DecodeCommand::Seek { time, generation: requested }) => {
+                        generation = requested;
+                        let result = decoder.seek(time);
+                        if events.send(DecodeEvent::Seeked { generation, result }).is_err() {
+                            return;
+                        }
+                    }
+                    Ok(DecodeCommand::Close) | Err(_) => {
+                        let _ = decoder.close();
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Video player engine that wraps a decoder and exposes playback control.
 pub struct VideoEngine {
-    decoder: Box<dyn VideoDecoder + Send>,
+    /// The decode thread and the channels to it.
+    worker: DecodeWorker,
     metadata: VideoMetadata,
+    /// The generation of the current position. Events from an older generation are stale.
+    generation: u64,
+    /// True once the current generation has reported end of stream.
+    ended: bool,
     state: PlaybackState,
     current_time: f64,
     /// The master timeline frames are judged against (BLUE24 §12 U-2).
@@ -89,12 +268,14 @@ impl VideoEngine {
     /// report `Ended` again immediately.
     pub fn play(&mut self) {
         if self.state == PlaybackState::Ended {
-            if let Err(e) = self.decoder.seek(0.0) {
+            // A finished stream is replayed from its first frame: the clock rewinding alone is not
+            // enough, because the decoder is still parked at end-of-stream and the next read would
+            // report `Ended` again immediately. `seek` restarts the decode thread's generation and
+            // moves the clock with it, which is the one path that keeps the two in step.
+            if let Err(e) = self.seek(0.0) {
                 log::error!("[video-engine] failed to rewind decoder on replay: {e}");
                 return;
             }
-            self.current_time = 0.0;
-            self.pending = None;
             // The clock may be `Paused` (end-of-stream reached through `read_frame`) rather than
             // `Ended` (reached through the duration), and [`MediaClock::play`] only rewinds the
             // latter. Reset the position explicitly so replay starts at the first frame either way.
@@ -119,8 +300,10 @@ impl VideoEngine {
         self.pending = None;
         self.clock.stop();
         // The clock rewound but the decoder did not; without this a stop followed by play would
-        // resume from where the decoder left off rather than from the first frame.
-        if let Err(e) = self.decoder.seek(0.0) {
+        // resume from where the decoder left off rather than from the first frame. Routing through
+        // `seek` also restarts the decode generation, so frames already queued for the old position
+        // cannot be shown after the stop (MEDIA-03).
+        if let Err(e) = self.seek(0.0) {
             log::error!("[video-engine] failed to rewind decoder on stop: {e}");
         }
         self.on_state_change.emit(self.state);
@@ -136,7 +319,32 @@ impl VideoEngine {
     /// ignores the unusable bound and clamps only against the floor.
     pub fn seek(&mut self, time: f64) -> Result<(), String> {
         let time = ordered_clamp_f64(time, 0.0, self.metadata.duration);
-        self.decoder.seek(time)?;
+        // Every seek starts a new generation, so frames already decoded for the previous position
+        // are recognisable as stale and are dropped rather than shown at the new one.
+        self.generation = self.generation.wrapping_add(1);
+        let generation = self.generation;
+        self.worker.send(DecodeCommand::Seek { time, generation })?;
+        // Wait for the decoder's answer. Frames from older generations are drained here — they are
+        // exactly the frames the seek makes obsolete, and leaving them in the bounded queue would
+        // keep the worker blocked on a full channel.
+        let result =
+            loop {
+                match self.worker.recv() {
+                    Some(DecodeEvent::Seeked { generation: answered, result })
+                        if answered == generation =>
+                    {
+                        break result
+                    }
+                    Some(_) => continue,
+                    None => return Err(
+                        "the video decode thread stopped while seeking; the source can no longer \
+                         be read"
+                            .to_string(),
+                    ),
+                }
+            };
+        result?;
+        self.ended = false;
         self.current_time = time;
         // A frame decoded before the seek is a frame from where playback *was*; showing it after the
         // seek would put one stale picture in the middle of the jump.
@@ -170,8 +378,10 @@ impl VideoEngine {
         let mut clock = MediaClock::new();
         clock.set_duration(metadata.duration);
         Self {
-            decoder,
+            worker: DecodeWorker::spawn(decoder),
             metadata,
+            generation: 0,
+            ended: false,
             state: PlaybackState::Stopped,
             current_time: 0.0,
             clock,
@@ -243,7 +453,15 @@ impl VideoEngine {
                     // spending the whole loop here.
                     return Ok(None);
                 }
-                match self.decoder.read_frame()? {
+                // Pull from the decode thread's read-ahead queue. A queued frame is a
+                // non-blocking receive; an empty queue blocks for the next frame, bounded by the
+                // catch-up budget above. Blocking is the old synchronous contract, so a decoder
+                // that cannot keep up behaves exactly as it did (MEDIA-03).
+                let next = match self.try_decoded() {
+                    Some(result) => result?,
+                    None => self.next_decoded()?,
+                };
+                match next {
                     Some(frame) => {
                         self.pending = Some(frame);
                         reads += 1;
@@ -305,7 +523,84 @@ impl VideoEngine {
         if let Some(frame) = self.pending.take() {
             return Ok(Some(frame));
         }
-        self.decoder.read_frame()
+        self.next_decoded()
+    }
+
+    /// Blocks until the decode thread produces a frame for the current generation.
+    ///
+    /// Stale events — frames and end markers from before a seek — are discarded here; they belong
+    /// to the position playback left.
+    fn next_decoded(&mut self) -> Result<Option<VideoFrame>, String> {
+        if self.ended {
+            return Ok(None);
+        }
+        loop {
+            let Some(event) = self.worker.recv() else {
+                return Err(
+                    "the video decode thread stopped unexpectedly; the source can no longer be read"
+                        .to_string(),
+                );
+            };
+            match event {
+                DecodeEvent::Frame { generation, frame } => {
+                    if generation == self.generation {
+                        return Ok(Some(frame));
+                    }
+                }
+                DecodeEvent::End { generation } => {
+                    if generation == self.generation {
+                        self.ended = true;
+                        return Ok(None);
+                    }
+                }
+                DecodeEvent::Failed { generation, message } => {
+                    if generation == self.generation {
+                        return Err(message);
+                    }
+                }
+                // `seek` is the only caller that waits for this event.
+                DecodeEvent::Seeked { .. } => {}
+            }
+        }
+    }
+
+    /// Takes a decoded frame only if one is already queued.
+    ///
+    /// `None` means "the decoder has not got there yet", which the frame loop treats as a normal
+    /// no-frame tick rather than as a reason to wait.
+    fn try_decoded(&mut self) -> Option<Result<Option<VideoFrame>, String>> {
+        if self.ended {
+            return Some(Ok(None));
+        }
+        loop {
+            match self.worker.try_recv() {
+                Ok(DecodeEvent::Frame { generation, frame }) => {
+                    if generation == self.generation {
+                        return Some(Ok(Some(frame)));
+                    }
+                }
+                Ok(DecodeEvent::End { generation }) => {
+                    if generation == self.generation {
+                        self.ended = true;
+                        return Some(Ok(None));
+                    }
+                }
+                Ok(DecodeEvent::Failed { generation, message }) => {
+                    if generation == self.generation {
+                        return Some(Err(message));
+                    }
+                }
+                Ok(DecodeEvent::Seeked { .. }) => {}
+                Err(TryRecvError::Empty) => return None,
+                Err(TryRecvError::Disconnected) => {
+                    return Some(Err(
+                        "the video decode thread stopped unexpectedly; the source can no longer \
+                         be read"
+                            .to_string(),
+                    ))
+                }
+            }
+        }
     }
 
     /// Advance one frame (step forward).
@@ -685,6 +980,84 @@ mod tests {
         assert!(
             dropped >= 3,
             "several overdue frames are dropped in one tick, not one: got {dropped}"
+        );
+    }
+
+    /// Decoding runs on the engine's worker thread, not on the caller's.
+    ///
+    /// This is the observable half of MEDIA-03: `tick_frame` used to call `read_frame` inline, so
+    /// a slow codec blocked the frame loop. The decoder now records the thread it ran on, and the
+    /// assertion is that it is never the thread that called `next_frame`.
+    #[test]
+    fn frames_are_decoded_off_the_calling_thread() {
+        use std::sync::{Arc, Mutex};
+
+        struct ThreadRecordingDecoder {
+            metadata: VideoMetadata,
+            threads: Arc<Mutex<Vec<std::thread::ThreadId>>>,
+            read: u64,
+        }
+
+        impl VideoDecoder for ThreadRecordingDecoder {
+            fn read_frame(&mut self) -> Result<Option<VideoFrame>, String> {
+                self.threads.lock().unwrap().push(std::thread::current().id());
+                if self.read >= 4 {
+                    return Ok(None);
+                }
+                self.read += 1;
+                Ok(Some(VideoFrame::new(self.read as f64 / 10.0, vec![0u8; 4], 1, 1)))
+            }
+
+            fn seek(&mut self, _time: f64) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn close(&mut self) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn metadata(&self) -> &VideoMetadata {
+                &self.metadata
+            }
+        }
+
+        let threads = Arc::new(Mutex::new(Vec::new()));
+        let decoder = ThreadRecordingDecoder {
+            metadata: VideoMetadata::new_with_format(ContainerFormat::Mjpeg, 1, 1, 10.0),
+            threads: Arc::clone(&threads),
+            read: 0,
+        };
+
+        let caller = std::thread::current().id();
+        let mut engine = VideoEngine::with_decoder(Box::new(decoder));
+        engine.play();
+        assert!(engine.next_frame().expect("no error").is_some(), "a frame is produced");
+
+        let seen = threads.lock().unwrap();
+        assert!(!seen.is_empty(), "the decoder was read");
+        assert!(
+            seen.iter().all(|thread| *thread != caller),
+            "every read must happen on the decode thread, not the caller's: {seen:?}"
+        );
+    }
+
+    /// A seek discards frames already decoded for the old position.
+    ///
+    /// The worker reads ahead, so without the generation check the first frame after a seek could
+    /// be one from before it — the stale-picture bug the generation token exists to prevent.
+    #[test]
+    fn a_seek_drops_frames_decoded_for_the_old_position() {
+        let mut engine = engine_with_pattern();
+        engine.play();
+        // Prime the read-ahead window before moving.
+        assert!(engine.tick_frame(0, 0.05).expect("no error").is_some());
+
+        engine.seek(5.0).expect("seek");
+        let frame = engine.next_frame().expect("no error").expect("a frame after the seek");
+        assert!(
+            frame.timestamp >= 4.9,
+            "the first frame after seeking to 5.0 s must not be an earlier one: got {}",
+            frame.timestamp
         );
     }
 }

@@ -119,11 +119,11 @@ impl CupertinoSegmentedControl {
     }
 
     /// Returns the currently selected index.
-    pub fn selected_index(&self) -> usize {
+    pub fn selected_index(&self) -> Option<usize> {
         if self.segments.is_empty() {
-            0
+            None
         } else {
-            self.selected_index.min(self.segments.len() - 1)
+            Some(self.selected_index.min(self.segments.len() - 1))
         }
     }
 
@@ -232,7 +232,9 @@ impl Widget for CupertinoSegmentedControl {
 impl WidgetProperties for CupertinoSegmentedControl {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
-            "selected_index" => Ok(CapabilityValue::UInt(self.selected_index() as u64)),
+            "selected_index" => {
+                Ok(CapabilityValue::UInt(self.selected_index().unwrap_or(0) as u64))
+            }
             "segment_count" => Ok(CapabilityValue::UInt(self.segment_count() as u64)),
             _ => base_property_get(self, name),
         }
@@ -453,7 +455,7 @@ mod tests {
         let sc = CupertinoSegmentedControl::new(Rect::new(0, 0, 300, 32));
         assert_eq!(sc.kind(), WidgetKind::CupertinoSegmentedControl);
         assert_eq!(sc.segment_count(), 0);
-        assert_eq!(sc.selected_index(), 0);
+        assert_eq!(sc.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
@@ -461,7 +463,7 @@ mod tests {
         let mut sc = CupertinoSegmentedControl::new(Rect::new(0, 0, 300, 32));
         sc.set_segments(vec!["One".to_string(), "Two".to_string(), "Three".to_string()]);
         assert_eq!(sc.segment_count(), 3);
-        assert_eq!(sc.selected_index(), 0);
+        assert_eq!(sc.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
@@ -469,11 +471,11 @@ mod tests {
         let mut sc = CupertinoSegmentedControl::new(Rect::new(0, 0, 300, 32));
         sc.set_segments(vec!["A".to_string(), "B".to_string(), "C".to_string()]);
         sc.set_selected_index(1);
-        assert_eq!(sc.selected_index(), 1);
+        assert_eq!(sc.selected_index().unwrap_or(0), 1);
 
         // Clamp to max
         sc.set_selected_index(10);
-        assert_eq!(sc.selected_index(), 2);
+        assert_eq!(sc.selected_index().unwrap_or(0), 2);
     }
 
     #[test]
@@ -545,7 +547,11 @@ mod tests {
         sc.handle_event(&Event::MouseRelease { pos: Point::new(200, 16), button: 1 });
 
         assert!(!fired.load(Ordering::SeqCst), "a disabled control must not emit");
-        assert_eq!(sc.selected_index(), 0, "a disabled control must not change selection");
+        assert_eq!(
+            sc.selected_index().unwrap_or(0),
+            0,
+            "a disabled control must not change selection"
+        );
     }
 
     /// A disabled control must paint differently from an enabled one.

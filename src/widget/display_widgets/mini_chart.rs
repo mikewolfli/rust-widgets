@@ -88,6 +88,9 @@ impl MiniChart {
 
     /// Sets the chart type (Line or Bar).
     pub fn set_chart_type(&mut self, t: ChartType) {
+        if self.chart_type == t {
+            return;
+        }
         self.chart_type = t;
         self.base.request_redraw();
     }
@@ -111,6 +114,9 @@ impl MiniChart {
     /// Sets the value range (min, max) for the chart Y axis.
     pub fn set_range(&mut self, min: u32, max: u32) {
         let (a, b) = if min <= max { (min, max) } else { (max, min) };
+        if self.min_value == a && self.max_value == b {
+            return;
+        }
         self.min_value = a;
         self.max_value = b;
         self.base.request_redraw();

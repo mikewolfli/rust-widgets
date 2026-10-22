@@ -1,15 +1,15 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! Rich clipboard formats (CF_HTML on Windows, and the platform-independent codec).
+//! Native rich-clipboard bindings and the platform-independent CF_HTML codec.
 //!
 //! # About the file name
 //!
-//! The module is still called `clipboard_stubs` because it is a public path; the name no longer
-//! describes it. What lives here is the **real** CF_HTML encoder/decoder (the byte-offset codec is
-//! platform-independent and unit-tested on hosts where the Windows backend does not compile), not
-//! a placeholder. A future release that can take the path break should rename it to
-//! `clipboard_formats`.
+//! This module used to be called `clipboard_stubs`, but it never contained stubs: the macOS
+//! `NSPasteboard`, Windows `OpenClipboard`, Linux and WASM implementations are the production
+//! bindings, and `cf_html` is the real byte-offset encoder/decoder. It was renamed to say what it
+//! is (PLAT-13). The old path is kept as a `#[deprecated]` alias in `platform::mod`, so an
+//! existing `platform::clipboard_stubs::…` path still compiles and forwards here.
 
 /// The CF_HTML wire format used by the Windows clipboard's `HTML Format`.
 ///
@@ -768,7 +768,7 @@ pub mod objc2_macos {
     /// Whether the current thread is the AppKit main thread.
     ///
     /// `NSPasteboard` is a window-server singleton, so the same rule the cocoa backend applies
-    /// (see `clipboard_stubs::macos`) applies here: the thread that may touch it is the one the
+    /// (see `clipboard_native::macos`) applies here: the thread that may touch it is the one the
     /// app was started on. The check is what keeps this backend from turning a call from a worker
     /// thread into an AppKit access off the main thread; the caller then gets `false` / `None`,
     /// which is the honest "no host clipboard from here" answer, and its own record is the

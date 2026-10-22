@@ -8,7 +8,7 @@ use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-use crate::undo::{TextSnapshotCommand, UndoStack};
+use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -112,10 +112,11 @@ impl RichEdit {
         self.text = text;
         if !self.restoring_history {
             *self.history_target.borrow_mut() = self.text.clone();
-            self.undo_stack.push(Box::new(TextSnapshotCommand::new(
+            self.undo_stack.push(Box::new(ValueCommand::new(
                 self.history_target.clone(),
                 before,
                 self.text.clone(),
+                "Edit text",
                 "rich_edit_text",
             )));
         }
@@ -456,6 +457,9 @@ impl RichEdit {
             return;
         }
         let position = position.min(self.text.len());
+        if self.selection == Some((position, position)) {
+            return;
+        }
         self.selection = Some((position, position));
         self.cursor_position_changed.emit(position);
         self.base.request_redraw();

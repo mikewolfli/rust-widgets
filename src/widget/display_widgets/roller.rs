@@ -69,8 +69,8 @@ impl Roller {
     }
 
     /// Returns the currently selected index.
-    pub fn selected_index(&self) -> usize {
-        self.selected_index
+    pub fn selected_index(&self) -> Option<usize> {
+        self.options.get(self.selected_index).map(|_| self.selected_index)
     }
 
     /// Sets the selected index, clamped to the valid range.
@@ -113,7 +113,11 @@ impl Roller {
 
     /// Sets the font size used to render option text.
     pub fn set_font_size(&mut self, size: f32) {
-        self.font_size = size.max(4.0);
+        let size = size.max(4.0);
+        if self.font_size == size {
+            return;
+        }
+        self.font_size = size;
         self.base.request_redraw();
     }
 
@@ -252,7 +256,9 @@ impl Widget for Roller {
 impl WidgetProperties for Roller {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
-            "selected_index" => Ok(CapabilityValue::UInt(self.selected_index() as u64)),
+            "selected_index" => {
+                Ok(CapabilityValue::UInt(self.selected_index().unwrap_or(0) as u64))
+            }
             "visible_count" => Ok(CapabilityValue::UInt(self.visible_count() as u64)),
             "item_count" => Ok(CapabilityValue::UInt(self.options().len() as u64)),
             _ => base_property_get(self, name),
@@ -493,7 +499,7 @@ mod tests {
     fn roller_creation_defaults() {
         let roller = make_roller();
         assert_eq!(roller.options.len(), 5);
-        assert_eq!(roller.selected_index(), 0);
+        assert_eq!(roller.selected_index().unwrap_or(0), 0);
         assert_eq!(roller.selected_text(), Some("Apple"));
         assert!(roller.visible_count() >= 3);
         assert!(roller.visible_count() % 2 == 1);
@@ -503,16 +509,26 @@ mod tests {
     #[test]
     fn roller_set_selected_index() {
         let mut roller = make_roller();
-        assert_eq!(roller.selected_index(), 0);
+        assert_eq!(roller.selected_index().unwrap_or(0), 0);
 
         roller.set_selected_index(2);
-        assert_eq!(roller.selected_index(), 2);
+        assert_eq!(roller.selected_index().unwrap_or(0), 2);
         assert_eq!(roller.selected_text(), Some("Cherry"));
 
         // Clamp above max.
         roller.set_selected_index(100);
-        assert_eq!(roller.selected_index(), 4);
+        assert_eq!(roller.selected_index().unwrap_or(0), 4);
         assert_eq!(roller.selected_text(), Some("Elderberry"));
+    }
+
+    /// The canonical getter reports `None` until there is something to select (WDGT-13).
+    #[test]
+    fn selected_index_is_none_for_an_empty_roller() {
+        let empty = Roller::new(Vec::new(), Rect::new(0, 0, 100, 100));
+        assert_eq!(empty.selected_index(), None);
+
+        let filled = Roller::new(vec!["a".to_string()], Rect::new(0, 0, 100, 100));
+        assert_eq!(filled.selected_index(), Some(0));
     }
 
     #[test]
@@ -531,29 +547,29 @@ mod tests {
     #[test]
     fn roller_mouse_wheel_changes_selection() {
         let mut roller = make_roller();
-        assert_eq!(roller.selected_index(), 0);
+        assert_eq!(roller.selected_index().unwrap_or(0), 0);
 
         // Scroll down (positive delta) should move to next item.
         roller.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
-        assert_eq!(roller.selected_index(), 1);
+        assert_eq!(roller.selected_index().unwrap_or(0), 1);
 
         // Scroll down again.
         roller.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
-        assert_eq!(roller.selected_index(), 2);
+        assert_eq!(roller.selected_index().unwrap_or(0), 2);
 
         // Scroll up (negative delta) should move to previous item.
         roller.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
-        assert_eq!(roller.selected_index(), 1);
+        assert_eq!(roller.selected_index().unwrap_or(0), 1);
 
         // Scroll up past start clamps to 0.
         roller.set_selected_index(0);
         roller.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
-        assert_eq!(roller.selected_index(), 0);
+        assert_eq!(roller.selected_index().unwrap_or(0), 0);
 
         // Scroll down past end clamps to last.
         roller.set_selected_index(roller.options.len() - 1);
         roller.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
-        assert_eq!(roller.selected_index(), roller.options.len() - 1);
+        assert_eq!(roller.selected_index().unwrap_or(0), roller.options.len() - 1);
     }
 
     #[test]
@@ -583,13 +599,13 @@ mod tests {
         // Replace with fewer options; index should clamp.
         roller.set_options(vec!["X".to_string(), "Y".to_string()]);
         assert_eq!(roller.options.len(), 2);
-        assert_eq!(roller.selected_index(), 1);
+        assert_eq!(roller.selected_index().unwrap_or(0), 1);
         assert_eq!(roller.selected_text(), Some("Y"));
 
         // Replace with empty list.
         roller.set_options(Vec::new());
         assert!(roller.options.is_empty());
-        assert_eq!(roller.selected_index(), 0);
+        assert_eq!(roller.selected_index().unwrap_or(0), 0);
         assert!(roller.selected_text().is_none());
     }
 
@@ -639,7 +655,7 @@ mod tests {
             modifiers: 0,
         });
         // Should have moved one index up (if available).
-        assert_eq!(roller.selected_index(), 0); // already at 0, can't go up
+        assert_eq!(roller.selected_index().unwrap_or(0), 0); // already at 0, can't go up
 
         roller.set_selected_index(2);
         // Click one item below center → index 3.
@@ -648,7 +664,7 @@ mod tests {
             button: 1,
             modifiers: 0,
         });
-        assert_eq!(roller.selected_index(), 3);
+        assert_eq!(roller.selected_index().unwrap_or(0), 3);
     }
 
     /// The wheel's rows are a fixed height, so the same control is the same object in
@@ -715,13 +731,21 @@ mod tests {
             button: 1,
             modifiers: 0,
         });
-        assert_eq!(roller.selected_index(), 1, "a press above the wheel must not select");
+        assert_eq!(
+            roller.selected_index().unwrap_or(0),
+            1,
+            "a press above the wheel must not select"
+        );
         roller.handle_event(&Event::MousePress {
             pos: Point::new(100, band.y + band.height as i32 + 10),
             button: 1,
             modifiers: 0,
         });
-        assert_eq!(roller.selected_index(), 1, "a press below the wheel must not select");
+        assert_eq!(
+            roller.selected_index().unwrap_or(0),
+            1,
+            "a press below the wheel must not select"
+        );
     }
 
     /// The emitted fill is the wheel band, not the control's whole rectangle.

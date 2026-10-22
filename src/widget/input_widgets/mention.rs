@@ -238,8 +238,8 @@ impl Mention {
     }
 
     /// Replaces the text and re-derives the mention state.
-    pub fn set_text(&mut self, text: String) {
-        self.text = text;
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        self.text = text.into();
         self.caret = self.text.len();
         self.refresh();
         self.text_changed.emit(self.text.clone());

@@ -99,7 +99,11 @@ impl VideoPlayer {
         if !duration.is_finite() {
             return;
         }
-        self.duration = duration.max(0.0);
+        let duration = duration.max(0.0);
+        if self.duration == duration {
+            return;
+        }
+        self.duration = duration;
         let clamped_time = self.current_time.clamp(0.0, self.duration);
         if clamped_time != self.current_time {
             self.current_time = clamped_time;
@@ -172,7 +176,11 @@ impl VideoPlayer {
 
     /// Sets the volume level (0.0 = silent, 1.0 = full).
     pub fn set_volume(&mut self, vol: f32) {
-        self.volume = vol.clamp(0.0, 1.0);
+        let volume = vol.clamp(0.0, 1.0);
+        if self.volume == volume {
+            return;
+        }
+        self.volume = volume;
         self.base.request_redraw();
     }
 
@@ -183,6 +191,9 @@ impl VideoPlayer {
 
     /// Sets whether audio is muted.
     pub fn set_muted(&mut self, muted: bool) {
+        if self.muted == muted {
+            return;
+        }
         self.muted = muted;
         self.base.request_redraw();
     }
@@ -197,7 +208,11 @@ impl VideoPlayer {
         if !rate.is_finite() {
             return;
         }
-        self.playback_rate = rate.max(0.1);
+        let rate = rate.max(0.1);
+        if self.playback_rate == rate {
+            return;
+        }
+        self.playback_rate = rate;
         self.base.request_redraw();
     }
 

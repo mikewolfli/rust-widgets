@@ -33,7 +33,20 @@ pub(crate) fn system_fonts() -> Vec<SystemFont> {
         match Command::new("fc-list").args(["--format", "%{family}\t%{style}\t%{file}\n"]).output()
         {
             Ok(output) if output.status.success() => output,
-            Ok(_) | Err(_) => return Vec::new(),
+            Ok(output) => {
+                // Distinguish "no enumerator installed" from "the enumerator failed". Returning an
+                // empty list is the honest answer in the first case; staying silent in the second
+                // made a broken fontconfig look like a host with no fonts.
+                log::warn!(
+                    "[fonts] fc-list exited with {}; reporting no installed fonts",
+                    output.status
+                );
+                return Vec::new();
+            }
+            Err(e) => {
+                log::warn!("[fonts] failed to run fc-list: {e}; reporting no installed fonts");
+                return Vec::new();
+            }
         };
     let text = String::from_utf8_lossy(&output.stdout);
     let mut fonts: Vec<SystemFont> = Vec::new();

@@ -164,7 +164,11 @@ impl NumberPicker {
     /// Sets the suffix shown after the number. Display only: it is not part of the
     /// value, so a caller parsing the control's text never sees it.
     pub fn set_suffix(&mut self, suffix: impl Into<String>) {
-        self.suffix = suffix.into();
+        let suffix = suffix.into();
+        if self.suffix == suffix {
+            return;
+        }
+        self.suffix = suffix;
         self.base.request_redraw();
     }
 
@@ -175,7 +179,11 @@ impl NumberPicker {
 
     /// Sets the height of one wheel row, clamped to at least one pixel.
     pub fn set_row_height(&mut self, row_height: u32) {
-        self.row_height = row_height.max(1);
+        let row_height = row_height.max(1);
+        if self.row_height == row_height {
+            return;
+        }
+        self.row_height = row_height;
         self.base.request_layout();
         self.base.request_redraw();
     }

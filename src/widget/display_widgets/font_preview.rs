@@ -57,6 +57,9 @@ impl FontPreview {
 
     /// Sets the font family name.
     pub fn set_font_family(&mut self, name: &str) {
+        if self.font_family == name {
+            return;
+        }
         self.font_family = name.to_string();
         self.base.request_redraw();
     }
@@ -68,7 +71,11 @@ impl FontPreview {
 
     /// Sets the font size for the main preview text.
     pub fn set_font_size(&mut self, size: f32) {
-        self.font_size = size.max(4.0);
+        let size = size.max(4.0);
+        if self.font_size == size {
+            return;
+        }
+        self.font_size = size;
         self.base.request_redraw();
     }
 
@@ -79,6 +86,9 @@ impl FontPreview {
 
     /// Sets the preview text displayed at the top.
     pub fn set_preview_text(&mut self, text: &str) {
+        if self.preview_text == text {
+            return;
+        }
         self.preview_text = text.to_string();
         self.base.request_redraw();
     }

@@ -276,7 +276,11 @@ impl MessageBox {
     }
     /// Replaces the title and requests a redraw.
     pub fn set_title(&mut self, title: impl Into<String>) {
-        self.title = title.into();
+        let title = title.into();
+        if self.title == title {
+            return;
+        }
+        self.title = title;
         self.base.request_redraw();
     }
     /// Replaces the body text and requests a redraw.
@@ -292,6 +296,9 @@ impl MessageBox {
     }
     /// Replaces the icon and requests a redraw.
     pub fn set_icon(&mut self, icon: MessageBoxIcon) {
+        if self.icon == icon {
+            return;
+        }
         self.icon = icon;
         self.base.request_redraw();
     }
@@ -330,6 +337,9 @@ impl MessageBox {
 
     /// Marks the box modal or not and requests a redraw.
     pub fn set_modal(&mut self, modal: bool) {
+        if self.modal == modal {
+            return;
+        }
         self.modal = modal;
         self.base.request_redraw();
     }

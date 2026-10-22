@@ -169,7 +169,11 @@ impl Meter {
 
     /// Sets the number of tick marks drawn along the arc.
     pub fn set_tick_count(&mut self, count: u32) {
-        self.tick_count = count.max(2);
+        let count = count.max(2);
+        if self.tick_count == count {
+            return;
+        }
+        self.tick_count = count;
         self.base.request_redraw();
     }
 
@@ -214,6 +218,9 @@ impl Meter {
 
     /// Sets whether the numeric value is drawn beside each tick.
     pub fn set_show_tick_labels(&mut self, show: bool) {
+        if self.show_tick_labels == show {
+            return;
+        }
         self.show_tick_labels = show;
         self.base.request_redraw();
     }
@@ -225,6 +232,9 @@ impl Meter {
 
     /// Sets the unit suffix shown after the value, e.g. `°C`.
     pub fn set_unit(&mut self, unit: &str) {
+        if self.unit == unit {
+            return;
+        }
         self.unit = unit.to_string();
         self.base.request_redraw();
     }

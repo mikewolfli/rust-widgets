@@ -350,13 +350,11 @@ pub use display_widgets::floating_label::FloatingLabel;
 pub use display_widgets::font_preview::FontPreview;
 #[cfg(feature = "image")]
 pub use display_widgets::icon::draw_icon_image;
+// One export list, plus the `Icon` type where it exists. The list used to be written twice (one
+// copy with `Icon`, one without), so adding an icon symbol meant editing two places and a missed
+// edit silently dropped the symbol from stripped builds (BIND-13).
 #[cfg(widgets_unstripped)]
-pub use display_widgets::icon::{
-    draw_icon_at, draw_icon_centered, draw_icon_named, icon_token_is_drawable, measure_icon,
-    paint_icon, validate_icon, Icon, IconData, IconMetrics, IconName, IconPaintError,
-    IconPaintOutcome, IconRef, IconSourceMetadata,
-};
-#[cfg(not(widgets_unstripped))]
+pub use display_widgets::icon::Icon;
 pub use display_widgets::icon::{
     draw_icon_at, draw_icon_centered, draw_icon_named, icon_token_is_drawable, measure_icon,
     paint_icon, validate_icon, IconData, IconMetrics, IconName, IconPaintError, IconPaintOutcome,

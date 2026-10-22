@@ -9,7 +9,7 @@ use crate::event::FocusReason;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
-use crate::undo::{TextSnapshotCommand, UndoStack};
+use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -254,11 +254,13 @@ impl TextArea {
     /// [`Self::record_edit`], so a paste that replaces a selection is one undo press rather than
     /// two.
     fn replace_selection(&mut self) -> bool {
-        let Some((start, end)) = self.selection_range() else {
+        let selection = self.selection_range();
+        let Some(start) =
+            crate::widget::text_utils::replace_selected_range(&mut self.text, selection)
+        else {
             self.selection_anchor = None;
             return false;
         };
-        self.text.replace_range(start..end, "");
         self.cursor_pos = start;
         self.selection_anchor = None;
         true
@@ -276,10 +278,11 @@ impl TextArea {
             return;
         }
         *self.history_target.borrow_mut() = self.text.clone();
-        self.undo_stack.push(Box::new(TextSnapshotCommand::new(
+        self.undo_stack.push(Box::new(ValueCommand::new(
             self.history_target.clone(),
             before,
             self.text.clone(),
+            "Edit text",
             "text_area_text",
         )));
         // Every edit funnels through here, so this is the one place the viewport has to follow the
@@ -314,10 +317,11 @@ impl TextArea {
         self.text = next;
         if !self.restoring_history {
             *self.history_target.borrow_mut() = self.text.clone();
-            self.undo_stack.push(Box::new(TextSnapshotCommand::new(
+            self.undo_stack.push(Box::new(ValueCommand::new(
                 self.history_target.clone(),
                 before,
                 self.text.clone(),
+                "Edit text",
                 "text_area_text",
             )));
         }
@@ -331,16 +335,9 @@ impl TextArea {
     /// If `max_length` is greater than zero and the text already meets or exceeds
     /// that limit, the character is not inserted.
     ///
-    /// SAFETY: Ensures `cursor_pos` is on a valid UTF-8 char boundary before
-    /// inserting. If not, snaps to the nearest char boundary via `floor_char_boundary`.
-    /// Inserts a single character at the current cursor position.
-    ///
-    /// If `max_length` is greater than zero and the text already meets or exceeds
-    /// that limit, the character is not inserted.
-    ///
-    /// SAFETY: Ensures `cursor_pos` is on a valid UTF-8 char boundary before
-    /// inserting. If not, snaps to the nearest char boundary via `floor_char_boundary`.
-    pub fn insert(&mut self, ch: char) {
+    /// The cursor is snapped to a UTF-8 char boundary before inserting (via
+    /// `floor_char_boundary`), so a misplaced caret cannot split a character.
+    pub fn insert_char(&mut self, ch: char) {
         if self.max_length > 0 && self.text.len() >= self.max_length {
             return;
         }
@@ -355,6 +352,17 @@ impl TextArea {
         let new_cursor_pos = self.cursor_pos + ch.len_utf8();
         self.set_text(next);
         self.cursor_pos = new_cursor_pos.min(self.text.len());
+    }
+
+    /// Inserts a single character.
+    ///
+    /// # Deprecated
+    ///
+    /// [`Self::insert_char`] is the name shared by the other text fields (WDGT-14). This alias
+    /// enters exactly the same path, so migrating is a rename with no behaviour change.
+    #[deprecated(note = "use `insert_char`, the name shared by the other text fields (WDGT-14)")]
+    pub fn insert(&mut self, ch: char) {
+        self.insert_char(ch);
     }
 
     /// Deletes the character immediately before the cursor, or the selection when there is one.
@@ -492,14 +500,11 @@ impl TextArea {
     /// it currently shows, so reading text near the top does not make the field jump.
     fn scroll_caret_into_view(&mut self) {
         let caret_line = self.line_index_of(self.cursor_pos);
-        let visible = self.visible_line_count();
-        if caret_line < self.first_visible_line {
-            self.first_visible_line = caret_line;
-        } else if caret_line >= self.first_visible_line + visible {
-            // Put the caret's line on the last visible row, so the row the user is typing on is the
-            // one they can see.
-            self.first_visible_line = caret_line + 1 - visible;
-        }
+        self.first_visible_line = crate::widget::text_utils::first_visible_row_for(
+            caret_line,
+            self.first_visible_line,
+            self.visible_line_count(),
+        );
     }
 
     /// The logical line that a viewport row paints, or `None` for this control's own layout.
@@ -972,7 +977,7 @@ impl WidgetProperties for TextArea {
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "insert" => {
-                self.insert(' ');
+                self.insert_char(' ');
                 Ok(())
             }
             "delete_char" => {
@@ -1048,7 +1053,7 @@ impl EventHandler for TextArea {
                     }
                     13 => {
                         // Enter — insert a newline, over the selection if there is one.
-                        self.insert('\n');
+                        self.insert_char('\n');
                         self.request_redraw();
                     }
                     37 => {
@@ -1117,7 +1122,7 @@ impl EventHandler for TextArea {
                             // 9/10/13 are Tab/LF/CR — control codes the host owns, not text.
                             if let Some(ch) = char::from_u32(*key).filter(|c| !c.is_control()) {
                                 if ch.is_ascii_graphic() || ch == ' ' {
-                                    self.insert(ch);
+                                    self.insert_char(ch);
                                     self.request_redraw();
                                 }
                             }
@@ -1478,7 +1483,7 @@ mod tests {
     fn textarea_insert_char() {
         let mut ta = TextArea::new("Helo".to_string(), Rect::new(0, 0, 300, 200));
         ta.set_cursor_pos(3);
-        ta.insert('l');
+        ta.insert_char('l');
         assert_eq!(ta.text(), "Hello");
         assert_eq!(ta.cursor_pos(), 4);
     }
@@ -1647,7 +1652,7 @@ mod tests {
         let mut ta = TextArea::new(String::new(), Rect::new(0, 0, 300, 200));
         ta.set_max_length(3);
         ta.set_text("ABC".to_string());
-        ta.insert('D');
+        ta.insert_char('D');
         // Should not insert because max_length reached
         assert_eq!(ta.text(), "ABC");
         assert_eq!(ta.cursor_pos(), 3);
@@ -1953,6 +1958,19 @@ mod tests {
         assert_eq!(ta.text(), "X world", "the selection was consumed, not kept beside the insert");
         assert_eq!(ta.cursor_pos(), 1, "and the caret sits after what replaced it");
         assert_eq!(ta.selection_anchor(), None, "the range it described is gone");
+    }
+
+    /// `insert_char` is the canonical spelling shared with the other text fields (WDGT-14).
+    #[test]
+    fn insert_char_is_the_canonical_single_character_insert() {
+        let mut ta = area("");
+        ta.insert_char('é');
+        assert_eq!(ta.text(), "é");
+        assert_eq!(
+            ta.cursor_pos(),
+            'é'.len_utf8(),
+            "the caret follows the character's byte length"
+        );
     }
 
     /// Backspace and Delete both remove the whole selection rather than one character of it.

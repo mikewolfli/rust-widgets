@@ -9,7 +9,7 @@ use crate::event::FocusReason;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::undo::{TextSnapshotCommand, UndoStack};
+use crate::undo::{UndoStack, ValueCommand};
 
 use crate::widget::capability::coercion::{
     expect_bool, expect_horizontal_alignment, expect_string, expect_usize,
@@ -243,10 +243,11 @@ impl LineEdit {
         if !self.restoring_history {
             let before = self.history_target.borrow().clone();
             *self.history_target.borrow_mut() = self.text.clone();
-            self.undo_stack.push(Box::new(TextSnapshotCommand::new(
+            self.undo_stack.push(Box::new(ValueCommand::new(
                 self.history_target.clone(),
                 before,
                 self.text.clone(),
+                "Edit text",
                 "line_edit_text",
             )));
         }
@@ -300,6 +301,11 @@ impl LineEdit {
     }
     /// Sets placeholder text.
     pub fn set_placeholder_text(&mut self, text: String) {
+        // A same-value write paints the same placeholder; queueing a frame for it is the
+        // wheel-spinning the other text setters already avoid (WDGT-15).
+        if self.placeholder_text == text {
+            return;
+        }
         self.placeholder_text = text;
         self.base.request_redraw();
     }
@@ -319,6 +325,9 @@ impl LineEdit {
     /// therefore goes through [`byte_index_of_char`], the same conversion `insert_text` and
     /// `set_text` use, so all three agree about what the limit means.
     pub fn set_max_length(&mut self, max_length: Option<usize>) {
+        if self.max_length == max_length {
+            return;
+        }
         self.max_length = max_length;
         // Truncate if needed
         if let Some(max) = max_length {
@@ -367,6 +376,9 @@ impl LineEdit {
     }
     /// Sets echo mode.
     pub fn set_echo_mode(&mut self, mode: EchoMode) {
+        if self.echo_mode == mode {
+            return;
+        }
         self.echo_mode = mode;
         self.base.request_redraw();
     }
@@ -380,13 +392,36 @@ impl LineEdit {
     /// arbitrary number must not be able to leave the caret inside a character — otherwise the next
     /// insert would silently round to the end of the value instead of landing where it was put.
     pub fn set_cursor_position(&mut self, position: usize) {
-        self.cursor_position = floor_char_boundary(&self.text, position.min(self.text.len()));
+        let position = floor_char_boundary(&self.text, position.min(self.text.len()));
+        if self.cursor_position == position && self.selection_start.is_none() {
+            return;
+        }
+        self.cursor_position = position;
         self.selection_start = None;
         self.base.request_redraw();
     }
     /// Returns selection start position.
     pub fn selection_start(&self) -> Option<usize> {
         self.selection_start
+    }
+
+    /// Returns the selected byte range, if anything is selected.
+    ///
+    /// This is the spelling `TextArea` and `TextEdit` already publish (WDGT-14), so selection
+    /// handling can move between the three fields without a per-widget adapter. The ends are
+    /// snapped to character boundaries and returned low-to-high, which is the same rule
+    /// [`Self::selected_text`] slices with — the two cannot disagree about what is selected.
+    /// Returns `None` when the anchor is absent or collapses onto the caret, so an empty selection
+    /// is not reported as a zero-length range.
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        let anchor = self.selection_start?;
+        let len = self.text.len();
+        let start = floor_char_boundary(&self.text, anchor.min(len));
+        let end = floor_char_boundary(&self.text, self.cursor_position.min(len));
+        if start == end {
+            return None;
+        }
+        Some(if start < end { (start, end) } else { (end, start) })
     }
     /// Returns selected text.
     ///
@@ -611,7 +646,7 @@ impl LineEdit {
     /// characters, six bytes — a limit of six therefore computed `6 - 6 == 0` bytes of room and
     /// refused a perfectly legal insert. Counting both sides in characters makes the field accept
     /// exactly the value its own counter says it is allowed to hold.
-    pub fn insert_text(&mut self, text: &str) {
+    pub fn insert_str(&mut self, text: &str) {
         if text.is_empty() {
             return;
         }
@@ -652,13 +687,25 @@ impl LineEdit {
         // recomputed; snap it back onto a boundary inside whatever the field now holds.
         self.clamp_caret();
     }
+
+    /// Inserts text at the caret.
+    ///
+    /// # Deprecated
+    ///
+    /// [`Self::insert_str`] is the name shared by `TextArea` and `TextEdit` (WDGT-14). This alias
+    /// enters exactly the same path, so migrating is a rename with no behaviour change.
+    #[deprecated(note = "use `insert_str`, the name shared by the other text fields (WDGT-14)")]
+    pub fn insert_text(&mut self, text: &str) {
+        self.insert_str(text);
+    }
+
     /// Starts or updates an input-method composition without changing the field's value.
     ///
     /// # The three methods an IME session needs, and why they are a set (BLUE24 §12 U-5)
     ///
     /// A platform input method reports a **preedit** (the uncommitted string it is building) and then
     /// either commits it or cancels. Mapping that onto a text field takes exactly these three
-    /// operations, and none of them is expressible as `insert_text`:
+    /// operations, and none of them is expressible as `insert_str`:
     ///
     /// * `set_composition` — the user is still typing. The field's **value must not change**: firing
     ///   `text_changed` on every keystroke of an unfinished word would run a form's validation
@@ -673,11 +720,11 @@ impl LineEdit {
     /// An empty string clears the composition without committing it, which is what an input method
     /// sends when it withdraws.
     pub fn set_composition(&mut self, preedit: &str) {
-        if preedit.is_empty() {
-            self.composition = None;
-        } else {
-            self.composition = Some(preedit.to_string());
+        let next = if preedit.is_empty() { None } else { Some(preedit.to_string()) };
+        if self.composition == next {
+            return;
         }
+        self.composition = next;
         self.base.request_redraw();
     }
 
@@ -702,7 +749,7 @@ impl LineEdit {
         };
         // Through `insert_text`, so `max_length`, the selection replacement and `text_changed`
         // behave exactly as they do for any other insertion — a committed composition is text.
-        self.insert_text(&preedit);
+        self.insert_str(&preedit);
         self.base.request_redraw();
         true
     }
@@ -1318,7 +1365,7 @@ impl LineEdit {
                 {
                     let pasted = crate::get_clipboard_text();
                     if !pasted.is_empty() {
-                        self.insert_text(&pasted);
+                        self.insert_str(&pasted);
                     }
                 }
                 #[cfg(alloc_frugal)]
@@ -1398,7 +1445,7 @@ impl LineEdit {
                     // text field, and all of them are control codes the host owns.
                     if let Some(ch) = char::from_u32(key).filter(|c| !c.is_control()) {
                         if ch.is_ascii_graphic() || ch == ' ' {
-                            self.insert_text(&ch.to_string());
+                            self.insert_str(&ch.to_string());
                         }
                     }
                 }
@@ -1480,7 +1527,7 @@ impl EventHandler for LineEdit {
             // `read_only`/`is_enabled` early returns above already gate this branch.
             Event::TextInput { text } => {
                 let before = self.text.clone();
-                self.insert_text(text);
+                self.insert_str(text);
                 self.announce_value_changed_if_text_moved(&before);
             }
             // A commit ends the composition as well as inserting its text. Clearing the preedit
@@ -1490,7 +1537,7 @@ impl EventHandler for LineEdit {
             Event::ImeCommit { text } => {
                 let before = self.text.clone();
                 self.composition = None;
-                self.insert_text(text);
+                self.insert_str(text);
                 self.announce_value_changed_if_text_moved(&before);
             }
             // The uncommitted composition belongs to the field while the user is building it: the
@@ -2445,7 +2492,7 @@ mod tests {
     #[test]
     fn lineedit_insert_text() {
         let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
-        le.insert_text("Hello");
+        le.insert_str("Hello");
         assert_eq!(le.text(), "Hello");
     }
 
@@ -2945,7 +2992,7 @@ mod tests {
         let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
         le.set_text("héllo");
         le.set_max_length(Some(6));
-        le.insert_text("z");
+        le.insert_str("z");
         assert_eq!(le.text(), "hélloz", "the counter said 5/6, so one more character fits");
         assert_eq!(le.text().chars().count(), 6);
 
@@ -2953,8 +3000,25 @@ mod tests {
         let mut clipped = LineEdit::new(Rect::new(0, 0, 200, 24));
         clipped.set_text("éé");
         clipped.set_max_length(Some(4));
-        clipped.insert_text("wxyz");
+        clipped.insert_str("wxyz");
         assert_eq!(clipped.text(), "ééwx");
+    }
+
+    /// `selection_range` and `insert_str` are the spellings the other text fields publish
+    /// (WDGT-14); this pins that they describe and edit the same selection.
+    #[test]
+    fn selection_range_and_insert_str_share_the_fields_selection() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.set_text("hello world");
+        assert_eq!(le.selection_range(), None, "no anchor means no range");
+
+        le.select_all();
+        assert_eq!(le.selection_range(), Some((0, 11)));
+        assert_eq!(le.selected_text(), "hello world", "the range and the text agree");
+
+        le.insert_str("bye");
+        assert_eq!(le.text(), "bye", "the canonical insert replaced the selection");
+        assert_eq!(le.selection_range(), None);
     }
 
     /// The widget layer's half of IME: a preedit updates the preview without touching the value,
@@ -2984,7 +3048,7 @@ mod tests {
         le.set_cursor_position(0);
         le.handle_event(&Event::key_press(39, 0)); // Right
         assert_eq!(le.cursor_position(), 2, "one character forward is two bytes for 'é'");
-        le.insert_text("x");
+        le.insert_str("x");
         assert_eq!(le.text(), "éxé", "the insert lands at the caret, not at the end");
 
         // Backspace removes the whole character before the caret.

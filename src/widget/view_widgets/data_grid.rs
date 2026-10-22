@@ -739,14 +739,18 @@ impl Draw for DataGrid {
         // is held across the draw (the mutex is not re-entrant). `data_grid` reaches the
         // theme through its `table` classification, which is `Input` — an interior that
         // moves with the appearance.
-        let style = self.base.style().clone();
+        // `WidgetStyle` carries a font-family `String` and a gradient `Vec`; cloning it to read
+        // three `Copy` colour fields allocated both on every frame (WDGT-08). Copy the fields
+        // under one short borrow instead.
+        let (background_color, text_color, border_color) = {
+            let style = self.base.style();
+            (style.background_color, style.text_color, style.border_color)
+        };
         let theme = crate::style::resolved_theme_style("data_grid");
-        let mut surface = style
-            .background_color
+        let mut surface = background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
             .unwrap_or(Color::WHITE);
-        let ink = style
-            .text_color
+        let ink = text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
             .unwrap_or(Color::BLACK);
         // `data_grid` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
@@ -761,8 +765,7 @@ impl Draw for DataGrid {
         if surface == window_fill {
             surface = window_fill.blend(&ink, 0.08);
         }
-        let border = style
-            .border_color
+        let border = border_color
             .or_else(|| theme.as_ref().and_then(|t| t.border_color))
             .filter(|resolved| *resolved != surface)
             .unwrap_or_else(|| surface.blend(&ink, 0.20));
@@ -836,9 +839,9 @@ impl Draw for DataGrid {
                         // real centred box. Fitting as well keeps a long value inside its own
                         // column instead of bleeding right.
                         context.draw_text_fitted(
-                            context.text_line(cell_rect, effective_font(&style)),
+                            context.text_line(cell_rect, effective_font(self.style())),
                             text,
-                            effective_font(&style),
+                            effective_font(self.style()),
                             ink,
                             HorizontalAlignment::Left,
                         );

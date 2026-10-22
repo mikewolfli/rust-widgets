@@ -306,7 +306,13 @@ impl PieMenu {
         }
     }
 
+    /// Returns the selected index, or `None` when the menu has no items.
+    pub fn selected_index(&self) -> Option<usize> {
+        self.items.get(self.current_index).map(|_| self.current_index)
+    }
+
     /// Returns the current (last selected) index.
+    #[deprecated(note = "use `selected_index` (Option) — WDGT-13")]
     pub fn current_index(&self) -> usize {
         self.current_index
     }
@@ -483,8 +489,12 @@ impl PieMenu {
     /// deliberately stores the rectangle **without** requesting a redraw (see its own docs),
     /// so the caller here owes one.
     pub fn set_radius(&mut self, radius: f32) {
-        self.radius =
+        let radius =
             if radius.is_finite() { radius.max(Self::MIN_RADIUS) } else { Self::MIN_RADIUS };
+        if self.radius == radius {
+            return;
+        }
+        self.radius = radius;
         self.inner_radius = self.inner_radius.min(self.radius * 0.9);
         self.update_geometry();
         self.base.request_redraw();
@@ -521,7 +531,11 @@ impl PieMenu {
         if !inner_radius.is_finite() {
             return;
         }
-        self.inner_radius = inner_radius.min(self.radius * 0.95).max(2.0);
+        let inner_radius = inner_radius.min(self.radius * 0.95).max(2.0);
+        if self.inner_radius == inner_radius {
+            return;
+        }
+        self.inner_radius = inner_radius;
         self.update_geometry();
         self.base.request_redraw();
     }
@@ -538,6 +552,9 @@ impl PieMenu {
     ///
     /// Repaints, for the same reason [`Self::set_radius`] does.
     pub fn set_center(&mut self, center: Point) {
+        if self.center == center {
+            return;
+        }
         self.center = center;
         self.update_geometry();
         self.base.request_redraw();
@@ -879,7 +896,7 @@ impl WidgetProperties for PieMenu {
             "item_count" => Ok(CapabilityValue::UInt(self.item_count() as u64)),
             "radius" => Ok(CapabilityValue::Float(self.radius() as f64)),
             "inner_radius" => Ok(CapabilityValue::Float(self.inner_radius() as f64)),
-            "current_index" => Ok(CapabilityValue::UInt(self.current_index() as u64)),
+            "current_index" => Ok(CapabilityValue::UInt(self.selected_index().unwrap_or(0) as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -1203,7 +1220,7 @@ mod tests {
         assert_eq!(menu.radius(), radius);
         assert!(menu.inner_radius() < radius);
         assert_eq!(menu.inner_radius(), radius * 0.35);
-        assert_eq!(menu.current_index(), 0);
+        assert_eq!(menu.selected_index().unwrap_or(0), 0);
         assert_eq!(menu.hovered_index(), None);
         // At the **resting** end: a freshly built menu has not been opened yet, so it starts
         // closed and unfurls. The previous expectation (`1.0`) was the shape BLUE24 §2.4 gate B
@@ -1484,17 +1501,17 @@ mod tests {
         menu.add_item("Blue");
 
         // Default is 0
-        assert_eq!(menu.current_index(), 0);
+        assert_eq!(menu.selected_index().unwrap_or(0), 0);
 
         menu.set_current_index(1);
-        assert_eq!(menu.current_index(), 1);
+        assert_eq!(menu.selected_index().unwrap_or(0), 1);
 
         menu.set_current_index(2);
-        assert_eq!(menu.current_index(), 2);
+        assert_eq!(menu.selected_index().unwrap_or(0), 2);
 
         // Out of bounds => no-op
         menu.set_current_index(99);
-        assert_eq!(menu.current_index(), 2);
+        assert_eq!(menu.selected_index().unwrap_or(0), 2);
     }
 
     /// 6. Item count

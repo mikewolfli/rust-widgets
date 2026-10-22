@@ -368,6 +368,9 @@ impl MdiArea {
     }
     /// Sets view mode.
     pub fn set_view_mode(&mut self, mode: ViewMode) {
+        if self.view_mode == mode {
+            return;
+        }
         self.view_mode = mode;
         self.base.request_redraw();
     }
@@ -487,6 +490,9 @@ impl MdiArea {
     }
     /// Sets activation order.
     pub fn set_activation_order(&mut self, order: ActivationOrder) {
+        if self.activation_order == order {
+            return;
+        }
         self.activation_order = order;
         self.base.request_redraw();
     }

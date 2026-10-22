@@ -1177,7 +1177,7 @@ pub struct WindowsPlatform {
     /// platform-independent state machine.
     pub ime_bridge: crate::platform::ime_windows::WindowsImeBridge,
     /// Platform rich clipboard backend.
-    pub clipboard: crate::platform::clipboard_stubs::windows::WindowsClipboard,
+    pub clipboard: crate::platform::clipboard_native::windows::WindowsClipboard,
     /// Platform accessibility bridge for UIAutomation notifications.
     #[cfg(target_os = "windows")]
     pub a11y_bridge: crate::platform::accessibility::windows::WindowsAccessibilityBridge,
@@ -1227,6 +1227,40 @@ impl Win32MenuState {
             next_command_id: AtomicU64::new(1000),
         }
     }
+
+    /// Drops every native record that names `widget_id` (PLAT-08).
+    ///
+    /// Windows keeps a different table set from the Android/Mobile/Wayland menu model: the
+    /// native-handle map and the command-id map are Win32-specific. Keeping the three lock/error
+    /// blocks here makes `destroy_widget` one call and gives a new side table a single place to
+    /// be added.
+    pub(crate) fn purge(&self, widget_id: u64) {
+        match self.handles.lock() {
+            Ok(mut handles) => {
+                handles.remove(&widget_id);
+            }
+            Err(_) => log::error!(
+                "[rust_widgets][windows] destroy_widget: handles mutex poisoned; the entry \
+                 for widget {widget_id} was not released"
+            ),
+        }
+        match self.control_command_to_widget.lock() {
+            Ok(mut commands) => commands.retain(|_, owner| *owner != widget_id),
+            Err(_) => log::error!(
+                "[rust_widgets][windows] destroy_widget: command map poisoned; command ids \
+                 for widget {widget_id} were not released"
+            ),
+        }
+        // A trigger already queued for a widget that is going away would otherwise be drained
+        // and delivered to whatever id is recycled next.
+        match self.pending_widget_events.lock() {
+            Ok(mut events) => events.retain(|event| event.widget_id != widget_id),
+            Err(_) => log::error!(
+                "[rust_widgets][windows] destroy_widget: trigger queue poisoned; queued \
+                 events for widget {widget_id} were not released"
+            ),
+        }
+    }
 }
 #[cfg(target_os = "windows")]
 // Extension trait for native Win32 Slider (Trackbar) integration
@@ -1240,7 +1274,7 @@ impl WindowsPlatform {
             #[cfg(target_os = "windows")]
             menu_state: Win32MenuState::new(),
             ime_bridge: crate::platform::ime_windows::WindowsImeBridge::new(),
-            clipboard: crate::platform::clipboard_stubs::windows::WindowsClipboard,
+            clipboard: crate::platform::clipboard_native::windows::WindowsClipboard,
             #[cfg(target_os = "windows")]
             a11y_bridge: crate::platform::accessibility::windows::WindowsAccessibilityBridge::new(),
             #[cfg(not(target_os = "windows"))]

@@ -136,6 +136,9 @@ impl FreeformShapeWidget {
     /// outline, and a very large width draws a band much wider than the shape's
     /// edges rather than being scaled down to fit.
     pub fn set_stroke_width(&mut self, width: u32) {
+        if self.stroke_width == width {
+            return;
+        }
         self.stroke_width = width;
         self.base.request_redraw();
     }

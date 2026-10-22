@@ -1295,8 +1295,6 @@ impl Platform for WindowsPlatform {
         #[cfg(target_os = "windows")]
         unsafe {
             use std::ptr::null_mut;
-            use std::thread;
-            use std::time::Duration;
             use winapi::um::winuser::{
                 DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_QUIT,
             };
@@ -1325,9 +1323,12 @@ impl Platform for WindowsPlatform {
                 //
                 // Dispatching here is main-thread work: the window procedure ran on
                 // this same thread, which is what the widgets require.
-                crate::drive_frame(FRAME_INTERVAL_MS as u32);
+                let outcome = crate::drive_frame(FRAME_INTERVAL_MS as u32);
                 if self.runtime_running.load(Ordering::SeqCst) {
-                    thread::sleep(Duration::from_millis(FRAME_INTERVAL_MS));
+                    // Block in the native message queue. An input message wakes this
+                    // immediately (so the loop keeps zero input latency), while a still loop
+                    // waits the longer idle interval instead of waking every 16 ms.
+                    crate::platform::frame_wait::pause_between_frames(outcome.needs_another_frame);
                 }
             }
             self.runtime_running.store(false, Ordering::SeqCst);
@@ -1369,32 +1370,7 @@ impl Platform for WindowsPlatform {
     fn destroy_widget(&self, widget_id: ObjectId) -> bool {
         #[cfg(target_os = "windows")]
         {
-            match self.menu_state.handles.lock() {
-                Ok(mut handles) => {
-                    handles.remove(&widget_id);
-                }
-                Err(_) => log::error!(
-                    "[rust_widgets][windows] destroy_widget: handles mutex poisoned; the entry \
-                     for widget {widget_id} was not released"
-                ),
-            }
-            match self.menu_state.control_command_to_widget.lock() {
-                Ok(mut commands) => commands.retain(|_, owner| *owner != widget_id),
-                Err(_) => log::error!(
-                    "[rust_widgets][windows] destroy_widget: command map poisoned; command ids \
-                     for widget {widget_id} were not released"
-                ),
-            }
-            // A trigger already queued for a widget that is going away would otherwise be
-            // drained and delivered to whatever id is recycled next. `macos_objc2` and
-            // `wayland` both retain the same way; this backend did not.
-            match self.menu_state.pending_widget_events.lock() {
-                Ok(mut events) => events.retain(|event| event.widget_id != widget_id),
-                Err(_) => log::error!(
-                    "[rust_widgets][windows] destroy_widget: trigger queue poisoned; queued \
-                     events for widget {widget_id} were not released"
-                ),
-            }
+            self.menu_state.purge(widget_id);
             self.a11y_bridge.unregister_handle(widget_id);
         }
 

@@ -70,6 +70,9 @@ impl EmptyState {
     ///
     /// This is typically an emoji or a short symbol string (1–2 characters).
     pub fn set_icon(&mut self, icon: &str) {
+        if self.icon == icon {
+            return;
+        }
         self.icon = icon.to_string();
         self.base.request_redraw();
     }
@@ -81,6 +84,9 @@ impl EmptyState {
 
     /// Sets the title text displayed below the icon.
     pub fn set_title(&mut self, title: &str) {
+        if self.title == title {
+            return;
+        }
         self.title = title.to_string();
         self.base.request_redraw();
     }
@@ -92,6 +98,9 @@ impl EmptyState {
 
     /// Sets the descriptive message displayed below the title.
     pub fn set_message(&mut self, message: &str) {
+        if self.message == message {
+            return;
+        }
         self.message = message.to_string();
         self.base.request_redraw();
     }
@@ -107,6 +116,9 @@ impl EmptyState {
     /// bottom of the empty state. Clicking the button emits `action_pressed`.
     /// When set to an empty string, the action button is hidden.
     pub fn set_action_text(&mut self, action_text: &str) {
+        if self.action_text == action_text {
+            return;
+        }
         self.action_text = action_text.to_string();
         self.base.request_redraw();
     }

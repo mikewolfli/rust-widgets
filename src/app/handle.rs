@@ -3493,7 +3493,7 @@ impl TabWidgetHandle {
     pub fn current_index(&self) -> Option<usize> {
         crate::widget::runtime::with_widget(self.raw_id(), |widget| {
             crate::widget::capability::coercion::widget_as::<crate::widget::TabWidget>(widget)
-                .map(|tabs| tabs.current_index())
+                .and_then(|tabs| tabs.selected_index())
         })
         .flatten()
     }

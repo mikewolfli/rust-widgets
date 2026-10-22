@@ -76,7 +76,11 @@ impl Toast {
 
     /// Sets the message.
     pub fn set_message(&mut self, message: impl Into<String>) {
-        self.message = message.into();
+        let message = message.into();
+        if self.message == message {
+            return;
+        }
+        self.message = message;
         self.base.request_redraw();
     }
 
@@ -87,6 +91,9 @@ impl Toast {
 
     /// Sets the severity level.
     pub fn set_level(&mut self, level: ToastLevel) {
+        if self.level == level {
+            return;
+        }
         self.level = level;
         self.base.request_redraw();
     }
@@ -109,6 +116,9 @@ impl Toast {
 
     /// Shows or hides the close affordance.
     pub fn set_dismissible(&mut self, dismissible: bool) {
+        if self.dismissible == dismissible {
+            return;
+        }
         self.dismissible = dismissible;
         self.base.request_redraw();
     }

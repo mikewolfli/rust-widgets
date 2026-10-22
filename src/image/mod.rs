@@ -32,7 +32,9 @@ pub use cache::{
     DEFAULT_BUDGET_BYTES,
 };
 pub use color::*;
-pub use decoder::{decode, decode_animation, decode_to_rgba8, detect_format};
+pub use decoder::{
+    decode, decode_animation, decode_async, decode_to_rgba8, detect_format, ImageDecodeJob,
+};
 pub use encoder::*;
 pub use exif::*;
 pub use format::{ColorSpace, DecodedAnimation, DecodedImage, ExifData, ImageData, ImageFormat};

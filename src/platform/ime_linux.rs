@@ -92,67 +92,52 @@ impl IbusConnection {
         Some(IbusConnection { connection: conn, input_context_path: context_path })
     }
 
-    /// Invoke a void method on this connection's input context with no arguments.
-    fn call_input_context_no_args(&self, method: &str) -> bool {
+    /// Send a method call straight over the session connection.
+    ///
+    /// This deliberately does **not** build a `zbus::Proxy` per call: a proxy performs
+    /// introspection/property bookkeeping that an input-context call does not need, and it used
+    /// to be rebuilt on every keystroke. The connection already knows the destination, path and
+    /// interface, so `Connection::call_method` is the direct route.
+    fn call_input_context<B>(&self, method: &str, body: &B) -> Option<zbus::Message>
+    where
+        B: serde::Serialize + zbus::zvariant::DynamicType,
+    {
         let conn = self.connection.clone();
         let path = self.input_context_path.clone();
         let method = method.to_string();
         pollster::block_on(async move {
-            let proxy =
-                zbus::Proxy::new(&conn, "org.freedesktop.IBus", path.as_str(), IBUS_IC_INTERFACE)
-                    .await
-                    .ok()?;
-            match proxy.call_method(method.as_str(), &()).await {
-                Ok(_) => Some(()),
+            match conn
+                .call_method(
+                    Some("org.freedesktop.IBus"),
+                    path.as_str(),
+                    Some(IBUS_IC_INTERFACE),
+                    method.as_str(),
+                    body,
+                )
+                .await
+            {
+                Ok(reply) => Some(reply),
                 Err(e) => {
                     log::warn!("[Linux IME] IBus {method} call failed: {e}");
                     None
                 }
             }
         })
-        .is_some()
+    }
+
+    /// Invoke a void method on this connection's input context with no arguments.
+    fn call_input_context_no_args(&self, method: &str) -> bool {
+        self.call_input_context(method, &()).is_some()
     }
 
     /// Invoke a void method on this connection's input context with one `u` argument.
     fn call_input_context_u(&self, method: &str, arg: u32) -> bool {
-        let conn = self.connection.clone();
-        let path = self.input_context_path.clone();
-        let method = method.to_string();
-        pollster::block_on(async move {
-            let proxy =
-                zbus::Proxy::new(&conn, "org.freedesktop.IBus", path.as_str(), IBUS_IC_INTERFACE)
-                    .await
-                    .ok()?;
-            match proxy.call_method(method.as_str(), &(arg,)).await {
-                Ok(_) => Some(()),
-                Err(e) => {
-                    log::warn!("[Linux IME] IBus {method} call failed: {e}");
-                    None
-                }
-            }
-        })
-        .is_some()
+        self.call_input_context(method, &(arg,)).is_some()
     }
 
     /// Invoke a void method on this connection's input context with four `i` args.
     fn call_input_context_iiii(&self, method: &str, a: i32, b: i32, c: i32, d: i32) -> bool {
-        let conn = self.connection.clone();
-        let path = self.input_context_path.clone();
-        let method = method.to_string();
-        pollster::block_on(async move {
-            let proxy =
-                zbus::Proxy::new(&conn, "org.freedesktop.IBus", path.as_str(), IBUS_IC_INTERFACE)
-                    .await
-                    .ok()?;
-            match proxy.call_method(method.as_str(), &(a, b, c, d)).await {
-                Ok(_) => Some(()),
-                Err(e) => {
-                    log::warn!("[Linux IME] IBus {method} call failed: {e}");
-                    None
-                }
-            }
-        })
-        .is_some()
+        self.call_input_context(method, &(a, b, c, d)).is_some()
     }
 
     /// Set input capabilities advertised to the engine.
@@ -194,21 +179,10 @@ impl IbusConnection {
     /// when it declined and the key should be handled locally, and `None` when
     /// the call itself failed (engine/connection gone).
     fn process_key_event(&self, keyval: u32, keycode: u32, state: u32) -> Option<bool> {
-        let conn = self.connection.clone();
-        let path = self.input_context_path.clone();
-        pollster::block_on(async move {
-            let proxy =
-                zbus::Proxy::new(&conn, "org.freedesktop.IBus", path.as_str(), IBUS_IC_INTERFACE)
-                    .await
-                    .ok()?;
-            match proxy.call_method("ProcessKeyEvent", &(keyval, keycode, state)).await {
-                Ok(reply) => reply.body().deserialize::<bool>().ok(),
-                Err(e) => {
-                    log::warn!("[Linux IME] IBus ProcessKeyEvent call failed: {e}");
-                    None
-                }
-            }
-        })
+        self.call_input_context("ProcessKeyEvent", &(keyval, keycode, state))?
+            .body()
+            .deserialize::<bool>()
+            .ok()
     }
 }
 

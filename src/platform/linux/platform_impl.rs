@@ -39,8 +39,6 @@ use crate::platform::PlatformCapabilities;
 #[cfg(all(unix_desktop, feature = "gtk-native"))]
 use crate::platform::{Display, DisplayId};
 use crate::platform::{WidgetTriggerEvent, WidgetTriggerKind};
-#[cfg(not(all(unix_desktop, feature = "gtk-native")))]
-use core::time::Duration;
 #[cfg(all(unix_desktop, feature = "gtk-native"))]
 use gtk::prelude::*;
 // `glib` is a `gtk` re-export rather than a declared dependency of this crate, so it is
@@ -49,8 +47,6 @@ use gtk::prelude::*;
 // module compiles then too.
 #[cfg(all(unix_desktop, feature = "gtk-native"))]
 use gtk::glib;
-#[cfg(not(all(unix_desktop, feature = "gtk-native")))]
-use std::thread;
 
 /// The frame interval this backend's event loop runs at, in milliseconds.
 ///
@@ -682,8 +678,10 @@ impl Platform for LinuxPlatform {
             // polls. What matters for correctness is that the *library* is asked per frame
             // and that a still frame costs nothing but the sweep.
             while self.runtime.running.load(Ordering::SeqCst) {
-                crate::drive_frame(FRAME_INTERVAL_MS as u32);
-                thread::sleep(Duration::from_millis(FRAME_INTERVAL_MS));
+                let outcome = crate::drive_frame(FRAME_INTERVAL_MS as u32);
+                // A still loop blocks for the next wake instead of polling every frame. A posted
+                // event, a stop request, or scheduled cross-thread work wakes it immediately.
+                crate::platform::frame_wait::pause_between_frames(outcome.needs_another_frame);
             }
         }
     }

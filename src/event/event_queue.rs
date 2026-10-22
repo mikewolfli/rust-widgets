@@ -45,14 +45,18 @@ impl EventSender {
         priority: EventPriority,
     ) -> Result<(), String> {
         let sequence = self.next_sequence.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        self.inner.send(EventEnvelope { target: object_id, event, priority, sequence }).map_err(
-            |_| {
+        let result = self
+            .inner
+            .send(EventEnvelope { target: object_id, event, priority, sequence })
+            .map_err(|_| {
                 format!(
                     "event for object {object_id} could not be queued: the receiving end was \
                      dropped, so the queue is closed"
                 )
-            },
-        )
+            });
+        // A backend loop may be blocked between frames; a new event is a reason to run one.
+        crate::platform::frame_wait::wake();
+        result
     }
     /// Post idle-priority event.
     pub fn post_idle(&self, object_id: ObjectId, event: Event) -> Result<(), String> {

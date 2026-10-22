@@ -169,8 +169,12 @@ impl GanttWidget {
 
     /// Sets viewport range.
     pub fn set_viewport(&mut self, start: i64, end: i64) {
+        let end = end.max(start + 1);
+        if self.viewport_start == start && self.viewport_end == end {
+            return;
+        }
         self.viewport_start = start;
-        self.viewport_end = end.max(start + 1);
+        self.viewport_end = end;
         self.base.request_redraw();
     }
 
@@ -215,6 +219,9 @@ impl GanttWidget {
     /// is what makes it readable against a busy schedule; before this it did not exist and the only
     /// way a reader could locate "now" was to compare today's date against the axis by eye.
     pub fn set_today(&mut self, position: Option<i64>) {
+        if self.today == position {
+            return;
+        }
         self.today = position;
         self.base.request_redraw();
     }

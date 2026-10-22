@@ -28,7 +28,7 @@ use std::borrow::Cow;
 use serde_json::Value;
 
 use crate::app::{ButtonHandle, WidgetHandle};
-use crate::core::{Alignment, Color, ObjectId, Orientation, Rect};
+use crate::core::{Color, ObjectId, Rect};
 use crate::json::properties::ApplyOutcome;
 use crate::json::{
     add_spacer_to_layout, add_widget_to_layout, apply_layout, create_layout_from_kind,
@@ -822,8 +822,24 @@ impl JsonLoader {
 
     /// Create a widget box from a type name and property object.
     ///
-    /// Widget-specific properties (text for Button/Label, value/items for
-    /// input widgets, min/max for sliders, etc.) are applied before boxing.
+    /// # One property route (BIND-05)
+    ///
+    /// An arm here supplies **only** what the constructor needs: the document's `text`/`title`,
+    /// an `items` array, and the handful of keys listed by [`is_loader_owned_key`] as
+    /// construction-time scalars whose spelling differs from the control's property name
+    /// (`tristate`, `password`, `word_wrap`, `tab_shape`, `h_policy`, `v_policy`, `alpha`). Every
+    /// other key is applied once, by the name-driven pass in
+    /// [`apply_properties_with_icon_resolver`].
+    ///
+    /// # Why the arms used to repeat the setters, and why they no longer do
+    ///
+    /// The table predates the property contract: each arm applied its own scalars, and the
+    /// name-driven pass then applied the same keys a second time. That was the "dual route" this
+    /// issue filed — two implementations of one property, which agree only until one is edited,
+    /// and a ~570-line table in which a new control could silently land on the factory fallback
+    /// with different constructor arguments. The arms now carry construction only, so the fallback
+    /// and the table produce the same state through the same pass; the tests below pin both halves
+    /// of that (an arm may read no published property, and every factory name is constructible).
     fn create_widget(
         widget_type: &str,
         obj: &serde_json::Map<String, Value>,
@@ -840,193 +856,67 @@ impl JsonLoader {
             }
             "label" => {
                 let text = obj.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                let mut label = Label::new(text.to_string(), geometry);
-                // alignment: "left"|"center"|"right"|"top"|"bottom"
-                if let Some(align) = obj.get("alignment").and_then(|v| v.as_str()) {
-                    label.set_alignment(match align {
-                        "center" => Alignment::Center,
-                        "right" => Alignment::Right,
-                        "top" => Alignment::Top,
-                        "bottom" => Alignment::Bottom,
-                        _ => Alignment::Left,
-                    });
-                }
-                Ok(Box::new(label))
+                Ok(Box::new(Label::new(text.to_string(), geometry)))
             }
             "checkbox" => {
                 let mut cb = CheckBox::new(geometry);
-                if let Some(checked) = obj.get("checked").and_then(|v| v.as_bool()) {
-                    cb.set_checked(checked);
-                }
-                // tristate: enables partial check state
+                // `tristate` is loader-owned: it is a construction-time switch with no published
+                // property, so this arm is the only place that can apply it.
                 if let Some(tri) = obj.get("tristate").and_then(|v| v.as_bool()) {
                     cb.set_tristate_enabled(tri);
                 }
                 Ok(Box::new(cb))
             }
-            "radiobutton" => {
-                let mut rb = RadioButton::new(geometry);
-                if let Some(checked) = obj.get("checked").and_then(|v| v.as_bool()) {
-                    rb.set_checked(checked);
-                }
-                // group_id: logical group name for mutual exclusion
-                if let Some(gid) = obj.get("group_id").and_then(|v| v.as_str()) {
-                    if !gid.is_empty() {
-                        rb.set_group_id(Some(gid.to_string()));
-                    }
-                }
-                Ok(Box::new(rb))
-            }
+            "radiobutton" => Ok(Box::new(RadioButton::new(geometry))),
             "lineedit" => {
                 let mut le = LineEdit::new(geometry);
-                if let Some(value) = obj.get("value").and_then(|v| v.as_str()) {
-                    le.set_text(value.to_string());
-                }
-                if let Some(placeholder) = obj.get("placeholder").and_then(|v| v.as_str()) {
-                    le.set_placeholder_text(placeholder.to_string());
-                }
-                if let Some(max_len) = json_usize_at(obj, "max_length") {
-                    le.set_max_length(Some(max_len));
-                }
-                if let Some(password) = obj.get("password").and_then(|v| v.as_bool()) {
-                    if password {
-                        le.set_echo_mode(crate::widget::EchoMode::Password);
-                    }
+                // `password` is loader-owned: the document states a boolean, and the arm maps it
+                // onto `EchoMode` (the control publishes no `password` property).
+                if obj.get("password").and_then(|v| v.as_bool()) == Some(true) {
+                    le.set_echo_mode(crate::widget::EchoMode::Password);
                 }
                 Ok(Box::new(le))
             }
             #[cfg(not(alloc_frugal))]
             "textedit" => {
                 let mut te = TextEdit::new(geometry);
-                if let Some(value) = obj.get("value").and_then(|v| v.as_str()) {
-                    te.set_text(value.to_string());
-                }
-                if let Some(placeholder) = obj.get("placeholder").and_then(|v| v.as_str()) {
-                    te.set_placeholder_text(placeholder.to_string());
-                }
-                if let Some(max_len) = json_usize_at(obj, "max_length") {
-                    te.set_max_length(Some(max_len));
-                }
-                if let Some(read_only) = obj.get("read_only").and_then(|v| v.as_bool()) {
-                    te.set_read_only(read_only);
-                }
-                if let Some(word_wrap) = obj.get("word_wrap").and_then(|v| v.as_bool()) {
-                    te.set_line_wrap(word_wrap);
+                // `word_wrap` is loader-owned (the published property is `line_wrap`).
+                if let Some(wrap) = obj.get("word_wrap").and_then(|v| v.as_bool()) {
+                    te.set_line_wrap(wrap);
                 }
                 Ok(Box::new(te))
             }
             "combobox" => {
                 let mut cb = ComboBox::new(geometry);
                 for_each_json_item(obj, |text| cb.add_item(text));
-                // current_index: pre-select an item by index (0-based)
-                if let Some(idx) = json_usize_at(obj, "current_index") {
-                    cb.set_current_index(Some(idx));
-                }
-                // editable: allow user to type custom text
-                if let Some(ed) = obj.get("editable").and_then(|v| v.as_bool()) {
-                    cb.set_editable(ed);
-                }
-                // max_visible_items: dropdown max rows
-                if let Some(max) = json_usize_at(obj, "max_visible_items") {
-                    cb.set_max_visible_items(max);
-                }
                 Ok(Box::new(cb))
             }
             "listbox" => {
                 let mut lb = ListBox::new(geometry);
                 for_each_json_item(obj, |text| lb.add_item(text));
-                if let Some(mode) = obj.get("selection_mode").and_then(|v| v.as_str()) {
-                    match mode {
-                        "none" => lb.set_selection_mode(crate::widget::SelectionMode::None),
-                        "single" => lb.set_selection_mode(crate::widget::SelectionMode::Single),
-                        "multi" => lb.set_selection_mode(crate::widget::SelectionMode::Multi),
-                        "extended" => lb.set_selection_mode(crate::widget::SelectionMode::Extended),
-                        // Unknown value; use widget default
-                        _ => {}
-                    }
-                }
                 Ok(Box::new(lb))
             }
             "slider" => {
                 let mut sl = Slider::new(geometry);
+                // `minimum` + `maximum` are one atomic range on this control; the scalar property
+                // pass writes them one at a time, so the pair is applied here. Every other key is
+                // the name-driven pass's.
                 apply_range_like(obj, &mut sl);
-                if let Some(orientation) = json_orientation(obj) {
-                    sl.set_orientation(orientation);
-                }
-                // single_step: keyboard arrow increment
-                if let Some(step) = json_i32_at(obj, "single_step") {
-                    sl.set_single_step(step);
-                }
-                // page_step: PgUp/PgDn increment
-                if let Some(step) = json_i32_at(obj, "page_step") {
-                    sl.set_page_step(step);
-                }
-                // tick_position: "none"|"above"|"below"|"both"
-                if let Some(pos) = obj.get("tick_position").and_then(|v| v.as_str()) {
-                    match pos {
-                        "above" => sl.set_tick_position(
-                            crate::widget::display_widgets::slider::TickPosition::TicksAbove,
-                        ),
-                        "below" => sl.set_tick_position(
-                            crate::widget::display_widgets::slider::TickPosition::TicksBelow,
-                        ),
-                        "both" => sl.set_tick_position(
-                            crate::widget::display_widgets::slider::TickPosition::TicksBothSides,
-                        ),
-                        // Unknown value; use widget default
-                        _ => {}
-                    }
-                }
-                // tick_interval: interval between tick marks
-                if let Some(iv) = json_i32_at(obj, "tick_interval") {
-                    sl.set_tick_interval(iv);
-                }
-                // tracking: emit value_changed while dragging (default: true)
-                if let Some(tr) = obj.get("tracking").and_then(|v| v.as_bool()) {
-                    sl.set_tracking(tr);
-                }
                 Ok(Box::new(sl))
             }
             "scrollbar" => {
                 let mut sb = ScrollBar::new(geometry);
+                // See `slider`: the minimum/maximum pair is one atomic range.
                 apply_range_like(obj, &mut sb);
-                if let Some(orientation) = json_orientation(obj) {
-                    sb.set_orientation(orientation);
-                }
-                // single_step: arrow button increment
-                if let Some(step) = json_i32_at(obj, "single_step") {
-                    sb.set_single_step(step);
-                }
-                // page_step: click-track increment
-                if let Some(step) = json_i32_at(obj, "page_step") {
-                    sb.set_page_step(step);
-                }
                 Ok(Box::new(sb))
             }
             "progressbar" => {
                 let mut pb = ProgressBar::new(geometry);
+                // See `slider`: the minimum/maximum pair is one atomic range.
                 apply_range_like(obj, &mut pb);
-                // text_visible: show percentage text overlay
-                if let Some(tv) = obj.get("text_visible").and_then(|v| v.as_bool()) {
-                    pb.set_text_visible(tv);
-                }
-                // orientation: "horizontal"|"vertical"
-                if let Some(orientation) = json_orientation(obj) {
-                    pb.set_orientation(orientation);
-                }
-                // inverted_appearance: fill from right/bottom
-                if let Some(inv) = obj.get("inverted_appearance").and_then(|v| v.as_bool()) {
-                    pb.set_inverted_appearance(inv);
-                }
                 Ok(Box::new(pb))
             }
-            "switch" | "toggle" => {
-                let mut sw = Switch::new(geometry);
-                if let Some(checked) = obj.get("checked").and_then(|v| v.as_bool()) {
-                    sw.set_checked(checked);
-                }
-                Ok(Box::new(sw))
-            }
+            "switch" | "toggle" => Ok(Box::new(Switch::new(geometry))),
             "groupbox" | "panel" => {
                 let mut gb = GroupBox::new(geometry);
                 if let Some(title) = obj.get("title").and_then(|v| v.as_str()) {
@@ -1034,49 +924,13 @@ impl JsonLoader {
                         gb.set_title(title.to_string());
                     }
                 }
-                // alignment: title text alignment
-                if let Some(align) = obj.get("alignment").and_then(|v| v.as_str()) {
-                    match align {
-                        "center" => gb.set_alignment(Alignment::Center),
-                        "right" => gb.set_alignment(Alignment::Right),
-                        _ => gb.set_alignment(Alignment::Left),
-                    }
-                }
-                // checkable: add a checkbox to the group box title
-                if let Some(chk) = obj.get("checkable").and_then(|v| v.as_bool()) {
-                    gb.set_checkable(chk);
-                }
-                // checked: initial checked state (only if checkable)
-                if let Some(chk) = obj.get("checked").and_then(|v| v.as_bool()) {
-                    if gb.is_checkable() || obj.get("checkable").is_none() {
-                        gb.set_checked(chk);
-                    }
-                }
                 Ok(Box::new(gb))
             }
             #[cfg(not(alloc_frugal))]
             "tabwidget" => {
                 let mut tw = TabWidget::new(geometry);
-                if let Some(index) = json_usize_at(obj, "current_index") {
-                    tw.set_current_index(index);
-                }
-                // tab_position: "north"|"south"|"west"|"east"
-                if let Some(pos) = obj.get("tab_position").and_then(|v| v.as_str()) {
-                    match pos {
-                        "south" => tw.set_tab_position(
-                            crate::widget::container_widgets::tabwidget::TabPosition::South,
-                        ),
-                        "west" => tw.set_tab_position(
-                            crate::widget::container_widgets::tabwidget::TabPosition::West,
-                        ),
-                        "east" => tw.set_tab_position(
-                            crate::widget::container_widgets::tabwidget::TabPosition::East,
-                        ),
-                        // Unknown value; use widget default
-                        _ => {}
-                    }
-                }
-                // tab_shape: "rounded"|"triangular"|"rectangular"
+                // `tab_shape` is loader-owned: it has no published property (the published
+                // `tab_position` is the other axis), so the arm is the only route.
                 if let Some(shape) = obj.get("tab_shape").and_then(|v| v.as_str()) {
                     match shape {
                         "triangular" => tw.set_tab_shape(
@@ -1089,79 +943,17 @@ impl JsonLoader {
                         _ => {}
                     }
                 }
-                // closable: show close buttons on tabs
-                if let Some(cl) = obj.get("closable").and_then(|v| v.as_bool()) {
-                    tw.set_closable(cl);
-                }
-                // movable: allow drag-reordering of tabs
-                if let Some(mv) = obj.get("movable").and_then(|v| v.as_bool()) {
-                    tw.set_movable(mv);
-                }
                 Ok(Box::new(tw))
             }
             #[cfg(not(alloc_frugal))]
-            "grid" => {
-                let mut grid = GridWidget::new(geometry);
-                if let Some(rows) = json_u32_at(obj, "rows") {
-                    grid.set_rows(rows);
-                }
-                if let Some(cols) = json_u32_at(obj, "columns") {
-                    grid.set_columns(cols);
-                }
-                if let Some(spacing) = json_u32_at(obj, "spacing") {
-                    grid.set_spacing(spacing);
-                }
-                if let Some(color_str) = obj.get("line_color").and_then(|v| v.as_str()) {
-                    if let Some(color) = Color::parse_hex(color_str) {
-                        // A `line_color` in the document is an explicit caller choice, so it is the
-                        // `Some(Some(..))` shape: "the caller picked this colour". An absent key
-                        // leaves the control at `Some(None)`, "follow the theme".
-                        grid.set_line_color(Some(Some(color)));
-                    }
-                }
-                Ok(Box::new(grid))
-            }
-            "spinbox" => {
-                let mut sb = SpinBox::new(geometry);
-                let (min, max) = read_json_range(obj);
-                if let Some(min) = min {
-                    sb.set_minimum(i32_from_i64(min));
-                }
-                if let Some(max) = max {
-                    sb.set_maximum(i32_from_i64(max));
-                }
-                if let Some(value) = obj.get("value").and_then(|v| v.as_i64()) {
-                    sb.set_value(i32_from_i64(value));
-                }
-                if let Some(step) = json_i32_at(obj, "single_step") {
-                    sb.set_single_step(step);
-                }
-                if let Some(prefix) = obj.get("prefix").and_then(|v| v.as_str()) {
-                    sb.set_prefix(prefix.to_string());
-                }
-                if let Some(suffix) = obj.get("suffix").and_then(|v| v.as_str()) {
-                    sb.set_suffix(suffix.to_string());
-                }
-                if let Some(wrap) = obj.get("wrapping").and_then(|v| v.as_bool()) {
-                    sb.set_wrapping(wrap);
-                }
-                Ok(Box::new(sb))
-            }
+            "grid" => Ok(Box::new(GridWidget::new(geometry))),
+            "spinbox" => Ok(Box::new(SpinBox::new(geometry))),
             #[cfg(not(alloc_frugal))]
             "listview" => Ok(Box::new(ListView::new(geometry))),
             "scrollarea" => {
                 let mut sa = ScrollArea::new(geometry);
-                if let Some(resizable) = obj.get("widget_resizable").and_then(|v| v.as_bool()) {
-                    sa.set_widget_resizable(resizable);
-                }
-                if let Some(align) = obj.get("alignment").and_then(|v| v.as_str()) {
-                    match align {
-                        "center" => sa.set_alignment(Alignment::Center),
-                        "right" => sa.set_alignment(Alignment::Right),
-                        _ => sa.set_alignment(Alignment::Left),
-                    }
-                }
-                // h_policy / v_policy: "always_on"|"always_off"|"as_needed"
+                // `h_policy` / `v_policy` are loader-owned: the document uses Qt's policy words
+                // and the control publishes the setter names instead.
                 if let Some(policy) = obj.get("h_policy").and_then(|v| v.as_str()) {
                     sa.set_horizontal_scroll_bar_policy(match policy {
                         "always_on" => {
@@ -1192,48 +984,13 @@ impl JsonLoader {
             }
             "frame" => {
                 use crate::widget::base_widgets::frame::Frame;
-                let mut frame = Frame::new(geometry);
-                if let Some(shape) = obj.get("frame_shape").and_then(|v| v.as_str()) {
-                    match shape {
-                        "no_frame" => frame.set_frame_shape(
-                            crate::widget::base_widgets::frame::FrameShape::NoFrame,
-                        ),
-                        "panel" => frame
-                            .set_frame_shape(crate::widget::base_widgets::frame::FrameShape::Panel),
-                        "styled_panel" => frame.set_frame_shape(
-                            crate::widget::base_widgets::frame::FrameShape::StyledPanel,
-                        ),
-                        "hline" => frame
-                            .set_frame_shape(crate::widget::base_widgets::frame::FrameShape::HLine),
-                        "vline" => frame
-                            .set_frame_shape(crate::widget::base_widgets::frame::FrameShape::VLine),
-                        "win_panel" => frame.set_frame_shape(
-                            crate::widget::base_widgets::frame::FrameShape::WinPanel,
-                        ),
-                        _ => frame
-                            .set_frame_shape(crate::widget::base_widgets::frame::FrameShape::Box),
-                    }
-                }
-                if let Some(shadow) = obj.get("frame_shadow").and_then(|v| v.as_str()) {
-                    match shadow {
-                        "raised" => frame.set_frame_shadow(
-                            crate::widget::base_widgets::frame::FrameShadow::Raised,
-                        ),
-                        "sunken" => frame.set_frame_shadow(
-                            crate::widget::base_widgets::frame::FrameShadow::Sunken,
-                        ),
-                        // Unknown value; use widget default
-                        _ => {}
-                    }
-                }
-                if let Some(lw) = json_f32_at(obj, "line_width") {
-                    frame.set_line_width(lw);
-                }
-                Ok(Box::new(frame))
+                Ok(Box::new(Frame::new(geometry)))
             }
             #[cfg(not(alloc_frugal))]
             "messagebox" => {
                 let mut mb = MessageBox::new(geometry);
+                // `title` and `text` are loader-owned construction arguments; the icon is a
+                // published property and is applied by the name-driven pass.
                 if let Some(title) = obj.get("title").and_then(|v| v.as_str()) {
                     if !title.is_empty() {
                         mb.set_title(title.to_string());
@@ -1244,50 +1001,15 @@ impl JsonLoader {
                         mb.set_text(text.to_string());
                     }
                 }
-                if let Some(icon) = obj.get("icon").and_then(|v| v.as_str()) {
-                    match icon {
-                        "information" => mb.set_icon(
-                            crate::widget::dialog::message_box::MessageBoxIcon::Information,
-                        ),
-                        "question" => mb
-                            .set_icon(crate::widget::dialog::message_box::MessageBoxIcon::Question),
-                        "warning" => {
-                            mb.set_icon(crate::widget::dialog::message_box::MessageBoxIcon::Warning)
-                        }
-                        "critical" => mb
-                            .set_icon(crate::widget::dialog::message_box::MessageBoxIcon::Critical),
-                        _ => {
-                            mb.set_icon(crate::widget::dialog::message_box::MessageBoxIcon::NoIcon)
-                        }
-                    }
-                }
                 Ok(Box::new(mb))
             }
             #[cfg(not(alloc_frugal))]
             "filedialog" => {
                 let mut fd = FileDialog::new(geometry);
-                if let Some(mode) = obj.get("mode").and_then(|v| v.as_str()) {
-                    match mode {
-                        "open_files" => fd.set_mode(
-                            crate::widget::dialog::file_dialog::FileDialogMode::OpenFiles,
-                        ),
-                        "save_file" => fd
-                            .set_mode(crate::widget::dialog::file_dialog::FileDialogMode::SaveFile),
-                        "select_directory" => fd.set_mode(
-                            crate::widget::dialog::file_dialog::FileDialogMode::SelectDirectory,
-                        ),
-                        _ => fd
-                            .set_mode(crate::widget::dialog::file_dialog::FileDialogMode::OpenFile),
-                    }
-                }
+                // `title` is loader-owned; `mode` and `directory` are published properties.
                 if let Some(title) = obj.get("title").and_then(|v| v.as_str()) {
                     if !title.is_empty() {
                         fd.set_title(title.to_string());
-                    }
-                }
-                if let Some(dir) = obj.get("directory").and_then(|v| v.as_str()) {
-                    if !dir.is_empty() {
-                        fd.set_directory(dir.to_string());
                     }
                 }
                 Ok(Box::new(fd))
@@ -1295,39 +1017,14 @@ impl JsonLoader {
             #[cfg(not(alloc_frugal))]
             "colordialog" => {
                 let mut cd = ColorDialog::new(geometry);
+                // `alpha` is loader-owned (the published property is `options_alpha`).
                 if let Some(alpha) = obj.get("alpha").and_then(|v| v.as_bool()) {
                     cd.set_options_alpha(alpha);
-                }
-                if let Some(color_str) = obj.get("value").and_then(|v| v.as_str()) {
-                    if let Some(color) = Color::parse_hex(color_str) {
-                        cd.set_current_color(color);
-                    }
                 }
                 Ok(Box::new(cd))
             }
             #[cfg(not(alloc_frugal))]
-            "fontdialog" => {
-                let mut fd = FontDialog::new(geometry);
-                if let Some(font_str) = obj.get("value").and_then(|v| v.as_str()) {
-                    if !font_str.is_empty() {
-                        match crate::core::Font::parse(font_str) {
-                            Some(font) => fd.set_current_font(font),
-                            // The string was supplied and could not be understood. Say
-                            // so and name it, rather than substituting a default as if
-                            // the request had been honoured — the caller's value was
-                            // previously read and then silently thrown away. This
-                            // mirrors `colordialog` above, which falls through on an
-                            // unparsable colour instead of pretending to apply it.
-                            None => log::warn!(
-                                "fontdialog: cannot parse font {font_str:?}; expected \
-                                 \"<family> <size>[ bold][ italic]\". Keeping the dialog's \
-                                 own current font."
-                            ),
-                        }
-                    }
-                }
-                Ok(Box::new(fd))
-            }
+            "fontdialog" => Ok(Box::new(FontDialog::new(geometry))),
             _ => {
                 // Not one of the widget types this arm table knows how to
                 // configure. Before giving up, ask the capability registry: it
@@ -1340,7 +1037,11 @@ impl JsonLoader {
                 // A build without the registry (a stripped profile) answers `None`
                 // and the error below is reported, which is the truth there.
                 let factory = crate::json::schema_factory();
-                if let Some(widget) = factory.create(widget_type, geometry, "") {
+                // The factory takes the same constructor argument the arm table reads, so a
+                // control registered with the factory but not named here starts from the same
+                // text rather than from `""` until the property pass catches up (BIND-05).
+                let text = obj.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                if let Some(widget) = factory.create(widget_type, geometry, text) {
                     return Ok(widget);
                 }
                 Err(format!(
@@ -1909,7 +1610,13 @@ fn apply_range_like<W: RangeLike>(obj: &serde_json::Map<String, Value>, widget: 
 /// control on the orientation it was constructed with, which is what `slider` and `scrollbar`
 /// already did for an unknown value. `progressbar` used to force `Horizontal` for an unknown
 /// string; that is the orientation it is constructed with, so the resulting state is unchanged.
-fn json_orientation(obj: &serde_json::Map<String, Value>) -> Option<Orientation> {
+///
+/// Test-only since BIND-05: the construction arms no longer apply `orientation` themselves — the
+/// name-driven property pass does — so the only callers left are the tests that pin the shared
+/// range contract.
+#[cfg(test)]
+fn json_orientation(obj: &serde_json::Map<String, Value>) -> Option<crate::core::Orientation> {
+    use crate::core::Orientation;
     match obj.get("orientation").and_then(|value| value.as_str())? {
         "horizontal" => Some(Orientation::Horizontal),
         "vertical" => Some(Orientation::Vertical),
@@ -1943,26 +1650,6 @@ fn json_u32_at(obj: &serde_json::Map<String, Value>, key: &str) -> Option<u32> {
 /// Reads a JSON `u64` field and narrows it to `usize`, clamping at the bounds.
 fn json_usize_at(obj: &serde_json::Map<String, Value>, key: &str) -> Option<usize> {
     obj.get(key).and_then(|v| v.as_u64()).map(|raw| usize::try_from(raw).unwrap_or(usize::MAX))
-}
-
-/// Reads a JSON integer field and narrows it to `i32`, clamping at the bounds.
-///
-/// `as i32` on an `i64` wraps: `2147483648` became `-2147483648`, so a large positive
-/// range bound arrived as a large negative one. Clamping preserves the sign.
-fn json_i32_at(obj: &serde_json::Map<String, Value>, key: &str) -> Option<i32> {
-    obj.get(key)
-        .and_then(|v| v.as_i64())
-        .map(|raw| i32::try_from(raw).unwrap_or(if raw > 0 { i32::MAX } else { i32::MIN }))
-}
-
-/// Reads a JSON number field and narrows it to `f32`.
-///
-/// A `u64` above `f32::MAX` converts to `inf`, so the result is checked for finiteness:
-/// a non-finite value is refused (`None`) rather than stored and later mapped to a
-/// meaningless pixel width.
-fn json_f32_at(obj: &serde_json::Map<String, Value>, key: &str) -> Option<f32> {
-    let raw = obj.get(key).and_then(|v| v.as_f64())? as f32;
-    raw.is_finite().then_some(raw)
 }
 
 /// Narrows an `i64` (typically a JSON range bound) to `i32`, clamping at the bounds.
@@ -2249,6 +1936,7 @@ pub fn load_layout_from_str(json_str: &str) -> Result<BoundJsonLayout, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::Orientation;
 
     /// `lowered` is the loader's one answer to "compare this declared name against a lowercase
     /// literal". The borrow is the point: a document that spells its controls the documented way
@@ -2808,10 +2496,21 @@ mod tests {
         }
 
         let mut unresolved: alloc::vec::Vec<&str> = alloc::vec::Vec::new();
+        // Both spellings an arm can use to read a key: `obj.get("k")` and the typed
+        // `json_*_at(obj, "k")` helpers. The original test only checked the first, so a helper
+        // read could still name a published property without the duplication being noticed.
+        let mut consumed: alloc::vec::Vec<&str> = alloc::vec::Vec::new();
         for (offset, _) in arms.match_indices("obj.get(\"") {
             let remainder = &arms[offset + "obj.get(\"".len()..];
             let Some(close) = remainder.find('"') else { continue };
-            let name = &remainder[..close];
+            consumed.push(&remainder[..close]);
+        }
+        for (offset, _) in arms.match_indices("_at(obj, \"") {
+            let remainder = &arms[offset + "_at(obj, \"".len()..];
+            let Some(close) = remainder.find('"') else { continue };
+            consumed.push(&remainder[..close]);
+        }
+        for name in &consumed {
             if !published.contains(name) && !is_loader_owned_key(name) {
                 unresolved.push(name);
             }
@@ -2824,6 +2523,61 @@ mod tests {
             "these keys are read by a `create_widget` arm but are neither published as \
              properties nor listed in `is_loader_owned_key`, so the name-driven pass \
              will log a false \"was ignored\" warning about them: {unresolved:?}"
+        );
+
+        // The other half of BIND-05: an arm may read a *published* key only when that key is
+        // also loader-owned (its spelling or type differs from the property). Any other
+        // published key read by an arm is a second implementation of a property, which is the
+        // drift this issue filed.
+        let mut duplicated: alloc::vec::Vec<&str> = consumed
+            .iter()
+            .copied()
+            .filter(|name| published.contains(name) && !is_loader_owned_key(name))
+            .collect();
+        duplicated.sort_unstable();
+        duplicated.dedup();
+        assert!(
+            duplicated.is_empty(),
+            "these published properties are applied by a `create_widget` arm as well as by the \
+             name-driven pass; keep only the construction-time keys here: {duplicated:?}"
+        );
+    }
+
+    /// Every control the factory can build must also be constructible through the loader.
+    ///
+    /// # Why this test exists (BIND-05)
+    ///
+    /// The loader had two construction routes: the arm table and the factory fallback. A control
+    /// registered with the factory but forgotten by the table silently took the fallback — which
+    /// used to pass no text to its constructor. The fallback now forwards the document's `text`,
+    /// and this test is the gate that the two routes at least agree on **which control was
+    /// built**: for every registered name the loader must answer `Ok`, and the widget's own
+    /// `kind()` must be the one the registry describes. A copy-paste error in an arm (the
+    /// `window` arm building a `Button`, say) fails here rather than at run time.
+    #[test]
+    fn every_factory_name_is_constructible_by_the_loader() {
+        let factory = crate::widget::WidgetFactory::new_with_defaults();
+        let empty = serde_json::Map::new();
+        let mut failures: alloc::vec::Vec<alloc::string::String> = alloc::vec::Vec::new();
+        for capability in factory.capabilities() {
+            let name = capability.canonical_name;
+            match JsonLoader::create_widget(name, &empty) {
+                Ok(widget) => {
+                    if widget.kind() != capability.kind {
+                        failures.push(alloc::format!(
+                            "{name}: built {:?}, registry says {:?}",
+                            widget.kind(),
+                            capability.kind
+                        ));
+                    }
+                }
+                Err(error) => failures.push(alloc::format!("{name}: {error}")),
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "every registered control must be constructible from JSON with its registry kind: \
+             {failures:?}"
         );
     }
 

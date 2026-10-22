@@ -197,6 +197,9 @@ impl PropertiesPanel {
     /// Sets the filter text. Only properties whose name contains the filter
     /// (case-insensitive) will be shown.
     pub fn set_filter(&mut self, text: &str) {
+        if self.filter_text == text {
+            return;
+        }
         self.filter_text = text.to_string();
         self.scroll_offset = 0;
         self.base.request_redraw();
@@ -236,7 +239,11 @@ impl PropertiesPanel {
 
     /// Sets the scroll offset.
     pub fn set_scroll_offset(&mut self, offset: i32) {
-        self.scroll_offset = offset.max(0);
+        let offset = offset.max(0);
+        if self.scroll_offset == offset {
+            return;
+        }
+        self.scroll_offset = offset;
         self.base.request_redraw();
     }
 

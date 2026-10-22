@@ -720,6 +720,9 @@ impl Icon {
     /// name does not fail: it draws the placeholder shape instead. Setting a
     /// name requests a redraw.
     pub fn set_icon(&mut self, name: &str) {
+        if self.icon_name == name && self.icon_source.is_none() {
+            return;
+        }
         self.icon_name = name.to_string();
         self.icon_source = None;
         self.base.request_redraw();
@@ -774,7 +777,11 @@ impl Icon {
     /// stroke or glyph height. Values are clamped to a minimum of `4.0` to keep
     /// the icon legible. Requests a redraw.
     pub fn set_size(&mut self, size: f32) {
-        self.size = size.max(4.0);
+        let size = size.max(4.0);
+        if self.size == size {
+            return;
+        }
+        self.size = size;
         self.base.request_redraw();
     }
 
@@ -792,6 +799,9 @@ impl Icon {
     /// The colour is used for every shape in the icon; there is no separate
     /// stroke and fill colour. Requests a redraw.
     pub fn set_color(&mut self, color: Color) {
+        if self.color == Some(color) {
+            return;
+        }
         self.color = Some(color);
         self.base.request_redraw();
     }

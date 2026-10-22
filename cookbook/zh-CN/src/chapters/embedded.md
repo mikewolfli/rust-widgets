@@ -26,13 +26,13 @@ cargo run --no-default-features --features mini     --example embedded_host
 
 | Profile | Feature | 你得到什么 | 代价 |
 |---|---|---|---|
-| `mini` | `--features mini` | 软件光栅、约 15 个核心控件、`heapless`/`bumpalo`/`spin` 分配器、完全不链接 OS 运行时。 | crate 变为 `no_std`；平台运行时不被链接。 |
+| `mini` | `--features mini` | 软件光栅、约 28 个核心控件、`heapless`/`bumpalo`/`spin` 分配器、完全不链接 OS 运行时。 | crate 变为 `no_std`；平台运行时不被链接。 |
 | `embedded` | `--features embedded` | 软件光栅、无 GPU、无触摸、控件集被裁剪。 | 无 GPU 后端、无触摸。 |
 
 ```toml
 # 你自己二进制的 Cargo.toml
 [dependencies]
-rust_widgets = { version = "2.8.13", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "2.8.14", default-features = false, features = ["embedded"] }
 ```
 
 适合设备的 release profile —— 优先体积而非速度，并用 `panic = "abort"`，因为没有 unwinder：

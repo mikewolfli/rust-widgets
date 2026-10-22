@@ -4,13 +4,16 @@
 //! Benchmarks for the capability/property hot path and the event queue's batch drain.
 //!
 //! The 2026-10-21 scan (`docs/issues/issue-20261021.md`, `BIND-19`) listed four P1 hot paths with
-//! no benchmark coverage. These are the two that can be measured without a window or a GPU: the
-//! per-call capability-factory rebuild (`T1`) and the event queue's per-turn drain (`CORE-04` /
-//! `CORE-08`). The property-read bench exercises the shared factory through the same accessor a
+//! no benchmark coverage. These are the ones that can be measured without a window or a GPU: the
+//! per-call capability-factory rebuild (`T1`), the event queue's per-turn drain (`CORE-04` /
+//! `CORE-08`), repeated property **writes** through a typed handle, and the theme sweep over a live
+//! widget set. The property-read bench exercises the shared factory through the same accessor a
 //! `WindowHandle` uses.
 
 #[cfg(not(target_arch = "wasm32"))]
 use criterion::{criterion_group, criterion_main, Criterion};
+#[cfg(not(target_arch = "wasm32"))]
+use rust_widgets::app::CheckBoxHandle;
 #[cfg(not(target_arch = "wasm32"))]
 use rust_widgets::core::Rect;
 #[cfg(not(target_arch = "wasm32"))]
@@ -117,15 +120,123 @@ fn bench_event_queue_batch_drain(c: &mut Criterion) {
     });
 }
 
+/// A repeated **write** through the typed handle (`BIND-19`): the path a host's state-sync loop
+/// takes when it pushes the same or a toggling value every frame.
+///
+/// The value alternates so the write is never the same-value short circuit `WDGT-15` added — this
+/// measures the real property-write path, which is what the benchmark is for.
+#[cfg(not(target_arch = "wasm32"))]
+fn bench_checkbox_set_checked(c: &mut Criterion) {
+    let widget = WidgetFactory::shared()
+        .create("checkbox", Rect::new(0, 0, 120, 24), "check")
+        .expect("checkbox is a registered control");
+    let id = rust_widgets::widget::runtime::register(widget).expect("this thread has a registry");
+    let handle = CheckBoxHandle::from_raw(id);
+    let mut checked = false;
+    c.bench_function("checkbox_set_checked_repeated", |b| {
+        b.iter(|| {
+            checked = !checked;
+            handle.set_checked(checked);
+            black_box(())
+        })
+    });
+    rust_widgets::widget::runtime::unregister(id);
+}
+
+/// Re-applying the active theme to ~1000 live widgets (`BIND-19`): a global theme switch walks
+/// every mounted control through `reapply_active_theme`, so its cost is the cost of one switch.
+///
+/// The widgets are mounted through `widget::runtime::register` rather than a window surface: this
+/// benchmark measures the sweep, and a headless bench has no surface to mount onto.
+#[cfg(not(target_arch = "wasm32"))]
+fn bench_reapply_active_theme_1000(c: &mut Criterion) {
+    const WIDGETS: usize = 1000;
+    let mut ids = Vec::with_capacity(WIDGETS);
+    for i in 0..WIDGETS {
+        let kind = if i % 2 == 0 { "button" } else { "label" };
+        let widget = WidgetFactory::shared()
+            .create(kind, Rect::new(0, 0, 120, 24), "theme")
+            .expect("button and label are registered controls");
+        if let Some(id) = rust_widgets::widget::runtime::register(widget) {
+            ids.push(id);
+        }
+    }
+    c.bench_function("reapply_active_theme_1000_widgets", |b| {
+        b.iter(|| {
+            rust_widgets::reapply_active_theme();
+            black_box(())
+        })
+    });
+    for id in ids {
+        rust_widgets::widget::runtime::unregister(id);
+    }
+}
+
+/// A 40-child flex row and its hints, built once so the benchmark measures layout, not setup.
+#[cfg(not(target_arch = "wasm32"))]
+fn flex_fixture() -> (rust_widgets::layout::FlexLayout, Vec<rust_widgets::layout::ChildInfo>) {
+    use rust_widgets::layout::{ChildInfo, FlexLayout, Hints, Layout};
+    let mut layout = FlexLayout::new();
+    let children: Vec<ChildInfo> = (0..40)
+        .map(|i| {
+            let id = i as u64 + 1;
+            layout.add_widget(id, 0);
+            ChildInfo::new(id, Hints::fixed(18, 24))
+        })
+        .collect();
+    (layout, children)
+}
+
+/// A repeated arrangement of the **same** rectangle: the case the result cache serves
+/// (measure, arrange, paint). REND-01's cache key is hashed from the layout's own fields, so a
+/// hit costs the hash plus a `Vec` copy instead of the four-pass flex solver.
+#[cfg(not(target_arch = "wasm32"))]
+fn bench_flex_arrange_cached(c: &mut Criterion) {
+    use rust_widgets::layout::Layout;
+    let (layout, children) = flex_fixture();
+    let rect = rust_widgets::core::Rect::new(0, 0, 800, 40);
+    let mut scratch = Vec::with_capacity(children.len());
+    c.bench_function("flex_arrange_40_children_cached", |b| {
+        b.iter(|| {
+            scratch.clear();
+            layout.arrange(rect, &children, &mut |_, child| scratch.push(child));
+            black_box(scratch.len())
+        })
+    });
+}
+
+/// The same row with a **different** rectangle every iteration, which misses the cache and runs
+/// the solver. Comparing the two gives the cache's saving on the arrangement itself.
+#[cfg(not(target_arch = "wasm32"))]
+fn bench_flex_arrange_uncached(c: &mut Criterion) {
+    use rust_widgets::layout::Layout;
+    let (layout, children) = flex_fixture();
+    let mut width = 800u32;
+    let mut scratch = Vec::with_capacity(children.len());
+    c.bench_function("flex_arrange_40_children_uncached", |b| {
+        b.iter(|| {
+            width = if width == 800 { 801 } else { 800 };
+            scratch.clear();
+            let rect = rust_widgets::core::Rect::new(0, 0, width, 40);
+            layout.arrange(rect, &children, &mut |_, child| scratch.push(child));
+            black_box(scratch.len())
+        })
+    });
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 criterion_group!(
     benches,
     bench_factory_new_with_defaults,
     bench_factory_shared,
     bench_property_read,
+    bench_checkbox_set_checked,
+    bench_reapply_active_theme_1000,
     bench_event_queue_batch_drain,
     bench_view_diff_idle,
-    bench_view_diff_one_changed_leaf
+    bench_view_diff_one_changed_leaf,
+    bench_flex_arrange_cached,
+    bench_flex_arrange_uncached
 );
 #[cfg(not(target_arch = "wasm32"))]
 criterion_main!(benches);

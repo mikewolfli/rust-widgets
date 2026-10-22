@@ -117,15 +117,18 @@ mod tests {
         assert_eq!(read_u32("color-scheme", &cache), Some(1));
     }
 
-    /// An expired entry is not reused; without a bus the fresh answer is `None`.
+    /// An expired entry is not reused; without a usable answer the fresh query returns `None`.
+    ///
+    /// The key is a **bogus** one rather than `color-scheme`: a host that does run a portal would
+    /// answer the real key, so asserting `None` there made the test depend on the machine. The
+    /// code path under test (expiry check, then query) is the same for any key.
     #[test]
     fn an_expired_reading_is_not_answered() {
         let cache = Mutex::new(Some(Cached {
             at: Instant::now() - CACHE_TTL - Duration::from_secs(1),
             value: Some(2),
         }));
-        // There is no portal in the test host, so the expired value must not survive.
-        assert_eq!(read_u32("color-scheme", &cache), None);
+        assert_eq!(read_u32("rw-test-expired-probe", &cache), None);
     }
 
     #[test]

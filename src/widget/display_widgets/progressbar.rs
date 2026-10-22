@@ -146,6 +146,9 @@ impl ProgressBar {
     }
     /// Sets text visibility.
     pub fn set_text_visible(&mut self, visible: bool) {
+        if self.text_visible == visible {
+            return;
+        }
         self.text_visible = visible;
         self.base.request_redraw();
     }
@@ -155,6 +158,9 @@ impl ProgressBar {
     }
     /// Sets orientation.
     pub fn set_orientation(&mut self, orientation: Orientation) {
+        if self.orientation == orientation {
+            return;
+        }
         self.orientation = orientation;
         self.base.request_redraw();
     }
@@ -164,6 +170,9 @@ impl ProgressBar {
     }
     /// Sets inverted appearance.
     pub fn set_inverted_appearance(&mut self, inverted: bool) {
+        if self.inverted_appearance == inverted {
+            return;
+        }
         self.inverted_appearance = inverted;
         self.base.request_redraw();
     }
@@ -178,6 +187,9 @@ impl ProgressBar {
     /// A bar that runs right-to-left fills from the right edge, so its filled run is measured from
     /// the beginning of the line — the edge the reader starts at — rather than from the left.
     pub fn set_direction(&mut self, direction: crate::core::TextDirection) {
+        if self.direction == direction {
+            return;
+        }
         self.direction = direction;
         self.base.request_redraw();
     }

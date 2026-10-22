@@ -295,6 +295,9 @@ impl DockWidget {
     }
     /// Sets title.
     pub fn set_title(&mut self, title: String) {
+        if self.title == title {
+            return;
+        }
         self.title = title;
         self.base.request_redraw();
     }

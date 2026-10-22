@@ -86,6 +86,9 @@ impl Badge {
     /// Sets the notification count. A value of 0 hides the badge (unless dot mode is enabled
     /// or custom text is set). Values above 999 are displayed as "999+".
     pub fn set_count(&mut self, count: u32) {
+        if self.count == count {
+            return;
+        }
         self.count = count;
         self.base.request_redraw();
     }
@@ -114,6 +117,9 @@ impl Badge {
 
     /// Sets the severity level, which changes the badge's background color.
     pub fn set_level(&mut self, level: BadgeLevel) {
+        if self.level == level {
+            return;
+        }
         self.level = level;
         self.base.request_redraw();
     }
@@ -126,6 +132,9 @@ impl Badge {
     /// Enables or disables dot mode. When enabled, the badge renders as a small
     /// colored dot without any text overlay, regardless of count or text.
     pub fn set_dot_mode(&mut self, enabled: bool) {
+        if self.dot_mode == enabled {
+            return;
+        }
         self.dot_mode = enabled;
         self.base.request_redraw();
     }
@@ -136,17 +145,26 @@ impl Badge {
     }
 
     /// Returns the display string to render inside the badge.
-    fn display_text(&self) -> String {
+    ///
+    /// Borrowed when the badge shows caller text or a literal, which is the common case; only a
+    /// computed count allocates. The draw path uses this rather than
+    /// [`Self::display_text`] so a badged caption does not clone itself every frame (WDGT-06).
+    fn display_text_cow(&self) -> std::borrow::Cow<'_, str> {
         if !self.text.is_empty() {
-            return self.text.clone();
+            return std::borrow::Cow::Borrowed(&self.text);
         }
         if self.count > 999 {
-            "999+".to_string()
+            std::borrow::Cow::Borrowed("999+")
         } else if self.count > 0 {
-            self.count.to_string()
+            std::borrow::Cow::Owned(self.count.to_string())
         } else {
-            String::new()
+            std::borrow::Cow::Borrowed("")
         }
+    }
+
+    #[cfg(test)]
+    fn display_text(&self) -> String {
+        self.display_text_cow().into_owned()
     }
 
     /// Returns whether the badge should be drawn at all.
@@ -304,7 +322,7 @@ impl Draw for Badge {
         };
         // The count reads against the pill, so its colour is derived per-branch below from the
         // fill it actually lands on.
-        let text_str = self.display_text();
+        let text_str = self.display_text_cow();
 
         if self.dot_mode {
             // The dot is a **fixed-size** marker, not a fraction of the caller's rectangle:

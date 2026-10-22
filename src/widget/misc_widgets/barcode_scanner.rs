@@ -188,6 +188,9 @@ impl BarcodeScanner {
 
     /// Shows or hides the viewfinder overlay.
     pub fn set_show_viewfinder(&mut self, show: bool) {
+        if self.show_viewfinder == show {
+            return;
+        }
         self.show_viewfinder = show;
         self.base.request_redraw();
     }

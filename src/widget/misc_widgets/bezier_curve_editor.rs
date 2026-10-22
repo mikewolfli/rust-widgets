@@ -131,7 +131,11 @@ impl BezierCurveEditor {
 
     /// Sets the grid size (spacing between grid lines as a fraction of widget size).
     pub fn set_grid_size(&mut self, size: f32) {
-        self.grid_size = size.clamp(0.05, 0.5);
+        let size = size.clamp(0.05, 0.5);
+        if self.grid_size == size {
+            return;
+        }
+        self.grid_size = size;
         self.base.request_redraw();
     }
 

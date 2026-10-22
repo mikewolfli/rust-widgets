@@ -295,7 +295,11 @@ impl RangeSlider {
 
     /// Sets the step increment for handle movement.
     pub fn set_step(&mut self, step: f64) {
-        self.step = step.max(0.001);
+        let step = step.max(0.001);
+        if self.step == step {
+            return;
+        }
+        self.step = step;
         self.base.request_redraw();
     }
 
@@ -323,6 +327,9 @@ impl RangeSlider {
     /// all had a vertical arm. That is the "declared but unreachable" shape principle #22 forbids, and
     /// it is why the vertical arm had no test: nothing could put the control in that state.
     pub fn set_orientation(&mut self, orientation: RangeSliderOrientation) {
+        if self.orientation == orientation {
+            return;
+        }
         self.orientation = orientation;
         self.base.request_redraw();
     }
@@ -335,6 +342,9 @@ impl RangeSlider {
     /// ([`RangeSlider::track_begin_and_length`] plus [`crate::core::TextDirection`]), which is the
     /// property that stops a click on a handle from returning a different value from the one drawn.
     pub fn set_direction(&mut self, direction: crate::core::TextDirection) {
+        if self.direction == direction {
+            return;
+        }
         self.direction = direction;
         self.base.request_redraw();
     }

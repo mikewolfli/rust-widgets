@@ -18,8 +18,8 @@ use crate::core::ObjectId;
 use crate::core::PlatformFamily;
 use crate::platform::types::{Display, DisplayId, SafeAreaInsets};
 use crate::platform::{Platform, PlatformCapabilities};
+#[cfg(all(target_os = "macos", feature = "macos"))]
 use core::time::Duration;
-use std::thread;
 
 /// Resolves the widget id a host holds to the platform window id this backend registers.
 ///
@@ -445,7 +445,7 @@ impl Platform for MacOSObjc2Platform {
     fn clipboard_generation(&self) -> u64 {
         #[cfg(all(target_os = "macos", feature = "macos"))]
         {
-            crate::platform::clipboard_stubs::objc2_macos::generation()
+            crate::platform::clipboard_native::objc2_macos::generation()
         }
         #[cfg(not(all(target_os = "macos", feature = "macos")))]
         {
@@ -525,7 +525,7 @@ impl Platform for MacOSObjc2Platform {
             typed_widget_trigger: true,
             // `NSPasteboard`, through the objc2 bindings — a build-time fact, so it is asked of
             // the target and feature rather than assumed. The module that holds the binding is
-            // `clipboard_stubs::objc2_macos`, gated on exactly this pair, and the trait methods
+            // `clipboard_native::objc2_macos`, gated on exactly this pair, and the trait methods
             // above call it through the same gate, so the flag and the bodies cannot drift.
             clipboard: cfg!(all(target_os = "macos", feature = "macos")),
             // No handler spawn in this preview backend.
@@ -803,16 +803,30 @@ impl Platform for MacOSObjc2Platform {
         // `crate::drive_frame` drains and then advances the animation bus; the drain alone
         // re-ran layout but left every animation inert, because nothing on this backend ran
         // the per-frame step (BLUE24 §0A.1 measurement 1).
+        // The loop is paced by the wait below: it blocks in AppKit's run loop when a native
+        // window is available, so an idle window no longer wakes every frame.
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        let mut wait_ms = FRAME_INTERVAL_MS;
         while self.runtime.running.load(Ordering::SeqCst) {
             // Pump the real AppKit queue so the native window draws, receives mouse/key
             // input, resizes and closes — without this the loop ran only library frames and
-            // the window was inert. The frame and a short sleep fill the rest of the tick.
+            // the window was inert. Waiting *inside* the run loop is what makes input
+            // immediate while an idle window is not polled.
             #[cfg(all(target_os = "macos", feature = "macos"))]
             {
-                super::native::pump_native_event();
+                super::native::pump_native_event_until(Duration::from_millis(wait_ms));
+                let outcome = crate::drive_frame(FRAME_INTERVAL_MS as u32);
+                wait_ms = if outcome.needs_another_frame {
+                    FRAME_INTERVAL_MS
+                } else {
+                    crate::platform::types::IDLE_FRAME_INTERVAL_MS
+                };
             }
-            crate::drive_frame(FRAME_INTERVAL_MS as u32);
-            thread::sleep(Duration::from_millis(FRAME_INTERVAL_MS));
+            #[cfg(not(all(target_os = "macos", feature = "macos")))]
+            {
+                let outcome = crate::drive_frame(FRAME_INTERVAL_MS as u32);
+                crate::platform::frame_wait::pause_between_frames(outcome.needs_another_frame);
+            }
         }
     }
     fn quit(&self) -> bool {
@@ -916,17 +930,17 @@ impl Platform for MacOSObjc2Platform {
     // ---- Clipboard & Drag-Drop ----
     //
     // `NSPasteboard` through the objc2 backend's own implementation
-    // (`clipboard_stubs::objc2_macos`, which binds `NSPasteboard` with objc2 rather than the
+    // (`clipboard_native::objc2_macos`, which binds `NSPasteboard` with objc2 rather than the
     // `cocoa`/`objc` crates the legacy backend uses). Each `#[cfg]` block below is removed in the
     // build it does not describe, which leaves exactly one as the method's tail expression; on a
     // host without AppKit the in-process `BackendState` record remains the answer.
     fn set_clipboard_text(&self, text: &str) -> bool {
         #[cfg(all(target_os = "macos", feature = "macos"))]
         {
-            if crate::platform::clipboard_stubs::objc2_macos::on_main_thread() {
+            if crate::platform::clipboard_native::objc2_macos::on_main_thread() {
                 // The pasteboard's own answer, confirmed by a read-back (`writeObjects:` is the
                 // system write; building the item is not).
-                return crate::platform::clipboard_stubs::objc2_macos::write_text(text);
+                return crate::platform::clipboard_native::objc2_macos::write_text(text);
             }
             // Off the AppKit main thread the pasteboard may not be touched, and widgets do call
             // this from worker threads (a background copy). The in-process record keeps the call
@@ -942,8 +956,8 @@ impl Platform for MacOSObjc2Platform {
     fn get_clipboard_text(&self) -> String {
         #[cfg(all(target_os = "macos", feature = "macos"))]
         {
-            if crate::platform::clipboard_stubs::objc2_macos::on_main_thread() {
-                return crate::platform::clipboard_stubs::objc2_macos::read_text()
+            if crate::platform::clipboard_native::objc2_macos::on_main_thread() {
+                return crate::platform::clipboard_native::objc2_macos::read_text()
                     .unwrap_or_default();
             }
             self.state.clipboard_text()
@@ -963,8 +977,8 @@ impl Platform for MacOSObjc2Platform {
     fn clipboard_text(&self) -> Option<String> {
         #[cfg(all(target_os = "macos", feature = "macos"))]
         {
-            if crate::platform::clipboard_stubs::objc2_macos::on_main_thread() {
-                return crate::platform::clipboard_stubs::objc2_macos::read_text();
+            if crate::platform::clipboard_native::objc2_macos::on_main_thread() {
+                return crate::platform::clipboard_native::objc2_macos::read_text();
             }
             let text = self.state.clipboard_text();
             if text.is_empty() {
@@ -989,8 +1003,8 @@ impl Platform for MacOSObjc2Platform {
         #[cfg(all(target_os = "macos", feature = "macos"))]
         {
             // A unit struct, so the backend needs no `OnceLock`: there is nothing to initialise.
-            static CLIPBOARD: crate::platform::clipboard_stubs::objc2_macos::MacOsObjc2Clipboard =
-                crate::platform::clipboard_stubs::objc2_macos::MacOsObjc2Clipboard;
+            static CLIPBOARD: crate::platform::clipboard_native::objc2_macos::MacOsObjc2Clipboard =
+                crate::platform::clipboard_native::objc2_macos::MacOsObjc2Clipboard;
             Some(&CLIPBOARD)
         }
         #[cfg(not(all(target_os = "macos", feature = "macos")))]

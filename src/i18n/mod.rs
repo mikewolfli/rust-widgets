@@ -35,7 +35,7 @@ pub use global::{
     check_and_reload_all, get_manager, init, init_with_options, translate, translate_with_context,
 };
 #[cfg(test)]
-pub(crate) use global::{global_i18n_test_lock, GLOBAL_I18N};
+pub(crate) use global::{global_i18n_test_lock, init_call_count, GLOBAL_I18N};
 pub use manager::I18nManager;
 pub use options::{InitOptions, InitReport};
 pub use types::{ReloadEvent, Translation, TranslationFile};

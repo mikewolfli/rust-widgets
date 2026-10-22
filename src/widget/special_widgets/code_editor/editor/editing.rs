@@ -87,10 +87,11 @@ impl CodeEditor {
                         "code_editor_edit",
                     )) as Box<dyn UndoCommand>
                 }
-                None => Box::new(TextSnapshotCommand::new(
+                None => Box::new(ValueCommand::new(
                     target,
                     before.clone(),
                     after.clone(),
+                    "Edit text",
                     "code_editor_edit",
                 )),
             })

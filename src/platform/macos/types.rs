@@ -46,7 +46,7 @@ pub struct MacOSPlatform {
     /// Platform IME bridge for text input method integration.
     pub(crate) ime_bridge: crate::platform::ime_macos::MacOsImeBridge,
     /// Platform rich clipboard backend.
-    pub(crate) clipboard: crate::platform::clipboard_stubs::macos::MacOsClipboard,
+    pub(crate) clipboard: crate::platform::clipboard_native::macos::MacOsClipboard,
     /// Platform accessibility bridge for NSAccessibility notifications.
     pub(crate) a11y_bridge: MacOSAccessibilityBridge,
     /// Accelerator display text per menu item, so a host can confirm which chord
@@ -97,7 +97,7 @@ impl MacOSPlatform {
             state: BackendState::new(),
             handles: Mutex::new(HashMap::new()),
             ime_bridge: crate::platform::ime_macos::MacOsImeBridge::new(),
-            clipboard: crate::platform::clipboard_stubs::macos::MacOsClipboard,
+            clipboard: crate::platform::clipboard_native::macos::MacOsClipboard,
             a11y_bridge: MacOSAccessibilityBridge::new(),
             menu_item_shortcuts: Mutex::new(HashMap::new()),
         }

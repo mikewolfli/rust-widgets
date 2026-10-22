@@ -103,7 +103,13 @@ impl StackedWidget {
             self.set_current_index(index);
         }
     }
+    /// Returns the selected child index, or `None` when the stack is empty.
+    pub fn selected_index(&self) -> Option<usize> {
+        self.widgets.get(self.current_index).map(|_| self.current_index)
+    }
+
     /// Returns current widget index.
+    #[deprecated(note = "use `selected_index` (Option) — WDGT-13")]
     pub fn current_index(&self) -> usize {
         self.current_index
     }
@@ -252,7 +258,7 @@ impl WidgetProperties for StackedWidget {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "widget_count" => Ok(CapabilityValue::UInt(self.widget_count() as u64)),
-            "current_index" => Ok(CapabilityValue::UInt(self.current_index() as u64)),
+            "current_index" => Ok(CapabilityValue::UInt(self.selected_index().unwrap_or(0) as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -389,7 +395,7 @@ mod tests {
         let sw = StackedWidget::new(Rect::new(0, 0, 300, 200));
         assert_eq!(sw.count(), 0);
         assert_eq!(sw.widget_count(), 0);
-        assert_eq!(sw.current_index(), 0);
+        assert_eq!(sw.selected_index().unwrap_or(0), 0);
         assert_eq!(sw.current_widget(), None);
         assert!(sw.is_visible());
         assert!(sw.is_enabled());
@@ -403,7 +409,7 @@ mod tests {
         let sw = StackedWidget::new(Rect::new(0, 0, 100, 100));
         assert_eq!(sw.current_widget(), None);
         // Even though current_index is 0, an empty widgets vec means no current widget.
-        assert_eq!(sw.current_index(), 0);
+        assert_eq!(sw.selected_index().unwrap_or(0), 0);
         assert_eq!(sw.widget(0), None);
         assert_eq!(sw.widget(1), None);
     }
@@ -452,7 +458,7 @@ mod tests {
         let mut sw = StackedWidget::new(Rect::new(0, 0, 300, 200));
         sw.add_widget(widget_id_1());
         // current_index stays 0 after add
-        assert_eq!(sw.current_index(), 0);
+        assert_eq!(sw.selected_index().unwrap_or(0), 0);
         assert_eq!(sw.current_widget(), Some(widget_id_1()));
     }
 
@@ -464,7 +470,7 @@ mod tests {
         sw.add_widget(widget_id_1());
         sw.add_widget(widget_id_2());
         sw.set_current_index(1);
-        assert_eq!(sw.current_index(), 1);
+        assert_eq!(sw.selected_index().unwrap_or(0), 1);
         assert_eq!(sw.current_widget(), Some(widget_id_2()));
     }
 
@@ -473,14 +479,14 @@ mod tests {
         let mut sw = StackedWidget::new(Rect::new(0, 0, 300, 200));
         sw.add_widget(widget_id_1());
         sw.set_current_index(5); // out of bounds
-        assert_eq!(sw.current_index(), 0);
+        assert_eq!(sw.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
     fn stacked_widget_insert_into_empty_selects_first_widget() {
         let mut widget = StackedWidget::new(Rect::new(0, 0, 100, 100));
         widget.insert_widget(0, widget_id_1());
-        assert_eq!(widget.current_index(), 0);
+        assert_eq!(widget.selected_index().unwrap_or(0), 0);
         assert_eq!(widget.current_widget(), Some(widget_id_1()));
     }
 
@@ -490,7 +496,7 @@ mod tests {
         sw.add_widget(widget_id_1());
         sw.add_widget(widget_id_2());
         sw.set_current_index(0); // already 0
-        assert_eq!(sw.current_index(), 0);
+        assert_eq!(sw.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
@@ -501,7 +507,7 @@ mod tests {
         sw.add_widget(widget_id_3());
         sw.set_current_index(2);
         sw.set_current_index(0);
-        assert_eq!(sw.current_index(), 0);
+        assert_eq!(sw.selected_index().unwrap_or(0), 0);
         assert_eq!(sw.current_widget(), Some(widget_id_1()));
     }
 
@@ -512,7 +518,7 @@ mod tests {
         sw.add_widget(widget_id_2());
         sw.add_widget(widget_id_3());
         sw.set_current_widget(widget_id_3());
-        assert_eq!(sw.current_index(), 2);
+        assert_eq!(sw.selected_index().unwrap_or(0), 2);
         assert_eq!(sw.current_widget(), Some(widget_id_3()));
     }
 
@@ -521,7 +527,7 @@ mod tests {
         let mut sw = StackedWidget::new(Rect::new(0, 0, 300, 200));
         sw.add_widget(widget_id_1());
         sw.set_current_widget(9999); // unknown id
-        assert_eq!(sw.current_index(), 0);
+        assert_eq!(sw.selected_index().unwrap_or(0), 0);
     }
 
     // ── 4. Page count ─────────────────────────────────────────────────────
@@ -583,7 +589,7 @@ mod tests {
                                  // Remove first widget (index 0 < current_index 2)
         sw.remove_widget(widget_id_1());
         // current_index should decrement from 2 to 1
-        assert_eq!(sw.current_index(), 1);
+        assert_eq!(sw.selected_index().unwrap_or(0), 1);
         assert_eq!(sw.current_widget(), Some(widget_id_3()));
     }
 
@@ -596,7 +602,7 @@ mod tests {
         sw.set_current_index(0);
         // Remove last widget (index 2 > current_index 0)
         sw.remove_widget(widget_id_3());
-        assert_eq!(sw.current_index(), 0);
+        assert_eq!(sw.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
@@ -608,7 +614,7 @@ mod tests {
         sw.remove_widget(widget_id_1());
         sw.remove_widget(widget_id_2());
         assert_eq!(sw.count(), 0);
-        assert_eq!(sw.current_index(), 0);
+        assert_eq!(sw.selected_index().unwrap_or(0), 0);
         assert_eq!(sw.current_widget(), None);
     }
 
@@ -634,7 +640,7 @@ mod tests {
         sw.set_current_index(1); // currently at widget_id_2
                                  // Insert at index 0, current_index (1) >= 0, so it increments to 2
         sw.insert_widget(0, widget_id_3());
-        assert_eq!(sw.current_index(), 2);
+        assert_eq!(sw.selected_index().unwrap_or(0), 2);
         assert_eq!(sw.current_widget(), Some(widget_id_2()));
     }
 
@@ -646,7 +652,7 @@ mod tests {
         sw.set_current_index(0);
         // Insert at end (> current_index), current_index stays 0
         sw.insert_widget(2, widget_id_3());
-        assert_eq!(sw.current_index(), 0);
+        assert_eq!(sw.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
@@ -1007,7 +1013,7 @@ mod tests {
         sw.set_enabled(false);
         sw.set_current_index(1);
 
-        assert_eq!(sw.current_index(), 1, "the visible page still moves");
+        assert_eq!(sw.selected_index().unwrap_or(0), 1, "the visible page still moves");
     }
 
     #[test]
@@ -1038,7 +1044,7 @@ mod tests {
 
         // The enabled path is what `current_changed` is for; the disabled path is the
         // one that must stay silent.
-        assert_eq!(sw.current_index(), 1);
+        assert_eq!(sw.selected_index().unwrap_or(0), 1);
         assert!(sw.current_changed_suppression_reason(1).is_none());
     }
 
@@ -1071,7 +1077,7 @@ mod tests {
 
         sw.set_enabled(false);
         sw.set_current_index(0);
-        assert_eq!(sw.current_index(), 0, "the page still moves");
+        assert_eq!(sw.selected_index().unwrap_or(0), 0, "the page still moves");
         assert_eq!(
             total.load(Ordering::SeqCst),
             1,
@@ -1090,7 +1096,7 @@ mod tests {
         // `set_current_widget` routes through `set_current_index`, so the guard must hold
         // for the by-id entry point too, not just the by-index one.
         sw.set_current_widget(widget_id_2());
-        assert_eq!(sw.current_index(), 1);
+        assert_eq!(sw.selected_index().unwrap_or(0), 1);
         assert!(
             sw.current_changed_suppression_reason(1).is_some(),
             "the suppression must remain queryable so the host is not left guessing"
@@ -1122,6 +1128,6 @@ mod tests {
         sw.insert_widget(9, widget_id_3());
         assert_eq!(sw.count(), 3);
         sw.set_current_widget(widget_id_3());
-        assert_eq!(sw.current_index(), 2, "past the end lands last");
+        assert_eq!(sw.selected_index().unwrap_or(0), 2, "past the end lands last");
     }
 }

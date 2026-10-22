@@ -4,7 +4,7 @@
 //! Range-scoped undo command for the code editor.
 //!
 //! A keystroke changes a few characters. The shared
-//! [`crate::undo::TextSnapshotCommand`] records that by storing **two complete
+//! [`crate::undo::ValueCommand`] records that by storing **two complete
 //! copies of the document** — the state before and the state after — which at a
 //! million lines is tens of megabytes allocated per key press and milliseconds
 //! of copying.

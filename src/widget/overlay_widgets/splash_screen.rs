@@ -109,7 +109,11 @@ impl SplashScreen {
 
     /// Sets the title.
     pub fn set_title(&mut self, title: impl Into<String>) {
-        self.title = title.into();
+        let title = title.into();
+        if self.title == title {
+            return;
+        }
+        self.title = title;
         self.base.request_redraw();
     }
 
@@ -120,7 +124,11 @@ impl SplashScreen {
 
     /// Sets the subtitle.
     pub fn set_subtitle(&mut self, subtitle: impl Into<String>) {
-        self.subtitle = subtitle.into();
+        let subtitle = subtitle.into();
+        if self.subtitle == subtitle {
+            return;
+        }
+        self.subtitle = subtitle;
         self.base.request_redraw();
     }
 
@@ -134,8 +142,12 @@ impl SplashScreen {
     /// A `NaN` is treated as indeterminate rather than clamping to an arbitrary
     /// end: `NaN` cannot be ordered, so any clamp would be a silent invention.
     pub fn set_progress(&mut self, progress: Option<f32>) {
-        self.progress =
+        let progress =
             progress.map(|value| if value.is_nan() { 0.0 } else { value.clamp(0.0, 1.0) });
+        if self.progress == progress {
+            return;
+        }
+        self.progress = progress;
         self.base.request_redraw();
     }
 
@@ -146,6 +158,9 @@ impl SplashScreen {
 
     /// Enables or disables the skip affordance.
     pub fn set_skippable(&mut self, skippable: bool) {
+        if self.skippable == skippable {
+            return;
+        }
         self.skippable = skippable;
         self.base.request_redraw();
     }

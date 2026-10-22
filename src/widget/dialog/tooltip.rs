@@ -113,11 +113,12 @@ impl Tooltip {
     /// Sets the tooltip text content.
     ///
     /// A same-value write is a no-op: the string is the tooltip's whole payload (WDGT-12).
-    pub fn set_text(&mut self, text: &str) {
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
         if self.text == text {
             return;
         }
-        self.text = text.to_string();
+        self.text = text;
         self.base.request_redraw();
     }
 
@@ -246,6 +247,9 @@ impl Tooltip {
     /// Written straight onto the widget rather than onto its style so it survives the
     /// theme's own application, which would otherwise replace the widget's style record.
     pub fn set_background_color(&mut self, color: Color) {
+        if self.background_color == color {
+            return;
+        }
         self.background_color = color;
         self.base.request_redraw();
     }
@@ -260,6 +264,9 @@ impl Tooltip {
 
     /// Sets the colour the bubble's text is drawn in and requests a redraw.
     pub fn set_text_color(&mut self, color: Color) {
+        if self.text_color == color {
+            return;
+        }
         self.text_color = color;
         self.base.request_redraw();
     }

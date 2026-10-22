@@ -178,6 +178,9 @@ impl BarChart {
 
     /// Sets the default bar color for all bars (used when BarEntry.color is None).
     pub fn set_bar_color(&mut self, color: Color) {
+        if self.bar_color == color {
+            return;
+        }
         self.bar_color = color;
         self.base.request_redraw();
     }
@@ -189,7 +192,11 @@ impl BarChart {
 
     /// Sets the spacing between bars as a fraction of the bar slot width.
     pub fn set_bar_spacing(&mut self, spacing: f32) {
-        self.bar_spacing = spacing.clamp(0.0, 0.8);
+        let spacing = spacing.clamp(0.0, 0.8);
+        if self.bar_spacing == spacing {
+            return;
+        }
+        self.bar_spacing = spacing;
         self.base.request_redraw();
     }
 
@@ -200,6 +207,9 @@ impl BarChart {
 
     /// Enables or disables showing value labels on top of bars.
     pub fn set_show_values(&mut self, show: bool) {
+        if self.show_values == show {
+            return;
+        }
         self.show_values = show;
         self.base.request_redraw();
     }
@@ -211,6 +221,9 @@ impl BarChart {
 
     /// Enables or disables grid lines.
     pub fn set_show_grid(&mut self, show: bool) {
+        if self.show_grid == show {
+            return;
+        }
         self.show_grid = show;
         self.base.request_redraw();
     }
@@ -222,6 +235,9 @@ impl BarChart {
 
     /// Sets manual min/max value range. Pass `None` for auto-compute.
     pub fn set_value_range(&mut self, min: Option<f64>, max: Option<f64>) {
+        if self.min_value == min && self.max_value == max {
+            return;
+        }
         self.min_value = min;
         self.max_value = max;
         self.base.request_redraw();

@@ -165,8 +165,8 @@ impl Dropdown {
 
     /// Returns the currently-selected index (may be out of range if the list
     /// was shrunk after selection).
-    pub fn selected_index(&self) -> usize {
-        self.selected_index
+    pub fn selected_index(&self) -> Option<usize> {
+        self.items.get(self.selected_index).map(|_| self.selected_index)
     }
 
     /// Sets the selected index, clamping it to the list bounds.
@@ -341,7 +341,9 @@ impl WidgetProperties for Dropdown {
                 Some(text) => Ok(CapabilityValue::String(text.to_string())),
                 None => Ok(CapabilityValue::String(String::new())),
             },
-            "selected_index" => Ok(CapabilityValue::UInt(self.selected_index() as u64)),
+            "selected_index" => {
+                Ok(CapabilityValue::UInt(self.selected_index().unwrap_or(0) as u64))
+            }
             "item_count" => Ok(CapabilityValue::UInt(self.items().len() as u64)),
             "expanded" => Ok(CapabilityValue::Bool(self.is_expanded())),
             "alignment" => Ok(CapabilityValue::String(
@@ -638,7 +640,7 @@ mod tests {
         assert_eq!(dd.items()[0], "Option A");
         assert_eq!(dd.items()[1], "Option B");
         assert_eq!(dd.items()[2], "Option C");
-        assert_eq!(dd.selected_index(), 0);
+        assert_eq!(dd.selected_index().unwrap_or(0), 0);
         assert_eq!(dd.selected_text(), Some("Option A"));
         assert!(!dd.is_expanded());
     }
@@ -650,7 +652,7 @@ mod tests {
         assert_eq!(dd.items().len(), 2);
         assert_eq!(dd.items()[0], "X");
         assert_eq!(dd.items()[1], "Y");
-        assert_eq!(dd.selected_index(), 0);
+        assert_eq!(dd.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
@@ -659,7 +661,7 @@ mod tests {
         dd.set_selected_index(2);
         dd.set_items(Vec::new());
         assert!(dd.items().is_empty());
-        assert_eq!(dd.selected_index(), 0);
+        assert_eq!(dd.selected_index().unwrap_or(0), 0);
         assert!(dd.selected_text().is_none());
     }
 
@@ -667,7 +669,7 @@ mod tests {
     fn dropdown_select_item() {
         let mut dd = make_dropdown();
         dd.set_selected_index(1);
-        assert_eq!(dd.selected_index(), 1);
+        assert_eq!(dd.selected_index().unwrap_or(0), 1);
         assert_eq!(dd.selected_text(), Some("Option B"));
     }
 
@@ -675,7 +677,7 @@ mod tests {
     fn dropdown_select_item_clamps_out_of_range() {
         let mut dd = make_dropdown();
         dd.set_selected_index(100);
-        assert_eq!(dd.selected_index(), 2);
+        assert_eq!(dd.selected_index().unwrap_or(0), 2);
         assert_eq!(dd.selected_text(), Some("Option C"));
     }
 
@@ -734,13 +736,13 @@ mod tests {
 
         // The first item is at y = 10 + 24 + 0*20 = 34
         dd.handle_event(&Event::mouse_press(15, 35, 1));
-        assert_eq!(dd.selected_index(), 0);
+        assert_eq!(dd.selected_index().unwrap_or(0), 0);
         assert!(!dd.is_expanded()); // selection collapses
 
         // Expand again and select the 3rd item (index 2)
         dd.set_expanded(true);
         dd.handle_event(&Event::mouse_press(15, 35 + 2 * 20, 1));
-        assert_eq!(dd.selected_index(), 2);
+        assert_eq!(dd.selected_index().unwrap_or(0), 2);
         assert!(!dd.is_expanded());
     }
 
@@ -753,25 +755,25 @@ mod tests {
 
         // Down arrow moves to next item
         dd.handle_event(&Event::key_press(40, 0));
-        assert_eq!(dd.selected_index(), 1);
+        assert_eq!(dd.selected_index().unwrap_or(0), 1);
 
         dd.handle_event(&Event::key_press(40, 0));
-        assert_eq!(dd.selected_index(), 2);
+        assert_eq!(dd.selected_index().unwrap_or(0), 2);
 
         // Already at last — should stay
         dd.handle_event(&Event::key_press(40, 0));
-        assert_eq!(dd.selected_index(), 2);
+        assert_eq!(dd.selected_index().unwrap_or(0), 2);
 
         // Up arrow
         dd.handle_event(&Event::key_press(38, 0));
-        assert_eq!(dd.selected_index(), 1);
+        assert_eq!(dd.selected_index().unwrap_or(0), 1);
 
         dd.handle_event(&Event::key_press(38, 0));
-        assert_eq!(dd.selected_index(), 0);
+        assert_eq!(dd.selected_index().unwrap_or(0), 0);
 
         // Already at first — should stay
         dd.handle_event(&Event::key_press(38, 0));
-        assert_eq!(dd.selected_index(), 0);
+        assert_eq!(dd.selected_index().unwrap_or(0), 0);
 
         // Enter commits and collapses
         dd.handle_event(&Event::key_press(13, 0));

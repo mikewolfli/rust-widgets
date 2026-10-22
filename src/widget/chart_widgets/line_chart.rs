@@ -103,6 +103,9 @@ impl LineChart {
 
     /// Sets the line color.
     pub fn set_line_color(&mut self, color: Color) {
+        if self.line_color == color {
+            return;
+        }
         self.line_color = color;
         self.base.request_redraw();
     }
@@ -114,6 +117,9 @@ impl LineChart {
 
     /// Enables or disables the filled area under the line.
     pub fn set_fill_area(&mut self, fill: bool) {
+        if self.fill_area == fill {
+            return;
+        }
         self.fill_area = fill;
         self.base.request_redraw();
     }
@@ -125,6 +131,9 @@ impl LineChart {
 
     /// Sets the fill color used for the area under the line.
     pub fn set_fill_color(&mut self, color: Color) {
+        if self.fill_color == color {
+            return;
+        }
         self.fill_color = color;
         self.base.request_redraw();
     }
@@ -136,7 +145,11 @@ impl LineChart {
 
     /// Sets the stroke width of the line.
     pub fn set_stroke_width(&mut self, width: f32) {
-        self.stroke_width = width.max(0.5);
+        let width = width.max(0.5);
+        if self.stroke_width == width {
+            return;
+        }
+        self.stroke_width = width;
         self.base.request_redraw();
     }
 
@@ -206,6 +219,9 @@ impl LineChart {
 
     /// Enables or disables the grid lines.
     pub fn set_show_grid(&mut self, show: bool) {
+        if self.show_grid == show {
+            return;
+        }
         self.show_grid = show;
         self.base.request_redraw();
     }
@@ -217,6 +233,9 @@ impl LineChart {
 
     /// Sets the grid line color.
     pub fn set_grid_color(&mut self, color: Color) {
+        if self.grid_color == color {
+            return;
+        }
         self.grid_color = color;
         self.base.request_redraw();
     }
@@ -228,6 +247,9 @@ impl LineChart {
 
     /// Enables or disables axis labels.
     pub fn set_show_labels(&mut self, show: bool) {
+        if self.show_labels == show {
+            return;
+        }
         self.show_labels = show;
         self.base.request_redraw();
     }

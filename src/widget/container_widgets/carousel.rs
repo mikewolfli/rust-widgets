@@ -399,7 +399,13 @@ impl Carousel {
         }
     }
 
+    /// Returns the selected page index, or `None` when the carousel is empty.
+    pub fn selected_index(&self) -> Option<usize> {
+        self.pages.get(self.current_index).map(|_| self.current_index)
+    }
+
     /// Returns the current page index.
+    #[deprecated(note = "use `selected_index` (Option) — WDGT-13")]
     pub fn current(&self) -> usize {
         self.current_index
     }
@@ -472,6 +478,9 @@ impl Carousel {
 
     /// Sets the page-indicator style.
     pub fn set_indicator_style(&mut self, style: CarouselIndicatorStyle) {
+        if self.indicator_style == style {
+            return;
+        }
         self.indicator_style = style;
         self.base.request_redraw();
     }
@@ -483,6 +492,9 @@ impl Carousel {
 
     /// Sets which edge the page indicator is drawn against.
     pub fn set_indicator_position(&mut self, position: CarouselIndicatorPosition) {
+        if self.indicator_position == position {
+            return;
+        }
         self.indicator_position = position;
         self.base.request_redraw();
     }
@@ -688,7 +700,7 @@ impl Widget for Carousel {
 impl WidgetProperties for Carousel {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
-            "current_index" => Ok(CapabilityValue::UInt(self.current() as u64)),
+            "current_index" => Ok(CapabilityValue::UInt(self.selected_index().unwrap_or(0) as u64)),
             "item_count" => Ok(CapabilityValue::UInt(self.page_count() as u64)),
             "current_page_title" => {
                 Ok(CapabilityValue::String(self.current_page_title().to_string()))
@@ -914,6 +926,9 @@ impl Carousel {
 
     /// Sets the feel, requesting a redraw.
     pub fn set_physics(&mut self, physics: ScrollPhysics) {
+        if self.physics == physics {
+            return;
+        }
         self.physics = physics;
         self.base.request_redraw();
     }
@@ -1487,7 +1502,7 @@ mod tests {
     #[test]
     fn carousel_creation_defaults() {
         let c = Carousel::new(Rect::new(0, 0, 300, 200));
-        assert_eq!(c.current(), 0);
+        assert_eq!(c.selected_index().unwrap_or(0), 0);
         assert_eq!(c.page_count(), 0);
         assert!(c.current_page().is_none());
         assert_eq!(c.kind(), WidgetKind::Carousel);
@@ -1509,41 +1524,41 @@ mod tests {
         c.add_page("Details", Color::rgb(200, 100, 100));
         assert_eq!(c.page_count(), 2);
 
-        assert_eq!(c.current(), 0);
+        assert_eq!(c.selected_index().unwrap_or(0), 0);
         assert_eq!(c.current_page().unwrap().title, "Intro");
     }
 
     #[test]
     fn carousel_navigation() {
         let mut c = default_carousel();
-        assert_eq!(c.current(), 0);
+        assert_eq!(c.selected_index().unwrap_or(0), 0);
 
         c.next();
-        assert_eq!(c.current(), 1);
+        assert_eq!(c.selected_index().unwrap_or(0), 1);
 
         c.next();
-        assert_eq!(c.current(), 2);
+        assert_eq!(c.selected_index().unwrap_or(0), 2);
 
         // Should not advance past last page when loop is off
         c.next();
-        assert_eq!(c.current(), 2);
+        assert_eq!(c.selected_index().unwrap_or(0), 2);
 
         c.previous();
-        assert_eq!(c.current(), 1);
+        assert_eq!(c.selected_index().unwrap_or(0), 1);
 
         c.previous();
-        assert_eq!(c.current(), 0);
+        assert_eq!(c.selected_index().unwrap_or(0), 0);
 
         // Should not go before first page when loop is off
         c.previous();
-        assert_eq!(c.current(), 0);
+        assert_eq!(c.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
     fn carousel_set_current_clamps() {
         let mut c = default_carousel();
         c.set_current(5); // beyond range
-        assert_eq!(c.current(), 2);
+        assert_eq!(c.selected_index().unwrap_or(0), 2);
     }
 
     #[test]
@@ -1558,7 +1573,7 @@ mod tests {
         });
 
         c.next();
-        assert_eq!(c.current(), 1);
+        assert_eq!(c.selected_index().unwrap_or(0), 1);
         assert_eq!(*captured.lock().unwrap(), Some(1));
 
         // No signal for same index
@@ -1574,11 +1589,11 @@ mod tests {
         let mut c = default_carousel();
         // Click left half → previous (but at 0, so stays)
         c.handle_event(&Event::MouseRelease { pos: Point::new(50, 100), button: 1 });
-        assert_eq!(c.current(), 0);
+        assert_eq!(c.selected_index().unwrap_or(0), 0);
 
         // Click right half → next
         c.handle_event(&Event::MouseRelease { pos: Point::new(250, 100), button: 1 });
-        assert_eq!(c.current(), 1);
+        assert_eq!(c.selected_index().unwrap_or(0), 1);
     }
 
     /// The previous version of this test sent a `MousePress`, while the paging
@@ -1596,17 +1611,29 @@ mod tests {
 
         // The event that would page when enabled.
         c.handle_event(&Event::MouseRelease { pos: Point::new(250, 100), button: 1 });
-        assert_eq!(c.current(), 0, "a disabled carousel must not page on release");
+        assert_eq!(
+            c.selected_index().unwrap_or(0),
+            0,
+            "a disabled carousel must not page on release"
+        );
 
         // Arrow keys, the other paging path.
         c.handle_event(&Event::KeyPress { key: 39, modifiers: 0 });
-        assert_eq!(c.current(), 0, "a disabled carousel must not page on right arrow");
+        assert_eq!(
+            c.selected_index().unwrap_or(0),
+            0,
+            "a disabled carousel must not page on right arrow"
+        );
 
         // Swipe, the third paging path.
         c.handle_event(&Event::MousePress { pos: Point::new(280, 100), button: 1, modifiers: 0 });
         c.handle_event(&Event::MouseMove { pos: Point::new(200, 100) });
         c.handle_event(&Event::MouseRelease { pos: Point::new(200, 100), button: 1 });
-        assert_eq!(c.current(), 0, "a disabled carousel must not page on a swipe");
+        assert_eq!(
+            c.selected_index().unwrap_or(0),
+            0,
+            "a disabled carousel must not page on a swipe"
+        );
     }
 
     #[test]
@@ -1640,18 +1667,18 @@ mod tests {
     #[test]
     fn carousel_previous_at_zero_does_nothing() {
         let mut c = default_carousel();
-        assert_eq!(c.current(), 0);
+        assert_eq!(c.selected_index().unwrap_or(0), 0);
         c.previous();
-        assert_eq!(c.current(), 0);
+        assert_eq!(c.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
     fn carousel_next_at_last_does_nothing() {
         let mut c = default_carousel();
         c.set_current(2);
-        assert_eq!(c.current(), 2);
+        assert_eq!(c.selected_index().unwrap_or(0), 2);
         c.next();
-        assert_eq!(c.current(), 2);
+        assert_eq!(c.selected_index().unwrap_or(0), 2);
     }
 
     #[test]
@@ -1699,7 +1726,11 @@ mod tests {
         let removed = c.remove_page(2);
         assert!(removed.is_some());
         assert_eq!(c.page_count(), 2);
-        assert_eq!(c.current(), 1, "removing the visible page shows the neighbour");
+        assert_eq!(
+            c.selected_index().unwrap_or(0),
+            1,
+            "removing the visible page shows the neighbour"
+        );
         assert!(c.remove_page(9).is_none());
     }
 
@@ -1715,8 +1746,12 @@ mod tests {
         c.set_current(2);
         let showing = c.pages()[2].title.clone();
         c.remove_page(0);
-        assert_eq!(c.current(), 1, "the index follows the page it pointed at");
-        assert_eq!(c.pages()[c.current()].title, showing, "still showing the same page");
+        assert_eq!(c.selected_index().unwrap_or(0), 1, "the index follows the page it pointed at");
+        assert_eq!(
+            c.pages()[c.selected_index().unwrap_or(0)].title,
+            showing,
+            "still showing the same page"
+        );
     }
 
     // ── B1-2: swipe paging ──────────────────────────────────────────────────
@@ -1724,14 +1759,18 @@ mod tests {
     #[test]
     fn carousel_swipe_past_half_width_lands_on_adjacent_page() {
         let mut c = default_carousel();
-        assert_eq!(c.current(), 0);
+        assert_eq!(c.selected_index().unwrap_or(0), 0);
 
         // Press at x=280, drag left well past 50% of the 300px width, release.
         c.handle_event(&Event::MousePress { pos: Point::new(280, 100), button: 1, modifiers: 0 });
         c.handle_event(&Event::MouseMove { pos: Point::new(100, 100) });
         c.handle_event(&Event::MouseRelease { pos: Point::new(100, 100), button: 1 });
 
-        assert_eq!(c.current(), 1, "a leftward swipe of 180px must advance one page");
+        assert_eq!(
+            c.selected_index().unwrap_or(0),
+            1,
+            "a leftward swipe of 180px must advance one page"
+        );
     }
 
     #[test]
@@ -1743,7 +1782,7 @@ mod tests {
         c.handle_event(&Event::MouseMove { pos: Point::new(200, 100) });
         c.handle_event(&Event::MouseRelease { pos: Point::new(200, 100), button: 1 });
 
-        assert_eq!(c.current(), 1, "a rightward swipe must go back one page");
+        assert_eq!(c.selected_index().unwrap_or(0), 1, "a rightward swipe must go back one page");
     }
 
     #[test]
@@ -1756,20 +1795,20 @@ mod tests {
 
         // Release at x=80 is in the left half, so the click rule applies and the
         // control is already at page 0 — the point is that the *swipe* did not fire.
-        assert_eq!(c.current(), 0);
+        assert_eq!(c.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
     fn carousel_swipe_without_loop_stops_at_edge() {
         let mut c = default_carousel();
         assert!(!c.r#loop());
-        assert_eq!(c.current(), 0);
+        assert_eq!(c.selected_index().unwrap_or(0), 0);
 
         // Swiping right at page 0 would go to -1, which must be refused.
         c.handle_event(&Event::MousePress { pos: Point::new(20, 100), button: 1, modifiers: 0 });
         c.handle_event(&Event::MouseMove { pos: Point::new(250, 100) });
         c.handle_event(&Event::MouseRelease { pos: Point::new(250, 100), button: 1 });
-        assert_eq!(c.current(), 0);
+        assert_eq!(c.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
@@ -1782,7 +1821,7 @@ mod tests {
         c.handle_event(&Event::MousePress { pos: Point::new(280, 100), button: 1, modifiers: 0 });
         c.handle_event(&Event::MouseMove { pos: Point::new(100, 100) });
         c.handle_event(&Event::MouseRelease { pos: Point::new(100, 100), button: 1 });
-        assert_eq!(c.current(), 0);
+        assert_eq!(c.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
@@ -1790,7 +1829,11 @@ mod tests {
         let mut c = default_carousel();
         c.handle_event(&Event::MousePress { pos: Point::new(250, 100), button: 1, modifiers: 0 });
         c.handle_event(&Event::MouseRelease { pos: Point::new(250, 100), button: 1 });
-        assert_eq!(c.current(), 1, "a press and release with no travel is a click");
+        assert_eq!(
+            c.selected_index().unwrap_or(0),
+            1,
+            "a press and release with no travel is a click"
+        );
     }
 
     // ── B1-2: the velocity half of the release rule ─────────────────────────
@@ -1953,7 +1996,7 @@ mod tests {
     #[test]
     fn carousel_short_fast_drag_pages_end_to_end() {
         let mut c = default_carousel();
-        assert_eq!(c.current(), 0);
+        assert_eq!(c.selected_index().unwrap_or(0), 0);
 
         // Cross the 54px press threshold to enter the swiping state.
         c.handle_event(&Event::MousePress { pos: Point::new(280, 100), button: 1, modifiers: 0 });
@@ -1964,7 +2007,7 @@ mod tests {
         c.handle_event(&Event::MouseMove { pos: Point::new(280 - 66, 100) });
         c.handle_event(&Event::MouseRelease { pos: Point::new(280 - 66, 100), button: 1 });
 
-        assert_eq!(c.current(), 1, "a 66px leftward drag must page forward");
+        assert_eq!(c.selected_index().unwrap_or(0), 1, "a 66px leftward drag must page forward");
     }
 
     /// The velocity path end to end: entering `Swiping` at the threshold, then
@@ -1982,13 +2025,13 @@ mod tests {
         c.handle_event(&Event::MousePress { pos: Point::new(280, 100), button: 1, modifiers: 0 });
         c.handle_event(&Event::MouseMove { pos: Point::new(220, 100) });
         c.handle_event(&Event::MouseRelease { pos: Point::new(220, 100), button: 1 });
-        assert_eq!(c.current(), 1);
+        assert_eq!(c.selected_index().unwrap_or(0), 1);
 
         // And the same gesture backwards.
         c.handle_event(&Event::MousePress { pos: Point::new(20, 100), button: 1, modifiers: 0 });
         c.handle_event(&Event::MouseMove { pos: Point::new(80, 100) });
         c.handle_event(&Event::MouseRelease { pos: Point::new(80, 100), button: 1 });
-        assert_eq!(c.current(), 0);
+        assert_eq!(c.selected_index().unwrap_or(0), 0);
     }
 
     // ── B1-3: autoplay + loop ───────────────────────────────────────────────
@@ -1999,9 +2042,17 @@ mod tests {
         c.set_loop(true);
 
         c.previous();
-        assert_eq!(c.current(), 2, "previous from the first page wraps to the last");
+        assert_eq!(
+            c.selected_index().unwrap_or(0),
+            2,
+            "previous from the first page wraps to the last"
+        );
         c.next();
-        assert_eq!(c.current(), 0, "next from the last page wraps to the first");
+        assert_eq!(
+            c.selected_index().unwrap_or(0),
+            0,
+            "next from the last page wraps to the first"
+        );
     }
 
     #[test]
@@ -2011,11 +2062,11 @@ mod tests {
 
         // Less than one interval: no advance.
         c.advance_autoplay_by(core::time::Duration::from_millis(400));
-        assert_eq!(c.current(), 0);
+        assert_eq!(c.selected_index().unwrap_or(0), 0);
 
         // Crossing the interval advances once.
         c.advance_autoplay_by(core::time::Duration::from_millis(700));
-        assert_eq!(c.current(), 1);
+        assert_eq!(c.selected_index().unwrap_or(0), 1);
     }
 
     /// The frame bus drives the autoplay, and the interval is milliseconds rather than tick
@@ -2030,18 +2081,22 @@ mod tests {
         let mut c = default_carousel();
         c.set_autoplay(Some(core::time::Duration::from_millis(1000)));
         assert!(c.is_animating(), "an autoplay carousel owes frames");
-        assert_eq!(c.current(), 0);
+        assert_eq!(c.selected_index().unwrap_or(0), 0);
 
         // Many small frames that add up to less than the interval must not advance the page —
         // the assertion a tick-counted implementation cannot pass.
         for _ in 0..50 {
             assert!(c.tick(16), "the clock is still running, so another frame is owed");
         }
-        assert_eq!(c.current(), 0, "800 ms is short of the one-second interval");
+        assert_eq!(
+            c.selected_index().unwrap_or(0),
+            0,
+            "800 ms is short of the one-second interval"
+        );
 
         // The frames that cross the interval advance exactly one page.
         c.tick(250);
-        assert_eq!(c.current(), 1, "1050 ms crosses the interval once");
+        assert_eq!(c.selected_index().unwrap_or(0), 1, "1050 ms crosses the interval once");
 
         // Turning autoplay off stops it owing frames at all.
         c.set_autoplay(None);
@@ -2058,7 +2113,11 @@ mod tests {
         for _ in 0..10 {
             c.advance_autoplay_by(core::time::Duration::from_millis(100));
         }
-        assert_eq!(c.current(), 2, "autoplay must stop at the last page when loop is off");
+        assert_eq!(
+            c.selected_index().unwrap_or(0),
+            2,
+            "autoplay must stop at the last page when loop is off"
+        );
     }
 
     #[test]
@@ -2068,11 +2127,11 @@ mod tests {
 
         c.handle_event(&Event::MouseEnter { pos: Point::new(10, 10) });
         c.advance_autoplay_by(core::time::Duration::from_millis(500));
-        assert_eq!(c.current(), 0, "hover must hold autoplay");
+        assert_eq!(c.selected_index().unwrap_or(0), 0, "hover must hold autoplay");
 
         c.handle_event(&Event::MouseLeave { pos: Point::new(10, 10) });
         c.advance_autoplay_by(core::time::Duration::from_millis(500));
-        assert_ne!(c.current(), 0, "autoplay resumes once the pointer leaves");
+        assert_ne!(c.selected_index().unwrap_or(0), 0, "autoplay resumes once the pointer leaves");
     }
 
     #[test]
@@ -2081,7 +2140,7 @@ mod tests {
         c.set_autoplay(Some(core::time::Duration::from_millis(100)));
         c.set_enabled(false);
         c.advance_autoplay_by(core::time::Duration::from_millis(1000));
-        assert_eq!(c.current(), 0);
+        assert_eq!(c.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
@@ -2091,7 +2150,7 @@ mod tests {
         // Zero would mean "advance every tick", which is a hang, not a setting.
         assert!(c.autoplay().is_none());
         c.advance_autoplay_by(core::time::Duration::from_millis(1000));
-        assert_eq!(c.current(), 0);
+        assert_eq!(c.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
@@ -2102,12 +2161,12 @@ mod tests {
         // Accumulate most of an interval, then move by hand.
         c.advance_autoplay_by(core::time::Duration::from_millis(900));
         c.set_current(2);
-        assert_eq!(c.current(), 2);
+        assert_eq!(c.selected_index().unwrap_or(0), 2);
 
         // The manual move cleared the accumulator, so the next tick does not
         // immediately advance again.
         c.advance_autoplay_by(core::time::Duration::from_millis(200));
-        assert_eq!(c.current(), 2);
+        assert_eq!(c.selected_index().unwrap_or(0), 2);
     }
 
     // ── B1-4: indicator style + position (pixel assertions) ─────────────────
@@ -2331,9 +2390,9 @@ mod tests {
         // The carousel itself pages on arrows, so the assertion here is that the
         // call is handled without disturbing the mounted child's geometry.
         c.handle_event(&Event::KeyPress { key: 39, modifiers: 0 });
-        assert_eq!(c.current(), 1);
+        assert_eq!(c.selected_index().unwrap_or(0), 1);
         c.handle_event(&Event::KeyPress { key: 37, modifiers: 0 });
-        assert_eq!(c.current(), 0);
+        assert_eq!(c.selected_index().unwrap_or(0), 0);
         assert!(c.pages()[0].has_content());
     }
 

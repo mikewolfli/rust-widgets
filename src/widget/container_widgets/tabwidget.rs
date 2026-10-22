@@ -66,6 +66,29 @@ pub struct TabWidget {
     pub tab_moved: Signal1<(usize, usize)>,
     /// Optional shared registry for child widget forwarding.
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
+    /// Memoised preferred width per tab, keyed by the inputs the measurement reads.
+    ///
+    /// `tab_width_hints` is asked by the paint path **and** by every pointer move's hit test, and
+    /// each answer used to run `estimate_text_width` per tab — with `text-shaping` that is a cluster
+    /// segmentation and a glyph-advance lookup per label. The width depends on exactly three
+    /// things: the title, whether the tab reserves an icon slot, and the effective font. The cache
+    /// stores all three as its key and re-measures when any of them differs, so there is no
+    /// explicit invalidation list to keep in sync (a missed `add`/`remove`/`set_text`/theme hook
+    /// cannot leave a stale width behind). Strip width and tab position are not part of the key:
+    /// they only decide the overflow division, which is integer arithmetic over these widths.
+    tab_width_cache: RefCell<TabWidthCache>,
+}
+
+/// The measurement cache behind [`TabWidget::tab_width_hints`].
+///
+/// `font: None` marks an empty cache, so the first call always measures. `fingerprint` is a hash of
+/// `(title, has_icon)` for every tab in strip order; a different tab count or a different caption
+/// changes it.
+#[derive(Default)]
+struct TabWidthCache {
+    font: Option<Font>,
+    fingerprint: u64,
+    widths: Vec<i32>,
 }
 /// Tab information.
 pub struct Tab {
@@ -268,6 +291,7 @@ impl TabWidget {
             tab_close_requested: Signal1::new(),
             tab_moved: Signal1::new(),
             registry: None,
+            tab_width_cache: RefCell::new(TabWidthCache::default()),
         }
     }
     /// Sets the shared widget registry for child forwarding.
@@ -358,7 +382,13 @@ impl TabWidget {
     pub fn count(&self) -> usize {
         self.tabs.len()
     }
+    /// Returns the selected tab index, or `None` when the widget has no tabs.
+    pub fn selected_index(&self) -> Option<usize> {
+        self.tabs.get(self.current_index).map(|_| self.current_index)
+    }
+
     /// Returns current tab index.
+    #[deprecated(note = "use `selected_index` (Option) — WDGT-13")]
     pub fn current_index(&self) -> usize {
         self.current_index
     }
@@ -498,6 +528,9 @@ impl TabWidget {
     }
     /// Sets tab position.
     pub fn set_tab_position(&mut self, position: TabPosition) {
+        if self.tab_position == position {
+            return;
+        }
         self.tab_position = position;
         // The strip moved, so the content box moved with it: the selected page has to follow,
         // or it keeps the rectangle the previous side implied until something else resizes it.
@@ -510,6 +543,9 @@ impl TabWidget {
     }
     /// Sets tab shape.
     pub fn set_tab_shape(&mut self, shape: TabShape) {
+        if self.tab_shape == shape {
+            return;
+        }
         self.tab_shape = shape;
         self.base.request_redraw();
     }
@@ -519,6 +555,9 @@ impl TabWidget {
     }
     /// Sets closable state.
     pub fn set_closable(&mut self, closable: bool) {
+        if self.closable == closable {
+            return;
+        }
         self.closable = closable;
         self.base.request_redraw();
     }
@@ -536,6 +575,9 @@ impl TabWidget {
     /// not let the release that follows still move a tab, which is what dropping the live
     /// drag state here prevents.
     pub fn set_movable(&mut self, movable: bool) {
+        if self.movable == movable {
+            return;
+        }
         self.movable = movable;
         if !movable {
             self.cancel_tab_drag();
@@ -691,20 +733,7 @@ impl TabWidget {
         if count == 0 {
             return crate::compat::Vec::new();
         }
-        let measured: crate::compat::Vec<i32> = self
-            .tabs
-            .iter()
-            .map(|tab| {
-                // The shared estimate, not `chars().count() * TAB_CHAR_WIDTH`: one derivation of a
-                // label's advance for the whole crate, matching what `TabView::tab_widths` uses and
-                // what the renderer draws with. The hand-rolled form also mis-measured any
-                // non-Latin caption, since it charged a fixed 8 px per cluster.
-                (estimate_text_width(&tab.title, effective_font(self.style()), 1.0) as i32
-                    + TAB_TEXT_PADDING
-                    + if tab.has_icon() { (TAB_ICON_SIDE + TAB_ICON_GAP) as i32 } else { 0 })
-                .clamp(MIN_TAB_WIDTH, MAX_TAB_WIDTH)
-            })
-            .collect();
+        let measured = self.measured_tab_widths();
         let total: i32 = measured.iter().sum::<i32>() + scaled_tab_spacing() * (count as i32 - 1);
         let available = match self.tab_position {
             TabPosition::North | TabPosition::South => rect.width as i32,
@@ -726,6 +755,51 @@ impl TabWidget {
         // having to squeeze past a floor that claimed to be the share.
         let floor = MIN_TAB_WIDTH / 2;
         crate::compat::vec![(floor.min(share), share, share); count]
+    }
+
+    /// The measured (and clamped) preferred width of every tab, from the cache when its key still
+    /// matches.
+    ///
+    /// The key is "whatever the measurement reads": the caption text, whether the tab reserves an
+    /// icon slot, and the effective font. That makes the cache self-invalidating — a caller cannot
+    /// reach a state where the width is a function of something the key omitted — and it costs one
+    /// hash of the titles plus a `Font` comparison per call instead of a shaping pass per tab.
+    fn measured_tab_widths(&self) -> crate::compat::Vec<i32> {
+        use std::hash::{Hash, Hasher};
+
+        let font = effective_font(self.style()).clone();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for tab in &self.tabs {
+            tab.title.hash(&mut hasher);
+            tab.has_icon().hash(&mut hasher);
+        }
+        let fingerprint = hasher.finish();
+
+        {
+            let cache = self.tab_width_cache.borrow();
+            if cache.font.as_ref() == Some(&font) && cache.fingerprint == fingerprint {
+                return cache.widths.clone();
+            }
+        }
+
+        // The shared estimate, not `chars().count() * TAB_CHAR_WIDTH`: one derivation of a
+        // label's advance for the whole crate, matching what `TabView::tab_widths` uses and
+        // what the renderer draws with. The hand-rolled form also mis-measured any
+        // non-Latin caption, since it charged a fixed 8 px per cluster.
+        let widths: crate::compat::Vec<i32> = self
+            .tabs
+            .iter()
+            .map(|tab| {
+                (estimate_text_width(&tab.title, &font, 1.0) as i32
+                    + TAB_TEXT_PADDING
+                    + if tab.has_icon() { (TAB_ICON_SIDE + TAB_ICON_GAP) as i32 } else { 0 })
+                .clamp(MIN_TAB_WIDTH, MAX_TAB_WIDTH)
+            })
+            .collect();
+
+        *self.tab_width_cache.borrow_mut() =
+            TabWidthCache { font: Some(font), fingerprint, widths: widths.clone() };
+        widths
     }
 
     /// The tab strip as a run, in strip order and strip coordinates starting at `(0, 0)`.
@@ -1010,7 +1084,7 @@ impl WidgetProperties for TabWidget {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "tab_count" => Ok(CapabilityValue::UInt(self.count() as u64)),
-            "current_index" => Ok(CapabilityValue::UInt(self.current_index() as u64)),
+            "current_index" => Ok(CapabilityValue::UInt(self.selected_index().unwrap_or(0) as u64)),
             // Symmetric with the writer below: a value that can be set can be read back.
             // Without this arm the property would be write-only, which is the one-directional
             // contract rule #97 forbids.
@@ -1481,7 +1555,7 @@ mod tests {
         assert_eq!(tw.kind(), WidgetKind::TabWidget);
         assert_eq!(tw.geometry(), Rect::new(10, 20, 400, 300));
         assert_eq!(tw.count(), 0);
-        assert_eq!(tw.current_index(), 0);
+        assert_eq!(tw.selected_index().unwrap_or(0), 0);
         assert!(tw.current_widget().is_none());
         assert_eq!(tw.tab_position(), TabPosition::North);
         assert_eq!(tw.tab_shape(), TabShape::Rounded);
@@ -1558,7 +1632,7 @@ mod tests {
         tw.set_current_index(1);
         tw.insert_tab(0, "X".to_string(), None);
         // current_index was 1, now should be 2 because a tab was inserted before it
-        assert_eq!(tw.current_index(), 2);
+        assert_eq!(tw.selected_index().unwrap_or(0), 2);
     }
 
     #[test]
@@ -1615,7 +1689,7 @@ mod tests {
         tw.add_tab("A".to_string(), None);
         tw.remove_tab(0);
         assert_eq!(tw.count(), 0);
-        assert_eq!(tw.current_index(), 0);
+        assert_eq!(tw.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
@@ -1626,7 +1700,7 @@ mod tests {
         tw.add_tab("C".to_string(), None);
         tw.set_current_index(2);
         tw.remove_tab(2);
-        assert_eq!(tw.current_index(), 1);
+        assert_eq!(tw.selected_index().unwrap_or(0), 1);
     }
 
     #[test]
@@ -1648,7 +1722,7 @@ mod tests {
         tw.add_tab("A".to_string(), Some(wid1()));
         tw.add_tab("B".to_string(), Some(wid2()));
         tw.set_current_index(1);
-        assert_eq!(tw.current_index(), 1);
+        assert_eq!(tw.selected_index().unwrap_or(0), 1);
         assert_eq!(tw.current_widget(), Some(wid2()));
     }
 
@@ -1657,7 +1731,7 @@ mod tests {
         let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
         tw.add_tab("A".to_string(), None);
         tw.set_current_index(10);
-        assert_eq!(tw.current_index(), 0);
+        assert_eq!(tw.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
@@ -1666,7 +1740,7 @@ mod tests {
         tw.add_tab("A".to_string(), None);
         tw.add_tab("B".to_string(), None);
         tw.set_current_index(0); // already 0
-        assert_eq!(tw.current_index(), 0);
+        assert_eq!(tw.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
@@ -1682,11 +1756,11 @@ mod tests {
         tw.add_tab("B".to_string(), None);
         tw.add_tab("C".to_string(), None);
         tw.set_current_index(2);
-        assert_eq!(tw.current_index(), 2);
+        assert_eq!(tw.selected_index().unwrap_or(0), 2);
         tw.set_current_index(0);
-        assert_eq!(tw.current_index(), 0);
+        assert_eq!(tw.selected_index().unwrap_or(0), 0);
         tw.set_current_index(1);
-        assert_eq!(tw.current_index(), 1);
+        assert_eq!(tw.selected_index().unwrap_or(0), 1);
     }
 
     // ── 6. Tab count after operations ─────────────────────────────────────────
@@ -2072,7 +2146,7 @@ mod tests {
         tw.handle_event(&event);
 
         // current_index should still be 0 because the widget is disabled
-        assert_eq!(tw.current_index(), 0);
+        assert_eq!(tw.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
@@ -2093,7 +2167,7 @@ mod tests {
         let event = Event::mouse_press(click_x, second.y + 2, 1);
         tw.handle_event(&event);
 
-        assert_eq!(tw.current_index(), 1);
+        assert_eq!(tw.selected_index().unwrap_or(0), 1);
     }
 
     #[test]
@@ -2111,7 +2185,7 @@ mod tests {
         tw.handle_event(&event);
 
         // Should NOT switch because tab 1 is disabled
-        assert_eq!(tw.current_index(), 0);
+        assert_eq!(tw.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
@@ -2127,7 +2201,7 @@ mod tests {
         tw.handle_event(&event);
 
         // Should NOT switch because only button 1 (left click) triggers switch
-        assert_eq!(tw.current_index(), 0);
+        assert_eq!(tw.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
@@ -2142,7 +2216,7 @@ mod tests {
         let event = Event::mouse_press(500, 0, 1);
         tw.handle_event(&event);
 
-        assert_eq!(tw.current_index(), 0);
+        assert_eq!(tw.selected_index().unwrap_or(0), 0);
     }
 
     // ── 15. SVG output verification ───────────────────────────────────────────
@@ -2387,13 +2461,13 @@ mod tests {
         // Dragging the current tab must not leave the selection on the slot it vacated.
         assert!(tw.move_tab(2, 0));
         assert_eq!(titles(&tw), vec!["T2", "T0", "T1"]);
-        assert_eq!(tw.current_index(), 0);
+        assert_eq!(tw.selected_index().unwrap_or(0), 0);
 
         // And dragging another tab across the selection shifts it by one slot.
         tw.set_current_index(0); // the dragged tab
         assert!(tw.move_tab(2, 0));
         assert_eq!(titles(&tw), vec!["T1", "T2", "T0"]);
-        assert_eq!(tw.current_index(), 1);
+        assert_eq!(tw.selected_index().unwrap_or(0), 1);
     }
 
     /// A press on a tab of a *movable* strip that then travels reorders it.
@@ -2446,7 +2520,7 @@ mod tests {
         tw.handle_event(&Event::MouseMove { pos: Point::new(third.x + third.width as i32 / 2, y) });
         assert_eq!(titles(&tw), vec!["T0", "T1", "T2"]);
         // The press still selected, which is the behaviour a non-movable strip keeps.
-        assert_eq!(tw.current_index(), 0);
+        assert_eq!(tw.selected_index().unwrap_or(0), 0);
     }
 
     /// A press-and-jitter must stay a click rather than a reorder.
@@ -2551,6 +2625,15 @@ mod tests {
         assert_eq!(tw.tab_shape(), TabShape::Triangular);
     }
 
+    /// The canonical getter reports `None` until a tab exists (WDGT-13).
+    #[test]
+    fn selected_index_is_none_for_an_empty_tab_widget() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        assert_eq!(tw.selected_index(), None);
+        tw.add_tab("A".to_string(), None);
+        assert_eq!(tw.selected_index(), Some(0));
+    }
+
     /// Removing a tab before the selection renumbers it, and the shift is announced.
     ///
     /// A subscriber keyed by index would otherwise keep the old number and address the
@@ -2572,7 +2655,47 @@ mod tests {
         });
 
         tw.remove_tab(0);
-        assert_eq!(tw.current_index(), 1, "the selected tab keeps its identity");
+        assert_eq!(tw.selected_index().unwrap_or(0), 1, "the selected tab keeps its identity");
         assert_eq!(*emitted.lock().unwrap(), Some(1), "the new index is announced");
+    }
+
+    /// The measured widths are reused until an input the measurement reads changes.
+    ///
+    /// This pins the cache contract (WDGT-16): a repeated `tab_width_hints` call must not
+    /// re-measure, a changed caption must, and a font change must — the three inputs the key is
+    /// derived from. The strip width is deliberately *not* one of them: it only decides the
+    /// overflow division, so resizing must not force a re-shape either.
+    #[test]
+    fn tabwidget_widths_are_cached_and_invalidated_by_their_inputs() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 600, 200));
+        tw.add_tab("One".to_string(), None);
+        tw.add_tab("Two".to_string(), None);
+
+        let first = tw.tab_width_hints();
+        assert_eq!(first.len(), 2);
+        assert_eq!(first, tw.tab_width_hints(), "an unchanged strip reuses the measurement");
+
+        // Resizing changes the overflow arithmetic, not the measured widths.
+        tw.set_geometry(Rect::new(0, 0, 80, 200));
+        let narrow = tw.tab_width_hints();
+        assert_eq!(
+            narrow[0].0,
+            MIN_TAB_WIDTH / 2,
+            "overflow lowers the floor, not the measurement"
+        );
+
+        // A longer caption must be re-measured.
+        tw.set_geometry(Rect::new(0, 0, 600, 200));
+        tw.set_tab_text(1, "A considerably longer tab caption".to_string());
+        let renamed = tw.tab_width_hints();
+        assert!(renamed[1].1 > first[1].1, "the changed caption is measured again");
+        assert_eq!(renamed[0].1, first[0].1, "the untouched tab keeps its width");
+
+        // A font change changes every advance, so the cache key's font component must invalidate.
+        let mut style = tw.style().clone();
+        style.font = Some(Font::builder().family("Arial").size(28.0).build());
+        tw.set_style(style);
+        let larger = tw.tab_width_hints();
+        assert!(larger[0].1 > first[0].1, "a larger font re-measures even when no caption changed");
     }
 }

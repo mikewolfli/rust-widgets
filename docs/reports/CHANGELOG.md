@@ -5,6 +5,37 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.8.14 (2026-10-22) — 114-item sweep: off-thread media decode, cheaper frames, one property channel
+
+This release closes every item in `docs/issues/issue-20261021.md` — 114 of 114, across the core
+layer, widget infrastructure, widget families, rendering/layout/style, platform, media/IO and the
+binding/JSON/export surface — and adds a review pass over the resulting code. The item-by-item
+record with its verification evidence is in `docs/log/log-20261021-2.md`.
+
+### Media: decoding no longer runs on the frame loop
+
+- In-memory video sources are demuxed through a seekable cursor instead of a temporary file, so opening a video no longer writes the whole buffer to disk and reads it back.
+- `VideoEngine` decodes on a named worker thread with a bounded read-ahead queue. Seeks are generation-tagged: frames decoded for the previous position are dropped rather than shown, and `seek` still returns the decoder's error.
+- `AudioEngine::load_async`, `poll_load`, `wait_for_load` and `is_loading` decode on a worker; `load` remains the synchronous shorthand. A new load supersedes an earlier one.
+- `image::decoder::decode_async` returns an `ImageDecodeJob` (`wait` / `try_take`).
+- All three fall back to synchronous decoding when a thread cannot be spawned, so the failure mode is "slower", never "nothing loads".
+
+### Layout and rendering
+
+- `ToolBar` computes its item bands once per draw and once per hit test instead of once per item.
+- `FlexLayout` caches the last arrangement keyed by every input (configuration fields, rectangle, scale, touch and every child hint), so measure/arrange/paint repeats skip the solver; the cache misses instead of going stale.
+- The wgpu renderer keeps one colour arena with dynamic uniform offsets, one bind group, a grow-only vertex buffer, a grow-only readback buffer and size-keyed offscreen targets across calls. The offset stride is read from the device's `min_uniform_buffer_offset_alignment` rather than assumed to be 256.
+- `GpuStagingBufferPool` is documented as CPU-only accounting, with the condition under which it is deleted.
+
+### Loading and the export surface
+
+- JSON `create_widget` arms now only construct a widget; every published property goes through the same name-driven channel. Two gates assert that no arm re-implements a published property and that every factory name the registry accepts is constructible.
+- The crate root exports each widget explicitly instead of `pub use widget::*`, so adding a widget is a deliberate act and the export surface can be audited.
+
+### Verification
+
+- 7550 library tests pass with `--features desktop`; 156 video/audio tests and 4 real GPU renderer tests (submit + readback) pass; `clippy --all-targets` is warning-free for `desktop` and `desktop,gpu-wgpu`; `mini`, `embedded` and the cross-target matrix build; `cargo fmt --check` is clean.
+
 ## 2.8.13 (2026-10-21) — composite content, correct labels, cheaper editor frames, mobile safe area
 
 This release makes the non-basic controls show their own content and their own words, and removes

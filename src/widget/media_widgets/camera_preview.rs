@@ -125,7 +125,11 @@ impl CameraPreview {
     ///
     /// Used for the on-screen "WxH" text; no capture pipeline exists.
     pub fn set_resolution(&mut self, w: u32, h: u32) {
-        self.resolution = (w.max(1), h.max(1));
+        let resolution = (w.max(1), h.max(1));
+        if self.resolution == resolution {
+            return;
+        }
+        self.resolution = resolution;
         self.base.request_redraw();
     }
 
@@ -136,6 +140,9 @@ impl CameraPreview {
 
     /// Enables or disables mirror mode (horizontal flip).
     pub fn set_mirror_mode(&mut self, mirrored: bool) {
+        if self.mirror_mode == mirrored {
+            return;
+        }
         self.mirror_mode = mirrored;
         self.base.request_redraw();
     }
@@ -147,7 +154,11 @@ impl CameraPreview {
 
     /// Sets the zoom level (1.0 = normal, 2.0 = 2x, etc.).
     pub fn set_zoom(&mut self, level: f32) {
-        self.zoom_level = level.clamp(1.0, 10.0);
+        let level = level.clamp(1.0, 10.0);
+        if self.zoom_level == level {
+            return;
+        }
+        self.zoom_level = level;
         self.base.request_redraw();
     }
 

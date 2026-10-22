@@ -19,7 +19,7 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-use crate::undo::{TextSnapshotCommand, UndoStack};
+use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::coercion::{
     expect_horizontal_alignment, expect_string, horizontal_alignment_to_str,
 };
@@ -188,12 +188,13 @@ impl MaskedEdit {
     /// control painted nothing. That is why the census SVG for this control contained an
     /// empty `<text></text>`: not a rendering subtlety, but a setter that threw its
     /// argument away.
-    pub fn set_text(&mut self, text: &str) {
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
         let before = self.raw_text.clone();
         self.raw_text = String::new();
         if self.segments.is_empty() {
             // No mask: the text is the value, verbatim.
-            self.raw_text = text.to_string();
+            self.raw_text = text;
         } else {
             let mut chars = text.chars();
             for seg in &self.segments {
@@ -216,10 +217,11 @@ impl MaskedEdit {
         self.cursor_pos = self.segments.len();
         if !self.restoring_history {
             *self.history_target.borrow_mut() = self.raw_text.clone();
-            self.undo_stack.push(Box::new(TextSnapshotCommand::new(
+            self.undo_stack.push(Box::new(ValueCommand::new(
                 self.history_target.clone(),
                 before,
                 self.raw_text.clone(),
+                "Edit text",
                 "masked_edit_text",
             )));
         }
@@ -309,7 +311,11 @@ impl MaskedEdit {
     /// anchor behind, and the next `Shift+arrow` extended from a position belonging to a gesture the
     /// user had already finished — a range starting somewhere they never chose.
     pub fn set_cursor_pos(&mut self, pos: usize) {
-        self.cursor_pos = pos.min(self.segments.len());
+        let pos = pos.min(self.segments.len());
+        if self.cursor_pos == pos && self.selection_anchor.is_none() {
+            return;
+        }
+        self.cursor_pos = pos;
         self.selection_anchor = None;
         self.base.request_redraw();
     }

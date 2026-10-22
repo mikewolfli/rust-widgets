@@ -7,56 +7,12 @@ use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
+use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-static NEXT_KEY_SEQUENCE_COMMAND_ID: AtomicU64 = AtomicU64::new(1);
-
-struct KeySequenceCommand {
-    id: CommandId,
-    target: Rc<RefCell<KeySequence>>,
-    before: KeySequence,
-    after: KeySequence,
-}
-
-impl KeySequenceCommand {
-    fn new(target: Rc<RefCell<KeySequence>>, before: KeySequence, after: KeySequence) -> Self {
-        Self {
-            id: CommandId(NEXT_KEY_SEQUENCE_COMMAND_ID.fetch_add(1, Ordering::Relaxed)),
-            target,
-            before,
-            after,
-        }
-    }
-}
-
-impl UndoCommand for KeySequenceCommand {
-    fn id(&self) -> CommandId {
-        self.id
-    }
-
-    fn description(&self) -> CommandDescription {
-        CommandDescription {
-            text: "Edit key sequence".to_string(),
-            timestamp_ms: 0,
-            command_type: "key_sequence_edit",
-        }
-    }
-
-    fn execute(&mut self) -> Result<(), String> {
-        *self.target.borrow_mut() = self.after.clone();
-        Ok(())
-    }
-
-    fn undo(&mut self) -> Result<(), String> {
-        *self.target.borrow_mut() = self.before.clone();
-        Ok(())
-    }
-}
 /// Represents a key sequence (modifier + key name).
 ///
 /// A sequence is a single chord, not a multi-step sequence: one modifier
@@ -250,10 +206,12 @@ impl KeySequenceEdit {
         self.key_sequence = seq.clone();
         if !self.restoring_history {
             *self.history_target.borrow_mut() = self.key_sequence.clone();
-            self.undo_stack.push(Box::new(KeySequenceCommand::new(
+            self.undo_stack.push(Box::new(ValueCommand::new(
                 self.history_target.clone(),
                 before,
                 self.key_sequence.clone(),
+                "Edit key sequence",
+                "key_sequence_edit",
             )));
         }
         self.key_sequence_changed.emit(seq);

@@ -23,7 +23,7 @@ macro_rules! impl_menu_widgets {
             width: u32,
             height: u32,
         ) -> ObjectId {
-            #[cfg(not(alloc_frugal))]
+            #[cfg(all(not(alloc_frugal), full_widgets))]
             {
                 // A menu handed to a **bar** is one of that bar's top-level titles, so two
                 // things must happen and only one of them is widget creation:
@@ -83,6 +83,21 @@ macro_rules! impl_menu_widgets {
                     });
                 }
                 id
+            }
+            #[cfg(all(not(alloc_frugal), not(full_widgets)))]
+            {
+                // `menu_toolbar` exists only where the full widget set is compiled. Without it
+                // there is no bar entry and no heading flag to set, but the popup itself is
+                // still a widget: mount it so the call does not silently create nothing.
+                self.mount_widget_of_kind(
+                    crate::control_backend::custom::MENU_KIND,
+                    parent,
+                    text,
+                    x,
+                    y,
+                    width,
+                    height,
+                )
             }
             #[cfg(alloc_frugal)]
             {

@@ -22,7 +22,7 @@ use crate::core::{Color, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
+use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::advanced_widgets::{date_edit::Date, time_edit::Time};
 use crate::widget::capability::coercion::{
     expect_bool, expect_datetime, expect_horizontal_alignment, expect_string,
@@ -36,51 +36,7 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-static NEXT_DATE_TIME_EDIT_COMMAND_ID: AtomicU64 = AtomicU64::new(1);
-
-struct DateTimeEditCommand {
-    id: CommandId,
-    target: Rc<RefCell<DateTime>>,
-    before: DateTime,
-    after: DateTime,
-}
-
-impl DateTimeEditCommand {
-    fn new(target: Rc<RefCell<DateTime>>, before: DateTime, after: DateTime) -> Self {
-        Self {
-            id: CommandId(NEXT_DATE_TIME_EDIT_COMMAND_ID.fetch_add(1, Ordering::Relaxed)),
-            target,
-            before,
-            after,
-        }
-    }
-}
-
-impl UndoCommand for DateTimeEditCommand {
-    fn id(&self) -> CommandId {
-        self.id
-    }
-
-    fn description(&self) -> CommandDescription {
-        CommandDescription {
-            text: "Edit date-time".to_string(),
-            timestamp_ms: 0,
-            command_type: "date_time_edit",
-        }
-    }
-
-    fn execute(&mut self) -> Result<(), String> {
-        *self.target.borrow_mut() = self.after;
-        Ok(())
-    }
-
-    fn undo(&mut self) -> Result<(), String> {
-        *self.target.borrow_mut() = self.before;
-        Ok(())
-    }
-}
 /// Combined date-time value.
 ///
 /// This is a plain pair: the fields are public, so they can be replaced
@@ -262,10 +218,12 @@ impl DateTimeEdit {
             self.datetime = dt;
             if !self.restoring_history {
                 *self.history_target.borrow_mut() = self.datetime;
-                self.undo_stack.push(Box::new(DateTimeEditCommand::new(
+                self.undo_stack.push(Box::new(ValueCommand::new(
                     self.history_target.clone(),
                     before,
                     self.datetime,
+                    "Edit date-time",
+                    "date_time_edit",
                 )));
             }
             self.datetime_changed.emit(dt);
@@ -294,6 +252,9 @@ impl DateTimeEdit {
     /// a value below its own minimum — which would make every later
     /// [`DateTimeEdit::set_datetime`] call fail silently.
     pub fn set_minimum_datetime(&mut self, dt: DateTime) {
+        if self.minimum == dt {
+            return;
+        }
         self.minimum = dt;
         self.clamp_to_range();
         self.base.request_redraw();
@@ -303,6 +264,9 @@ impl DateTimeEdit {
     /// The current value is clamped down into the new range, like
     /// [`DateTimeEdit::set_minimum_datetime`] clamps up.
     pub fn set_maximum_datetime(&mut self, dt: DateTime) {
+        if self.maximum == dt {
+            return;
+        }
         self.maximum = dt;
         self.clamp_to_range();
         self.base.request_redraw();
@@ -321,6 +285,9 @@ impl DateTimeEdit {
     /// The string is kept verbatim; no validation is performed. See
     /// [`DateTimeEdit::display_format`] for the current limits on its use.
     pub fn set_display_format(&mut self, fmt: String) {
+        if self.display_format == fmt {
+            return;
+        }
         self.display_format = fmt;
         self.base.request_redraw();
     }
@@ -328,6 +295,9 @@ impl DateTimeEdit {
     ///
     /// Purely stored state; changing it only triggers a redraw.
     pub fn set_calendar_popup(&mut self, popup: bool) {
+        if self.calendar_popup == popup {
+            return;
+        }
         self.calendar_popup = popup;
         self.base.request_redraw();
     }

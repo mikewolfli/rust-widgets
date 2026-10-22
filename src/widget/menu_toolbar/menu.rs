@@ -497,6 +497,9 @@ impl Menu {
     /// This has nothing to do with the title a menu-bar entry shows — that comes
     /// from the menu-bar API, not from this type.
     pub fn set_title(&mut self, title: String) {
+        if self.title == title {
+            return;
+        }
         self.title = title;
         self.base.request_redraw();
     }

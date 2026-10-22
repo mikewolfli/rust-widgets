@@ -9,13 +9,11 @@
 //! Decodes frames to RGBA8 format and populates full `VideoMetadata`.
 
 use std::collections::VecDeque;
-use std::fs;
-use std::io::Write;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::io::Cursor;
 
 use ffmpeg_next::codec::decoder::Video as VideoDecoder;
 use ffmpeg_next::format::context::Input;
+use ffmpeg_next::format::context::StreamIo;
 use ffmpeg_next::media;
 use ffmpeg_next::software;
 use ffmpeg_next::util::format;
@@ -25,49 +23,6 @@ use crate::video::format::ContainerFormat;
 use crate::video::frame::{FrameType, VideoFrame};
 use crate::video::metadata::VideoMetadata;
 use crate::video::VideoDecoder as VideoDecoderTrait;
-
-// ---------------------------------------------------------------------------
-// Atomic counter for unique temp-file names
-// ---------------------------------------------------------------------------
-
-static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn next_temp_path() -> PathBuf {
-    let count = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let pid = std::process::id();
-    let mut path = std::env::temp_dir();
-    path.push(format!("rust_widgets_ffmpeg_{pid}_{count}.tmp"));
-    path
-}
-
-/// Removes a temporary file on drop unless the decoder took ownership of it.
-///
-/// Construction creates the file before the payload is written; any failure in
-/// between must not leave the file behind.
-struct TempFileGuard {
-    path: PathBuf,
-    armed: bool,
-}
-
-impl TempFileGuard {
-    fn new(path: PathBuf) -> Self {
-        Self { path, armed: true }
-    }
-
-    /// Hands ownership of the path to the decoder (which cleans it up on drop).
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for TempFileGuard {
-    fn drop(&mut self) {
-        if self.armed {
-            // Best effort: never mask the original error.
-            let _ = fs::remove_file(&self.path);
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Standalone convenience: decode entire video in one shot
@@ -126,11 +81,9 @@ pub struct FfmpegDecoder {
     stream_index: usize,
     /// Time base of the video stream (for PTS → seconds conversion).
     time_base: Rational,
-    /// Temporary file path (cleaned up on drop).
-    _temp_path: Option<PathBuf>,
 
     // ── streaming state ──────────────────────────────────────────────
-    /// True when the demuxer has been fully consumed.
+    /// Whether the demuxer has been fully consumed.
     eof: bool,
     /// True after `send_eof()` has been called (decoder flushed).
     flushed: bool,
@@ -150,6 +103,17 @@ unsafe impl Send for FfmpegDecoder {}
 
 impl FfmpegDecoder {
     /// Create a new FFmpeg decoder from raw video bytes.
+    ///
+    /// # Why the bytes are not written to a temporary file
+    ///
+    /// The first implementation wrote the whole buffer to a temp path and asked FFmpeg to open
+    /// it, which cost a full disk write plus a read-back on the calling thread for a source the
+    /// caller already had in memory (MEDIA-03). ffmpeg-next 9 exposes custom AVIO through
+    /// [`StreamIo`], so the demuxer reads a seekable [`Cursor`] over the caller's bytes instead:
+    /// no file is created, and nothing needs cleaning up on success or on an error path.
+    ///
+    /// The stream stays seekable, so [`VideoDecoderTrait::seek`] keeps working exactly as it did
+    /// over a file.
     pub fn new(data: Vec<u8>) -> Result<Self, String> {
         ffmpeg_next::init().map_err(|e| {
             format!(
@@ -158,54 +122,30 @@ impl FfmpegDecoder {
             )
         })?;
 
-        // Write data to a temporary file so ffmpeg-next can open it.
-        let temp_path = next_temp_path();
-
-        // The file is created on disk before the writes below, and the writes can
-        // fail (`?`). Without a guard those early returns leaked the temp file —
-        // the pre-existing cleanup only ran when `from_path` returned `Err`, so a
-        // failed `write_all`/`flush` left the file behind.
-        let mut temp_guard = TempFileGuard::new(temp_path.clone());
-
-        let mut file = fs::File::create(&temp_path).map_err(|e| {
-            format!("temp file '{}' could not be created: {e}", temp_path.display())
+        let byte_len = data.len();
+        let stream_io = StreamIo::from_read_seek(Cursor::new(data)).map_err(|e| {
+            format!("{byte_len} in-memory bytes could not be wrapped for FFmpeg's demuxer: {e}")
         })?;
-        file.write_all(&data).map_err(|e| {
+        let input = ffmpeg_next::format::input_from_stream(stream_io, None, None).map_err(|e| {
             format!(
-                "{} bytes could not be written to temp file '{}': {e}",
-                data.len(),
-                temp_path.display()
+                "FFmpeg could not open the in-memory source ({byte_len} bytes; unsupported or \
+                 corrupt container): {e}"
             )
         })?;
-        file.flush().map_err(|e| {
-            format!("temp file '{}' could not be flushed to disk: {e}", temp_path.display())
-        })?;
-        // Close the handle before FFmpeg opens the path, so the write is durable
-        // on platforms that lock the file (Windows).
-        drop(file);
 
-        // On failure the guard removes the file; on success ownership passes to
-        // the decoder, whose `Drop` cleans up `_temp_path`.
-        let decoder = Self::from_path(&temp_path)?;
-        temp_guard.disarm();
-        Ok(decoder)
+        Self::from_input(input, "in-memory source")
     }
 
-    /// Open an FFmpeg decoder from a file path.
-    fn from_path(path: &std::path::Path) -> Result<Self, String> {
-        let input = ffmpeg_next::format::input(path).map_err(|e| {
-            format!(
-                "FFmpeg could not open input '{}' (unsupported or corrupt container): {e}",
-                path.display()
-            )
-        })?;
-
+    /// Build a decoder over an already-open demuxer.
+    ///
+    /// `label` names the source in diagnostics; it used to be a path that both the open and the
+    /// "no video stream" message interpolated.
+    fn from_input(input: Input, label: &str) -> Result<Self, String> {
         // Find the best video stream.
         let stream = input.streams().best(media::Type::Video).ok_or_else(|| {
             format!(
-                "input '{}' has no video stream ({} stream(s) present): audio-only \
-                     containers cannot be decoded into frames",
-                path.display(),
+                "input '{label}' has no video stream ({} stream(s) present): audio-only \
+                 containers cannot be decoded into frames",
                 input.streams().len()
             )
         })?;
@@ -258,7 +198,6 @@ impl FfmpegDecoder {
             metadata,
             stream_index,
             time_base,
-            _temp_path: Some(path.to_path_buf()),
             eof: false,
             flushed: false,
             buffered: VecDeque::new(),
@@ -442,9 +381,9 @@ impl VideoDecoderTrait for FfmpegDecoder {
 
 impl Drop for FfmpegDecoder {
     fn drop(&mut self) {
-        if let Some(path) = self._temp_path.take() {
-            let _ = fs::remove_file(&path);
-        }
+        // The demuxer owns its custom IO (a `Cursor` over the caller's bytes), so dropping the
+        // input releases the buffer; there is no file to unlink (MEDIA-03).
+        self.buffered.clear();
     }
 }
 
@@ -775,10 +714,14 @@ mod tests {
         assert_eq!(codec_name_from_id(ffmpeg_next::codec::Id::MJPEG), "mjpeg");
     }
 
-    /// Returns true when this process still has the decoder temp file `index`.
-    fn decoder_temp_file_exists(index: u64) -> bool {
+    /// Returns true when this process has any decoder temp file left in the temp directory.
+    ///
+    /// The decoder no longer creates one (MEDIA-03) — it reads the caller's bytes through a
+    /// seekable in-memory AVIO stream. This scans for the prefix the old implementation used so a
+    /// regression that starts writing files again is caught rather than silently accepted.
+    fn any_decoder_temp_file_exists() -> bool {
         let pid = std::process::id();
-        let prefix = format!("rust_widgets_ffmpeg_{pid}_{index}.");
+        let prefix = format!("rust_widgets_ffmpeg_{pid}_");
         std::fs::read_dir(std::env::temp_dir())
             .map(|entries| {
                 entries
@@ -788,46 +731,27 @@ mod tests {
             .unwrap_or(false)
     }
 
-    /// Serializes the temp-file lifecycle tests.
-    ///
-    /// `TEMP_COUNTER` is shared by every decoder test in this thread pool, so
-    /// reading it and then calling `new()` is racy: a concurrent test can claim
-    /// the same index in between. The lock removes that window (and the rare
-    /// false failure it produced).
+    /// Serializes the tests that assert on process-global temp-directory state.
     static DECODER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// A **failed** decoder construction must not leave its temp file behind.
+    /// A **failed** decoder construction must not write a temp file at all.
     ///
-    /// Regression: the file is created before the payload is written, and the
-    /// write/flush steps use `?`. Before the `TempFileGuard`, an error there
-    /// returned early without deleting the file (the old cleanup only ran for
-    /// `from_path` failures).
+    /// This is the regression gate for MEDIA-03: the old implementation wrote the whole buffer
+    /// to disk before asking FFmpeg to open it, so a failed decode could leave the file behind.
     #[test]
     fn test_failed_decoder_leaves_no_temp_file() {
         let _serial = DECODER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let index = TEMP_COUNTER.load(Ordering::Relaxed);
-
         let result = FfmpegDecoder::new(vec![0u8; 100]);
         assert!(result.is_err(), "invalid video data must fail to decode");
-
-        assert!(
-            !decoder_temp_file_exists(index),
-            "a failed decoder construction leaked its temp file (index {index})"
-        );
+        assert!(!any_decoder_temp_file_exists(), "a failed decoder construction wrote a temp file");
     }
 
-    /// A decoder temp file must never survive construction, whether it succeeded
-    /// (the decoder owns it and removes it on drop) or failed (the guard
-    /// removes it).
+    /// Construction must not write a temp file, whether it succeeds or fails.
     #[test]
     fn test_decoder_leaves_no_temp_file() {
         let _serial = DECODER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let index = TEMP_COUNTER.load(Ordering::Relaxed);
         let _ = FfmpegDecoder::new(small_mp4_data());
-        assert!(
-            !decoder_temp_file_exists(index),
-            "a decoder temp file survived construction (index {index})"
-        );
+        assert!(!any_decoder_temp_file_exists(), "a decoder temp file survived construction");
     }
 
     /// N-S-53: the seek target must be expressed in AV_TIME_BASE microseconds,

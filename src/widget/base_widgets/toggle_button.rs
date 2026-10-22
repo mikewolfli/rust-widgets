@@ -170,6 +170,9 @@ impl ToggleButton {
     /// one is checked. Setting it requests a redraw even though the flag is not
     /// drawn.
     pub fn set_auto_exclusive(&mut self, exclusive: bool) {
+        if self.auto_exclusive == exclusive {
+            return;
+        }
         self.auto_exclusive = exclusive;
         self.base.request_redraw();
     }
@@ -183,6 +186,9 @@ impl ToggleButton {
     /// Sets (or clears, with `None`) the group id. See
     /// [`ToggleButton::group_id`].
     pub fn set_group_id(&mut self, group_id: Option<String>) {
+        if self.group_id == group_id {
+            return;
+        }
         self.group_id = group_id;
         self.base.request_redraw();
     }

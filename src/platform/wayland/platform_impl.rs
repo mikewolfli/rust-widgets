@@ -461,7 +461,12 @@ impl Platform for WaylandPlatform {
 
         #[cfg(not(all(feature = "wayland-native", not(alloc_frugal), unix_desktop)))]
         while self.runtime.running.load(std::sync::atomic::Ordering::SeqCst) {
-            std::thread::sleep(std::time::Duration::from_millis(16));
+            // The library-painted path's frame loop. This used to be `sleep(16)` and nothing
+            // else, so no trigger was drained and no control advanced: resizes were never
+            // applied and every animation stayed frozen. Advance the frame exactly as the
+            // Linux backend's state-only loop does, then block when no frame is owed.
+            let outcome = crate::drive_frame(FRAME_INTERVAL_MS);
+            crate::platform::frame_wait::pause_between_frames(outcome.needs_another_frame);
         }
     }
 
@@ -486,19 +491,9 @@ impl Platform for WaylandPlatform {
     /// nothing per-widget to release there and no protocol request is issued.
     fn destroy_widget(&self, widget_id: ObjectId) -> bool {
         if let Ok(mut menus) = self.menus.lock() {
-            // The widget may be an attached menu bar (keyed by window id) or a
-            // window owning one, so both directions are cleared.
-            menus.attached_menu_bar.remove(&widget_id);
-            menus.attached_menu_bar.retain(|_, bar| *bar != widget_id);
-            // The widget may be a container in the menu tree: drop both the
-            // children it owned and the child entry under its own parent.
-            menus.menu_children.remove(&widget_id);
-            for children in menus.menu_children.values_mut() {
-                children.retain(|child| *child != widget_id);
-            }
-            // Drop queued triggers that reference a widget that no longer exists.
-            menus.pending_menu_events.retain(|queued| *queued != widget_id);
-            menus.pending_widget_events.retain(|event| event.widget_id != widget_id);
+            // Both directions of the attached-bar map, the menu subtree and the queues are
+            // cleared by the shared rule (PLAT-08).
+            menus.purge(widget_id);
         } else {
             log::error!("[wayland] destroy_widget: menu mutex poisoned");
         }

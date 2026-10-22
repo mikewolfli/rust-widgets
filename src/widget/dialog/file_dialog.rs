@@ -152,6 +152,9 @@ impl FileDialog {
     }
     /// Sets the modality flag and repaints. See [`FileDialog::is_modal`].
     pub fn set_modal(&mut self, modal: bool) {
+        if self.modal == modal {
+            return;
+        }
         self.modal = modal;
         self.base.request_redraw();
     }
@@ -236,14 +239,22 @@ impl FileDialog {
     }
     /// Sets the title shown in the header bar and repaints.
     pub fn set_title(&mut self, title: impl Into<String>) {
-        self.title = title.into();
+        let title = title.into();
+        if self.title == title {
+            return;
+        }
+        self.title = title;
         self.base.request_redraw();
     }
     /// Sets the directory the dialog reports as current and repaints.
     ///
     /// Purely informational — see [`FileDialog::directory`].
     pub fn set_directory(&mut self, dir: impl Into<String>) {
-        self.directory = dir.into();
+        let dir = dir.into();
+        if self.directory == dir {
+            return;
+        }
+        self.directory = dir;
         self.base.request_redraw();
     }
     /// Replaces the filter list and repaints.

@@ -122,7 +122,11 @@ impl CommandPalette {
 
     /// Sets row height.
     pub fn set_row_height(&mut self, row_height: u32) {
-        self.row_height = row_height.max(1);
+        let row_height = row_height.max(1);
+        if self.row_height == row_height {
+            return;
+        }
+        self.row_height = row_height;
         self.base.request_layout();
         self.base.request_redraw();
     }

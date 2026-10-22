@@ -155,6 +155,74 @@ pub fn decode(data: &[u8]) -> Result<DecodedImage, String> {
     }
 }
 
+/// A background image decode started by [`decode_async`].
+pub struct ImageDecodeJob {
+    receiver: std::sync::mpsc::Receiver<Result<DecodedImage, String>>,
+}
+
+impl ImageDecodeJob {
+    /// Blocks until the decode finishes.
+    pub fn wait(self) -> Result<DecodedImage, String> {
+        match self.receiver.recv() {
+            Ok(result) => result,
+            Err(_) => Err(
+                "the image decode thread stopped before producing a result; the image could not \
+                 be decoded"
+                    .to_string(),
+            ),
+        }
+    }
+
+    /// Takes the result only if the decode has already finished.
+    ///
+    /// `None` means "still decoding", which a caller polling from a frame loop treats as a
+    /// normal not-yet outcome.
+    pub fn try_take(&self) -> Option<Result<DecodedImage, String>> {
+        match self.receiver.try_recv() {
+            Ok(result) => Some(result),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(
+                "the image decode thread stopped before producing a result; the image could not \
+                 be decoded"
+                    .to_string(),
+            )),
+        }
+    }
+}
+
+/// Decode an image on a background thread (MEDIA-03).
+///
+/// # Why this exists
+///
+/// [`decode`] runs the whole codec — a 4000×3000 JPEG is tens of milliseconds — on the calling
+/// thread. The frame loop is the usual caller, so the picture that was asked for could not appear
+/// until the work finished, and every other control on the window waited with it. This returns a
+/// handle instead: the caller either polls [`ImageDecodeJob::try_take`] once per frame or blocks
+/// once with [`ImageDecodeJob::wait`].
+///
+/// The decode itself is the same function, so there is exactly one implementation of "what an
+/// image's bytes mean". A host that cannot spawn a thread still gets a result — the decode runs
+/// synchronously and is delivered through the same handle — so the failure mode is "slower",
+/// never "nothing decodes".
+pub fn decode_async(data: Vec<u8>) -> ImageDecodeJob {
+    use std::sync::Arc;
+    // `Arc` so a spawn failure can still reach the bytes without a second copy of a possibly
+    // multi-megabyte buffer.
+    let data = Arc::new(data);
+    let worker_data = Arc::clone(&data);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let worker_sender = sender.clone();
+    let spawned = std::thread::Builder::new().name("rust-widgets-image-decode".to_string()).spawn(
+        move || {
+            let _ = worker_sender.send(decode(&worker_data));
+        },
+    );
+    if spawned.is_err() {
+        let _ = sender.send(decode(&data));
+    }
+    ImageDecodeJob { receiver }
+}
+
 /// Decode and convert to RGBA8 in one step.
 pub fn decode_to_rgba8(data: &[u8]) -> Result<DecodedImage, String> {
     let mut img = decode(data)?;
@@ -3327,5 +3395,47 @@ mod tests {
 
         idct_8x8(&block, &mut output);
         assert!(output.iter().any(|sample| *sample == i32::MAX || *sample == i32::MIN));
+    }
+
+    /// `decode_async` runs the codec off the calling thread and returns the same image.
+    #[test]
+    fn decode_async_round_trips_a_png_off_the_calling_thread() {
+        use crate::image::encode;
+        use crate::image::{DecodedImage, ImageData, ImageFormat};
+
+        // A 2×2 RGBA image, encoded with the crate's own encoder so the fixture needs no file.
+        let source = DecodedImage::new(
+            ImageFormat::Rgba8,
+            ImageData::Rgba8(vec![
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+            ]),
+            2,
+            2,
+        );
+        let png = encode(&source, ImageFormat::Png).expect("the fixture must encode");
+
+        let job = decode_async(png);
+        let decoded = job.wait().expect("the PNG must decode");
+
+        assert_eq!((decoded.width, decoded.height), (2, 2));
+        assert_eq!(decoded.format, ImageFormat::Png);
+        assert_eq!(decoded.as_rgba8().as_bytes(), source.data.as_bytes());
+    }
+
+    /// `try_take` reports "not yet" rather than blocking, and a failed decode is reported once.
+    #[test]
+    fn decode_async_reports_a_failure_through_the_job() {
+        let job = decode_async(vec![0u8; 32]);
+        // The worker may not have run yet; poll until it produces its answer.
+        let mut result = None;
+        for _ in 0..500 {
+            if let Some(reported) = job.try_take() {
+                result = Some(reported);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let error = result.expect("the decode must finish").expect_err("garbage must not decode");
+        assert!(error.contains("Unsupported image format"), "unexpected error: {error}");
     }
 }

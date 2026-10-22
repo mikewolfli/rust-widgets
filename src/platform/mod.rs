@@ -197,9 +197,27 @@ pub mod profile;
 pub(crate) mod child_process;
 /// Rich clipboard content types and backend trait (BLUE10 R8.6).
 pub mod clipboard;
-/// Platform-specific rich clipboard stubs (BLUE10 R8.6).
-pub mod clipboard_stubs;
+/// Native rich clipboard bindings and the platform-independent CF_HTML codec (BLUE10 R8.6).
+pub mod clipboard_native;
+/// Shared cleanup for the menu tables the platform backends keep (PLAT-08).
+pub(crate) mod menu_bookkeeping;
+
+/// The pre-`PLAT-13` path of [`clipboard_native`].
+///
+/// Kept only so an existing `platform::clipboard_stubs::…` path keeps compiling; new code should
+/// use [`clipboard_native`]. The re-export forwards the public submodules (`macos`, `windows`,
+/// `objc2_macos`, `linux`, `wasm`); the crate-private `cf_html` codec is not part of the public
+/// surface and is not re-exported.
+#[deprecated(note = "renamed to `clipboard_native`; this alias forwards to it")]
+pub mod clipboard_stubs {
+    // On a target where no clipboard submodule compiles (Android, iOS, …) the glob re-exports
+    // nothing, which the compiler reports as an unused import. The alias itself must still exist
+    // so the old path resolves on every target.
+    #[allow(unused_imports)]
+    pub use super::clipboard_native::*;
+}
 mod contract;
+pub(crate) mod frame_wait;
 /// Device class detection and adaptive layout support (BLUE8 P4-6).
 /// Laser holographic keyboard detector (BLUE8 P4-5a, experimental).
 #[cfg(feature = "holographic")]

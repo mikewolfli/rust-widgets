@@ -198,6 +198,9 @@ impl MenuButton {
 
     /// Sets the button text.
     pub fn set_text(&mut self, text: &str) {
+        if self.text == text {
+            return;
+        }
         self.text = text.to_string();
         self.base.request_redraw();
     }
@@ -209,6 +212,9 @@ impl MenuButton {
 
     /// Sets the button icon.
     pub fn set_icon(&mut self, icon: &str) {
+        if self.icon.as_deref() == Some(icon) && self.icon_source.is_none() {
+            return;
+        }
         self.icon = Some(icon.to_string());
         self.icon_source = None;
         self.base.request_redraw();

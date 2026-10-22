@@ -12,7 +12,7 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-use crate::undo::{TextSnapshotCommand, UndoStack};
+use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::coercion::{
     expect_horizontal_alignment, expect_string, horizontal_alignment_to_str,
 };
@@ -100,10 +100,11 @@ impl SearchBox {
             self.text = text.clone();
             if !self.restoring_history {
                 *self.history_target.borrow_mut() = self.text.clone();
-                self.undo_stack.push(Box::new(TextSnapshotCommand::new(
+                self.undo_stack.push(Box::new(ValueCommand::new(
                     self.history_target.clone(),
                     before,
                     self.text.clone(),
+                    "Edit text",
                     "search_box_text",
                 )));
             }
@@ -119,6 +120,9 @@ impl SearchBox {
 
     /// Sets the placeholder text shown when the search box is empty.
     pub fn set_placeholder(&mut self, placeholder: &str) {
+        if self.placeholder == placeholder {
+            return;
+        }
         self.placeholder = placeholder.to_string();
         self.base.request_redraw();
     }

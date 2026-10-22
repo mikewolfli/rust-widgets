@@ -12,10 +12,6 @@ use crate::compat::Vec;
 use crate::compat::{format, String};
 use crate::core::PlatformFamily;
 use crate::platform::{Platform, PlatformCapabilities};
-#[cfg(not(target_arch = "wasm32"))]
-use core::time::Duration;
-#[cfg(not(target_arch = "wasm32"))]
-use std::thread;
 
 /// The frame interval this backend's loop runs at, in milliseconds.
 ///
@@ -514,8 +510,8 @@ impl Platform for WasmPlatform {
             // window layout but every animation unreachable, because nothing ran the
             // per-frame step (BLUE24 §0A.1 measurement 1). See `crate::drive_frame`.
             while self.runtime.running.load(Ordering::SeqCst) {
-                crate::drive_frame(FRAME_INTERVAL_MS as u32);
-                thread::sleep(Duration::from_millis(FRAME_INTERVAL_MS));
+                let outcome = crate::drive_frame(FRAME_INTERVAL_MS as u32);
+                crate::platform::frame_wait::pause_between_frames(outcome.needs_another_frame);
             }
         }
     }

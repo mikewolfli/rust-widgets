@@ -6,6 +6,7 @@ use super::{Layout, LayoutContext};
 use crate::compat::{Any, Vec};
 use crate::core::{ObjectId, Rect, Size};
 use crate::layout::hints::ChildInfo;
+use core::cell::RefCell;
 
 /// Main-axis direction for flex layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -116,6 +117,29 @@ pub struct FlexLayout {
     items: Vec<FlexItem>,
     /// Size hints indexed by position within items (set before update).
     child_sizes: Vec<Size>,
+    /// The last arrangement this layout produced, keyed by every input that produced it.
+    ///
+    /// # Why the key, rather than a dirty flag (REND-01)
+    ///
+    /// Every configuration field on this type is `pub` (and `items_mut` hands out `&mut Vec`),
+    /// so a mutator hook could not be added without making the fields private — a public API
+    /// break. The key is hashed from the fields themselves on each call, which makes a
+    /// stale hit unrepresentable: changing any field changes the key, so the next call
+    /// recomputes. A full solver pass (four passes plus several `Vec`s) costs far more than
+    /// hashing the same inputs, which is why this is a net win even though the key is built
+    /// on every call.
+    ///
+    /// One slot: a layout is normally asked for the same rectangle repeatedly (measure, then
+    /// arrange, then paint), and alternating between two modes only costs a recompute, never a
+    /// wrong answer.
+    cache: RefCell<Option<FlexCache>>,
+}
+
+/// One cached arrangement: the key it was produced under and the boxes it produced.
+#[derive(Debug, Clone)]
+struct FlexCache {
+    key: u64,
+    rects: Vec<(Option<ObjectId>, Rect)>,
 }
 
 impl FlexLayout {
@@ -130,6 +154,7 @@ impl FlexLayout {
             padding: 0,
             items: Vec::new(),
             child_sizes: Vec::new(),
+            cache: RefCell::new(None),
         }
     }
 
@@ -153,6 +178,7 @@ impl FlexLayout {
             padding: padding.max(0),
             items: Vec::new(),
             child_sizes: Vec::new(),
+            cache: RefCell::new(None),
         }
     }
 
@@ -178,6 +204,101 @@ impl FlexLayout {
 
     fn is_row(&self) -> bool {
         matches!(self.direction, FlexDirection::Row | FlexDirection::RowReverse)
+    }
+
+    /// A stable hash of every input an arrangement depends on.
+    ///
+    /// This *is* the invalidation contract: no field has to remember to clear the cache,
+    /// because a changed field changes the hash. See the `cache` field for why a dirty flag was
+    /// not possible without breaking the public surface (REND-01).
+    fn flex_cache_key(
+        &self,
+        mode: u8,
+        rect: Rect,
+        scale: f32,
+        touch: Option<Size>,
+        children: Option<&[ChildInfo]>,
+    ) -> u64 {
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        let mut mix = |value: u64| {
+            hash ^= value;
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        };
+        mix(mode as u64);
+        mix(rect.x as u64);
+        mix(rect.y as u64);
+        mix(rect.width as u64);
+        mix(rect.height as u64);
+        mix(scale.to_bits() as u64);
+        match touch {
+            Some(size) => {
+                mix(1);
+                mix(size.width as u64);
+                mix(size.height as u64);
+            }
+            None => mix(0),
+        }
+        mix(self.direction as u64);
+        mix(self.wrap as u64);
+        mix(self.justify_content as u64);
+        mix(self.align_items as u64);
+        mix(self.gap as u64);
+        mix(self.padding as u64);
+        mix(self.items.len() as u64);
+        for item in &self.items {
+            mix(item.widget_id.unwrap_or(u64::MAX));
+            mix(item.flex_grow.to_bits() as u64);
+            mix(item.flex_shrink.to_bits() as u64);
+            mix(item.align_self.map(|align| align as u64 + 1).unwrap_or(0));
+            mix(item.min_size.width as u64);
+            mix(item.min_size.height as u64);
+            mix(item.max_size.width as u64);
+            mix(item.max_size.height as u64);
+        }
+        mix(self.child_sizes.len() as u64);
+        for size in &self.child_sizes {
+            mix(size.width as u64);
+            mix(size.height as u64);
+        }
+        if let Some(children) = children {
+            mix(children.len() as u64);
+            for child in children {
+                mix(child.id);
+                mix(child.hints.width.min as u64);
+                mix(child.hints.width.pref as u64);
+                mix(child.hints.width.max as u64);
+                mix(child.hints.height.min as u64);
+                mix(child.hints.height.pref as u64);
+                mix(child.hints.height.max as u64);
+                mix(child.params.fill as u64);
+                mix(child.params.stretch as u64);
+                mix(child.params.margins.left as i64 as u64);
+                mix(child.params.margins.top as i64 as u64);
+                mix(child.params.margins.right as i64 as u64);
+                mix(child.params.margins.bottom as i64 as u64);
+            }
+        }
+        hash
+    }
+
+    /// The boxes cached under `key`, if the last arrangement was produced under the same key.
+    fn cached_arrangement(&self, key: u64) -> Option<Vec<(Option<ObjectId>, Rect)>> {
+        self.cache
+            .borrow()
+            .as_ref()
+            .filter(|entry| entry.key == key)
+            .map(|entry| entry.rects.clone())
+    }
+
+    /// Records the boxes produced under `key`.
+    fn store_arrangement(&self, key: u64, rects: &[(Option<ObjectId>, Rect)]) {
+        *self.cache.borrow_mut() = Some(FlexCache { key, rects: rects.to_vec() });
+    }
+
+    /// The key of the cached arrangement, for tests that pin the invalidation contract.
+    #[cfg(test)]
+    fn cached_key(&self) -> Option<u64> {
+        self.cache.borrow().as_ref().map(|entry| entry.key)
     }
 
     fn is_reverse(&self) -> bool {
@@ -334,21 +455,24 @@ impl FlexLayout {
             let mut progress = true;
             while leftover > 0 && progress {
                 progress = false;
-                let give: Vec<i32> = main_sizes
+                // Room each child can still give. Computed as a sum and then re-read per index
+                // rather than materialised as a `Vec`: this loop can run several rounds per call
+                // and the scratch list was a fresh allocation each round (REND-01(c)).
+                let total_give: i32 = main_sizes
                     .iter()
                     .zip(floors.iter())
                     .map(|(size, floor)| (size - floor).max(0))
-                    .collect();
-                let total_give: i32 = give.iter().sum();
+                    .sum();
                 if total_give <= 0 {
                     break;
                 }
-                for (index, room) in give.iter().enumerate() {
-                    if *room <= 0 {
+                for (index, floor) in floors.iter().enumerate() {
+                    let room = (main_sizes[index] - *floor).max(0);
+                    if room <= 0 {
                         continue;
                     }
-                    let share = ((leftover as i64 * *room as i64) / total_give as i64) as i32;
-                    let take = share.min(*room).min(leftover);
+                    let share = ((leftover as i64 * room as i64) / total_give as i64) as i32;
+                    let take = share.min(room).min(leftover);
                     main_sizes[index] -= take;
                     leftover -= take;
                     if take > 0 {
@@ -844,7 +968,18 @@ impl Layout for FlexLayout {
             rect.height.saturating_sub(2 * padding as u32),
         );
 
+        let key = self.flex_cache_key(0, rect, 1.0, None, None);
+        if let Some(results) = self.cached_arrangement(key) {
+            for (widget_id, child_rect) in results {
+                if let Some(wid) = widget_id {
+                    widgets(wid, child_rect);
+                }
+            }
+            return;
+        }
+
         let results = self.compute_rects(content_rect, None);
+        self.store_arrangement(key, &results);
         for (widget_id, child_rect) in results {
             if let Some(wid) = widget_id {
                 widgets(wid, child_rect);
@@ -981,6 +1116,26 @@ impl FlexLayout {
             return;
         }
 
+        // A repeated arrangement of the same rectangle with the same children is the common
+        // case (measure, arrange, paint). The key covers the layout's fields, the rectangle,
+        // the device scale and every hint, so a hit can only be returned for identical input
+        // (REND-01).
+        let key = self.flex_cache_key(
+            if apply_touch_floor { 2 } else { 1 },
+            rect,
+            scale,
+            Some(context.min_touch_size),
+            Some(children),
+        );
+        if let Some(placed) = self.cached_arrangement(key) {
+            for (widget_id, child_rect) in placed {
+                if let Some(wid) = widget_id {
+                    out(wid, child_rect);
+                }
+            }
+            return;
+        }
+
         let is_row = self.is_row();
         let (available_main, origin_main, cross_origin, available_cross) = if is_row {
             (content_rect.width as i32, content_rect.x, content_rect.y, content_rect.height as i32)
@@ -1042,7 +1197,20 @@ impl FlexLayout {
         // so a caller that also sets the layout's `gap` gets both — the same double spacing the
         // crate has always allowed, and the reason the assembly rules put inter-element space on
         // one of the two and not both.
-        let mut solver = FlexLayout { child_sizes: sizes.clone(), ..self.clone() };
+        // Build the solver by hand rather than `..self.clone()`: the clone would copy the cache
+        // (up to one rectangle per child) on every arrangement, which is exactly the allocation
+        // this cache exists to avoid (REND-01).
+        let mut solver = FlexLayout {
+            direction: self.direction,
+            wrap: self.wrap,
+            justify_content: self.justify_content,
+            align_items: self.align_items,
+            gap: self.gap,
+            padding: self.padding,
+            items: self.items.clone(),
+            child_sizes: sizes.clone(),
+            cache: RefCell::new(None),
+        };
         // Each child's *own floor* is what it may be squeezed to, and the hints channel is the
         // only place that number arrives — `add_widget(id, stretch)` carries no size at all, so
         // `FlexItem::min_size` defaults to zero and the solver's `flex_shrink` step would
@@ -1158,6 +1326,7 @@ impl FlexLayout {
         } else {
             origin_main + first_offset
         };
+        let mut placed: Vec<(Option<ObjectId>, Rect)> = Vec::with_capacity(sizes.len());
         for index in 0..sizes.len() {
             let (left, top, right, bottom) = inset(index);
             // The solver reports the *whole* box, margins included, so the child's drawn extent
@@ -1374,7 +1543,7 @@ impl FlexLayout {
                     );
                     Rect::new(clamped_x, clamped_y, grown.width, grown.height)
                 };
-                out(widget_id, floored);
+                placed.push((Some(widget_id), floored));
             }
             // Backward on a reversed axis, forward otherwise -- so the next child is always placed
             // against the one just emitted.
@@ -1382,6 +1551,13 @@ impl FlexLayout {
                 cursor -= solved + scaled_gap + inter_extra;
             } else {
                 cursor += solved + scaled_gap + inter_extra;
+            }
+        }
+
+        self.store_arrangement(key, &placed);
+        for (widget_id, child_rect) in placed {
+            if let Some(wid) = widget_id {
+                out(wid, child_rect);
             }
         }
     }
@@ -1438,6 +1614,63 @@ mod tests {
     fn flex_layout_default_creates_empty() {
         let layout = FlexLayout::new();
         assert_eq!(layout.item_count(), 0);
+    }
+
+    /// A repeated `update` reuses the cached result, and changing a public field invalidates it.
+    ///
+    /// This pins the invalidation contract REND-01 asked for: `FlexLayout`'s configuration is
+    /// public, so the cache cannot be cleared by setters; it is keyed on the configuration itself.
+    /// A layout whose key survived a field change would return stale boxes — the exact failure the
+    /// issue filed.
+    #[test]
+    fn a_repeated_update_hits_the_cache_and_a_field_change_misses_it() {
+        let mut layout = FlexLayout::new();
+        layout.add_widget(1, 0);
+        layout.add_widget(2, 0);
+        layout.set_child_sizes(vec![Size::new(40, 10), Size::new(40, 10)]);
+
+        let rect = Rect::new(0, 0, 100, 20);
+        let mut first = Vec::new();
+        layout.update(rect, &mut |id, child| first.push((id, child)));
+        let cached = layout.cached_key().expect("the first update must populate the cache");
+        assert_eq!(cached, layout.flex_cache_key(0, rect, 1.0, None, None));
+
+        let mut second = Vec::new();
+        layout.update(rect, &mut |id, child| second.push((id, child)));
+        assert_eq!(first, second, "a cache hit must reproduce the first result exactly");
+        assert_eq!(layout.cached_key(), Some(cached), "a hit must keep the same entry");
+
+        // A public field is the only channel a caller has for changing the layout.
+        layout.gap = 20;
+        let mut third = Vec::new();
+        layout.update(rect, &mut |id, child| third.push((id, child)));
+        assert_ne!(first, third, "changing `gap` must change the arrangement");
+        assert_ne!(layout.cached_key(), Some(cached), "changing `gap` must miss the cache");
+    }
+
+    /// A hint change between two `arrange` calls must miss the cache even when the layout itself
+    /// is untouched: the key covers the children's sizes.
+    #[test]
+    fn an_arrange_with_different_child_hints_does_not_reuse_the_old_boxes() {
+        let mut layout = FlexLayout::new();
+        layout.add_widget(1, 0);
+        layout.add_widget(2, 0);
+        let rect = Rect::new(0, 0, 200, 40);
+        let narrow =
+            [ChildInfo::new(1, Hints::fixed(20, 10)), ChildInfo::new(2, Hints::fixed(20, 10))];
+        let mut first = Vec::new();
+        layout.arrange(rect, &narrow, &mut |id, child| first.push((id, child)));
+
+        let mut same = Vec::new();
+        layout.arrange(rect, &narrow, &mut |id, child| same.push((id, child)));
+        assert_eq!(first, same, "the same hints must hit");
+
+        let wide =
+            [ChildInfo::new(1, Hints::fixed(80, 10)), ChildInfo::new(2, Hints::fixed(80, 10))];
+        let mut changed = Vec::new();
+        layout.arrange(rect, &wide, &mut |id, child| changed.push((id, child)));
+        assert_ne!(first, changed, "different hints must be laid out, not replayed");
+        assert_eq!(changed[0].1.width, 80, "the wider hint must reach the solver");
     }
 
     #[test]

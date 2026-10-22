@@ -15,6 +15,7 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::numeric::ordered_clamp_f64;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use std::cell::{Ref, RefCell};
 /// LCD number display mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LCDNumberMode {
@@ -65,6 +66,21 @@ pub struct LCDNumber {
     /// still clamped into range; this signal notifies listeners that the
     /// requested magnitude could not be represented.
     pub overflow: GenericSignal,
+    /// The last formatted readout, keyed by the three inputs it is derived from.
+    ///
+    /// `draw` asks for the readout every frame, and formatting it built a `String` (plus a
+    /// `" ".repeat` fill) each time. The text is a pure function of `(value, mode, num_digits)`,
+    /// so those three are the key; any setter that changes one of them makes the next call
+    /// rebuild (WDGT-06).
+    display_cache: RefCell<Option<DisplayCache>>,
+}
+
+/// Memoised output of [`LCDNumber::display_text`].
+struct DisplayCache {
+    value_bits: u64,
+    mode: LCDNumberMode,
+    num_digits: i32,
+    text: String,
 }
 impl LCDNumber {
     /// Creates a decimal display showing `0.0`, with the range
@@ -85,6 +101,7 @@ impl LCDNumber {
             overflowed: false,
             value_changed: Signal1::new(),
             overflow: GenericSignal::new(),
+            display_cache: RefCell::new(None),
         }
     }
     /// Returns the displayed value, always inside `min_value ..= max_value`.
@@ -136,17 +153,22 @@ impl LCDNumber {
     pub fn set_value(&mut self, value: f64) {
         let out_of_range = value.is_nan() || value < self.min_value || value > self.max_value;
         let clamped = ordered_clamp_f64(value, self.min_value, self.max_value);
+        let value_changed = self.value != clamped;
+        let overflow_changed = self.overflowed != out_of_range;
         if out_of_range {
             self.overflowed = true;
             self.overflow.emit();
         } else {
             self.overflowed = false;
         }
-        if self.value != clamped {
+        if value_changed {
             self.value = clamped;
             self.value_changed.emit(clamped);
         }
-        self.base.request_redraw();
+        // A same-value display update is a no-op; this is written once per progress tick.
+        if value_changed || overflow_changed {
+            self.base.request_redraw();
+        }
     }
     /// Sets the lower bound, adjusting the upper bound if necessary to keep `min <= max`,
     /// and re-applies it to the current value through [`LCDNumber::set_value`].
@@ -184,23 +206,36 @@ impl LCDNumber {
     /// Sets the digit count, floored at `1` so the display is never zero-width.
     /// Requests a redraw. The value itself is not re-clamped or truncated.
     pub fn set_num_digits(&mut self, digits: i32) {
-        self.num_digits = digits.max(1);
+        let digits = digits.max(1);
+        if self.num_digits == digits {
+            return;
+        }
+        self.num_digits = digits;
         self.base.request_redraw();
     }
     /// Chooses between a reduced-size and a normal-size decimal point.
     /// Requests a redraw.
     pub fn set_small_decimal_point(&mut self, small: bool) {
+        if self.small_decimal_point == small {
+            return;
+        }
         self.small_decimal_point = small;
         self.base.request_redraw();
     }
     /// Sets the display radix. Requests a redraw. Changing the mode does not
     /// change the stored value, only how it is rendered.
     pub fn set_mode(&mut self, mode: LCDNumberMode) {
+        if self.mode == mode {
+            return;
+        }
         self.mode = mode;
         self.base.request_redraw();
     }
     /// Sets the segment rendering style. Requests a redraw.
     pub fn set_segment_style(&mut self, style: SegmentStyle) {
+        if self.segment_style == style {
+            return;
+        }
         self.segment_style = style;
         self.base.request_redraw();
     }
@@ -277,6 +312,34 @@ impl LCDNumber {
         let budget = (self.num_digits.max(1) as usize).saturating_sub(sign.len() + point.len());
         let fill = budget.saturating_sub(digits.chars().count());
         format!("{}{sign}{digits}{point}", " ".repeat(fill))
+    }
+
+    /// The cached readout, recomputed only when one of its three inputs changes.
+    ///
+    /// The returned `Ref` borrows the cache, so the paint path can pass it to `draw_text`/`chars`
+    /// without cloning. `display_text` remains the public value-returning form.
+    fn display_text_cached(&self) -> Ref<'_, str> {
+        let value_bits = self.value.to_bits();
+        let stale = match self.display_cache.borrow().as_ref() {
+            Some(cache) => {
+                cache.value_bits != value_bits
+                    || cache.mode != self.mode
+                    || cache.num_digits != self.num_digits
+            }
+            None => true,
+        };
+        if stale {
+            let text = self.display_text();
+            *self.display_cache.borrow_mut() = Some(DisplayCache {
+                value_bits,
+                mode: self.mode,
+                num_digits: self.num_digits,
+                text,
+            });
+        }
+        Ref::map(self.display_cache.borrow(), |cache| {
+            cache.as_ref().expect("the cache was just filled").text.as_str()
+        })
     }
 
     /// Whether the value carries a fractional part that the `Dec` readout should show.
@@ -465,7 +528,7 @@ impl Draw for LCDNumber {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        let display_text = self.display_text();
+        let display_text = self.display_text_cached();
         // The panel is `num_digits` cells wide, always — that is what the property means. It used
         // to be sized by the *text* (`display_text.len()`), so the digit cells shrank and grew as
         // the value changed length and the readout's shape bore no relation to `num_digits` except
@@ -718,6 +781,26 @@ mod tests {
     use super::*;
     use crate::core::Rect;
     use crate::widget::svg::render_to_svg;
+
+    /// The paint path's readout is memoised and refreshes when its inputs change (WDGT-06).
+    #[test]
+    fn the_drawn_readout_is_cached_and_refreshes_when_an_input_changes() {
+        let mut lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
+        lcd.set_value(42.0);
+        assert_eq!(&*lcd.display_text_cached(), lcd.display_text().as_str());
+        assert_eq!(
+            &*lcd.display_text_cached(),
+            lcd.display_text().as_str(),
+            "a second frame reuses it"
+        );
+
+        lcd.set_value(7.0);
+        assert_eq!(&*lcd.display_text_cached(), lcd.display_text().as_str());
+        lcd.set_mode(LCDNumberMode::Hex);
+        assert_eq!(&*lcd.display_text_cached(), lcd.display_text().as_str());
+        lcd.set_num_digits(3);
+        assert_eq!(&*lcd.display_text_cached(), lcd.display_text().as_str());
+    }
 
     #[test]
     fn lcd_creation_defaults() {

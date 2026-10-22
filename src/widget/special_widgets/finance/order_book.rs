@@ -119,6 +119,9 @@ impl OrderBookWidget {
     /// to show nothing and is honoured literally — the caller may genuinely want the pane
     /// blank while it waits for the first snapshot.
     pub fn set_depth(&mut self, depth: usize) {
+        if self.depth == depth {
+            return;
+        }
         self.depth = depth;
         if let Some((_, index)) = self.hovered {
             if index >= depth {
@@ -137,7 +140,11 @@ impl OrderBookWidget {
     ///
     /// Capped at six places, past which the column is wider than the price is meaningful.
     pub fn set_decimals(&mut self, decimals: Option<usize>) {
-        self.decimals = decimals.map(|value| value.min(6));
+        let decimals = decimals.map(|value| value.min(6));
+        if self.decimals == decimals {
+            return;
+        }
+        self.decimals = decimals;
         self.base.request_redraw();
     }
 

@@ -25,7 +25,7 @@ use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
+use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::access::date_to_string;
 use crate::widget::capability::coercion::{
     expect_bool, expect_date, expect_horizontal_alignment, expect_string,
@@ -39,51 +39,7 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-static NEXT_DATE_EDIT_COMMAND_ID: AtomicU64 = AtomicU64::new(1);
-
-struct DateEditCommand {
-    id: CommandId,
-    target: Rc<RefCell<Date>>,
-    before: Date,
-    after: Date,
-}
-
-impl DateEditCommand {
-    fn new(target: Rc<RefCell<Date>>, before: Date, after: Date) -> Self {
-        Self {
-            id: CommandId(NEXT_DATE_EDIT_COMMAND_ID.fetch_add(1, Ordering::Relaxed)),
-            target,
-            before,
-            after,
-        }
-    }
-}
-
-impl UndoCommand for DateEditCommand {
-    fn id(&self) -> CommandId {
-        self.id
-    }
-
-    fn description(&self) -> CommandDescription {
-        CommandDescription {
-            text: "Edit date".to_string(),
-            timestamp_ms: 0,
-            command_type: "date_edit",
-        }
-    }
-
-    fn execute(&mut self) -> Result<(), String> {
-        *self.target.borrow_mut() = self.after;
-        Ok(())
-    }
-
-    fn undo(&mut self) -> Result<(), String> {
-        *self.target.borrow_mut() = self.before;
-        Ok(())
-    }
-}
 /// Date value (year, month, day).
 ///
 /// This is a plain value type, not a validated one: [`Date::new`] stores the
@@ -502,10 +458,12 @@ impl DateEdit {
             self.date = date;
             if !self.restoring_history {
                 *self.history_target.borrow_mut() = self.date;
-                self.undo_stack.push(Box::new(DateEditCommand::new(
+                self.undo_stack.push(Box::new(ValueCommand::new(
                     self.history_target.clone(),
                     before,
                     self.date,
+                    "Edit date",
+                    "date_edit",
                 )));
             }
             self.date_changed.emit(date);

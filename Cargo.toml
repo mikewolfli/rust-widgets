@@ -1,6 +1,6 @@
 [package]
 name = "rust_widgets"
-version = "2.8.13"
+version = "2.8.14"
 edition = "2021"
 description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 180 widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"
@@ -207,7 +207,7 @@ mobile = [
 ## Embedded: software raster, no GPU, no touch, low memory.
 embedded = ["software", "controls-custom", "text-bidi"]
 
-## LVGL-style mini: ~15 core widgets, software raster, no alloc-heavy deps.
+## LVGL-style mini: ~28 core widgets, software raster, no alloc-heavy deps.
 mini = [
     "software",
     "controls-custom",

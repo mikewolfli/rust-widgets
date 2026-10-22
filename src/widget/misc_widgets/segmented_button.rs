@@ -177,6 +177,9 @@ impl SegmentedButton {
     /// single-select control holding several selections would paint several highlights that its
     /// own click handler could not produce.
     pub fn set_allows_multiple(&mut self, allows: bool) {
+        if self.allows_multiple == allows {
+            return;
+        }
         self.allows_multiple = allows;
         if !allows && self.selected.len() > 1 {
             self.selected.truncate(1);

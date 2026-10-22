@@ -50,6 +50,9 @@ impl Divider {
 
     /// Sets whether the divider is vertical (true) or horizontal (false).
     pub fn set_vertical(&mut self, vertical: bool) {
+        if self.vertical == vertical {
+            return;
+        }
         self.vertical = vertical;
         self.base.request_redraw();
     }
@@ -66,6 +69,9 @@ impl Divider {
 
     /// Sets the line thickness in pixels.
     pub fn set_thickness(&mut self, thickness: u32) {
+        if self.thickness == thickness {
+            return;
+        }
         self.thickness = thickness;
         self.base.request_redraw();
     }
@@ -75,6 +81,9 @@ impl Divider {
     /// An explicit colour wins over the active theme, so this overrides the
     /// theme-resolved line colour until it is set again.
     pub fn set_color(&mut self, color: Color) {
+        if self.color_is_explicit && self.color == color {
+            return;
+        }
         self.color = color;
         self.color_is_explicit = true;
         self.base.request_redraw();

@@ -156,7 +156,13 @@ impl ImageGallery {
         }
     }
 
+    /// Returns the selected image index, or `None` when the gallery is empty.
+    pub fn selected_index(&self) -> Option<usize> {
+        self.images.get(self.current_index).map(|_| self.current_index)
+    }
+
     /// Returns the current image index.
+    #[deprecated(note = "use `selected_index` (Option) — WDGT-13")]
     pub fn current_index(&self) -> usize {
         self.current_index
     }
@@ -223,7 +229,11 @@ impl ImageGallery {
 
     /// Sets the thumbnail size in pixels.
     pub fn set_thumbnail_size(&mut self, size: u32) {
-        self.thumbnail_size = size.clamp(16, 256);
+        let size = size.clamp(16, 256);
+        if self.thumbnail_size == size {
+            return;
+        }
+        self.thumbnail_size = size;
         self.base.request_redraw();
     }
 
@@ -234,6 +244,9 @@ impl ImageGallery {
 
     /// Shows or hides the thumbnail strip.
     pub fn set_show_thumbnails(&mut self, show: bool) {
+        if self.show_thumbnails == show {
+            return;
+        }
         self.show_thumbnails = show;
         self.base.request_redraw();
     }
@@ -303,7 +316,7 @@ impl Widget for ImageGallery {
 impl WidgetProperties for ImageGallery {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
-            "current_index" => Ok(CapabilityValue::UInt(self.current_index() as u64)),
+            "current_index" => Ok(CapabilityValue::UInt(self.selected_index().unwrap_or(0) as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -783,7 +796,7 @@ mod tests {
     fn image_gallery_creation_defaults() {
         let g = ImageGallery::new(Rect::new(0, 0, 400, 300));
         assert_eq!(g.image_count(), 0);
-        assert_eq!(g.current_index(), 0);
+        assert_eq!(g.selected_index().unwrap_or(0), 0);
         assert!(g.current_image().is_none());
         assert_eq!(g.thumbnail_size(), 64);
         assert!(g.show_thumbnails());
@@ -796,7 +809,7 @@ mod tests {
     fn image_gallery_add_images_and_count() {
         let g = make_gallery(Rect::new(0, 0, 400, 300));
         assert_eq!(g.image_count(), 5);
-        assert_eq!(g.current_index(), 0);
+        assert_eq!(g.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
@@ -814,12 +827,12 @@ mod tests {
         assert!(g.has_next());
 
         assert!(g.next_image());
-        assert_eq!(g.current_index(), 1);
+        assert_eq!(g.selected_index().unwrap_or(0), 1);
         assert!(g.has_previous());
         assert!(g.has_next());
 
         assert!(g.previous_image());
-        assert_eq!(g.current_index(), 0);
+        assert_eq!(g.selected_index().unwrap_or(0), 0);
         assert!(!g.has_previous());
 
         // Navigate to the end.
@@ -834,7 +847,7 @@ mod tests {
         let mut g = make_gallery(Rect::new(0, 0, 400, 300));
         g.remove_image(0);
         assert_eq!(g.image_count(), 4);
-        assert_eq!(g.current_index(), 0);
+        assert_eq!(g.selected_index().unwrap_or(0), 0);
         assert_eq!(g.current_image().unwrap().label.as_deref(), Some("Mountains"));
     }
 
@@ -851,12 +864,12 @@ mod tests {
     fn image_gallery_set_current_index() {
         let mut g = make_gallery(Rect::new(0, 0, 400, 300));
         g.set_current_index(2);
-        assert_eq!(g.current_index(), 2);
+        assert_eq!(g.selected_index().unwrap_or(0), 2);
         assert_eq!(g.current_image().unwrap().label.as_deref(), Some("Ocean"));
 
         // Clamp to max.
         g.set_current_index(999);
-        assert_eq!(g.current_index(), 4);
+        assert_eq!(g.selected_index().unwrap_or(0), 4);
     }
 
     #[test]

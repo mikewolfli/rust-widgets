@@ -30,3 +30,4 @@ pub use values::*;
 // `FRAME_INTERVAL_MS` is `pub(crate)`, so a `pub use` cannot carry it; the crate-internal path
 // (`crate::platform::types::FRAME_INTERVAL_MS`) is what nine backends use.
 pub(crate) use values::FRAME_INTERVAL_MS;
+pub(crate) use values::IDLE_FRAME_INTERVAL_MS;

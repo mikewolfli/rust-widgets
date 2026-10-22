@@ -10,8 +10,6 @@ use crate::compat::atomic::{AtomicUsize, Ordering};
 use crate::compat::{HashMap, Mutex, OnceLock};
 use crate::core::{ObjectId, PlatformFamily};
 use crate::platform::types::{host_battery_probe, host_memory_probe, host_process_memory_probe};
-use std::thread;
-use std::time::Duration;
 
 /// How often the run loop ticks, in milliseconds — one 60 Hz frame.
 ///
@@ -51,6 +49,21 @@ struct MobileMenuState {
     attached_menu_bar: HashMap<ObjectId, ObjectId>,
     /// Parent menu id -> direct child menu/menu-item ids.
     menu_children: HashMap<ObjectId, Vec<ObjectId>>,
+}
+
+impl MobileMenuState {
+    /// Drops every menu record that names `widget_id`.
+    ///
+    /// The trigger queue for this backend lives in `BackendState::widget_events`, which
+    /// `state.destroy_widget` already clears, so there is no local queue to pass.
+    fn purge(&mut self, widget_id: ObjectId) {
+        crate::platform::menu_bookkeeping::purge(
+            &mut self.attached_menu_bar,
+            &mut self.menu_children,
+            None,
+            widget_id,
+        );
+    }
 }
 
 /// Baseline Android mobile platform adapter.
@@ -194,8 +207,8 @@ impl Platform for AndroidMobilePlatform {
         self.running.store(true, Ordering::SeqCst);
         log::info!("[mobile] AndroidMobilePlatform run (state-only preview backend)");
         while self.running.load(Ordering::SeqCst) {
-            crate::drive_frame(FRAME_INTERVAL_MS as u32);
-            thread::sleep(Duration::from_millis(FRAME_INTERVAL_MS));
+            let outcome = crate::drive_frame(FRAME_INTERVAL_MS as u32);
+            crate::platform::frame_wait::pause_between_frames(outcome.needs_another_frame);
         }
     }
 
@@ -212,16 +225,9 @@ impl Platform for AndroidMobilePlatform {
     /// otherwise a UI rebuilt in a create/destroy loop would leak one entry per
     /// discarded widget.
     fn destroy_widget(&self, widget_id: ObjectId) -> bool {
-        {
-            let mut menus = crate::compat::lock(&self.menus);
-            menus.attached_menu_bar.remove(&widget_id);
-            // The widget may be a container in the menu tree: drop both the
-            // children it owned and the child entry under its own parent.
-            menus.menu_children.remove(&widget_id);
-            for children in menus.menu_children.values_mut() {
-                children.retain(|child| *child != widget_id);
-            }
-        }
+        // Menu bookkeeping is shared by Android, Mobile and Wayland; see
+        // `platform::menu_bookkeeping` for the rule (PLAT-08).
+        crate::compat::lock(&self.menus).purge(widget_id);
 
         // The state record is the authority on whether the widget existed.
         self.state.destroy_widget(widget_id)

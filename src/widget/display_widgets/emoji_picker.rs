@@ -251,6 +251,9 @@ impl EmojiPicker {
 
     /// Sets the search text, clearing the cursor.
     pub fn set_search(&mut self, search: &str) {
+        if self.search == search && self.cursor.is_none() {
+            return;
+        }
         self.search = search.to_string();
         self.cursor = None;
         self.base.request_redraw();

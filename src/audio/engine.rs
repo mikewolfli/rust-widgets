@@ -7,6 +7,9 @@
 use crate::audio::AudioOutput;
 use crate::audio::{decode, AudioBuffer};
 use crate::signal::Signal;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::Arc;
+use std::thread;
 
 /// Audio player engine for playback control.
 pub struct AudioEngine {
@@ -14,6 +17,12 @@ pub struct AudioEngine {
     position: usize,
     is_playing: bool,
     volume: f32,
+    /// A decode running on the background thread started by [`AudioEngine::load_async`].
+    ///
+    /// `None` when nothing is loading. The receiver is the completion channel: the worker sends
+    /// exactly one result, and [`AudioEngine::poll_load`] / [`AudioEngine::wait_for_load`] installs
+    /// it. See [`AudioEngine::load_async`] for why loading is a background operation (MEDIA-03).
+    pending_load: Option<Receiver<Result<AudioBuffer, String>>>,
     /// The active device output, held for the full duration of device playback
     /// so the underlying cpal stream is not dropped the moment `play_to_device`
     /// returns.
@@ -31,10 +40,108 @@ impl AudioEngine {
             position: 0,
             is_playing: false,
             volume: 1.0,
+            pending_load: None,
             #[cfg(feature = "audio-output")]
             output: None,
             on_state_change: Signal::new(),
         }
+    }
+
+    /// Load audio from raw bytes, decoding on a background thread (MEDIA-03).
+    ///
+    /// # Why this is not inside [`AudioEngine::load`]
+    ///
+    /// `load` decodes the whole file into memory on the calling thread — a 5-minute stereo track
+    /// is ~100 MB of PCM and hundreds of milliseconds of decode, which is a visible stall on the
+    /// frame loop. This method starts the same decode on a worker and returns immediately; the
+    /// caller either polls [`AudioEngine::poll_load`] once per frame or blocks once with
+    /// [`AudioEngine::wait_for_load`]. `load` remains the synchronous shorthand and is now
+    /// implemented in terms of these two.
+    ///
+    /// If no thread can be spawned, the decode runs synchronously and the result is still
+    /// delivered through the same channel, so the failure mode is "slower", never "nothing
+    /// loads".
+    pub fn load_async(&mut self, data: Vec<u8>) {
+        // A new load supersedes any earlier one: dropping the old receiver makes the previous
+        // worker's send fail, so it stops instead of installing a track the caller replaced.
+        self.pending_load = None;
+
+        // `Arc` rather than a `Vec` clone: the worker needs the bytes only for the length of the
+        // decode, and a spawn failure must still be able to decode them here.
+        let data = Arc::new(data);
+        let worker_data = Arc::clone(&data);
+        let (sender, receiver) = mpsc::channel();
+        let worker_sender = sender.clone();
+        let spawned =
+            thread::Builder::new().name("rust-widgets-audio-decode".to_string()).spawn(move || {
+                let _ = worker_sender.send(decode(&worker_data));
+            });
+        if spawned.is_err() {
+            let _ = sender.send(decode(&data));
+        }
+        self.pending_load = Some(receiver);
+    }
+
+    /// Whether a background load started by [`AudioEngine::load_async`] is still running.
+    pub fn is_loading(&self) -> bool {
+        self.pending_load.is_some()
+    }
+
+    /// Installs a finished background load, if one is ready.
+    ///
+    /// Returns `None` while the decode is still running, and `Some(result)` exactly once — on the
+    /// call that reports success the buffer is already installed and the previous device output
+    /// released.
+    pub fn poll_load(&mut self) -> Option<Result<(), String>> {
+        let receiver = self.pending_load.as_ref()?;
+        match receiver.try_recv() {
+            Ok(Ok(buffer)) => {
+                self.pending_load = None;
+                self.install_decoded(buffer);
+                Some(Ok(()))
+            }
+            Ok(Err(message)) => {
+                self.pending_load = None;
+                Some(Err(message))
+            }
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => {
+                self.pending_load = None;
+                Some(Err(
+                    "the audio decode thread stopped before producing a result; the track could \
+                     not be loaded"
+                        .to_string(),
+                ))
+            }
+        }
+    }
+
+    /// Blocks until the background load finishes and installs its buffer.
+    pub fn wait_for_load(&mut self) -> Result<(), String> {
+        let Some(receiver) = self.pending_load.take() else { return Ok(()) };
+        match receiver.recv() {
+            Ok(Ok(buffer)) => {
+                self.install_decoded(buffer);
+                Ok(())
+            }
+            Ok(Err(message)) => Err(message),
+            Err(_) => Err(
+                "the audio decode thread stopped before producing a result; the track could not \
+                 be loaded"
+                    .to_string(),
+            ),
+        }
+    }
+
+    /// Installs a decoded buffer, stopping any device playback of the old one first.
+    fn install_decoded(&mut self, buffer: AudioBuffer) {
+        // Release the previous device output before installing the new buffer: the old `output`
+        // holds a live cpal stream that keeps feeding the speakers independently of this engine's
+        // state.
+        self.release_output();
+        self.buffer = Some(buffer);
+        self.position = 0;
+        self.is_playing = false;
     }
 
     /// Load audio from raw bytes. Detects format automatically.
@@ -49,10 +156,7 @@ impl AudioEngine {
         // Release the previous device output before installing the new buffer.
         // Deferred until after `decode` succeeds so a failed load does not stop
         // playback of the track that is still loaded.
-        self.release_output();
-        self.buffer = Some(buffer);
-        self.position = 0;
-        self.is_playing = false;
+        self.install_decoded(buffer);
         Ok(())
     }
 
@@ -422,5 +526,80 @@ mod tests {
         let samples = engine.current_samples(usize::MAX);
         assert_eq!(samples.len(), 2, "only the two remaining samples are in the window");
         assert_eq!(samples, vec![1.0, 1.0]);
+    }
+
+    /// A minimal 16-bit mono WAV: 8 kHz, eight samples of a square wave.
+    ///
+    /// Built here rather than loaded from disk so the async-load tests have a decoder fixture the
+    /// repository does not have to carry as a binary (MEDIA-03 asked for a testable load path).
+    fn minimal_wav() -> Vec<u8> {
+        let sample_rate: u32 = 8000;
+        let samples: [i16; 8] = [0, 8000, 16000, 8000, 0, -8000, -16000, -8000];
+        let data_len = (samples.len() * 2) as u32;
+        let mut wav = Vec::with_capacity(44 + data_len as usize);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+        wav.extend_from_slice(&sample_rate.to_le_bytes());
+        wav.extend_from_slice(&(sample_rate * 2).to_le_bytes()); // byte rate
+        wav.extend_from_slice(&2u16.to_le_bytes()); // block align
+        wav.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_len.to_le_bytes());
+        for sample in samples {
+            wav.extend_from_slice(&sample.to_le_bytes());
+        }
+        wav
+    }
+
+    /// `load_async` decodes on a worker and `poll_load` installs the buffer once.
+    #[test]
+    fn load_async_installs_a_decoded_wav() {
+        let mut engine = AudioEngine::new();
+        engine.load_async(minimal_wav());
+        assert!(engine.is_loading(), "the decode starts in the background");
+
+        let mut installed = None;
+        // Bounded polling: a hung worker fails the test instead of hanging the suite.
+        for _ in 0..500 {
+            if let Some(result) = engine.poll_load() {
+                installed = Some(result);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        installed.expect("the load must finish").expect("the WAV must decode");
+        assert!(!engine.is_loading(), "a completed load clears the pending job");
+        assert_eq!(engine.buffer().map(|buffer| buffer.samples.len()), Some(8));
+        assert!(engine.duration_seconds() > 0.0);
+        assert_eq!(engine.poll_load(), None, "the result is reported exactly once");
+    }
+
+    /// `wait_for_load` is the blocking form and reports a decode failure without installing
+    /// anything.
+    #[test]
+    fn wait_for_load_reports_a_failure_and_keeps_the_old_track() {
+        let mut engine = AudioEngine::new();
+        engine.load(&minimal_wav()).expect("the fixture decodes");
+
+        engine.load_async(vec![0u8; 16]);
+        let error = engine.wait_for_load().expect_err("invalid bytes must fail to decode");
+        assert!(error.contains("format") || error.contains("WAV"), "{error}");
+        assert!(
+            engine.buffer().is_some(),
+            "a failed load must not clear the track that is still loaded"
+        );
+    }
+
+    /// `load` remains the synchronous shorthand over the same install path.
+    #[test]
+    fn load_decodes_a_wav_synchronously() {
+        let mut engine = AudioEngine::new();
+        engine.load(&minimal_wav()).expect("the fixture decodes");
+        assert_eq!(engine.buffer().map(|buffer| buffer.samples.len()), Some(8));
+        assert!(!engine.is_loading());
     }
 }

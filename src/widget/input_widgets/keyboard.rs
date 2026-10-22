@@ -184,6 +184,9 @@ impl Keyboard {
 
     /// Set whether lowercase letters are shown when shift is off.
     pub fn set_lowercase(&mut self, enabled: bool) {
+        if self.lowercase == enabled {
+            return;
+        }
         self.lowercase = enabled;
         self.base.request_redraw();
     }

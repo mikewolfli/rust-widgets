@@ -118,6 +118,9 @@ impl ScrollBar {
     }
     /// Sets minimum value.
     pub fn set_minimum(&mut self, minimum: i32) {
+        if self.minimum == minimum {
+            return;
+        }
         self.minimum = minimum;
         if self.maximum < self.minimum {
             self.maximum = self.minimum;
@@ -131,6 +134,9 @@ impl ScrollBar {
     }
     /// Sets maximum value.
     pub fn set_maximum(&mut self, maximum: i32) {
+        if self.maximum == maximum {
+            return;
+        }
         self.maximum = maximum;
         if self.minimum > self.maximum {
             self.minimum = self.maximum;
@@ -141,8 +147,12 @@ impl ScrollBar {
     /// Sets both minimum and maximum in one call.
     /// This is a convenience writer; query bounds via `minimum()` and `maximum()`.
     pub fn set_range(&mut self, minimum: i32, maximum: i32) {
+        let maximum = maximum.max(minimum);
+        if self.minimum == minimum && self.maximum == maximum {
+            return;
+        }
         self.minimum = minimum;
-        self.maximum = maximum.max(minimum);
+        self.maximum = maximum;
         self.set_value(self.value); // Re-clamp
         self.base.request_redraw();
     }
@@ -169,7 +179,11 @@ impl ScrollBar {
     }
     /// Sets single step value.
     pub fn set_single_step(&mut self, step: i32) {
-        self.single_step = step.max(1);
+        let step = step.max(1);
+        if self.single_step == step {
+            return;
+        }
+        self.single_step = step;
         self.base.request_redraw();
     }
     /// Returns page step value.
@@ -178,7 +192,11 @@ impl ScrollBar {
     }
     /// Sets page step value.
     pub fn set_page_step(&mut self, step: i32) {
-        self.page_step = step.max(1);
+        let step = step.max(1);
+        if self.page_step == step {
+            return;
+        }
+        self.page_step = step;
         self.base.request_redraw();
     }
     /// Returns orientation.

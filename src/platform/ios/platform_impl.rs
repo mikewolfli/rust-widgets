@@ -41,8 +41,6 @@ use crate::core::PlatformFamily;
 use crate::platform::clipboard::RichClipboardBackend;
 use crate::platform::types::{Display, DisplayId};
 use crate::platform::{Platform, PlatformCapabilities, WidgetTriggerEvent, WidgetTriggerKind};
-use core::time::Duration;
-use std::thread;
 
 /// The frame interval this backend's loop runs at, in milliseconds.
 ///
@@ -434,8 +432,10 @@ impl Platform for IosMobilePlatform {
         // alone re-ran layout but left every animation on this platform unreachable, since
         // nothing else runs the per-frame step (BLUE24 §0A.1 measurement 1).
         while self.runtime.running.load(Ordering::SeqCst) {
-            crate::drive_frame(FRAME_INTERVAL_MS as u32);
-            thread::sleep(Duration::from_millis(FRAME_INTERVAL_MS));
+            let outcome = crate::drive_frame(FRAME_INTERVAL_MS as u32);
+            // Block when no frame is owed instead of waking every 16 ms. A posted event, a stop
+            // request, or scheduled cross-thread work wakes the loop immediately.
+            crate::platform::frame_wait::pause_between_frames(outcome.needs_another_frame);
         }
     }
 

@@ -227,6 +227,9 @@ impl RadarChart {
 
     /// Sets whether the grid rings and spokes are drawn.
     pub fn set_show_grid(&mut self, show: bool) {
+        if self.show_grid == show {
+            return;
+        }
         self.show_grid = show;
         self.base.request_redraw();
     }
@@ -238,6 +241,9 @@ impl RadarChart {
 
     /// Sets whether axis names are drawn.
     pub fn set_show_axis_labels(&mut self, show: bool) {
+        if self.show_axis_labels == show {
+            return;
+        }
         self.show_axis_labels = show;
         self.base.request_redraw();
     }
@@ -249,6 +255,9 @@ impl RadarChart {
 
     /// Sets whether the legend is drawn.
     pub fn set_show_legend(&mut self, show: bool) {
+        if self.show_legend == show {
+            return;
+        }
         self.show_legend = show;
         self.base.request_redraw();
     }

@@ -102,7 +102,12 @@ impl ProgressCircle {
 
     /// Sets the progress value. Clamped to 0.0..=1.0.
     pub fn set_value(&mut self, value: f32) {
-        self.value = value.clamp(0.0, 1.0);
+        let clamped = value.clamp(0.0, 1.0);
+        // A same-value write is a no-op; progress controls are written every animation frame.
+        if self.value == clamped {
+            return;
+        }
+        self.value = clamped;
         self.base.request_redraw();
     }
 
@@ -113,6 +118,9 @@ impl ProgressCircle {
 
     /// Sets whether the indicator shows indeterminate (spinning) animation.
     pub fn set_indeterminate(&mut self, indeterminate: bool) {
+        if self.indeterminate == indeterminate {
+            return;
+        }
         self.indeterminate = indeterminate;
         // Entering the spinning state starts from the top rather than wherever the last sweep
         // stopped, so two rings switched on at different times still read as one animation.
@@ -165,6 +173,9 @@ impl ProgressCircle {
 
     /// Sets the track (background circle) color.
     pub fn set_track_color(&mut self, color: Color) {
+        if self.track_color == color {
+            return;
+        }
         self.track_color = color;
         self.base.request_redraw();
     }
@@ -176,6 +187,9 @@ impl ProgressCircle {
 
     /// Sets the progress (foreground arc) color.
     pub fn set_progress_color(&mut self, color: Color) {
+        if self.progress_color == color {
+            return;
+        }
         self.progress_color = color;
         self.base.request_redraw();
     }
@@ -201,13 +215,21 @@ impl ProgressCircle {
 
     /// Sets the diameter of the progress circle.
     pub fn set_diameter(&mut self, diameter: u32) {
-        self.diameter = diameter.max(1);
+        let diameter = diameter.max(1);
+        if self.diameter == diameter {
+            return;
+        }
+        self.diameter = diameter;
         self.base.request_redraw();
     }
 
     /// Sets the stroke width for both track and progress arcs.
     pub fn set_stroke_width(&mut self, width: f32) {
-        self.stroke_width = width.max(0.5);
+        let width = width.max(0.5);
+        if self.stroke_width == width {
+            return;
+        }
+        self.stroke_width = width;
         self.base.request_redraw();
     }
 

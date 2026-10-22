@@ -32,8 +32,6 @@ use crate::core::PlatformFamily;
 use crate::platform::clipboard::RichClipboardBackend;
 use crate::platform::types::{Display, DisplayId};
 use crate::platform::{Platform, PlatformCapabilities, WidgetTriggerEvent, WidgetTriggerKind};
-use core::time::Duration;
-use std::thread;
 
 impl AndroidPlatform {}
 
@@ -471,8 +469,10 @@ impl Platform for AndroidPlatform {
         // alone did not: layout was correct and every animation was inert, because no code
         // ran the per-frame step (BLUE24 §0A.1 measurement 1).
         while self.runtime.running.load(Ordering::SeqCst) {
-            crate::drive_frame(FRAME_INTERVAL_MS as u32);
-            thread::sleep(Duration::from_millis(FRAME_INTERVAL_MS));
+            let outcome = crate::drive_frame(FRAME_INTERVAL_MS as u32);
+            // Block when no frame is owed instead of waking every 16 ms. A posted event, a stop
+            // request, or scheduled cross-thread work wakes the loop immediately.
+            crate::platform::frame_wait::pause_between_frames(outcome.needs_another_frame);
         }
     }
 
@@ -492,18 +492,9 @@ impl Platform for AndroidPlatform {
     /// discarded widget. The lock is scoped to its own statement so no two guards
     /// are held at the same time.
     fn destroy_widget(&self, widget_id: u64) -> bool {
-        {
-            let mut menus = lock(&self.menus);
-            menus.attached_menu_bar.remove(&widget_id);
-            // The widget may be a container in the menu tree: drop both the
-            // children it owned and the child entry under its own parent.
-            menus.menu_children.remove(&widget_id);
-            for children in menus.menu_children.values_mut() {
-                children.retain(|child| *child != widget_id);
-            }
-            // Drop queued triggers that reference a widget that no longer exists.
-            menus.pending_menu_events.retain(|queued| *queued != widget_id);
-        }
+        // Menu bookkeeping is shared by Android, Mobile and Wayland; see
+        // `platform::menu_bookkeeping` for the rule (PLAT-08).
+        lock(&self.menus).purge(widget_id);
 
         // The state record is the authority on whether the widget existed.
         self.state.destroy_widget(widget_id)

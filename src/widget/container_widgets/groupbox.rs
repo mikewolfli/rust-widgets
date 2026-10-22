@@ -101,6 +101,9 @@ impl GroupBox {
     }
     /// Sets title.
     pub fn set_title(&mut self, title: String) {
+        if self.title == title {
+            return;
+        }
         // The cached width belongs to the *old* title, and it is read by `title_row` (placement)
         // and by `size_hint` (the width reported to a parent). Leaving it set would make the box
         // reserve the previous caption's room until the next draw happened to run — and since the
@@ -117,6 +120,9 @@ impl GroupBox {
     }
     /// Sets alignment.
     pub fn set_alignment(&mut self, alignment: Alignment) {
+        if self.alignment == alignment {
+            return;
+        }
         self.alignment = alignment;
         self.base.request_redraw();
     }

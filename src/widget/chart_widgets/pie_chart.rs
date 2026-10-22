@@ -114,6 +114,9 @@ impl PieChart {
 
     /// Enables or disables showing labels next to each slice.
     pub fn set_show_labels(&mut self, show: bool) {
+        if self.show_labels == show {
+            return;
+        }
         self.show_labels = show;
         self.base.request_redraw();
     }
@@ -125,6 +128,9 @@ impl PieChart {
 
     /// Enables or disables showing percentage values on each slice.
     pub fn set_show_percentages(&mut self, show: bool) {
+        if self.show_percentages == show {
+            return;
+        }
         self.show_percentages = show;
         self.base.request_redraw();
     }
@@ -136,6 +142,9 @@ impl PieChart {
 
     /// Enables or disables donut (ring) mode.
     pub fn set_donut_mode(&mut self, donut: bool) {
+        if self.donut == donut {
+            return;
+        }
         self.donut = donut;
         self.base.request_redraw();
     }
@@ -148,7 +157,11 @@ impl PieChart {
     /// Sets the donut hole ratio (0.0 = full pie, 1.0 = invisible ring).
     /// Clamped to 0.0..=1.0.
     pub fn set_donut_ratio(&mut self, ratio: f32) {
-        self.donut_ratio = ratio.clamp(0.0, 1.0);
+        let ratio = ratio.clamp(0.0, 1.0);
+        if self.donut_ratio == ratio {
+            return;
+        }
+        self.donut_ratio = ratio;
         self.base.request_redraw();
     }
 

@@ -8,7 +8,7 @@
 //! no line index that can be "out of range because the buffer is empty".
 //!
 //! The model also mirrors its text into an `Rc<RefCell<String>>` so the shared
-//! [`TextSnapshotCommand`] undo command can be reused unchanged instead of
+//! `ValueCommand<String>` undo command can be reused unchanged instead of
 //! introducing a second history implementation.
 
 use super::types::{EditorBuffer, FoldRegion, TextPosition};

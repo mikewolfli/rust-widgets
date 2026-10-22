@@ -94,6 +94,9 @@ impl QRCode {
 
     /// Sets the data string used to generate the QR code pattern.
     pub fn set_data(&mut self, data: &str) {
+        if self.data == data {
+            return;
+        }
         self.data = data.to_string();
         self.base.request_redraw();
     }
@@ -123,6 +126,9 @@ impl QRCode {
     /// refusing a margin a caller explicitly asked for would be a different kind of wrong. The
     /// default is two, unchanged, so existing renders are unaffected.
     pub fn set_quiet_zone(&mut self, modules: u32) {
+        if self.quiet_zone == modules {
+            return;
+        }
         self.quiet_zone = modules;
         self.base.request_redraw();
     }
@@ -135,7 +141,11 @@ impl QRCode {
 
     /// Sets the size of each module (cell) in logical pixels.
     pub fn set_module_size(&mut self, size: u32) {
-        self.module_size = size.max(1);
+        let size = size.max(1);
+        if self.module_size == size {
+            return;
+        }
+        self.module_size = size;
         self.base.request_redraw();
     }
 

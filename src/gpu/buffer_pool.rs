@@ -226,6 +226,24 @@ fn align_up_checked(value: usize, alignment: usize) -> Option<usize> {
 ///
 /// This is specialized for GPU staging buffers and complements the general
 /// purpose `BufferPool` in `crate::memory::pool`.
+///
+/// # Status: an accounting model, not an upload path (REND-11)
+///
+/// The pool tracks *where bytes would go* — a ring of aligned offsets, a frame cursor and the
+/// fallback chain — but it owns no GPU buffer: a ring allocation is an `(offset, size)` pair, and
+/// only a fallback allocation carries storage (a `Vec<u8>`). No renderer allocates from it. The
+/// wgpu renderer uploads with `Queue::write_buffer` into persistent buffers
+/// (`src/wgpu_backend/renderer.rs`, `RenderCache`), which is the native wgpu staging path and
+/// already coalesces a batch into one write, so routing that data through this pool would add a
+/// copy and an offset translation without saving an allocation.
+///
+/// It is kept, rather than deleted, because [`GpuUploadBatcher`] and the fallback chain are the
+/// public surface a host-owned upload ring would build on, and because the issue that reported
+/// this (`REND-11`) offers "document and gate" as an acceptable resolution. **Deletion
+/// condition:** if no host allocates through the pool by the next major release, delete
+/// `GpuStagingBufferPool`, [`GpuUploadBatcher`] and their statistics together — a pool nobody
+/// allocates from is not a feature, and keeping it compiles ~1000 lines that no test can exercise
+/// beyond its own unit tests.
 pub struct GpuStagingBufferPool {
     config: StagingBufferPoolConfig,
     slots: Vec<GpuRingBufferSlot>,

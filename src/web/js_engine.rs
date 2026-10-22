@@ -525,18 +525,21 @@ impl SimpleJsEngine {
         if block.is_empty() {
             return Ok(JsValue::Undefined);
         }
-        // Split into top-level semicolons (naive; does not split inside {}, [], "", '')
+        // Split into top-level semicolons (naive; does not split inside {}, [], "", '').
+        //
+        // `char_indices` rather than `block.chars().collect::<Vec<_>>()`: the collected
+        // vector was one heap allocation per block (and blocks nest), only to recover byte
+        // offsets that `char_indices` already gives.
         let mut stmts = Vec::new();
         let mut depth = 0usize;
         let mut start = 0usize;
-        let chars: Vec<char> = block.chars().collect();
-        for i in 0..chars.len() {
-            match chars[i] {
+        for (i, ch) in block.char_indices() {
+            match ch {
                 '{' | '[' | '(' => depth += 1,
                 '}' | ']' | ')' => depth = depth.saturating_sub(1),
                 ';' if depth == 0 => {
                     stmts.push(block[start..i].trim().to_string());
-                    start = i + 1;
+                    start = i + ch.len_utf8();
                 }
                 _ => { /* Other characters are not relevant */ }
             }

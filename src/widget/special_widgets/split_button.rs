@@ -97,7 +97,11 @@ impl SplitButton {
 
     /// Sets button text.
     pub fn set_text(&mut self, text: impl Into<String>) {
-        self.text = text.into();
+        let text = text.into();
+        if self.text == text {
+            return;
+        }
+        self.text = text;
         self.base.request_redraw();
     }
 
@@ -145,7 +149,11 @@ impl SplitButton {
 
     /// Sets menu row height.
     pub fn set_row_height(&mut self, row_height: u32) {
-        self.row_height = row_height.max(1);
+        let row_height = row_height.max(1);
+        if self.row_height == row_height {
+            return;
+        }
+        self.row_height = row_height;
         self.base.request_layout();
         self.base.request_redraw();
     }

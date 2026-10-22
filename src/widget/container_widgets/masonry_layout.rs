@@ -61,7 +61,11 @@ impl MasonryLayout {
 
     /// Sets the number of columns (minimum 1).
     pub fn set_columns(&mut self, columns: u32) {
-        self.columns = columns.max(1);
+        let columns = columns.max(1);
+        if self.columns == columns {
+            return;
+        }
+        self.columns = columns;
         self.base.request_redraw();
     }
 

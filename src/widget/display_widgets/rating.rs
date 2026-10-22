@@ -131,6 +131,9 @@ impl Rating {
     /// Sets the size of each star in pixels.
     pub fn set_star_size(&mut self, size: u32) {
         let size = size.max(8);
+        if self.star_size == size {
+            return;
+        }
         self.star_size = size;
         self.base.request_redraw();
     }

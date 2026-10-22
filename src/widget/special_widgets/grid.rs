@@ -111,7 +111,11 @@ impl GridWidget {
     }
     /// Sets the number of rows (minimum 1). Triggers a redraw request.
     pub fn set_rows(&mut self, rows: u32) {
-        self.rows = rows.max(1);
+        let rows = rows.max(1);
+        if self.rows == rows {
+            return;
+        }
+        self.rows = rows;
         self.update_cell_dimensions();
         self.base.request_redraw();
     }
@@ -121,7 +125,11 @@ impl GridWidget {
     }
     /// Sets the number of columns (minimum 1). Triggers a redraw request.
     pub fn set_columns(&mut self, columns: u32) {
-        self.columns = columns.max(1);
+        let columns = columns.max(1);
+        if self.columns == columns {
+            return;
+        }
+        self.columns = columns;
         self.update_cell_dimensions();
         self.base.request_redraw();
     }
@@ -134,6 +142,9 @@ impl GridWidget {
     }
     /// Sets spacing between cells in pixels. Triggers a redraw request.
     pub fn set_spacing(&mut self, spacing: u32) {
+        if self.spacing == spacing {
+            return;
+        }
         self.spacing = spacing;
         self.update_cell_dimensions();
         self.base.request_redraw();
@@ -153,6 +164,9 @@ impl GridWidget {
     /// Sets the grid line color. Pass `None` to disable grid lines, or `Some(None)` to follow the
     /// theme's border colour.
     pub fn set_line_color(&mut self, color: Option<Option<Color>>) {
+        if self.line_color == color {
+            return;
+        }
         self.line_color = color;
         self.base.request_redraw();
     }

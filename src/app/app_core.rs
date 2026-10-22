@@ -248,6 +248,10 @@ impl App {
     pub fn run(&self) {
         trace_runtime_route("app::run");
 
+        // Enumerating installed fonts can take hundreds of milliseconds. Start it on a background
+        // thread now so the first font chooser does not pay for it on the UI thread.
+        crate::platform::fonts::prewarm_system_fonts();
+
         // Enter the platform event loop.  On each tick the platform will
         // invoke dispatch_trigger for us (or we poll manually below).
         // We also drain any remaining events after the loop ends.
@@ -272,6 +276,7 @@ impl App {
     /// On other targets, falls back to blocking `run()` via `run_blocking`.
     pub fn run_async(&self) -> std::thread::JoinHandle<()> {
         trace_runtime_route("app::run_async");
+        crate::platform::fonts::prewarm_system_fonts();
         std::thread::spawn(|| {
             crate::run();
             fire_shutdown();
@@ -473,20 +478,26 @@ mod tests {
     ///
     /// `AppConfig::enable_i18n` was declared but `App::init` called the unparameterised
     /// `crate::init()`, so the global i18n manager was brought up regardless. After the
-    /// fix the optional-subsystem step is skipped and the manager stays absent.
+    /// fix the optional-subsystem step is skipped.
+    ///
+    /// The assertion is on a **thread-local call counter**, not on `GLOBAL_I18N.is_none()`.
+    /// `translate()` lazily populates the global slot by design, so any test that renders a
+    /// translated label in parallel puts a manager there — which made the old global assertion
+    /// fail intermittently for a reason that had nothing to do with this switch. The counter sees
+    /// only the calls this test thread made.
     #[test]
     fn with_i18n_false_skips_i18n_initialisation() {
         let _lock = app_init_test_lock();
         let _i18n = crate::i18n::global_i18n_test_lock();
-        // Start from a known-uninitialised state.
-        *crate::compat::lock(&crate::i18n::GLOBAL_I18N) = None;
+        let before = crate::i18n::init_call_count();
 
         let mut app = App::with_config(AppConfig::default().with_i18n(false));
         app.init();
 
-        assert!(
-            crate::i18n::GLOBAL_I18N.lock().unwrap_or_else(|e| e.into_inner()).is_none(),
-            "with_i18n(false) must leave the i18n manager uninitialised"
+        assert_eq!(
+            crate::i18n::init_call_count(),
+            before,
+            "with_i18n(false) must not call i18n::init()"
         );
     }
 
@@ -496,10 +507,16 @@ mod tests {
     fn with_i18n_true_initialises_i18n() {
         let _lock = app_init_test_lock();
         let _i18n = crate::i18n::global_i18n_test_lock();
+        let before = crate::i18n::init_call_count();
         *crate::compat::lock(&crate::i18n::GLOBAL_I18N) = None;
 
         let mut app = App::new();
         app.init();
+
+        assert!(
+            crate::i18n::init_call_count() > before,
+            "the default configuration must call i18n::init()"
+        );
 
         let count = crate::i18n::GLOBAL_I18N
             .lock()

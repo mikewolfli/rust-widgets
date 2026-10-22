@@ -131,6 +131,9 @@ impl ColorHistory {
 
     /// Sets the maximum number of colors. Truncates if current colors exceed the new limit.
     pub fn set_max_colors(&mut self, max: usize) {
+        if self.max_colors == max {
+            return;
+        }
         self.max_colors = max;
         while self.colors.len() > max {
             self.colors.remove(0);

@@ -509,6 +509,9 @@ impl ComboBox {
     }
     /// Sets editable state.
     pub fn set_editable(&mut self, editable: bool) {
+        if self.editable == editable {
+            return;
+        }
         self.editable = editable;
         self.base.request_redraw();
     }
@@ -525,7 +528,11 @@ impl ComboBox {
     /// The window is re-clamped as well as the field, so shrinking the limit on a list scrolled past
     /// its new end cannot leave the window showing nothing.
     pub fn set_max_visible_items(&mut self, max: usize) {
-        self.max_visible_items = max.max(1);
+        let max = max.max(1);
+        if self.max_visible_items == max {
+            return;
+        }
+        self.max_visible_items = max;
         self.first_visible_item = self.first_visible_item();
         self.base.request_redraw();
     }

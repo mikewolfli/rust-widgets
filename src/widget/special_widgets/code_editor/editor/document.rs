@@ -99,10 +99,11 @@ impl CodeEditor {
         let before = self.text();
         if !self.restoring_history {
             let target = self.model.borrow().text.clone();
-            self.undo_stack.push(Box::new(TextSnapshotCommand::new(
+            self.undo_stack.push(Box::new(ValueCommand::new(
                 target,
                 before,
                 next.clone(),
+                "Edit text",
                 "code_editor_text",
             )));
         }
@@ -424,7 +425,7 @@ impl CodeEditor {
     /// Pushes one undo checkpoint for an edit.
     ///
     /// A range edit stores only the text it replaced; anything else falls back to
-    /// `TextSnapshotCommand`, which stores the whole document twice. Typing always
+    /// `ValueCommand<String>`, which stores the whole document twice. Typing always
     /// takes the range path, so a keystroke's history cost is the size of the
     /// edit rather than the size of the file.
     pub(super) fn push_checkpoint(
@@ -453,10 +454,11 @@ impl CodeEditor {
                 let current = target.borrow().clone();
                 let before = before_snapshot.unwrap_or_else(|| current.clone());
                 let bytes = before.len() + current.len();
-                self.undo_stack.push(Box::new(TextSnapshotCommand::new(
+                self.undo_stack.push(Box::new(ValueCommand::new(
                     target,
                     before,
                     current,
+                    "Edit text",
                     "code_editor_edit",
                 )));
                 bytes

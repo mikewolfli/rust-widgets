@@ -40,7 +40,7 @@
 use super::platform_impl::WaylandSessionState;
 use crate::compat::{lock, Arc, Mutex, String, ToString, Vec};
 use crate::platform::clipboard::{ClipboardContent, RichClipboardBackend};
-use std::os::fd::{AsFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use wayland_client::protocol::wl_data_device::WlDataDevice;
 use wayland_client::protocol::wl_data_device_manager::WlDataDeviceManager;
 use wayland_client::protocol::wl_data_offer::WlDataOffer;
@@ -84,6 +84,15 @@ struct Inner {
     last_serial: u32,
     /// Bumped whenever the selection changes or we write, for `clipboard_generation`.
     generation: u64,
+    /// The last successful remote read.
+    ///
+    /// A read no longer blocks the caller: the `receive` request is queued on the caller's
+    /// thread (proxies are thread-affine) and the pipe is drained on a worker. This is the value
+    /// that worker publishes, so a second read observes the result without another transfer.
+    remote: Option<ClipboardContent>,
+    /// Set while a worker is draining a receive pipe, so repeated reads do not start a thread
+    /// each and flood the source application with requests.
+    fetching: bool,
 }
 
 impl WaylandClipboard {
@@ -97,6 +106,8 @@ impl WaylandClipboard {
                 source: None,
                 last_serial: 0,
                 generation: 0,
+                remote: None,
+                fetching: false,
             })),
         }
     }
@@ -110,6 +121,8 @@ impl WaylandClipboard {
         inner.channel = None;
         inner.offer = None;
         inner.source = None;
+        inner.remote = None;
+        inner.fetching = false;
     }
 
     /// Records the `wl_data_device` and the queue it belongs to; called once per session.
@@ -124,6 +137,8 @@ impl WaylandClipboard {
         inner.channel = Some(Channel { manager, device, qh, conn });
         inner.offer = None;
         inner.source = None;
+        inner.remote = None;
+        inner.fetching = false;
         inner.generation = inner.generation.wrapping_add(1);
     }
 
@@ -153,6 +168,9 @@ impl WaylandClipboard {
     pub(crate) fn note_offer(&self, proxy: WlDataOffer) {
         let mut inner = lock(&self.inner);
         inner.offer = Some(Offer { proxy, mimes: Vec::new() });
+        // A new offer means the cached remote content describes the previous selection.
+        inner.remote = None;
+        inner.fetching = false;
         inner.generation = inner.generation.wrapping_add(1);
     }
 
@@ -179,6 +197,9 @@ impl WaylandClipboard {
             }
             None => inner.offer = None,
         }
+        // The new selection invalidates the cached read from the old one.
+        inner.remote = None;
+        inner.fetching = false;
         inner.generation = inner.generation.wrapping_add(1);
     }
 
@@ -229,44 +250,65 @@ impl WaylandClipboard {
 
     /// Reads the current selection as rich content.
     ///
-    /// The offer is read first because it is the system clipboard; the local copy is the fallback
-    /// only when there is no offer or the transfer fails.
+    /// Returns the cached remote read immediately and, when there is no cache, queues the
+    /// `receive` requests and drains their pipes on a worker thread. The caller therefore never
+    /// waits for the source application: a slow or wedged source can no longer freeze the UI for
+    /// `READ_TIMEOUT_MS`.
     fn read_contents(&self) -> Option<ClipboardContent> {
-        let (offer, mimes, conn) = {
+        let (offer, mimes, conn, cached, fetching, local) = {
             let inner = lock(&self.inner);
-            let offer = inner.offer.as_ref()?;
-            let channel = inner.channel.as_ref()?;
-            (offer.proxy.clone(), offer.mimes.clone(), channel.conn.clone())
+            (
+                inner.offer.as_ref().map(|offer| offer.proxy.clone()),
+                inner.offer.as_ref().map(|offer| offer.mimes.clone()).unwrap_or_default(),
+                inner.channel.as_ref().map(|channel| channel.conn.clone()),
+                inner.remote.clone(),
+                inner.fetching,
+                inner.local.clone(),
+            )
         };
-
-        if mimes.iter().any(|mime| mime == "text/html") {
-            let html = read_mime(&offer, &conn, "text/html")?;
-            let html = decode(html)?;
-            let plain = TEXT_MIMES
-                .iter()
-                .find(|mime| mimes.iter().any(|offered| offered == *mime))
-                .and_then(|mime| read_mime(&offer, &conn, mime))
-                .and_then(decode)
-                .unwrap_or_default();
-            return Some(ClipboardContent::Html { html, plain });
-        }
-
-        if let Some(mime) = TEXT_MIMES.iter().find(|mime| mimes.iter().any(|o| o == *mime)) {
-            if let Some(text) = read_mime(&offer, &conn, mime).and_then(decode) {
-                return Some(ClipboardContent::Text(text));
+        let (Some(offer), Some(conn)) = (offer, conn) else {
+            // No live selection: the locally written content is the only answer.
+            return local;
+        };
+        if cached.is_none() && !fetching {
+            // Queue the receives on *this* thread: `WlDataOffer` is a protocol proxy bound to the
+            // session's connection. Only the pipe descriptors cross to the worker.
+            let plan = read_plan(&mimes);
+            let mut requests: Vec<(String, OwnedFd)> = Vec::with_capacity(plan.len());
+            for mime in plan {
+                if let Some(read_end) = receive_to_pipe(&offer, &conn, mime) {
+                    requests.push((mime.to_string(), read_end));
+                }
+            }
+            if !requests.is_empty() {
+                lock(&self.inner).fetching = true;
+                let inner = self.inner.clone();
+                let spawned = std::thread::Builder::new()
+                    .name("wayland-clipboard-read".to_string())
+                    .spawn(move || {
+                        let reads: Vec<(String, Vec<u8>)> = requests
+                            .into_iter()
+                            .filter_map(|(mime, read_end)| {
+                                finish_read(read_end).map(|bytes| (mime, bytes))
+                            })
+                            .collect();
+                        let content = content_from_reads(reads);
+                        let mut guard = lock(&inner);
+                        guard.fetching = false;
+                        if let Some(content) = content {
+                            guard.remote = Some(content);
+                            guard.generation = guard.generation.wrapping_add(1);
+                        }
+                        drop(guard);
+                        // A host that renders clipboard state can now observe the result.
+                        crate::platform::frame_wait::wake();
+                    });
+                if spawned.is_err() {
+                    lock(&self.inner).fetching = false;
+                }
             }
         }
-
-        // A single non-text type (an application-defined type) round-trips by name.
-        if let Some(mime) = mimes
-            .iter()
-            .find(|mime| !TEXT_MIMES.contains(&mime.as_str()) && mime.as_str() != "text/html")
-        {
-            if let Some(data) = read_mime(&offer, &conn, mime) {
-                return Some(ClipboardContent::Custom { content_type: mime.clone(), data });
-            }
-        }
-        None
+        cached
     }
 }
 
@@ -308,6 +350,7 @@ impl RichClipboardBackend for WaylandClipboard {
     fn set_contents(&self, content: ClipboardContent) -> bool {
         let mut inner = lock(&self.inner);
         inner.local = Some(content);
+        inner.remote = None;
         inner.generation = inner.generation.wrapping_add(1);
         inner.publish(true);
         true
@@ -417,6 +460,103 @@ fn decode(bytes: Vec<u8>) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
+/// The MIME types to request for a plain/rich paste, in priority order.
+///
+/// One decision shared by the caller and the worker: the caller needs it to queue the
+/// `receive` requests, and the worker needs the same order to interpret the bytes.
+fn read_plan(mimes: &[String]) -> Vec<&str> {
+    let has = |mime: &str| mimes.iter().any(|offered| offered == mime);
+    if has("text/html") {
+        let mut plan = vec!["text/html"];
+        if let Some(plain) = TEXT_MIMES.iter().find(|mime| has(mime)) {
+            plan.push(*plain);
+        }
+        return plan;
+    }
+    if let Some(text) = TEXT_MIMES.iter().find(|mime| has(mime)) {
+        return vec![*text];
+    }
+    // A single non-text type (an application-defined type) round-trips by name.
+    mimes
+        .iter()
+        .find(|mime| !TEXT_MIMES.contains(&mime.as_str()) && mime.as_str() != "text/html")
+        .map(|mime| vec![mime.as_str()])
+        .unwrap_or_default()
+}
+
+/// Queues `receive` for `mime` and returns the pipe's read end.
+///
+/// Only this half runs on the caller's thread: `WlDataOffer` is a proxy bound to the session's
+/// connection, while the descriptor is free to cross to a worker. The wait for the source
+/// application happens in [`finish_read`], not here.
+fn receive_to_pipe(offer: &WlDataOffer, conn: &Connection, mime: &str) -> Option<OwnedFd> {
+    let mut fds = [0i32; 2];
+    // SAFETY: `fds` is a valid two-element array; `pipe2` either fills both entries or fails
+    // without changing them, and the owned ends below are only constructed on success.
+    let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
+    if rc != 0 {
+        log::warn!("[wayland] clipboard: pipe2 failed");
+        return None;
+    }
+    // SAFETY: `fds[1]` is a fresh descriptor this function owns and has not wrapped elsewhere.
+    let write_end = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+    offer.receive(mime.to_string(), write_end.as_fd());
+    // Dropping our write end is what lets the receiver observe EOF after the compositor's copy.
+    drop(write_end);
+    if let Err(e) = conn.flush() {
+        log::warn!("[wayland] clipboard: receive flush failed: {e}");
+        // SAFETY: `fds[0]` is fresh and owned here; closing it once is required.
+        unsafe { libc::close(fds[0]) };
+        return None;
+    }
+    // SAFETY: `fds[0]` is a fresh descriptor this function owns and has not wrapped elsewhere.
+    Some(unsafe { OwnedFd::from_raw_fd(fds[0]) })
+}
+
+/// Waits for the source application to write and drains the pipe.
+///
+/// FFI/safety: `read_end` is owned by this call, so it is closed exactly once — by the `File`
+/// wrapper on the read path, or by dropping the `OwnedFd` on the timeout path.
+fn finish_read(read_end: OwnedFd) -> Option<Vec<u8>> {
+    let fd = read_end.as_raw_fd();
+    let mut pollfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+    // SAFETY: `pollfd` is a valid array of one entry for the duration of the call.
+    let ready = unsafe { libc::poll(&mut pollfd, 1, READ_TIMEOUT_MS) };
+    if ready <= 0 {
+        log::warn!("[wayland] clipboard: transfer timed out or failed");
+        return None;
+    }
+    let mut file = std::fs::File::from(read_end);
+    let mut bytes = Vec::new();
+    use std::io::Read;
+    match file.read_to_end(&mut bytes) {
+        Ok(_) => Some(bytes),
+        Err(e) => {
+            log::warn!("[wayland] clipboard: reading the transfer failed: {e}");
+            None
+        }
+    }
+}
+
+/// Turns the completed reads into the rich-content shape the read plan asked for.
+fn content_from_reads(mut reads: Vec<(String, Vec<u8>)>) -> Option<ClipboardContent> {
+    if let Some(position) = reads.iter().position(|(mime, _)| mime == "text/html") {
+        let (_, html_bytes) = reads.remove(position);
+        let html = decode(html_bytes)?;
+        let plain = reads
+            .iter()
+            .find(|(mime, _)| is_text_mime(mime))
+            .and_then(|(_, bytes)| decode(bytes.clone()))
+            .unwrap_or_default();
+        return Some(ClipboardContent::Html { html, plain });
+    }
+    if let Some((_, bytes)) = reads.iter().find(|(mime, _)| is_text_mime(mime)) {
+        return decode(bytes.clone()).map(ClipboardContent::Text);
+    }
+    let (content_type, data) = reads.into_iter().next()?;
+    Some(ClipboardContent::Custom { content_type, data })
+}
+
 /// Reads one MIME type from an offer through a pipe.
 ///
 /// FFI/safety: the pipe fds are created here and each is owned by exactly one value — the write
@@ -486,10 +626,9 @@ mod tests {
 
     #[test]
     fn html_offers_markup_plus_a_plain_fallback() {
-        let mimes =
-            offered_mimes(&ClipboardContent::Html { html: "<b>x</b>".into(), plain: "x".into() });
-        assert_eq!(mimes, vec!["text/html", "text/plain;charset=utf-8", "text/plain"]);
         let content = ClipboardContent::Html { html: "<b>x</b>".into(), plain: "x".into() };
+        let mimes = offered_mimes(&content);
+        assert_eq!(mimes, vec!["text/html", "text/plain;charset=utf-8", "text/plain"]);
         assert_eq!(bytes_for(&content, "text/html"), Some(b"<b>x</b>".to_vec()));
         assert_eq!(bytes_for(&content, "text/plain;charset=utf-8"), Some(b"x".to_vec()));
     }

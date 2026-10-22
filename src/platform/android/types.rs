@@ -37,6 +37,18 @@ pub(crate) struct AndroidMenuState {
     pub(crate) pending_menu_events: VecDeque<u64>,
 }
 
+impl AndroidMenuState {
+    /// Drops every menu record that names `widget_id` (PLAT-08).
+    pub(crate) fn purge(&mut self, widget_id: u64) {
+        crate::platform::menu_bookkeeping::purge(
+            &mut self.attached_menu_bar,
+            &mut self.menu_children,
+            Some(&mut self.pending_menu_events),
+            widget_id,
+        );
+    }
+}
+
 /// Android platform runtime state lifecycle markers.
 pub(crate) struct AndroidRuntimeState {
     /// `true` after backend initialization has completed.

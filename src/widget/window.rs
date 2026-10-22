@@ -52,6 +52,9 @@ impl Window {
     }
     /// Updates window title.
     pub fn set_title(&mut self, title: String) {
+        if self.title == title {
+            return;
+        }
         self.title = title;
         self.base.request_redraw();
     }
@@ -62,6 +65,9 @@ impl Window {
 
     /// Sets the title bar height and requests redraw.
     pub fn set_title_bar_height(&mut self, height: u32) {
+        if self.title_bar_height == height {
+            return;
+        }
         self.title_bar_height = height;
         self.base.request_redraw();
     }
@@ -73,6 +79,9 @@ impl Window {
 
     /// Sets the close button size and requests redraw.
     pub fn set_close_button_size(&mut self, size: u32) {
+        if self.close_button_size == size {
+            return;
+        }
         self.close_button_size = size;
         self.base.request_redraw();
     }
@@ -84,6 +93,9 @@ impl Window {
 
     /// Sets the button spacing and requests redraw.
     pub fn set_button_spacing(&mut self, spacing: u32) {
+        if self.button_spacing == spacing {
+            return;
+        }
         self.button_spacing = spacing;
         self.base.request_redraw();
     }

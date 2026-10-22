@@ -111,7 +111,11 @@ impl AudioVisualizer {
 
     /// Sets the number of vertical bars to display.
     pub fn set_bar_count(&mut self, n: usize) {
-        self.bar_count = n.max(1);
+        let bar_count = n.max(1);
+        if self.bar_count == bar_count {
+            return;
+        }
+        self.bar_count = bar_count;
         // Both per-bar vectors resize together. They are indexed alike, so resizing one alone left
         // the other short -- and the marker walk, which indexes both, would have panicked on the
         // next tick after any widening.
@@ -127,7 +131,11 @@ impl AudioVisualizer {
 
     /// Sets the spacing between bars in pixels.
     pub fn set_bar_spacing(&mut self, spacing: f32) {
-        self.bar_spacing = spacing.max(0.0);
+        let spacing = spacing.max(0.0);
+        if self.bar_spacing == spacing {
+            return;
+        }
+        self.bar_spacing = spacing;
         self.base.request_redraw();
     }
 
@@ -138,6 +146,9 @@ impl AudioVisualizer {
 
     /// Sets the color of the bars.
     pub fn set_bar_color(&mut self, color: Color) {
+        if self.bar_color == color {
+            return;
+        }
         self.bar_color = color;
         self.base.request_redraw();
     }
@@ -149,6 +160,9 @@ impl AudioVisualizer {
 
     /// Sets the background color of the visualization area.
     pub fn set_background_color(&mut self, color: Color) {
+        if self.background_color == Some(color) {
+            return;
+        }
         self.background_color = Some(color);
         self.base.request_redraw();
     }
@@ -177,6 +191,9 @@ impl AudioVisualizer {
 
     /// Enables or disables mirror mode. When enabled, the bottom half mirrors the top.
     pub fn set_mirror(&mut self, mirror: bool) {
+        if self.mirror == mirror {
+            return;
+        }
         self.mirror = mirror;
         self.base.request_redraw();
     }
@@ -188,6 +205,9 @@ impl AudioVisualizer {
 
     /// Enables or disables peak hold indicators.
     pub fn set_peak_hold(&mut self, enabled: bool) {
+        if self.peak_hold == enabled {
+            return;
+        }
         self.peak_hold = enabled;
         self.base.request_redraw();
     }
@@ -204,6 +224,9 @@ impl AudioVisualizer {
     /// the field was stored, published and read by nothing, and a marker sat at its highest ever
     /// value for the lifetime of the widget -- which is not "hold for 500 ms", it is "hold forever".
     pub fn set_peak_hold_duration(&mut self, ms: u64) {
+        if self.peak_hold_duration == ms {
+            return;
+        }
         self.peak_hold_duration = ms;
         self.base.request_redraw();
     }

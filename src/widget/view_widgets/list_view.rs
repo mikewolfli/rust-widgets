@@ -558,6 +558,9 @@ impl ListView {
 
     /// Sets the view mode.
     pub fn set_view_mode(&mut self, mode: ViewMode) {
+        if self.view_mode == mode {
+            return;
+        }
         self.view_mode = mode;
         self.base.request_redraw();
     }

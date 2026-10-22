@@ -63,6 +63,9 @@ impl FAB {
     ///
     /// Common values: `"+"`, `"✕"`, `"↓"`, `"↑"`, `"✓"`, `"✎"`.
     pub fn set_icon_text(&mut self, text: &str) {
+        if self.icon_text == text && self.icon_source.is_none() {
+            return;
+        }
         self.icon_text = text.to_string();
         self.icon_source = None;
         self.base.request_redraw();
@@ -91,6 +94,9 @@ impl FAB {
 
     /// Sets the accent (fill) color of the circular button.
     pub fn set_accent_color(&mut self, color: Color) {
+        if self.accent_color == color {
+            return;
+        }
         self.accent_color = color;
         self.base.request_redraw();
     }
@@ -106,6 +112,9 @@ impl FAB {
     /// The geometry rect should be adjusted separately; this flag controls
     /// visual proportions like shadow offset and press scale factor.
     pub fn set_mini(&mut self, mini: bool) {
+        if self.mini == mini {
+            return;
+        }
         self.mini = mini;
         self.base.request_redraw();
     }

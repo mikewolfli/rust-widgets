@@ -88,7 +88,11 @@ impl TerminalView {
 
     /// Sets current input line.
     pub fn set_input_line(&mut self, line: impl Into<String>) {
-        self.input_line = line.into();
+        let line = line.into();
+        if self.input_line == line {
+            return;
+        }
+        self.input_line = line;
         self.base.request_redraw();
     }
 

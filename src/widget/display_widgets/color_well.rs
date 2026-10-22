@@ -49,6 +49,9 @@ impl ColorWell {
 
     /// Sets the current color and requests a redraw.
     pub fn set_color(&mut self, color: Color) {
+        if self.color == color {
+            return;
+        }
         self.color = color;
         self.base.request_redraw();
     }

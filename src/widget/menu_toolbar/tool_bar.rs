@@ -247,11 +247,18 @@ impl ToolBar {
     /// Values below 8 are raised to 8, which is the smallest size at which an
     /// item remains clickable rather than collapsing to a sliver.
     pub fn set_icon_size(&mut self, size: f32) {
-        self.icon_size = size.max(8.0);
+        let size = size.max(8.0);
+        if self.icon_size == size {
+            return;
+        }
+        self.icon_size = size;
         self.base.request_redraw();
     }
     /// Allows or forbids dragging the toolbar; repaints either way.
     pub fn set_movable(&mut self, v: bool) {
+        if self.movable == v {
+            return;
+        }
         self.movable = v;
         self.base.request_redraw();
     }
@@ -260,6 +267,9 @@ impl ToolBar {
     /// Forbidding it also docks a currently-floating toolbar, so the permission and
     /// the state cannot disagree.
     pub fn set_floatable(&mut self, v: bool) {
+        if self.floatable == v {
+            return;
+        }
         self.floatable = v;
         if !v {
             // Docking through the setter keeps `top_level_changed` truthful: the
@@ -410,18 +420,10 @@ impl ToolBar {
     /// height of the control's own `size_hint`, which is a rectangle shaped like a toolbar
     /// rather than a toolbar. [`ControlMetrics::full_width_band`] keeps the full width (a
     /// toolbar *is* as wide as its window) and takes the strip's own height, so the ink and
-    /// the reported size agree. This one band is what `item_rect` — and therefore the hit test
-    /// — and `draw` both read.
+    /// the reported size agree. This one band is what [`ToolBar::item_bands`] — and therefore
+    /// the hit test — and `draw` both read.
     fn band_rect(&self) -> Rect {
         ControlMetrics::full_width_band(self.geometry(), dimensions::TOOLBAR_HEIGHT)
-    }
-    fn item_rect(&self, index: usize) -> Rect {
-        // The **painted band**, not the control's rectangle: the strip is
-        // [`dimensions::TOOLBAR_HEIGHT`] tall and centred, and an item is that band inset by
-        // [`dimensions::TOOLBAR_ITEM_INSET`]. Deriving the item's height from `geometry()`
-        // made a 240x120 census cell give every item a 116 px hover square, so the strip's
-        // own hover fill covered the whole cell rather than the row the item sits on.
-        self.item_bands().get(index).copied().unwrap_or(Rect { x: 0, y: 0, width: 0, height: 0 })
     }
 
     /// Every item's box, placed by the one advance every item shares.
@@ -431,13 +433,14 @@ impl ToolBar {
     /// A toolbar item has no intrinsic size to negotiate: a button is `icon_size + spacing` along
     /// the strip, a separator is `spacing`, and the cross axis is the band inset at both ends. The
     /// previous form built a `CompositeBuilder`, a `FlexLayout`, and a temporary `label` widget per
-    /// item on **every** call — and this method is called by `item_rect` from the hit test and from
-    /// `draw`, so a 40-item toolbar created 40 widgets and ran a full layout pass per pointer event
-    /// and per frame. The boxes are the same ones the layout produced (the tests below pin the
-    /// relation), so computing them directly removes the work without changing a pixel.
+    /// item on **every** call — and this method is called by the hit test and by `draw`, so a
+    /// 40-item toolbar created 40 widgets and ran a full layout pass per pointer event and per
+    /// frame. The boxes are the same ones the layout produced (the tests below pin the relation),
+    /// so computing them directly removes the work without changing a pixel.
     ///
-    /// `item_rect` remains a lookup into this list, so the hit test and the paint path cannot
-    /// disagree.
+    /// The callers read this list once per pass: `draw` and `hit_item` each walk it in place
+    /// rather than asking a per-index helper, which used to rebuild the whole list per index and
+    /// made both paths O(N²) in the item count (REND-01).
     fn item_bands(&self) -> Vec<Rect> {
         let band = self.band_rect();
         if self.items.is_empty() {
@@ -480,7 +483,10 @@ impl ToolBar {
         // sibling overpaints the boundary column. Including it in the hit-test made
         // that one pixel resolve to the *earlier* item — the opposite of what is drawn
         // there.
-        (0..self.items.len()).find(|&i| self.item_rect(i).contains_point(pos))
+        //
+        // One `item_bands` call for the whole probe: a per-index helper used to recompute every
+        // box for every index, so a pointer move over an N-item strip was O(N²) (REND-01).
+        self.item_bands().iter().position(|band| band.contains_point(pos))
     }
 }
 impl Widget for ToolBar {
@@ -648,7 +654,7 @@ impl Draw for ToolBar {
     fn draw(&mut self, context: &mut RenderContext) {
         // The **strip**, not the control's rectangle: see `band_rect`. Every measurement below
         // — the fill, the rule, the separators and the item squares — is taken from this one
-        // band, and `item_rect` (and therefore the hit test) reads the same one.
+        // band, and the item bands (and therefore the hit test) read the same one.
         let rect = self.band_rect();
         let style = self.style();
         // Background
@@ -687,8 +693,12 @@ impl Draw for ToolBar {
         let hovered_fill = resting.blend(&accent, 0.18);
         let checked_fill = resting.blend(&accent, 0.34);
 
-        for i in 0..self.items.len() {
-            let item_r = self.item_rect(i);
+        // One pass over the item boxes for the whole paint. A per-index helper derives its answer
+        // from the same `item_bands`, which walks every item; calling it inside this loop made
+        // painting an N-item toolbar O(N²) (REND-01). The boxes are a pure function of the band,
+        // the item count and `icon_size`, so computing them once is the same picture at one pass.
+        let bands = self.item_bands();
+        for (i, &item_r) in bands.iter().enumerate() {
             let item = &self.items[i];
             if item.is_separator() {
                 // Both separators read the same resolved border colour. The horizontal one

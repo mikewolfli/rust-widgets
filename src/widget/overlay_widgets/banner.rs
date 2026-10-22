@@ -203,7 +203,11 @@ impl Banner {
 
     /// Sets the message.
     pub fn set_text(&mut self, text: impl Into<String>) {
-        self.text = text.into();
+        let text = text.into();
+        if self.text == text {
+            return;
+        }
+        self.text = text;
         self.base.request_redraw();
     }
 
@@ -214,6 +218,9 @@ impl Banner {
 
     /// Sets the severity, which selects the bar's palette.
     pub fn set_severity(&mut self, severity: BannerSeverity) {
+        if self.severity == severity {
+            return;
+        }
         self.severity = severity;
         self.base.request_redraw();
     }
@@ -225,6 +232,9 @@ impl Banner {
 
     /// Sets whether the control offers a dismiss affordance.
     pub fn set_dismissible(&mut self, dismissible: bool) {
+        if self.dismissible == dismissible {
+            return;
+        }
         self.dismissible = dismissible;
         self.base.request_redraw();
     }

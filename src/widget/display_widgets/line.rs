@@ -56,13 +56,20 @@ impl Line {
 
     /// Sets the orientation (Horizontal or Vertical).
     pub fn set_orientation(&mut self, ori: LineOrientation) {
+        if self.orientation == ori {
+            return;
+        }
         self.orientation = ori;
         self.base.request_redraw();
     }
 
     /// Sets the line thickness in pixels (minimum 1).
     pub fn set_thickness(&mut self, t: u32) {
-        self.thickness = t.max(1);
+        let thickness = t.max(1);
+        if self.thickness == thickness {
+            return;
+        }
+        self.thickness = thickness;
         self.base.request_redraw();
     }
 }

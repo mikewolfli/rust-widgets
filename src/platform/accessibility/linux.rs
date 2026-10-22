@@ -72,6 +72,47 @@ const ATSPI_REGISTRY_INTERFACE: &str = "org.a11y.atspi.Registry";
 #[cfg(feature = "linux-a11y")]
 const ATSPI_ACCESSIBLE_INTERFACE: &str = "org.a11y.atspi.Accessible";
 
+/// One queued AT-SPI event.
+///
+/// The source is identified by widget id, not by a borrowed object path: the path is rebuilt on the
+/// worker thread so the queue owns everything it carries.
+#[cfg(feature = "linux-a11y")]
+enum A11yEvent {
+    Notify { event_type: String, id: ObjectId, detail1: i32, detail2: i32 },
+}
+
+/// Start the single background thread that emits AT-SPI events.
+///
+/// `NotifyEvent` waits for the registry's reply. Doing that on the caller's (UI) thread froze focus,
+/// selection and text-change paths whenever the a11y bus was slow. The worker owns its own blocking
+/// connection and drains a bounded queue, so callers only pay for a channel send.
+#[cfg(feature = "linux-a11y")]
+fn start_event_worker(conn: zbus::Connection) -> std::sync::mpsc::SyncSender<A11yEvent> {
+    // Bounded so a wedged registry cannot grow memory without limit. A full queue drops the event
+    // with a warning instead of blocking the UI thread.
+    let (tx, rx) = std::sync::mpsc::sync_channel::<A11yEvent>(64);
+    let spawned = std::thread::Builder::new().name("atspi-events".to_string()).spawn(move || {
+        let blocking = zbus::blocking::Connection::from(conn);
+        while let Ok(event) = rx.recv() {
+            match event {
+                A11yEvent::Notify { event_type, id, detail1, detail2 } => {
+                    LinuxAccessibilityBridge::emit_atspi_event(
+                        &blocking,
+                        &event_type,
+                        id,
+                        detail1,
+                        detail2,
+                    );
+                }
+            }
+        }
+    });
+    if let Err(e) = spawned {
+        log::warn!("[Linux AT-SPI] Failed to start the event worker: {e}");
+    }
+    tx
+}
+
 /// The D-Bus object path that a widget's exported `org.a11y.atspi.Accessible` lives at.
 ///
 /// `None` for an id whose path would be invalid; the ids are decimal integers, so in practice this
@@ -248,6 +289,11 @@ pub struct LinuxAccessibilityBridge {
     /// connection was successfully established.
     #[cfg(feature = "linux-a11y")]
     dbus_connection: Mutex<Option<zbus::Connection>>,
+    /// Queue handle for the background AT-SPI event emitter.
+    ///
+    /// `None` when no bus was reachable: there is nobody to emit to.
+    #[cfg(feature = "linux-a11y")]
+    event_tx: Mutex<Option<std::sync::mpsc::SyncSender<A11yEvent>>>,
     /// Placeholder field when `linux-a11y` feature is disabled.
     #[cfg(not(feature = "linux-a11y"))]
     dbus_connection: Mutex<Option<()>>,
@@ -272,6 +318,8 @@ impl LinuxAccessibilityBridge {
         Self {
             names: Mutex::new(HashMap::new()),
             nodes: Mutex::new(HashMap::new()),
+            #[cfg(feature = "linux-a11y")]
+            event_tx: Mutex::new(conn.as_ref().map(|c| start_event_worker(c.clone()))),
             dbus_connection: Mutex::new(conn),
         }
     }
@@ -449,30 +497,32 @@ impl LinuxAccessibilityBridge {
     fn emit_atspi_event(
         conn: &zbus::blocking::Connection,
         event_type: &str,
-        source_path: &zbus::zvariant::ObjectPath<'_>,
+        id: ObjectId,
         detail1: i32,
         detail2: i32,
     ) {
         use zbus::zvariant::Value;
 
-        let proxy = match zbus::blocking::Proxy::new(
-            conn,
-            ATSPI_REGISTRY_BUS_NAME,
-            ATSPI_REGISTRY_OBJECT_PATH,
-            ATSPI_REGISTRY_INTERFACE,
-        ) {
-            Ok(p) => p,
-            Err(e) => {
-                log::warn!("[Linux AT-SPI] Failed to create proxy for event emission: {e}");
-                return;
-            }
+        let Some(source_path) = object_path_for(id) else {
+            log::warn!("[Linux AT-SPI] Refusing to emit {event_type} for unrepresentable id={id}");
+            return;
         };
 
+        // Send the call directly over the already-open connection. Building a
+        // `zbus::blocking::Proxy` here used to run introspection bookkeeping for every
+        // accessibility event (focus/selection/text changes) and allocated a proxy each time.
+        // The connection carries the destination/path/interface, so no proxy is needed.
         // The any_data variant — we send an empty string for simplicity.
         let any_data = Value::new("");
-        let event = (event_type, source_path, detail1, detail2, any_data);
+        let event = (event_type, &source_path, detail1, detail2, any_data);
 
-        match proxy.call_method("NotifyEvent", &event) {
+        match conn.call_method(
+            Some(ATSPI_REGISTRY_BUS_NAME),
+            ATSPI_REGISTRY_OBJECT_PATH,
+            Some(ATSPI_REGISTRY_INTERFACE),
+            "NotifyEvent",
+            &event,
+        ) {
             Ok(_) => {
                 log::debug!(
                     "[Linux AT-SPI] Event emitted: {event_type} \
@@ -489,17 +539,13 @@ impl LinuxAccessibilityBridge {
     /// and the fallback no-op path.
     ///
     /// Without `linux-a11y` there is no bus and no object can be exported, so no event is ever
-    /// emitted; the `nodes` argument is accepted so the callers are identical in both builds.
+    /// emitted.
     #[cfg(not(feature = "linux-a11y"))]
-    fn dispatch_event(
-        dbus_connection: &Mutex<Option<()>>,
-        nodes: &Mutex<HashMap<ObjectId, std::sync::Arc<Mutex<A11yState>>>>,
-        event_type: &str,
-        id: ObjectId,
-        detail1: i32,
-        detail2: i32,
-    ) {
-        let _ = (dbus_connection, nodes, event_type, id, detail1, detail2);
+    fn dispatch_event(&self, event_type: &str, id: ObjectId, detail1: i32, detail2: i32) {
+        // Keep the field's purpose visible in builds without the D-Bus feature: there is no bus,
+        // so no event is ever emitted, but the node store still exists.
+        let _ = &self.dbus_connection;
+        let _ = (event_type, id, detail1, detail2);
     }
 
     /// Dispatch event emission — handles both the feature-gated D-Bus path
@@ -513,33 +559,26 @@ impl LinuxAccessibilityBridge {
     /// object there, which a client cannot query. The `nodes` map is checked before the path is
     /// built, so the gate cannot be bypassed by a later `object_path_for` failure.
     #[cfg(feature = "linux-a11y")]
-    fn dispatch_event(
-        dbus_connection: &Mutex<Option<zbus::Connection>>,
-        nodes: &Mutex<HashMap<ObjectId, std::sync::Arc<Mutex<A11yState>>>>,
-        event_type: &str,
-        id: ObjectId,
-        detail1: i32,
-        detail2: i32,
-    ) {
-        if !lock(nodes).contains_key(&id) {
+    fn dispatch_event(&self, event_type: &str, id: ObjectId, detail1: i32, detail2: i32) {
+        if !lock(&self.nodes).contains_key(&id) {
             log::debug!(
                 "[Linux AT-SPI] Suppressing {event_type} for id={id}: no exported object to be its \
                  source (D09-A11Y-01)"
             );
             return;
         }
-        let Some(source_path) = object_path_for(id) else {
+        if object_path_for(id).is_none() {
             log::warn!("[Linux AT-SPI] Refusing to emit {event_type} for unrepresentable id={id}");
             return;
+        }
+        let guard = lock(&self.event_tx);
+        let Some(ref tx) = *guard else {
+            return;
         };
-        let conn_guard = lock(dbus_connection);
-        if let Some(ref conn) = *conn_guard {
-            Self::emit_atspi_event(
-                &zbus::blocking::Connection::from(conn.clone()),
-                event_type,
-                &source_path,
-                detail1,
-                detail2,
+        let event = A11yEvent::Notify { event_type: event_type.to_string(), id, detail1, detail2 };
+        if let Err(e) = tx.try_send(event) {
+            log::warn!(
+                "[Linux AT-SPI] Dropping {event_type} for id={id}: event worker unavailable ({e})"
             );
         }
     }
@@ -616,43 +655,23 @@ impl AccessibilityBridge for LinuxAccessibilityBridge {
 
     fn notify_name_changed(&self, id: ObjectId) {
         log::info!("[Linux AT-SPI] notify_name_changed: id={id:?}");
-        Self::dispatch_event(
-            &self.dbus_connection,
-            &self.nodes,
-            "Object:PropertyChange:accessible-name",
-            id,
-            0,
-            0,
-        );
+        self.dispatch_event("Object:PropertyChange:accessible-name", id, 0, 0);
     }
 
     fn notify_value_changed(&self, id: ObjectId) {
         log::info!("[Linux AT-SPI] notify_value_changed: id={id:?}");
-        Self::dispatch_event(
-            &self.dbus_connection,
-            &self.nodes,
-            "Object:PropertyChange:accessible-value",
-            id,
-            0,
-            0,
-        );
+        self.dispatch_event("Object:PropertyChange:accessible-value", id, 0, 0);
     }
 
     fn notify_state_changed(&self, id: ObjectId) {
         log::info!("[Linux AT-SPI] notify_state_changed: id={id:?}");
-        Self::dispatch_event(&self.dbus_connection, &self.nodes, "Object:StateChanged", id, 0, 0);
+        self.dispatch_event("Object:StateChanged", id, 0, 0);
     }
 
     fn notify_focus_changed(&self, id: ObjectId) {
         log::info!("[Linux AT-SPI] notify_focus_changed: id={id:?}");
-        Self::dispatch_event(
-            &self.dbus_connection,
-            &self.nodes,
-            "Focus:",
-            id,
-            1, // detail1 = 1 indicates focus-gained
-            0,
-        );
+        // detail1 = 1 indicates focus-gained.
+        self.dispatch_event("Focus:", id, 1, 0);
     }
 }
 

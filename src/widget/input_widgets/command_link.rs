@@ -62,7 +62,8 @@ impl CommandLink {
     }
     /// Replaces the title line and requests a redraw. The description is
     /// unaffected. A same-value write is a no-op (WDGT-12).
-    pub fn set_text(&mut self, text: String) {
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
         if self.text == text {
             return;
         }

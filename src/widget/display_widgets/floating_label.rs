@@ -138,8 +138,8 @@ impl FloatingLabel {
 
     /// Sets the text content and emits `text_changed` signal.
     /// Also updates the floating label state based on whether text is non-empty.
-    pub fn set_text(&mut self, text: String) {
-        self.text = text;
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        self.text = text.into();
         self.update_label_state();
         self.text_changed.emit(self.text.clone());
         self.base.request_redraw();
@@ -152,6 +152,9 @@ impl FloatingLabel {
 
     /// Sets the label text (shown inside field or floating above).
     pub fn set_label(&mut self, label: String) {
+        if self.label == label {
+            return;
+        }
         self.label = label;
         self.update_label_state();
         self.base.request_redraw();
@@ -164,6 +167,9 @@ impl FloatingLabel {
 
     /// Sets the placeholder text (shown when empty and unfocused).
     pub fn set_placeholder(&mut self, placeholder: String) {
+        if self.placeholder == placeholder {
+            return;
+        }
         self.placeholder = placeholder;
         self.base.request_redraw();
     }

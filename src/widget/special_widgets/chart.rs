@@ -221,6 +221,9 @@ impl ChartWidget {
 
     /// Sets the chart type.
     pub fn set_chart_type(&mut self, chart_type: ChartType) {
+        if self.chart_type == chart_type {
+            return;
+        }
         self.chart_type = chart_type;
         self.base.request_redraw();
     }

@@ -543,6 +543,9 @@ impl Button {
     }
     /// Sets whether this button is the default button.
     pub fn set_default(&mut self, default: bool) {
+        if self.default_button == default {
+            return;
+        }
         self.default_button = default;
         self.base.request_redraw();
     }

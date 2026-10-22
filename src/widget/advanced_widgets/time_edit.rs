@@ -26,7 +26,7 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
+use crate::undo::{UndoStack, ValueCommand};
 
 use crate::widget::capability::access::time_to_string;
 use crate::widget::capability::coercion::{
@@ -43,51 +43,7 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-static NEXT_TIME_EDIT_COMMAND_ID: AtomicU64 = AtomicU64::new(1);
-
-struct TimeEditCommand {
-    id: CommandId,
-    target: Rc<RefCell<Time>>,
-    before: Time,
-    after: Time,
-}
-
-impl TimeEditCommand {
-    fn new(target: Rc<RefCell<Time>>, before: Time, after: Time) -> Self {
-        Self {
-            id: CommandId(NEXT_TIME_EDIT_COMMAND_ID.fetch_add(1, Ordering::Relaxed)),
-            target,
-            before,
-            after,
-        }
-    }
-}
-
-impl UndoCommand for TimeEditCommand {
-    fn id(&self) -> CommandId {
-        self.id
-    }
-
-    fn description(&self) -> CommandDescription {
-        CommandDescription {
-            text: "Edit time".to_string(),
-            timestamp_ms: 0,
-            command_type: "time_edit",
-        }
-    }
-
-    fn execute(&mut self) -> Result<(), String> {
-        *self.target.borrow_mut() = self.after;
-        Ok(())
-    }
-
-    fn undo(&mut self) -> Result<(), String> {
-        *self.target.borrow_mut() = self.before;
-        Ok(())
-    }
-}
 /// The clock face's diameter, in logical pixels.
 ///
 /// A clock is read by angle, so it has to be big enough that twelve of them are distinguishable --
@@ -534,10 +490,12 @@ impl TimeEdit {
             self.time = time;
             if !self.restoring_history {
                 *self.history_target.borrow_mut() = self.time;
-                self.undo_stack.push(Box::new(TimeEditCommand::new(
+                self.undo_stack.push(Box::new(ValueCommand::new(
                     self.history_target.clone(),
                     before,
                     self.time,
+                    "Edit time",
+                    "time_edit",
                 )));
             }
             self.time_changed.emit(time);
@@ -550,6 +508,9 @@ impl TimeEdit {
     /// a value below its own minimum — which would make every later
     /// [`TimeEdit::set_time`] call fail silently.
     pub fn set_minimum_time(&mut self, time: Time) {
+        if self.minimum == time {
+            return;
+        }
         self.minimum = time;
         self.clamp_to_range();
         self.base.request_redraw();
@@ -559,6 +520,9 @@ impl TimeEdit {
     /// The current time is clamped down into the new range, like
     /// [`TimeEdit::set_minimum_time`] clamps up.
     pub fn set_maximum_time(&mut self, time: Time) {
+        if self.maximum == time {
+            return;
+        }
         self.maximum = time;
         self.clamp_to_range();
         self.base.request_redraw();
@@ -586,6 +550,9 @@ impl TimeEdit {
     /// The string is kept verbatim; no validation is performed. See
     /// [`TimeEdit::display_format`] for the current limits on its use.
     pub fn set_display_format(&mut self, fmt: String) {
+        if self.display_format == fmt {
+            return;
+        }
         self.display_format = fmt;
         self.base.request_redraw();
     }

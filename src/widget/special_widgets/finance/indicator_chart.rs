@@ -196,6 +196,9 @@ impl IndicatorChart {
 
     /// Sets the mode and requests a repaint.
     pub fn set_mode(&mut self, mode: IndicatorMode) {
+        if self.mode == mode {
+            return;
+        }
         self.mode = mode;
         self.base.request_redraw();
     }
@@ -226,7 +229,11 @@ impl IndicatorChart {
     /// A period of zero would make every indicator return all gaps, which is a blank pane
     /// with no explanation; one is the smallest period that produces any output at all.
     pub fn set_period(&mut self, period: usize) {
-        self.period = period.max(1);
+        let period = period.max(1);
+        if self.period == period {
+            return;
+        }
+        self.period = period;
         self.base.request_redraw();
     }
 
@@ -237,7 +244,11 @@ impl IndicatorChart {
 
     /// Sets the stochastic smoothing periods.
     pub fn set_stochastic_periods(&mut self, k_smoothing: usize, d_period: usize) {
-        self.stochastic_periods = (k_smoothing.max(1), d_period.max(1));
+        let periods = (k_smoothing.max(1), d_period.max(1));
+        if self.stochastic_periods == periods {
+            return;
+        }
+        self.stochastic_periods = periods;
         self.base.request_redraw();
     }
 
@@ -248,6 +259,9 @@ impl IndicatorChart {
 
     /// Shows or hides the overbought/oversold reference levels.
     pub fn set_show_reference_levels(&mut self, show: bool) {
+        if self.show_reference_levels == show {
+            return;
+        }
         self.show_reference_levels = show;
         self.base.request_redraw();
     }

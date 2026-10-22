@@ -10,7 +10,7 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::undo::{TextSnapshotCommand, UndoStack};
+use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -131,15 +131,17 @@ impl InplaceEditor {
     }
 
     /// Sets the text content.
-    pub fn set_text(&mut self, text: &str) {
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
         let before = self.text.clone();
-        self.text = text.to_string();
+        self.text = text;
         if !self.restoring_history && before != self.text {
             *self.history_target.borrow_mut() = self.text.clone();
-            self.undo_stack.push(Box::new(TextSnapshotCommand::new(
+            self.undo_stack.push(Box::new(ValueCommand::new(
                 self.history_target.clone(),
                 before,
                 self.text.clone(),
+                "Edit text",
                 "inplace_editor_text",
             )));
         }
@@ -190,7 +192,11 @@ impl InplaceEditor {
 
     /// Sets the font size.
     pub fn set_font_size(&mut self, size: f32) {
-        self.font_size = size.max(4.0);
+        let size = size.max(4.0);
+        if self.font_size == size {
+            return;
+        }
+        self.font_size = size;
         self.base.request_redraw();
     }
 
@@ -201,7 +207,11 @@ impl InplaceEditor {
 
     /// Sets the padding around the text.
     pub fn set_padding(&mut self, padding: i32) {
-        self.padding = padding.max(0);
+        let padding = padding.max(0);
+        if self.padding == padding {
+            return;
+        }
+        self.padding = padding;
         self.base.request_redraw();
     }
 

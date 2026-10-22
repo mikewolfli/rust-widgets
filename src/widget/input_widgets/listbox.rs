@@ -449,7 +449,11 @@ impl ListBox {
     }
     /// Sets item height.
     pub fn set_item_height(&mut self, height: f32) {
-        self.item_height = height.max(1.0);
+        let height = height.max(1.0);
+        if self.item_height == height {
+            return;
+        }
+        self.item_height = height;
         self.base.request_redraw();
     }
     /// Returns all items.

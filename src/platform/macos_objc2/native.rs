@@ -26,7 +26,7 @@
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::sel;
-use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
+use objc2::{define_class, msg_send, AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSAccessibilityButtonRole, NSAccessibilityCheckBoxRole, NSAccessibilityComboBoxRole,
     NSAccessibilityGroupRole, NSAccessibilityImageRole, NSAccessibilityIncrementorRole,
@@ -36,7 +36,8 @@ use objc2_app_kit::{
     NSAccessibilityStaticTextRole, NSAccessibilityTabGroupRole, NSAccessibilityTableRole,
     NSAccessibilityTextFieldRole, NSAccessibilityUnknownRole, NSAccessibilityWindowRole,
     NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType,
-    NSCursor, NSEventMask, NSScreen, NSView, NSWindow, NSWindowStyleMask, NSWorkspace,
+    NSCursor, NSEventMask, NSScreen, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow,
+    NSWindowStyleMask, NSWorkspace,
 };
 // Named only by the input handlers and the blit, both of which are `widgets_unstripped` code.
 #[cfg(widgets_unstripped)]
@@ -940,6 +941,20 @@ define_class!(
             self.forward_mouse(event, MousePhase::SecondaryPress);
         }
 
+        /// `-mouseMoved:` — the pointer travelled with **no** button held.
+        ///
+        /// This is the hover path. It is a distinct phase from `-mouseDragged:` because the
+        /// repaint rule differs: a drag owes a frame per sample (a selection follows it), while a
+        /// hover owes one only when the pointer crosses into another control. AppKit delivers this
+        /// message only to a view with a tracking area that asked for it, which is what
+        /// `install_hover_tracking_area` installs. Without the pair this backend never highlighted
+        /// a control under the pointer (and `MousePhase::Move` had no constructor).
+        #[cfg(widgets_unstripped)]
+        #[unsafe(method(mouseMoved:))]
+        fn mouse_moved(&self, event: &NSEvent) {
+            self.forward_mouse(event, MousePhase::Move);
+        }
+
         #[cfg(widgets_unstripped)]
         #[unsafe(method(rightMouseUp:))]
         fn right_mouse_up(&self, event: &NSEvent) {
@@ -1111,7 +1126,39 @@ impl RustWidgetsObjc2CanvasView {
         });
         // SAFETY: `this` is an allocated instance with its ivars initialised, and
         // `initWithFrame:` is the designated initializer of `NSView`.
-        unsafe { msg_send![super(this), initWithFrame: frame] }
+        let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
+        view.install_hover_tracking_area();
+        view
+    }
+
+    /// Installs the tracking area that makes `-mouseMoved:` fire.
+    ///
+    /// `NSTrackingInVisibleRect` keeps the area sized to the view as it grows and shrinks, so it is
+    /// installed once and never re-added on a geometry change (which would leak an area per
+    /// resize). `NSTrackingActiveInKeyWindow` matches the click rule: an inactive window does not
+    /// highlight controls under the pointer.
+    fn install_hover_tracking_area(&self) {
+        let options = NSTrackingAreaOptions::MouseEnteredAndExited
+            | NSTrackingAreaOptions::MouseMoved
+            | NSTrackingAreaOptions::ActiveInKeyWindow
+            | NSTrackingAreaOptions::InVisibleRect;
+        for area in self.trackingAreas().iter() {
+            self.removeTrackingArea(&area);
+        }
+        // SAFETY: every Objective-C object is an `AnyObject`, and `self` is a live view.
+        let owner: &AnyObject = unsafe { &*(self as *const Self).cast() };
+        // SAFETY: `bounds` is the view's own rect; `self` is the area's owner and outlives it,
+        // and the tracking area does not retain its owner. `None` is the documented empty user info.
+        let area = unsafe {
+            NSTrackingArea::initWithRect_options_owner_userInfo(
+                NSTrackingArea::alloc(),
+                self.bounds(),
+                options,
+                Some(owner),
+                None,
+            )
+        };
+        self.addTrackingArea(&area);
     }
 
     /// The widget-registry id this canvas presents.
@@ -1781,13 +1828,20 @@ pub(crate) fn bootstrap_ns_application() -> bool {
     true
 }
 
-/// Pumps one AppKit event without blocking, and reports whether one was dispatched.
+/// Pumps one AppKit event, waiting at most `timeout` for one to arrive.
 ///
-/// `-[NSApplication nextEventMatchingMask:untilDate:inMode:dequeue:]` with
-/// `NSDate distantPast` returns immediately when the queue is empty, so this is the
-/// non-blocking step the backend's `run` interleaves with library frames. Without it
-/// the native window never drew, received no mouse/key events, and could not close.
-pub(crate) fn pump_native_event() -> bool {
+/// `-[NSApplication nextEventMatchingMask:untilDate:inMode:dequeue:]` blocks until an event is
+/// due, so the backend loop waits in the run loop instead of polling AppKit every 16 ms: input is
+/// handled the moment it arrives and an idle window does not wake until the timeout backstop.
+///
+/// The non-blocking variant this replaced (`untilDate: NSDate.distantPast`) is gone with the
+/// polling loop; every caller wants the wait, and an unused non-blocking pump is dead code.
+pub(crate) fn pump_native_event_until(timeout: core::time::Duration) -> bool {
+    dispatch_one_native_event(&NSDate::dateWithTimeIntervalSinceNow(timeout.as_secs_f64()))
+}
+
+/// Dispatches at most one event no later than `until`.
+fn dispatch_one_native_event(until: &NSDate) -> bool {
     let Some(mtm) = MainThreadMarker::new() else {
         return false;
     };
@@ -1796,7 +1850,7 @@ pub(crate) fn pump_native_event() -> bool {
     let mode = unsafe { NSDefaultRunLoopMode };
     let event = app.nextEventMatchingMask_untilDate_inMode_dequeue(
         NSEventMask::Any,
-        Some(&NSDate::distantPast()),
+        Some(until),
         mode,
         true,
     );

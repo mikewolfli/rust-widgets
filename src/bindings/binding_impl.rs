@@ -955,11 +955,12 @@ pub extern "C" fn rw_theme_names(out: *mut c_char, cap: c_uint) -> c_uint {
 #[no_mangle]
 /// Number of entries in the host's installed-font snapshot.
 ///
-/// The snapshot is process-wide: the first call queries the operating system and every later
-/// call reads the same list until [`rw_refresh_system_fonts`]. A target whose backend reports
-/// no fonts truthfully returns `0` rather than inventing a list.
+/// The snapshot is process-wide. The first call returns `0` and starts a background query; a later
+/// call reads the installed list. A target whose backend reports no fonts truthfully returns `0`
+/// rather than inventing a list. This never blocks the calling thread on `fc-list` or the platform
+/// font store — see [`crate::platform::fonts::prewarm_system_fonts`].
 pub extern "C" fn rw_system_font_count() -> c_uint {
-    c_try!({ crate::platform::fonts::system_fonts().len() as c_uint })
+    c_try!({ crate::platform::fonts::system_font_count_nonblocking() as c_uint })
 }
 
 #[no_mangle]

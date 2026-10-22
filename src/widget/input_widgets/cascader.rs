@@ -274,6 +274,9 @@ impl Cascader {
     /// the right spelling for languages whose breadcrumb convention has no glyph
     /// between parts.
     pub fn set_separator(&mut self, separator: &str) {
+        if self.separator == separator {
+            return;
+        }
         self.separator = separator.to_string();
         self.base.request_redraw();
     }
@@ -323,6 +326,11 @@ impl Cascader {
 
     /// Sets whether typing filters the visible rows.
     pub fn set_filterable(&mut self, filterable: bool) {
+        // Only a real change resets the filter: the filter exists to narrow filterable options,
+        // so re-applying the current flag must not silently discard what the user typed (WDGT-15).
+        if self.filterable == filterable {
+            return;
+        }
         self.filterable = filterable;
         self.filter.clear();
         self.base.request_redraw();
@@ -1414,6 +1422,21 @@ mod tests {
         c.filter = "Beta".to_string();
         assert_eq!(c.filtered_indices(0), vec![0, 1], "level 0 is not browsed");
         assert_eq!(c.filtered_indices(1), vec![1], "only Beta City matches at level 1");
+    }
+
+    #[test]
+    fn cascader_same_value_filterable_keeps_the_filter() {
+        let mut c = cascader();
+        c.set_filterable(true);
+        c.filter = "2".to_string();
+
+        // Re-applying the current flag is a no-op: the filter the user typed survives (WDGT-15).
+        c.set_filterable(true);
+        assert_eq!(c.filter(), "2");
+
+        // A real change still resets it.
+        c.set_filterable(false);
+        assert_eq!(c.filter(), "");
     }
 
     #[test]

@@ -20,11 +20,6 @@ use crate::core::{ObjectId, PlatformFamily};
 use crate::platform::types::{Display, DisplayId};
 use crate::{WidgetTriggerEvent, WidgetTriggerKind};
 
-#[cfg(not(target_arch = "wasm32"))]
-use core::time::Duration;
-#[cfg(not(target_arch = "wasm32"))]
-use std::thread;
-
 /// The frame interval this backend's loop runs at, in milliseconds.
 ///
 /// The same value as every other backend's twin constant, and named here for the same
@@ -307,8 +302,10 @@ impl Platform for HarmonyPlatform {
         // and toggle transition unreachable (BLUE24 §0A.1 measurement 1). One call per tick
         // gives both, in the order they must happen.
         while self.runtime.running.load(Ordering::SeqCst) {
-            crate::drive_frame(FRAME_INTERVAL_MS as u32);
-            thread::sleep(Duration::from_millis(FRAME_INTERVAL_MS));
+            let outcome = crate::drive_frame(FRAME_INTERVAL_MS as u32);
+            // Block when no frame is owed instead of waking every 16 ms. A posted event, a stop
+            // request, or scheduled cross-thread work wakes the loop immediately.
+            crate::platform::frame_wait::pause_between_frames(outcome.needs_another_frame);
         }
     }
     fn quit(&self) -> bool {

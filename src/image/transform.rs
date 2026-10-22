@@ -166,12 +166,33 @@ pub fn rotate(
     match degrees % 360 {
         0 => Ok((data, src_w, src_h)),
         90 => {
-            let mut out = Vec::with_capacity((src_w * src_h * 4) as usize);
-            for x in 0..src_w {
-                for y in (0..src_h).rev() {
-                    let off = ((y * src_w + x) * 4) as usize;
-                    out.extend_from_slice(&pixels[off..off + 4]);
+            // Tiled transpose. The untiled loop walked one source column to the end
+            // (`y` varying, `x` fixed), so each pixel pulled in a fresh cache line from a
+            // row tens of kilobytes away and the next column evicted it. A 64×64 tile
+            // keeps the working set in L1 and reuses each fetched line across the 16
+            // pixels it carries.
+            const TILE: u32 = 64;
+            let mut out = vec![0u8; pixels.len()];
+            // Destination is `src_h` wide and `src_w` tall (90° swaps the axes).
+            let mut ty = 0u32;
+            while ty < src_w {
+                let y_end = (ty + TILE).min(src_w);
+                let mut tx = 0u32;
+                while tx < src_h {
+                    let x_end = (tx + TILE).min(src_h);
+                    for dst_y in ty..y_end {
+                        let src_x = dst_y;
+                        for dst_x in tx..x_end {
+                            let src_y = src_h - 1 - dst_x;
+                            let src_off = ((src_y * src_w + src_x) * 4) as usize;
+                            let dst_off = ((dst_y * src_h + dst_x) * 4) as usize;
+                            out[dst_off..dst_off + 4]
+                                .copy_from_slice(&pixels[src_off..src_off + 4]);
+                        }
+                    }
+                    tx = x_end;
                 }
+                ty = y_end;
             }
             Ok((ImageData::Rgba8(out), src_h, src_w))
         }
@@ -186,12 +207,28 @@ pub fn rotate(
             Ok((ImageData::Rgba8(out), src_w, src_h))
         }
         270 => {
-            let mut out = Vec::with_capacity((src_w * src_h * 4) as usize);
-            for x in (0..src_w).rev() {
-                for y in 0..src_h {
-                    let off = ((y * src_w + x) * 4) as usize;
-                    out.extend_from_slice(&pixels[off..off + 4]);
+            // Mirror of the 90° tiled transpose (see the comment there).
+            const TILE: u32 = 64;
+            let mut out = vec![0u8; pixels.len()];
+            let mut ty = 0u32;
+            while ty < src_w {
+                let y_end = (ty + TILE).min(src_w);
+                let mut tx = 0u32;
+                while tx < src_h {
+                    let x_end = (tx + TILE).min(src_h);
+                    for dst_y in ty..y_end {
+                        let src_x = src_w - 1 - dst_y;
+                        for dst_x in tx..x_end {
+                            let src_y = dst_x;
+                            let src_off = ((src_y * src_w + src_x) * 4) as usize;
+                            let dst_off = ((dst_y * src_h + dst_x) * 4) as usize;
+                            out[dst_off..dst_off + 4]
+                                .copy_from_slice(&pixels[src_off..src_off + 4]);
+                        }
+                    }
+                    tx = x_end;
                 }
+                ty = y_end;
             }
             Ok((ImageData::Rgba8(out), src_h, src_w))
         }

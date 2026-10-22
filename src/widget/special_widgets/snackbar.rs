@@ -112,7 +112,11 @@ impl Snackbar {
 
     /// Sets optional progress indicator.
     pub fn set_progress(&mut self, progress: Option<f32>) {
-        self.progress = progress.map(|value| value.clamp(0.0, 1.0));
+        let progress = progress.map(|value| value.clamp(0.0, 1.0));
+        if self.progress == progress {
+            return;
+        }
+        self.progress = progress;
         self.base.request_redraw();
     }
 

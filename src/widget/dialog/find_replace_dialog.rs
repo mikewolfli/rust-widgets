@@ -155,6 +155,9 @@ impl FindReplaceDialog {
 
     /// Sets the find text.
     pub fn set_find_text(&mut self, text: &str) {
+        if self.find_text == text {
+            return;
+        }
         self.find_text = text.to_string();
         self.base.request_redraw();
     }
@@ -166,6 +169,9 @@ impl FindReplaceDialog {
 
     /// Sets the replace text.
     pub fn set_replace_text(&mut self, text: &str) {
+        if self.replace_text == text {
+            return;
+        }
         self.replace_text = text.to_string();
         self.base.request_redraw();
     }
@@ -179,6 +185,9 @@ impl FindReplaceDialog {
 
     /// Sets the match case toggle.
     pub fn set_match_case(&mut self, value: bool) {
+        if self.match_case == value {
+            return;
+        }
         self.match_case = value;
         self.base.request_redraw();
     }
@@ -192,6 +201,9 @@ impl FindReplaceDialog {
 
     /// Sets the whole word toggle.
     pub fn set_whole_word(&mut self, value: bool) {
+        if self.whole_word == value {
+            return;
+        }
         self.whole_word = value;
         self.base.request_redraw();
     }
@@ -205,6 +217,9 @@ impl FindReplaceDialog {
 
     /// Sets the regex toggle.
     pub fn set_use_regex(&mut self, value: bool) {
+        if self.use_regex == value {
+            return;
+        }
         self.use_regex = value;
         self.base.request_redraw();
     }
@@ -218,6 +233,9 @@ impl FindReplaceDialog {
 
     /// Sets the highlight all toggle.
     pub fn set_highlight_all(&mut self, value: bool) {
+        if self.highlight_all == value {
+            return;
+        }
         self.highlight_all = value;
         self.base.request_redraw();
     }
@@ -244,6 +262,9 @@ impl FindReplaceDialog {
 
     /// Sets the wrap-around toggle.
     pub fn set_wrap_around(&mut self, value: bool) {
+        if self.wrap_around == value {
+            return;
+        }
         self.wrap_around = value;
         self.base.request_redraw();
     }

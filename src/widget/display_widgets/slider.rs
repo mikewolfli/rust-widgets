@@ -223,7 +223,11 @@ impl Slider {
     }
     /// Sets single step value.
     pub fn set_single_step(&mut self, step: i32) {
-        self.single_step = step.max(1);
+        let step = step.max(1);
+        if self.single_step == step {
+            return;
+        }
+        self.single_step = step;
         self.base.request_redraw();
     }
     /// Returns page step value.
@@ -232,7 +236,11 @@ impl Slider {
     }
     /// Sets page step value.
     pub fn set_page_step(&mut self, step: i32) {
-        self.page_step = step.max(1);
+        let step = step.max(1);
+        if self.page_step == step {
+            return;
+        }
+        self.page_step = step;
         self.base.request_redraw();
     }
     /// Returns orientation.
@@ -241,6 +249,9 @@ impl Slider {
     }
     /// Sets orientation.
     pub fn set_orientation(&mut self, orientation: Orientation) {
+        if self.orientation == orientation {
+            return;
+        }
         self.orientation = orientation;
         self.base.request_redraw();
     }
@@ -250,6 +261,9 @@ impl Slider {
     }
     /// Sets tick position.
     pub fn set_tick_position(&mut self, position: TickPosition) {
+        if self.tick_position == position {
+            return;
+        }
         self.tick_position = position;
         self.base.request_redraw();
     }
@@ -259,7 +273,11 @@ impl Slider {
     }
     /// Sets tick interval.
     pub fn set_tick_interval(&mut self, interval: i32) {
-        self.tick_interval = interval.max(0);
+        let interval = interval.max(0);
+        if self.tick_interval == interval {
+            return;
+        }
+        self.tick_interval = interval;
         self.base.request_redraw();
     }
     /// Returns whether tracking is enabled.

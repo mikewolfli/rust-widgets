@@ -81,6 +81,9 @@ impl CupertinoNavigationBar {
 
     /// Sets the title text.
     pub fn set_title(&mut self, title: &str) {
+        if self.title == title {
+            return;
+        }
         self.title = title.to_string();
         self.base.request_redraw();
     }
@@ -151,6 +154,9 @@ impl CupertinoNavigationBar {
 
     /// Sets the text for the back button.
     pub fn set_back_button_text(&mut self, text: &str) {
+        if self.back_button_text == text {
+            return;
+        }
         self.back_button_text = text.to_string();
         self.base.request_redraw();
     }

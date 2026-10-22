@@ -256,6 +256,9 @@ impl Heatmap {
 
     /// Sets whether labels are drawn.
     pub fn set_show_labels(&mut self, show: bool) {
+        if self.show_labels == show {
+            return;
+        }
         self.show_labels = show;
         self.base.request_redraw();
     }
@@ -267,6 +270,9 @@ impl Heatmap {
 
     /// Sets whether the legend is drawn.
     pub fn set_show_legend(&mut self, show: bool) {
+        if self.show_legend == show {
+            return;
+        }
         self.show_legend = show;
         self.base.request_redraw();
     }

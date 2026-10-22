@@ -185,7 +185,16 @@ impl FontComboBox {
     pub fn fonts(&self) -> &[String] {
         &self.fonts
     }
+    /// Returns the selected index, or `None` when nothing is selected.
+    ///
+    /// Canonical spelling shared with the other selection controls (WDGT-13); the old `-1`
+    /// sentinel is available through the deprecated [`Self::current_index`].
+    pub fn selected_index(&self) -> Option<usize> {
+        (self.current_index >= 0).then_some(self.current_index as usize)
+    }
+
     /// Returns the selected index, or `-1` when nothing is selected.
+    #[deprecated(note = "use `selected_index` (Option) — WDGT-13")]
     pub fn current_index(&self) -> i32 {
         self.current_index
     }
@@ -263,6 +272,9 @@ impl FontComboBox {
     /// Sets the editable flag. See [`FontComboBox::is_editable`] — it currently
     /// has no behavioural effect beyond being reported. Requests a redraw.
     pub fn set_editable(&mut self, editable: bool) {
+        if self.editable == editable {
+            return;
+        }
         self.editable = editable;
         if !editable {
             // Turning the feature off abandons any in-progress edit, so the field
@@ -478,7 +490,9 @@ impl WidgetProperties for FontComboBox {
         match name {
             "current_font_family" => Ok(CapabilityValue::String(self.current_text())),
             "item_count" => Ok(CapabilityValue::Int(self.count() as i64)),
-            "current_index" => Ok(CapabilityValue::Int(self.current_index() as i64)),
+            "current_index" => Ok(CapabilityValue::Int(
+                self.selected_index().map(|index| index as i32).unwrap_or(-1) as i64,
+            )),
             "editable" => Ok(CapabilityValue::Bool(self.is_editable())),
             "alignment" => Ok(CapabilityValue::String(
                 horizontal_alignment_to_str(self.alignment()).to_string(),
@@ -812,7 +826,7 @@ mod tests {
         let fcb = FontComboBox::new(Rect::new(0, 0, 200, 24));
         assert!(fcb.fonts().is_empty());
         assert_eq!(fcb.count(), 0);
-        assert_eq!(fcb.current_index(), -1);
+        assert_eq!(fcb.selected_index().map(|index| index as i32).unwrap_or(-1), -1);
         assert!(fcb.current_text().is_empty());
         assert!(!fcb.is_editable());
         assert_eq!(fcb.max_visible_items(), 10);
@@ -858,7 +872,7 @@ mod tests {
         fcb.set_current_index(0);
         fcb.clear();
         assert_eq!(fcb.count(), 0);
-        assert_eq!(fcb.current_index(), -1);
+        assert_eq!(fcb.selected_index().map(|index| index as i32).unwrap_or(-1), -1);
     }
 
     #[test]
@@ -867,7 +881,7 @@ mod tests {
         fcb.add_font("Arial".to_string());
         fcb.add_font("Helvetica".to_string());
         fcb.set_current_index(0);
-        assert_eq!(fcb.current_index(), 0);
+        assert_eq!(fcb.selected_index().map(|index| index as i32).unwrap_or(-1), 0);
         assert_eq!(fcb.current_text(), "Arial");
     }
 
@@ -980,11 +994,11 @@ mod tests {
         };
         let run = |events: &[Event]| {
             let mut c = build();
-            let before = c.current_index();
+            let before = c.selected_index().map(|index| index as i32).unwrap_or(-1);
             for event in events {
                 c.handle_event(event);
             }
-            (before, c.current_index())
+            (before, c.selected_index().map(|index| index as i32).unwrap_or(-1))
         };
 
         // A release with no press must not cycle, wherever it lands.
@@ -1038,7 +1052,7 @@ mod tests {
         c.add_font("Arial".to_string());
         c.add_font("Helvetica".to_string());
         c.handle_event(&Event::MouseRelease { pos: inside, button: 3 });
-        assert_eq!(c.current_index(), -1);
+        assert_eq!(c.selected_index().map(|index| index as i32).unwrap_or(-1), -1);
     }
 
     /// The family name's box ends where the indicator's box begins, at every control width.

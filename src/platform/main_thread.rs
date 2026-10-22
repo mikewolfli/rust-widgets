@@ -119,6 +119,8 @@ pub fn schedule_in(after: Duration, work: impl FnOnce() + Send + 'static) -> boo
     // The poison recovery lives in `lock`; a previous callback panicked with the items already
     // *out* of the queue, so its contents are still consistent.
     append(queued, after, Box::new(work));
+    // The loop may be blocked between frames; the scheduled work is a reason to look again.
+    crate::platform::frame_wait::wake();
     crate::platform::stop::loop_has_ticked()
 }
 

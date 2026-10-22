@@ -3,6 +3,8 @@
 
 //! Byte-index helpers shared by the text-editing controls.
 
+use crate::compat::String;
+
 /// Rounds `index` down to the nearest UTF-8 character boundary in `text`.
 ///
 /// # Why this is hand-written
@@ -77,6 +79,48 @@ pub fn next_char_boundary(text: &str, offset: usize) -> usize {
     match text[boundary..].chars().next() {
         Some(ch) => boundary + ch.len_utf8(),
         None => text.len(),
+    }
+}
+
+/// Removes the selected range from `text`, returning the caret position to place.
+///
+/// `selection` is the ordered range a control's own `selection_range` reported. The ends are
+/// floored to character boundaries again here so the helper is total even for a caller that built
+/// the range from offsets it did not clamp — the same rule the three text controls had copied
+/// three times (WDGT-11). Returns `None` when there is no selection; the caller still clears its
+/// anchor, because an absent range and a collapsed one are the same state.
+pub(crate) fn replace_selected_range(
+    text: &mut String,
+    selection: Option<(usize, usize)>,
+) -> Option<usize> {
+    let (start, end) = selection?;
+    let len = text.len();
+    let start = floor_char_boundary(text, start.min(len));
+    let end = floor_char_boundary(text, end.min(len));
+    let (start, end) = if start < end { (start, end) } else { (end, start) };
+    text.replace_range(start..end, "");
+    Some(start)
+}
+
+/// The first visible row after scrolling so `caret_row` is inside a `visible`-row viewport.
+///
+/// This is the `TextArea`/`TextEdit` scroll-follow rule, which had two copies that differed only in
+/// the field names (WDGT-11). A zero-height viewport returns the current origin rather than the
+/// `caret_row + 1` the arithmetic would otherwise produce, which put the caret just off screen.
+pub(crate) fn first_visible_row_for(
+    caret_row: usize,
+    first_visible: usize,
+    visible: usize,
+) -> usize {
+    if visible == 0 {
+        return first_visible;
+    }
+    if caret_row < first_visible {
+        caret_row
+    } else if caret_row >= first_visible + visible {
+        caret_row + 1 - visible
+    } else {
+        first_visible
     }
 }
 
@@ -169,5 +213,27 @@ mod tests {
         assert_eq!(next_char_boundary(text, 2), 3, "and stepping forward leaves that character");
         assert_eq!(previous_char_boundary("", 0), 0);
         assert_eq!(next_char_boundary("", 0), 0);
+    }
+
+    /// The selection-removal helper is the one implementation TextArea/TextEdit share (WDGT-11).
+    #[test]
+    fn removing_a_selection_returns_the_caret_and_respects_boundaries() {
+        let mut text = String::from("aé世b");
+        // Select "é世" (bytes 1..6), passed in reverse order as a control may report it.
+        assert_eq!(replace_selected_range(&mut text, Some((6, 1))), Some(1));
+        assert_eq!(text, "ab");
+
+        let mut untouched = String::from("abc");
+        assert_eq!(replace_selected_range(&mut untouched, None), None);
+        assert_eq!(untouched, "abc", "no selection leaves the value alone");
+    }
+
+    /// The scroll-follow rule is shared by both multi-line controls; check its three outcomes.
+    #[test]
+    fn the_caret_row_is_brought_into_the_viewport() {
+        assert_eq!(first_visible_row_for(2, 5, 3), 2, "above the viewport scrolls up");
+        assert_eq!(first_visible_row_for(9, 5, 3), 7, "below it scrolls just enough");
+        assert_eq!(first_visible_row_for(6, 5, 3), 5, "inside it leaves the origin alone");
+        assert_eq!(first_visible_row_for(6, 5, 0), 5, "a zero-height viewport keeps the origin");
     }
 }

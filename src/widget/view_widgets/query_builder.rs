@@ -344,6 +344,9 @@ impl QueryBuilder {
     /// Sets the active row, ignoring an index that names no row.
     pub fn set_active_row(&mut self, index: usize) {
         if index < self.rows.len() {
+            if self.active_row == Some(index) {
+                return;
+            }
             self.active_row = Some(index);
             self.base.request_redraw();
         }

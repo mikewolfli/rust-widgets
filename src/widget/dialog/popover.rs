@@ -169,6 +169,9 @@ impl Popover {
 
     /// Sets the anchor rectangle.
     pub fn set_anchor_rect(&mut self, rect: Rect) {
+        if self.anchor_rect == rect {
+            return;
+        }
         self.anchor_rect = rect;
         self.base.request_redraw();
     }

@@ -232,6 +232,9 @@ impl SignaturePad {
 
     /// Sets the pen stroke color and requests a redraw.
     pub fn set_stroke_color(&mut self, color: Color) {
+        if self.stroke_color == color {
+            return;
+        }
         self.stroke_color = color;
         self.base.request_redraw();
     }
@@ -243,7 +246,11 @@ impl SignaturePad {
 
     /// Sets the pen stroke width, floored at 1, and requests a redraw.
     pub fn set_stroke_width(&mut self, width: u32) {
-        self.stroke_width = width.max(1);
+        let width = width.max(1);
+        if self.stroke_width == width {
+            return;
+        }
+        self.stroke_width = width;
         self.base.request_redraw();
     }
 

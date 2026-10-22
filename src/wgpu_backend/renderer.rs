@@ -7,8 +7,197 @@ use super::raster::{align_to, rasterize_draw_commands_rgba8};
 use super::shaders::ShaderModule;
 use super::types::Rgba8;
 use crate::render::gpu::{GpuCapability, GpuRenderer};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::mpsc;
+
+/// One persistent colour-uniform arena shared by every draw of one call.
+///
+/// WebGPU requires a dynamic uniform offset to be a multiple of the device's
+/// `min_uniform_buffer_offset_alignment` (256 on the common backends, but a
+/// device may report more), so each rectangle's 16-byte colour is padded to a
+/// stride read from the device rather than assumed. One buffer and one bind
+/// group serve the whole call instead of one of each per rectangle (REND-02).
+struct UniformArena {
+    buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    capacity: u64,
+    /// Dynamic-offset stride: the device's `min_uniform_buffer_offset_alignment`,
+    /// raised to hold the 16-byte colour, so every offset stays legal on any backend.
+    stride: u64,
+}
+
+/// The offscreen render target for one `(width, height)`.
+struct TargetCache {
+    width: u32,
+    height: u32,
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
+/// A grow-only vertex buffer reused across calls.
+struct VertexCache {
+    buffer: wgpu::Buffer,
+    capacity: u64,
+}
+
+/// A grow-only readback buffer reused across calls.
+struct ReadbackCache {
+    buffer: wgpu::Buffer,
+    size: u64,
+}
+
+/// Device resources a renderer keeps across calls.
+///
+/// # Why this exists (REND-02)
+///
+/// Every entry point used to allocate its uniform buffer, bind group, vertex
+/// buffer, offscreen texture and full-frame readback buffer per call. Those
+/// allocations are not free — a `fill_rect` batch of 40 rectangles created 40
+/// uniform buffers and 40 bind groups — and the per-call texture made the GPU
+/// treat every call as a new render target. This cache keeps one of each, grown
+/// on demand and overwritten with `write_buffer`, because the API is called at
+/// frame rate by a host that renders offscreen. The data is fully rewritten on
+/// every call, so no stale content can leak between calls.
+///
+/// `RefCell` rather than `&mut self`: the public entry points take `&self` (and
+/// `GpuRenderer` calls them that way), so the cache is the only interior-mutable
+/// piece. It is not `Sync`, and the renderer is not shared across threads.
+#[derive(Default)]
+struct RenderCache {
+    uniform: Option<UniformArena>,
+    target: Option<TargetCache>,
+    upload_target: Option<TargetCache>,
+    vertices: Option<VertexCache>,
+    readback: Option<ReadbackCache>,
+}
+
+impl RenderCache {
+    /// The dynamic-offset stride for the colour arena: the device's
+    /// `min_uniform_buffer_offset_alignment`, raised to hold the 16-byte colour
+    /// and rounded back up to a legal multiple. A hard-coded 256 would make every
+    /// draw a validation error on a device that reports 512.
+    fn uniform_stride(device: &wgpu::Device) -> u64 {
+        let alignment = device.limits().min_uniform_buffer_offset_alignment as u64;
+        alignment.max(16).next_multiple_of(alignment.max(1))
+    }
+
+    /// Ensures the colour arena can hold `slots` colours.
+    fn ensure_uniform(
+        &mut self,
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        slots: usize,
+    ) -> Result<(), String> {
+        let stride = Self::uniform_stride(device);
+        let needed = stride
+            .checked_mul(slots.max(1) as u64)
+            .ok_or_else(|| format!("{slots} colour slots overflow the uniform buffer size"))?;
+        let needs_new = self.uniform.as_ref().map(|arena| arena.capacity < needed).unwrap_or(true);
+        if needs_new {
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("rect_color_ubo"),
+                size: needed,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("rect_bind_group"),
+                layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &buffer,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(16),
+                    }),
+                }],
+            });
+            self.uniform = Some(UniformArena { buffer, bind_group, capacity: needed, stride });
+        }
+        Ok(())
+    }
+
+    /// Ensures the offscreen target matches `width × height`.
+    fn ensure_target(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+        let matches = self
+            .target
+            .as_ref()
+            .map(|target| target.width == width && target.height == height)
+            .unwrap_or(false);
+        if !matches {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("wgpu_offscreen_target"),
+                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.target = Some(TargetCache { width, height, texture, view });
+        }
+    }
+
+    /// Ensures the upload-side texture matches `width × height`.
+    ///
+    /// Separate from [`Self::ensure_target`] because this one is writable
+    /// (`COPY_DST`): `queue.write_texture` uploads the caller's bytes into it before the copy
+    /// back, which a render-attachment-only texture cannot accept.
+    fn ensure_upload_target(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+        let matches = self
+            .upload_target
+            .as_ref()
+            .map(|target| target.width == width && target.height == height)
+            .unwrap_or(false);
+        if !matches {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("rw_wgpu_offscreen_texture"),
+                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.upload_target = Some(TargetCache { width, height, texture, view });
+        }
+    }
+
+    /// Ensures the vertex buffer can hold `bytes`.
+    fn ensure_vertices(&mut self, device: &wgpu::Device, bytes: u64) {
+        let needs_new = self.vertices.as_ref().map(|cache| cache.capacity < bytes).unwrap_or(true);
+        if needs_new {
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("rect_vertex_buffer"),
+                size: bytes.max(4),
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.vertices = Some(VertexCache { buffer, capacity: bytes.max(4) });
+        }
+    }
+
+    /// Ensures the readback buffer can hold `size` bytes.
+    fn ensure_readback(&mut self, device: &wgpu::Device, size: u64) {
+        let needs_new = self.readback.as_ref().map(|cache| cache.size < size).unwrap_or(true);
+        if needs_new {
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("wgpu_readback"),
+                size: size.max(4),
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            self.readback = Some(ReadbackCache { buffer, size: size.max(4) });
+        }
+    }
+}
 
 /// Byte length of an RGBA8 image of `width × height` pixels.
 ///
@@ -35,6 +224,22 @@ fn rgba_buffer_len(width: u32, height: u32) -> Result<usize, String> {
     }
     Ok(bytes)
 }
+
+/// Bytes per row of an RGBA8 image, aligned to WebGPU's copy requirement.
+fn padded_row_bytes(width: u32) -> Result<u32, String> {
+    let unpadded = width
+        .checked_mul(4)
+        .ok_or_else(|| format!("row byte width for {width} pixels overflows u32"))?;
+    Ok(align_to(unpadded, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT))
+}
+
+/// Total bytes of a padded RGBA8 readback buffer.
+fn readback_frame_bytes(width: u32, height: u32) -> Result<u64, String> {
+    let padded = padded_row_bytes(width)?;
+    (padded as u64)
+        .checked_mul(height as u64)
+        .ok_or_else(|| format!("readback buffer for {width}x{height} overflows u64"))
+}
 /// Lightweight GPU renderer context backed by `wgpu`.
 pub struct WgpuRenderer {
     device: wgpu::Device,
@@ -44,6 +249,8 @@ pub struct WgpuRenderer {
     bind_group_layout: wgpu::BindGroupLayout,
     /// Cached shader module pipeline references (BLUE11 R5.2).
     shader_cache: HashMap<String, wgpu::ShaderModule>,
+    /// Device resources reused across calls (REND-02).
+    cache: RefCell<RenderCache>,
 }
 impl WgpuRenderer {
     /// Create a new renderer by requesting a default GPU adapter and logical device.
@@ -141,7 +348,7 @@ impl WgpuRenderer {
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
+                    has_dynamic_offset: true,
                     min_binding_size: Some(wgpu::BufferSize::new(16).unwrap()),
                 },
                 count: None,
@@ -255,7 +462,15 @@ impl WgpuRenderer {
         shader_cache.insert("rect_vs".to_string(), rect_vs_module);
         shader_cache.insert("rect_fs".to_string(), rect_fs_module);
 
-        Ok(Self { device, queue, clear_pipeline, rect_pipeline, bind_group_layout, shader_cache })
+        Ok(Self {
+            device,
+            queue,
+            clear_pipeline,
+            rect_pipeline,
+            bind_group_layout,
+            shader_cache,
+            cache: RefCell::new(RenderCache::default()),
+        })
     }
     /// Render one offscreen RGBA frame by clearing a texture with the given color and read pixels back.
     pub fn render_clear_rgba8(
@@ -289,46 +504,24 @@ impl WgpuRenderer {
         // not a valid render target and an overflowing byte count must not be
         // truncated (N-S-66).
         let expected_len = rgba_buffer_len(width, height)?;
-        let color_f32: [f32; 4] = [
-            color[0].clamp(0.0, 1.0) as f32,
-            color[1].clamp(0.0, 1.0) as f32,
-            color[2].clamp(0.0, 1.0) as f32,
-            color[3].clamp(0.0, 1.0) as f32,
-        ];
+        let mut colour_bytes = [0u8; 16];
+        for (channel, value) in color.iter().enumerate() {
+            let clamped = value.clamp(0.0, 1.0) as f32;
+            colour_bytes[channel * 4..channel * 4 + 4].copy_from_slice(&clamped.to_le_bytes());
+        }
+        let frame_bytes = readback_frame_bytes(width, height)?;
 
-        // Create offscreen render target texture
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("gpu_clear_texture"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // One cached uniform arena, target and readback buffer for every call, rather than a new
+        // set of GPU resources per call (REND-02).
+        let mut cache = self.cache.borrow_mut();
+        cache.ensure_uniform(&self.device, &self.bind_group_layout, 1)?;
+        cache.ensure_target(&self.device, width, height);
+        cache.ensure_readback(&self.device, frame_bytes);
+        let uniform = cache.uniform.as_ref().expect("the arena was just ensured");
+        let target = cache.target.as_ref().expect("the target was just ensured");
+        let readback = cache.readback.as_ref().expect("the readback was just ensured");
 
-        // Create uniform buffer and write clear color
-        let uniform_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("clear_color_ubo"),
-            size: 16,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let color_bytes: Vec<u8> = color_f32.iter().flat_map(|f| f.to_le_bytes()).collect();
-        self.queue.write_buffer(&uniform_buffer, 0, &color_bytes);
-
-        // Create bind group from the pipeline's layout
-        let bind_group_layout = self.clear_pipeline.get_bind_group_layout(0);
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("clear_bind_group"),
-            layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            }],
-        });
+        self.queue.write_buffer(&uniform.buffer, 0, &colour_bytes);
 
         // Encode render pass with full-screen triangle
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -338,7 +531,7 @@ impl WgpuRenderer {
             let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("gpu_clear_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &texture_view,
+                    view: &target.view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
@@ -349,32 +542,20 @@ impl WgpuRenderer {
                 multiview_mask: None,
             });
             rp.set_pipeline(&self.clear_pipeline);
-            rp.set_bind_group(0, &bind_group, &[]);
+            rp.set_bind_group(0, &uniform.bind_group, &[0]);
             rp.draw(0..3, 0..1); // 3 vertices for full-screen triangle
         }
 
-        // Read back pixels
-        let unpadded_bytes_per_row = width
-            .checked_mul(4)
-            .ok_or_else(|| format!("row byte width for {width} pixels overflows u32"))?;
-        let padded_bytes_per_row =
-            super::raster::align_to(unpadded_bytes_per_row, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-        let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("gpu_clear_readback"),
-            size: padded_bytes_per_row as u64 * height as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-
+        let padded_bytes_per_row = padded_row_bytes(width)?;
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
-                texture: &texture,
+                texture: &target.texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::TexelCopyBufferInfo {
-                buffer: &output_buffer,
+                buffer: &readback.buffer,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(padded_bytes_per_row),
@@ -385,38 +566,7 @@ impl WgpuRenderer {
         );
 
         self.queue.submit(Some(encoder.finish()));
-        let buffer_slice = output_buffer.slice(..);
-        let (sender, receiver) = mpsc::channel();
-        buffer_slice.map_async(
-            wgpu::MapMode::Read,
-            move |result: Result<(), wgpu::BufferAsyncError>| {
-                let _ = sender.send(result);
-            },
-        );
-        let _ = self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
-        let map_result =
-            receiver.recv().map_err(|_| "wgpu map_async callback channel closed".to_string())?;
-        map_result.map_err(|error| {
-            format!("GPU buffer could not be mapped for CPU readback: {error:?}")
-        })?;
-        let mapped = buffer_slice.get_mapped_range().map_err(|error| {
-            format!("mapped GPU buffer range could not be read back: {error:?}")
-        })?;
-
-        // Copy row by row, stripping padding
-        let unpadded = unpadded_bytes_per_row as usize;
-        let padded = padded_bytes_per_row as usize;
-        let mut pixels = vec![0u8; expected_len];
-        for row in 0..height as usize {
-            let src_start = row * padded;
-            let src_end = src_start + unpadded;
-            let dst_start = row * unpadded;
-            let dst_end = dst_start + unpadded;
-            pixels[dst_start..dst_end].copy_from_slice(&mapped[src_start..src_end]);
-        }
-        drop(mapped);
-        output_buffer.unmap();
-        Ok(pixels)
+        self.read_back(&readback.buffer, width, height, expected_len)
     }
     /// Render filled rectangles using the GPU pipeline with vertex buffer shaders.
     ///
@@ -443,10 +593,11 @@ impl WgpuRenderer {
         let w = width as f32;
         let h = height as f32;
 
-        // Generate transformed vertex positions in NDC for each rect.
-        // Each rect becomes 6 vertices (2 triangles forming a quad).
-        let mut all_vertices: Vec<f32> = Vec::with_capacity(rects.len() * 12);
-        let mut bind_groups: Vec<wgpu::BindGroup> = Vec::with_capacity(rects.len());
+        // Generate transformed vertex positions in NDC and one clamped colour per rect.
+        // Both are built directly as bytes: the previous `Vec<f32>` + `flat_map().collect()`
+        // pair allocated twice per call for data that is written once (REND-02).
+        let mut vertex_bytes: Vec<u8> = Vec::with_capacity(rects.len() * 48);
+        let mut colours: Vec<[f32; 4]> = Vec::with_capacity(rects.len());
 
         for &(x, y, rw, rh, color) in rects {
             // Convert pixel coordinates to NDC: [-1, 1]
@@ -460,61 +611,46 @@ impl WgpuRenderer {
             let y1 = 1.0 - ((y.saturating_add(rh as i32)) as f32 / h) * 2.0;
 
             // Two triangles: bottom-left, bottom-right, top-left, then bottom-right, top-right, top-left
-            all_vertices.extend_from_slice(&[
-                x0, y0, x1, y0, x0, y1, // triangle 1
-                x1, y0, x1, y1, x0, y1, // triangle 2
-            ]);
+            for value in [x0, y0, x1, y0, x0, y1, x1, y0, x1, y1, x0, y1] {
+                vertex_bytes.extend_from_slice(&value.to_le_bytes());
+            }
 
-            // Create uniform buffer with the rect's color
-            let cf: [f32; 4] = [
+            colours.push([
                 color[0].clamp(0.0, 1.0) as f32,
                 color[1].clamp(0.0, 1.0) as f32,
                 color[2].clamp(0.0, 1.0) as f32,
                 color[3].clamp(0.0, 1.0) as f32,
-            ];
-            let color_bytes: Vec<u8> = cf.iter().flat_map(|f| f.to_le_bytes()).collect();
-
-            let uniform_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("rect_color_ubo"),
-                size: 16,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            self.queue.write_buffer(&uniform_buffer, 0, &color_bytes);
-
-            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("rect_bind_group"),
-                layout: &self.bind_group_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform_buffer.as_entire_binding(),
-                }],
-            });
-            bind_groups.push(bind_group);
+            ]);
         }
 
-        // Create vertex buffer with all transformed vertices
-        let vertex_bytes: Vec<u8> = all_vertices.iter().flat_map(|f| f.to_le_bytes()).collect();
-        let vertex_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("rect_vertex_buffer"),
-            size: vertex_bytes.len() as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        self.queue.write_buffer(&vertex_buffer, 0, &vertex_bytes);
+        let frame_bytes = readback_frame_bytes(width, height)?;
+        let padded_bytes_per_row = padded_row_bytes(width)?;
 
-        // Create offscreen render target texture
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("gpu_rect_texture"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // Cached resources for the whole call: one colour arena, one bind group, one vertex
+        // buffer, one target and one readback buffer (REND-02).
+        let mut cache = self.cache.borrow_mut();
+        cache.ensure_uniform(&self.device, &self.bind_group_layout, colours.len())?;
+        cache.ensure_target(&self.device, width, height);
+        cache.ensure_vertices(&self.device, vertex_bytes.len() as u64);
+        cache.ensure_readback(&self.device, frame_bytes);
+        let uniform = cache.uniform.as_ref().expect("the arena was just ensured");
+        let target = cache.target.as_ref().expect("the target was just ensured");
+        let vertices = cache.vertices.as_ref().expect("the vertices were just ensured");
+        let readback = cache.readback.as_ref().expect("the readback was just ensured");
+        // The stride the arena was actually built with — device-derived, not assumed.
+        let stride = uniform.stride as usize;
+
+        // One upload for every colour, laid out at the dynamic-offset stride.
+        let mut uniform_bytes = vec![0u8; stride * colours.len()];
+        for (slot, colour) in colours.iter().enumerate() {
+            let start = slot * stride;
+            for (channel, value) in colour.iter().enumerate() {
+                uniform_bytes[start + channel * 4..start + channel * 4 + 4]
+                    .copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        self.queue.write_buffer(&uniform.buffer, 0, &uniform_bytes);
+        self.queue.write_buffer(&vertices.buffer, 0, &vertex_bytes);
 
         // Encode render pass: draw all rects with their respective colors
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -524,7 +660,7 @@ impl WgpuRenderer {
             let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("gpu_rect_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &texture_view,
+                    view: &target.view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -538,38 +674,26 @@ impl WgpuRenderer {
                 multiview_mask: None,
             });
             rp.set_pipeline(&self.rect_pipeline);
-            rp.set_vertex_buffer(0, vertex_buffer.slice(..));
+            rp.set_vertex_buffer(0, vertices.buffer.slice(..vertex_bytes.len() as u64));
 
-            for (i, bg) in bind_groups.iter().enumerate() {
-                rp.set_bind_group(0, bg, &[]);
-                let start = (i * 6) as u32;
-                let end = ((i + 1) * 6) as u32;
+            for index in 0..colours.len() {
+                let offset = (index * stride) as u32;
+                rp.set_bind_group(0, &uniform.bind_group, &[offset]);
+                let start = (index * 6) as u32;
+                let end = ((index + 1) * 6) as u32;
                 rp.draw(start..end, 0..1);
             }
         }
 
-        // Read back pixels (same logic as render_clear_gpu)
-        let unpadded_bytes_per_row = width
-            .checked_mul(4)
-            .ok_or_else(|| format!("row byte width for {width} pixels overflows u32"))?;
-        let padded_bytes_per_row =
-            super::raster::align_to(unpadded_bytes_per_row, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-        let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("gpu_rect_readback"),
-            size: padded_bytes_per_row as u64 * height as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
-                texture: &texture,
+                texture: &target.texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::TexelCopyBufferInfo {
-                buffer: &output_buffer,
+                buffer: &readback.buffer,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(padded_bytes_per_row),
@@ -580,8 +704,28 @@ impl WgpuRenderer {
         );
 
         self.queue.submit(Some(encoder.finish()));
-        let buffer_slice = output_buffer.slice(..);
-        let (sender, receiver) = std::sync::mpsc::channel();
+        self.read_back(&readback.buffer, width, height, expected_len)
+    }
+
+    /// Maps a readback buffer, copies its rows into a tight RGBA8 image and unmaps it.
+    ///
+    /// The buffer belongs to [`RenderCache`], so it must be unmapped before it can be reused:
+    /// leaving it mapped made the next `map_async` fail silently, which is why this is one
+    /// helper rather than a copy in every entry point.
+    fn read_back(
+        &self,
+        buffer: &wgpu::Buffer,
+        width: u32,
+        height: u32,
+        expected_len: usize,
+    ) -> Result<Vec<u8>, String> {
+        let unpadded = width
+            .checked_mul(4)
+            .ok_or_else(|| format!("row byte width for {width} pixels overflows u32"))?
+            as usize;
+        let padded = padded_row_bytes(width)? as usize;
+        let buffer_slice = buffer.slice(..(padded * height as usize) as u64);
+        let (sender, receiver) = mpsc::channel();
         buffer_slice.map_async(
             wgpu::MapMode::Read,
             move |result: Result<(), wgpu::BufferAsyncError>| {
@@ -598,18 +742,16 @@ impl WgpuRenderer {
             format!("mapped GPU buffer range could not be read back: {error:?}")
         })?;
 
-        let unpadded = unpadded_bytes_per_row as usize;
-        let padded = padded_bytes_per_row as usize;
+        // Copy row by row, stripping padding.
         let mut pixels = vec![0u8; expected_len];
         for row in 0..height as usize {
             let src_start = row * padded;
-            let src_end = src_start + unpadded;
             let dst_start = row * unpadded;
-            let dst_end = dst_start + unpadded;
-            pixels[dst_start..dst_end].copy_from_slice(&mapped[src_start..src_end]);
+            pixels[dst_start..dst_start + unpadded]
+                .copy_from_slice(&mapped[src_start..src_start + unpadded]);
         }
         drop(mapped);
-        output_buffer.unmap();
+        buffer.unmap();
         Ok(pixels)
     }
     /// Render stroked (outlined) rectangles using the GPU pipeline.
@@ -766,28 +908,20 @@ impl WgpuRenderer {
                 rgba8.len(),
             ));
         }
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("rw_wgpu_offscreen_texture"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        let bytes_per_pixel = 4u32;
-        let unpadded_bytes_per_row = width
-            .checked_mul(bytes_per_pixel)
-            .ok_or_else(|| format!("row byte width for {width} pixels overflows u32"))?;
-        let padded_bytes_per_row =
-            align_to(unpadded_bytes_per_row, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-        let output_buffer_size = padded_bytes_per_row as u64 * height as u64;
+        let padded_bytes_per_row = padded_row_bytes(width)?;
+        let output_buffer_size = readback_frame_bytes(width, height)?;
+
+        // Cached upload texture and readback buffer (REND-02). Both are fully overwritten by this
+        // call — `write_texture` covers the whole extent — so no previous frame can leak through.
+        let mut cache = self.cache.borrow_mut();
+        cache.ensure_upload_target(&self.device, width, height);
+        cache.ensure_readback(&self.device, output_buffer_size);
+        let target = cache.upload_target.as_ref().expect("the upload target was just ensured");
+        let readback = cache.readback.as_ref().expect("the readback was just ensured");
+
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: &texture,
+                texture: &target.texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
@@ -795,29 +929,23 @@ impl WgpuRenderer {
             rgba8,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(unpadded_bytes_per_row),
+                bytes_per_row: Some(width * 4),
                 rows_per_image: Some(height),
             },
             wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         );
-        let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("rw_wgpu_readback_buffer"),
-            size: output_buffer_size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("rw_wgpu_encoder"),
         });
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
-                texture: &texture,
+                texture: &target.texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::TexelCopyBufferInfo {
-                buffer: &output_buffer,
+                buffer: &readback.buffer,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(padded_bytes_per_row),
@@ -827,34 +955,7 @@ impl WgpuRenderer {
             wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         );
         self.queue.submit(Some(encoder.finish()));
-        let buffer_slice = output_buffer.slice(..);
-        let (sender, receiver) = mpsc::channel();
-        buffer_slice.map_async(
-            wgpu::MapMode::Read,
-            move |result: Result<(), wgpu::BufferAsyncError>| {
-                let _ = sender.send(result);
-            },
-        );
-        let _ = self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
-        let map_result =
-            receiver.recv().map_err(|_| "wgpu map_async callback channel closed".to_string())?;
-        map_result.map_err(|error| {
-            format!("GPU buffer could not be mapped for CPU readback: {error:?}")
-        })?;
-        let mapped = buffer_slice.get_mapped_range().map_err(|error| {
-            format!("mapped GPU buffer range could not be read back: {error:?}")
-        })?;
-        let mut pixels = vec![0u8; expected_len];
-        for row in 0..height as usize {
-            let src_start = row * padded_bytes_per_row as usize;
-            let src_end = src_start + unpadded_bytes_per_row as usize;
-            let dst_start = row * unpadded_bytes_per_row as usize;
-            let dst_end = dst_start + unpadded_bytes_per_row as usize;
-            pixels[dst_start..dst_end].copy_from_slice(&mapped[src_start..src_end]);
-        }
-        drop(mapped);
-        output_buffer.unmap();
-        Ok(pixels)
+        self.read_back(&readback.buffer, width, height, expected_len)
     }
     fn upload_and_readback_rgba8(
         &self,
@@ -920,5 +1021,90 @@ impl GpuRenderer for WgpuRenderer {
         // Vendor/device info is available from `wgpu::Adapter::get_info()`, but we do not
         // store the adapter after construction. This will be plumbed in a follow-up.
         "wgpu (WGPU)"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A renderer on this host, or `None` when no adapter can be reached.
+    ///
+    /// The GPU tests are real: they submit work and read the pixels back. A host with no
+    /// adapter cannot answer them, so they report the skip rather than failing — the same
+    /// contract the platform code uses for an unavailable capability.
+    fn renderer() -> Option<WgpuRenderer> {
+        match WgpuRenderer::new() {
+            Ok(renderer) => Some(renderer),
+            Err(error) => {
+                eprintln!("skipping GPU test: no wgpu adapter available ({error})");
+                None
+            }
+        }
+    }
+
+    fn pixel(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
+        let start = ((y * width + x) * 4) as usize;
+        [pixels[start], pixels[start + 1], pixels[start + 2], pixels[start + 3]]
+    }
+
+    /// A clear must fill every pixel with the requested colour.
+    #[test]
+    fn clear_writes_the_requested_colour_across_the_frame() {
+        let Some(renderer) = renderer() else { return };
+        let pixels =
+            renderer.render_clear_gpu(4, 3, [1.0, 0.0, 0.0, 1.0]).expect("the clear must render");
+        assert_eq!(pixels.len(), 4 * 3 * 4);
+        for y in 0..3 {
+            for x in 0..4 {
+                assert_eq!(pixel(&pixels, 4, x, y), [255, 0, 0, 255]);
+            }
+        }
+    }
+
+    /// Two rectangles must each land in their own corner — and the second call through the
+    /// cached buffers must produce exactly the same picture as the first (REND-02's reuse path).
+    #[test]
+    fn fill_rect_reuses_its_buffers_without_changing_the_picture() {
+        let Some(renderer) = renderer() else { return };
+        let rects = [(0, 0, 4, 4, [1.0, 0.0, 0.0, 1.0]), (4, 4, 4, 4, [0.0, 0.0, 1.0, 1.0])];
+        let first = renderer.render_fill_rect_gpu(8, 8, &rects).expect("first fill");
+        let second = renderer.render_fill_rect_gpu(8, 8, &rects).expect("second fill");
+        assert_eq!(first, second, "cached resources must reproduce the same frame");
+        assert_eq!(pixel(&first, 8, 0, 0), [255, 0, 0, 255]);
+        assert_eq!(pixel(&first, 8, 3, 3), [255, 0, 0, 255]);
+        assert_eq!(pixel(&first, 8, 4, 4), [0, 0, 255, 255]);
+        assert_eq!(pixel(&first, 8, 7, 7), [0, 0, 255, 255]);
+        assert_eq!(pixel(&first, 8, 7, 0), [0, 0, 0, 0]);
+    }
+
+    /// A growing batch must not keep the old, smaller allocation in use: three rects need a
+    /// larger colour arena than one, and all three still have to reach their own pixels.
+    #[test]
+    fn a_growing_batch_uses_the_enlarged_colour_arena() {
+        let Some(renderer) = renderer() else { return };
+        let one = [(0, 0, 4, 2, [1.0, 0.0, 0.0, 1.0])];
+        renderer.render_fill_rect_gpu(4, 2, &one).expect("one rect");
+        let three = [
+            (0, 0, 1, 1, [1.0, 0.0, 0.0, 1.0]),
+            (1, 0, 1, 1, [0.0, 1.0, 0.0, 1.0]),
+            (2, 0, 1, 1, [0.0, 0.0, 1.0, 1.0]),
+        ];
+        let pixels = renderer.render_fill_rect_gpu(4, 2, &three).expect("three rects");
+        assert_eq!(pixel(&pixels, 4, 0, 0), [255, 0, 0, 255]);
+        assert_eq!(pixel(&pixels, 4, 1, 0), [0, 255, 0, 255]);
+        assert_eq!(pixel(&pixels, 4, 2, 0), [0, 0, 255, 255]);
+    }
+
+    /// An upload must round-trip the exact bytes it was given.
+    #[test]
+    fn upload_round_trips_the_given_pixels() {
+        let Some(renderer) = renderer() else { return };
+        let input: Vec<u8> = (0..(4 * 4 * 4) as u8).collect();
+        let output =
+            renderer.upload_rgba8_and_readback(4, 4, &input).expect("the upload must round-trip");
+        assert_eq!(output, input);
+        // A second call reuses the cached upload texture and readback buffer.
+        assert_eq!(renderer.upload_rgba8_and_readback(4, 4, &input).expect("second upload"), input);
     }
 }

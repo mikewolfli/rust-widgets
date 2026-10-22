@@ -139,7 +139,11 @@ impl TreeTable {
 
     /// Sets fixed row height.
     pub fn set_row_height(&mut self, row_height: u32) {
-        self.row_height = row_height.max(1);
+        let row_height = row_height.max(1);
+        if self.row_height == row_height {
+            return;
+        }
+        self.row_height = row_height;
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -151,7 +155,11 @@ impl TreeTable {
 
     /// Sets fixed column width.
     pub fn set_column_width(&mut self, column_width: u32) {
-        self.column_width = column_width.max(1);
+        let column_width = column_width.max(1);
+        if self.column_width == column_width {
+            return;
+        }
+        self.column_width = column_width;
         self.base.request_layout();
         self.base.request_redraw();
     }

@@ -67,6 +67,9 @@ static LOOP_TICKED: AtomicBool = AtomicBool::new(false);
 /// tick above calls on the loop's own thread.
 pub fn request() -> bool {
     STOP_REQUESTED.store(true, Ordering::SeqCst);
+    // A loop blocked between frames must wake to read the request; the recorded flag is the
+    // acknowledgement, the wake is what makes it observable before the idle backstop expires.
+    crate::platform::frame_wait::wake();
     loop_has_ticked()
 }
 

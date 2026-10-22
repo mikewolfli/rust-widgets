@@ -68,6 +68,19 @@ pub(crate) struct WaylandMenuState {
     pub(crate) pending_widget_events: VecDeque<WidgetTriggerEvent>,
 }
 
+impl WaylandMenuState {
+    /// Drops every menu record that names `widget_id` (PLAT-08).
+    pub(crate) fn purge(&mut self, widget_id: u64) {
+        crate::platform::menu_bookkeeping::purge(
+            &mut self.attached_menu_bar,
+            &mut self.menu_children,
+            Some(&mut self.pending_menu_events),
+            widget_id,
+        );
+        self.pending_widget_events.retain(|event| event.widget_id != widget_id);
+    }
+}
+
 /// Runtime lifecycle state for the Wayland backend.
 pub(crate) struct WaylandRuntimeState {
     pub(crate) initialized: AtomicBool,

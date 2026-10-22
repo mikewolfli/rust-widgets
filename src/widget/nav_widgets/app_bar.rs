@@ -106,6 +106,9 @@ impl AppBar {
 
     /// Sets the title text displayed centered in the bar.
     pub fn set_title(&mut self, title: &str) {
+        if self.title == title {
+            return;
+        }
         self.title = title.to_string();
         self.base.request_redraw();
     }
@@ -117,6 +120,9 @@ impl AppBar {
 
     /// Sets whether the back arrow is shown in the bar's leading zone.
     pub fn set_show_back(&mut self, show_back: bool) {
+        if self.show_back == show_back {
+            return;
+        }
         self.show_back = show_back;
         self.base.request_redraw();
     }
@@ -130,6 +136,9 @@ impl AppBar {
     ///
     /// Pass an empty string to hide the action area.
     pub fn set_action_text(&mut self, text: &str) {
+        if self.action_text == text {
+            return;
+        }
         self.action_text = text.to_string();
         self.base.request_redraw();
     }

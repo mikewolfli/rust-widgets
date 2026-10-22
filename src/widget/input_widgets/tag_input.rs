@@ -11,7 +11,7 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
+use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::coercion::{
     expect_horizontal_alignment, expect_string, horizontal_alignment_to_str,
 };
@@ -23,61 +23,6 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static NEXT_TAG_INPUT_COMMAND_ID: AtomicU64 = AtomicU64::new(1);
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct TagInputState {
-    tags: Vec<String>,
-    input_buffer: String,
-}
-
-struct TagInputStateCommand {
-    id: CommandId,
-    target: Rc<RefCell<TagInputState>>,
-    before: TagInputState,
-    after: TagInputState,
-}
-
-impl TagInputStateCommand {
-    fn new(
-        target: Rc<RefCell<TagInputState>>,
-        before: TagInputState,
-        after: TagInputState,
-    ) -> Self {
-        Self {
-            id: CommandId(NEXT_TAG_INPUT_COMMAND_ID.fetch_add(1, Ordering::Relaxed)),
-            target,
-            before,
-            after,
-        }
-    }
-}
-
-impl UndoCommand for TagInputStateCommand {
-    fn id(&self) -> CommandId {
-        self.id
-    }
-
-    fn description(&self) -> CommandDescription {
-        CommandDescription {
-            text: "Edit tags".to_string(),
-            timestamp_ms: 0,
-            command_type: "tag_input_state",
-        }
-    }
-
-    fn execute(&mut self) -> Result<(), String> {
-        *self.target.borrow_mut() = self.after.clone();
-        Ok(())
-    }
-
-    fn undo(&mut self) -> Result<(), String> {
-        *self.target.borrow_mut() = self.before.clone();
-        Ok(())
-    }
-}
 
 /// Horizontal padding between tag chip and container edge, or between chips.
 const TAG_PADDING: i32 = 6;
@@ -91,6 +36,14 @@ const TAG_CLOSE_RADIUS: i32 = 7;
 const TAG_CHIP_RADIUS: u32 = 12;
 /// Minimum input area width.
 const MIN_INPUT_WIDTH: i32 = 60;
+
+/// The undo payload: the tag list plus the in-progress input buffer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TagInputState {
+    tags: Vec<String>,
+    input_buffer: String,
+}
+
 /// TagInput widget — a text input that creates tags/chips on Enter or comma.
 pub struct TagInput {
     base: BaseWidget,
@@ -194,6 +147,9 @@ impl TagInput {
 
     /// Sets the placeholder shown while the input area is empty.
     pub fn set_placeholder(&mut self, placeholder: &str) {
+        if self.placeholder == placeholder {
+            return;
+        }
         self.placeholder = placeholder.to_string();
         self.base.request_redraw();
     }
@@ -312,10 +268,12 @@ impl TagInput {
             return;
         }
         *self.history_target.borrow_mut() = after.clone();
-        self.undo_stack.push(Box::new(TagInputStateCommand::new(
+        self.undo_stack.push(Box::new(ValueCommand::new(
             self.history_target.clone(),
             before,
             after,
+            "Edit tags",
+            "tag_input_state",
         )));
     }
 

@@ -30,7 +30,7 @@ services at all.
 
 ```toml
 [dependencies]
-rust_widgets = "2.8.13"
+rust_widgets = "2.8.14"
 ```
 
 Choose **exactly one** device profile. They are mutually exclusive: `mini` and `embedded` compile
@@ -38,11 +38,11 @@ parts of the crate *out*, so pairing one with `desktop` is not a lowest common d
 a build that cannot work.
 
 ```toml
-rust_widgets = { version = "2.8.13", features = ["desktop"] }                       # default
-rust_widgets = { version = "2.8.13", default-features = false, features = ["tablet"] }
-rust_widgets = { version = "2.8.13", default-features = false, features = ["mobile"] }
-rust_widgets = { version = "2.8.13", default-features = false, features = ["embedded"] }
-rust_widgets = { version = "2.8.13", default-features = false, features = ["mini"] }
+rust_widgets = { version = "2.8.14", features = ["desktop"] }                       # default
+rust_widgets = { version = "2.8.14", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "2.8.14", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "2.8.14", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "2.8.14", default-features = false, features = ["mini"] }
 ```
 
 | Profile | Intended for |

@@ -80,6 +80,9 @@ impl Pagination {
 
     /// Sets the total item count, clamping the current page into the new range.
     pub fn set_total(&mut self, total: usize) {
+        if self.total == total {
+            return;
+        }
         self.total = total;
         let last = self.last_page();
         if self.page > last {
@@ -97,7 +100,11 @@ impl Pagination {
     /// Sets the items per page. A size of 0 is treated as 1, because a zero page
     /// size would make the page count infinite.
     pub fn set_page_size(&mut self, page_size: usize) {
-        self.page_size = page_size.max(1);
+        let page_size = page_size.max(1);
+        if self.page_size == page_size {
+            return;
+        }
+        self.page_size = page_size;
         let last = self.last_page();
         if self.page > last {
             self.page = last;
@@ -184,7 +191,11 @@ impl Pagination {
     /// Sets how many numbered siblings flank the current page, clamped to 0..=3
     /// so the bar cannot grow past what a single row can hold legibly.
     pub fn set_sibling_count(&mut self, sibling_count: usize) {
-        self.sibling_count = sibling_count.min(3);
+        let sibling_count = sibling_count.min(3);
+        if self.sibling_count == sibling_count {
+            return;
+        }
+        self.sibling_count = sibling_count;
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -196,6 +207,9 @@ impl Pagination {
 
     /// Sets whether the previous/next controls are shown.
     pub fn set_show_nav_buttons(&mut self, show: bool) {
+        if self.show_nav_buttons == show {
+            return;
+        }
         self.show_nav_buttons = show;
         self.base.request_layout();
         self.base.request_redraw();

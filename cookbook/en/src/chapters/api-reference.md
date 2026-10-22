@@ -4,7 +4,7 @@ This chapter provides a comprehensive, module-by-module reference for the
 entire `rust_widgets` public API. Use this as a quick lookup when you need to
 find the right type, function, or trait for your task.
 
-The library version documented here is **2.8.13**. Code examples assume
+The library version documented here is **2.8.14**. Code examples assume
 `use rust_widgets::*;` or explicit paths as shown.
 
 ---
@@ -43,9 +43,10 @@ The library version documented here is **2.8.13**. Code examples assume
 30. [GPU Acceleration (`gpu`, `wgpu_backend`)](#gpu-acceleration-gpu-wgpu_backend)
 31. [Embedded Support (`embedded`)](#embedded-support-embedded)
 32. [Language Bindings (`bindings`)](#language-bindings-bindings)
-33. [Feature Flags Reference](#feature-flags-reference)
-34. [Error Codes Reference](#error-codes-reference)
-35. [FFI / C ABI Reference](#ffi--c-abi-reference)
+33. [Media Modules (`audio`, `video`, `image`)](#media-modules-audio-video-image)
+34. [Feature Flags Reference](#feature-flags-reference)
+35. [Error Codes Reference](#error-codes-reference)
+36. [FFI / C ABI Reference](#ffi--c-abi-reference)
 
 ---
 
@@ -2826,6 +2827,100 @@ full C API.
 
 ---
 
+## Media Modules (`audio`, `video`, `image`)
+
+These modules are gated by the `audio`, `video` and `image` features. `desktop`, `tablet` and
+`mobile` enable all three; `mini` and `embedded` do not.
+
+Since 2.8.14, decoding runs on a worker thread in every entry point that takes a whole buffer, so
+the frame loop is not blocked by a long track or a large image. Each entry point also keeps its
+synchronous form, and every async one falls back to a synchronous decode when a thread cannot be
+spawned — the failure mode is "slower", never "nothing loads".
+
+### Audio (`audio`)
+
+`AudioEngine` owns one decoded buffer and one optional device output.
+
+```rust
+use rust_widgets::audio::AudioEngine;
+
+let mut engine = AudioEngine::new();
+engine.load(&wav_bytes)?;      // synchronous: decodes on the calling thread
+engine.play();
+let played = engine.tick(1024); // advances the position, returns samples consumed
+
+// Or decode in the background and install the result once:
+engine.load_async(wav_bytes);   // returns immediately
+// Once per frame:
+if let Some(result) = engine.poll_load() {
+    result?;                    // the buffer is installed on this call
+}
+// Or block once instead of polling:
+engine.wait_for_load()?;
+```
+
+| Method | Signature | Notes |
+|---|---|---|
+| `new` | `fn() -> Self` | Empty engine |
+| `load` | `fn(&mut self, data: &[u8]) -> Result<(), String>` | Synchronous decode |
+| `load_async` | `fn(&mut self, data: Vec<u8>)` | Background decode; a new call supersedes an earlier one |
+| `is_loading` | `fn(&self) -> bool` | A background load is still running |
+| `poll_load` | `fn(&mut self) -> Option<Result<(), String>>` | Installs a finished load; `None` while still running |
+| `wait_for_load` | `fn(&mut self) -> Result<(), String>` | Blocks until the load finishes |
+| `play` / `pause` / `stop` | `fn(&mut self)` | Playback state |
+| `set_volume` / `volume` | `fn(&mut self, f32)` / `fn(&self) -> f32` | Clamped to `0.0..=1.0` |
+| `tick` | `fn(&mut self, samples: usize) -> usize` | Advances the position, saturating at the end |
+| `current_samples` | `fn(&self, count: usize) -> Vec<f32>` | Samples under the current position |
+| `duration_seconds` | `fn(&self) -> f64` | `0.0` when nothing is loaded |
+| `play_to_device` | `fn(&mut self) -> Result<(), String>` | Requires `audio-output` (cpal) |
+
+Format support is described by `AudioFormat`; `symphonia-codecs` adds FLAC, OGG Vorbis, AAC and
+Opus decoding.
+
+### Video (`video`)
+
+`VideoEngine` drives a `VideoDecoder` and owns the master timeline. Frames are decoded on a
+background thread, so `tick_frame` reads from a bounded read-ahead queue instead of decoding in
+the frame loop. A seek starts a new generation: frames already decoded for the old position are
+dropped rather than shown.
+
+```rust
+use rust_widgets::video::VideoEngine;
+
+let mut engine = VideoEngine::open(mp4_bytes)?; // picks a decoder from the container
+engine.play();
+let frame = engine.tick_frame(16, 0.008)?;      // one display tick; Some(frame) when due
+```
+
+| Method | Signature | Notes |
+|---|---|---|
+| `open` | `fn(Vec<u8>) -> Result<Self, String>` | Detects the container; H.264 and friends need `video-codecs` |
+| `with_decoder` | `fn(Box<dyn VideoDecoder + Send>) -> Self` | Bring your own decoder |
+| `metadata` / `duration` | `fn(&self) -> &VideoMetadata` / `fn(&self) -> f64` | Container information |
+| `play` / `pause` / `stop` | `fn(&mut self)` | `play` after the end restarts from the first frame |
+| `seek` | `fn(&mut self, time: f64) -> Result<(), String>` | Frames for the old position are dropped |
+| `tick_frame` | `fn(&mut self, delta_ms: u32, tolerance: f64) -> Result<Option<VideoFrame>, String>` | `None` means no frame is due this tick |
+| `next_frame` / `step_frame` | `fn(&mut self) -> Result<Option<VideoFrame>, String>` | Read through the same one-frame slot |
+| `take_dropped_frames` | `fn(&mut self) -> u64` | Frames discharged to catch up |
+| `clock` / `clock_mut` | timeline accessors | The master `MediaClock` |
+
+### Images (`image`)
+
+```rust
+use rust_widgets::image::{decode, decode_async};
+
+let image = decode(&png_bytes)?;   // synchronous
+let job = decode_async(png_bytes); // background; returns an ImageDecodeJob
+let image = job.wait()?;           // or job.try_take() once per frame
+```
+
+`decode` returns a `DecodedImage` (`format`, `data`, `width`, `height`, `exif`, `color_space`).
+`decode_to_rgba8` converts in the same step, and `decode_animation` returns every GIF/WebP frame
+with its delay. `ImageDecodeJob::try_take` returns `None` while the decode is still running, and
+`wait` blocks until it finishes.
+
+---
+
 ## Feature Flags Reference
 
 The library uses a **three-axis feature system** — pick one from each axis:
@@ -2873,6 +2968,15 @@ The library uses a **three-axis feature system** — pick one from each axis:
 | `controls-native` | Native OS-style control rendering |
 | `controls-custom` | Custom (themed) control rendering |
 | `advanced-widgets` | Advanced widgets (calendar, date/time pickers, ribbon bar, etc.) |
+| `image` | Image decoding/encoding module |
+| `video` | Video engine module (container detection, frame decoding, playback) |
+| `audio` | Audio engine module (format detection, decoding, buffers) |
+| `audio-output` | Device playback via cpal |
+| `symphonia-codecs` | FLAC / OGG Vorbis / AAC / Opus audio decoding |
+| `video-codecs` | FFmpeg-backed video decoding |
+| `pdf-encryption` | Encrypted PDF output |
+| `js-engine` | Embedded JavaScript engine (boa) |
+| `web-http` | HTTP client for web capabilities (ureq) |
 | `unstable-pipeline-routing` | Experimental pipeline routing |
 | `unstable-special-widgets` | Experimental special widgets |
 

@@ -45,7 +45,7 @@ use crate::compat::MiniVec;
 use crate::core::{Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::signal::Signal1;
-use crate::undo::{CommandDescription, CommandId, TextSnapshotCommand, UndoCommand, UndoStack};
+use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack, ValueCommand};
 use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};

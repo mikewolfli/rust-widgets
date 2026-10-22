@@ -134,13 +134,20 @@ impl StatusBar {
     /// Unlike the transient message this is not reported through
     /// `message_changed`, so a listener relying on that signal will miss it.
     pub fn set_permanent_message(&mut self, msg: impl Into<String>) {
-        self.permanent_message = msg.into();
+        let msg = msg.into();
+        if self.permanent_message == msg {
+            return;
+        }
+        self.permanent_message = msg;
         self.base.request_redraw();
     }
     /// Enables or disables the resize grip and requests a redraw. See
     /// [`StatusBar::size_grip_enabled`] — the flag removes both the grip's ink and the
     /// room its box reserves for the permanent message.
     pub fn set_size_grip_enabled(&mut self, enabled: bool) {
+        if self.size_grip_enabled == enabled {
+            return;
+        }
         self.size_grip_enabled = enabled;
         self.base.request_redraw();
     }

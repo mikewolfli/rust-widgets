@@ -259,12 +259,20 @@ impl InputDialog {
     }
     /// Sets the title and repaints.
     pub fn set_title(&mut self, t: impl Into<String>) {
-        self.title = t.into();
+        let t = t.into();
+        if self.title == t {
+            return;
+        }
+        self.title = t;
         self.base.request_redraw();
     }
     /// Sets the label drawn beside the input field and repaints.
     pub fn set_label_text(&mut self, t: impl Into<String>) {
-        self.label_text = t.into();
+        let t = t.into();
+        if self.label_text == t {
+            return;
+        }
+        self.label_text = t;
         self.base.request_redraw();
     }
     /// Switches which value the input field presents, and repaints.
@@ -272,6 +280,9 @@ impl InputDialog {
     /// The other values are unaffected: switching away from a mode does not
     /// clear what it held, so switching back shows it again.
     pub fn set_mode(&mut self, mode: InputMode) {
+        if self.mode == mode {
+            return;
+        }
         self.mode = mode;
         self.base.request_redraw();
     }
@@ -344,6 +355,9 @@ impl InputDialog {
     }
     /// Sets the modality flag and repaints. See [`InputDialog::is_modal`].
     pub fn set_modal(&mut self, modal: bool) {
+        if self.modal == modal {
+            return;
+        }
         self.modal = modal;
         self.base.request_redraw();
     }

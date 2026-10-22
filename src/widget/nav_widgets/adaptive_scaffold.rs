@@ -131,6 +131,9 @@ impl AdaptiveScaffold {
 
     /// Sets whether the bottom navigation bar is visible.
     pub fn set_show_bottom_nav(&mut self, show: bool) {
+        if self.show_bottom_nav == show {
+            return;
+        }
         self.show_bottom_nav = show;
         self.base.request_redraw();
     }

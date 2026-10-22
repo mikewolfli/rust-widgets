@@ -176,8 +176,8 @@ impl NavigationDrawer {
     }
 
     /// Returns the currently selected item index.
-    pub fn selected_index(&self) -> usize {
-        self.selected_index
+    pub fn selected_index(&self) -> Option<usize> {
+        self.items.get(self.selected_index).map(|_| self.selected_index)
     }
 
     /// Returns a reference to the items list.
@@ -192,6 +192,9 @@ impl NavigationDrawer {
 
     /// Sets the panel width in pixels.
     pub fn set_panel_width(&mut self, width: u32) {
+        if self.panel_width == width {
+            return;
+        }
         self.panel_width = width;
         self.base.request_redraw();
     }
@@ -564,7 +567,7 @@ mod tests {
         let drawer = NavigationDrawer::new(Rect::new(0, 0, 400, 600));
         assert!(!drawer.is_open());
         assert_eq!(drawer.kind(), WidgetKind::NavigationDrawer);
-        assert_eq!(drawer.selected_index(), 0);
+        assert_eq!(drawer.selected_index().unwrap_or(0), 0);
         assert!(drawer.items().is_empty());
     }
 
@@ -658,7 +661,7 @@ mod tests {
         });
 
         drawer.set_selected_index(2);
-        assert_eq!(drawer.selected_index(), 2);
+        assert_eq!(drawer.selected_index().unwrap_or(0), 2);
         assert_eq!(selected.load(Ordering::SeqCst), 2);
     }
 
@@ -667,7 +670,7 @@ mod tests {
         let mut drawer = make_drawer();
         drawer.set_selected_index(99);
         // Should not change because index is out of bounds
-        assert_eq!(drawer.selected_index(), 0);
+        assert_eq!(drawer.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
@@ -716,10 +719,10 @@ mod tests {
             modifiers: 0,
         });
         // Not yet selected on press
-        assert_eq!(drawer.selected_index(), 0);
+        assert_eq!(drawer.selected_index().unwrap_or(0), 0);
 
         drawer.handle_event(&Event::MouseRelease { pos: Point::new(20, target_y), button: 1 });
-        assert_eq!(drawer.selected_index(), 1);
+        assert_eq!(drawer.selected_index().unwrap_or(0), 1);
     }
 
     #[test]
@@ -735,7 +738,7 @@ mod tests {
         });
         drawer.handle_event(&Event::MouseRelease { pos: Point::new(350, 300), button: 2 });
         assert!(drawer.is_open());
-        assert_eq!(drawer.selected_index(), 0);
+        assert_eq!(drawer.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
@@ -766,7 +769,7 @@ mod tests {
             modifiers: 0,
         });
         drawer.handle_event(&Event::MouseRelease { pos: Point::new(20, 100), button: 1 });
-        assert_eq!(drawer.selected_index(), 0);
+        assert_eq!(drawer.selected_index().unwrap_or(0), 0);
     }
 
     #[test]

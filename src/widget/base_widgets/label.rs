@@ -66,6 +66,9 @@ impl Label {
     }
     /// Sets text alignment.
     pub fn set_alignment(&mut self, alignment: crate::core::Alignment) {
+        if self.alignment == alignment {
+            return;
+        }
         self.alignment = alignment;
         self.base.request_redraw();
     }

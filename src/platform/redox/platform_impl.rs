@@ -47,13 +47,11 @@ use crate::platform::types::{
     Display, DisplayId, OpenError, Platform, PlatformCapabilities, SafeAreaInsets,
 };
 use crate::widget::runtime;
-use core::time::Duration;
 use orbclient::{
     get_display_size, Color as OrbitalColor, EventOption, MediaKind, Renderer, Window, WindowFlag,
     WindowFlags,
 };
 use std::sync::atomic::Ordering;
-use std::thread;
 
 /// The frame interval this backend advances the library by, in milliseconds.
 ///
@@ -255,8 +253,8 @@ impl Platform for OrbitalPlatform {
         }
         while self.running.load(Ordering::SeqCst) {
             self.pump();
-            crate::drive_frame(FRAME_INTERVAL_MS);
-            thread::sleep(Duration::from_millis(FRAME_INTERVAL_MS as u64));
+            let outcome = crate::drive_frame(FRAME_INTERVAL_MS);
+            crate::platform::frame_wait::pause_between_frames(outcome.needs_another_frame);
         }
     }
 

@@ -17,6 +17,15 @@ use crate::core::{ObjectId, Orientation, PlatformFamily, Rect};
 /// is exactly the drift shape principle #54 forbids. A backend that later runs at the display's
 /// own rate changes this one value.
 pub(crate) const FRAME_INTERVAL_MS: u64 = 16;
+
+/// How long an idle backend loop waits before looking again, in milliseconds.
+///
+/// When `drive_frame` reports that no frame is owed, an idle loop has nothing to do. Waiting a
+/// full second would delay a stop request or a state change with no wake channel, so the idle
+/// wait is bounded; at 100 ms it cuts idle wakeups 6× versus the frame tick while keeping those
+/// unseen transitions responsive. A posted event, a stop request, or scheduled cross-thread work
+/// wakes the loop immediately -- this value is only the backstop.
+pub(crate) const IDLE_FRAME_INTERVAL_MS: u64 = 100;
 #[cfg(all(feature = "serde", widgets_unstripped))]
 use serde::{Deserialize, Serialize};
 

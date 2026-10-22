@@ -12,7 +12,7 @@ use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::undo::{TextSnapshotCommand, UndoStack};
+use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::coercion::{
     expect_horizontal_alignment, expect_string, horizontal_alignment_to_str,
 };
@@ -106,10 +106,11 @@ impl SearchBar {
             self.text = new_text.clone();
             if !self.restoring_history {
                 *self.history_target.borrow_mut() = self.text.clone();
-                self.undo_stack.push(Box::new(TextSnapshotCommand::new(
+                self.undo_stack.push(Box::new(ValueCommand::new(
                     self.history_target.clone(),
                     before,
                     self.text.clone(),
+                    "Edit text",
                     "search_bar_text",
                 )));
             }
@@ -125,7 +126,11 @@ impl SearchBar {
 
     /// Sets the placeholder text.
     pub fn set_placeholder(&mut self, placeholder: impl Into<String>) {
-        self.placeholder = placeholder.into();
+        let placeholder = placeholder.into();
+        if self.placeholder == placeholder {
+            return;
+        }
+        self.placeholder = placeholder;
         self.base.request_redraw();
     }
 
@@ -144,6 +149,9 @@ impl SearchBar {
 
     /// Sets whether the cancel button is visible when active.
     pub fn set_cancel_button_visible(&mut self, visible: bool) {
+        if self.cancel_button_visible == visible {
+            return;
+        }
         self.cancel_button_visible = visible;
         self.base.request_redraw();
     }

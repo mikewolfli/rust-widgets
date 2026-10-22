@@ -29,6 +29,7 @@ use crate::widget::decorations::{
     DecorationLayout, DecorationMetrics, DecorationSlots, DECORATION_GAP,
 };
 use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
+use std::cell::{Ref, RefCell};
 
 use crate::widget::capability::coercion::{
     expect_bool, expect_f64, expect_horizontal_alignment, expect_i64, expect_string,
@@ -106,6 +107,12 @@ pub struct SpinBox {
     /// `minimum`, e.g. `"Auto"` for a value of 0. `None` always shows the
     /// number.
     special_value_text: Option<String>,
+    /// The last formatted value text, keyed by the inputs `value_text` reads.
+    ///
+    /// `draw` asks for it every frame, and formatting the number built a `String` each time. The
+    /// text is a pure function of `(value, minimum, decimals, special_value_text)`, so those are
+    /// the key; a setter that changes one makes the next call rebuild (WDGT-06).
+    value_text_cache: RefCell<Option<ValueTextCache>>,
     /// When true, stepping past `minimum` jumps to `maximum` (and vice versa)
     /// instead of clamping. Affects only the step buttons / keyboard stepping,
     /// not `set_value`.
@@ -139,6 +146,15 @@ pub struct SpinBox {
     /// Emitted without a payload when an in-progress edit is committed or
     /// cancelled (Enter, focus loss, or step).
     pub editing_finished: GenericSignal,
+}
+
+/// Memoised output of [`SpinBox::value_text`].
+struct ValueTextCache {
+    value_bits: u64,
+    minimum_bits: u64,
+    decimals: u32,
+    special: Option<String>,
+    text: String,
 }
 impl SpinBox {
     /// The band the whole control is painted in: full width, one text field tall, centred.
@@ -336,6 +352,7 @@ impl SpinBox {
             prefix: String::new(),
             suffix: String::new(),
             special_value_text: None,
+            value_text_cache: RefCell::new(None),
             wrapping: false,
             // Left-to-right is the default because the crate's default locale is; a host in an RTL
             // locale sets it, and every box below follows.
@@ -395,7 +412,7 @@ impl SpinBox {
     }
     /// Sets the minimum as a decimal, re-clamping the range and the value.
     pub fn set_minimum_f64(&mut self, minimum: f64) {
-        if minimum.is_nan() {
+        if minimum.is_nan() || self.minimum == minimum {
             return;
         }
         self.minimum = minimum;
@@ -419,7 +436,7 @@ impl SpinBox {
     }
     /// Sets the maximum as a decimal, re-clamping the range and the value.
     pub fn set_maximum_f64(&mut self, maximum: f64) {
-        if maximum.is_nan() {
+        if maximum.is_nan() || self.maximum == maximum {
             return;
         }
         self.maximum = maximum;
@@ -509,6 +526,9 @@ impl SpinBox {
     }
     /// Sets prefix text.
     pub fn set_prefix(&mut self, prefix: String) {
+        if self.prefix == prefix {
+            return;
+        }
         self.prefix = prefix;
         self.base.request_redraw();
     }
@@ -518,6 +538,9 @@ impl SpinBox {
     }
     /// Sets suffix text.
     pub fn set_suffix(&mut self, suffix: String) {
+        if self.suffix == suffix {
+            return;
+        }
         self.suffix = suffix;
         self.base.request_redraw();
     }
@@ -527,6 +550,9 @@ impl SpinBox {
     }
     /// Sets special value text.
     pub fn set_special_value_text(&mut self, text: Option<String>) {
+        if self.special_value_text == text {
+            return;
+        }
         self.special_value_text = text;
         self.base.request_redraw();
     }
@@ -536,6 +562,9 @@ impl SpinBox {
     }
     /// Sets wrapping state.
     pub fn set_wrapping(&mut self, wrapping: bool) {
+        if self.wrapping == wrapping {
+            return;
+        }
         self.wrapping = wrapping;
         self.base.request_redraw();
     }
@@ -605,6 +634,37 @@ impl SpinBox {
             }
         }
         self.formatted_value()
+    }
+
+    /// The cached value text, recomputed only when an input of [`Self::value_text`] changes.
+    ///
+    /// The returned `Ref` lets the paint path borrow the string without a per-frame allocation;
+    /// `value_text` remains the value-returning form the property contract uses.
+    fn value_text_cached(&self) -> Ref<'_, str> {
+        let value_bits = self.value.to_bits();
+        let minimum_bits = self.minimum.to_bits();
+        let stale = match self.value_text_cache.borrow().as_ref() {
+            Some(cache) => {
+                cache.value_bits != value_bits
+                    || cache.minimum_bits != minimum_bits
+                    || cache.decimals != self.decimals
+                    || cache.special != self.special_value_text
+            }
+            None => true,
+        };
+        if stale {
+            let text = self.value_text();
+            *self.value_text_cache.borrow_mut() = Some(ValueTextCache {
+                value_bits,
+                minimum_bits,
+                decimals: self.decimals,
+                special: self.special_value_text.clone(),
+                text,
+            });
+        }
+        Ref::map(self.value_text_cache.borrow(), |cache| {
+            cache.as_ref().expect("the cache was just filled").text.as_str()
+        })
     }
 }
 
@@ -1085,7 +1145,7 @@ impl Draw for SpinBox {
             0,
             &slots,
         );
-        let value_text = self.value_text();
+        let value_text = self.value_text_cached();
         if !value_text.is_empty() {
             let line = context.text_line(editable, font);
             // The value's horizontal alignment is the control's own setting, so a centred or
@@ -1154,6 +1214,23 @@ fn draw_step_arrow(context: &mut RenderContext, button: Rect, up: bool, color: C
 mod tests {
     use super::*;
     use crate::core::Rect;
+
+    /// The paint path's value text is memoised and refreshes when any input changes (WDGT-06).
+    #[test]
+    fn the_drawn_value_is_cached_and_refreshes_when_an_input_changes() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_value(12);
+        assert_eq!(&*sb.value_text_cached(), sb.value_text().as_str());
+        assert_eq!(&*sb.value_text_cached(), sb.value_text().as_str(), "a second frame reuses it");
+
+        sb.set_decimals(2);
+        assert_eq!(&*sb.value_text_cached(), sb.value_text().as_str());
+        sb.set_special_value_text(Some("Zero".to_string()));
+        sb.set_value(0);
+        assert_eq!(&*sb.value_text_cached(), "Zero");
+        sb.set_special_value_text(None);
+        assert_eq!(&*sb.value_text_cached(), sb.value_text().as_str());
+    }
 
     #[test]
     fn spinbox_creation_defaults() {

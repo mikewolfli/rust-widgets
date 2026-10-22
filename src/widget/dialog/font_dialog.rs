@@ -171,6 +171,9 @@ impl FontDialog {
     /// Sets the modality intent and requests a redraw. See
     /// [`FontDialog::is_modal`].
     pub fn set_modal(&mut self, modal: bool) {
+        if self.modal == modal {
+            return;
+        }
         self.modal = modal;
         self.base.request_redraw();
     }

@@ -200,7 +200,11 @@ impl ToolButton {
 
     /// Sets the button's label and requests a redraw.
     pub fn set_text(&mut self, text: impl Into<String>) {
-        self.text = text.into();
+        let text = text.into();
+        if self.text == text {
+            return;
+        }
+        self.text = text;
         self.base.request_redraw();
     }
 
@@ -319,6 +323,9 @@ impl ToolButton {
     /// emitting [`ToolButton::toggled`], so a listener is not told about the
     /// change. Turning it on leaves the current state untouched.
     pub fn set_checkable(&mut self, v: bool) {
+        if self.checkable == v {
+            return;
+        }
         self.checkable = v;
         if !v {
             self.checked = false;
@@ -328,12 +335,18 @@ impl ToolButton {
 
     /// Sets the popup mode and requests a redraw.
     pub fn set_popup_mode(&mut self, mode: ToolButtonPopupMode) {
+        if self.popup_mode == mode {
+            return;
+        }
         self.popup_mode = mode;
         self.base.request_redraw();
     }
 
     /// Sets the button style and requests a redraw.
     pub fn set_button_style(&mut self, style: ToolButtonStyle) {
+        if self.button_style == style {
+            return;
+        }
         self.button_style = style;
         self.base.request_redraw();
     }
@@ -504,6 +517,9 @@ impl ToolButton {
 
     /// Enables or disables auto-raise and requests a redraw.
     pub fn set_auto_raise(&mut self, v: bool) {
+        if self.auto_raise == v {
+            return;
+        }
         self.auto_raise = v;
         self.base.request_redraw();
     }

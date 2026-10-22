@@ -152,8 +152,8 @@ impl BottomNavigationBar {
     }
 
     /// Returns the currently selected tab index.
-    pub fn selected_index(&self) -> usize {
-        self.selected_index
+    pub fn selected_index(&self) -> Option<usize> {
+        self.items.get(self.selected_index).map(|_| self.selected_index)
     }
 
     /// Removes all navigation items from the bar.
@@ -231,7 +231,9 @@ impl WidgetProperties for BottomNavigationBar {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "item_count" => Ok(CapabilityValue::UInt(self.item_count() as u64)),
-            "selected_index" => Ok(CapabilityValue::UInt(self.selected_index() as u64)),
+            "selected_index" => {
+                Ok(CapabilityValue::UInt(self.selected_index().unwrap_or(0) as u64))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -505,7 +507,7 @@ mod tests {
         assert_eq!(bar.kind(), WidgetKind::BottomNavigationBar);
         assert_eq!(bar.geometry(), Rect::new(0, 0, 375, 56));
         assert_eq!(bar.item_count(), 0);
-        assert_eq!(bar.selected_index(), 0);
+        assert_eq!(bar.selected_index().unwrap_or(0), 0);
         assert!(bar.is_visible());
         assert!(bar.is_enabled());
     }
@@ -552,26 +554,26 @@ mod tests {
     fn bottom_nav_bar_clear_items() {
         let mut bar = make_bar();
         assert_eq!(bar.item_count(), 4);
-        assert_eq!(bar.selected_index(), 0);
+        assert_eq!(bar.selected_index().unwrap_or(0), 0);
 
         bar.set_selected_index(2);
-        assert_eq!(bar.selected_index(), 2);
+        assert_eq!(bar.selected_index().unwrap_or(0), 2);
 
         bar.clear_items();
         assert_eq!(bar.item_count(), 0);
-        assert_eq!(bar.selected_index(), 0);
+        assert_eq!(bar.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
     fn bottom_nav_bar_set_selected_index() {
         let mut bar = make_bar();
-        assert_eq!(bar.selected_index(), 0);
+        assert_eq!(bar.selected_index().unwrap_or(0), 0);
 
         bar.set_selected_index(2);
-        assert_eq!(bar.selected_index(), 2);
+        assert_eq!(bar.selected_index().unwrap_or(0), 2);
 
         bar.set_selected_index(0);
-        assert_eq!(bar.selected_index(), 0);
+        assert_eq!(bar.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
@@ -581,11 +583,11 @@ mod tests {
 
         // Out-of-range high should clamp to last valid index
         bar.set_selected_index(100);
-        assert_eq!(bar.selected_index(), 3);
+        assert_eq!(bar.selected_index().unwrap_or(0), 3);
 
         // Back to valid range
         bar.set_selected_index(1);
-        assert_eq!(bar.selected_index(), 1);
+        assert_eq!(bar.selected_index().unwrap_or(0), 1);
     }
 
     #[test]
@@ -626,18 +628,18 @@ mod tests {
         // Tab 0: x in [0..93], Tab 1: x in [94..187], Tab 2: x in [188..281], Tab 3: x in [282..374]
         // Click on tab at index 2
         bar.handle_event(&Event::MousePress { pos: Point::new(200, 28), button: 1, modifiers: 0 });
-        assert_eq!(bar.selected_index(), 2);
+        assert_eq!(bar.selected_index().unwrap_or(0), 2);
 
         // Click on tab at index 0
         bar.handle_event(&Event::MousePress { pos: Point::new(30, 28), button: 1, modifiers: 0 });
-        assert_eq!(bar.selected_index(), 0);
+        assert_eq!(bar.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
     fn bottom_nav_bar_mouse_release_selects_tab() {
         let mut bar = make_bar();
         bar.handle_event(&Event::MouseRelease { pos: Point::new(300, 28), button: 1 });
-        assert_eq!(bar.selected_index(), 3);
+        assert_eq!(bar.selected_index().unwrap_or(0), 3);
     }
 
     #[test]
@@ -645,14 +647,14 @@ mod tests {
         let mut bar = make_bar();
         bar.set_selected_index(1);
         bar.handle_event(&Event::MousePress { pos: Point::new(30, 28), button: 2, modifiers: 0 });
-        assert_eq!(bar.selected_index(), 1); // should remain unchanged
+        assert_eq!(bar.selected_index().unwrap_or(0), 1); // should remain unchanged
     }
 
     #[test]
     fn bottom_nav_bar_mouse_click_outside_does_nothing() {
         let mut bar = make_bar();
         bar.handle_event(&Event::MousePress { pos: Point::new(500, 100), button: 1, modifiers: 0 });
-        assert_eq!(bar.selected_index(), 0);
+        assert_eq!(bar.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
@@ -661,7 +663,7 @@ mod tests {
         bar.set_enabled(false);
 
         bar.handle_event(&Event::MousePress { pos: Point::new(200, 28), button: 1, modifiers: 0 });
-        assert_eq!(bar.selected_index(), 0); // should not change
+        assert_eq!(bar.selected_index().unwrap_or(0), 0); // should not change
     }
 
     #[test]
@@ -670,18 +672,18 @@ mod tests {
         // These should not panic with no items
         bar.handle_event(&Event::MousePress { pos: Point::new(30, 28), button: 1, modifiers: 0 });
         bar.set_selected_index(5);
-        assert_eq!(bar.selected_index(), 0);
+        assert_eq!(bar.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
     fn bottom_nav_bar_selected_index_out_of_range_clamps() {
         let mut bar = make_bar();
         bar.set_selected_index(10);
-        assert_eq!(bar.selected_index(), 3);
+        assert_eq!(bar.selected_index().unwrap_or(0), 3);
 
         bar.clear_items();
         bar.set_selected_index(0);
-        assert_eq!(bar.selected_index(), 0);
+        assert_eq!(bar.selected_index().unwrap_or(0), 0);
     }
 
     #[test]

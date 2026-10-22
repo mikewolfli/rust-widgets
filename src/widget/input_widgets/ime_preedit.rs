@@ -60,11 +60,12 @@ impl ImePreedit {
     ///
     /// A same-value write is a no-op: an IME can re-announce the composition it already has, and
     /// repainting the same glyphs queues a frame nobody can see (WDGT-12).
-    pub fn set_text(&mut self, text: &str) {
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
         if self.text == text {
             return;
         }
-        self.text = text.to_string();
+        self.text = text;
         self.base.request_redraw();
     }
 
@@ -75,12 +76,20 @@ impl ImePreedit {
 
     /// Sets the font used for the preedit text.
     pub fn set_font(&mut self, font: Font) {
+        if self.font == font {
+            return;
+        }
         self.font = font;
         self.base.request_redraw();
     }
 
     /// Sets the text color.
     pub fn set_text_color(&mut self, color: Color) {
+        // The `_set` flag is part of the comparison: the first write must go through even when it
+        // repeats the default colour, because that is what starts overriding the theme (WDGT-15).
+        if self.text_color_set && self.text_color == color {
+            return;
+        }
         self.text_color = color;
         self.text_color_set = true;
         self.base.request_redraw();
@@ -88,6 +97,9 @@ impl ImePreedit {
 
     /// Sets the underline color.
     pub fn set_underline_color(&mut self, color: Color) {
+        if self.underline_color_set && self.underline_color == color {
+            return;
+        }
         self.underline_color = color;
         self.underline_color_set = true;
         self.base.request_redraw();
@@ -95,6 +107,9 @@ impl ImePreedit {
 
     /// Sets the underline thickness in pixels.
     pub fn set_underline_thickness(&mut self, thickness: u32) {
+        if self.underline_thickness == thickness {
+            return;
+        }
         self.underline_thickness = thickness;
         self.base.request_redraw();
     }

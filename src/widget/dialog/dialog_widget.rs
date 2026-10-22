@@ -101,7 +101,11 @@ impl Dialog {
 
     /// Sets the dialog's title and requests a redraw.
     pub fn set_title(&mut self, title: impl Into<String>) {
-        self.title = title.into();
+        let title = title.into();
+        if self.title == title {
+            return;
+        }
+        self.title = title;
         self.base.request_redraw();
     }
 

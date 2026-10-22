@@ -8,7 +8,7 @@ use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-use crate::undo::{TextSnapshotCommand, UndoStack};
+use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::coercion::{
     expect_horizontal_alignment, horizontal_alignment_to_str,
 };
@@ -87,6 +87,26 @@ pub struct TextEdit {
     /// Emitted after the text changes: on edits, and after an undo/redo restore.
     /// Not emitted when a `set_text` is given the text the widget already holds.
     pub text_changed: Signal1<String>,
+    /// The last wrap table, keyed by the inputs the wrapping reads.
+    ///
+    /// `layout_rows` is called by the paint path **and** by every caret/hit-test answer; before
+    /// this cache a single Up key re-measured the whole document several times. The key is the full
+    /// text plus the interior width, wrap flag and font — the exact inputs `rows_for` reads — so a
+    /// change to any of them re-wraps and nothing else can leave a stale row behind (WDGT-01).
+    row_cache: RefCell<Option<RowCache>>,
+}
+
+/// Memoised output of [`TextEdit::layout_rows`].
+///
+/// The text is stored (not hashed) so a hit is an exact comparison rather than a collision-prone
+/// fingerprint; the comparison is O(bytes), which is far cheaper than the per-character measurement
+/// a miss performs.
+struct RowCache {
+    text: String,
+    interior_width: u32,
+    line_wrap: bool,
+    font: Font,
+    rows: Vec<RowSpan>,
 }
 
 impl TextEdit {
@@ -109,6 +129,7 @@ impl TextEdit {
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
             text_changed: Signal1::new(),
+            row_cache: RefCell::new(None),
         }
     }
     /// Returns the current text.
@@ -266,11 +287,13 @@ impl TextEdit {
     /// to remember. The caret ends at the range's start and the anchor is dropped, because the
     /// selection it described no longer exists.
     fn replace_selection(&mut self) -> bool {
-        let Some((start, end)) = self.selection_range() else {
+        let selection = self.selection_range();
+        let Some(start) =
+            crate::widget::text_utils::replace_selected_range(&mut self.text, selection)
+        else {
             self.selection_anchor = None;
             return false;
         };
-        self.text.replace_range(start..end, "");
         self.cursor = start;
         self.selection_anchor = None;
         true
@@ -376,10 +399,11 @@ impl TextEdit {
             return;
         }
         *self.history_target.borrow_mut() = self.text.clone();
-        self.undo_stack.push(Box::new(TextSnapshotCommand::new(
+        self.undo_stack.push(Box::new(ValueCommand::new(
             self.history_target.clone(),
             before,
             self.text.clone(),
+            "Edit text",
             "text_edit_text",
         )));
         self.text_changed.emit(self.text.clone());
@@ -429,10 +453,11 @@ impl TextEdit {
         self.text = text;
         if !self.restoring_history {
             *self.history_target.borrow_mut() = self.text.clone();
-            self.undo_stack.push(Box::new(TextSnapshotCommand::new(
+            self.undo_stack.push(Box::new(ValueCommand::new(
                 self.history_target.clone(),
                 before,
                 self.text.clone(),
+                "Edit text",
                 "text_edit_text",
             )));
         }
@@ -469,6 +494,15 @@ impl TextEdit {
         let padding = 4;
         let font = self.text_font();
         let interior_width = rect.width.saturating_sub(padding as u32 * 2);
+        if let Some(cache) = self.row_cache.borrow().as_ref() {
+            if cache.interior_width == interior_width
+                && cache.line_wrap == self.line_wrap
+                && cache.text == self.text
+                && cache.font == *font
+            {
+                return cache.rows.clone();
+            }
+        }
         // # One measurement surface for the whole document
         //
         // The advance callback used to call `char_advance`, which builds a `SoftwarePaintBackend`
@@ -476,7 +510,7 @@ impl TextEdit {
         // `layout_rows()` of a 10 000-character document therefore built 10 000 measurement
         // backends — and a single Up key built that table four times. The surface is created once
         // here, and the glyph's own UTF-8 bytes are measured straight out of a stack buffer.
-        Self::with_measurement(|context| {
+        let rows = Self::with_measurement(|context| {
             self.rows_for(interior_width, font, |ch| {
                 // One measurement per character, matching the painter — and taken from the
                 // **renderer's** own metrics rather than an estimate model.
@@ -493,7 +527,15 @@ impl TextEdit {
                 let mut glyph = [0u8; 4];
                 context.measure_text(ch.encode_utf8(&mut glyph), font).width
             })
-        })
+        });
+        *self.row_cache.borrow_mut() = Some(RowCache {
+            text: self.text.clone(),
+            interior_width,
+            line_wrap: self.line_wrap,
+            font: font.clone(),
+            rows: rows.clone(),
+        });
+        rows
     }
 
     /// The resolved body font the control paints and measures text with.
@@ -604,14 +646,11 @@ impl TextEdit {
     /// already shows, so reading near the top does not make the field jump.
     fn scroll_caret_into_view(&mut self) {
         let row = self.row_of_offset(self.cursor);
-        let visible = self.visible_row_count();
-        if row < self.first_visible_row {
-            self.first_visible_row = row;
-        } else if row >= self.first_visible_row + visible {
-            // Put the caret's row on the last visible one, so the row being typed on is the row the
-            // user can see.
-            self.first_visible_row = row + 1 - visible;
-        }
+        self.first_visible_row = crate::widget::text_utils::first_visible_row_for(
+            row,
+            self.first_visible_row,
+            self.visible_row_count(),
+        );
     }
 
     /// The byte offset the point `pos` falls on.
@@ -688,6 +727,9 @@ impl TextEdit {
     }
     /// Sets placeholder text.
     pub fn set_placeholder_text(&mut self, text: String) {
+        if self.placeholder_text == text {
+            return;
+        }
         self.placeholder_text = text;
         self.base.request_redraw();
     }
@@ -747,6 +789,9 @@ impl TextEdit {
     }
     /// Sets read-only state.
     pub fn set_read_only(&mut self, read_only: bool) {
+        if self.read_only == read_only {
+            return;
+        }
         self.read_only = read_only;
         self.base.request_redraw();
     }
@@ -756,6 +801,9 @@ impl TextEdit {
     }
     /// Sets line wrap mode.
     pub fn set_line_wrap(&mut self, wrap: bool) {
+        if self.line_wrap == wrap {
+            return;
+        }
         self.line_wrap = wrap;
         self.base.request_redraw();
     }
@@ -1572,6 +1620,27 @@ impl TextEdit {
 mod tests {
     use super::*;
     use crate::core::Rect;
+
+    /// The wrap table is memoised and re-wrapped when text, width or wrap mode changes (WDGT-01).
+    #[test]
+    fn the_row_table_is_cached_and_refreshes_when_an_input_changes() {
+        let mut te = TextEdit::new(Rect::new(0, 0, 200, 100));
+        te.set_text("hello\nworld");
+        let first = te.layout_rows();
+        assert_eq!(first.len(), 2);
+        assert_eq!(te.layout_rows(), first, "a second read reuses the table");
+        assert_eq!(te.row_cache.borrow().as_ref().expect("cache filled").rows, first);
+
+        te.set_text("hello\nworld\nthird");
+        assert_eq!(te.layout_rows().len(), 3, "a text change re-wraps");
+
+        te.set_geometry(Rect::new(0, 0, 40, 100));
+        let narrow = te.layout_rows();
+        assert!(narrow.len() >= 3, "a narrower interior re-wraps: {narrow:?}");
+
+        te.set_line_wrap(false);
+        assert_eq!(te.layout_rows().len(), 3, "wrap off is one row per line");
+    }
 
     #[test]
     fn textedit_property_route_reaches_its_own_accessors() {

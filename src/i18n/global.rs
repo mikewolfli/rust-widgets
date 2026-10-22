@@ -10,8 +10,29 @@ use crate::i18n::types::TranslationFile;
 const EMBEDDED_EN_JSON: &str = include_str!("../../language/en.json");
 /// Global i18n manager instance using Mutex for thread-safe access
 pub(crate) static GLOBAL_I18N: Mutex<Option<I18nManager>> = Mutex::new(None);
+
+#[cfg(test)]
+std::thread_local! {
+    /// Explicit [`init`] calls made by the **current test thread**.
+    ///
+    /// A process-global assertion cannot prove "this call did not initialise i18n":
+    /// [`translate`] lazily populates `GLOBAL_I18N` by design, so any test that renders a
+    /// translated label concurrently puts a manager in the slot, and the `is_none()` assertion
+    /// fails for a reason unrelated to the switch under test. A per-thread counter observes only
+    /// the calls the test's own thread made.
+    static INIT_CALLS: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+/// How many times [`init`] ran on the calling thread (test-only).
+#[cfg(test)]
+pub(crate) fn init_call_count() -> usize {
+    INIT_CALLS.with(core::cell::Cell::get)
+}
+
 /// Initialize the i18n system, loading the embedded English translations.
 pub fn init() {
+    #[cfg(test)]
+    INIT_CALLS.with(|calls| calls.set(calls.get() + 1));
     let mut guard = crate::compat::lock(&GLOBAL_I18N);
     ensure_initialized(&mut guard);
 }

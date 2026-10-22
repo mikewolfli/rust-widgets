@@ -120,6 +120,9 @@ impl DepthChart {
     /// curve near the touch, which is where the reading usually matters — a book with
     /// hundreds of levels plotted whole puts the interesting part in a few pixels.
     pub fn set_depth(&mut self, depth: usize) {
+        if self.depth == depth {
+            return;
+        }
         self.depth = depth;
         self.base.request_redraw();
     }

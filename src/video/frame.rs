@@ -3,6 +3,7 @@
 
 //! Video frame representation.
 
+use crate::compat::Arc;
 use crate::image::format::{DecodedImage, ImageData, ImageFormat};
 
 /// Type of video frame in the compression sequence.
@@ -33,7 +34,12 @@ pub struct VideoFrame {
     /// Height in pixels.
     pub height: u32,
     /// Pixel data in RGBA8 format.
-    pub data: Vec<u8>,
+    ///
+    /// Shared rather than owned so emitting a frame on
+    /// [`VideoEngine::on_frame`](crate::video::engine::VideoEngine::on_frame) costs an `Arc` clone
+    /// instead of copying the whole picture (1080p RGBA is about 8 MB per frame). Callers that
+    /// need an owned buffer can use `(*frame.data).clone()` or `frame.data.as_slice()`.
+    pub data: Arc<Vec<u8>>,
     /// Frame type.
     pub frame_type: FrameType,
 }
@@ -41,7 +47,7 @@ pub struct VideoFrame {
 impl VideoFrame {
     /// Create a new video frame.
     pub fn new(timestamp: f64, data: Vec<u8>, width: u32, height: u32) -> Self {
-        Self { timestamp, width, height, data, frame_type: FrameType::Unknown }
+        Self { timestamp, width, height, data: Arc::new(data), frame_type: FrameType::Unknown }
     }
 
     /// Create a new video frame with frame type.
@@ -52,7 +58,7 @@ impl VideoFrame {
         height: u32,
         frame_type: FrameType,
     ) -> Self {
-        Self { timestamp, width, height, data, frame_type }
+        Self { timestamp, width, height, data: Arc::new(data), frame_type }
     }
 
     /// Returns the number of pixels in this frame.
@@ -64,7 +70,7 @@ impl VideoFrame {
     pub fn to_image(&self) -> DecodedImage {
         DecodedImage::new(
             ImageFormat::Rgba8,
-            ImageData::Rgba8(self.data.clone()),
+            ImageData::Rgba8((*self.data).clone()),
             self.width,
             self.height,
         )

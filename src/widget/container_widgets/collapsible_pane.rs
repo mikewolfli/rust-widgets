@@ -79,6 +79,9 @@ impl CollapsiblePane {
 
     /// Sets the title text.
     pub fn set_title(&mut self, title: String) {
+        if self.title == title {
+            return;
+        }
         self.title = title;
         self.base.request_redraw();
     }
@@ -169,6 +172,9 @@ impl CollapsiblePane {
 
     /// Sets the height of the header bar in pixels.
     pub fn set_header_height(&mut self, height: u32) {
+        if self.header_height == height {
+            return;
+        }
         self.header_height = height;
         self.base.request_redraw();
     }

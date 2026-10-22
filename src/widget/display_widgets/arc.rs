@@ -137,30 +137,46 @@ impl Arc {
 
     /// Sets the total sweep angle in degrees (e.g., 360 for full circle, 270 for gauge).
     pub fn set_sweep_angle(&mut self, angle: u16) {
+        if self.sweep_angle == angle {
+            return;
+        }
         self.sweep_angle = angle;
         self.base.request_redraw();
     }
 
     /// Sets the arc thickness in pixels.
     pub fn set_thickness(&mut self, thickness: u32) {
-        self.thickness = thickness.max(1);
+        let thickness = thickness.max(1);
+        if self.thickness == thickness {
+            return;
+        }
+        self.thickness = thickness;
         self.base.request_redraw();
     }
 
     /// Sets whether the arc ends are rounded.
     pub fn set_rounded(&mut self, rounded: bool) {
+        if self.rounded == rounded {
+            return;
+        }
         self.rounded = rounded;
         self.base.request_redraw();
     }
 
     /// Sets whether the value text is shown in the center of the arc.
     pub fn set_show_value(&mut self, show: bool) {
+        if self.show_value == show {
+            return;
+        }
         self.show_value = show;
         self.base.request_redraw();
     }
 
     /// Sets whether the arc is in indeterminate (spinning indicator) mode.
     pub fn set_indeterminate(&mut self, indeterminate: bool) {
+        if self.indeterminate == indeterminate {
+            return;
+        }
         self.indeterminate = indeterminate;
         self.base.request_redraw();
     }

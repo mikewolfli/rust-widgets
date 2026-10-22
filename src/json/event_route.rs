@@ -784,4 +784,26 @@ mod tests {
             );
         }
     }
+
+    /// Gate for BIND-12: every marker the compatibility route can express must have an `on_*` key,
+    /// and the forward/reverse lookups must agree.
+    ///
+    /// Adding a `JsonTriggerMarker` variant now fails here until the key table lists a spelling for
+    /// it — the drift the old hand-written extraction permitted. The alias pair is asserted too:
+    /// `on_change` and `on_value_changed` are both real spellings of the same marker, so a future
+    /// edit that "simplifies" one away is caught rather than silently dropping documents' handlers.
+    #[test]
+    fn every_marker_has_a_compatibility_key_and_round_trips() {
+        use JsonTriggerMarker::*;
+        for marker in
+            [Clicked, DoubleClicked, FocusGained, FocusLost, ValueChanged, SelectionChanged, Closed]
+        {
+            let key = marker_key_for(marker)
+                .unwrap_or_else(|| panic!("{marker:?} has no `on_*` compatibility key"));
+            assert_eq!(marker_for_key(key), Some(marker), "`{key}` must round-trip");
+        }
+
+        assert_eq!(marker_for_key("on_change"), Some(ValueChanged));
+        assert_eq!(marker_for_key("on_value_changed"), Some(ValueChanged));
+    }
 }

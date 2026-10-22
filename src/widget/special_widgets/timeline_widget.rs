@@ -95,8 +95,12 @@ impl TimelineWidget {
 
     /// Sets viewport range.
     pub fn set_viewport(&mut self, start: i64, end: i64) {
+        let end = end.max(start + 1);
+        if self.viewport_start == start && self.viewport_end == end {
+            return;
+        }
         self.viewport_start = start;
-        self.viewport_end = end.max(start + 1);
+        self.viewport_end = end;
         self.base.request_redraw();
     }
 
@@ -115,7 +119,11 @@ impl TimelineWidget {
 
     /// Sets item row height.
     pub fn set_row_height(&mut self, row_height: u32) {
-        self.row_height = row_height.max(1);
+        let row_height = row_height.max(1);
+        if self.row_height == row_height {
+            return;
+        }
+        self.row_height = row_height;
         self.base.request_layout();
         self.base.request_redraw();
     }

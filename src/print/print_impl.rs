@@ -13,6 +13,7 @@ use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 /// Page ordering for multi-copy print jobs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -718,26 +719,123 @@ impl Printer {
 
     /// Core print path: render `pagination`'s pages and submit, honouring `settings`
     /// for page size (orientation) and colour mode when present.
+    ///
+    /// The spool command now runs on the print worker thread; this synchronous method is the
+    /// compatibility bridge that waits for it. A UI caller should use
+    /// [`Self::print_with_settings_async`] instead and let the completion callback notify it.
     fn print_with_pagination_settings_result(
         &self,
         document: &dyn PrintDocument,
         pagination: &PrintPagination,
         settings: Option<&PrintSettings>,
     ) -> Result<(), String> {
-        // Orientation is expressed as the page size the document is drawn into, so
-        // it must be applied before drawing: a landscape job swaps the dimensions.
-        let page_size = match settings {
-            Some(settings) => settings.orientation.apply(self.page_size),
-            None => self.page_size,
-        };
-        let color_mode = settings.map(|s| s.color_mode.clone());
-        let mut context = MemoryPrintContext::new(page_size);
-        for page in pagination.selected_pages(document.page_count()) {
-            document.draw_page(page, &mut context);
-            context.end_page();
-        }
-        let job = PrintJobPayload { page_size, color_mode, commands: context.commands };
-        self.backend.submit(&job)
+        let job = self.render_print_job(document, pagination, settings);
+        submit_print_job_async(self.backend, job, None)?.wait()
+    }
+
+    /// Renders `pagination`'s pages into an owned payload for the worker thread.
+    ///
+    /// Rendering stays on the caller's thread because `PrintDocument` is a borrowed trait object
+    /// and need not be `Send`; what moves to the worker is only the finished command stream.
+    /// Callers that can transfer ownership of the document should use
+    /// [`Self::print_with_settings_owned_async`], which moves the rendering too.
+    fn render_print_job(
+        &self,
+        document: &dyn PrintDocument,
+        pagination: &PrintPagination,
+        settings: Option<&PrintSettings>,
+    ) -> PrintJobPayload {
+        render_print_job_payload(self.page_size, document, pagination, settings)
+    }
+
+    /// Renders the document and submits it on a worker thread, returning at once.
+    ///
+    /// # The contract
+    ///
+    /// The returned handle reports when the spooler has finished with the job, and `on_complete`
+    /// runs on the worker thread with the same result. The library owns the temporary spool file
+    /// and removes it on both the success and failure paths, so a caller never handles a path.
+    ///
+    /// Rendering still happens before the worker starts (see [`Self::render_print_job`]); the
+    /// long part — waiting for `lpr`/`lp`/the Windows `Print` verb — is what moves off the caller.
+    ///
+    /// `on_complete` is not invoked when this method itself returns `Err` (the job never
+    /// started), so a caller cannot see two outcomes for one submit.
+    pub fn print_with_pagination_settings_async(
+        &self,
+        document: &dyn PrintDocument,
+        pagination: &PrintPagination,
+        settings: Option<&PrintSettings>,
+        on_complete: Option<PrintJobCallback>,
+    ) -> Result<PrintJobHandle, String> {
+        let job = render_print_job_payload(self.page_size, document, pagination, settings);
+        submit_print_job_async(self.backend, job, on_complete)
+    }
+
+    /// Renders **and** submits on the worker thread, taking ownership of the document.
+    ///
+    /// # Why this variant exists
+    ///
+    /// [`Self::print_with_settings_async`] must render before it can return, because it borrows
+    /// the document (`&dyn PrintDocument` is not `Send`). For a document large enough that its own
+    /// drawing is the cost, that still leaves work on the caller. This form takes
+    /// `Box<dyn PrintDocument + Send + 'static>` and moves the whole chain — render, write the
+    /// spool file, wait for the spooler — onto the worker, so the caller returns immediately.
+    ///
+    /// The pagination is validated **before** submission: an invalid page range is still an
+    /// immediate `Err`, not a failure delivered through the callback.
+    pub fn print_with_settings_owned_async(
+        &self,
+        document: Box<dyn PrintDocument + Send + 'static>,
+        settings: PrintSettings,
+        on_complete: Option<PrintJobCallback>,
+    ) -> Result<PrintJobHandle, String> {
+        let pagination = settings.try_apply_to_pagination(document.page_count())?;
+        let backend = self.backend;
+        let initial_page_size = self.page_size;
+        submit_print_work_async(
+            move || {
+                let job = render_print_job_payload(
+                    initial_page_size,
+                    document.as_ref(),
+                    &pagination,
+                    Some(&settings),
+                );
+                backend.submit(&job)
+            },
+            on_complete,
+        )
+    }
+
+    /// Settings-aware asynchronous submission (see
+    /// [`Self::print_with_pagination_settings_async`]).
+    pub fn print_with_settings_async(
+        &self,
+        document: &dyn PrintDocument,
+        settings: &PrintSettings,
+        on_complete: Option<PrintJobCallback>,
+    ) -> Result<PrintJobHandle, String> {
+        let pagination = settings.try_apply_to_pagination(document.page_count())?;
+        self.print_with_pagination_settings_async(
+            document,
+            &pagination,
+            Some(settings),
+            on_complete,
+        )
+    }
+
+    /// Asynchronous submission with default pagination and no settings.
+    pub fn print_with_result_async(
+        &self,
+        document: &dyn PrintDocument,
+        on_complete: Option<PrintJobCallback>,
+    ) -> Result<PrintJobHandle, String> {
+        self.print_with_pagination_settings_async(
+            document,
+            &PrintPagination::default(),
+            None,
+            on_complete,
+        )
     }
     /// Get active print backend name.
     pub fn backend_name(&self) -> &'static str {
@@ -754,6 +852,31 @@ struct PrintJobPayload {
     /// Flattened draw command stream with page-break markers.
     commands: Vec<String>,
 }
+
+/// Renders `pagination`'s selected pages into an owned payload.
+///
+/// Free-standing so both the borrowed async path (which renders on the caller) and the owned
+/// async path (which renders on the worker) use one implementation.
+fn render_print_job_payload(
+    initial_page_size: Size,
+    document: &dyn PrintDocument,
+    pagination: &PrintPagination,
+    settings: Option<&PrintSettings>,
+) -> PrintJobPayload {
+    // Orientation is expressed as the page size the document is drawn into, so
+    // it must be applied before drawing: a landscape job swaps the dimensions.
+    let page_size = match settings {
+        Some(settings) => settings.orientation.apply(initial_page_size),
+        None => initial_page_size,
+    };
+    let color_mode = settings.map(|settings| settings.color_mode.clone());
+    let mut context = MemoryPrintContext::new(page_size);
+    for page in pagination.selected_pages(document.page_count()) {
+        document.draw_page(page, &mut context);
+        context.end_page();
+    }
+    PrintJobPayload { page_size, color_mode, commands: context.commands }
+}
 /// Print backend selection.
 ///
 /// Public so a caller can pass an explicit choice to [`Printer::with_backend`]
@@ -767,7 +890,6 @@ pub enum PrintBackend {
 }
 
 /// Global storage for Memory print backend output.
-use std::sync::Mutex;
 static MEMORY_PRINT_JOBS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
 /// The most jobs the memory backend retains.
@@ -921,18 +1043,222 @@ fn write_print_job_body(
     out: &mut impl std::io::Write,
     job: &PrintJobPayload,
 ) -> std::io::Result<()> {
-    // Emit a real page-description document instead of the debug command strings.
-    // The renderer can only fail on a malformed command, which this module never
-    // produces; map any such failure to an IO error so the job is reported rather
-    // than written as a partial file (D09-PR-01).
-    let document = render_postscript(job).map_err(std::io::Error::other)?;
-    out.write_all(document.as_bytes())
+    // Stream the document: each command is rendered and written as it is reached. The
+    // previous version built the whole PostScript document in a `String` first, so a large
+    // job held the assembled text and the file's encoded copy at once — a claim this
+    // function's caller used to make in a comment while the implementation contradicted it.
+    writeln!(out, "%!PS-Adobe-3.0")?;
+    writeln!(out, "%%Creator: rust_widgets")?;
+    writeln!(out, "%%BoundingBox: 0 0 {} {}", job.page_size.width, job.page_size.height)?;
+    // PostScript's origin is bottom-left; the recorded stream uses top-left. The command
+    // renderer flips the y axis so recorded coordinates land where they should.
+    writeln!(out, "%%EndComments")?;
+    writeln!(out, "/rw_page {{ }} def")?;
+
+    // Colour mode: `grayscale`/`monochrome` forces every colour to a single grey (the
+    // luminance), so the setting reaches the output instead of being ignored.
+    let grayscale = matches!(
+        job.color_mode.as_deref().map(str::to_ascii_lowercase).as_deref(),
+        Some("grayscale") | Some("grey") | Some("monochrome") | Some("mono"),
+    );
+
+    let mut pages = 0u32;
+    for command in &job.commands {
+        if command == "page-break" {
+            writeln!(out, "showpage")?;
+            pages += 1;
+            continue;
+        }
+        let rendered =
+            render_command_ps(command, job.page_size, grayscale).map_err(std::io::Error::other)?;
+        out.write_all(rendered.as_bytes())?;
+    }
+    // A document with no explicit trailing page-break still needs its last page shown.
+    if pages == 0 {
+        writeln!(out, "showpage")?;
+    }
+    writeln!(out, "%%EOF")
 }
 fn run_print_command(path: &Path) -> Result<(), String> {
     // The OS-specific printing mechanism (lpr/lp on macOS and Linux, the shell
     // `Print` verb on Windows) belongs behind the platform backend so this layer
     // stays free of `cfg(target_os)` — see principle #36.
     crate::platform::platform_facts().spawn_print_job(path)
+}
+
+// ────────────────────────────────────────────────────────────────
+// Asynchronous job submission (PLAT-03 ≡ MEDIA-04)
+// ────────────────────────────────────────────────────────────────
+
+/// Completion callback for an asynchronously submitted print job.
+///
+/// The result is the spool command's outcome. The callback runs on the library's print worker
+/// thread, so it must not touch the UI directly — forward to the UI thread the same way any other
+/// background completion is forwarded.
+pub type PrintJobCallback = Box<dyn FnOnce(Result<(), String>) + Send + 'static>;
+
+static NEXT_PRINT_JOB_ID: AtomicU64 = AtomicU64::new(1);
+
+/// State shared by a submitted job and every handle to it.
+#[derive(Debug)]
+struct PrintJobRecord {
+    id: u64,
+    status: Mutex<PrintJobStatus>,
+    result: Mutex<Option<Result<(), String>>>,
+    finished: Condvar,
+}
+
+impl PrintJobRecord {
+    fn new(id: u64) -> Self {
+        Self {
+            id,
+            status: Mutex::new(PrintJobStatus::Queued),
+            result: Mutex::new(None),
+            finished: Condvar::new(),
+        }
+    }
+
+    fn status(&self) -> PrintJobStatus {
+        *self.status.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Records a terminal status and wakes every waiter.
+    ///
+    /// The result is stored **before** the status is made terminal, and the status mutex is the
+    /// one [`Self::wait`] sleeps on, so a waiter that observes the terminal status always finds the
+    /// result, and the check-then-wait sequence cannot miss this notification.
+    fn finish(&self, result: Result<(), String>) {
+        *self.result.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(result.clone());
+        let mut status = self.status.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        *status = if result.is_ok() { PrintJobStatus::Completed } else { PrintJobStatus::Failed };
+        drop(status);
+        self.finished.notify_all();
+    }
+
+    fn wait(&self) -> Result<(), String> {
+        let mut status = self.status.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        while !matches!(
+            *status,
+            PrintJobStatus::Completed | PrintJobStatus::Failed | PrintJobStatus::Cancelled
+        ) {
+            status = self.finished.wait(status).unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        drop(status);
+        self.result
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .unwrap_or_else(|| Err("the print job was cancelled".to_string()))
+    }
+}
+
+/// Handle to a print job submitted on a worker thread.
+///
+/// Dropping the handle neither cancels the job nor waits for it: submission has already handed
+/// the job to the OS by the time the handle exists. Use [`Self::wait`] when the caller really
+/// needs the outcome, and the completion callback when it does not.
+#[derive(Clone)]
+pub struct PrintJobHandle {
+    record: Arc<PrintJobRecord>,
+}
+
+impl PrintJobHandle {
+    /// The job's process-unique id.
+    pub fn id(&self) -> u64 {
+        self.record.id
+    }
+
+    /// The current status.
+    pub fn status(&self) -> PrintJobStatus {
+        self.record.status()
+    }
+
+    /// Whether the job has reached a terminal status.
+    pub fn is_finished(&self) -> bool {
+        matches!(
+            self.status(),
+            PrintJobStatus::Completed | PrintJobStatus::Failed | PrintJobStatus::Cancelled
+        )
+    }
+
+    /// Blocks until the job finishes and returns the spool result.
+    ///
+    /// This is the bridge the historical `*_result` methods use; a UI caller should prefer the
+    /// completion callback so the frame loop keeps running.
+    pub fn wait(&self) -> Result<(), String> {
+        self.record.wait()
+    }
+}
+
+impl std::fmt::Debug for PrintJobHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PrintJobHandle")
+            .field("id", &self.id())
+            .field("status", &self.status())
+            .finish()
+    }
+}
+
+/// Runs `work` on the print worker thread and returns its handle immediately.
+///
+/// Split from the two submit paths so the queue/status/callback machinery has one implementation
+/// and can be exercised with a synthetic failure (a real spooler cannot be made to fail on demand
+/// in a test).
+fn submit_print_work_async(
+    work: impl FnOnce() -> Result<(), String> + Send + 'static,
+    on_complete: Option<PrintJobCallback>,
+) -> Result<PrintJobHandle, String> {
+    let id = NEXT_PRINT_JOB_ID.fetch_add(1, Ordering::Relaxed);
+    let record = Arc::new(PrintJobRecord::new(id));
+    let worker_record = Arc::clone(&record);
+    let spawned = std::thread::Builder::new().name(format!("rw-print-{id}")).spawn(move || {
+        *worker_record.status.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            PrintJobStatus::Printing;
+        // A panicking job must still reach a terminal state: `wait()` blocks on the condvar, so
+        // letting the panic unwind out of the thread would leave every handle waiting forever.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
+            .unwrap_or_else(|payload| Err(panic_message(&payload)));
+        worker_record.finish(result.clone());
+        if let Some(callback) = on_complete {
+            // The job is already finished, so a panicking callback can only lose the
+            // notification; report that instead of letting it vanish into the thread.
+            let outcome =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(result)));
+            if outcome.is_err() {
+                log::error!("[print] completion callback for job {id} panicked");
+            }
+        }
+    });
+    if let Err(error) = spawned {
+        return Err(format!("print job {id} could not start a worker thread: {error}"));
+    }
+    Ok(PrintJobHandle { record })
+}
+
+/// Submits a rendered command stream for `backend` on a worker thread.
+fn submit_print_job_async(
+    backend: PrintBackend,
+    job: PrintJobPayload,
+    on_complete: Option<PrintJobCallback>,
+) -> Result<PrintJobHandle, String> {
+    submit_print_work_async(move || backend.submit(&job), on_complete)
+}
+
+/// Describes a panic payload well enough for the job's error channel.
+///
+/// `panic!("literal")` does not always produce a `&str` payload: when the panicking closure has a
+/// declared return type, the payload can be an internal formatted-message type that stable code
+/// cannot name. The job still reports the panic; the original text is only available when the
+/// payload is a string, which is the common case for `panic!("literal")` in a `!`-returning
+/// closure.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        format!("print worker panicked: {message}")
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        format!("print worker panicked: {message}")
+    } else {
+        "print worker panicked with a non-string payload".to_string()
+    }
 }
 // ────────────────────────────────────────────────────────────────
 // Print framework types (PrintOrientation, PrintSettings, PrintJob,
@@ -1219,15 +1545,33 @@ pub fn print_page_dialog() -> Result<bool, String> {
     Ok(false)
 }
 
-/// Submits rendered content to the system printer.
+/// Submits rendered content to the system printer, blocking until the spooler finishes.
 ///
-/// Writes content to a temporary file and submits via system print command.
+/// This is the compatibility wrapper around [`print_to_printer_async`]; a UI caller should use
+/// the asynchronous form so the frame loop is not frozen by `lpr`/`lp`.
+///
 /// On error, includes the specific failure reason in the error message.
 ///
 /// Whether a spooler exists is asked of the backend rather than gated with
 /// `cfg(target_os)` — principle #36. The backend also supplies the submission
 /// mechanism itself (`Platform::spawn_print_job`).
 pub fn print_to_printer(content: &str, settings: &PrintSettings) -> Result<(), String> {
+    print_to_printer_async(content, settings, None)?.wait()
+}
+
+/// Asynchronous counterpart of [`print_to_printer`].
+///
+/// The content is **copied into the worker-owned job**, so the caller may drop its buffer as soon
+/// as this returns. The temporary file is created and removed by the library inside the worker;
+/// no path is ever exposed, and both the success and failure paths delete it.
+///
+/// Returns a [`PrintJobHandle`] immediately. `on_complete` runs on the worker thread with the
+/// spool result; it is not invoked if this function itself returns `Err` (nothing was submitted).
+pub fn print_to_printer_async(
+    content: &str,
+    settings: &PrintSettings,
+    on_complete: Option<PrintJobCallback>,
+) -> Result<PrintJobHandle, String> {
     if !crate::platform::platform_facts().has_print_support() {
         return Err(format!(
             "no system printer is available: backend '{}' reports no print support, so the \
@@ -1242,33 +1586,55 @@ pub fn print_to_printer(content: &str, settings: &PrintSettings) -> Result<(), S
             content.len()
         ));
     }
+    // Owned by the worker: the caller's borrow ends when this function returns (PLAT-03 =
+    // MEDIA-04's "the library takes the temporary file's ownership").
+    let owned = content.to_string();
+    let copies = settings.copies;
+    let color_mode = settings.color_mode.clone();
+    submit_print_work_async(
+        move || {
+            let path = write_raw_print_file(&owned)?;
+            let result = run_print_command(&path);
+            if let Err(error) = &result {
+                log::warn!(
+                    "[print] print_to_printer: system print command failed for {} \
+                     (copies={copies}, color={color_mode}): {error}",
+                    path.display()
+                );
+            }
+            // Removed whichever way the spool command went, so a rejection leaves nothing
+            // behind for a later job (or the OS) to pick up.
+            if let Err(error) = fs::remove_file(&path) {
+                log::warn!("[print] failed to clean up temp file {}: {error}", path.display());
+            }
+            result
+        },
+        on_complete,
+    )
+}
+
+/// Writes raw rendered content to a process-unique temporary file and returns its path.
+///
+/// The sequence number is part of the name for the same reason [`write_print_job_file`] carries
+/// one: two jobs in the same millisecond from the same process would otherwise share a path and
+/// overwrite each other's document.
+fn write_raw_print_file(content: &str) -> Result<PathBuf, String> {
+    static RAW_SEQ: AtomicU64 = AtomicU64::new(0);
     let mut path = std::env::temp_dir();
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|err| format!("clock error: {err}"))?
         .as_millis();
-    path.push(format!("rw_print_output_{ts}.txt"));
-    if let Err(err) = fs::write(&path, content) {
-        return Err(format!(
+    let seq = RAW_SEQ.fetch_add(1, Ordering::Relaxed);
+    path.push(format!("rw_print_output_{}_{ts}_{seq}.txt", std::process::id()));
+    fs::write(&path, content).map_err(|err| {
+        format!(
             "print spool file '{}' could not be written: {err} (check the temp directory \
              is writable)",
             path.display()
-        ));
-    }
-    let result = run_print_command(&path);
-    if let Err(ref e) = result {
-        log::warn!(
-            "[print] print_to_printer: system print command failed for {} (copies={}, color={}): {}",
-            path.display(),
-            settings.copies,
-            settings.color_mode,
-            e
-        );
-    }
-    if let Err(err) = fs::remove_file(&path) {
-        log::warn!("[print] failed to clean up temp file {}: {err}", path.display());
-    }
-    result
+        )
+    })?;
+    Ok(path)
 }
 
 /// In-memory print context that records drawing commands.
@@ -1533,6 +1899,11 @@ fn hex_nibble(byte: u8) -> Result<u8, String> {
 ///
 /// The returned document is self-contained: it sets a page size from `page_size`,
 /// and each `page-break` marker in the stream starts a new `showpage`.
+/// Renders the whole document into one `String`.
+///
+/// Production printing streams through [`write_print_job_body`]; this assembled form exists for
+/// the tests that assert the document's exact text, so it is compiled only into the test build.
+#[cfg(test)]
 fn render_postscript(job: &PrintJobPayload) -> Result<String, String> {
     let mut out = String::new();
     out.push_str("%!PS-Adobe-3.0\n");
@@ -1785,10 +2156,22 @@ mod tests {
             self.drawn.lock().expect("test lock poisoned").push(page_num);
         }
     }
+
+    /// Serialises the tests that **clear or consume** the process-global memory job store.
+    ///
+    /// Tests that only append jobs run in parallel: their assertions match by content rather
+    /// than by position or count, the same rule `print_settings_orientation_reaches_the_output`
+    /// follows. Without this lock, one test's `clear`/`take` could delete another's job between
+    /// its `wait()` and its read — a race that has nothing to do with the code under test.
+    fn memory_job_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
     /// The memory backend's history must be readable and removable, and a taken job must not be
     /// returned twice — the backend used to write into a private `Vec` nothing could read.
     #[test]
     fn memory_backend_jobs_are_readable_and_clearable() {
+        let _guard = memory_job_test_lock();
         clear_memory_print_jobs();
         MEMORY_PRINT_JOBS
             .lock()
@@ -1806,6 +2189,150 @@ mod tests {
         assert!(
             !memory_print_jobs().iter().any(|(label, _)| label == "label"),
             "take must remove what it returns"
+        );
+    }
+
+    /// A submitted job reports completion through both surfaces the contract promises: the
+    /// returned handle and the completion callback (PLAT-03 ≡ MEDIA-04).
+    #[test]
+    fn a_submitted_job_completes_the_handle_and_invokes_the_callback() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let handle = submit_print_work_async(
+            || Ok(()),
+            Some(Box::new(move |result| {
+                let _ = sender.send(result);
+            })),
+        )
+        .expect("the worker thread starts");
+
+        assert!(handle.id() > 0, "every submission gets a process-unique id");
+        assert_eq!(handle.wait(), Ok(()));
+        assert_eq!(handle.status(), PrintJobStatus::Completed);
+        assert!(handle.is_finished());
+        assert_eq!(
+            receiver.recv_timeout(std::time::Duration::from_secs(5)).expect("the callback ran"),
+            Ok(()),
+            "the callback receives the same result the handle reports"
+        );
+    }
+
+    /// A spooler failure must reach the caller through the handle **and** the callback; a
+    /// successful-looking completion after a rejected job is the defect this contract removes.
+    #[test]
+    fn a_failed_job_reaches_the_handle_and_the_callback() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let handle = submit_print_work_async(
+            || Err("the spooler refused the job".to_string()),
+            Some(Box::new(move |result| {
+                let _ = sender.send(result);
+            })),
+        )
+        .expect("the worker thread starts");
+
+        assert_eq!(handle.wait(), Err("the spooler refused the job".to_string()));
+        assert_eq!(handle.status(), PrintJobStatus::Failed);
+        assert_eq!(
+            receiver.recv_timeout(std::time::Duration::from_secs(5)).expect("the callback ran"),
+            Err("the spooler refused the job".to_string())
+        );
+    }
+
+    /// A panicking worker must still terminate the handle. `wait()` blocks on a condvar, so an
+    /// unwind that escaped the worker would leave the caller waiting forever.
+    #[test]
+    fn a_panicking_worker_still_finishes_the_handle() {
+        let handle = submit_print_work_async(|| panic!("the spooler exploded"), None)
+            .expect("worker starts");
+
+        let result = handle.wait();
+        assert_eq!(handle.status(), PrintJobStatus::Failed);
+        let error = result.expect_err("a worker panic is a failed job, not a completion");
+        assert!(
+            error.contains("print worker panicked"),
+            "the panic must be reported as a failed job: {error}"
+        );
+    }
+
+    /// The historical synchronous entry point is now a `wait()` on the asynchronous job, so the
+    /// memory backend still proves the payload path end to end.
+    #[test]
+    fn synchronous_printing_waits_for_the_async_job() {
+        let _guard = memory_job_test_lock();
+        let printer =
+            Printer { page_size: Size { width: 100, height: 100 }, backend: PrintBackend::Memory };
+        let settings =
+            PrintSettings { color_mode: "sync-wait-probe".to_string(), ..PrintSettings::default() };
+        let doc = TestDoc::new(1);
+        printer
+            .print_with_settings_result(&doc, &settings)
+            .expect("the memory backend never fails");
+        assert!(
+            memory_print_jobs()
+                .iter()
+                .any(|(_, content)| content.contains("color_mode=sync-wait-probe")),
+            "the sync wrapper must wait for the worker to store the job"
+        );
+    }
+
+    /// The public asynchronous entry point submits the same payload the synchronous wrapper does,
+    /// and its callback carries the result.
+    #[test]
+    fn the_public_async_entry_point_submits_a_memory_job() {
+        let _guard = memory_job_test_lock();
+        let printer =
+            Printer { page_size: Size { width: 100, height: 100 }, backend: PrintBackend::Memory };
+        let settings = PrintSettings {
+            color_mode: "async-public-probe".to_string(),
+            ..PrintSettings::default()
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let doc = TestDoc::new(1);
+        let handle = printer
+            .print_with_settings_async(
+                &doc,
+                &settings,
+                Some(Box::new(move |result| {
+                    let _ = sender.send(result);
+                })),
+            )
+            .expect("the memory backend never fails to start a worker");
+
+        assert_eq!(handle.wait(), Ok(()));
+        assert!(
+            memory_print_jobs()
+                .iter()
+                .any(|(_, content)| content.contains("color_mode=async-public-probe")),
+            "the worker stored the job"
+        );
+        assert_eq!(
+            receiver.recv_timeout(std::time::Duration::from_secs(5)).expect("the callback ran"),
+            Ok(())
+        );
+    }
+
+    /// The owned form moves rendering to the worker as well, so a large document's drawing is
+    /// not on the caller's thread (MEDIA-04's "render + write + submit" chain).
+    #[test]
+    fn the_owned_async_entry_point_renders_and_submits_off_the_caller() {
+        let _guard = memory_job_test_lock();
+        let printer =
+            Printer { page_size: Size { width: 100, height: 100 }, backend: PrintBackend::Memory };
+        let document: Box<dyn PrintDocument + Send> = Box::new(TestDoc::new(2));
+        let settings = PrintSettings {
+            color_mode: "async-owned-probe".to_string(),
+            ..PrintSettings::default()
+        };
+
+        let handle = printer
+            .print_with_settings_owned_async(document, settings, None)
+            .expect("the memory backend never fails to start a worker");
+        assert_eq!(handle.wait(), Ok(()));
+
+        assert!(
+            memory_print_jobs()
+                .iter()
+                .any(|(_, content)| content.contains("color_mode=async-owned-probe")),
+            "the settings reached the payload rendered on the worker"
         );
     }
 

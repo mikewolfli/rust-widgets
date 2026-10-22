@@ -177,7 +177,13 @@ impl TabView {
         }
     }
 
+    /// Returns the selected tab index, or `None` when there are no tabs.
+    pub fn selected_index(&self) -> Option<usize> {
+        self.tabs.get(self.selected_index).map(|_| self.selected_index)
+    }
+
     /// Returns the currently selected tab index.
+    #[deprecated(note = "use `selected_index` (Option) — WDGT-13")]
     pub fn current_index(&self) -> usize {
         self.selected_index
     }
@@ -395,7 +401,9 @@ impl WidgetProperties for TabView {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "tab_count" => Ok(CapabilityValue::UInt(self.tab_count() as u64)),
-            "selected_index" => Ok(CapabilityValue::UInt(self.current_index() as u64)),
+            "selected_index" => {
+                Ok(CapabilityValue::UInt(self.selected_index().unwrap_or(0) as u64))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -802,7 +810,7 @@ mod tests {
     fn tab_view_default_state() {
         let tv = make_tab_view();
         assert_eq!(tv.tab_count(), 0);
-        assert_eq!(tv.current_index(), 0);
+        assert_eq!(tv.selected_index().unwrap_or(0), 0);
         assert_eq!(tv.kind(), WidgetKind::TabView);
     }
 
@@ -812,10 +820,10 @@ mod tests {
         tv.add_tab("Tab 1", None, None::<&str>);
         tv.add_tab("Tab 2", None, None::<&str>);
         assert_eq!(tv.tab_count(), 2);
-        assert_eq!(tv.current_index(), 0);
+        assert_eq!(tv.selected_index().unwrap_or(0), 0);
 
         tv.set_current_index(1);
-        assert_eq!(tv.current_index(), 1);
+        assert_eq!(tv.selected_index().unwrap_or(0), 1);
     }
 
     #[test]
@@ -845,7 +853,7 @@ mod tests {
         tv.set_current_index(2);
         tv.remove_tab(2);
         assert_eq!(tv.tab_count(), 2);
-        assert_eq!(tv.current_index(), 1);
+        assert_eq!(tv.selected_index().unwrap_or(0), 1);
     }
 
     /// Removing a tab *before* the selected one keeps the same tab selected.
@@ -861,8 +869,12 @@ mod tests {
         tv.add_tab("C", None, None::<&str>);
         tv.set_current_index(2);
         tv.remove_tab(0);
-        assert_eq!(tv.current_index(), 1, "the index follows the tab it pointed at");
-        assert_eq!(tv.tabs()[tv.current_index()].title, "C", "still showing the same tab");
+        assert_eq!(tv.selected_index().unwrap_or(0), 1, "the index follows the tab it pointed at");
+        assert_eq!(
+            tv.tabs()[tv.selected_index().unwrap_or(0)].title,
+            "C",
+            "still showing the same tab"
+        );
     }
 
     #[test]
@@ -872,7 +884,7 @@ mod tests {
         tv.add_tab("Y", None, None::<&str>);
         tv.clear_tabs();
         assert_eq!(tv.tab_count(), 0);
-        assert_eq!(tv.current_index(), 0);
+        assert_eq!(tv.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
@@ -894,7 +906,7 @@ mod tests {
             strip.y + second.height as i32 / 2,
         );
         tv.handle_event(&Event::MousePress { pos: centre, button: 1, modifiers: 0 });
-        assert_eq!(tv.current_index(), 1, "a press on the second tab selects it");
+        assert_eq!(tv.selected_index().unwrap_or(0), 1, "a press on the second tab selects it");
 
         // And the first tab's own box still selects the first, so the mapping is not merely
         // "anything selects index 1".
@@ -904,7 +916,7 @@ mod tests {
             strip.y + first.height as i32 / 2,
         );
         tv.handle_event(&Event::MousePress { pos: centre, button: 1, modifiers: 0 });
-        assert_eq!(tv.current_index(), 0, "a press on the first tab selects it");
+        assert_eq!(tv.selected_index().unwrap_or(0), 0, "a press on the first tab selects it");
     }
 
     #[test]
@@ -1093,7 +1105,7 @@ mod tests {
     fn tab_view_set_current_index_noop_when_empty() {
         let mut tv = make_tab_view();
         tv.set_current_index(5); // no tabs, should not panic
-        assert_eq!(tv.current_index(), 0);
+        assert_eq!(tv.selected_index().unwrap_or(0), 0);
     }
 
     /// A tab's mounted content is reachable through the registry.

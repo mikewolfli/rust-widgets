@@ -137,6 +137,9 @@ impl NavigationStack {
 
     /// Sets the navigation bar title.
     pub fn set_navigation_bar_title(&mut self, title: &str) {
+        if self.navigation_bar_title == title {
+            return;
+        }
         self.navigation_bar_title = title.to_string();
         self.base.request_redraw();
     }

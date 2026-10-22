@@ -91,7 +91,11 @@ impl ModalBottomSheet {
 
     /// Sets the sheet title text.
     pub fn set_title(&mut self, title: impl Into<String>) {
-        self.title = title.into();
+        let title = title.into();
+        if self.title == title {
+            return;
+        }
+        self.title = title;
         self.base.request_redraw();
     }
 

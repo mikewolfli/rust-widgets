@@ -123,6 +123,9 @@ impl Avatar {
 
     /// Sets whether the avatar renders as a rounded square (instead of a circle).
     pub fn set_square(&mut self, square: bool) {
+        if self.square == square {
+            return;
+        }
         self.square = square;
         self.base.request_redraw();
     }
@@ -137,6 +140,9 @@ impl Avatar {
     /// An explicit colour wins over the active theme, so this overrides the
     /// theme-resolved fill until it is set again.
     pub fn set_bg_color(&mut self, color: Color) {
+        if self.bg_color_is_explicit && self.bg_color == color {
+            return;
+        }
         self.bg_color = color;
         self.bg_color_is_explicit = true;
         self.base.request_redraw();
