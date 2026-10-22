@@ -13,7 +13,7 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::style::SemanticColor;
 use crate::widget::capability::coercion::{
-    badge_level_to_str, expect_badge_level, expect_i64, expect_string,
+    badge_level_to_str, expect_badge_level, expect_bool, expect_i64, expect_string,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -216,6 +216,7 @@ impl WidgetProperties for Badge {
             "text" => Ok(CapabilityValue::String(self.text().to_string())),
             "count" => Ok(CapabilityValue::Int(self.count() as i64)),
             "level" => Ok(CapabilityValue::String(badge_level_to_str(self.level()).to_string())),
+            "dot_mode" => Ok(CapabilityValue::Bool(self.is_dot_mode())),
             _ => base_property_get(self, name),
         }
     }
@@ -237,12 +238,16 @@ impl WidgetProperties for Badge {
                 self.set_level(expect_badge_level(value)?);
                 Ok(())
             }
+            "dot_mode" => {
+                self.set_dot_mode(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["text", "count", "level", BASE_PROPERTY_NAMES]
+        property_names_of!["text", "count", "level", "dot_mode", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `badge` publishes.
@@ -276,7 +281,7 @@ impl Draw for Badge {
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("badge");
+        let theme = crate::style::resolved_theme_style_shared("badge");
         // The severity colour is the badge's **subject**, so it is the base the pill is built
         // from — not a last-resort fallback.
         //
@@ -384,7 +389,7 @@ impl Draw for Badge {
         // a coincidence of two separate constants rather than a fact about the pill.
         let text_color = bg_color.contrast_color();
         let line = context.text_line(pill_rect, &font);
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             Rect::new(line.x, line.y, line.width.max(1), line.height.max(1)),
             &text_str,
             &font,

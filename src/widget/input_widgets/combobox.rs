@@ -26,8 +26,8 @@ use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::style::EdgeOffsets;
 use crate::widget::capability::coercion::{
-    expect_bool, expect_horizontal_alignment, expect_string, expect_text_direction, expect_usize,
-    horizontal_alignment_to_str, text_direction_to_str,
+    expect_bool, expect_horizontal_alignment, expect_string, expect_string_list,
+    expect_text_direction, expect_usize, horizontal_alignment_to_str, text_direction_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -859,6 +859,9 @@ impl WidgetProperties for ComboBox {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "item_count" => Ok(CapabilityValue::UInt(self.count() as u64)),
+            "items" => Ok(CapabilityValue::Tuple(
+                self.items().iter().map(|item| CapabilityValue::String(item.clone())).collect(),
+            )),
             "current_index" => match self.current_index() {
                 Some(idx) => Ok(CapabilityValue::UInt(idx as u64)),
                 None => Ok(CapabilityValue::Null),
@@ -929,8 +932,11 @@ impl WidgetProperties for ComboBox {
                 self.set_max_visible_items(expect_usize(value)?);
                 Ok(())
             }
-            // Derived from the item list.
             "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "items" => {
+                self.set_items(expect_string_list(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -939,6 +945,7 @@ impl WidgetProperties for ComboBox {
         // Mirrors `COMBO_BOX_PROPERTIES`.
         property_names_of![
             "item_count",
+            "items",
             "current_index",
             "current_text",
             "editable",
@@ -1187,9 +1194,9 @@ impl Draw for ComboBox {
         // the same alignment, so the field reads as one column whichever value it is showing.
         let value_align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
         if !current_text.is_empty() {
-            context.draw_text_fitted(text_box, &current_text, font, text_color, value_align);
+            context.draw_text_fitted_cow(text_box, &current_text, font, text_color, value_align);
         } else if self.items.is_empty() {
-            context.draw_text_fitted(text_box, "(Empty)", font, text_color, value_align);
+            context.draw_text_fitted_cow(text_box, "(Empty)", font, text_color, value_align);
         }
 
         // ── The drop-down list ──
@@ -1209,7 +1216,7 @@ impl Draw for ComboBox {
                 // rendering failure rather than as "there is nothing to choose", and a user cannot
                 // tell it from a list that failed to load.
                 let row = Rect::new(list.x, list.y, list.width, dimensions::MENU_ROW_HEIGHT);
-                context.draw_text_fitted(
+                context.draw_text_fitted_cow(
                     context.text_line(row, font),
                     "(No items)",
                     font,
@@ -1236,7 +1243,7 @@ impl Draw for ComboBox {
                         row.width.saturating_sub(inset * 2),
                         context.text_line(row, font).height,
                     );
-                    context.draw_text_fitted(
+                    context.draw_text_fitted_cow(
                         label,
                         &self.items[index],
                         font,
@@ -1263,6 +1270,31 @@ mod tests {
         assert_eq!(cb.current_index(), None);
         assert!(!cb.is_editable());
         assert_eq!(cb.max_visible_items(), 10);
+    }
+
+    #[test]
+    fn items_property_round_trips_the_entry_list() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        let written = CapabilityValue::Tuple(vec![
+            CapabilityValue::String("Alpha".to_string()),
+            CapabilityValue::String("Beta".to_string()),
+            // A repeated label is legal for a combo box and must survive the round trip.
+            CapabilityValue::String("Alpha".to_string()),
+        ]);
+        cb.set("items", written).expect("items is writable");
+        assert_eq!(cb.count(), 3);
+        match cb.get("items").expect("items is readable") {
+            CapabilityValue::Tuple(items) => {
+                let texts: Vec<&str> = items.iter().filter_map(|value| value.as_str()).collect();
+                assert_eq!(texts, vec!["Alpha", "Beta", "Alpha"]);
+            }
+            other => panic!("items should read back as a Tuple, got {other:?}"),
+        }
+        // A non-list write is refused rather than coerced into one entry.
+        assert_eq!(
+            cb.set("items", CapabilityValue::String("Alpha".to_string())),
+            Err(CapabilityAccessError::TypeMismatch)
+        );
     }
 
     #[test]

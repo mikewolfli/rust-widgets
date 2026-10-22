@@ -322,7 +322,7 @@ impl Draw for SearchBar {
         // it, and re-resolving would take the theme lock once per read. Precedence is the
         // crate-wide one — an explicit style wins, then the theme, then the literal.
         let style = self.style();
-        let themed = crate::style::resolved_theme_style("search_bar");
+        let themed = crate::style::resolved_theme_style_shared("search_bar");
         let themed_bg = themed.as_ref().and_then(|resolved| resolved.background_color);
         let accent = style
             .border_color
@@ -443,7 +443,7 @@ impl Draw for SearchBar {
             let metrics = context.measure_text(&self.placeholder, font);
             if text_width >= metrics.width {
                 let text_y = rect.y + (rect.height as i32 - metrics.height as i32) / 2;
-                context.draw_text_fitted(
+                context.draw_text_fitted_cow(
                     Rect::new(text_left, text_y, text_width.max(1), metrics.height.max(1)),
                     &self.placeholder,
                     font,
@@ -460,7 +460,7 @@ impl Draw for SearchBar {
                 // line low — and it used a fixed `40,40,40`, which is a light field's ink and
                 // rendered at 1.5:1 once the field's background resolved to a dark surface.
                 let text_y = rect.y + (rect.height as i32 - metrics.height as i32) / 2;
-                context.draw_text_fitted(
+                context.draw_text_fitted_cow(
                     Rect::new(
                         text_left,
                         text_y,

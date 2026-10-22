@@ -270,7 +270,12 @@ impl<'a> LineGrid<'a> {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RowLayout {
     /// x of each character boundary; `xs[0] == 0.0`, length is `char_len + 1`.
-    xs: Vec<f32>,
+    ///
+    /// Shared rather than owned: the paint path stores the layout and the cached-layout
+    /// path hands a copy to the row it is about to paint, so cloning the handle (a
+    /// refcount bump) instead of the vector keeps a cache hit cheaper than re-shaping the
+    /// line, which is the whole point of the cache.
+    xs: crate::compat::Rc<Vec<f32>>,
 }
 
 impl RowLayout {
@@ -279,7 +284,7 @@ impl RowLayout {
         if xs.is_empty() {
             xs.push(0.0);
         }
-        Self { xs }
+        Self { xs: crate::compat::Rc::new(xs) }
     }
 
     /// x of the boundary that starts character `index`.

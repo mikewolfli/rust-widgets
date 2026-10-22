@@ -5,7 +5,8 @@
 //!
 //! # Reachability
 //!
-//! **State:** decided, after verification (CORE-12). Two groups, and the earlier
+//! **State:** Reserved: these are host-facing utilities with no in-crate caller
+//! (decided after verification, CORE-12). Two groups, and the earlier
 //! statement here ("superseded by `gpu::performance`") is corrected rather than
 //! deleted, because it was not true of all three modules:
 //!

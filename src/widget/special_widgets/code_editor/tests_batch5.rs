@@ -774,3 +774,46 @@ fn the_minimap_has_one_bucket_per_line_until_it_runs_out_of_rows() {
     // the remainder — the count is `rows` rounded down to the partition, not `rows`.
     assert!(long.minimap_buckets.len() > rows - 10, "the strip is filled, not truncated");
 }
+
+/// A cached row layout is reused while its inputs are unchanged, and re-measured when the text
+/// changes.
+///
+/// The x of the boundary after "WWWW" is much wider than after "iiii", so a stale cache would
+/// report the wide numbers against the narrow text. Painting twice with no change must keep the
+/// same measurement (it is a measurement, not a fresh sample), and replacing the text must
+/// replace the layout even though the visible line index never moved.
+#[test]
+fn a_cached_row_layout_is_reused_until_the_text_changes() {
+    let mut editor = editor();
+    editor.set_text("WWWW");
+    let _ = crate::widget::svg::render_to_svg(&mut editor);
+    let wide = editor.cached_x(0, 4).expect("the painted row has a boundary");
+
+    let _ = crate::widget::svg::render_to_svg(&mut editor);
+    assert_eq!(editor.cached_x(0, 4), Some(wide), "unchanged inputs reuse the measurement");
+
+    editor.set_text("iiii");
+    let _ = crate::widget::svg::render_to_svg(&mut editor);
+    let narrow = editor.cached_x(0, 4).expect("the repainted row has a boundary");
+    assert!(
+        narrow < wide,
+        "a stale layout would keep the wide x against narrow text: {narrow} vs {wide}"
+    );
+}
+
+/// Changing a metric the layout was measured with — here the font size — invalidates the cache.
+///
+/// Without this the editor would draw larger glyphs at the old advances, so the caret and the
+/// hit-test would disagree with the ink until the text happened to change.
+#[test]
+fn a_font_size_change_invalidates_the_cached_row_layout() {
+    let mut editor = editor();
+    editor.set_text("WWWW");
+    let _ = crate::widget::svg::render_to_svg(&mut editor);
+    let small = editor.cached_x(0, 4).expect("the painted row has a boundary");
+
+    editor.config.font_size *= 2.0;
+    let _ = crate::widget::svg::render_to_svg(&mut editor);
+    let large = editor.cached_x(0, 4).expect("the repainted row has a boundary");
+    assert!(large > small, "the doubled font must re-measure: {large} vs {small}");
+}

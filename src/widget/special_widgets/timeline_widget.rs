@@ -380,7 +380,7 @@ impl Draw for TimelineWidget {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("timeline_widget");
+        let theme = crate::style::resolved_theme_style_shared("timeline_widget");
         // `timeline_widget` is not a control kind in the role table, so it classifies
         // as `Surface`, whose background is `theme.colors.background` — the window's
         // own colour. The panel is therefore a step toward the foreground, so it is
@@ -452,7 +452,7 @@ impl Draw for TimelineWidget {
                 // low" to "pinned to the row's top edge". `draw_text_line` does both.
                 let label_band =
                     Rect::new(rect.x, y, dimensions::CHART_LABEL_GUTTER as u32, self.row_height);
-                context.draw_text_line(
+                context.draw_text_line_cow(
                     label_band,
                     &item.label,
                     effective_font(style),

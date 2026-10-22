@@ -941,8 +941,11 @@ impl Draw for ToolBox {
                 // (D09-STYLE-01).
                 let text_font = effective_font(style);
                 let item_line = context.text_line(item_rect, text_font);
-                context.draw_text(
-                    Point::new(text_x, item_line.y),
+                // Fitted inside the item: horizontal tabs are a fixed width, so a long item name
+                // used to paint over the next tab (and, vertically, outside the control).
+                let text_width = (item_rect.x + item_rect.width as i32 - text_x).max(0) as u32;
+                context.draw_text_fitted_cow(
+                    Rect::new(text_x, item_line.y, text_width, item_line.height.max(1)),
                     &item.text,
                     text_font,
                     text_color,

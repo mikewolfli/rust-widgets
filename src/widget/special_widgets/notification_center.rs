@@ -437,7 +437,7 @@ impl Draw for NotificationCenter {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("notification_center");
+        let theme = crate::style::resolved_theme_style_shared("notification_center");
         // `notification_center` is not a control kind in the role table, so it
         // classifies as `Surface`, whose background is `theme.colors.background` —
         // byte-identical to the window behind it. The panel is therefore a step
@@ -537,7 +537,7 @@ impl Draw for NotificationCenter {
                 rect.width.saturating_sub(text_x as u32 - rect.x as u32),
                 line_height,
             );
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 title_band,
                 &item.title,
                 effective_font(style),
@@ -551,7 +551,7 @@ impl Draw for NotificationCenter {
                     rect.width.saturating_sub(text_x as u32 - rect.x as u32),
                     line_height,
                 );
-                context.draw_text_fitted(
+                context.draw_text_fitted_cow(
                     message_band,
                     &item.message,
                     effective_font(style),

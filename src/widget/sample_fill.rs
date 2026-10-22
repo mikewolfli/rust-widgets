@@ -684,7 +684,7 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
                 center.push(NotificationItem::new(
                     "n3",
                     "Update available",
-                    "Version 2.8.14 is ready to install.",
+                    "Version 2.9.0 is ready to install.",
                     NotificationLevel::Info,
                 ));
                 settle(widget, |w| {

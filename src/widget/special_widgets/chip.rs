@@ -389,36 +389,44 @@ impl Chip {
         ControlMetrics::full_width_band(self.geometry(), dimensions::CHIP_HEIGHT)
     }
 
-    fn chip_rect(&self, index: usize) -> Option<Rect> {
+    /// The laid-out chips: `(item index, pill rectangle)`, in row order.
+    ///
+    /// Computed once per paint and once per hit test. `chip_rect` used to re-walk (and re-measure)
+    /// the prefix for every index, so painting N chips measured N(N+1)/2 labels; a chips row is a
+    /// linear strip, so a single pass is enough. Chips that would start past the band's right edge
+    /// are omitted rather than painted outside the control.
+    fn chip_layout(&self) -> Vec<(usize, Rect)> {
         let band = self.row_band();
+        let mut layout = Vec::with_capacity(self.items.len());
         let mut x = band.x + dimensions::CHIP_PADDING_H as i32;
-        for (i, item) in self.items.iter().enumerate() {
-            let width = self.chip_width(item, self.chip_padding).max(10);
-            if i == index {
-                // Only the width is content-driven; the height is the chip's own, so the
-                // chip sits in the row band rather than at the control's top edge.
-                let width = (width as u32).min(band.width);
-                return Some(Rect::new(x, band.y, width, band.height));
+        let right = band.x + band.width as i32;
+        for (index, item) in self.items.iter().enumerate() {
+            if x >= right {
+                break;
             }
-            x += width + self.chip_spacing;
+            let width = (self.chip_width(item, self.chip_padding).max(10) as u32).min(band.width);
+            let available = (right - x).max(1) as u32;
+            layout.push((index, Rect::new(x, band.y, width.min(available), band.height)));
+            x += width as i32 + self.chip_spacing;
         }
-        None
+        layout
+    }
+
+    #[cfg(test)]
+    fn chip_rect(&self, index: usize) -> Option<Rect> {
+        self.chip_layout().into_iter().find(|(item, _)| *item == index).map(|(_, rect)| rect)
     }
 
     fn hit_index(&self, pos: Point) -> Option<usize> {
-        for index in 0..self.items.len() {
-            let Some(chip) = self.chip_rect(index) else {
-                continue;
-            };
-            if pos.x >= chip.x
-                && pos.x < chip.x + chip.width as i32
-                && pos.y >= chip.y
-                && pos.y < chip.y + chip.height as i32
-            {
-                return Some(index);
-            }
-        }
-        None
+        self.chip_layout()
+            .into_iter()
+            .find(|(_, chip)| {
+                pos.x >= chip.x
+                    && pos.x < chip.x + chip.width as i32
+                    && pos.y >= chip.y
+                    && pos.y < chip.y + chip.height as i32
+            })
+            .map(|(index, _)| index)
     }
 }
 
@@ -668,7 +676,7 @@ impl Draw for Chip {
         // declared selected fill and every other chip derived from it. The declared base of the
         // row is a fact about the theme and the row, so it comes from the theme.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("chip");
+        let theme = crate::style::resolved_theme_style_shared("chip");
         let background = theme
             .as_ref()
             .and_then(|t| t.background_color)
@@ -710,11 +718,7 @@ impl Draw for Chip {
         // child, which is not what a chip row looks like. Each chip paints its own pill instead;
         // a chip is a rounded pill by definition, and a square box read as a table cell.
 
-        for index in 0..self.items.len() {
-            let Some(chip_rect) = self.chip_rect(index) else {
-                continue;
-            };
-
+        for (index, chip_rect) in self.chip_layout() {
             let Some(item) = self.items.get(index) else {
                 continue;
             };
@@ -786,7 +790,7 @@ impl Draw for Chip {
             // chip's *box* is already clamped to the band (`(width as u32).min(band.width)`), so
             // the ink is fitted into that same clamped box: a long label now elides inside its
             // chip instead of running past the box the chip was drawn as.
-            context.draw_text_line(
+            context.draw_text_line_cow(
                 label_box,
                 &item.label,
                 effective_font(style),

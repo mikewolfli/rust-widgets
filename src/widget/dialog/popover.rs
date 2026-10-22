@@ -319,7 +319,7 @@ impl Draw for Popover {
         // The theme reads take and release the global manager's lock internally, so no
         // guard is held across the draw (the mutex is not re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("popover");
+        let theme = crate::style::resolved_theme_style_shared("popover");
         // `popover` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
         // `Surface` and resolves to `theme.colors.background` — the window's own fill. A card
         // painted in that colour would be byte-identical to the frame behind it, so a resolved
@@ -467,7 +467,7 @@ impl Draw for Popover {
         // fit/ellipsis behaviour is unchanged (the box is 224 px wide at the census geometry
         // and `Popover (empty)` is wider than that).
         let line = context.text_line(content_rect, font);
-        context.draw_text_fitted(line, label, font, muted_ink, HorizontalAlignment::Center);
+        context.draw_text_fitted_cow(line, label, font, muted_ink, HorizontalAlignment::Center);
     }
 }
 

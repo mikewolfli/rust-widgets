@@ -482,7 +482,7 @@ impl Draw for TabView {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("tab_view");
+        let theme = crate::style::resolved_theme_style_shared("tab_view");
         // `tab_view` is not a control kind in the role table, so it classifies as
         // `Surface`, whose background is `theme.colors.background` — byte-identical
         // to the window behind it. The content area's fill is therefore a step toward
@@ -502,10 +502,14 @@ impl Draw for TabView {
         let inactive_tab = content_background.blend(&text_color, 0.05);
         // The selected indicator is a *selection* state, so it reads the theme's
         // primary token rather than a literal blue.
-        let indicator = crate::style::resolved_theme_style("button")
+        let indicator = crate::style::resolved_theme_style_shared("button")
             .and_then(|button| button.background_color)
             .unwrap_or_else(|| content_background.blend(&text_color, 0.6));
-        let selected_text = indicator;
+        // The selected label used to be the indicator colour itself, i.e. the accent **fill**
+        // reused as ink: the default theme's `rgb(33,150,243)` on the content background is about
+        // 2.3:1, below even the large-text floor. The accent still paints the 3 px indicator;
+        // the label keeps its legibility floor.
+        let selected_text = indicator.legible_on(content_background, 4.5);
         let inactive_text = text_color.blend(&content_background, 0.3);
         // The separator under the strip is secondary chrome, derived from the same pair.
         let separator = content_background.blend(&text_color, 0.2);
@@ -597,7 +601,7 @@ impl Draw for TabView {
             // The line box is what `text_line` derives from the same font, so the caption cannot
             // sit half a line off; `draw_text_fitted` with `Center` then bounds it to the tab, so
             // a long title is elided rather than running over its neighbour.
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 context.text_line(label, font),
                 display_text,
                 font,

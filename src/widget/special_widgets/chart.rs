@@ -13,6 +13,7 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{effective_font, role_font};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use std::borrow::Cow;
 /// The chart styles [`ChartWidget`] can switch between at runtime.
 ///
 /// # Scope, and why this is not the same enum as the other `ChartType`s
@@ -505,7 +506,9 @@ impl Draw for ChartWidget {
         let plot = PlotArea::of(rect, label_row_height);
         let border = style
             .border_color
-            .or_else(|| crate::style::resolved_theme_style("chart").and_then(|t| t.border_color))
+            .or_else(|| {
+                crate::style::resolved_theme_style_shared("chart").and_then(|t| t.border_color)
+            })
             .unwrap_or_else(|| surface.blend(&ink, 0.2));
         // Draw chart background
         context.face_with_gradient(
@@ -530,7 +533,7 @@ impl Draw for ChartWidget {
             self.draw_value_axis(context, &plot, ink, surface);
             let font = role_font(style, 12.0);
             let line = context.text_line(rect, &font);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 line,
                 "No data",
                 &font,
@@ -713,9 +716,9 @@ fn draw_truncated_label(
     }
     let text = if label.chars().count() > BUDGET {
         let kept: String = label.chars().take(BUDGET - 2).collect();
-        format!("{kept}..")
+        Cow::Owned(format!("{kept}.."))
     } else {
-        label.to_string()
+        Cow::Borrowed(label)
     };
     let width = context.measure_text(&text, font).width as i32;
     let origin_x = (x - width / 2).min(right_bound - width).max(0);
@@ -751,7 +754,7 @@ impl ChartWidget {
     pub(crate) fn panel_colors_with(
         style: Option<&crate::style::WidgetStyle>,
     ) -> (crate::core::Color, crate::core::Color) {
-        let theme = crate::style::resolved_theme_style("chart");
+        let theme = crate::style::resolved_theme_style_shared("chart");
         let surface = style
             .and_then(|s| s.background_color)
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -854,7 +857,7 @@ impl ChartWidget {
                 height: label_height as u32,
             };
             let line = context.text_line(band, &font);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 line,
                 &format_axis_value(value),
                 &font,
@@ -1247,6 +1250,10 @@ impl ChartWidget {
     /// whiskers out to `min` and `max`. A trailing partial group is ignored.
     fn draw_box_plot_chart(&self, context: &mut RenderContext, rect: Rect) {
         const VALUES_PER_BOX: usize = 5;
+        // The median reads as a line *through* the box, so it is painted in the panel's own
+        // surface. It used to be a literal white, which is the light panel colour: on the
+        // default appearance the most-read statistic of a box plot was white on white.
+        let (surface, _) = Self::panel_colors_with(Some(self.style()));
         let data = match self.series.first() {
             Some(data) => data,
             _ => return,
@@ -1303,10 +1310,7 @@ impl ChartWidget {
             // Median: drawn in the background colour so it reads as a line *through*
             // the box rather than another filled band.
             let y_median = area.y_for(median, min, max);
-            context.fill_rect(
-                Rect { x, y: y_median, width: box_width as u32, height: 2 },
-                crate::core::Color::rgb(255, 255, 255),
-            );
+            context.fill_rect(Rect { x, y: y_median, width: box_width as u32, height: 2 }, surface);
             if let Some(label) = self.labels.get(i) {
                 draw_truncated_label(
                     context,
@@ -1325,6 +1329,11 @@ impl ChartWidget {
             Some(data) if !data.is_empty() => data,
             _ => return,
         };
+        // Pie labels sit on the chart panel, so their ink comes from the same derivation as
+        // the panel. The literal `rgb(60,60,60)` was a light-appearance ink: on the dark
+        // panel it measured below the 4.5:1 floor, so every slice label disappeared.
+        let (_, ink) = Self::panel_colors_with(Some(self.style()));
+        let label_font = role_font(self.style(), 9.0);
         // Only finite, positive values contribute. `filter(|v| **v > 0.0)` let `+Inf` into the total
         // (and `NaN` is not `> 0.0`, so it was excluded from the sum but *not* from the per-slice
         // loop below, where `val / total` on a `NaN` produced a NaN angle and a degenerate wedge).
@@ -1337,6 +1346,8 @@ impl ChartWidget {
         let cy = rect.y + rect.height as i32 / 2;
         let radius = (rect.width.min(rect.height) as i32 / 2).saturating_sub(10).max(10);
         let mut start_angle = -std::f64::consts::FRAC_PI_2;
+        // One buffer for every label: `format!` built a fresh `String` per slice per frame.
+        let mut text = crate::compat::String::new();
         for (i, &val) in data.iter().enumerate() {
             // A non-finite or non-positive wedge has no angle; skipping it keeps the
             // angle sum equal to the sum of the positive values the total was taken over.
@@ -1361,16 +1372,29 @@ impl ChartWidget {
                 let lx = cx + (label_radius * mid_angle.cos()) as i32;
                 let ly = cy + (label_radius * mid_angle.sin()) as i32;
                 let pct = val / total * 100.0;
-                let text = if pct >= 1.0 {
-                    format!("{label}:{pct:.0}%")
+                text.clear();
+                if pct >= 1.0 {
+                    let _ =
+                        core::fmt::Write::write_fmt(&mut text, format_args!("{label}:{pct:.0}%"));
                 } else {
-                    format!("{label}:{pct:.1}%")
-                };
+                    let _ =
+                        core::fmt::Write::write_fmt(&mut text, format_args!("{label}:{pct:.1}%"));
+                }
+                // Anchor the label's *box* on the midpoint and clamp that box to the
+                // control. The old origin was the anchor with no bound, so the bottom slice
+                // of a 120 px chart painted its label below the control.
+                let metrics = context.measure_text(&text, &label_font);
+                let label_w = metrics.width as i32;
+                let label_h = metrics.height as i32;
+                let max_x = (rect.x + rect.width as i32 - label_w).max(rect.x);
+                let max_y = (rect.y + rect.height as i32 - label_h).max(rect.y);
+                let x = (lx - label_w / 2).clamp(rect.x, max_x);
+                let y = (ly - label_h / 2).clamp(rect.y, max_y);
                 context.draw_text(
-                    Point { x: lx, y: ly },
+                    Point { x, y },
                     &text,
-                    &role_font(self.style(), 9.0),
-                    crate::core::Color::rgb(60, 60, 60),
+                    &label_font,
+                    ink,
                     HorizontalAlignment::Left,
                 );
             }

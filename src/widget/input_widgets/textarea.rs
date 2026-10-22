@@ -10,7 +10,7 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
 use crate::undo::{UndoStack, ValueCommand};
-use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -635,6 +635,11 @@ impl TextArea {
             .unwrap_or(line_end)
     }
 
+    /// Returns the maximum text length in bytes, where `0` means unlimited.
+    pub fn max_length(&self) -> usize {
+        self.max_length
+    }
+
     /// Sets the maximum text length, truncating the value if it exceeds the new limit.
     ///
     /// # The limit is a **byte** budget, and the truncation must respect that
@@ -964,6 +969,7 @@ impl WidgetProperties for TextArea {
             "text" => Ok(CapabilityValue::String(self.text().to_string())),
             "placeholder" => Ok(CapabilityValue::String(self.placeholder().to_string())),
             "read_only" => Ok(CapabilityValue::Bool(self.is_read_only())),
+            "max_length" => Ok(CapabilityValue::UInt(self.max_length() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -982,13 +988,17 @@ impl WidgetProperties for TextArea {
                 self.set_read_only(expect_bool(value)?);
                 Ok(())
             }
+            "max_length" => {
+                self.set_max_length(expect_usize(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
         // Mirrors `TEXT_AREA_PROPERTIES`.
-        property_names_of!["text", "placeholder", "read_only", BASE_PROPERTY_NAMES]
+        property_names_of!["text", "placeholder", "read_only", "max_length", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `text_area` publishes.

@@ -8,7 +8,8 @@
 //!
 //! # Reachability
 //!
-//! **State:** Wired. `App::init` (and [`crate::init`]) start the process-wide manager,
+//! **State:** Production callers: `src/app/app_core.rs:220` (and `src/lib.rs:1169`) start the
+//! process-wide manager,
 //! the menu family reads its policy through the menu toolbar's `effects::current`
 //! boundary, and the master switch defaults to **on**. A host that wants the
 //! pre-adaptive rendering calls [`set_enabled`]`(false)`; verification paths install

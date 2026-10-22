@@ -5,6 +5,36 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.9.0 (2026-10-22) — review round: theme-correct chrome, bounded per-frame work, leak-free teardown
+
+This release is a full-project review pass over `docs/issues/issue-20261022.md` plus a new scan of
+widget drawing, layout, styling and per-frame cost. It closes the residual `REND-N01`/`WDGT-N02`
+gaps, fixes twelve user-visible drawing/layout defects found in this pass, and removes the
+per-frame work that made still controls expensive.
+
+### Drawing and layout
+
+- Box-plot medians use the chart panel surface, so the line is visible on the default light panel (it was white on white). Pie-chart labels take the panel ink instead of a fixed dark grey (they were illegible on dark appearances), are measured and clamped into the control, and an empty pie now paints its frame plus `No data` like every other chart.
+- Finance price/indicator axis labels are measured and right-aligned inside the reserved label column instead of being placed from a `7 px × character` guess that started left of the control. The depth chart's bid wash is anchored on the left edge of its span (bids are best-first, so the span runs right-to-left) and is derived from each side's own colour rather than a near-black literal.
+- Video player: the time and playback-rate labels are laid out from the right-hand icon group with measured widths, so neither can overlap the fullscreen icon; the disabled face and frame now follow the theme.
+- Theme fonts now reach `WizardDialog`, `CommandLink`, `CameraPreview`, `NavigationDrawer`, `PropertyGrid`, `SwipeToDismiss`, `ShortcutEditor`, `Cascader` and `Meter` (role fonts) instead of per-frame `Font::new("Arial"/"sans-serif")`.
+
+### Per-frame cost
+
+- Canvas and mini canvas replay their stored display list by reference (`execute_command_ref`), removing a deep clone of every text/font/point vector per frame.
+- Every widget draw path now reads the theme through `resolved_theme_style_shared`: a cache hit is a refcount bump rather than a `WidgetStyle` clone (font-family string and gradient stops).
+- `TreeView`'s projection is computed only as far as the viewport, and pointer hit-testing resolves a single row instead of materialising the whole document.
+- `VirtualList` returns an `Rc` window; `DataGrid` caches its filter/sort projection; `TabBar` resolves chrome once per frame; `EmojiPicker`/`KanbanBoard`/`Lottie`/`ImageGallery`/`ShortcutEditor` no longer clone every visible item or font; `IndicatorChart` caches its computed series until an input changes; `GridTable` hoists its column spans; `DateEdit`/`Meter` reuse text buffers.
+
+### Correctness
+
+- Closing a widget now also drops its window, panel and declarative layout registrations, so create/destroy loops no longer leak a `Box<dyn Layout>` per window.
+- `VideoPlayer` publishes `muted`, `playback_rate` and `controls_visible` through `get`/`set`/`property_names` and its capability schema, with defaults, so the designer/property route can drive the live setters.
+
+### Verification
+
+- `cargo test --lib`: 7610 passed. `cargo test --tests`: all suites pass. `cargo clippy --all --all-targets -D warnings` and `cargo fmt --check`: clean. `mini`, `embedded` and the three demos check. `tools/check_svg_snapshots.sh`: 188 controls × 2 appearances plus extras, 398 files, PASS (8 finance/video snapshots regenerated intentionally).
+
 ## 2.8.14 (2026-10-22) — 114-item sweep: off-thread media decode, cheaper frames, one property channel
 
 This release closes every item in `docs/issues/issue-20261021.md` — 114 of 114, across the core

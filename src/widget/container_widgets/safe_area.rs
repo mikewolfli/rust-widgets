@@ -194,7 +194,7 @@ impl Draw for SafeArea {
         // The theme reads take and release the global manager's lock internally, so no
         // guard is held across the draw (the mutex is not re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("safe_area");
+        let theme = crate::style::resolved_theme_style_shared("safe_area");
         let window_fill = crate::style::theme_manager()
             .current_theme()
             .map(|active| active.colors.background)

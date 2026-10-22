@@ -8,10 +8,8 @@
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: `src/platform/types/values.rs` (`compile_target_shortcut_style`)
-//! and the shortcut formatting it feeds. 15 files reference it. (The line numbers this note used
-//! to carry went stale with every edit, and the file was split in two; the paths are the durable
-//! part.)
+//! **State:** Production callers: `src/platform/types/values.rs:204`
+//! (`compile_target_shortcut_style`) and the shortcut formatting it feeds. 15 files reference it.
 mod manager;
 #[cfg(test)]
 mod tests;

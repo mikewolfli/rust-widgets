@@ -791,7 +791,7 @@ impl Draw for DockWidget {
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("dock_widget");
+        let theme = crate::style::resolved_theme_style_shared("dock_widget");
         // `dock_widget` is absent from `WidgetRole::for_kind_name`'s table, so it classifies
         // as `Surface` and resolves to `theme.colors.background` — the window's own fill. A
         // panel painted in that colour would be byte-identical to the frame behind it, so a
@@ -869,7 +869,7 @@ impl Draw for DockWidget {
             if shown == 0 { 0 } else { shown * TITLE_BUTTON_SIZE + (shown + 1) * TITLE_BUTTON_GAP };
         match self.dock_location.title_bar_axis() {
             TitleBarAxis::Horizontal => {
-                context.draw_text_fitted(
+                context.draw_text_fitted_cow(
                     Rect::new(
                         title_bar.x + TITLE_BUTTON_GAP as i32,
                         title_bar.y + (title_bar.height as i32 - title_h) / 2,

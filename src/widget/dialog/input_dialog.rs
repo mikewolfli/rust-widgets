@@ -587,7 +587,7 @@ impl Draw for InputDialog {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
-        let theme = crate::style::resolved_theme_style("input_dialog");
+        let theme = crate::style::resolved_theme_style_shared("input_dialog");
         // The window fill and the accent are read as their own lock acquisition and copied
         // out as values, so the guard is dropped before anything else touches the theme —
         // the global manager's mutex is not re-entrant.
@@ -658,7 +658,7 @@ impl Draw for InputDialog {
         if !self.title.is_empty() {
             let title_font = font;
             let title_line = context.text_line(title_bar_band, title_font);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(
                     rect.x + 8,
                     title_line.y,
@@ -684,7 +684,7 @@ impl Draw for InputDialog {
         let label_band = ControlMetrics::top_band(body, label_line_h);
         if !self.label_text.is_empty() {
             let label_line = context.text_line(label_band, label_font);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(
                     body.x + 10,
                     label_line.y,
@@ -717,7 +717,7 @@ impl Draw for InputDialog {
         if !display_text.is_empty() {
             let input_font = font;
             let input_line = context.text_line(input_band, input_font);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(
                     input_band.x + 4,
                     input_line.y,
@@ -748,11 +748,17 @@ impl Draw for InputDialog {
             super::message_box::action_row_geometry(context, font, &labels, button_band, true);
         let ok_rect = row.buttons[0];
         context.fill_rect(ok_rect, accent);
-        context.draw_text_line(ok_rect, &labels[0], font, accent_ink, HorizontalAlignment::Center);
+        context.draw_text_line_cow(
+            ok_rect,
+            &labels[0],
+            font,
+            accent_ink,
+            HorizontalAlignment::Center,
+        );
         let cancel_rect = row.buttons[1];
         context.fill_rect(cancel_rect, surface.blend(&ink, 0.1));
         context.draw_rect(cancel_rect, border);
-        context.draw_text_line(cancel_rect, &labels[1], font, ink, HorizontalAlignment::Center);
+        context.draw_text_line_cow(cancel_rect, &labels[1], font, ink, HorizontalAlignment::Center);
     }
 }
 

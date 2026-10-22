@@ -3,6 +3,8 @@
 
 //! Virtualized list widget backed by incremental data source protocol.
 
+use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
@@ -25,7 +27,9 @@ struct WindowCache {
     start: usize,
     len: usize,
     revision: u64,
-    rows: Vec<(usize, String)>,
+    /// Shared with the draw path so a cache hit is a refcount bump. The owned vector was
+    /// cloned per frame, duplicating every visible label.
+    rows: Rc<Vec<(usize, String)>>,
 }
 
 /// Virtualized list view that renders only a visible row window.
@@ -44,6 +48,15 @@ pub struct VirtualList {
     /// the draw path does not see the pointer.
     hovered_row: Option<usize>,
     window_cache: Option<WindowCache>,
+    /// Bumped by the source's `data_changed` signal and by `set_data_source`.
+    ///
+    /// A source whose `revision()` stays `0` still changes, and the signal is how it says so.
+    /// Keying the window cache on this counter is what lets such a source be cached at all; a
+    /// source that offers neither a revision nor a signal is not cached, because then there is
+    /// no evidence a cached window is still current.
+    data_generation: Arc<AtomicU64>,
+    /// Whether the bound source can report change (`revision > 0` or a `data_changed` signal).
+    data_is_observable: bool,
     /// Emitted when selected row changes.
     pub selection_changed: Signal1<Option<usize>>,
     /// Emitted when visible row window changes `(start, len)`.
@@ -63,6 +76,8 @@ impl VirtualList {
             selected_row: None,
             hovered_row: None,
             window_cache: None,
+            data_generation: Arc::new(AtomicU64::new(0)),
+            data_is_observable: false,
             selection_changed: Signal1::new(),
             visible_window_changed: Signal1::new(),
         }
@@ -71,14 +86,24 @@ impl VirtualList {
     /// Binds incremental data source.
     pub fn set_data_source(&mut self, data_source: Arc<dyn IncrementalTableDataSource>) {
         self.data_source_connection_scope = ConnectionScope::new();
-        if let Some(data_changed) = data_source.data_changed_signal() {
+        let revision_nonzero = data_source.revision() > 0;
+        let has_signal = if let Some(data_changed) = data_source.data_changed_signal() {
             let redraw = self.base.redraw_requested_signal().clone();
             let layout = self.base.layout_requested_signal().clone();
+            let generation = Arc::clone(&self.data_generation);
             data_changed.connect_scoped(&self.data_source_connection_scope, move || {
+                // The source says its projection changed. Advancing the key is what makes the
+                // next fetch miss; a revision-less source has no other way to invalidate.
+                generation.fetch_add(1, Ordering::Relaxed);
                 redraw.emit();
                 layout.emit();
             });
-        }
+            true
+        } else {
+            false
+        };
+        self.data_generation.fetch_add(1, Ordering::Relaxed);
+        self.data_is_observable = revision_nonzero || has_signal;
         self.data_source = Some(data_source);
         self.scroll_row = 0;
         self.selected_row = None;
@@ -108,6 +133,8 @@ impl VirtualList {
     pub fn clear_data_source(&mut self) {
         self.data_source_connection_scope = ConnectionScope::new();
         self.data_source = None;
+        self.data_is_observable = false;
+        self.data_generation.fetch_add(1, Ordering::Relaxed);
         self.scroll_row = 0;
         self.selected_row = None;
         self.clear_window_cache();
@@ -248,29 +275,41 @@ impl VirtualList {
 
     /// Fetches visible rows as `(row_index, text)` pairs.
     pub fn fetch_visible_rows(&mut self) -> Vec<(usize, String)> {
+        (*self.fetch_visible_rows_shared()).clone()
+    }
+
+    /// The draw path's form of [`Self::fetch_visible_rows`]: a cache hit returns the shared
+    /// window instead of cloning every row label.
+    pub fn fetch_visible_rows_shared(&mut self) -> Rc<Vec<(usize, String)>> {
         self.normalize_projection_state();
 
         let Some(source) = self.data_source.as_ref() else {
-            return Vec::new();
+            return Rc::new(Vec::new());
         };
 
         let (start, len) = self.visible_window();
         if len == 0 {
-            return Vec::new();
+            return Rc::new(Vec::new());
         }
 
         let revision = source.revision();
-        if revision > 0 {
+        // A source with a real revision uses it; one that only raises `data_changed` uses the
+        // generation this widget advances from that signal. When neither exists the window is
+        // fetched afresh — a cache with no invalidation contract would serve stale rows.
+        let cache_revision =
+            if revision > 0 { revision } else { self.data_generation.load(Ordering::Relaxed) };
+        if self.data_is_observable {
             if let Some(cache) = self.window_cache.as_ref() {
-                if cache.start == start && cache.len == len && cache.revision == revision {
-                    return cache.rows.clone();
+                if cache.start == start && cache.len == len && cache.revision == cache_revision {
+                    return Rc::clone(&cache.rows);
                 }
             }
         }
 
-        let rows = self.fetch_window_rows(start, len);
-        if revision > 0 {
-            self.window_cache = Some(WindowCache { start, len, revision, rows: rows.clone() });
+        let rows = Rc::new(self.fetch_window_rows(start, len));
+        if self.data_is_observable {
+            self.window_cache =
+                Some(WindowCache { start, len, revision: cache_revision, rows: Rc::clone(&rows) });
         } else {
             self.window_cache = None;
         }
@@ -476,7 +515,7 @@ impl Draw for VirtualList {
             let style = self.base.style();
             (style.background_color, style.text_color, style.border_color)
         };
-        let theme = crate::style::resolved_theme_style("virtual_list");
+        let theme = crate::style::resolved_theme_style_shared("virtual_list");
         let mut surface = background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
             .unwrap_or(Color::WHITE);
@@ -518,13 +557,14 @@ impl Draw for VirtualList {
         );
         context.draw_rect(rect, border);
 
-        let rows = self.fetch_visible_rows();
+        let rows = self.fetch_visible_rows_shared();
         if rows.is_empty() {
             return;
         }
 
         let rh = self.row_height as i32;
-        for (row_index, text) in rows {
+        let row_font = effective_font(self.style());
+        for &(row_index, ref text) in rows.iter() {
             let y = rect.y + ((row_index as i32 - self.scroll_row as i32) * rh);
             if y + rh <= rect.y || y >= rect.y + rect.height as i32 {
                 continue;
@@ -546,9 +586,8 @@ impl Draw for VirtualList {
             // own box rather than drawn at an unbounded length. `draw_text` places a string and
             // never asks whether it fits; the sibling `list_view` already fits its rows, and this
             // one let a long label run past the control's right edge.
-            let row_font = effective_font(self.style());
             let row_box = Rect::new(rect.x + 4, y, rect.width.saturating_sub(8), self.row_height);
-            context.draw_text_line(row_box, &text, row_font, ink, HorizontalAlignment::Left);
+            context.draw_text_line_cow(row_box, text, row_font, ink, HorizontalAlignment::Left);
         }
     }
 }
@@ -657,6 +696,12 @@ mod tests {
             self.revision.fetch_add(1, Ordering::Relaxed);
             self.changed.emit();
         }
+
+        /// Announces a change without touching the revision, which is the shape a source that
+        /// does not implement `revision()` has.
+        fn touch(&self) {
+            self.changed.emit();
+        }
     }
 
     impl IncrementalTableDataSource for CountingSource {
@@ -742,6 +787,64 @@ mod tests {
         source.bump_revision();
         let _ = list.fetch_visible_rows();
         assert!(source.calls() > calls_after_b);
+    }
+
+    #[test]
+    fn a_revision_less_source_is_cached_and_invalidated_by_its_signal() {
+        let mut list = VirtualList::new(Rect::new(0, 0, 120, 40));
+        list.set_overscan(0);
+
+        // Revision 0 = the trait's default, i.e. "I do not version my projection".
+        let source = Arc::new(CountingSource::new(6, 0));
+        list.set_data_source(source.clone());
+
+        let first = list.fetch_visible_rows_shared();
+        let calls_after_first = source.calls();
+        assert!(calls_after_first > 0);
+
+        let second = list.fetch_visible_rows_shared();
+        assert!(Rc::ptr_eq(&first, &second), "the cached window is shared, not re-fetched");
+        assert_eq!(source.calls(), calls_after_first, "the signal makes this source observable");
+
+        source.touch();
+        let _ = list.fetch_visible_rows_shared();
+        assert!(source.calls() > calls_after_first, "a reported change must invalidate the window");
+    }
+
+    #[test]
+    fn a_source_with_no_change_contract_is_not_cached() {
+        /// A source that has neither a revision nor a `data_changed` signal: caching it would
+        /// have no way to learn that the projection moved.
+        struct SilentSource {
+            rows: usize,
+            calls: AtomicUsize,
+        }
+
+        impl IncrementalTableDataSource for SilentSource {
+            fn row_count(&self) -> usize {
+                self.rows
+            }
+            fn column_count(&self) -> usize {
+                1
+            }
+            fn data(&self, row: usize, column: usize) -> Option<String> {
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                (column == 0 && row < self.rows).then(|| format!("row-{row}"))
+            }
+        }
+
+        let mut list = VirtualList::new(Rect::new(0, 0, 120, 40));
+        list.set_overscan(0);
+        let source = Arc::new(SilentSource { rows: 6, calls: AtomicUsize::new(0) });
+        list.set_data_source(source.clone());
+
+        let _ = list.fetch_visible_rows_shared();
+        let calls_after_first = source.calls.load(Ordering::Relaxed);
+        let _ = list.fetch_visible_rows_shared();
+        assert!(
+            source.calls.load(Ordering::Relaxed) > calls_after_first,
+            "without a change contract every fetch must read the source"
+        );
     }
 
     #[test]

@@ -40,6 +40,15 @@ pub(crate) fn is_combining_mark(c: char) -> bool {
         // Thai combining marks
         | 0x0E31..=0x0E3A
         | 0x0E47..=0x0E4E
+        // Arabic harakat (fatha, damma, kasra, shadda, sukun, tanween) and Quranic marks.
+        // Arabic is a shipped script (`font_assets/arabic.rs`), so a mark outside this list
+        // would become its own cluster and paint a 1 px sliver beside its base letter.
+        | 0x0610..=0x061A
+        | 0x064B..=0x065F
+        | 0x0670
+        | 0x06D6..=0x06ED
+        // Hangul medial/final jamo, which compose with a leading consonant
+        | 0x1160..=0x11FF
         // General combining range for Indic scripts
         | 0x0981..=0x0983
         | 0x09BE..=0x09CD
@@ -72,6 +81,14 @@ mod tests {
 
         assert!(!is_combining_mark('a'), "a base letter is not a mark");
         assert!(!is_variation_selector('a'), "a base letter is not a selector");
+        // Arabic harakat must cluster with their base letter: a mark that is not recognised
+        // becomes its own cluster and paints a one-pixel sliver beside the letter.
+        assert!(is_combining_mark('\u{064E}'), "U+064E is Arabic fatha");
+        assert!(is_combining_mark('\u{0651}'), "U+0651 is Arabic shadda");
+        assert!(is_combining_mark('\u{0670}'), "U+0670 is Arabic superscript alef");
+        assert!(is_combining_mark('\u{1161}'), "U+1161 is a Hangul medial jamo");
+        // U+0627 is alef, a base letter inside the same script.
+        assert!(!is_combining_mark('\u{0627}'), "Arabic alef is a base letter");
         // U+FE10 is a vertical-form punctuation, one past the selector range's end.
         assert!(!is_variation_selector('\u{FE10}'), "the selector range must not over-reach");
     }

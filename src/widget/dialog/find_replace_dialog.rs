@@ -575,7 +575,7 @@ impl Draw for FindReplaceDialog {
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("find_replace_dialog");
+        let theme = crate::style::resolved_theme_style_shared("find_replace_dialog");
         let themed_ink = theme.as_ref().and_then(|t| t.text_color);
         let themed_border = theme.as_ref().and_then(|t| t.border_color);
 
@@ -644,7 +644,7 @@ impl Draw for FindReplaceDialog {
         // the bar, rather than the fixed 12 px sans-serif this used to build (D09-STYLE-01).
         let font = effective_font(style);
         let label_line = self.text_line(label_rect, font, context);
-        context.draw_text_fitted(label_line, "Find:", font, ink, HorizontalAlignment::Left);
+        context.draw_text_fitted_cow(label_line, "Find:", font, ink, HorizontalAlignment::Left);
         x += label_col as i32 + GAP;
 
         // Find text input background. The field is only drawn when the row genuinely
@@ -661,7 +661,7 @@ impl Draw for FindReplaceDialog {
             let display_text = if self.find_text.is_empty() { "" } else { &self.find_text };
             if !display_text.is_empty() {
                 let input_line = self.text_line(input_rect, font, context);
-                context.draw_text_fitted(
+                context.draw_text_fitted_cow(
                     input_line,
                     display_text,
                     font,
@@ -677,7 +677,7 @@ impl Draw for FindReplaceDialog {
         let mc_color = if self.match_case { accent } else { field.blend(&ink, 0.15) };
         context.fill_rect(mc_rect, mc_color);
         let mc_line = self.text_line(mc_rect, font, context);
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             mc_line,
             "Aa",
             font,
@@ -691,7 +691,7 @@ impl Draw for FindReplaceDialog {
         let ww_color = if self.whole_word { accent } else { field.blend(&ink, 0.15) };
         context.fill_rect(ww_rect, ww_color);
         let ww_line = self.text_line(ww_rect, font, context);
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             ww_line,
             "W",
             font,
@@ -705,7 +705,7 @@ impl Draw for FindReplaceDialog {
         let rx_color = if self.use_regex { accent } else { field.blend(&ink, 0.15) };
         context.fill_rect(rx_rect, rx_color);
         let rx_line = self.text_line(rx_rect, font, context);
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             rx_line,
             ".*",
             font,
@@ -719,7 +719,7 @@ impl Draw for FindReplaceDialog {
         let ha_color = if self.highlight_all { accent } else { field.blend(&ink, 0.15) };
         context.fill_rect(ha_rect, ha_color);
         let ha_line = self.text_line(ha_rect, font, context);
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             ha_line,
             "H",
             font,
@@ -768,7 +768,7 @@ impl Draw for FindReplaceDialog {
         // "Replace:" label
         let rl_rect = Rect::new(x2, replace_row.y, label_col, replace_row.height);
         let rl_line = self.text_line(rl_rect, font, context);
-        context.draw_text_fitted(rl_line, "Rpl:", font, ink, HorizontalAlignment::Left);
+        context.draw_text_fitted_cow(rl_line, "Rpl:", font, ink, HorizontalAlignment::Left);
         x2 += label_col as i32 + GAP;
 
         // Replace text input background. Drawn only when there is room, for the same
@@ -780,7 +780,7 @@ impl Draw for FindReplaceDialog {
             let r_text = if self.replace_text.is_empty() { "" } else { &self.replace_text };
             if !r_text.is_empty() {
                 let r_input_line = self.text_line(r_input_rect, font, context);
-                context.draw_text_fitted(
+                context.draw_text_fitted_cow(
                     r_input_line,
                     r_text,
                     font,
@@ -797,14 +797,20 @@ impl Draw for FindReplaceDialog {
         let rep_rect = Rect::new(x2, replace_row.y, REPLACE_BTN, replace_row.height);
         context.fill_rect(rep_rect, muted);
         let rep_line = self.text_line(rep_rect, font, context);
-        context.draw_text_fitted(rep_line, "Rpl", font, muted_ink, HorizontalAlignment::Center);
+        context.draw_text_fitted_cow(rep_line, "Rpl", font, muted_ink, HorizontalAlignment::Center);
         x2 += REPLACE_BTN as i32 + GAP;
 
         // Replace All button
         let ra_rect = Rect::new(x2, replace_row.y, REPLACE_BTN, replace_row.height);
         context.fill_rect(ra_rect, muted);
         let ra_line = self.text_line(ra_rect, font, context);
-        context.draw_text_fitted(ra_line, "Rpl All", font, muted_ink, HorizontalAlignment::Center);
+        context.draw_text_fitted_cow(
+            ra_line,
+            "Rpl All",
+            font,
+            muted_ink,
+            HorizontalAlignment::Center,
+        );
     }
 }
 

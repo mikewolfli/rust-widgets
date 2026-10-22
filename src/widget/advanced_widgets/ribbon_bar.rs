@@ -271,7 +271,7 @@ impl RibbonPalette {
     /// not re-entrant. The window fill is read as its own scoped acquisition and copied out, so
     /// no guard is held while the rest of the palette is computed.
     fn resolve(style: &crate::style::WidgetStyle) -> Self {
-        let theme = crate::style::resolved_theme_style("ribbon_bar");
+        let theme = crate::style::resolved_theme_style_shared("ribbon_bar");
         let (window_fill, foreground, secondary, primary) = {
             let manager = crate::style::theme_manager();
             match manager.current_theme() {
@@ -881,7 +881,13 @@ impl RibbonBar {
         let font = effective_font(self.style());
         let line = context.text_line(tab_rect, font);
         let title_band = Rect::new(tab_rect.x, line.y, tab_rect.width, line.height);
-        context.draw_text_fitted(title_band, text, font, text_color, HorizontalAlignment::Center);
+        context.draw_text_fitted_cow(
+            title_band,
+            text,
+            font,
+            text_color,
+            HorizontalAlignment::Center,
+        );
     }
 
     /// Draws the content panel for the current tab (groups + items).
@@ -968,7 +974,7 @@ impl RibbonBar {
                             let icon_char = item.icon_text().chars().next().unwrap_or(' ');
                             let icon_band =
                                 Rect::new(ir.x, ir.y + 2, ir.width, LARGE_ICON_SIZE as u32);
-                            context.draw_text_fitted(
+                            context.draw_text_fitted_cow(
                                 context.text_line(icon_band, item_font),
                                 &icon_char.to_string(),
                                 item_font,
@@ -979,7 +985,7 @@ impl RibbonBar {
                         }
                         let label_band =
                             Rect::new(ir.x + 2, label_y, ir.width.saturating_sub(4), 16);
-                        context.draw_text_fitted(
+                        context.draw_text_fitted_cow(
                             context.text_line(label_band, item_font),
                             item.text(),
                             item_font,
@@ -1027,7 +1033,7 @@ impl RibbonBar {
                             (ir.x + ir.width as i32 - label_x).max(0) as u32,
                             item_line.height.max(1),
                         );
-                        context.draw_text_fitted(
+                        context.draw_text_fitted_cow(
                             label_band,
                             item.text(),
                             item_font,

@@ -1268,8 +1268,8 @@ impl Draw for TextEdit {
         // The fallback name matters: the role table is keyed on **role** names, so `text_edit`
         // (the factory name) is not in it and would classify as `Surface`, i.e. the window fill.
         // `line_edit` is, and resolves to the field interior plus the theme's foreground.
-        let theme = crate::style::resolved_theme_style("text_edit")
-            .or_else(|| crate::style::resolved_theme_style("line_edit"));
+        let theme = crate::style::resolved_theme_style_shared("text_edit")
+            .or_else(|| crate::style::resolved_theme_style_shared("line_edit"));
         let field_from_theme = theme
             .as_ref()
             .and_then(|t| t.background_color)
@@ -1607,7 +1607,7 @@ impl TextEdit {
         if pen_y + line_height > bottom {
             return pen_y;
         }
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             Rect::new(interior.x, pen_y, interior.width, line_height as u32),
             row,
             font,

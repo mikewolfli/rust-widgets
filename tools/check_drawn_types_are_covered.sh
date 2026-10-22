@@ -41,8 +41,8 @@ cd "$ROOT_DIR"
 . "$ROOT_DIR/tools/lib_python.sh"
 
 if ! "$PYTHON" tools/check_drawn_types_are_covered.py; then
-    echo "FAIL: an `impl Draw` type is covered by no gate, or an acknowledgement is stale"
+    echo 'FAIL: an `impl Draw` type is covered by no gate, or an acknowledgement is stale'
     exit 1
 fi
 
-echo "✅ check_drawn_types_are_covered: every drawn type is covered or acknowledged"
+echo '✅ check_drawn_types_are_covered: every drawn type is covered or acknowledged'

@@ -339,6 +339,7 @@ pub fn default_widget_property_default_value(
             "text_visible" => CapabilityValue::Bool(true),
             "orientation" => CapabilityValue::String("horizontal".to_string()),
             "inverted_appearance" => CapabilityValue::Bool(false),
+            "indeterminate" => CapabilityValue::Bool(false),
             "direction" => CapabilityValue::String("ltr".to_string()),
             "progress" => CapabilityValue::Float(0.0),
             _ => return None,
@@ -394,6 +395,9 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::ComboBox => match property_name {
             "item_count" => CapabilityValue::UInt(0),
+            // An empty list rather than `Null`: a dropped binding resolves to this default, and
+            // `Null` is a value the `StringList` schema check refuses.
+            "items" => CapabilityValue::Tuple(crate::compat::Vec::new()),
             "current_index" => CapabilityValue::Null,
             "current_text" => CapabilityValue::String(String::new()),
             "editable" => CapabilityValue::Bool(false),
@@ -864,6 +868,12 @@ pub fn default_widget_property_default_value(
         // the `segment_count` / `selected_index` defaults are declared on the kind
         // that actually owns them.
         WidgetKind::Breadcrumb => match property_name {
+            // A control starts with no path, so the default is an **empty list of the declared
+            // schema** rather than `Null`: `view::apply::resolve_null_reset` substitutes this default
+            // for a dropped binding, and `Null` would be a value the property's schema check refuses.
+            "segments" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::special_widgets::breadcrumb::BREADCRUMB_SEGMENT_SCHEMA,
+            )),
             "segment_count" => CapabilityValue::UInt(0),
             "selected_index" => CapabilityValue::Null,
             _ => return None,
@@ -947,6 +957,8 @@ pub fn default_widget_property_default_value(
             "thickness" => CapabilityValue::UInt(10),
             "sweep_angle" => CapabilityValue::UInt(360),
             "indeterminate" => CapabilityValue::Bool(false),
+            "rounded" => CapabilityValue::Bool(false),
+            "show_value" => CapabilityValue::Bool(true),
             _ => return None,
         },
         WidgetKind::Spinner => match property_name {
@@ -960,6 +972,7 @@ pub fn default_widget_property_default_value(
             "selected_index" => CapabilityValue::UInt(0),
             "visible_count" => CapabilityValue::UInt(5),
             "item_count" => CapabilityValue::UInt(0),
+            "options" => CapabilityValue::Tuple(crate::compat::Vec::new()),
             _ => return None,
         },
         WidgetKind::Dropdown => match property_name {
@@ -974,6 +987,8 @@ pub fn default_widget_property_default_value(
             "text" => CapabilityValue::String(String::new()),
             "placeholder" => CapabilityValue::String(String::new()),
             "read_only" => CapabilityValue::Bool(false),
+            // `0` is unlimited, matching `TextArea::new`.
+            "max_length" => CapabilityValue::UInt(0),
             _ => return None,
         },
         WidgetKind::Keyboard => match property_name {
@@ -994,6 +1009,9 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::Line => match property_name {
             "orientation" => CapabilityValue::String("horizontal".to_string()),
+            // Mirrors `Line::new`'s default thickness and its literal fallback colour.
+            "thickness" => CapabilityValue::UInt(2),
+            "color" => CapabilityValue::Color(crate::core::Color::rgb(180, 180, 180)),
             _ => return None,
         },
         WidgetKind::Meter => match property_name {
@@ -1225,6 +1243,7 @@ pub fn default_widget_property_default_value(
         WidgetKind::Badge => match property_name {
             "text" => CapabilityValue::String(String::new()),
             "count" => CapabilityValue::Int(0),
+            "dot_mode" => CapabilityValue::Bool(false),
             // Mirrors `BadgeLevel::default()`, which is `Info`.
             "level" => CapabilityValue::String("info".to_string()),
             _ => return None,
@@ -1301,7 +1320,10 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::ColorWell => match property_name {
-            "color" => CapabilityValue::String("#FF0000FF".to_string()),
+            // A fresh well starts on red, and the declared kind is `Color` — so the default is
+            // carried as one rather than as a hex string the schema never promised.
+            "color" => CapabilityValue::Color(crate::core::Color::rgb(255, 0, 0)),
+            "show_border" => CapabilityValue::Bool(true),
             _ => return None,
         },
         WidgetKind::TagInput => match property_name {
@@ -1390,6 +1412,17 @@ pub fn default_widget_property_default_value(
         WidgetKind::ProgressCircle => match property_name {
             "value" => CapabilityValue::Float(0.0),
             "thickness" => CapabilityValue::Float(4.0),
+            // The constructor derives `diameter` from the initial bounds, so a fresh control's
+            // answer depends on its geometry; this is the declared default diameter the size hint
+            // uses, which is the value a document can rely on when it does not set one.
+            "diameter" => CapabilityValue::UInt(u64::from(
+                crate::widget::metrics::dimensions::PROGRESS_CIRCLE_DEFAULT_DIAMETER,
+            )),
+            "progress_color" => CapabilityValue::Color(
+                crate::style::resolved_theme_style_shared("progress_bar")
+                    .and_then(|resolved| resolved.background_color)
+                    .unwrap_or(crate::core::Color::PRIMARY),
+            ),
             "indeterminate" => CapabilityValue::Bool(false),
             _ => return None,
         },
@@ -1593,6 +1626,7 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::Sparkline => match property_name {
             "stroke_width" => CapabilityValue::Float(1.5),
+            "data" => CapabilityValue::Tuple(crate::compat::Vec::new()),
             _ => return None,
         },
         WidgetKind::BarChart => match property_name {
@@ -1624,12 +1658,22 @@ pub fn default_widget_property_default_value(
         WidgetKind::VideoPlayer => match property_name {
             "is_playing" => CapabilityValue::Bool(false),
             "volume" => CapabilityValue::Float(0.8),
+            "muted" => CapabilityValue::Bool(false),
+            "playback_rate" => CapabilityValue::Float(1.0),
+            "controls_visible" => CapabilityValue::Bool(true),
             _ => return None,
         },
 
         // ── New widgets (view) ──────────────────────────────────────
         WidgetKind::ImageGallery => match property_name {
             "current_index" => CapabilityValue::UInt(0),
+            // An empty list of the declared schema rather than `Null`: a dropped binding resolves to
+            // this default, and `Null` is a value the `Records` schema check refuses.
+            "images" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::view_widgets::image_gallery::GALLERY_IMAGE_SCHEMA,
+            )),
+            "thumbnail_size" => CapabilityValue::UInt(64),
+            "show_thumbnails" => CapabilityValue::Bool(true),
             _ => return None,
         },
 

@@ -11,10 +11,21 @@ pub use custom_paint::CustomPaintControlBackend;
 pub(crate) use property_names::{
     widget_label_property_name, widget_value_property_name, TOGGLE_BUTTON_KIND,
 };
-// Only the full-widget-set creation path reads these two tables, so a stripped profile
-// that re-exported them would carry an unused import (principle #10).
-#[cfg(full_widgets)]
-pub(crate) use property_names::{LABEL_PROPERTY_NAMES, MENU_KIND};
+// Each table is re-exported under the gate its **consumer** compiles in, not under
+// `full_widgets`. The two consumers differ:
+//
+//  * `LABEL_PROPERTY_NAMES` is read by the label accessor, gated `widgets_unstripped`;
+//  * `MENU_KIND` is read by the menu creation arm, which is `all(not(alloc_frugal),
+//    not(embedded_surface))` — it covers the no-device-profile desktop build
+//    (`windows controls-custom …`) where `full_widgets` is false but the popup still has to be
+//    mounted, and it is absent from `embedded` because the menu fragment is too.
+//
+// Gating both on `full_widgets` broke exactly that cell: the menu arm compiled and the table
+// it names was cfg'd out (check_profiles step 6b).
+#[cfg(widgets_unstripped)]
+pub(crate) use property_names::LABEL_PROPERTY_NAMES;
+#[cfg(all(not(alloc_frugal), not(embedded_surface)))]
+pub(crate) use property_names::MENU_KIND;
 
 /// Tests for the custom backend's creation and state accessors.
 ///

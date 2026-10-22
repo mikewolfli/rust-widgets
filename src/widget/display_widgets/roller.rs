@@ -11,7 +11,7 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
-use crate::widget::capability::coercion::{expect_u32, expect_usize};
+use crate::widget::capability::coercion::{expect_string_list, expect_u32, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -261,6 +261,9 @@ impl WidgetProperties for Roller {
             }
             "visible_count" => Ok(CapabilityValue::UInt(self.visible_count() as u64)),
             "item_count" => Ok(CapabilityValue::UInt(self.options().len() as u64)),
+            "options" => Ok(CapabilityValue::Tuple(
+                self.options().iter().map(|item| CapabilityValue::String(item.clone())).collect(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -276,12 +279,22 @@ impl WidgetProperties for Roller {
                 Ok(())
             }
             "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "options" => {
+                self.set_options(expect_string_list(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["selected_index", "visible_count", "item_count", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "options",
+            "selected_index",
+            "visible_count",
+            "item_count",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `roller` publishes.
@@ -367,8 +380,8 @@ impl Draw for Roller {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("roller")
-            .or_else(|| crate::style::resolved_theme_style("list_box"));
+        let theme = crate::style::resolved_theme_style_shared("roller")
+            .or_else(|| crate::style::resolved_theme_style_shared("list_box"));
         // `roller` is not a control kind in the role table, so it classifies as
         // `Surface`, whose background is `theme.colors.background` — byte-identical
         // to the window behind it. The wheel's own fill is therefore a step toward the
@@ -384,7 +397,7 @@ impl Draw for Roller {
         let bg_color = resolved.blend(&text_color, 0.08);
         // The centre item is a *selection*, which is chrome rather than data, so it
         // reads the theme's primary token instead of the previous literal blue.
-        let selected_bg = crate::style::resolved_theme_style("button")
+        let selected_bg = crate::style::resolved_theme_style_shared("button")
             .and_then(|button| button.background_color)
             .unwrap_or_else(|| bg_color.blend(&text_color, 0.6));
         // Its label must be legible **on the selection band itself**, so it takes whichever
@@ -397,8 +410,7 @@ impl Draw for Roller {
         let selected_text_color = selected_bg.contrast_color();
         let muted_color = text_color.blend(&bg_color, 0.47);
 
-        let font =
-            self.style().font.clone().unwrap_or_else(|| Font::simple("sans-serif", self.font_size));
+        let font = style.font.clone().unwrap_or_else(|| Font::simple("sans-serif", self.font_size));
         // `item_height` derives its row from the same font, so the wheel band cannot clip the
         // glyphs it draws (D09-STYLE-02).
 
@@ -493,6 +505,29 @@ mod tests {
             "Elderberry".to_string(),
         ];
         Roller::new(options, Rect::new(0, 0, 160, 120))
+    }
+
+    #[test]
+    fn options_property_round_trips_the_option_list() {
+        let mut roller = Roller::new(vec!["one".to_string()], Rect::new(0, 0, 160, 120));
+        let written = CapabilityValue::Tuple(vec![
+            CapabilityValue::String("Red".to_string()),
+            CapabilityValue::String("Green".to_string()),
+            CapabilityValue::String("Red".to_string()),
+        ]);
+        roller.set("options", written).expect("options is writable");
+        assert_eq!(roller.options().len(), 3);
+        match roller.get("options").expect("options is readable") {
+            CapabilityValue::Tuple(items) => {
+                let texts: Vec<&str> = items.iter().filter_map(|value| value.as_str()).collect();
+                assert_eq!(texts, vec!["Red", "Green", "Red"]);
+            }
+            other => panic!("options should read back as a Tuple, got {other:?}"),
+        }
+        assert_eq!(
+            roller.set("options", CapabilityValue::UInt(3)),
+            Err(CapabilityAccessError::TypeMismatch)
+        );
     }
 
     #[test]

@@ -154,6 +154,16 @@ impl Arc {
         self.base.request_redraw();
     }
 
+    /// Returns whether the arc's ends are rounded.
+    pub fn rounded(&self) -> bool {
+        self.rounded
+    }
+
+    /// Returns whether the value label is drawn in the arc's middle.
+    pub fn show_value(&self) -> bool {
+        self.show_value
+    }
+
     /// Sets whether the arc ends are rounded.
     pub fn set_rounded(&mut self, rounded: bool) {
         if self.rounded == rounded {
@@ -267,6 +277,8 @@ impl WidgetProperties for Arc {
             "thickness" => Ok(CapabilityValue::UInt(self.thickness() as u64)),
             "sweep_angle" => Ok(CapabilityValue::UInt(self.sweep_angle() as u64)),
             "indeterminate" => Ok(CapabilityValue::Bool(self.is_indeterminate())),
+            "rounded" => Ok(CapabilityValue::Bool(self.rounded())),
+            "show_value" => Ok(CapabilityValue::Bool(self.show_value())),
             _ => base_property_get(self, name),
         }
     }
@@ -297,6 +309,14 @@ impl WidgetProperties for Arc {
                 self.set_indeterminate(expect_bool(value)?);
                 Ok(())
             }
+            "rounded" => {
+                self.set_rounded(expect_bool(value)?);
+                Ok(())
+            }
+            "show_value" => {
+                self.set_show_value(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -309,6 +329,8 @@ impl WidgetProperties for Arc {
             "thickness",
             "sweep_angle",
             "indeterminate",
+            "rounded",
+            "show_value",
             BASE_PROPERTY_NAMES
         ]
     }

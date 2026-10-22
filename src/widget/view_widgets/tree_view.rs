@@ -345,11 +345,23 @@ impl TreeView {
     /// The walk is a single pass over the model with a stack of the open ancestors, so it is
     /// O(nodes) and allocates one `Vec`.
     pub fn visible_indices(&self) -> Vec<usize> {
+        self.visible_indices_limited(usize::MAX)
+    }
+
+    /// The visible projection, stopped after `limit` rows.
+    ///
+    /// The draw loop only needs the rows its content box can hold, and the pointer paths only
+    /// need one row. Walking the whole model for either made the cost follow the document
+    /// rather than the viewport.
+    pub fn visible_indices_limited(&self, limit: usize) -> Vec<usize> {
         let Some(model) = self.model.as_ref() else {
             return Vec::new();
         };
+        if limit == 0 {
+            return Vec::new();
+        }
         let count = model.node_count();
-        let mut rows = Vec::with_capacity(count);
+        let mut rows = Vec::with_capacity(count.min(limit));
         // `(depth, expanded)` of the open-able ancestors of the node being considered. The stack
         // holds only nodes that *have* children; a leaf can never hide anything.
         let mut ancestors: Vec<(usize, bool)> = Vec::new();
@@ -362,12 +374,42 @@ impl TreeView {
             }
             if ancestors.iter().all(|(_, expanded)| *expanded) {
                 rows.push(index);
+                if rows.len() >= limit {
+                    break;
+                }
             }
             if node.has_children {
                 ancestors.push((node.depth, self.is_expanded(index)));
             }
         }
         rows
+    }
+
+    /// The **model** index of visible row `target`, or `None` when the projection is shorter.
+    ///
+    /// Single-row lookup that stops as soon as the row is found; the pointer paths used to
+    /// materialise the whole projection to read one entry from it.
+    fn visible_index_at(&self, target: usize) -> Option<usize> {
+        let model = self.model.as_ref()?;
+        let count = model.node_count();
+        let mut shown = 0usize;
+        let mut ancestors: Vec<(usize, bool)> = Vec::new();
+        for index in 0..count {
+            let Some(node) = model.node(index) else { continue };
+            while ancestors.last().is_some_and(|(depth, _)| *depth >= node.depth) {
+                ancestors.pop();
+            }
+            if ancestors.iter().all(|(_, expanded)| *expanded) {
+                if shown == target {
+                    return Some(index);
+                }
+                shown += 1;
+            }
+            if node.has_children {
+                ancestors.push((node.depth, self.is_expanded(index)));
+            }
+        }
+        None
     }
 
     /// Whether the node at **model** index `index` is expanded.
@@ -453,13 +495,13 @@ impl TreeView {
     /// The row's own view, so a host can ask the same questions the renderer does (is this row a
     /// branch, how deep is it) without recomputing the visible projection itself.
     pub fn node_view(&self, index: usize) -> Option<NodeView> {
-        let model_index = *self.visible_indices().get(index)?;
+        let model_index = self.visible_index_at(index)?;
         self.model.as_ref()?.node(model_index)
     }
 
     /// The **model** index a visible row names, if the row exists.
     pub fn model_index(&self, index: usize) -> Option<usize> {
-        self.visible_indices().get(index).copied()
+        self.visible_index_at(index)
     }
 
     /// Selects a node by **visible** index.
@@ -467,7 +509,7 @@ impl TreeView {
     /// Repaints: the selected row's highlight is painted, so without the request the
     /// selection would only appear once some unrelated event repainted the control.
     pub fn select_node(&mut self, index: usize) -> bool {
-        let Some(model_index) = self.visible_indices().get(index).copied() else {
+        let Some(model_index) = self.visible_index_at(index) else {
             return false;
         };
         self.selected_node = Some(model_index);
@@ -553,9 +595,9 @@ impl TreeView {
             return None;
         }
         let index = ((pos.y - content.y) / TREE_ROW_HEIGHT).max(0) as usize;
-        // `visible_row_count`, not `visible_indices().len()`: this runs on every pointer move, and
-        // counting the projection does not need to materialise it.
-        (index < self.visible_row_count()).then_some(index)
+        // A single-row lookup, not the whole projection: this runs on every pointer move, and
+        // counting or materialising the document made hover cost follow the model size.
+        self.visible_index_at(index).map(|_| index)
     }
 
     /// How many rows the visible projection has, without building the list.
@@ -916,7 +958,7 @@ impl Draw for TreeView {
         // take and release the global manager's lock internally, so no guard is held across
         // the draw (the mutex is not re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("tree_view");
+        let theme = crate::style::resolved_theme_style_shared("tree_view");
         let surface = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -954,10 +996,14 @@ impl Draw for TreeView {
         // `y + item_height / 2` — which put the glyph box's top edge on the row's middle
         // line and left the first node pinned to y=0.
         if let Some(ref model) = self.model {
-            // The **visible projection**, computed once for the whole frame: a row index here is
-            // the same index `node_row_rect`, `node_at` and the selection speak, so the row that is
-            // painted is the row a click hits.
-            let rows = self.visible_indices();
+            // The **visible projection**, computed only as far as the viewport can show. The
+            // full projection materialised one entry per node — a 10k-node tree allocated a
+            // 10k-entry `Vec` per frame to paint ~30 rows. The limit is the row count the
+            // content box can hold plus one (the loop stops at the first row that does not
+            // fit), so the projection stops as soon as painting will.
+            let content = ControlMetrics::band_inset(rect, TREE_INSET);
+            let row_capacity = (content.height / TREE_ROW_HEIGHT as u32) as usize + 1;
+            let rows = self.visible_indices_limited(row_capacity);
             let font = effective_font(style);
             for (visible, &model_index) in rows.iter().enumerate() {
                 // The row's own rectangle comes from the same derivation the hit test uses, so a
@@ -1016,7 +1062,7 @@ impl Draw for TreeView {
                         row.width.saturating_sub(indent.max(0) as u32),
                         row.height,
                     );
-                    context.draw_text_fitted(
+                    context.draw_text_fitted_cow(
                         context.text_line(cell, font),
                         &node.label,
                         font,

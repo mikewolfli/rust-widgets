@@ -308,8 +308,8 @@ impl Draw for TerminalView {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("terminal_view")
-            .or_else(|| crate::style::resolved_theme_style("text_edit"));
+        let theme = crate::style::resolved_theme_style_shared("terminal_view")
+            .or_else(|| crate::style::resolved_theme_style_shared("text_edit"));
         // `terminal_view` is not a control kind in the role table, so it classifies as
         // `Surface`, whose background is `theme.colors.background` — byte-identical to the
         // window behind it. That is why the field is derived rather than taken from the
@@ -390,7 +390,7 @@ impl Draw for TerminalView {
             let y = rect.y + 16 + idx as i32 * prompt_line_height as i32;
             let line_bounds =
                 Rect::new(rect.x + 8, y, rect.width.saturating_sub(16), prompt_line_height);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 line_bounds,
                 line,
                 prompt_font,
@@ -403,7 +403,7 @@ impl Draw for TerminalView {
         let prompt_text = format!("> {}", self.input_line);
         let prompt_bounds =
             Rect::new(rect.x + 8, prompt_y, rect.width.saturating_sub(16), prompt_line_height);
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             prompt_bounds,
             &prompt_text,
             prompt_font,

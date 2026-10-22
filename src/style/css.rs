@@ -41,6 +41,23 @@ pub enum CssSelector {
 }
 
 impl CssSelector {
+    /// CSS specificity weight, used to order matching rules inside one apply pass.
+    ///
+    /// The scale mirrors [`Selector::specificity`](crate::style::selector::Selector::specificity)
+    /// — id > class > kind — so a rule written for `.primary` wins over the generic `Button` rule
+    /// regardless of which one appears first in the sheet. Before this existed, the runtime applied
+    /// rules in source order only, which is the opposite of the CSS cascade.
+    pub fn specificity(&self) -> u32 {
+        match self {
+            CssSelector::Universal => 0,
+            CssSelector::Kind(_) => 1,
+            CssSelector::State(_) => 1,
+            CssSelector::Class(_) => 10,
+            CssSelector::Id(_) => 100,
+            CssSelector::And(selectors) => selectors.iter().map(CssSelector::specificity).sum(),
+        }
+    }
+
     /// Convert this CSS-parsed selector into the canonical `Selector` enum.
     ///
     /// Returns `None` when the selector names a widget kind the library does not
@@ -383,9 +400,13 @@ impl CssParser {
             } else if let Some(id_name) = part.strip_prefix('#') {
                 selectors.push(CssSelector::Id(id_name.to_string()));
             } else if let Some(state_name) = part.strip_prefix(':') {
-                if let Some(state) = Self::parse_pseudo_state(state_name) {
-                    selectors.push(CssSelector::State(state));
-                }
+                // An unrecognised pseudo-class used to be dropped silently, which left the rest of
+                // the selector in place: `Button:hoover` (typo) therefore parsed to `Button` and
+                // painted every button as if it were hovered, forever. A selector whose condition
+                // cannot be expressed must match nothing instead (the same policy
+                // `to_selector` already applies to an unknown kind).
+                let state = Self::parse_pseudo_state(state_name)?;
+                selectors.push(CssSelector::State(state));
             } else if part == "*" {
                 selectors.push(CssSelector::Universal);
             } else {
@@ -713,6 +734,12 @@ impl CssParser {
 
     fn parse_hex_color(hex: &str) -> Result<Color, String> {
         let hex = hex.trim();
+        // `len()` and the slices below are byte-based, so a non-ASCII character would panic on a
+        // char-boundary split (`"#日本"` is 6 bytes and enters the 6-digit arm). Reject non-hex
+        // input up front and let the normal "invalid colour" path report it.
+        if !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(format!("Invalid hex: {hex}"));
+        }
         let (r, g, b, a) = match hex.len() {
             3 => {
                 let r = u8::from_str_radix(&hex[0..1], 16)
@@ -1007,6 +1034,35 @@ impl CssParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A rule whose kind is unknown must match nothing. A **pseudo-class** that does not parse
+    /// used to be dropped instead, leaving the rest of the selector intact, so `Button:hoover`
+    /// selected every button in every state.
+    #[test]
+    fn an_unknown_pseudo_class_makes_the_selector_match_nothing() {
+        assert!(CssParser::parse_selector("Button:hoover").is_none());
+        assert!(CssParser::parse_selector("Button:focus-within").is_none());
+        // Known states still parse.
+        assert!(CssParser::parse_selector("Button:hover").is_some());
+    }
+
+    /// Non-ASCII input must be reported, not panic on a char-boundary slice.
+    #[test]
+    fn a_non_ascii_hex_colour_is_rejected_without_panicking() {
+        for value in ["#日本", "#日aaaaa", "#zzzzzz", "#fffz"] {
+            assert!(CssParser::parse_color(value).is_err(), "{value} must be rejected");
+        }
+    }
+
+    /// A class selector must outrank a kind selector regardless of source order.
+    #[test]
+    fn specificity_ranks_a_class_above_a_kind() {
+        let kind = CssParser::parse_selector("Button").expect("kind selector");
+        let class = CssParser::parse_selector("Button.primary").expect("class selector");
+        let id = CssParser::parse_selector("#ok").expect("id selector");
+        assert!(kind.specificity() < class.specificity());
+        assert!(class.specificity() < id.specificity());
+    }
 
     #[test]
     fn test_parse_simple_rule() {

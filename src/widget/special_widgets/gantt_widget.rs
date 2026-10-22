@@ -421,7 +421,7 @@ impl Draw for GanttWidget {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("gantt_widget");
+        let theme = crate::style::resolved_theme_style_shared("gantt_widget");
         // `gantt_widget` is not a control kind in the role table, so it classifies as
         // `Surface`, whose background is `theme.colors.background` — byte-identical
         // to the window behind it. The chart's own fill is therefore a step toward
@@ -444,7 +444,7 @@ impl Draw for GanttWidget {
         let selected_lane = background.blend(&text_color, 0.14);
         // Task bars are data marks drawn in the accent colour, which is what makes
         // them a chart rather than chrome.
-        let bar_color = crate::style::resolved_theme_style("slider")
+        let bar_color = crate::style::resolved_theme_style_shared("slider")
             .and_then(|accent| accent.background_color)
             .unwrap_or_else(|| background.blend(&text_color, 0.55));
         let progress_color = bar_color.blend(&text_color, 0.18);
@@ -452,10 +452,9 @@ impl Draw for GanttWidget {
         let separator = background.blend(&text_color, 0.12);
         // The "now" line is a **semantic** mark, not chrome: it answers the question the chart exists
         // to answer, so it takes the theme's error role -- the one colour in the palette that is
-        // universally read as "pay attention to this instant". Derived from the text colour only as a
-        // last fallback, and kept at full strength so it is never mistaken for a lane separator.
-        let today_color = crate::style::resolved_theme_style("badge")
-            .and_then(|style| style.text_color)
+        // universally read as "pay attention to this instant". It read the `badge` style's text
+        // colour instead, and `badge` is not a role, so the mark was painted in ordinary ink.
+        let today_color = crate::style::semantic_color(crate::style::SemanticColor::Error)
             .unwrap_or_else(|| background.blend(&text_color, 0.85));
         // Dependencies are structure, not data: a line that connected bars in the accent colour would
         // compete with the bars themselves.
@@ -499,7 +498,7 @@ impl Draw for GanttWidget {
             // `draw_text_line` is the entry point that centres on both axes.
             let label_band =
                 Rect::new(rect.x, y, track_x.saturating_sub(rect.x) as u32, self.row_height);
-            context.draw_text_line(
+            context.draw_text_line_cow(
                 label_band,
                 &task.label,
                 effective_font(style),

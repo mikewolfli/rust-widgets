@@ -484,7 +484,7 @@ fn draw_label(context: &mut RenderContext, text: &str, band: Rect, font: &Font) 
     // Fitted to the band, so a long category name cannot run into the bar beside it — the
     // caller already knows each label's column, which is why the band is passed rather than a
     // point.
-    context.draw_text_fitted(
+    context.draw_text_fitted_cow(
         band,
         text,
         font,

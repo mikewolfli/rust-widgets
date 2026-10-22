@@ -846,7 +846,7 @@ impl Draw for MdiArea {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("mdi_area");
+        let theme = crate::style::resolved_theme_style_shared("mdi_area");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
         let (window_fill, foreground, secondary, primary) = {
@@ -1016,7 +1016,7 @@ impl Draw for MdiArea {
                     title_width =
                         title_width.saturating_sub(SUBWINDOW_ICON_SIDE + SUBWINDOW_ICON_GAP);
                 }
-                context.draw_text_fitted(
+                context.draw_text_fitted_cow(
                     Rect {
                         x: title_x,
                         y: title_line.y,
@@ -1131,7 +1131,7 @@ impl MdiArea {
                 label.x += (SUBWINDOW_ICON_SIDE + SUBWINDOW_ICON_GAP) as i32;
                 label.width = label.width.saturating_sub(SUBWINDOW_ICON_SIDE + SUBWINDOW_ICON_GAP);
             }
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 context.text_line(label, font),
                 &subwindow.title,
                 font,

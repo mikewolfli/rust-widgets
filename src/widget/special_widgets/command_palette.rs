@@ -425,7 +425,7 @@ impl Draw for CommandPalette {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("command_palette");
+        let theme = crate::style::resolved_theme_style_shared("command_palette");
         let background = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -461,7 +461,7 @@ impl Draw for CommandPalette {
         // (D09-STYLE-01).
         let query_font = effective_font(style);
         let query_h = context.measure_text("M", query_font).height;
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             Rect::new(
                 header.x + 8,
                 header.y + (header.height as i32 - query_h as i32) / 2,
@@ -489,18 +489,29 @@ impl Draw for CommandPalette {
             }
 
             if let Some(entry) = self.filtered_entry(filtered_index) {
-                let line = if entry.category.is_empty() {
-                    entry.title.clone()
+                let band = Rect::new(rect.x + 8, y, rect.width.saturating_sub(16), self.row_height);
+                let font = effective_font(style);
+                let line_box = context.text_line(band, font);
+                // Fitted to the row and centred by its line box. The old origin was the row's
+                // midpoint used as a glyph top edge, so every result sat half a line low.
+                if entry.category.is_empty() {
+                    context.draw_text_fitted_cow(
+                        line_box,
+                        &entry.title,
+                        font,
+                        text_color,
+                        HorizontalAlignment::Left,
+                    );
                 } else {
-                    format!("{} · {}", entry.category, entry.title)
-                };
-                context.draw_text(
-                    Point::new(rect.x + 8, y + self.row_height as i32 / 2),
-                    &line,
-                    effective_font(style),
-                    text_color,
-                    HorizontalAlignment::Left,
-                );
+                    let joined = format!("{} · {}", entry.category, entry.title);
+                    context.draw_text_fitted_cow(
+                        line_box,
+                        &joined,
+                        font,
+                        text_color,
+                        HorizontalAlignment::Left,
+                    );
+                }
             }
 
             y += self.row_height as i32;

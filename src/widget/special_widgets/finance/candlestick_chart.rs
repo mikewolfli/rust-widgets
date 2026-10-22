@@ -497,6 +497,15 @@ impl CandlestickChart {
         // The axis's own hairline is the pane's grid colour, so the scale a reader measures
         // a candle against cannot be a fixed slate that only reads on a dark backdrop.
         let grid = self.chrome().grid;
+        // One role font for the whole column: it used to be rebuilt for each of the four
+        // labels every frame.
+        let font = role_font(self.style(), 10.0);
+        // The label column is the plot's left margin. The width used to be estimated as
+        // `len * 7`, which for an eight-character price (56 px) put the origin at −14 —
+        // outside the control's own rectangle — and under-counted wide glyphs.
+        let label_left = area.rect.x - area.left_margin;
+        let label_right = area.label_x();
+        let label_width = (label_right - label_left).max(0) as u32;
         // Four gridlines, at the ends and two inside.
         for step in 0..=3 {
             let fraction = step as f64 / 3.0;
@@ -508,14 +517,16 @@ impl CandlestickChart {
                 crate::core::Point { x: area.right(), y },
                 grid,
             );
-            // Right-aligned against the plot edge so the digits line up in a column.
-            let width = text.len() as i32 * 7;
-            context.draw_text(
-                crate::core::Point { x: area.rect.x - 6 - width, y: y - 6 },
+            // Right-aligned in the reserved column and fitted to it, so a wide value
+            // truncates instead of starting left of the control.
+            let line_height = context.measure_text(&text, &font).height.max(1);
+            let band = Rect::new(label_left, y - line_height as i32 / 2, label_width, line_height);
+            context.draw_text_fitted_cow(
+                band,
                 &text,
-                &role_font(self.style(), 10.0),
+                &font,
                 self.chrome().ink.with_alpha(190),
-                HorizontalAlignment::Left,
+                HorizontalAlignment::Right,
             );
         }
     }
@@ -544,7 +555,7 @@ impl CandlestickChart {
         );
         let font = role_font(self.style(), 12.0);
         let line = context.text_line(area.rect, &font);
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             line,
             "No data",
             &font,

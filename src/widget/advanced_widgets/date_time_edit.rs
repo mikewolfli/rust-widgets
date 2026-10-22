@@ -565,7 +565,7 @@ impl Draw for DateTimeEdit {
         // `background_color` (ThemeRole::Input resolves that to `None`), so the interior
         // is derived below from the theme's own background rather than left unset.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("date_time_edit");
+        let theme = crate::style::resolved_theme_style_shared("date_time_edit");
         // Read as its own lock acquisition and copied out as values, so the guard is
         // dropped before anything else touches the theme.
         let (window_fill, foreground) = {
@@ -629,7 +629,7 @@ impl Draw for DateTimeEdit {
         // body font and the user's text scale (D09-STYLE-01).
         let font = effective_font(style);
         let line = context.text_line(rect, font);
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             Rect {
                 x: rect.x + 6,
                 y: line.y,

@@ -355,6 +355,9 @@ impl WidgetProperties for VideoPlayer {
         match name {
             "is_playing" => Ok(CapabilityValue::Bool(self.is_playing())),
             "volume" => Ok(CapabilityValue::Float(self.volume() as f64)),
+            "muted" => Ok(CapabilityValue::Bool(self.is_muted())),
+            "playback_rate" => Ok(CapabilityValue::Float(self.playback_rate() as f64)),
+            "controls_visible" => Ok(CapabilityValue::Bool(self.controls_visible())),
             _ => base_property_get(self, name),
         }
     }
@@ -373,12 +376,35 @@ impl WidgetProperties for VideoPlayer {
                 self.set_volume(expect_f32(value)?);
                 Ok(())
             }
+            "muted" => {
+                self.set_muted(expect_bool(value)?);
+                Ok(())
+            }
+            "playback_rate" => {
+                self.set_playback_rate(expect_f32(value)?);
+                Ok(())
+            }
+            "controls_visible" => {
+                if expect_bool(value)? {
+                    self.show_controls();
+                } else {
+                    self.hide_controls();
+                }
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["is_playing", "volume", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "is_playing",
+            "volume",
+            "muted",
+            "playback_rate",
+            "controls_visible",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 
@@ -401,25 +427,29 @@ impl Draw for VideoPlayer {
         //   * the **seek fill** -- a value indicator, so it is the accent, exactly as a slider's
         //     fill or a progress bar's is. It was a fixed `rgb(60,140,240)` that no theme could
         //     move.
-        let (accent, placeholder, placeholder_ink) = {
+        let (accent, placeholder, placeholder_ink, window_fill) = {
             let manager = crate::style::theme_manager();
             match manager.current_theme() {
                 Some(active) => (
                     active.colors.primary,
                     active.colors.surface_container,
                     active.colors.secondary,
+                    active.colors.background,
                 ),
                 None => (
                     Color::rgba(60, 140, 240, 230),
                     Color::rgba(30, 30, 30, 255),
                     Color::rgba(180, 180, 180, 220),
+                    Color::WHITE,
                 ),
             }
         };
 
         // ── Video area ──────────────────────────────────────────────────
         let video_bg = if !is_enabled {
-            Color::rgba(200, 200, 200, 100)
+            // A disabled player is the page's own surface, veiled, rather than a fixed
+            // translucent grey that read as a light slab in a dark appearance.
+            self.base.disabled_surface_near(placeholder, window_fill)
         } else if self.source.is_empty() {
             placeholder
         } else {
@@ -433,7 +463,11 @@ impl Draw for VideoPlayer {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect_stroke(rect, Color::rgba(80, 80, 80, 200), 1);
+        context.draw_rect_stroke(
+            rect,
+            self.style().border_color.unwrap_or_else(|| video_bg.blend(&Color::WHITE, 0.2)),
+            1,
+        );
 
         // The control's chrome text (placeholder, time, rate) takes the **effective font**, so the
         // theme body font and the user's text scale reach it (D09-STYLE-01).
@@ -446,7 +480,7 @@ impl Draw for VideoPlayer {
             let metrics = context.measure_text(text, font);
             let text_y = rect.y + (rect.height as i32 - metrics.height as i32) / 2;
             let line = Rect::new(rect.x, text_y, rect.width, metrics.height);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 line,
                 text,
                 font,
@@ -490,11 +524,48 @@ impl Draw for VideoPlayer {
         crate::widget::draw_icon_centered(context, btn_box, btn_side, Color::WHITE, btn_icon);
 
         // Seek bar: the shared thickness, centred on the transport bar's own middle line.
+        //
+        // The right-hand items are laid out from the right edge first, then the time label
+        // is placed left of them, and only then is the seek bar given what remains. The old
+        // fixed 80 px reservation held an 11-glyph time string (≈74 px at 14 px) and left no
+        // room for a playback-rate label, which was then drawn over the fullscreen icon.
         let seek_bar_x = rect.x + 8 + btn_side as i32 + 12;
         let seek_bar_y = control_bar_y
             + (control_bar_height as i32 - dimensions::VIDEO_SEEK_BAR_HEIGHT as i32) / 2;
-        let seek_bar_width = rect.width.saturating_sub((seek_bar_x - rect.x + 80) as u32);
         let seek_bar_height = dimensions::VIDEO_SEEK_BAR_HEIGHT;
+        let time_text = format!(
+            "{:02}:{:02}/{:02}:{:02}",
+            (self.current_time as u32) / 60,
+            (self.current_time as u32) % 60,
+            (self.duration as u32) / 60,
+            (self.duration as u32) % 60,
+        );
+        let time_metrics = context.measure_text(&time_text, font);
+        let time_width = time_metrics.width as i32;
+        let vol_side = 16u32;
+        let vol_box = Rect::new(
+            rect.x + rect.width as i32 - vol_side as i32 - 8,
+            control_bar_y,
+            vol_side,
+            control_bar_height,
+        );
+        let fs_side = 16u32;
+        let fs_box =
+            Rect::new(vol_box.x - fs_side as i32 - 24, control_bar_y, fs_side, control_bar_height);
+        let rate_text = if (self.playback_rate - 1.0).abs() > 0.01 {
+            Some(format!("{:.1}x", self.playback_rate))
+        } else {
+            None
+        };
+        let rate_width = rate_text
+            .as_ref()
+            .map(|text| context.measure_text(text, font).width as i32)
+            .unwrap_or(0);
+        // The rate label sits left of the fullscreen icon; the time label sits left of the
+        // whole right-hand group. Both gaps are real, so neither label can overlap an icon.
+        let rate_x = fs_box.x - rate_width - 8;
+        let time_x = if rate_text.is_some() { rate_x } else { fs_box.x } - time_width - 8;
+        let seek_bar_width = (time_x - 8 - seek_bar_x).max(0) as u32;
         let seek_bar_full = Rect::new(seek_bar_x, seek_bar_y, seek_bar_width, seek_bar_height);
         context.fill_rounded_rect(
             seek_bar_full,
@@ -509,16 +580,7 @@ impl Draw for VideoPlayer {
             context.fill_rounded_rect(seek_bar_fill, seek_bar_height / 2, accent);
         }
 
-        // Time display.
-        let time_text = format!(
-            "{:02}:{:02}/{:02}:{:02}",
-            (self.current_time as u32) / 60,
-            (self.current_time as u32) % 60,
-            (self.duration as u32) / 60,
-            (self.duration as u32) % 60,
-        );
-        let time_metrics = context.measure_text(&time_text, font);
-        let time_x = seek_bar_full.x + seek_bar_full.width as i32 + 4;
+        // Time display, placed in the gap the right-hand group left for it.
         let time_y = control_bar_y + (control_bar_height as i32 - time_metrics.height as i32) / 2;
         context.draw_text(
             Point::new(time_x, time_y),
@@ -533,25 +595,16 @@ impl Draw for VideoPlayer {
         // transport bar wants). Muted is the crossed speaker; otherwise the plain speaker.
         let vol_icon =
             if self.muted || self.volume < 0.01 { IconName::VolumeOff } else { IconName::VolumeUp };
-        let vol_side = 16u32;
-        let vol_box = Rect::new(
-            rect.x + rect.width as i32 - vol_side as i32 - 8,
-            control_bar_y,
-            vol_side,
-            control_bar_height,
-        );
         crate::widget::draw_icon_centered(context, vol_box, vol_side, Color::WHITE, vol_icon);
 
-        // Playback rate indicator.
-        if (self.playback_rate - 1.0).abs() > 0.01 {
-            let rate_text = format!("{:.1}x", self.playback_rate);
-            let rate_metrics = context.measure_text(&rate_text, font);
-            let rate_x = vol_box.x - rate_metrics.width as i32 - 8;
+        // Playback rate indicator, in the slot reserved left of the fullscreen button.
+        if let Some(rate_text) = rate_text.as_ref() {
+            let rate_metrics = context.measure_text(rate_text, font);
             let rate_y =
                 control_bar_y + (control_bar_height as i32 - rate_metrics.height as i32) / 2;
             context.draw_text(
                 Point::new(rate_x, rate_y),
-                &rate_text,
+                rate_text,
                 font,
                 Color::rgba(255, 220, 100, 230),
                 HorizontalAlignment::Left,
@@ -560,9 +613,6 @@ impl Draw for VideoPlayer {
 
         // Fullscreen button: a `Fullscreen` **icon outline**, not the `⛶` text glyph (U+26F6 is
         // covered by no bundled face).
-        let fs_side = 16u32;
-        let fs_box =
-            Rect::new(vol_box.x - fs_side as i32 - 24, control_bar_y, fs_side, control_bar_height);
         crate::widget::draw_icon_centered(
             context,
             fs_box,
@@ -915,6 +965,33 @@ mod tests {
             assert_eq!(vp.current_time(), before, "seek({bad}) must be a no-op");
         }
         assert!(vp.progress().is_finite(), "progress must stay finite");
+    }
+
+    /// The live setters are reachable through the property channel too.
+    ///
+    /// `muted`, `playback_rate` and `controls_visible` were one method away on the type but
+    /// absent from `get`/`set`/`property_names`/the capability table, so a host driving the
+    /// player through the designer route could not mute it or change its rate.
+    #[test]
+    fn video_player_property_channel_covers_the_live_setters() {
+        use crate::widget::capability::WidgetProperties;
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+
+        vp.set("muted", CapabilityValue::Bool(true)).unwrap();
+        assert!(vp.is_muted());
+        assert_eq!(vp.get("muted").unwrap(), CapabilityValue::Bool(true));
+
+        vp.set("playback_rate", CapabilityValue::Float(1.5)).unwrap();
+        assert!((vp.playback_rate() - 1.5).abs() < 1e-6);
+
+        vp.set("controls_visible", CapabilityValue::Bool(false)).unwrap();
+        assert!(!vp.controls_visible());
+        vp.set("controls_visible", CapabilityValue::Bool(true)).unwrap();
+        assert!(vp.controls_visible());
+
+        for name in ["muted", "playback_rate", "controls_visible"] {
+            assert!(vp.property_names().contains(&name), "{name} must be published");
+        }
     }
 
     #[test]

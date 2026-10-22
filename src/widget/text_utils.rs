@@ -127,6 +127,8 @@ pub(crate) fn first_visible_row_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The `alloc_frugal` profiles have no `std` prelude, so this test's `Vec` must be named.
+    use crate::compat::Vec;
 
     #[test]
     fn ascii_boundaries_are_identity() {

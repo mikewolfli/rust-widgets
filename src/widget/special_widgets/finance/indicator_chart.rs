@@ -151,6 +151,12 @@ pub struct IndicatorChart {
     /// The values last computed, kept so a caller can read the numbers behind the picture
     /// without recomputing them — and so a tooltip and the drawn line cannot disagree.
     last_values: Vec<Vec<f64>>,
+    /// Whether `last_values` still matches `series`/`mode`/the period settings.
+    ///
+    /// The indicator is O(bars) work plus several full-length allocations; before this
+    /// flag, a still pane recomputed MACD/RSI/ATR on every frame even when nothing had
+    /// changed. Every setter that can change the numbers clears it.
+    values_valid: bool,
     /// Emitted with the bar index when the pane is clicked.
     pub bar_clicked: crate::signal::Signal1<usize>,
     /// Emitted with the bar index as the pointer moves across bars.
@@ -170,6 +176,7 @@ impl IndicatorChart {
             show_reference_levels: true,
             hovered_index: None,
             last_values: Vec::new(),
+            values_valid: false,
             bar_clicked: crate::signal::Signal1::new(),
             bar_hovered: crate::signal::Signal1::new(),
         }
@@ -183,6 +190,7 @@ impl IndicatorChart {
     /// Replaces the series and requests a repaint.
     pub fn set_series(&mut self, series: PriceSeries) {
         self.series = series;
+        self.values_valid = false;
         if self.hovered_index.is_some_and(|index| index >= self.series.len()) {
             self.hovered_index = None;
         }
@@ -200,6 +208,7 @@ impl IndicatorChart {
             return;
         }
         self.mode = mode;
+        self.values_valid = false;
         self.base.request_redraw();
     }
 
@@ -216,6 +225,7 @@ impl IndicatorChart {
             if slow == 0 { 26 } else { slow },
             if signal == 0 { 9 } else { signal },
         );
+        self.values_valid = false;
         self.base.request_redraw();
     }
 
@@ -234,6 +244,7 @@ impl IndicatorChart {
             return;
         }
         self.period = period;
+        self.values_valid = false;
         self.base.request_redraw();
     }
 
@@ -249,6 +260,7 @@ impl IndicatorChart {
             return;
         }
         self.stochastic_periods = periods;
+        self.values_valid = false;
         self.base.request_redraw();
     }
 
@@ -327,7 +339,15 @@ impl IndicatorChart {
 
     /// The coloured series to draw, in order, with the histogram last so it sits behind.
     fn pane_series(&self) -> Vec<PaneSeries> {
-        let values = self.compute();
+        self.pane_series_from(self.compute())
+    }
+
+    /// The coloured series to draw, built from values the caller already has.
+    ///
+    /// Taking the values by value lets the draw path move `last_values` through the pane
+    /// record and back, so a cached frame neither recomputes the indicator nor clones its
+    /// float vectors.
+    fn pane_series_from(&self, values: Vec<Vec<f64>>) -> Vec<PaneSeries> {
         let palette = match self.mode {
             IndicatorMode::Macd => alloc::vec![
                 Color::rgb(33, 150, 243),
@@ -469,6 +489,12 @@ impl IndicatorChart {
     /// Draws the pane's left-hand value labels.
     fn draw_labels(&self, context: &mut RenderContext, area: &PlotArea, price_axis: &PriceAxis) {
         let (low, high) = (price_axis.low, price_axis.high);
+        // One role font and one label column for the whole axis; the old `len * 7`
+        // estimate put an eight-character value's origin outside the control.
+        let font = role_font(self.style(), 10.0);
+        let label_left = area.rect.x - area.left_margin;
+        let label_right = area.label_x();
+        let label_width = (label_right - label_left).max(0) as u32;
         for step in 0..=3 {
             let fraction = step as f64 / 3.0;
             let value = low + fraction * (high - low);
@@ -477,13 +503,14 @@ impl IndicatorChart {
             // inferring precision from the data would give an unbounded axis like MACD a
             // changing number of decimals as the window scrolls.
             let text = alloc::format!("{value:.2}");
-            let width = text.chars().count() as i32 * 7;
-            context.draw_text(
-                Point { x: area.rect.x - 6 - width, y: y - 6 },
+            let line_height = context.measure_text(&text, &font).height.max(1);
+            let band = Rect::new(label_left, y - line_height as i32 / 2, label_width, line_height);
+            context.draw_text_fitted_cow(
+                band,
                 &text,
-                &role_font(self.style(), 10.0),
+                &font,
                 self.chrome().ink.with_alpha(190),
-                HorizontalAlignment::Left,
+                HorizontalAlignment::Right,
             );
         }
     }
@@ -511,7 +538,7 @@ impl IndicatorChart {
         context.draw_rect(area.rect, chrome.grid);
         let font = role_font(self.style(), 12.0);
         let line = context.text_line(area.rect, &font);
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             line,
             "No data",
             &font,
@@ -630,7 +657,14 @@ impl Draw for IndicatorChart {
             return;
         }
 
-        let series = self.pane_series();
+        let series = if self.values_valid {
+            // Move the cached values through the pane records and back at the end of the
+            // frame: no recompute, no float-vector clone.
+            let values = core::mem::take(&mut self.last_values);
+            self.pane_series_from(values)
+        } else {
+            self.pane_series()
+        };
         let (low, high) = self.axis_range(&series);
         let price_axis = area.price_axis(low, high);
         let index_axis = area.index_axis(self.series.len());
@@ -699,6 +733,7 @@ impl Draw for IndicatorChart {
 
         // The values are kept so a caller can read them without recomputing.
         self.last_values = series.into_iter().map(|pane| pane.values).collect();
+        self.values_valid = true;
     }
 }
 

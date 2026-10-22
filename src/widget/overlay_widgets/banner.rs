@@ -119,7 +119,7 @@ impl BannerSeverity {
     /// held across each other or across the draw — so a `Draw` that resolves a
     /// token cannot deadlock the non-reentrant global manager.
     fn background(self) -> Color {
-        let surface = crate::style::resolved_theme_style("banner")
+        let surface = crate::style::resolved_theme_style_shared("banner")
             .and_then(|style| style.background_color)
             .unwrap_or(Color::WHITE);
         match self.token_color() {
@@ -149,7 +149,7 @@ impl BannerSeverity {
     /// it is the *accent*, and text drawn in the accent on an accent-tinted fill
     /// would be nearly invisible.
     fn default_text(self) -> Color {
-        crate::style::resolved_theme_style("banner")
+        crate::style::resolved_theme_style_shared("banner")
             .and_then(|style| style.text_color)
             .unwrap_or(Color::BLACK)
     }
@@ -583,7 +583,7 @@ impl Draw for Banner {
             // line low — visible in `banner.svg`, where a 16 px line began at the middle of a
             // 120 px band instead of at 52.
             let line = context.text_line(rect, &font);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect {
                     x: rect.x + EDGE_PADDING as i32,
                     y: line.y,
@@ -612,7 +612,7 @@ impl Draw for Banner {
             // the button was.
             let action_font = role_font(style, 12.0);
             let action_line = context.text_line(action_rect, &action_font);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 action_line,
                 label,
                 &action_font,

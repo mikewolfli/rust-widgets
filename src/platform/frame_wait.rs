@@ -71,6 +71,12 @@ mod inner {
     /// Win32 is included: the backend loop pumps its own message queue in
     /// [`pause_between_frames`](super::pause_between_frames), but the event loop runs on its own
     /// thread and may block here just like any other waiter.
+    ///
+    /// Consumed by each backend's `pause_between_frames`. A build with no platform backend (the
+    /// `windows desktop-runtime` cell in `check_profiles`) compiles this module without a caller,
+    /// so the allow is scoped to this function rather than to the module: `wake`/`generation`/
+    /// `wait_after` still warn if their wiring disappears.
+    #[allow(dead_code)]
     pub(crate) fn wait_timeout(timeout: Duration) {
         let state = state();
         let observed = state.generation.load(Ordering::SeqCst);

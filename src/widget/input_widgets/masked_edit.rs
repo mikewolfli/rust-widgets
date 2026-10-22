@@ -796,7 +796,7 @@ impl Draw for MaskedEdit {
         // themed field carried unthemed text: `rgb(33,33,33)` on the dark theme's `rgb(69,69,69)`
         // field is ~1.35:1, which is present in the SVG and unreadable to a person.
         let style = self.style();
-        let themed = crate::style::resolved_theme_style("masked_edit");
+        let themed = crate::style::resolved_theme_style_shared("masked_edit");
         let themed_bg = themed.as_ref().and_then(|resolved| resolved.background_color);
         let themed_border = themed.as_ref().and_then(|resolved| resolved.border_color);
         // Explicit style wins, then the theme, then the original literal as a last resort so
@@ -865,7 +865,7 @@ impl Draw for MaskedEdit {
         // itself, so a light caret cannot carry a light glyph.
         let caret_color = crate::style::semantic_color(crate::style::SemanticColor::Info)
             .or_else(|| {
-                crate::style::resolved_theme_style("button").and_then(|b| b.background_color)
+                crate::style::resolved_theme_style_shared("button").and_then(|b| b.background_color)
             })
             .unwrap_or_else(|| bg_color.contrast_color())
             .legible_on(bg_color, INK_MIN_RATIO);
@@ -925,7 +925,7 @@ impl Draw for MaskedEdit {
             // halves of the control consistent rather than leaving one of them emitting nothing
             // that looks like something.
             if !self.raw_text.is_empty() {
-                context.draw_text_fitted(
+                context.draw_text_fitted_cow(
                     text_bounds,
                     &self.raw_text,
                     &font,

@@ -268,6 +268,17 @@ macro_rules! impl_properties_view {
         #[cfg(not(alloc_frugal))]
         pub(crate) const IMAGE_GALLERY_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("current_index", PropertyValueKind::UInt, true, true),
+            // The image list is a *property*, not only the `add_image` / `set_images` methods, so a
+            // document can spell the gallery. Each row is a record because an image carries its own
+            // dimensions and optional label as well as its path.
+            PropertySchema::records(
+                "images",
+                true,
+                true,
+                &crate::widget::view_widgets::image_gallery::GALLERY_IMAGE_SCHEMA,
+            ),
+            PropertySchema::new("thumbnail_size", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("show_thumbnails", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

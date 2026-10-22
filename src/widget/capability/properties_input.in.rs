@@ -46,6 +46,9 @@ macro_rules! impl_properties_input {
             PropertySchema::new("text_visible", PropertyValueKind::Bool, true, true),
             PropertySchema::enumerated("orientation", true, true, &["horizontal", "vertical"]),
             PropertySchema::new("inverted_appearance", PropertyValueKind::Bool, true, true),
+            // The mode switch was fully implemented (`is_indeterminate` / `set_indeterminate`, and
+            // the paint path's sweeping band) but unpublished, so a designer could never enable it.
+            PropertySchema::new("indeterminate", PropertyValueKind::Bool, true, true),
             // The direction the *line* runs in. Distinct from `inverted_appearance`, which is a
             // decoration: direction says which end the minimum is at, and the two compose (an RTL
             // bar draws inverted *without* the property being set). Declared in both tables so a
@@ -146,6 +149,13 @@ macro_rules! impl_properties_input {
 
         pub(crate) const COMBO_BOX_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
+            // The entry list is a *property*, not only the `set_items` command (whose signature takes
+            // the items as an argument the property route could not carry). Without it a document's
+            // `"items": [...]` had nowhere to go and a designer could not see or edit the entries at
+            // all. It travels as `StringList` rather than `Records`: two entries may share a label,
+            // so there is no identity field to key them by and `Records`' unique-id rule would
+            // refuse a legitimate list.
+            PropertySchema::new("items", PropertyValueKind::StringList, true, true),
             PropertySchema::new("current_index", PropertyValueKind::UInt, true, true),
             PropertySchema::new("current_text", PropertyValueKind::String, true, true),
             PropertySchema::new("editable", PropertyValueKind::Bool, true, true),
@@ -271,6 +281,10 @@ macro_rules! impl_properties_input {
         ];
 
         pub(crate) const ROLLER_PROPERTIES: &[PropertySchema] = &[
+            // The option list is a property as well as a command, for the same reason as
+            // `combo_box.items`: a document has to be able to spell the wheel's entries. Entries
+            // may repeat, so it is a `StringList` rather than `Records`.
+            PropertySchema::new("options", PropertyValueKind::StringList, true, true),
             PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
             PropertySchema::new("visible_count", PropertyValueKind::UInt, true, true),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
@@ -296,6 +310,9 @@ macro_rules! impl_properties_input {
             PropertySchema::new("text", PropertyValueKind::String, true, true),
             PropertySchema::new("placeholder", PropertyValueKind::String, true, true),
             PropertySchema::new("read_only", PropertyValueKind::Bool, true, true),
+            // Enforced by `set_max_length`, but unpublished: a designer had no way to see or set
+            // the control's byte budget. `0` means unlimited, as on `line_edit`.
+            PropertySchema::new("max_length", PropertyValueKind::UInt, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

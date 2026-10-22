@@ -18,7 +18,7 @@ use rust_widgets::app::CheckBoxHandle;
 use rust_widgets::core::Rect;
 #[cfg(not(target_arch = "wasm32"))]
 use rust_widgets::event::{Event, EventPriority, EventQueue};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), declarative_view))]
 use rust_widgets::widget::capability::CapabilityValue;
 #[cfg(not(target_arch = "wasm32"))]
 use rust_widgets::widget::WidgetFactory;
@@ -29,7 +29,12 @@ use std::hint::black_box;
 ///
 /// Every node is keyed and every key is unique, so the diff has no ambiguity to resolve and
 /// the benchmark measures the walking, not the matching policy.
-#[cfg(not(target_arch = "wasm32"))]
+///
+/// Gated on the build-script alias, not on `desktop`: `desktop,no-declarative-view` still turns
+/// the `declarative-view` *feature* on (Cargo unifies additively) while `build.rs` resolves the
+/// cfg to false, so `required-features` alone cannot express this and the file must not name
+/// `rust_widgets::view` in that configuration.
+#[cfg(all(not(target_arch = "wasm32"), declarative_view))]
 fn sample_view_tree() -> rust_widgets::view::Node {
     let rows = (0..40).map(|i| {
         rust_widgets::view::Node::new("row").key(format!("row{i}")).children_of((0..5).map(|j| {
@@ -43,7 +48,7 @@ fn sample_view_tree() -> rust_widgets::view::Node {
 
 /// An **idle** rebuild: the same tree diffed against itself, which is what a `View` that is
 /// re-evaluated every frame with unchanged state costs (`REND-15`).
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), declarative_view))]
 fn bench_view_diff_idle(c: &mut Criterion) {
     let tree = sample_view_tree();
     let lookup = |_: &[usize], _: usize| -> Option<rust_widgets::core::ObjectId> { Some(1) };
@@ -54,7 +59,7 @@ fn bench_view_diff_idle(c: &mut Criterion) {
 
 /// One leaf changed in a 201-node tree: the diff must stay proportional to the **changed
 /// paths** rather than to the tree, so this should be far cheaper than re-walking everything.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), declarative_view))]
 fn bench_view_diff_one_changed_leaf(c: &mut Criterion) {
     let old = sample_view_tree();
     let mut new = old.clone();
@@ -224,6 +229,19 @@ fn bench_flex_arrange_uncached(c: &mut Criterion) {
     });
 }
 
+/// The declarative-view benches, kept in one always-registered entry so the `criterion_group!`
+/// list stays valid when `declarative_view` is compiled out.
+#[cfg(not(target_arch = "wasm32"))]
+fn bench_view_suite(c: &mut Criterion) {
+    #[cfg(declarative_view)]
+    {
+        bench_view_diff_idle(c);
+        bench_view_diff_one_changed_leaf(c);
+    }
+    #[cfg(not(declarative_view))]
+    let _ = c;
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 criterion_group!(
     benches,
@@ -233,8 +251,7 @@ criterion_group!(
     bench_checkbox_set_checked,
     bench_reapply_active_theme_1000,
     bench_event_queue_batch_drain,
-    bench_view_diff_idle,
-    bench_view_diff_one_changed_leaf,
+    bench_view_suite,
     bench_flex_arrange_cached,
     bench_flex_arrange_uncached
 );

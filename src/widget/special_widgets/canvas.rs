@@ -285,7 +285,7 @@ impl Draw for Canvas {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("canvas");
+        let theme = crate::style::resolved_theme_style_shared("canvas");
         let background = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -304,9 +304,10 @@ impl Draw for Canvas {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        // Replay all stored commands
+        // Replay all stored commands. Borrowed: the list is the canvas's own content, so
+        // cloning each command per frame only duplicated its text and point vectors.
         for cmd in &self.commands {
-            context.execute_command(cmd.clone());
+            context.execute_command_ref(cmd);
         }
         // Draw border to make canvas area visible
         context.draw_rect(rect, border);

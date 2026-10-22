@@ -176,6 +176,21 @@ pub struct TabBar {
     pub tab_moved: Signal1<(usize, usize)>,
 }
 
+/// The resolved chrome colours shared by every tab in one draw pass.
+///
+/// Split out of `draw_tab` so the six values (and the two `WidgetStyle` resolutions they
+/// derive from) are computed once per frame rather than once per tab. `Copy` because they are
+/// all `Color`.
+#[derive(Clone, Copy)]
+struct TabChrome {
+    border: Color,
+    text_color: Color,
+    current_tab: Color,
+    disabled_tab: Color,
+    inactive_tab: Color,
+    hovered_tab: Color,
+}
+
 impl TabBar {
     /// Creates a new `TabBar` with the given geometry.
     pub fn new(geometry: Rect) -> Self {
@@ -728,13 +743,13 @@ impl TabBar {
         })
     }
 
-    /// Draws a single tab with the given shape.
-    fn draw_tab(&self, context: &mut RenderContext, index: usize, tab_rect: Rect) {
-        let tab = &self.tabs[index];
-        let is_current = self.current_index == Some(index);
-        let is_hovered = self.hovered_index == Some(index);
-        let is_enabled = tab.enabled;
-
+    /// The chrome shared by every tab in the strip.
+    ///
+    /// Resolved once per `draw` rather than once per tab: the six derived colours do not
+    /// depend on the tab, so resolving them inside `draw_tab` cloned the resolved
+    /// `WidgetStyle` twice for every tab on every frame (the style carries a font-family
+    /// `String` and a gradient stop vector).
+    fn tab_chrome(&self) -> TabChrome {
         // Chrome colours resolve explicit style first, then the theme's resolved
         // style for this control, and only then a literal. The theme step is what
         // makes an appearance switch visible; previously every colour below was a
@@ -744,7 +759,7 @@ impl TabBar {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("tab_bar");
+        let theme = crate::style::resolved_theme_style_shared("tab_bar");
         // `tab_bar` is not a control kind in the role table, so it classifies as
         // `Surface`, whose background is `theme.colors.background` — byte-identical
         // to the window behind it. The current tab's fill is therefore a step toward
@@ -768,11 +783,34 @@ impl TabBar {
         let disabled_tab = current_tab.blend(&text_color, 0.14);
         let inactive_tab = current_tab.blend(&text_color, 0.06);
         let hovered_tab = current_tab.blend(
-            &crate::style::resolved_theme_style("button")
+            &crate::style::resolved_theme_style_shared("button")
                 .and_then(|button| button.background_color)
                 .unwrap_or(text_color),
             0.08,
         );
+        TabChrome { border, text_color, current_tab, disabled_tab, inactive_tab, hovered_tab }
+    }
+
+    /// Draws a single tab with the given shape.
+    fn draw_tab(
+        &self,
+        context: &mut RenderContext,
+        index: usize,
+        tab_rect: Rect,
+        chrome: &TabChrome,
+        font: &Font,
+    ) {
+        let tab = &self.tabs[index];
+        let is_current = self.current_index == Some(index);
+        let is_hovered = self.hovered_index == Some(index);
+        let is_enabled = tab.enabled;
+
+        let border = chrome.border;
+        let text_color = chrome.text_color;
+        let current_tab = chrome.current_tab;
+        let disabled_tab = chrome.disabled_tab;
+        let inactive_tab = chrome.inactive_tab;
+        let hovered_tab = chrome.hovered_tab;
 
         // Background color.
         let bg = if !is_enabled {
@@ -853,8 +891,7 @@ impl TabBar {
             + if has_icon { (TAB_ICON_SIZE + TAB_ICON_GAP) as i32 } else { 0 };
         // The **effective font** — the resolved theme/caller font — replacing the fixed Arial face,
         // so the tab title honours the theme body font and the user's text scale (D09-STYLE-01).
-        let font = self.label_font();
-        let title_height = context.measure_text("M", &font).height;
+        let title_height = context.measure_text("M", font).height;
         let text_y = tab_rect.y + (tab_rect.height as i32 - title_height as i32) / 2;
         // The tab's icon, from whichever form is active. The legacy `Image` used to reserve the slot
         // above and then never be drawn -- the tab was wider for an icon that did not exist. Both
@@ -886,7 +923,7 @@ impl TabBar {
         context.draw_text(
             Point::new(text_x, text_y),
             &tab.title,
-            &font,
+            font,
             text_color,
             HorizontalAlignment::Left,
         );
@@ -1160,9 +1197,10 @@ impl Draw for TabBar {
             let width = context.measure_text(&tab.title, &font).width;
             self.measured_title_widths.push(width);
         }
+        let chrome = self.tab_chrome();
         for i in 0..self.tabs.len() {
             if let Some(tr) = self.tab_rect(i) {
-                self.draw_tab(context, i, tr);
+                self.draw_tab(context, i, tr, &chrome, &font);
             }
         }
     }

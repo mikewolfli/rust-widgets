@@ -3,6 +3,7 @@
 
 //! Data grid widget backed by incremental data source protocol.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::compat::Rc;
@@ -63,6 +64,12 @@ struct GridWindowCache {
     column_len: usize,
     revision: u64,
     cells: Rc<Vec<Vec<Option<String>>>>,
+    /// The filter/sort projection of `cells`, produced once and reused on later frames.
+    ///
+    /// The shared-window fix only covered the no-filter/no-sort path; with either active,
+    /// every frame cloned the whole window and re-ran `retain` + `sort_by` over the copy.
+    /// `None` means "not projected yet"; `clear_cache()` drops it together with the window.
+    projected: Option<Rc<Vec<Vec<Option<String>>>>>,
 }
 
 /// Virtualized data grid with windowed pull from incremental table data source.
@@ -85,6 +92,15 @@ pub struct DataGrid {
     /// the two cannot describe different filters.
     filter_expr: FilterExpr,
     window_cache: Option<GridWindowCache>,
+    /// Bumped by the source's `data_changed` signal and by `set_data_source`.
+    ///
+    /// A source whose `revision()` stays `0` still changes, and the signal is how it says so.
+    /// Keying the window cache on this counter is what lets such a source be cached at all; a
+    /// source that offers neither a revision nor a signal is not cached, because then there is no
+    /// evidence a cached window is still current.
+    data_generation: Arc<AtomicU64>,
+    /// Whether the bound source can report change (`revision > 0` or a `data_changed` signal).
+    data_is_observable: bool,
     /// The projected `(row, column)` of the last press, or `None` when the press missed.
     ///
     /// Set through [`Self::cell_at`], so a selection can only ever name a cell that was
@@ -118,6 +134,8 @@ impl DataGrid {
             filters: Vec::new(),
             filter_expr: FilterExpr::MatchAll,
             window_cache: None,
+            data_generation: Arc::new(AtomicU64::new(0)),
+            data_is_observable: false,
             selection: None,
             hovered_cell: None,
             visible_window_changed: Signal1::new(),
@@ -127,14 +145,22 @@ impl DataGrid {
     /// Binds incremental source.
     pub fn set_data_source(&mut self, data_source: Arc<dyn IncrementalTableDataSource>) {
         self.data_source_connection_scope = ConnectionScope::new();
-        if let Some(changed) = data_source.data_changed_signal() {
+        let revision_nonzero = data_source.revision() > 0;
+        let has_signal = if let Some(changed) = data_source.data_changed_signal() {
             let redraw = self.base.redraw_requested_signal().clone();
             let layout = self.base.layout_requested_signal().clone();
+            let generation = Arc::clone(&self.data_generation);
             changed.connect_scoped(&self.data_source_connection_scope, move || {
+                generation.fetch_add(1, Ordering::Relaxed);
                 redraw.emit();
                 layout.emit();
             });
-        }
+            true
+        } else {
+            false
+        };
+        self.data_generation.fetch_add(1, Ordering::Relaxed);
+        self.data_is_observable = revision_nonzero || has_signal;
         self.data_source = Some(data_source);
         self.scroll_row = 0;
         self.scroll_column = 0;
@@ -149,6 +175,8 @@ impl DataGrid {
     pub fn clear_data_source(&mut self) {
         self.data_source_connection_scope = ConnectionScope::new();
         self.data_source = None;
+        self.data_is_observable = false;
+        self.data_generation.fetch_add(1, Ordering::Relaxed);
         self.scroll_row = 0;
         self.scroll_column = 0;
         self.frozen_columns = 0;
@@ -397,31 +425,50 @@ impl DataGrid {
         }
 
         let revision = source.revision();
-        if revision > 0 {
+        // A source with a real revision uses it; one that only raises `data_changed` uses the
+        // generation this widget advances from that signal. When neither exists the window is
+        // fetched afresh — a cache with no invalidation contract would serve stale cells.
+        let cache_revision =
+            if revision > 0 { revision } else { self.data_generation.load(Ordering::Relaxed) };
+        if self.data_is_observable {
+            let mut cached_projection = None;
+            let mut cached_cells = None;
             if let Some(cache) = self.window_cache.as_ref() {
                 if cache.row_start == row_start
                     && cache.row_len == row_len
                     && cache.column_start == col_start
                     && cache.column_len == col_len
-                    && cache.revision == revision
+                    && cache.revision == cache_revision
                 {
                     if self.filter_expr.is_noop() && self.sort_specs.is_empty() {
                         return Rc::clone(&cache.cells);
                     }
-                    return Rc::new(self.apply_filter_sort((*cache.cells).clone()));
+                    cached_projection = cache.projected.clone();
+                    cached_cells = Some(Rc::clone(&cache.cells));
                 }
+            }
+            if let Some(projected) = cached_projection {
+                return projected;
+            }
+            if let Some(cells) = cached_cells {
+                let projected = Rc::new(self.apply_filter_sort((*cells).clone()));
+                if let Some(cache) = self.window_cache.as_mut() {
+                    cache.projected = Some(Rc::clone(&projected));
+                }
+                return projected;
             }
         }
 
         let cells = Rc::new(source.fetch_window(row_start, row_len, col_start, col_len));
-        if revision > 0 {
+        if self.data_is_observable {
             self.window_cache = Some(GridWindowCache {
                 row_start,
                 row_len,
                 column_start: col_start,
                 column_len: col_len,
-                revision,
+                revision: cache_revision,
                 cells: Rc::clone(&cells),
+                projected: None,
             });
         } else {
             self.window_cache = None;
@@ -430,7 +477,11 @@ impl DataGrid {
         if self.filter_expr.is_noop() && self.sort_specs.is_empty() {
             cells
         } else {
-            Rc::new(self.apply_filter_sort((*cells).clone()))
+            let projected = Rc::new(self.apply_filter_sort((*cells).clone()));
+            if let Some(cache) = self.window_cache.as_mut() {
+                cache.projected = Some(Rc::clone(&projected));
+            }
+            projected
         }
     }
 
@@ -764,7 +815,7 @@ impl Draw for DataGrid {
             let style = self.base.style();
             (style.background_color, style.text_color, style.border_color)
         };
-        let theme = crate::style::resolved_theme_style("data_grid");
+        let theme = crate::style::resolved_theme_style_shared("data_grid");
         let mut surface = background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
             .unwrap_or(Color::WHITE);
@@ -776,10 +827,9 @@ impl Draw for DataGrid {
         // painted in that colour would be byte-identical to the frame behind it, so a resolved
         // surface equal to the window fill is re-derived a visible step away from it, the same
         // distinction `Colors::input_background` draws for a field.
-        let window_fill = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.background)
-            .unwrap_or(Color::WHITE);
+        // One palette read for the surface, grid and accent roles (three theme locks before).
+        let palette = crate::style::palette_shared();
+        let window_fill = palette.as_ref().map(|colors| colors.background).unwrap_or(Color::WHITE);
         if surface == window_fill {
             surface = window_fill.blend(&ink, 0.08);
         }
@@ -792,17 +842,14 @@ impl Draw for DataGrid {
         // and a theme that tunes its separators moves this control with the rest of the table family
         // (`table_widget`, `virtual_table`, `tree_table`). The blend is the last rung for a build with
         // no theme.
-        let cell_border = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.outline_variant)
+        let cell_border = palette
+            .as_ref()
+            .map(|colors| colors.outline_variant)
             .filter(|resolved| *resolved != surface)
             .unwrap_or_else(|| surface.blend(&ink, 0.10));
         // The accent is the theme's `primary`: the hue a theme is expected to vary most, so
         // the frozen-column indicator follows the appearance rather than staying a literal blue.
-        let accent = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.primary)
-            .unwrap_or(Color::PRIMARY);
+        let accent = palette.as_ref().map(|colors| colors.primary).unwrap_or(Color::PRIMARY);
 
         context.face_with_gradient(
             rect,
@@ -856,7 +903,7 @@ impl Draw for DataGrid {
                         // line, so every value sat half a line low; `text_line` derives the
                         // real centred box. Fitting as well keeps a long value inside its own
                         // column instead of bleeding right.
-                        context.draw_text_fitted(
+                        context.draw_text_fitted_cow(
                             context.text_line(cell_rect, effective_font(self.style())),
                             text,
                             effective_font(self.style()),
@@ -1499,6 +1546,17 @@ mod tests {
             self.rev.fetch_add(1, Ordering::Relaxed);
             self.changed.emit();
         }
+
+        /// A revision-less source: announces change without versioning the projection.
+        fn with_revision(rows: usize, cols: usize, revision: u64) -> Self {
+            let source = Self::new(rows, cols);
+            source.rev.store(revision, Ordering::Relaxed);
+            source
+        }
+
+        fn touch(&self) {
+            self.changed.emit();
+        }
     }
 
     impl IncrementalTableDataSource for RevisionSource {
@@ -1542,6 +1600,34 @@ mod tests {
         source.bump();
         let _c = grid.fetch_visible_cells();
         assert!(source.call_count.load(Ordering::Relaxed) > calls_after_a);
+    }
+
+    /// The trait's `revision()` default is `0`; a source that reports change only through its
+    /// signal must still be cacheable, and that signal must invalidate the window.
+    #[test]
+    fn a_revision_less_source_is_cached_and_invalidated_by_its_signal() {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 240, 60));
+        let source = Arc::new(RevisionSource::with_revision(10, 4, 0));
+        grid.set_data_source(source.clone());
+
+        let first = grid.fetch_visible_cells_shared();
+        let calls_after_first = source.call_count.load(Ordering::Relaxed);
+        assert!(calls_after_first > 0);
+
+        let second = grid.fetch_visible_cells_shared();
+        assert!(Rc::ptr_eq(&first, &second), "the cached window is shared, not re-fetched");
+        assert_eq!(
+            source.call_count.load(Ordering::Relaxed),
+            calls_after_first,
+            "the signal makes this source observable"
+        );
+
+        source.touch();
+        let _ = grid.fetch_visible_cells_shared();
+        assert!(
+            source.call_count.load(Ordering::Relaxed) > calls_after_first,
+            "a reported change must invalidate the window"
+        );
     }
 
     #[test]

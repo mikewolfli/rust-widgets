@@ -223,7 +223,7 @@ impl Draw for MiniChart {
         // bare `rgb(255,255,255)` fallback won in *both* appearances and the light and dark
         // snapshots came out identical. Reading the resolved theme is what makes an appearance
         // switch visible on a control nobody has styled.
-        let theme = crate::style::resolved_theme_style("mini_chart");
+        let theme = crate::style::resolved_theme_style_shared("mini_chart");
         let bg_color = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))

@@ -1134,8 +1134,13 @@ mod tests {
     /// [`WidgetKind::css_name`] duplicates the spelling the compiler derives, because deriving
     /// is what allocates. The exhaustive match guarantees a variant is *named*; only this test
     /// can show it is named *correctly*. The registry is the right list to check: it holds every
+    /// The registry is the right list to check: it holds every
     /// kind a JSON document can produce, and the loader's stylesheet pass is the only consumer
     /// of the string.
+    ///
+    /// Gated on the registry's own gate: `WidgetFactory` is absent from the stripped profiles,
+    /// where this test would otherwise fail to compile rather than skip.
+    #[cfg(widgets_unstripped)]
     #[test]
     fn css_name_matches_the_debug_spelling_for_every_registered_kind() {
         let capabilities = crate::widget::WidgetFactory::shared().capabilities();

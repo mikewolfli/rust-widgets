@@ -16,6 +16,7 @@ pub use types::{Action, ActionBinding, ActionHostKind};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::Vec;
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;

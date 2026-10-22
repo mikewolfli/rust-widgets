@@ -286,11 +286,11 @@ impl EmojiPicker {
         if !self.search.is_empty() {
             return self.glyphs.iter().filter(|glyph| glyph.matches(&self.search)).collect();
         }
-        let tabs = self.tabs();
-        let Some(category) = tabs.get(self.active_tab) else {
-            return Vec::new();
-        };
-        if category == Self::RECENT_CATEGORY {
+        // Resolve the active category without materialising `tabs()`: that built a
+        // `Vec<Category>` (one `String` per category) per call, and the draw path asks for the
+        // visible set every frame.
+        let recent_offset = usize::from(self.recent_tab_visible());
+        if self.recent_tab_visible() && self.active_tab == 0 {
             // In recency order, not table order: the list exists to be a shortcut.
             return self
                 .recent
@@ -298,6 +298,11 @@ impl EmojiPicker {
                 .filter_map(|id| self.glyphs.iter().find(|glyph| &glyph.id == id))
                 .collect();
         }
+        let Some(category) =
+            self.active_tab.checked_sub(recent_offset).and_then(|index| self.categories.get(index))
+        else {
+            return Vec::new();
+        };
         self.glyphs.iter().filter(|glyph| &glyph.category == category).collect()
     }
 
@@ -339,11 +344,12 @@ impl EmojiPicker {
         ((width / CELL_SIZE).max(1)) as usize
     }
 
-    /// The rectangle of the grid cell at `index`.
-    fn cell_rect(&self, index: usize) -> Option<Rect> {
-        // Bounded by the visible glyph count so a stale cursor cannot address a cell
-        // that is not drawn.
-        if index >= self.visible_glyphs().len() {
+    /// The rectangle of the grid cell at `index`, given the visible count.
+    ///
+    /// The count is passed in rather than recomputed: `cell_rect` used to call
+    /// `visible_glyphs()` per cell, so painting N cells allocated N projection vectors.
+    fn cell_rect_at(&self, index: usize, count: usize) -> Option<Rect> {
+        if index >= count {
             return None;
         }
         let rect = self.geometry();
@@ -359,10 +365,35 @@ impl EmojiPicker {
         ))
     }
 
-    /// The grid index under `pos`, when the pointer is over a cell.
-    fn cell_at(&self, pos: Point) -> Option<usize> {
+    /// The rectangle of the grid cell at `index`.
+    ///
+    /// Test-only convenience: the paint and hit-test paths pass the visible count to
+    /// [`Self::cell_rect_at`] so they do not re-project the visible set per cell.
+    #[cfg(test)]
+    fn cell_rect(&self, index: usize) -> Option<Rect> {
         let count = self.visible_glyphs().len();
-        (0..count).find(|index| self.cell_rect(*index).is_some_and(|rect| rect.contains_point(pos)))
+        self.cell_rect_at(index, count)
+    }
+
+    /// The grid index under `pos`, when the pointer is over a cell.
+    ///
+    /// The cell is computed from the position directly. Scanning every cell (and asking
+    /// `cell_rect` per candidate, which re-projected the visible set) made a hit test O(N²).
+    fn cell_at(&self, pos: Point) -> Option<usize> {
+        let rect = self.geometry();
+        let grid_top = rect.y + (SEARCH_HEIGHT + TAB_HEIGHT) as i32;
+        if pos.y < grid_top || pos.x < rect.x {
+            return None;
+        }
+        let columns = self.columns();
+        let column = ((pos.x - rect.x) as u32 / CELL_SIZE) as usize;
+        if column >= columns {
+            return None;
+        }
+        let row = ((pos.y - grid_top) as u32 / CELL_SIZE) as usize;
+        let index = row * columns + column;
+        let count = self.visible_glyphs().len();
+        (index < count).then_some(index)
     }
 
     /// The tab index under `pos`, when the pointer is over the tab strip.
@@ -559,7 +590,10 @@ impl Draw for EmojiPicker {
         context.draw_rect(rect, border);
         self.draw_search(context, field, ink);
         self.draw_tabs(context, strip, ink, panel);
-        let visible: Vec<EmojiGlyph> = self.visible_glyphs().into_iter().cloned().collect();
+        // Borrowed: the visible set is a projection of `self.glyphs`, so cloning each glyph
+        // (id, symbol, category and keyword strings) per frame duplicated the whole visible
+        // page. The grid only reads them.
+        let visible = self.visible_glyphs();
         self.draw_grid(context, &visible, ink);
     }
 }
@@ -573,7 +607,7 @@ impl EmojiPicker {
     /// appearance swap reach every band.
     fn chrome_colors(&self) -> (Color, Color, Color, Color, Color) {
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("emoji_picker");
+        let theme = crate::style::resolved_theme_style_shared("emoji_picker");
         // # Why the panel does not fall back to the window fill
         //
         // `resolved_theme_style("emoji_picker")` cannot help here: `"emoji_picker"` is absent
@@ -670,6 +704,13 @@ impl EmojiPicker {
             crate::core::Color::BLACK,
         );
         let tabs = self.tabs();
+        // One font and one accent for the whole strip: both used to be resolved per tab, so a
+        // six-tab picker built six fonts and took six theme locks per frame.
+        let tab_font = Font::simple("Sans", 11.0);
+        let accent = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.colors.primary)
+            .unwrap_or_else(|| ink.legible_on(panel, 3.0));
         for (index, tab) in tabs.iter().enumerate() {
             let tab_rect = Rect::new(
                 strip.x + (index as u32 * Self::tab_width()) as i32,
@@ -692,24 +733,20 @@ impl EmojiPicker {
                         tab_rect.x + tab_rect.width as i32,
                         tab_rect.y + TAB_HEIGHT as i32 - 2,
                     ),
-                    crate::style::theme_manager()
-                        .current_theme()
-                        .map(|active| active.colors.primary)
-                        .unwrap_or_else(|| ink.legible_on(panel, 3.0)),
+                    accent,
                     2,
                 );
             }
             // The recent pseudo-category is shown by a clock-ish label rather than its
             // reserved identifier, which is not meant to be read.
-            let label =
-                if tab == Self::RECENT_CATEGORY { "Recent".to_string() } else { tab.clone() };
+            let label: &str = if tab == Self::RECENT_CATEGORY { "Recent" } else { tab.as_str() };
             // The inactive tabs are secondary by design, so they are the ink dimmed toward
             // the strip rather than a second literal.
             let color = if active { ink } else { ink.blend(&strip_bg, 0.45) };
             context.draw_text(
                 Point::new(tab_rect.x + 8, tab_rect.y + 17),
-                &label,
-                &Font::simple("Sans", 11.0),
+                label,
+                &tab_font,
                 color,
                 HorizontalAlignment::Left,
             );
@@ -717,7 +754,10 @@ impl EmojiPicker {
     }
 
     /// Draws the glyph grid.
-    fn draw_grid(&self, context: &mut RenderContext, visible: &[EmojiGlyph], ink: Color) {
+    fn draw_grid(&self, context: &mut RenderContext, visible: &[&EmojiGlyph], ink: Color) {
+        // One font for the whole grid: the cell glyphs used to build a fresh `Font` per cell,
+        // twice (once to measure, once to draw), and the placeholder built a third.
+        let glyph_font = Font::simple("Sans", 16.0);
         if visible.is_empty() {
             let rect = self.geometry();
             // The placeholder recedes by alpha, not by being a second literal grey.
@@ -731,14 +771,16 @@ impl EmojiPicker {
             return;
         }
         for (index, glyph) in visible.iter().enumerate() {
-            let Some(cell) = self.cell_rect(index) else {
+            let Some(cell) = self.cell_rect_at(index, visible.len()) else {
                 continue;
             };
             // A cell outside the control's own rectangle would paint over a
-            // neighbour, so the grid is clipped to the picker.
+            // neighbour, so the grid is clipped to the picker. Rows are laid out in order, so
+            // the first cell below the control ends the grid ("continue" still walked every
+            // remaining off-screen glyph).
             let rect = self.geometry();
             if cell.y + cell.height as i32 > rect.y + rect.height as i32 {
-                continue;
+                break;
             }
             let selected = self.cursor == Some(index);
             if selected {
@@ -750,7 +792,7 @@ impl EmojiPicker {
                     .unwrap_or_else(|| ink.legible_on(Color::rgb(252, 252, 254), 3.0));
                 context.fill_rounded_rect(cell, 4, accent.with_alpha(48));
             }
-            let metrics = context.measure_text(&glyph.symbol, &Font::simple("Sans", 16.0));
+            let metrics = context.measure_text(&glyph.symbol, &glyph_font);
             context.draw_text(
                 Point::new(
                     cell.x + (cell.width as i32 - metrics.width as i32) / 2,
@@ -760,7 +802,7 @@ impl EmojiPicker {
                     cell.y + (cell.height as i32 - metrics.height as i32) / 2,
                 ),
                 &glyph.symbol,
-                &Font::simple("Sans", 16.0),
+                &glyph_font,
                 ink,
                 HorizontalAlignment::Left,
             );

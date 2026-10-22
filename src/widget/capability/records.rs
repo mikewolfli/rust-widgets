@@ -531,6 +531,21 @@ fn value_matches_kind(value: &CapabilityValue, kind: PropertyValueKind) -> bool 
         PropertyValueKind::Color => matches!(value, CapabilityValue::Color(_)),
         PropertyValueKind::Rect => matches!(value, CapabilityValue::Rect(_)),
         PropertyValueKind::IconSpec => matches!(value, CapabilityValue::IconSpec(_)),
+        // A list kind is checked structurally: the carrier is a `Tuple`, and every element must be
+        // the kind the list declares. An empty list matches, exactly as an empty `String` does.
+        PropertyValueKind::StringList => matches!(
+            value,
+            CapabilityValue::Tuple(items)
+                if items.iter().all(|item| matches!(item, CapabilityValue::String(_)))
+        ),
+        PropertyValueKind::NumberList => matches!(
+            value,
+            CapabilityValue::Tuple(items)
+                if items.iter().all(|item| matches!(
+                    item,
+                    CapabilityValue::Float(_) | CapabilityValue::Int(_) | CapabilityValue::UInt(_)
+                ))
+        ),
         // A field whose declared kind is itself a record list: no control declares one, and
         // accepting any `Records` value here would let an unvalidated nested list through under the
         // name of a field. Refused rather than guessed.

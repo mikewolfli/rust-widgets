@@ -1652,7 +1652,11 @@ mod tests {
         let mut el = EventLoop::new();
         el.set_dispatch_fn(Arc::new(move |_target, event| {
             let Event::Custom { name, .. } = event else { return };
-            let label = match name.as_str() {
+            // The event payload's name is `Cow<str>` in one profile and `&str` in the other;
+            // `as_ref` is the one spelling both implement, so this test compiles in every
+            // profile `check_profiles.sh` builds instead of using the unstable `str::as_str`.
+            let event_name: &str = name.as_ref();
+            let label = match event_name {
                 "idle" => "idle",
                 "normal" => "normal",
                 "high" => "high",

@@ -760,7 +760,7 @@ impl Heatmap {
             // left edge, so the room available is the gutter itself — not the distance to
             // the grid, which is the same number and would drift if the two ever stopped
             // being equal.
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(grid.x - LABEL_GUTTER, y, LABEL_GUTTER as u32, font_height.max(1) as u32),
                 &self.row_labels[row],
                 font,
@@ -784,7 +784,7 @@ impl Heatmap {
             // is clamped to the control so the first row of text cannot start above it.
             let top = (grid.y - font_height).max(full.y);
             let height = (grid.y - top).max(1) as u32;
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(cell_x, top, width.max(1) as u32, height),
                 &self.column_labels[column],
                 font,
@@ -847,7 +847,7 @@ impl Heatmap {
         let label_height = context.measure_text("0", font).height;
         let label_top = y + strip_height + RAMP_GAP;
         let label_band_height = label_height.max(1);
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             Rect::new(strip_x, label_top, strip_width.max(1) as u32, label_band_height),
             &format_endpoint(low),
             font,
@@ -855,7 +855,7 @@ impl Heatmap {
             HorizontalAlignment::Left,
         );
         let high_text = format_endpoint(high);
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             Rect::new(strip_x, label_top, strip_width.max(1) as u32, label_band_height),
             &high_text,
             font,

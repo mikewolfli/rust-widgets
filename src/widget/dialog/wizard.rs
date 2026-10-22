@@ -15,7 +15,7 @@
 //! to a build error: a caller looking for the wizard reaches this module, and a caller looking for
 //! the numeric spinner reaches `container_widgets/stepper.rs`. No control is missing.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
@@ -25,6 +25,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// A single step in the wizard.
@@ -397,7 +398,7 @@ impl Draw for WizardDialog {
         // The theme reads take and release the global manager's lock internally, so no
         // guard is held across the draw (the mutex is not re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("wizard_dialog");
+        let theme = crate::style::resolved_theme_style_shared("wizard_dialog");
         // `wizard_dialog` is absent from `WidgetRole::for_kind_name`'s table, so it
         // classifies as `Surface` and resolves to `theme.colors.background` — the window's
         // own fill. A frame painted in that colour would be byte-identical to the window
@@ -526,7 +527,7 @@ impl Draw for WizardDialog {
                 // fixed `-4 / -6` written for a one-digit label: the offset put a two-digit
                 // step to the right of centre, and the label was never fitted at all.
                 let label = format!("{}", i + 1);
-                let label_font = Font::bold("Arial", 11.0);
+                let label_font = role_font(style, 11.0).with_bold(true);
                 let label_metrics = context.measure_text(&label, &label_font);
                 let label_box = Rect::new(
                     cx - circle_radius as i32,
@@ -534,7 +535,7 @@ impl Draw for WizardDialog {
                     circle_radius * 2,
                     circle_radius * 2,
                 );
-                context.draw_text_fitted(
+                context.draw_text_fitted_cow(
                     Rect::new(
                         label_box.x,
                         (label_box.y + (label_box.height as i32 - label_metrics.height as i32) / 2)
@@ -553,9 +554,9 @@ impl Draw for WizardDialog {
                 // former byte-slice truncation also panicked on a multi-byte character
                 // boundary, which a fitted draw cannot.
                 let title_font = if is_active {
-                    Font::bold("Arial", 9.0)
+                    role_font(style, 9.0).with_bold(true)
                 } else {
-                    Font::new("Arial", 9.0, false, false)
+                    role_font(style, 9.0)
                 };
                 let title_color = if !is_enabled {
                     self.base.disabled_ink_on(ink, surface)
@@ -566,7 +567,7 @@ impl Draw for WizardDialog {
                 };
                 let title_metrics = context.measure_text("M", &title_font);
                 let title_y = cy + circle_radius as i32 + 2;
-                context.draw_text_fitted(
+                context.draw_text_fitted_cow(
                     Rect::new(
                         cx - (spacing as i32 / 2),
                         title_y,
@@ -594,9 +595,9 @@ impl Draw for WizardDialog {
         } else {
             // No steps — draw placeholder. Confined to the band above the separator, which
             // is also where the navigation row begins when the frame is short.
-            let empty_font = Font::new("Arial", 14.0, false, false);
+            let empty_font = role_font(style, 14.0);
             let empty_metrics = context.measure_text("No steps configured", &empty_font);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(
                     rect.x + 10,
                     (rect.y + (step_indicator_height as i32 - empty_metrics.height as i32) / 2)
@@ -636,12 +637,12 @@ impl Draw for WizardDialog {
             // label is now bounded by the well and omitted when the well has no room for it.
             let well_top = content_rect.y;
             let well_bottom = content_rect.y + content_rect.height as i32;
-            let info_font = Font::new("Arial", 11.0, false, false);
+            let info_font = role_font(style, 11.0);
             let info_text = format!("Step {} of {}", self.current_step + 1, self.steps.len());
             let info_metrics = context.measure_text(&info_text, &info_font);
             let info_h = info_metrics.height.max(1) as i32;
             // Step title in content area
-            let title_font = Font::bold("Arial", 16.0);
+            let title_font = role_font(style, 16.0).with_bold(true);
             let title_metrics =
                 context.measure_text(&self.steps[self.current_step].title, &title_font);
             let title_natural = title_metrics.height.max(1) as i32;
@@ -658,7 +659,7 @@ impl Draw for WizardDialog {
             } as u32;
             let title_h = (title_natural as u32).min(title_room);
             if title_h > 2 {
-                context.draw_text_fitted(
+                context.draw_text_fitted_cow(
                     Rect::new(rect.x + 12, title_top, rect.width.saturating_sub(24), title_h),
                     &self.steps[self.current_step].title,
                     &title_font,
@@ -669,12 +670,12 @@ impl Draw for WizardDialog {
                 // Optional label, on the row below the title and only when that row is inside
                 // the well.
                 if self.steps[self.current_step].optional {
-                    let opt_font = Font::new("Arial", 11.0, false, true);
+                    let opt_font = role_font(style, 11.0).with_italic(true);
                     let opt_metrics = context.measure_text("(Optional step)", &opt_font);
                     let opt_top = title_top + title_h as i32 + 2;
                     let opt_h = opt_metrics.height.max(1) as i32;
                     if opt_top + opt_h <= well_bottom - (if both_fit { info_h + 4 } else { 0 }) {
-                        context.draw_text_fitted(
+                        context.draw_text_fitted_cow(
                             Rect::new(
                                 rect.x + 12,
                                 opt_top,
@@ -695,7 +696,7 @@ impl Draw for WizardDialog {
             // omitted when the well is too short to hold it without crossing the title.
             let info_y = (well_bottom - info_h).max(well_top);
             if both_fit && info_y >= title_top + title_h as i32 + 2 {
-                context.draw_text_fitted(
+                context.draw_text_fitted_cow(
                     Rect::new(rect.x + 12, info_y, rect.width.saturating_sub(24), info_h as u32),
                     &info_text,
                     &info_font,
@@ -706,9 +707,9 @@ impl Draw for WizardDialog {
         } else {
             // Empty content area. Drawn inside the well's two rows so a 120 px wizard no
             // longer stacks this above the first navigation button.
-            let empty_font = Font::new("Arial", 14.0, false, false);
+            let empty_font = role_font(style, 14.0);
             let empty_metrics = context.measure_text("Add steps to begin", &empty_font);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(
                     rect.x + 12,
                     (content_rect.y + 8).min(content_rect.y + content_rect.height as i32),
@@ -749,7 +750,7 @@ impl Draw for WizardDialog {
         // centring means offsetting by half the *difference*. Passing the button rect
         // unchanged put every label on the button's top edge with 24 px of empty pad below
         // it, which is what made the row look wrong even where the colours were right.
-        let nav_font = Font::new("Arial", 12.0, false, false);
+        let nav_font = role_font(style, 12.0);
         let nav_text_height = context.measure_text("M", &nav_font).height.max(1);
         let label_of = |button: Rect| {
             Rect::new(
@@ -763,7 +764,7 @@ impl Draw for WizardDialog {
         // Cancel button (left side)
         context.fill_rounded_rect(cancel_btn, 4, button_fill);
         context.draw_rounded_rect_stroke(cancel_btn, 4, border, 1);
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             label_of(cancel_btn),
             "Cancel",
             &nav_font,
@@ -797,7 +798,7 @@ impl Draw for WizardDialog {
         };
         context.fill_rounded_rect(back_btn, 4, back_color);
         context.draw_rounded_rect_stroke(back_btn, 4, border, 1);
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             label_of(back_btn),
             "Back",
             &nav_font,
@@ -827,10 +828,10 @@ impl Draw for WizardDialog {
             self.base.disabled_ink_on(btn_color.contrast_color(), btn_color)
         };
         context.fill_rounded_rect(next_btn, 4, btn_color);
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             label_of(next_btn),
             btn_text,
-            &Font::bold("Arial", 12.0),
+            &role_font(style, 12.0).with_bold(true),
             btn_text_color,
             HorizontalAlignment::Center,
         );

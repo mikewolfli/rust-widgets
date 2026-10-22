@@ -106,6 +106,10 @@ macro_rules! impl_properties_base {
 
         pub(crate) const LINE_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::enumerated("orientation", true, true, &["horizontal", "vertical"]),
+            PropertySchema::new("thickness", PropertyValueKind::UInt, true, true),
+            // The effective line colour: the explicit override when one is set, otherwise the
+            // theme/style border colour the painter uses. A `Null` write clears the override.
+            PropertySchema::new("color", PropertyValueKind::Color, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

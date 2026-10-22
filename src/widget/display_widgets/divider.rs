@@ -102,7 +102,7 @@ impl Divider {
         if self.color_is_explicit {
             return self.color;
         }
-        crate::style::resolved_theme_style("divider")
+        crate::style::resolved_theme_style_shared("divider")
             .and_then(|style| style.border_color)
             // # Why a divider reads `outline_variant`
             //

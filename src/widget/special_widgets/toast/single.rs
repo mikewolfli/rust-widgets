@@ -316,7 +316,7 @@ impl Draw for Toast {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("toast");
+        let theme = crate::style::resolved_theme_style_shared("toast");
         // `toast` is not a control kind in the role table, so it classifies as
         // `Surface`, whose background is `theme.colors.background` — byte-identical
         // to the window behind it. The toast's own fill is therefore a step toward
@@ -378,7 +378,7 @@ impl Draw for Toast {
             .map(|close| (close.x - text_x - 4).max(0) as u32)
             .unwrap_or_else(|| band.width.saturating_sub(TOAST_PADDING_H as u32));
         if !self.message.is_empty() && text_width > 0 {
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect { x: text_x, y: line.y, width: text_width, height: line.height },
                 &self.message,
                 font,

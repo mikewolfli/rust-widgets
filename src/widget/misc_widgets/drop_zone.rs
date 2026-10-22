@@ -332,7 +332,7 @@ impl Draw for DropZone {
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("drop_zone");
+        let theme = crate::style::resolved_theme_style_shared("drop_zone");
         let ink = style
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
@@ -446,7 +446,7 @@ impl Draw for DropZone {
         if rect.width > 40 && rect.height > 24 {
             let hint = format!("Drop {} here", self.accepted_type);
             let inner = Rect::new(rect.x + 10, rect.y, rect.width.saturating_sub(20), rect.height);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 inner,
                 &hint,
                 font,

@@ -649,7 +649,7 @@ impl Draw for RiveWidget {
         // background, the border, the chips and the progress trough all read from it and
         // re-resolving would take the theme lock several times inside one draw.
         let style = self.style();
-        let themed = crate::style::resolved_theme_style("rive_widget");
+        let themed = crate::style::resolved_theme_style_shared("rive_widget");
         let themed_bg = themed.as_ref().and_then(|resolved| resolved.background_color);
         let themed_border = themed.as_ref().and_then(|resolved| resolved.border_color);
         let themed_text = themed.as_ref().and_then(|resolved| resolved.text_color);
@@ -686,7 +686,7 @@ impl Draw for RiveWidget {
             let metrics = context.measure_text(text, font);
             let text_y = rect.y + (rect.height as i32 - metrics.height as i32) / 2;
             let line = Rect::new(rect.x, text_y, rect.width, metrics.height);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 line,
                 text,
                 font,

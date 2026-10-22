@@ -3,7 +3,7 @@
 
 //! MarkdownEditor widget.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -366,7 +366,7 @@ impl Draw for MarkdownEditor {
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("markdown_editor");
+        let theme = crate::style::resolved_theme_style_shared("markdown_editor");
         let surface = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -405,25 +405,28 @@ impl Draw for MarkdownEditor {
         );
         context.draw_rect(rect, border);
 
+        // One pass over the text for all three counts, and the header is built from them.
+        // `line_count`/`word_count`/`heading_count` each scanned the whole document, so the
+        // header cost three full passes plus a `format!` on every repaint of a ten-line pane.
+        let (line_total, word_total, heading_total) =
+            self.text.lines().fold((0usize, 0usize, 0usize), |(lines, words, headings), line| {
+                (
+                    lines + 1,
+                    words + line.split_whitespace().count(),
+                    headings + usize::from(line.trim_start().starts_with('#')),
+                )
+            });
         let header = if self.preview_mode {
             format!(
-                "Markdown Preview  lines:{} words:{} headings:{}",
-                self.line_count(),
-                self.word_count(),
-                self.heading_count()
+                "Markdown Preview  lines:{line_total} words:{word_total} headings:{heading_total}"
             )
         } else {
-            format!(
-                "Markdown Edit  lines:{} words:{} headings:{}",
-                self.line_count(),
-                self.word_count(),
-                self.heading_count()
-            )
+            format!("Markdown Edit  lines:{line_total} words:{word_total} headings:{heading_total}")
         };
         // Fitted to the control's width: the header is a long line of counts, and a narrow
         // editor previously drew it straight past its own right edge.
         let header_band = Rect::new(rect.x + 8, rect.y + 4, rect.width.saturating_sub(16), 14);
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             header_band,
             &header,
             effective_font(style),
@@ -439,8 +442,11 @@ impl Draw for MarkdownEditor {
             let color = if idx == self.cursor_line { cursor_ink } else { ink };
             let rendered =
                 if self.preview_mode { line.trim_start_matches('#').trim_start() } else { line };
-            context.draw_text(
-                Point::new(rect.x + 12, y),
+            // Fitted to the pane, so a long line ends in an ellipsis inside the control instead of
+            // painting over the widget beside it.
+            let band = Rect::new(rect.x + 12, y, rect.width.saturating_sub(24), 16);
+            context.draw_text_fitted_cow(
+                band,
                 rendered,
                 effective_font(style),
                 color,

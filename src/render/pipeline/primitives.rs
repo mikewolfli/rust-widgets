@@ -386,12 +386,16 @@ impl SoftwareSurface {
         let clip = self.current_clip();
         let frame = self.buffer.back_mut();
         let r = radius as i32;
+        // `r * r` overflows `i32` for radii above ~46k, which a caller can reach through the
+        // public `FillCircle` command. Compute the squared radius once in `i64` so the loop's
+        // arithmetic matches `fill_circle_aa`, which already works in floating point.
+        let rr = r as i64 * r as i64;
         for y in -r..=r {
-            let y2 = y * y;
-            if y2 > r * r {
+            let y2 = y as i64 * y as i64;
+            if y2 > rr {
                 continue;
             }
-            let span = ((r * r - y2) as f32).sqrt() as i32;
+            let span = ((rr - y2) as f64).sqrt() as i32;
             let py = center.y + y;
             if py < 0 || py >= height {
                 continue;

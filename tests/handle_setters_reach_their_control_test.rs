@@ -169,14 +169,20 @@ fn a_property_the_control_does_not_publish_is_refused_not_faked() {
 
     let pb = win.new_progress_bar(0, 0, 200, 30);
     let pid = pb.raw_id();
+    // The 2026-10-23 scan published `indeterminate`, so the original refusal premise no longer
+    // holds for this control. Its switch is reachable through the contract now, so this asserts
+    // the round trip; the refusal cases below still carry the test's purpose.
+    pb.set_indeterminate(true);
     assert_eq!(
         control(pid, "indeterminate"),
-        None,
-        "the fixture assumes ProgressBar publishes no `indeterminate`; if it now does, this \
-         test should assert the round trip instead"
+        Some(CapabilityValue::Bool(true)),
+        "a published setter must reach the control's own state"
     );
-    pb.set_indeterminate(true);
-    assert_eq!(pb.is_indeterminate(), None, "a refused write must not be reported by a later read");
+    assert_eq!(
+        pb.is_indeterminate(),
+        Some(true),
+        "a write that took effect must be reported by a later read"
+    );
 
     // A scroll area's offsets are clamped against its content, and the control publishes no
     // content-size property, so `ScrollAreaHandle::set_content_size` has nowhere to reach: the

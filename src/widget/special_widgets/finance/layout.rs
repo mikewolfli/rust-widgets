@@ -647,7 +647,7 @@ pub const PANEL_MIN_CONTRAST: f32 = 4.5;
 /// draw. Colour decisions go through [`Color::contrast_color`] and the derived ink via
 /// [`Color::legible_on`], the crate's single pair of contrast rules.
 pub fn panel_colors(style: Option<&WidgetStyle>) -> PanelColors {
-    let theme = crate::style::resolved_theme_style("chart");
+    let theme = crate::style::resolved_theme_style_shared("chart");
     // Read as its own lock acquisition and copied out as values, so the guard is dropped
     // before anything else touches the theme. Only the theme's *background* is taken: it is
     // needed to detect a surface the resolver has made identical to the window. The ink is

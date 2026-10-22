@@ -270,7 +270,7 @@ impl Draw for FAB {
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("fab");
+        let theme = crate::style::resolved_theme_style_shared("fab");
         // `fab` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
         // `Surface` and resolves to `theme.colors.background` — the window's own fill, not an
         // action colour. The circle is a filled call to action, so the theme's `primary` is
@@ -336,7 +336,7 @@ impl Draw for FAB {
                 (half_side * 2).max(0) as u32,
                 metrics.height,
             );
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 band,
                 &self.icon_text,
                 &font,

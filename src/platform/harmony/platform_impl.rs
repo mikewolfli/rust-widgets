@@ -341,15 +341,6 @@ impl Platform for HarmonyPlatform {
         self.insert_widget(HarmonyHandleKind::Window, title, x, y, width, height)
     }
 
-    /// The ArkTS window id the host bound through `rw_harmony_set_window_id`, when any.
-    ///
-    /// Kept as a semantic accessor rather than exposing the static: the FFI setter and this
-    /// reader are the two halves of one contract, and the reader is what makes the written id
-    /// observable to the backend's diagnostics instead of write-only state.
-    pub(crate) fn host_window_id(&self) -> Option<i32> {
-        super::host_facts::window_id()
-    }
-
     /// OpenHarmony's host model is one XComponent with one window.
     fn supports_multiple_windows(&self) -> bool {
         false
@@ -595,6 +586,19 @@ impl Platform for HarmonyPlatform {
     #[cfg(feature = "mobile-api")]
     fn mobile_extension(&self) -> Option<&dyn crate::platform::MobilePlatformExtension> {
         Some(self)
+    }
+}
+
+/// The ArkTS window id the host bound through `rw_harmony_set_window_id`, when any.
+///
+/// An **inherent** method, not a trait item: `Platform` does not declare it, and a
+/// `pub(crate) fn` inside the trait `impl` block is rejected by the compiler (`E0449`). The
+/// FFI setter and this reader are the two halves of one contract, and the reader is what
+/// makes the written id observable to the backend's diagnostics instead of write-only state.
+impl HarmonyPlatform {
+    /// The ArkTS window id the host bound through `rw_harmony_set_window_id`, when any.
+    pub(crate) fn host_window_id(&self) -> Option<i32> {
+        super::host_facts::window_id()
     }
 }
 

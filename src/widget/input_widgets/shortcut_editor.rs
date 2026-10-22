@@ -8,7 +8,7 @@
 //! Supports filtering by text, editing keybindings by clicking them, and
 //! organizing shortcuts by category.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -17,9 +17,11 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::role_font;
 use crate::widget::text_utils::floor_char_boundary;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -90,6 +92,32 @@ pub struct ShortcutEditor {
     pub shortcut_changed: Signal1<(String, Vec<String>)>,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<Vec<ShortcutEntry>>>,
+    /// Generation of [`Self::shortcuts`], bumped by every path that can change it.
+    ///
+    /// [`Self::shortcuts_mut`] hands out `&mut Vec<ShortcutEntry>`, so a caller can change the
+    /// table with no hook of ours running afterwards. Bumping **when the reference is handed
+    /// out** is conservative and sufficient: the grouping cache is already marked stale before
+    /// any such mutation can be observed, so the next draw rebuilds instead of drawing a stale
+    /// grouping.
+    table_generation: u64,
+    /// The draw path's grouping, reused while the table and the filter are unchanged.
+    grouping_cache: RefCell<GroupingCache>,
+}
+
+/// Cached category grouping for one table generation and filter string.
+///
+/// Stores **indices** rather than borrowed rows: the public
+/// [`ShortcutEditor::shortcuts_by_category`] returns `&ShortcutEntry` references, which cannot be
+/// cached without a self-referential borrow. Indices are plain data, so the cache can live in the
+/// widget and the draw reuses it across frames.
+#[derive(Default)]
+struct GroupingCache {
+    /// The table generation these groups were built from.
+    generation: u64,
+    /// The filter string they were built with.
+    filter: String,
+    /// Category name, then the indices into `ShortcutEditor::shortcuts` in that category.
+    groups: Vec<(String, Vec<usize>)>,
 }
 
 impl ShortcutEditor {
@@ -102,6 +130,8 @@ impl ShortcutEditor {
             shortcut_changed: Signal1::new(),
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(Vec::new())),
+            table_generation: 0,
+            grouping_cache: RefCell::new(GroupingCache::default()),
         }
     }
 
@@ -109,6 +139,7 @@ impl ShortcutEditor {
     pub fn add_shortcut(&mut self, entry: ShortcutEntry) {
         let before = self.shortcuts.clone();
         self.shortcuts.push(entry);
+        self.table_generation = self.table_generation.wrapping_add(1);
         self.record_shortcut_state(before);
         self.base.request_redraw();
     }
@@ -119,6 +150,7 @@ impl ShortcutEditor {
         let before = self.shortcuts.clone();
         self.shortcuts.retain(|s| s.id != id);
         if self.shortcuts.len() != initial_len {
+            self.table_generation = self.table_generation.wrapping_add(1);
             self.record_shortcut_state(before);
             self.base.request_redraw();
             return true;
@@ -130,6 +162,7 @@ impl ShortcutEditor {
     pub fn clear_shortcuts(&mut self) {
         let before = self.shortcuts.clone();
         self.shortcuts.clear();
+        self.table_generation = self.table_generation.wrapping_add(1);
         self.record_shortcut_state(before);
         self.base.request_redraw();
     }
@@ -142,6 +175,7 @@ impl ShortcutEditor {
                 return false;
             }
             entry.keys = keys.clone();
+            self.table_generation = self.table_generation.wrapping_add(1);
             self.record_shortcut_state(before);
             self.shortcut_changed.emit((id.to_string(), keys));
             self.base.request_redraw();
@@ -178,10 +212,10 @@ impl ShortcutEditor {
         self.shortcuts
             .iter()
             .filter(|s| {
-                s.name.to_lowercase().contains(&lower)
-                    || s.id.to_lowercase().contains(&lower)
-                    || s.category.to_lowercase().contains(&lower)
-                    || s.keys.iter().any(|k| k.to_lowercase().contains(&lower))
+                contains_ignore_ascii_case(&s.name, &lower)
+                    || contains_ignore_ascii_case(&s.id, &lower)
+                    || contains_ignore_ascii_case(&s.category, &lower)
+                    || s.keys.iter().any(|k| contains_ignore_ascii_case(k, &lower))
             })
             .collect()
     }
@@ -205,7 +239,46 @@ impl ShortcutEditor {
 
     /// Returns a mutable reference to shortcuts.
     pub fn shortcuts_mut(&mut self) -> &mut Vec<ShortcutEntry> {
+        // See `table_generation`: the caller may change anything through this reference, so the
+        // cache is invalidated now rather than left to notice the change some other way.
+        self.table_generation = self.table_generation.wrapping_add(1);
         &mut self.shortcuts
+    }
+
+    /// The filtered table grouped by category, rebuilt only when the table or filter changed.
+    ///
+    /// This is the draw path's form of [`Self::shortcuts_by_category`]: it caches indices instead
+    /// of borrowed rows and returns them without allocating a new grouping per frame. The borrow
+    /// is shared, so the caller may read `self.shortcuts` while holding it.
+    fn grouped(&self) -> std::cell::Ref<'_, GroupingCache> {
+        let stale = {
+            let cache = self.grouping_cache.borrow();
+            cache.generation != self.table_generation || cache.filter != self.filter_text
+        };
+        if stale {
+            let mut cache = self.grouping_cache.borrow_mut();
+            cache.generation = self.table_generation;
+            cache.filter = self.filter_text.clone();
+            cache.groups.clear();
+            // Filter inline rather than through `filtered_shortcuts`: that method builds a
+            // `Vec<&ShortcutEntry>` this path would immediately throw away.
+            let lower = self.filter_text.to_lowercase();
+            for (index, entry) in self.shortcuts.iter().enumerate() {
+                let matches = lower.is_empty()
+                    || contains_ignore_ascii_case(&entry.name, &lower)
+                    || contains_ignore_ascii_case(&entry.id, &lower)
+                    || contains_ignore_ascii_case(&entry.category, &lower)
+                    || entry.keys.iter().any(|key| contains_ignore_ascii_case(key, &lower));
+                if !matches {
+                    continue;
+                }
+                match cache.groups.iter_mut().find(|(name, _)| *name == entry.category) {
+                    Some((_, indices)) => indices.push(index),
+                    None => cache.groups.push((entry.category.clone(), vec![index])),
+                }
+            }
+        }
+        self.grouping_cache.borrow()
     }
 
     /// Reverts the most recent shortcut-table change.
@@ -290,6 +363,7 @@ impl ShortcutEditor {
 
     fn restore_shortcut_state(&mut self) {
         self.shortcuts = self.history_target.borrow().clone();
+        self.table_generation = self.table_generation.wrapping_add(1);
         self.base.request_redraw();
     }
 
@@ -448,7 +522,7 @@ impl Draw for ShortcutEditor {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("shortcut_editor");
+        let theme = crate::style::resolved_theme_style_shared("shortcut_editor");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
         let (window_fill, foreground, secondary) = {
@@ -505,13 +579,13 @@ impl Draw for ShortcutEditor {
         let mut y = rect.y + margin;
 
         // Draw filter bar
-        let filter_font = Font::new("sans-serif", 13.0, false, false);
+        let filter_font = role_font(style, 13.0);
         let filter_label = if self.filter_text.is_empty() {
             "Type to filter shortcuts...".to_string()
         } else {
             format!("Filter: {}", self.filter_text)
         };
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             Rect::new(rect.x + margin, y, rect.width.saturating_sub((margin * 2) as u32), 16),
             &filter_label,
             &filter_font,
@@ -529,13 +603,21 @@ impl Draw for ShortcutEditor {
         y += 8;
 
         // Draw categorized shortcuts
-        let categories = self.shortcuts_by_category();
-        let cat_font = Font::new("sans-serif", 12.0, true, false);
-        let name_font = Font::new("sans-serif", 12.0, false, false);
-        let key_font = Font::new("sans-serif", 11.0, false, false);
+        //
+        // The grouping is cached against the table generation and the filter string, so a frame
+        // with no edits reuses the previous frame's result instead of rebuilding two Vecs of
+        // references. The cache holds indices; the rows themselves live in `self.shortcuts`, which
+        // is borrowed here through the same shared borrow.
+        let grouped = self.grouped();
+        let cat_font = role_font(style, 12.0).with_bold(true);
+        let name_font = role_font(style, 12.0);
+        let key_font = role_font(style, 11.0);
         let row_height = 22;
+        // Reused row buffers: the name was cloned and the key join allocated a `String` for
+        // every visible row on every frame.
+        let mut key_text = String::new();
 
-        for (category, entries) in &categories {
+        for (category, indices) in &grouped.groups {
             if y + row_height > rect.y + rect.height as i32 {
                 break;
             }
@@ -550,41 +632,70 @@ impl Draw for ShortcutEditor {
             );
             y += row_height;
 
-            for entry in entries {
+            for &index in indices {
+                let Some(entry) = self.shortcuts.get(index) else {
+                    // The cache is keyed by a generation that every writer bumps, so this is
+                    // unreachable; skipping is still the honest response to an index that no
+                    // longer addresses a row.
+                    continue;
+                };
                 if y + row_height > rect.y + rect.height as i32 {
                     break;
                 }
 
                 // Command name
-                let name_text = if entry.name.len() > 30 {
+                let name_text: Cow<'_, str> = if entry.name.len() > 30 {
                     // Use floor_char_boundary to avoid mid-char panic
                     let boundary = floor_char_boundary(&entry.name, 27);
-                    format!("{}...", &entry.name[..boundary])
+                    Cow::Owned(format!("{}...", &entry.name[..boundary]))
                 } else {
-                    entry.name.clone()
+                    Cow::Borrowed(entry.name.as_str())
                 };
-                context.draw_text(
-                    Point::new(rect.x + margin + 16, y),
+
+                // Key binding (right-aligned)
+                key_text.clear();
+                if entry.keys.is_empty() {
+                    key_text.push_str("unbound");
+                } else {
+                    for (i, key) in entry.keys.iter().enumerate() {
+                        if i > 0 {
+                            key_text.push_str(", ");
+                        }
+                        key_text.push_str(key);
+                    }
+                }
+                // Unbound rows are de-emphasised rather than hidden, so "this shortcut has no key"
+                // reads differently from "this shortcut has a key".
+                let key_color = if entry.keys.is_empty() { muted_ink } else { ink };
+                // Measured, not estimated: the binding was placed from a UTF-8 byte count at
+                // 8 px/byte, capped at 150 px, so a wide font, a text-scale preference or a
+                // non-ASCII key name made the two columns overlap.
+                let key_width = context.measure_text(&key_text, &key_font).width as i32;
+                let name_x = rect.x + margin + 16;
+                let key_x = (rect.x + rect.width as i32 - margin - key_width).max(name_x);
+                let name_width = (key_x - name_x - 8).max(0) as u32;
+                // The fitted draw insets its band by `TEXT_FIT_MARGIN`, so the band is widened and
+                // shifted back: a name or key that fits is not shifted right or elided early.
+                let fit_inset = crate::render::TEXT_FIT_MARGIN as i32;
+                context.draw_text_fitted_cow(
+                    Rect::new(
+                        name_x - fit_inset,
+                        y,
+                        name_width + 2 * fit_inset as u32,
+                        name_font.size().max(1.0) as u32,
+                    ),
                     &name_text,
                     &name_font,
                     ink,
                     HorizontalAlignment::Left,
                 );
-
-                // Key binding (right-aligned)
-                let key_text = if entry.keys.is_empty() {
-                    "unbound".to_string()
-                } else {
-                    entry.keys.join(", ")
-                };
-                // Unbound rows are de-emphasised rather than hidden, so "this shortcut has no key"
-                // reads differently from "this shortcut has a key".
-                let key_color = if entry.keys.is_empty() { muted_ink } else { ink };
-                // Measure approximate key text width
-                let key_x =
-                    rect.x + rect.width as i32 - margin - (key_text.len() as i32 * 8).min(150);
-                context.draw_text(
-                    Point::new(key_x, y),
+                context.draw_text_fitted_cow(
+                    Rect::new(
+                        key_x - fit_inset,
+                        y,
+                        key_width.max(1) as u32 + 2 * fit_inset as u32,
+                        key_font.size().max(1.0) as u32,
+                    ),
                     &key_text,
                     &key_font,
                     key_color,
@@ -686,6 +797,25 @@ fn keycode_to_name(key: u32, modifiers: u32) -> String {
     parts.join("+")
 }
 
+/// Case-insensitive substring test for the shortcut filter.
+///
+/// `needle` is already lower-cased. For an ASCII needle the comparison allocates nothing;
+/// the previous `to_lowercase().contains()` allocated one `String` per field per entry per
+/// frame while a filter was active. Non-ASCII needles keep the owned path, because folding
+/// Unicode case is not a byte-wise operation.
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if !needle.is_ascii() {
+        return haystack.to_lowercase().contains(needle);
+    }
+    let needle = needle.as_bytes();
+    let haystack = haystack.as_bytes();
+    needle.len() <= haystack.len()
+        && haystack.windows(needle.len()).any(|window| window.eq_ignore_ascii_case(needle))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -712,6 +842,39 @@ mod tests {
         assert!(se.shortcuts().is_empty());
 
         assert!(!se.remove_shortcut("nonexistent"));
+    }
+
+    #[test]
+    fn grouping_cache_is_invalidated_by_table_and_filter_changes() {
+        let mut se = ShortcutEditor::new(Rect::new(0, 0, 400, 300));
+        se.add_shortcut(ShortcutEntry::new("save", "Save File", "File"));
+        se.add_shortcut(ShortcutEntry::new("copy", "Copy", "Edit"));
+
+        {
+            let groups = se.grouped();
+            assert_eq!(groups.groups.len(), 2);
+            assert_eq!(groups.groups[0].0, "File");
+            assert_eq!(groups.groups[0].1, vec![0]);
+        }
+
+        // `shortcuts_mut` hands out a raw `&mut Vec`, so no setter runs; the generation bump at
+        // the hand-out must still invalidate the cache.
+        se.shortcuts_mut().push(ShortcutEntry::new("open", "Open", "File"));
+        {
+            let groups = se.grouped();
+            let file = groups.groups.iter().find(|(name, _)| name == "File");
+            assert_eq!(file.map(|(_, indices)| indices.clone()), Some(vec![0, 2]));
+        }
+
+        // The filter is part of the cache key, so a filter change re-groups even though the table
+        // generation did not move.
+        se.set_filter("copy");
+        {
+            let groups = se.grouped();
+            assert_eq!(groups.groups.len(), 1);
+            assert_eq!(groups.groups[0].0, "Edit");
+            assert_eq!(groups.groups[0].1, vec![1]);
+        }
     }
 
     #[test]

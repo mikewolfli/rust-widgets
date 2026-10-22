@@ -537,7 +537,7 @@ impl Draw for AutoCompleteEdit {
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("auto_complete_edit");
+        let theme = crate::style::resolved_theme_style_shared("auto_complete_edit");
         let field_background = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -552,7 +552,7 @@ impl Draw for AutoCompleteEdit {
             .unwrap_or(Color::BLACK);
         // The surface the field sits on, for the *disabled* rules below: a disabled ink recedes
         // toward the field's contrast colour and a disabled fill toward the window it is painted on.
-        let window_fill = crate::style::resolved_theme_style("window")
+        let window_fill = crate::style::resolved_theme_style_shared("window")
             .and_then(|theme| theme.background_color)
             .unwrap_or(field_background);
         // The list is chrome of the same family as the field it drops from: its fill

@@ -18,7 +18,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -340,6 +340,10 @@ impl TagInput {
 
         for (index, tag) in self.tags.iter().enumerate() {
             let chip_width = self.compute_chip_width(tag).min(max_width);
+            // Stop where the paint loop stops: a chip that is not drawn has no close button.
+            if current_x + chip_width > rect.x + rect.width as i32 - TAG_PADDING {
+                break;
+            }
 
             // Check if the close button within this chip was hit
             let close_center = self.tag_close_center(current_x, chip_width, chip_y);
@@ -355,9 +359,13 @@ impl TagInput {
     }
 
     /// Computes the width of a tag chip based on its text content.
+    ///
+    /// Measured, not estimated from the byte count: `tag.len() * 7` under-measured CJK and wide
+    /// Latin glyphs, so the label ran under the close disc, and it counted UTF-8 bytes rather than
+    /// characters (`"日本"` is 6 bytes and 2 glyphs). The same ruler the painter uses keeps the
+    /// chip and its label in agreement.
     fn compute_chip_width(&self, tag: &str) -> i32 {
-        let text_width = tag.len() as i32 * 7 + 12; // approximate pixel width
-                                                    // Add space for close button + padding
+        let text_width = estimate_text_width(tag, effective_font(self.style()), 1.0) as i32;
         text_width + TAG_PADDING * 2 + TAG_CLOSE_RADIUS * 2 + 4
     }
 }
@@ -497,7 +505,7 @@ impl Draw for TagInput {
         // ladder is *derived* from the resolved colour rather than being three fixed greys, so
         // the states stay distinguishable and the control follows the theme.
         let style = self.style();
-        let themed = crate::style::resolved_theme_style("tag_input");
+        let themed = crate::style::resolved_theme_style_shared("tag_input");
         let themed_bg = themed.as_ref().and_then(|resolved| resolved.background_color);
         let themed_border = themed.as_ref().and_then(|resolved| resolved.border_color);
         let accent = style.border_color.or(themed_border);
@@ -550,6 +558,11 @@ impl Draw for TagInput {
         // ── Draw tag chips ──
         for tag in &self.tags {
             let chip_width = self.compute_chip_width(tag).min(max_width);
+            // The field's inner width is the row's bound. Without this the row kept painting
+            // chips — and then the input band — past the control, over its neighbours.
+            if current_x + chip_width > rect.x + rect.width as i32 - TAG_PADDING {
+                break;
+            }
             let chip_rect = Rect::new(current_x, chip_y, chip_width as u32, TAG_HEIGHT as u32);
 
             // Chip background
@@ -602,8 +615,8 @@ impl Draw for TagInput {
         }
 
         // ── Input area ──
-        let input_x = current_x;
-        let input_width = (rect.width as i32 - input_x - TAG_PADDING).max(MIN_INPUT_WIDTH);
+        let input_x = current_x.min(rect.x + rect.width as i32 - MIN_INPUT_WIDTH);
+        let input_width = (rect.x + rect.width as i32 - TAG_PADDING - input_x).max(0);
         let input_rect = Rect::new(input_x, chip_y, input_width as u32, TAG_HEIGHT as u32);
 
         // Input background (slightly inset).
@@ -664,7 +677,7 @@ impl Draw for TagInput {
         // The chip labels in this same file already centred themselves correctly; the field
         // was the one place that had not been brought in line.
         let input_line = context.text_line(input_band, font);
-        let drawn = context.draw_text_fitted(
+        let drawn = context.draw_text_fitted_cow(
             input_line,
             display_text,
             font,

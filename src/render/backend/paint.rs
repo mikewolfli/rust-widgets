@@ -447,7 +447,7 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
                 sat_mul_i32(*spread, 2).saturating_add(u32_to_i32_saturating(rect.height)).max(0)
                     as u32,
             );
-            let shadow_color = Color::rgba(color.r, color.g, color.b, (color.a as f32 * 0.5) as u8);
+            let shadow_color = *color;
             surface.fill_rect(spread_rect, shadow_color);
             // Apply box blur to the shadow region if blur_radius > 0
             if *blur_radius > 0 {

@@ -1,6 +1,6 @@
 [package]
 name = "rust_widgets"
-version = "2.8.14"
+version = "2.9.0"
 edition = "2021"
 description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 180 widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"
@@ -1154,11 +1154,14 @@ harness = false
 # Capability/property and event-queue hot paths (BIND-19 / CORE-04 / CORE-08).
 # Needs a device profile: `WidgetFactory::new_with_defaults` and the concrete controls it builds
 # only exist with `full_widgets`, so a stripped profile must skip the target rather than fail on
-# the missing symbols.
+# the missing symbols. The bench also measures the declarative view's diff, which is gated on
+# `declarative-view`; `desktop` alone can be paired with `no-declarative-view` (check_profiles
+# step 6a), so that feature is required too and Cargo skips the target in that configuration
+# instead of compiling a file that names an absent module.
 [[bench]]
 name = "capability_bench"
 harness = false
-required-features = ["desktop"]
+required-features = ["desktop", "declarative-view"]
 
 # The coverage-cache benchmark (BLUE23 §0A.4 / the runtime-fonts + CJK-shard round). Measures
 # `face_for_char` against the `#[doc(hidden)]` un-cached control, and `paint_active` end to end,

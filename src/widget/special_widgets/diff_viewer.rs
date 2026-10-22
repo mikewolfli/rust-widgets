@@ -290,7 +290,7 @@ impl Draw for DiffViewer {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("diff_viewer");
+        let theme = crate::style::resolved_theme_style_shared("diff_viewer");
         let background = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -365,6 +365,11 @@ impl Draw for DiffViewer {
 
         for (idx, line) in self.lines.iter().take(12).enumerate() {
             let y = rect.y + 34 + (idx as i32) * 16;
+            // Rows below the control are not painted: a 120 px viewer used to draw its eleventh
+            // row about 90 px below itself, over the neighbouring widget.
+            if y + 14 > rect.y + rect.height as i32 {
+                break;
+            }
             let bg = match line.kind {
                 DiffKind::Equal => None,
                 DiffKind::Added => added.or_else(|| Some(background.blend(&Color::GREEN, 0.12))),

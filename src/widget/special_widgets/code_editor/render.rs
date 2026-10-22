@@ -46,6 +46,20 @@ pub(super) use chrome::{
 };
 pub(super) use metrics::{row_height_of, GUTTER_LEFT_PAD};
 
+/// FNV-1a over the configured family name.
+///
+/// The row-layout key lives in a `Cell`, so every component has to be `Copy`; the family is a
+/// `String`. Hashing it per frame is a few bytes of arithmetic and keeps the key comparable
+/// with `==` — the alternative, a `RefCell<String>`, would make every key check a borrow.
+fn font_family_hash(family: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in family.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
 impl Draw for CodeEditor {
     fn draw(&mut self, context: &mut RenderContext) {
         // Measure the character cell **first**: every coordinate below — token origins, caret x, the
@@ -62,10 +76,22 @@ impl Draw for CodeEditor {
         // One document-wide search per (selection, revision) pair, not per frame and
         // certainly not per row.
         self.prepare_occurrences();
-        // Measured row layouts are keyed by what they were measured from: the text
-        // revision and the font size. A change to either makes every cached x a
-        // statement about text that is no longer on screen.
-        let layout_key = (self.revision(), self.config.font_size.to_bits(), self.geometry().width);
+        // Measured row layouts are keyed by everything they were measured from: the text
+        // revision, the font (family and size), the tab stops, the measured cell, the row
+        // width, the language and the lexer generation. A change to any of them makes every
+        // cached x a statement about text, glyphs or runs that are no longer on screen. When
+        // the key matches, the measurement is **reused** rather than re-shaped: `draw_source_rows`
+        // reads the cache before measuring.
+        let layout_key = (
+            self.revision(),
+            font_family_hash(&self.config.font_family),
+            self.config.font_size.to_bits(),
+            self.config.tab_width,
+            self.cell_width().to_bits(),
+            self.geometry().width,
+            self.active_language(),
+            self.layout_lexer_generation,
+        );
         if self.row_layout_key.get() != layout_key {
             self.row_layouts.borrow_mut().clear();
             self.row_layout_key.set(layout_key);

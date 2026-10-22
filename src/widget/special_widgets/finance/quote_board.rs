@@ -385,7 +385,13 @@ impl QuoteBoard {
             .iter()
             .map(|column| {
                 let mut widest = measure_body_text(column.title(), &heading_font) as i32;
-                for quote in &self.quotes {
+                // A bounded sample, not the whole watchlist: this measured every cell of every
+                // row on every frame (with a `String` per numeric cell), so a 200-instrument
+                // board formatted and measured ~1,200 cells to paint ~20. The first rows are a
+                // stable, data-ordered sample, so column widths do not shift while scrolling;
+                // a value beyond it is ellipsized by the fitted draw.
+                const MAX_MEASURED_ROWS: usize = 64;
+                for quote in self.quotes.iter().take(MAX_MEASURED_ROWS) {
                     let text = self.cell_text(quote, *column, decimals);
                     widest = widest.max(measure_body_text(&text, &body_font) as i32);
                 }
@@ -640,7 +646,7 @@ impl Draw for QuoteBoard {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("quote_board");
+        let theme = crate::style::resolved_theme_style_shared("quote_board");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
         let (window_fill, foreground, secondary) = {
@@ -713,7 +719,7 @@ impl Draw for QuoteBoard {
                     (*width).max(1) as u32,
                     font.size().max(1.0) as u32,
                 );
-                context.draw_text_fitted(
+                context.draw_text_fitted_cow(
                     band,
                     title,
                     &font,
@@ -827,7 +833,13 @@ impl Draw for QuoteBoard {
                         HorizontalAlignment::Left,
                     );
                 } else {
-                    context.draw_text_fitted(line, &text, &font, color, HorizontalAlignment::Left);
+                    context.draw_text_fitted_cow(
+                        line,
+                        &text,
+                        &font,
+                        color,
+                        HorizontalAlignment::Left,
+                    );
                 }
             }
         }

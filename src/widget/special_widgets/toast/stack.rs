@@ -358,7 +358,7 @@ impl Draw for ToastStack {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("toast_stack");
+        let theme = crate::style::resolved_theme_style_shared("toast_stack");
         // `toast_stack` is not a control kind in the role table, so it classifies as
         // `Surface`, whose background is `theme.colors.background` — byte-identical
         // to the window behind it. The stack's own fill is therefore a step toward

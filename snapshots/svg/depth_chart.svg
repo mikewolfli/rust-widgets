@@ -16,10 +16,10 @@
   <line x1="68" y1="60" x2="68" y2="36" stroke="rgba(38,166,91,1.00)" stroke-width="1" />
   <line x1="68" y1="36" x2="48" y2="36" stroke="rgba(38,166,91,1.00)" stroke-width="1" />
   <line x1="48" y1="36" x2="48" y2="8" stroke="rgba(38,166,91,1.00)" stroke-width="1" />
-  <rect x="130" y="78" width="21" height="22" fill="rgba(14,48,30,1.00)" />
-  <rect x="109" y="60" width="20" height="40" fill="rgba(14,48,30,1.00)" />
-  <rect x="89" y="36" width="21" height="64" fill="rgba(14,48,30,1.00)" />
-  <rect x="68" y="8" width="20" height="92" fill="rgba(14,48,30,1.00)" />
+  <rect x="109" y="78" width="21" height="22" fill="rgba(32,57,45,1.00)" />
+  <rect x="89" y="60" width="20" height="40" fill="rgba(32,57,45,1.00)" />
+  <rect x="68" y="36" width="21" height="64" fill="rgba(32,57,45,1.00)" />
+  <rect x="48" y="8" width="20" height="92" fill="rgba(32,57,45,1.00)" />
   <line x1="150" y1="100" x2="150" y2="93" stroke="rgba(220,68,70,1.00)" stroke-width="1" />
   <line x1="150" y1="93" x2="171" y2="93" stroke="rgba(220,68,70,1.00)" stroke-width="1" />
   <line x1="171" y1="93" x2="171" y2="82" stroke="rgba(220,68,70,1.00)" stroke-width="1" />
@@ -29,9 +29,9 @@
   <line x1="212" y1="66" x2="212" y2="46" stroke="rgba(220,68,70,1.00)" stroke-width="1" />
   <line x1="212" y1="46" x2="232" y2="46" stroke="rgba(220,68,70,1.00)" stroke-width="1" />
   <line x1="232" y1="46" x2="232" y2="22" stroke="rgba(220,68,70,1.00)" stroke-width="1" />
-  <rect x="150" y="82" width="21" height="18" fill="rgba(52,20,22,1.00)" />
-  <rect x="171" y="66" width="20" height="34" fill="rgba(52,20,22,1.00)" />
-  <rect x="191" y="46" width="21" height="54" fill="rgba(52,20,22,1.00)" />
-  <rect x="212" y="22" width="20" height="78" fill="rgba(52,20,22,1.00)" />
+  <rect x="150" y="82" width="21" height="18" fill="rgba(68,38,40,1.00)" />
+  <rect x="171" y="66" width="20" height="34" fill="rgba(68,38,40,1.00)" />
+  <rect x="191" y="46" width="21" height="54" fill="rgba(68,38,40,1.00)" />
+  <rect x="212" y="22" width="20" height="78" fill="rgba(68,38,40,1.00)" />
   <line x1="140" y1="8" x2="140" y2="100" stroke="rgba(118,118,119,1.00)" stroke-width="1" />
 </svg>

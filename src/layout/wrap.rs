@@ -168,7 +168,10 @@ pub(crate) fn break_lines(
     let mut count = 0usize;
     for (index, size) in sizes.iter().enumerate() {
         let candidate = main_extent(*size, direction);
-        let needs_wrap = wrap && count > 0 && used > 0 && used + spacing + candidate > available;
+        // `count > 0` already keeps the first item on its line; the removed `used > 0` guard made a
+        // line of zero-extent items unbreakable, so the next oversized item shared it and landed on
+        // a different cross position than the same run without the invisible items.
+        let needs_wrap = wrap && count > 0 && used + spacing + candidate > available;
         if needs_wrap {
             lines.push(Vec::new());
             used = 0;

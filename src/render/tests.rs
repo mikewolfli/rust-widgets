@@ -65,6 +65,72 @@ fn both_backends_agree_on_a_fonts_line_box() {
     }
 }
 #[test]
+fn translucent_fill_composites_over_the_backdrop() {
+    let mut surface = SoftwareSurface::new(Size { width: 4, height: 4 }, 1.0);
+    surface.begin_frame(Color::BLACK);
+    // Half-alpha white over opaque black must land halfway, and the result stays opaque.
+    surface.fill_rect(Rect::new(0, 0, 4, 4), Color::rgba(255, 255, 255, 128));
+    surface.end_frame();
+
+    let pixel = &surface.frame_rgba()[0..4];
+    assert!(
+        pixel[0] > 120 && pixel[0] < 136,
+        "a half-alpha white fill over black must be mid-grey, got {pixel:?}"
+    );
+    assert_eq!(pixel[3], 255, "compositing over an opaque backdrop leaves no hole: {pixel:?}");
+}
+
+#[test]
+fn a_low_alpha_shadow_darkens_instead_of_cutting_a_hole() {
+    let mut surface = SoftwareSurface::new(Size { width: 2, height: 2 }, 1.0);
+    surface.begin_frame(Color::rgb(200, 200, 200));
+    // A typical elevation shadow: black at ~16% alpha.
+    surface.fill_rect(Rect::new(0, 0, 2, 2), Color::rgba(0, 0, 0, 40));
+    surface.end_frame();
+
+    let pixel = &surface.frame_rgba()[0..4];
+    assert!(pixel[0] < 200, "the shadow must darken the backdrop: {pixel:?}");
+    assert!(pixel[0] > 150, "and by only its alpha share: {pixel:?}");
+    assert_eq!(pixel[3], 255, "the frame must stay opaque: {pixel:?}");
+}
+
+#[test]
+fn a_raised_face_casts_a_blurred_shadow_with_its_declared_alpha() {
+    use crate::render::{Elevation, RenderContext, SurfaceStyle};
+
+    let mut backend = SoftwarePaintBackend::new(Size { width: 80, height: 60 }, 1.0);
+    backend.begin_frame(Color::TRANSPARENT);
+    {
+        let mut context = RenderContext::new(&mut backend);
+        let style = SurfaceStyle::solid().elevated(Elevation::Level2);
+        style.paint(
+            &mut context,
+            Rect::new(10, 10, 40, 30),
+            Color::WHITE,
+            Color::BLACK,
+            0,
+            0,
+            Color::BLACK,
+        );
+    }
+    backend.end_frame();
+
+    let rgba = backend.frame_rgba();
+    let alpha_at = |x: usize, y: usize| rgba[(y * 80 + x) * 4 + 3];
+
+    assert_eq!(alpha_at(30, 20), 255, "the face itself is opaque");
+    assert!(
+        alpha_at(30, 42) > 0,
+        "the shadow reaches below the face (offset 2 + blur 6), not just a bar at its edge"
+    );
+    assert!(
+        alpha_at(30, 42) < 255,
+        "and it is translucent at its edge, because the blur spreads the declared alpha"
+    );
+    assert_eq!(alpha_at(30, 58), 0, "past the blur reach nothing is painted");
+}
+
+#[test]
 fn double_buffer_present_swaps_frame() {
     let mut surface = SoftwareSurface::new(Size { width: 4, height: 4 }, 1.0);
     surface.begin_frame(Color::RED);

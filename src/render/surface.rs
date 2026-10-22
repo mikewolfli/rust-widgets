@@ -176,9 +176,12 @@ pub const fn default_shadow(elevation: Elevation) -> Option<ElevationShadow> {
         Elevation::Flat => None,
         // `y: 2, blur: 6, alpha: 60` is not a guess: it is the exact shadow the theme layer cast
         // under every control before this ladder existed (`role_base_style`'s old literal). It is
-        // level 2 because that is where a face "floating just above its neighbours" belongs, and
-        // keeping the numbers byte-identical is what lets the default theme's snapshots go on
-        // passing unchanged while the *mechanism* underneath them is replaced.
+        // level 2 because that is where a face "floating just above its neighbours" belongs.
+        //
+        // The numbers are geometry and opacity, not a promise that the picture is unchanged: the
+        // shadow is now painted through `BoxShadow`, so `blur` actually softens it. The default
+        // preset is flat (`Theme::flat_surfaces`), so its snapshots do not contain a shadow at all;
+        // a theme that raises a face is the one that sees this ladder.
         Elevation::Level1 => Some(ElevationShadow { y: 1, blur: 3, alpha: 40 }),
         Elevation::Level2 => Some(ElevationShadow { y: 2, blur: 6, alpha: 60 }),
         Elevation::Level3 => Some(ElevationShadow { y: 4, blur: 12, alpha: 70 }),
@@ -543,12 +546,11 @@ impl SurfaceStyle {
         shadow_tint: Color,
     ) -> bool {
         // 1. The shadow, if this face is raised. It is behind the face, so it goes first — a
-        //    raised face drawn before its own shadow would have the shadow cover it.
+        //    raised face drawn before its own shadow would have the shadow cover it. It goes
+        //    through the box-shadow command so the theme's declared `blur` is actually painted:
+        //    a plain rectangle here dropped it, and every raised face cast a hard bar.
         if let Some(shadow) = self.shadow(shadow_tint) {
-            context.fill_rect(
-                Rect::new(rect.x + shadow.x, rect.y + shadow.y, rect.width, rect.height),
-                shadow.color,
-            );
+            context.draw_box_shadow(rect, shadow.color, shadow.x, shadow.y, shadow.blur, 0);
         }
 
         // 2. The fill, with the material's tint applied. `apply_fill` is the identity for a
@@ -608,10 +610,7 @@ impl SurfaceStyle {
         }
         // The shadow, behind the face.
         if let Some(shadow) = self.shadow(shadow_tint) {
-            context.fill_rect(
-                Rect::new(rect.x + shadow.x, rect.y + shadow.y, rect.width, rect.height),
-                shadow.color,
-            );
+            context.draw_box_shadow(rect, shadow.color, shadow.x, shadow.y, shadow.blur, 0);
         }
         // The gradient fill. A gradient cannot be rounded here because the gradient paint server
         // has no corner rounding; a radius still gets its bevel and edge, which is what keeps a

@@ -892,7 +892,7 @@ impl Draw for WebEngineView {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("web_engine_view");
+        let theme = crate::style::resolved_theme_style_shared("web_engine_view");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
         let (window_fill, foreground, secondary) = {
@@ -941,7 +941,7 @@ impl Draw for WebEngineView {
         // zero-content element that a downstream bounds reader still has to handle. The guard
         // is the same one every other labelled control in the crate uses.
         if !self.url().is_empty() {
-            ctx.draw_text_fitted(
+            ctx.draw_text_fitted_cow(
                 Rect::new(
                     bar.x + 4,
                     bar.y + (bar.height as i32 - url_h as i32) / 2,
@@ -962,7 +962,7 @@ impl Draw for WebEngineView {
             // from a second copy of its height.
             let content = ControlMetrics::content_below_top_band(g, dimensions::WEB_URL_BAR_HEIGHT);
             if content.height > 0 {
-                ctx.draw_text_fitted(
+                ctx.draw_text_fitted_cow(
                     Rect::new(
                         content.x + 4,
                         content.y + (content.height as i32 - hint_h as i32) / 2,

@@ -411,11 +411,11 @@ impl Avatar {
     /// One derivation, read by the disc fill *and* by the mask: two copies of the precedence would
     /// leave mask squares a different colour from the disc they are meant to continue.
     fn disc_fill(&self) -> Color {
-        let window_background = crate::style::resolved_theme_style("avatar")
+        let window_background = crate::style::resolved_theme_style_shared("avatar")
             .as_ref()
             .and_then(|theme| theme.background_color);
-        let raised =
-            crate::style::resolved_theme_style("button").and_then(|button| button.background_color);
+        let raised = crate::style::resolved_theme_style_shared("button")
+            .and_then(|button| button.background_color);
         let disc_background = self
             .base
             .style()

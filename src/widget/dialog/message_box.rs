@@ -796,7 +796,7 @@ impl Draw for MessageBox {
         // The theme reads take and release the global manager's lock internally, so no
         // guard is held across the draw (the mutex is not re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("message_box");
+        let theme = crate::style::resolved_theme_style_shared("message_box");
         // `message_box` is absent from `WidgetRole::for_kind_name`'s table — the variant
         // spells as `message_box`, but only `errordialog` is classified — so it resolves to
         // `theme.colors.background`: the colour the window behind it is already filled with.
@@ -880,7 +880,7 @@ impl Draw for MessageBox {
         if !self.title.is_empty() {
             let title_font = font;
             let title_line = context.text_line(title_bar_band, title_font);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(
                     rect.x + 8,
                     title_line.y,
@@ -955,7 +955,7 @@ impl Draw for MessageBox {
         // message band through the shared primitive rather than at a literal `y`.
         if !self.text.is_empty() {
             let message_line = context.text_line(message_band, body_font);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(
                     message_band.x,
                     message_line.y,
@@ -996,7 +996,7 @@ impl Draw for MessageBox {
             let fg = if is_default { primary_ink } else { ink };
             context.fill_rect(*button_rect, bg);
             context.draw_rect(*button_rect, border);
-            context.draw_text_line(
+            context.draw_text_line_cow(
                 *button_rect,
                 &button.translated_label(),
                 font,

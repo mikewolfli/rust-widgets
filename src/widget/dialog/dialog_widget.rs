@@ -452,7 +452,7 @@ impl Draw for Dialog {
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("dialog");
+        let theme = crate::style::resolved_theme_style_shared("dialog");
         // The dialog is a `Surface`-role control, and `Surface` resolves to
         // `theme.colors.background` — the colour the window behind it is already filled
         // with. Painting the frame in it would make the dialog indistinguishable from the
@@ -544,7 +544,7 @@ impl Draw for Dialog {
         let title_font = effective_font(style);
         let band = ControlMetrics::band_inset(bar, 0);
         let title_line = context.text_line(band, title_font);
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             Rect::new(
                 rect.x + 8,
                 title_line.y,

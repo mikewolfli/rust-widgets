@@ -35,7 +35,7 @@
 //! CSS selector (`KanbanBoard`), and through the typed `create_kanban_board` on
 //! `ControlBackend`.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::dnd::{DragPayload, DragSession, DropEffect, DropTarget};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -794,7 +794,7 @@ impl Draw for KanbanBoard {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("kanban_board");
+        let theme = crate::style::resolved_theme_style_shared("kanban_board");
         // `kanban_board` is not a control kind in the role table, so it classifies as
         // `Surface` — whose background is `theme.colors.background`, the very colour a
         // window paints. Filling the whole rect with it would make the board
@@ -937,12 +937,18 @@ impl KanbanBoard {
         let Some(column_rect) = self.column_rect(index) else {
             return;
         };
-        let (title, collapsed, cards, at_limit) = {
-            let Some(column) = self.columns.get(index) else {
-                return;
-            };
-            (column.title.clone(), column.collapsed, column.cards.clone(), column.is_at_wip_limit())
+        // Borrowed rather than cloned: the tuple used to copy the title `String`, the whole
+        // card vector (and every card's title/description) once per column per frame. Every
+        // helper below (`column_rect`, `card_rect`, `draw_card`) takes `&self`, so the borrow
+        // can live across the column.
+        let Some(column) = self.columns.get(index) else {
+            return;
         };
+        let title = column.title.as_str();
+        let collapsed = column.collapsed;
+        let cards = &column.cards;
+        let at_limit = column.is_at_wip_limit();
+        let wip_limit = column.wip_limit;
 
         // The drop preview is drawn under the cards, so a highlighted column still
         // shows its contents.
@@ -959,10 +965,13 @@ impl KanbanBoard {
         // user has to act on.
         let header_color = if at_limit { chrome.at_limit() } else { chrome.text() };
         let header_font = role_font(self.base.style(), 13.0);
+        let badge_font = role_font(self.base.style(), 11.0);
+        let title_font = role_font(self.base.style(), 12.0);
+        let desc_font = role_font(self.base.style(), 10.0);
         let header_line = context.text_line(header_rect, &header_font);
         context.draw_text(
             Point::new(header_rect.x + CARD_PADDING, header_line.y),
-            &title,
+            title,
             &header_font,
             header_color,
             HorizontalAlignment::Left,
@@ -970,12 +979,11 @@ impl KanbanBoard {
         // Card count on the right of the header, or the collapsed marker.
         let badge = if collapsed {
             format!("({})", cards.len())
-        } else if let Some(limit) = self.columns.get(index).and_then(|c| c.wip_limit) {
+        } else if let Some(limit) = wip_limit {
             format!("{}/{}", cards.len(), limit)
         } else {
             cards.len().to_string()
         };
-        let badge_font = role_font(self.base.style(), 11.0);
         let badge_metrics = context.measure_text(&badge, &badge_font);
         let badge_line = context.text_line(header_rect, &badge_font);
         context.draw_text(
@@ -1003,7 +1011,7 @@ impl KanbanBoard {
             // Clipped to the column so a card taller than the remaining space does
             // not paint over the column beside it.
             context.push_clip(column_rect.x, column_rect.y, column_rect.width, column_rect.height);
-            self.draw_card(context, card, card_rect, position, chrome);
+            self.draw_card(context, card, card_rect, position, chrome, &title_font, &desc_font);
             context.pop_clip();
         }
     }
@@ -1016,6 +1024,8 @@ impl KanbanBoard {
         card_rect: Rect,
         position: CardPosition,
         chrome: &BoardChrome,
+        title_font: &Font,
+        desc_font: &Font,
     ) {
         let is_dragged = self.drag_origin == Some(position) && self.is_dragging_card();
         // The dragged card stays drawn in place but faded, so the user can see both
@@ -1029,13 +1039,11 @@ impl KanbanBoard {
         } else {
             chrome.text().with_alpha(alpha)
         };
-        let title = card.title.clone();
+        let title = card.title.as_str();
         // The title and the description are placed from the card's own box: the literals
         // `+ 20` and `+ 38` described a 48 px card, so any other `CARD_HEIGHT` drew the
         // description past the card's bottom edge. A card is `CARD_HEIGHT` tall by contract.
-        let title_font = role_font(self.base.style(), 12.0);
-        let desc_font = role_font(self.base.style(), 10.0);
-        let title_line = context.text_line(card_rect, &title_font);
+        let title_line = context.text_line(card_rect, title_font);
         // The done marker used to be a `✓` (U+2713) prefix on the title string. No bundled
         // face covers that code point, so the text path fell back to an 8x8 bitmap and drew a
         // blocky check mark. An `IconName::Check` is real geometry both backends agree on, and
@@ -1055,8 +1063,8 @@ impl KanbanBoard {
         if !title.is_empty() {
             context.draw_text(
                 Point::new(title_x, title_line.y),
-                &title,
-                &title_font,
+                title,
+                title_font,
                 title_color,
                 HorizontalAlignment::Left,
             );
@@ -1070,11 +1078,11 @@ impl KanbanBoard {
                 card_rect.width,
                 card_rect.height / 2,
             );
-            let desc_line = context.text_line(desc_band, &desc_font);
+            let desc_line = context.text_line(desc_band, desc_font);
             context.draw_text(
                 Point::new(card_rect.x + CARD_PADDING, desc_line.y),
                 &card.description,
-                &desc_font,
+                desc_font,
                 chrome.muted_text().with_alpha(alpha),
                 HorizontalAlignment::Left,
             );

@@ -833,7 +833,7 @@ impl Draw for Slider {
         // `slider` classifies as `WidgetRole::Accent`, whose resolved colours are the theme's
         // accent token and its contrasting ink. `primary` is read alongside it as the crate's
         // conventional value-indicator token, so the handle matches the rest of the library.
-        let theme = crate::style::resolved_theme_style("slider");
+        let theme = crate::style::resolved_theme_style_shared("slider");
         // A stripped device build (`mini`/`embedded`) has no theme module, so there is no
         // manager to read. The literals below are the same ones the `None` arm uses, which
         // is what keeps the two profiles rendering alike rather than inventing a palette
@@ -892,6 +892,21 @@ impl Draw for Slider {
             .or_else(|| theme.as_ref().and_then(|t| t.border_color))
             .filter(|resolved| *resolved != handle_color)
             .unwrap_or_else(|| handle_color.blend(&accent, 0.40));
+        // A disabled slider must *look* disabled: it used to paint the same track, fill, handle
+        // and halo as an enabled one, and only refuse input. The states are damped toward the
+        // window fill by the same weights a disabled control uses elsewhere, and the halo is
+        // suppressed because a disabled control cannot be hovered or dragged.
+        let is_enabled = self.base.is_enabled();
+        let (groove_color, handle_color, tick_color, handle_border) = if is_enabled {
+            (groove_color, handle_color, tick_color, handle_border)
+        } else {
+            (
+                groove_color.blend(&window_fill, 0.50),
+                handle_color.blend(&window_fill, 0.55),
+                tick_color.blend(&window_fill, 0.50),
+                handle_border.blend(&window_fill, 0.55),
+            )
+        };
         // ── The interaction halo (BLUE23 Appendix A.4 / M1) ──
         //
         // # The defect this removes
@@ -905,7 +920,9 @@ impl Draw for Slider {
         // The weights are the two the major toolkits publish for exactly this: a hover is a faint
         // step, a drag a firmer one. Drawn as a disc **behind** the handle, so the halo cannot hide
         // the value indicator it is drawing attention to.
-        let halo_weight = if self.base.is_pressed() {
+        let halo_weight = if !is_enabled {
+            None
+        } else if self.base.is_pressed() {
             Some(DRAG_HALO_WEIGHT)
         } else if self.base.is_hovered() {
             Some(HOVER_HALO_WEIGHT)

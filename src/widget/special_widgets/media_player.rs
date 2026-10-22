@@ -597,7 +597,7 @@ impl Draw for MediaPlayer {
         // The title and status lines take the **effective font** — the resolved theme/caller font —
         // so the theme body font and the user's text scale reach them (D09-STYLE-01).
         let font = effective_font(style);
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             Rect::new(
                 rect.x + MEDIA_PLAYER_PADDING,
                 rect.y + MEDIA_PLAYER_PADDING / 2,
@@ -609,7 +609,7 @@ impl Draw for MediaPlayer {
             ink,
             HorizontalAlignment::Left,
         );
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             Rect::new(
                 rect.x + MEDIA_PLAYER_PADDING,
                 rect.y + MEDIA_PLAYER_PADDING / 2 + 18,

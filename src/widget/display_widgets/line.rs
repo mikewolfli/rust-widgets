@@ -11,7 +11,7 @@ use crate::compat::ToString;
 use crate::core::{Color, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::coercion::{expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -72,6 +72,30 @@ impl Line {
         self.thickness = thickness;
         self.base.request_redraw();
     }
+
+    /// Returns the line thickness in pixels.
+    pub fn thickness(&self) -> u32 {
+        self.thickness
+    }
+
+    /// The explicit colour override, or `None` when the line follows the theme's border colour.
+    pub fn color(&self) -> Option<Color> {
+        self.color
+    }
+
+    /// Sets (or clears, with `None`) the explicit line colour.
+    pub fn set_color(&mut self, color: Option<Color>) {
+        if self.color == color {
+            return;
+        }
+        self.color = color;
+        self.base.request_redraw();
+    }
+
+    /// The colour the painter uses: the explicit override, then the style's border, then a literal.
+    fn line_color(&self) -> Color {
+        self.color.or_else(|| self.style().border_color).unwrap_or(Color::rgb(180, 180, 180))
+    }
 }
 
 impl Widget for Line {
@@ -111,6 +135,10 @@ impl WidgetProperties for Line {
                 };
                 Ok(CapabilityValue::String(orientation.to_string()))
             }
+            // The effective colour, because that is what a caller sees; the explicit override is
+            // only one of the three rungs the painter walks.
+            "color" => Ok(CapabilityValue::Color(self.line_color())),
+            "thickness" => Ok(CapabilityValue::UInt(u64::from(self.thickness()))),
             _ => base_property_get(self, name),
         }
     }
@@ -127,12 +155,30 @@ impl WidgetProperties for Line {
                 self.set_orientation(orientation);
                 Ok(())
             }
+            "color" => {
+                // `Null` clears the override (the line follows the theme again). A CSS string is
+                // still accepted, as on the other colour properties.
+                match value {
+                    CapabilityValue::Null => self.set_color(None),
+                    CapabilityValue::Color(color) => self.set_color(Some(color)),
+                    CapabilityValue::String(raw) => match Color::parse_hex(&raw) {
+                        Some(color) => self.set_color(Some(color)),
+                        None => return Err(CapabilityAccessError::TypeMismatch),
+                    },
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                }
+                Ok(())
+            }
+            "thickness" => {
+                self.set_thickness(expect_u32(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["orientation", BASE_PROPERTY_NAMES]
+        property_names_of!["orientation", "thickness", "color", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `line` publishes.
@@ -161,9 +207,8 @@ impl Draw for Line {
         let is_vertical = self.orientation == LineOrientation::Vertical;
 
         // Resolve line color: preferred explicit color, then style border_color,
-        // then a default gray.
-        let line_color =
-            self.color.or_else(|| self.style().border_color).unwrap_or(Color::rgb(180, 180, 180));
+        // then a default gray. One derivation, shared with the `color` property.
+        let line_color = self.line_color();
 
         draw_line(context, rect, is_vertical, self.thickness, line_color);
     }
@@ -180,6 +225,28 @@ mod tests {
         let line = Line::new(LineOrientation::Horizontal, Rect::new(0, 0, 200, 4));
         assert_eq!(line.orientation(), LineOrientation::Horizontal);
         assert_eq!(line.kind(), WidgetKind::Line);
+    }
+
+    /// The colour override is a real state, not a write-only field.
+    ///
+    /// The field existed but had no setter and no property, so `draw` always fell through to
+    /// the style's border colour and the `Option` could never be `Some`.
+    #[test]
+    fn line_colour_override_round_trips() {
+        use crate::widget::capability::WidgetProperties;
+        let mut line = Line::new(LineOrientation::Horizontal, Rect::new(0, 0, 200, 4));
+        assert_eq!(line.color(), None);
+
+        line.set_color(Some(Color::RED));
+        assert_eq!(line.color(), Some(Color::RED));
+        assert_eq!(
+            line.get("color"),
+            Ok(CapabilityValue::Color(Color::RED)),
+            "the published colour is the effective one the painter uses"
+        );
+
+        line.set_color(None);
+        assert_eq!(line.color(), None, "`None` restores theme-following");
     }
 
     #[test]

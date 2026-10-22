@@ -555,7 +555,7 @@ impl Draw for RadioButton {
             // step 2, because step 2 resolves `radio_button:checked`, not `radio_button`.
             let caller_named = if style.theme_derived { None } else { style.background_color };
             #[cfg(device_profile)]
-            let declared = crate::style::resolved_theme_style_for_state(
+            let declared = crate::style::resolved_theme_style_for_state_shared(
                 "radio_button",
                 crate::style::WidgetState::Checked,
             )
@@ -595,7 +595,7 @@ impl Draw for RadioButton {
             } else {
                 ink.legible_on(page, 4.5).with_alpha(150)
             };
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(
                     label_x,
                     line.y,
@@ -1236,7 +1236,7 @@ mod tests {
         crate::theme::apply_active_theme(&mut button);
         let svg = crate::widget::svg::render_widget_to_svg(&mut button, bounds);
 
-        let declared = crate::style::resolved_theme_style_for_state(
+        let declared = crate::style::resolved_theme_style_for_state_shared(
             "radio_button",
             crate::style::WidgetState::Checked,
         )

@@ -178,6 +178,15 @@ pub(crate) fn to_capability_value_with_record_schema(
         Some(PropertyValueKind::IconSpec) => icon_spec_from_json(value)
             .map(CapabilityValue::IconSpec)
             .or_else(|| value.is_null().then_some(CapabilityValue::Null)),
+        // A list is an array of scalars, in order. The order *is* the value, so it is carried
+        // as a `Tuple` (the crate's positional-value carrier) rather than as records: two equal
+        // labels are legal for a combo box, and there is no identity field to key them by.
+        Some(PropertyValueKind::StringList) => string_list_from_json(value).map(|items| {
+            CapabilityValue::Tuple(items.into_iter().map(CapabilityValue::String).collect())
+        }),
+        Some(PropertyValueKind::NumberList) => number_list_from_json(value).map(|values| {
+            CapabilityValue::Tuple(values.into_iter().map(CapabilityValue::Float).collect())
+        }),
         None => match value {
             Value::Null => Some(CapabilityValue::Null),
             Value::Bool(b) => Some(CapabilityValue::Bool(*b)),
@@ -398,10 +407,50 @@ fn capability_value_to_json(value: &CapabilityValue) -> Option<Value> {
         CapabilityValue::Float(number) => serde_json::Number::from_f64(*number).map(Value::Number),
         CapabilityValue::String(text) => Some(Value::String(text.clone())),
         CapabilityValue::IconSpec(spec) => Some(icon_spec_to_json(spec)),
+        // A positional list — a string list, a sample series — exports as a JSON array of its
+        // elements. Only scalar elements have a document form; a compound element makes the whole
+        // value refuse (rather than writing a partial array that would read back differently).
+        CapabilityValue::Tuple(items) => {
+            let mut out = crate::compat::Vec::with_capacity(items.len());
+            for item in items {
+                out.push(capability_value_to_json(item)?);
+            }
+            Some(Value::Array(out))
+        }
         // Every other kind is either not a field a row declares or has no document grammar; see the
         // function's own note on why approximating one is worse than refusing it.
         _ => None,
     }
+}
+
+/// Reads a JSON array of strings, in order.
+///
+/// A non-string element refuses the whole list: silently skipping it would make the written value
+/// differ from the document, and stringifying it would turn a number into a label.
+fn string_list_from_json(value: &Value) -> Option<crate::compat::Vec<String>> {
+    let array = value.as_array()?;
+    let mut items = crate::compat::Vec::with_capacity(array.len());
+    for item in array {
+        items.push(String::from(item.as_str()?));
+    }
+    Some(items)
+}
+
+/// Reads a JSON array of finite numbers, in order.
+///
+/// JSON has no NaN/infinity, so `as_f64` is already finite for every number it accepts; the check
+/// is kept because the function is also the place a future non-finite spelling would land.
+fn number_list_from_json(value: &Value) -> Option<crate::compat::Vec<f64>> {
+    let array = value.as_array()?;
+    let mut items = crate::compat::Vec::with_capacity(array.len());
+    for item in array {
+        let number = item.as_f64()?;
+        if !number.is_finite() {
+            return None;
+        }
+        items.push(number);
+    }
+    Some(items)
 }
 
 /// The document form of an icon descriptor — the shape [`icon_spec_from_json`] reads.
@@ -621,6 +670,76 @@ mod tests {
         assert!(empty.is_empty());
         // And with no declared kind, a list stays refused: without a schema nothing can judge it.
         assert_eq!(to_capability_value(&serde_json::json!([{"id": "a"}]), None), None);
+    }
+
+    /// A `StringList` property reads a JSON array of strings, in order, into the positional
+    /// carrier the value travels as.
+    #[test]
+    fn to_capability_value_reads_a_string_list_in_order() {
+        let kind = Some(PropertyValueKind::StringList);
+        let json = serde_json::json!(["Alpha", "Beta", "Alpha"]);
+        let Some(CapabilityValue::Tuple(items)) = to_capability_value(&json, kind) else {
+            panic!("an array of strings must read as a string list");
+        };
+        let texts: Vec<&str> = items.iter().filter_map(|value| value.as_str()).collect();
+        assert_eq!(texts, vec!["Alpha", "Beta", "Alpha"]);
+
+        // An empty array is an empty list, which is a legitimate value.
+        let Some(CapabilityValue::Tuple(empty)) = to_capability_value(&serde_json::json!([]), kind)
+        else {
+            panic!("an empty array is an empty string list");
+        };
+        assert!(empty.is_empty());
+
+        // Anything that is not an array of strings is refused rather than coerced.
+        assert_eq!(to_capability_value(&serde_json::json!("Alpha"), kind), None);
+        assert_eq!(to_capability_value(&serde_json::json!({"a": "b"}), kind), None);
+        assert_eq!(to_capability_value(&serde_json::json!(["Alpha", 2]), kind), None);
+        assert_eq!(to_capability_value(&serde_json::json!([null]), kind), None);
+    }
+
+    /// A `NumberList` property reads a JSON array of numbers, in order, as `Float` elements.
+    #[test]
+    fn to_capability_value_reads_a_number_list() {
+        let kind = Some(PropertyValueKind::NumberList);
+        let json = serde_json::json!([1, 2.5, -3]);
+        let Some(CapabilityValue::Tuple(items)) = to_capability_value(&json, kind) else {
+            panic!("an array of numbers must read as a number list");
+        };
+        assert_eq!(
+            items,
+            vec![
+                CapabilityValue::Float(1.0),
+                CapabilityValue::Float(2.5),
+                CapabilityValue::Float(-3.0),
+            ]
+        );
+        assert_eq!(to_capability_value(&serde_json::json!(1.5), kind), None);
+        assert_eq!(to_capability_value(&serde_json::json!([1.5, "two"]), kind), None);
+        assert_eq!(to_capability_value(&serde_json::json!([true]), kind), None);
+    }
+
+    /// The document form of a positional list is a JSON array, so a value written from a document
+    /// reads back into one — the round trip a designer depends on.
+    #[test]
+    fn capability_value_to_json_exports_positional_lists_as_arrays() {
+        let strings = CapabilityValue::Tuple(vec![
+            CapabilityValue::String(String::from("Alpha")),
+            CapabilityValue::String(String::from("Beta")),
+        ]);
+        assert_eq!(capability_value_to_json(&strings), Some(serde_json::json!(["Alpha", "Beta"])));
+
+        let numbers =
+            CapabilityValue::Tuple(vec![CapabilityValue::Float(1.0), CapabilityValue::Float(2.5)]);
+        assert_eq!(capability_value_to_json(&numbers), Some(serde_json::json!([1.0, 2.5])));
+
+        // An element with no document form (a colour is not a row field) makes the whole value
+        // refuse, rather than writing a partial array that would read back as a different list.
+        let compound = CapabilityValue::Tuple(vec![
+            CapabilityValue::String(String::from("Alpha")),
+            CapabilityValue::Color(crate::core::Color::BLACK),
+        ]);
+        assert_eq!(capability_value_to_json(&compound), None);
     }
 
     #[test]

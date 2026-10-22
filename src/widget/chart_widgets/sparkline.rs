@@ -24,7 +24,7 @@
 use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::widget::capability::coercion::expect_f32;
+use crate::widget::capability::coercion::{expect_f32, expect_number_list};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -241,6 +241,12 @@ impl WidgetProperties for Sparkline {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "stroke_width" => Ok(CapabilityValue::Float(self.stroke_width() as f64)),
+            // The series is a *property*, not only the `set_data` command, so a document can spell
+            // the samples and a designer can read them back. It is a `NumberList`: order is the
+            // value and samples are not identifiable rows.
+            "data" => Ok(CapabilityValue::Tuple(
+                self.data().iter().map(|value| CapabilityValue::Float(*value)).collect(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -251,12 +257,16 @@ impl WidgetProperties for Sparkline {
                 self.set_stroke_width(expect_f32(value)?);
                 Ok(())
             }
+            "data" => {
+                self.set_data(expect_number_list(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["stroke_width", BASE_PROPERTY_NAMES]
+        property_names_of!["data", "stroke_width", BASE_PROPERTY_NAMES]
     }
 }
 
@@ -344,6 +354,43 @@ mod tests {
         assert_eq!(sl.line_color(), Color::SUCCESS);
         assert!((sl.stroke_width() - 1.5).abs() < f32::EPSILON);
         assert!(sl.show_last_point());
+    }
+
+    #[test]
+    fn data_property_round_trips_the_samples() {
+        let mut sl = Sparkline::new(Rect::new(0, 0, 80, 24));
+        let written = CapabilityValue::Tuple(vec![
+            CapabilityValue::Float(1.0),
+            // An integer spelling is a legitimate way to write a sample.
+            CapabilityValue::Int(2),
+            CapabilityValue::Float(3.5),
+        ]);
+        sl.set("data", written).expect("data is writable");
+        assert_eq!(sl.data(), &[1.0, 2.0, 3.5]);
+        match sl.get("data").expect("data is readable") {
+            CapabilityValue::Tuple(values) => {
+                let numbers: Vec<f64> = values
+                    .iter()
+                    .map(|value| match value {
+                        CapabilityValue::Float(number) => *number,
+                        other => panic!("data elements should read back as Float, got {other:?}"),
+                    })
+                    .collect();
+                assert_eq!(numbers, vec![1.0, 2.0, 3.5]);
+            }
+            other => panic!("data should read back as a Tuple, got {other:?}"),
+        }
+        // A non-numeric element refuses the whole list rather than dropping the sample.
+        assert_eq!(
+            sl.set(
+                "data",
+                CapabilityValue::Tuple(vec![
+                    CapabilityValue::Float(1.0),
+                    CapabilityValue::String("oops".to_string()),
+                ])
+            ),
+            Err(CapabilityAccessError::TypeMismatch)
+        );
     }
 
     #[test]

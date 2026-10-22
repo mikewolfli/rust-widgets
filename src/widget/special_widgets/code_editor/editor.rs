@@ -359,8 +359,31 @@ pub struct CodeEditor {
     /// `RefCell` because the painters and the public hit-test take `&self` — the same
     /// reason `measured_cell_width` is a `Cell`.
     pub(crate) row_layouts: RefCell<Vec<(usize, RowLayout)>>,
-    /// The (revision, font size, row width) the layouts were measured against.
-    pub(crate) row_layout_key: core::cell::Cell<(u64, u32, u32)>,
+    /// Everything the cached [`Self::row_layouts`] were measured against.
+    ///
+    /// A layout's `xs` are a statement about one line's text, shaped with one font at one
+    /// tab width. If any of those inputs changes, the cached numbers describe text that is no
+    /// longer on screen, so the pair is compared before reuse and the cache is dropped when it
+    /// differs. It is a `Cell` because the paint path that reads it holds `&self` in the
+    /// row helpers.
+    ///
+    /// The lexer generation is part of the key even though it is not a *metric*: the runs a
+    /// row is measured in come from the highlighter, and shaping each run separately can
+    /// differ from shaping the line as a whole. A language or highlighter change therefore
+    /// re-measures rather than reusing x positions computed from a different partition.
+    pub(crate) row_layout_key: core::cell::Cell<(
+        u64,
+        u64,
+        u32,
+        usize,
+        u32,
+        u32,
+        crate::widget::special_widgets::code_editor::syntax::LanguageId,
+        u64,
+    )>,
+    /// Bumped whenever the cached lexer state is dropped, which is the event that can change a
+    /// line's token runs without changing its text.
+    pub(crate) layout_lexer_generation: u64,
     /// Per-strip-row minimap summaries, rebuilt on edits and read while painting.
     ///
     /// This is what keeps the minimap's per-frame cost off the document size:
@@ -520,7 +543,17 @@ impl CodeEditor {
             occurrence_cache: None,
             bracket_cache: RefCell::new(None),
             row_layouts: RefCell::new(Vec::new()),
-            row_layout_key: core::cell::Cell::new((0, 0, 0)),
+            row_layout_key: core::cell::Cell::new((
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                crate::widget::special_widgets::code_editor::syntax::LanguageId::default(),
+                0,
+            )),
+            layout_lexer_generation: 0,
             walked_lines: 0,
             minimap_buckets: Vec::new(),
             minimap_line_count: 0,

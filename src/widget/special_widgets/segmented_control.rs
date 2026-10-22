@@ -404,7 +404,7 @@ impl Draw for SegmentedControl {
         // `segmented_control` reports `WidgetKind::ToggleButton`, whose role is `Primary`; the
         // control itself is not a filled call to action, so the role's primary fill is not used.
         // Its accent serves the selection instead, and the bar derives its own surface below.
-        let theme = crate::style::resolved_theme_style("segmented_control");
+        let theme = crate::style::resolved_theme_style_shared("segmented_control");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
         let (window_fill, foreground, primary, muted) = {

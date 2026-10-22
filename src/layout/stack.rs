@@ -103,8 +103,16 @@ impl Layout for StackLayout {
         self.items.push(widget_id);
     }
     fn remove_widget(&mut self, widget_id: ObjectId) {
-        self.items.retain(|id| *id != widget_id);
-        if self.current >= self.items.len() {
+        let Some(index) = self.items.iter().position(|id| *id == widget_id) else {
+            return;
+        };
+        self.items.remove(index);
+        // Same rule as `remove_at`: removing a page *before* the visible one must keep the same
+        // page visible. Clamping only the tail let `[A, B, C]` with `current == 1` (B) become
+        // `[B, C]` with `current == 1` (C) after A was removed.
+        if index < self.current {
+            self.current -= 1;
+        } else if self.current >= self.items.len() {
             self.current = self.items.len().saturating_sub(1);
         }
     }
@@ -160,6 +168,22 @@ mod tests {
         assert_eq!(layout.current_index(), 1, "a refused selection changes nothing");
         assert!(layout.try_set_current_index(0));
         assert_eq!(layout.current_index(), 0);
+    }
+
+    /// Removing a page before the current one must keep the same widget visible.
+    ///
+    /// `remove_widget` used to only clamp the tail, so removing an earlier page left the index
+    /// pointing at the following page: `[A, B, C]` with B visible showed C after removing A.
+    #[test]
+    fn remove_widget_keeps_the_same_widget_selected() {
+        let mut layout = stack_of(3);
+        layout.set_current_index(1);
+        assert_eq!(layout.item_at(1), Some(2), "B is visible before the removal");
+
+        layout.remove_widget(1); // remove A
+
+        assert_eq!(layout.current_index(), 0);
+        assert_eq!(layout.item_at(0), Some(2), "B is still the visible page");
     }
 
     /// Inserting before the current page keeps the same page visible.

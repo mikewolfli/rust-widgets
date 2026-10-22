@@ -557,7 +557,7 @@ impl Draw for MenuButton {
         // The **effective font** — the resolved theme/caller font — for the button's own label;
         // the popup rows take the same font below (D09-STYLE-01).
         let font = effective_font(style);
-        let themed = crate::style::resolved_theme_style("menu_button");
+        let themed = crate::style::resolved_theme_style_shared("menu_button");
         let themed_bg = themed.as_ref().and_then(|r| r.background_color);
         let themed_border = themed.as_ref().and_then(|r| r.border_color);
         let themed_text = themed.as_ref().and_then(|r| r.text_color);
@@ -665,7 +665,7 @@ impl Draw for MenuButton {
             // The popup panel is chrome: a popup that stayed white in a dark theme would be
             // the brightest object on screen. It reads the resolved surface, and the literal
             // it used to be stays as the fallback.
-            let panel = crate::style::resolved_theme_style("menu_button")
+            let panel = crate::style::resolved_theme_style_shared("menu_button")
                 .and_then(|r| r.background_color)
                 .or(themed_bg)
                 .unwrap_or(Color::WHITE);

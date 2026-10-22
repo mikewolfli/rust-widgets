@@ -758,7 +758,7 @@ impl Draw for ToolButton {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's
         // mutex is not re-entrant.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("tool_button");
+        let theme = crate::style::resolved_theme_style_shared("tool_button");
         let themed_bg = theme.as_ref().and_then(|resolved| resolved.background_color);
         let themed_text = theme.as_ref().and_then(|resolved| resolved.text_color);
         let themed_border = theme.as_ref().and_then(|resolved| resolved.border_color);
@@ -870,7 +870,7 @@ impl Draw for ToolButton {
             // an `x` here *and* asking for `Center` would centre twice: the renderer offsets by
             // `(free + 1) / 2` from the origin it is given, so a pre-shifted origin lands the ink
             // half a box to the leading side.
-            context.draw_text_line(box_, &self.text, font, fg, HorizontalAlignment::Center);
+            context.draw_text_line_cow(box_, &self.text, font, fg, HorizontalAlignment::Center);
         }
         if has_popup {
             // The arrow lives in the trailing strip `content_box` already removed from the content,

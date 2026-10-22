@@ -32,8 +32,8 @@ use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, Co
 use std::cell::{Ref, RefCell};
 
 use crate::widget::capability::coercion::{
-    expect_bool, expect_f64, expect_horizontal_alignment, expect_i64, expect_string,
-    expect_text_direction, horizontal_alignment_to_str, text_direction_to_str,
+    expect_bool, expect_f64, expect_horizontal_alignment, expect_string, expect_text_direction,
+    expect_u32, horizontal_alignment_to_str, text_direction_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -825,7 +825,7 @@ impl WidgetProperties for SpinBox {
             "maximum" => Ok(as_number(self.maximum_f64())),
             "value" => Ok(as_number(self.value_f64())),
             "single_step" => Ok(as_number(self.single_step_f64())),
-            "decimals" => Ok(CapabilityValue::Int(self.decimals() as i64)),
+            "decimals" => Ok(CapabilityValue::UInt(u64::from(self.decimals()))),
             "prefix" => Ok(CapabilityValue::String(self.prefix().to_string())),
             "suffix" => Ok(CapabilityValue::String(self.suffix().to_string())),
             // The announcement form: `$12`, or the special text at the minimum. Published because it is
@@ -877,15 +877,12 @@ impl WidgetProperties for SpinBox {
                 Ok(())
             }
             "decimals" => {
-                let decimals = expect_i64(value)?;
-                // `decimals` is declared `UInt`, so a negative is not a type error but a
-                // value that addresses nothing. Answering `OutOfRange` says exactly that
-                // and keeps the caller's mistake (their argument) distinct from a
-                // capability gap (`UnsupportedOnWidget`) — the distinction
-                // `CapabilityAccessError::OutOfRange` exists to preserve.
-                let decimals =
-                    u32::try_from(decimals).map_err(|_| CapabilityAccessError::OutOfRange)?;
-                self.set_decimals(decimals);
+                // The declared kind is `UInt`, so read it as one; a negative is a value error, not
+                // a type error, which is the distinction `OutOfRange` exists to preserve.
+                if matches!(value, CapabilityValue::Int(v) if v < 0) {
+                    return Err(CapabilityAccessError::OutOfRange);
+                }
+                self.set_decimals(expect_u32(value)?);
                 Ok(())
             }
             "prefix" => {
@@ -1155,7 +1152,7 @@ impl Draw for SpinBox {
             // leading inset. The vertical is the row band's business, so only the horizontal
             // axis is read here.
             let align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(layout.value.x, line.y, layout.value.width, line.height),
                 &value_text,
                 font,
@@ -1698,7 +1695,9 @@ mod tests {
         assert_eq!(sb.get("value").unwrap(), CapabilityValue::Int(7));
 
         sb.set("decimals", CapabilityValue::Int(2)).unwrap();
-        assert_eq!(sb.get("decimals").unwrap(), CapabilityValue::Int(2));
+        // The schema declares `UInt`, so the read answers `UInt`; the writer still accepts a
+        // non-negative `Int` (the JSON form of a small number) — the two facts this test pins.
+        assert_eq!(sb.get("decimals").unwrap(), CapabilityValue::UInt(2));
         // A decimal write is accepted and read back as a Float.
         assert_eq!(sb.set("value", CapabilityValue::Float(2.5)), Ok(()));
         assert_eq!(sb.get("value").unwrap(), CapabilityValue::Float(2.5));

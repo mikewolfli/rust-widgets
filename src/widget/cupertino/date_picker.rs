@@ -162,26 +162,13 @@ impl CupertinoDatePicker {
 
     /// Returns the range of years available for selection.
     ///
-    /// # Why the bounds are ordered
-    ///
-    /// `set_date_range` accepts its two ends independently, so a caller can pass a `max` year below
-    /// the `min` year (directly, or by `unwrap_or` defaults against one bound). `min_y..=max_y` with
-    /// `min_y > max_y` is an *empty* `RangeInclusive` that panics when first iterated — and this is
-    /// called from the render loop, so a bad range crashed the frame. Ordering the two ends keeps the
-    /// range a legal (possibly single-year) interval, which is the honest reading of an inverted
-    /// request.
-    fn year_range(&self) -> std::ops::RangeInclusive<i32> {
-        let min_y = self.min_date.map(|d| d.0).unwrap_or(1900);
-        let max_y = self.max_date.map(|d| d.0).unwrap_or(2100);
-        min_y.min(max_y)..=min_y.max(max_y)
-    }
-
     /// Returns the constraint for the current selection context.
     fn date_constraint(&self) -> DateConstraint {
         let min_y = self.min_date.map(|d| d.0).unwrap_or(1900);
         let max_y = self.max_date.map(|d| d.0).unwrap_or(2100);
-        // Same ordering as `year_range`, so a consumer that iterates this constraint cannot see an
-        // inverted interval the render path has already normalised.
+        // Ordering the two ends keeps an inverted `set_date_range` from producing an interval that
+        // panics when iterated (`min..=max` with `min > max` is empty). `draw` walks the five rows
+        // around the selection from this same constraint, so it cannot see a different interval.
         DateConstraint { min_year: min_y.min(max_y), max_year: min_y.max(max_y) }
     }
 }
@@ -280,7 +267,7 @@ impl Draw for CupertinoDatePicker {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's
         // mutex is not re-entrant.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("cupertino_date_picker");
+        let theme = crate::style::resolved_theme_style_shared("cupertino_date_picker");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme. The picker is not in the role table, so it
         // classifies as `Surface` and its resolved background is the window fill itself; the
@@ -388,7 +375,6 @@ impl Draw for CupertinoDatePicker {
 
         // Build visible column items (reuse static arrays — no per-draw Vec<String>)
         let constraint = self.date_constraint();
-        let year_sel_idx = self.selected_year - constraint.min_year;
 
         // Months: reference the static array directly (no allocation)
         let month_items: &[&str] = MONTH_NAMES;
@@ -399,12 +385,26 @@ impl Draw for CupertinoDatePicker {
         let day_items: &[&str] = &DAY_STRINGS[..max_days as usize];
         let day_sel_idx = (self.selected_day as usize - 1) as i32;
 
-        // Columns as (&[&str], ...) — borrow from static data
-        // Year values are dynamic (min_y..=max_y), so still need per-draw strings
-        let year_items: Vec<String> = self.year_range().map(|y| y.to_string()).collect();
-        let year_refs: Vec<&str> = year_items.iter().map(|s| s.as_str()).collect();
+        // Columns as (&[&str], ...) — borrow from static data.
+        //
+        // Years are dynamic, but only the five rows the wheel shows are needed. This used to
+        // materialise the whole default range (1900..=2100): 201 `String`s plus two 201-entry
+        // vectors, per frame, to paint five labels.
+        let year_items: [String; dimensions::PICKER_VISIBLE_ROWS as usize] =
+            core::array::from_fn(|row| {
+                let offset = row as i32 - 2;
+                let year = self.selected_year + offset;
+                if year >= constraint.min_year && year <= constraint.max_year {
+                    year.to_string()
+                } else {
+                    String::new()
+                }
+            });
+        let year_refs: [&str; dimensions::PICKER_VISIBLE_ROWS as usize] =
+            core::array::from_fn(|row| year_items[row].as_str());
         let columns: [(i32, &[&str], &str); 3] = [
-            (year_sel_idx, &year_refs, "Year"),
+            // The selected row is the middle of the five, by construction above.
+            (2, &year_refs, "Year"),
             (month_sel_idx, month_items, "Month"),
             (day_sel_idx, day_items, "Day"),
         ];
@@ -463,7 +463,7 @@ impl Draw for CupertinoDatePicker {
                     muted.legible_on(wheel, 4.5)
                 };
 
-                context.draw_text_fitted(
+                context.draw_text_fitted_cow(
                     Rect::new(col_x, text_y, col_width, metrics.height),
                     text,
                     &font,

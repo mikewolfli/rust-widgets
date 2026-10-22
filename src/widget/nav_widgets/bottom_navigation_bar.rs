@@ -268,7 +268,7 @@ impl Draw for BottomNavigationBar {
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("bottom_navigation_bar");
+        let theme = crate::style::resolved_theme_style_shared("bottom_navigation_bar");
         // `bottom_navigation_bar` is absent from `WidgetRole::for_kind_name`'s table, so it
         // classifies as `Surface` and resolves to `theme.colors.background` — the window's
         // own fill. A bar painted in that colour would be byte-identical to the frame behind

@@ -1199,7 +1199,7 @@ impl Draw for Menu {
         // entry label and every shortcut, so the menu honours the theme body font and the user's
         // text scale (D09-STYLE-01).
         let font = effective_font(style);
-        let theme = crate::style::resolved_theme_style("menu");
+        let theme = crate::style::resolved_theme_style_shared("menu");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
         let (window_fill, foreground, secondary, primary) = {
@@ -1385,7 +1385,7 @@ impl Draw for Menu {
                     crate::widget::draw_icon_at(context, tick, fg, IconName::Check);
                 }
             }
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 context.text_line(label, font),
                 item.text(),
                 font,
@@ -1402,7 +1402,7 @@ impl Draw for Menu {
                     self.trailing_width(),
                     row.height,
                 );
-                context.draw_text_fitted(
+                context.draw_text_fitted_cow(
                     context.text_line(trailing, font),
                     item.shortcut(),
                     font,

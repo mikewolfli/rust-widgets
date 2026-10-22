@@ -216,7 +216,7 @@ impl Draw for MobileDatePicker {
         // `mobile_date_picker` is not in the role table, so it classifies as `Surface` and its
         // resolved background is the window fill itself; the drum below therefore derives its own
         // distinct surface rather than painting the window's.
-        let theme = crate::style::resolved_theme_style("mobile_date_picker");
+        let theme = crate::style::resolved_theme_style_shared("mobile_date_picker");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
         let (window_fill, foreground, primary, secondary, disabled) = {
@@ -354,7 +354,7 @@ impl Draw for MobileDatePicker {
 
                 let text_color = if is_selected { selected_ink } else { row_ink };
 
-                context.draw_text_fitted(
+                context.draw_text_fitted_cow(
                     Rect::new(col_x, text_y, col_width, metrics.height),
                     text,
                     &font,

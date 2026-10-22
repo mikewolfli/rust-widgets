@@ -953,7 +953,7 @@ impl Draw for Calendar {
                 title_line.height,
             );
             let title = self.formatted_month_title();
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 title_bounds,
                 &title,
                 &title_font,
@@ -1024,7 +1024,7 @@ impl Draw for Calendar {
                 // the reading and keeps the truncation guard where it belongs, on a genuinely
                 // narrow column.
                 let label_bounds = Rect::new(cell_x, hdr.y + 6, cell_w as u32, 11);
-                context.draw_text_fitted(
+                context.draw_text_fitted_cow(
                     label_bounds,
                     name,
                     &role_font(style, 11.0).with_bold(true),
@@ -1066,7 +1066,7 @@ impl Draw for Calendar {
                         &mut week_text,
                         format_args!("{}", Self::iso_week_of(start)),
                     );
-                    context.draw_text_line(
+                    context.draw_text_line_cow(
                         band,
                         &week_text,
                         &font,
@@ -1240,7 +1240,7 @@ impl Draw for Calendar {
                     let day_line = context.text_line(cell_rect, &day_font);
                     day_text.clear();
                     let _ = core::fmt::Write::write_fmt(&mut day_text, format_args!("{day_num}"));
-                    context.draw_text_fitted(
+                    context.draw_text_fitted_cow(
                         day_line,
                         &day_text,
                         &day_font,

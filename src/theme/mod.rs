@@ -68,8 +68,8 @@ pub use crate::style::HighContrastMode;
 pub(crate) use manager::invalidate_resolved_style_cache;
 pub use manager::theme_test_guard;
 pub use manager::{
-    global_high_contrast, global_theme_manager, resolved_semantic_border, resolved_theme_style,
-    resolved_theme_style_for, resolved_theme_style_for_state,
+    active_palette_shared, global_high_contrast, global_theme_manager, resolved_semantic_border,
+    resolved_theme_style, resolved_theme_style_for, resolved_theme_style_for_state,
     resolved_theme_style_for_state_shared, resolved_theme_style_shared, semantic_color,
     set_global_high_contrast, SemanticColor, ThemeManager,
 };
@@ -120,6 +120,22 @@ mod tests {
         let theme = manager.current_theme();
         assert!(theme.is_some());
         assert_eq!(theme.unwrap().name, "default");
+    }
+
+    /// The palette is shared, not re-cloned, and the semantic reads come from it.
+    ///
+    /// The point of the cache is that a control painting five palette roles in one `draw` does
+    /// not take the global manager's lock five times; `Rc::ptr_eq` is what proves a second read
+    /// reused the first entry rather than resolving a copy that happens to compare equal.
+    #[test]
+    fn the_active_palette_is_shared_between_reads() {
+        let _guard = theme_test_guard();
+        let first = active_palette_shared().expect("the global manager always has a theme");
+        let second = active_palette_shared().expect("and a second read must answer too");
+        assert!(crate::compat::Rc::ptr_eq(&first, &second));
+
+        assert_eq!(semantic_color(SemanticColor::Error), Some(first.error));
+        assert_eq!(semantic_color(SemanticColor::Success), Some(first.success));
     }
 
     #[test]

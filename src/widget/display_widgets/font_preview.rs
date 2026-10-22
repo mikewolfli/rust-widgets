@@ -285,7 +285,7 @@ impl Draw for FontPreview {
         // any style suffix, so it grows with the caller's own inputs and can outrun the panel
         // just as the samples can. It painted in the same grey as a sample row, so the two
         // overflows were indistinguishable in the snapshot.
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             Rect::new(rect.x + margin as i32, y as i32, text_w, info_font.size() as u32),
             &info_text,
             &info_font,
@@ -303,7 +303,7 @@ impl Draw for FontPreview {
             // than the size the panel's own info line reports would be a worse lie than an
             // ellipsis. Fitting is therefore the correct fix here, not scaling.
             let preview_font = self.build_font(self.font_size);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(rect.x + margin as i32, y as i32, text_w, preview_font.size() as u32),
                 &self.preview_text,
                 &preview_font,
@@ -315,7 +315,10 @@ impl Draw for FontPreview {
 
         // --- Separator line ---
         y += 4;
-        let baseline_y = rect.y as u32 + y;
+        // `y` is already absolute (it starts at `rect.y + 10`); adding `rect.y` again drew the
+        // separator one control-height too low, and the same double count in the sample-row
+        // budget ended the samples early.
+        let baseline_y = y;
         context.draw_line(
             Point::new(rect.x + margin as i32, baseline_y as i32),
             Point::new(rect.x + rect.width as i32 - margin as i32, baseline_y as i32),
@@ -325,13 +328,14 @@ impl Draw for FontPreview {
 
         // --- Sample texts ---
         let sample_font = self.build_font(14.0);
+        let bottom = rect.y as u32 + rect.height;
         for text in &self.sample_texts {
-            if rect.y as u32 + y + 20 > rect.y as u32 + rect.height {
+            if y + 20 > bottom {
                 break; // Don't draw past the widget boundary
             }
             // The alphabet and the pangram are longer than any panel this widget is sized
             // for, so each row is fitted to the same inner width as the preview above it.
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(rect.x + margin as i32, y as i32, text_w, sample_font.size() as u32),
                 text,
                 &sample_font,

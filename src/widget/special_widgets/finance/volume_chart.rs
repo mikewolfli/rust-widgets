@@ -349,7 +349,7 @@ pub(crate) fn draw_empty_pane(
         chrome.grid,
     );
     let line = context.text_line(area.rect, font);
-    context.draw_text_fitted(
+    context.draw_text_fitted_cow(
         line,
         "No data",
         font,

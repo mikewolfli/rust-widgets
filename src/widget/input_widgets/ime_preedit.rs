@@ -243,7 +243,7 @@ impl Draw for ImePreedit {
         // released inside the accessor, so it is not held across the draw — the global manager's
         // mutex is not re-entrant.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("ime_preedit");
+        let theme = crate::style::resolved_theme_style_shared("ime_preedit");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
         let (window_fill, foreground) = {
@@ -285,7 +285,7 @@ impl Draw for ImePreedit {
         // rule that marks the composition pointed somewhere the text no longer reached.
         // `draw_text_fitted` returns what it drew, which is what keeps the underline under
         // the glyphs that are actually on screen.
-        let fitted = context.draw_text_fitted(
+        let fitted = context.draw_text_fitted_cow(
             rect,
             &self.text,
             &self.font,

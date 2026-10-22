@@ -436,7 +436,7 @@ impl Draw for KeySequenceEdit {
         // honours the theme body font and the user's text scale (D09-STYLE-01).
         let font = effective_font(style);
         let line = context.text_line(rect, font);
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             Rect {
                 x: rect.x + 6,
                 y: line.y,

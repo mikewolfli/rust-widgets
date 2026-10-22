@@ -411,7 +411,7 @@ impl Draw for DateRangePicker {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("date_range_picker");
+        let theme = crate::style::resolved_theme_style_shared("date_range_picker");
         let surface = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -461,7 +461,7 @@ impl Draw for DateRangePicker {
         let header_band = Rect::new(rect.x + 20, rect.y + 6, rect.width.saturating_sub(40), 18);
         let header_font = role_font(style, 14.0).with_bold(true);
         let header_text = format!("{} {}", self.month_name(), self.display_year);
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             header_band,
             &header_text,
             &header_font,
@@ -527,7 +527,7 @@ impl Draw for DateRangePicker {
             // less than the cell the label is measured for — which is how a column that fits
             // still renders as `...`.
             let margin = TEXT_FIT_MARGIN as i32;
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(cell_x - margin, cell_y + 4, cell_width + 2 * margin as u32, dow_height),
                 day_name,
                 &dow_font,
@@ -595,7 +595,7 @@ impl Draw for DateRangePicker {
             } else {
                 text_color
             };
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(
                     cell_x - TEXT_FIT_MARGIN as i32,
                     day_y,

@@ -864,7 +864,7 @@ impl Draw for ListBox {
         // theme step is what makes an appearance switch visible; the previous form hardcoded the
         // selection blue, the current-row fill and the separator, so the control was theme-blind.
         let style = self.style();
-        let theme = crate::style::resolved_theme_style("list_box");
+        let theme = crate::style::resolved_theme_style_shared("list_box");
         let surface = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -951,7 +951,7 @@ impl Draw for ListBox {
                     // sides, so the elision bound and the anchor move together.
                     let label_align =
                         self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
-                    context.draw_text_fitted(
+                    context.draw_text_fitted_cow(
                         Rect::new(
                             row.x + text_inset,
                             line.y,

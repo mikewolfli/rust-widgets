@@ -10,7 +10,7 @@
 
 use crate::core::HorizontalAlignment;
 use crate::core::ObjectId;
-use crate::core::{Color, Font, Point, Rect, Size};
+use crate::core::{Color, Font, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::style::animation::{MotionSlot, PropertyDriver};
@@ -506,7 +506,7 @@ impl Draw for Tooltip {
         // The theme reads take and release the global manager's lock internally, so no
         // guard is held across the draw (the mutex is not re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("tooltip");
+        let theme = crate::style::resolved_theme_style_shared("tooltip");
         // `tooltip` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
         // `Surface` and resolves to `theme.colors.background` — the window's own fill. A
         // bubble painted in that colour would be byte-identical to the frame behind it, so a
@@ -634,8 +634,20 @@ impl Draw for Tooltip {
         let line = context.text_line(bubble, &font);
         let text_x = bubble.x + dimensions::TOOLTIP_PADDING_H as i32;
 
-        context.draw_text(
-            Point::new(text_x, line.y),
+        // Fitted inside the bubble. The bubble is capped at `max_width`/the control width, but the
+        // label used to be drawn at its full measured width, so any tooltip longer than 300 px
+        // painted outside the bubble and outside the control. The band is widened by the fitted
+        // draw's own inset so a label that fits is neither shifted nor elided by those 3 px.
+        let fit_inset = crate::render::TEXT_FIT_MARGIN as i32;
+        let text_band = Rect::new(
+            text_x - fit_inset,
+            line.y,
+            (bubble.width.saturating_sub(dimensions::TOOLTIP_PADDING_H * 2) as i32 + 2 * fit_inset)
+                .max(1) as u32,
+            line.height.max(1),
+        );
+        context.draw_text_fitted_cow(
+            text_band,
             label,
             &font,
             text_color,
@@ -647,6 +659,7 @@ impl Draw for Tooltip {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::Point;
     use crate::widget::svg::render_to_svg;
 
     #[test]

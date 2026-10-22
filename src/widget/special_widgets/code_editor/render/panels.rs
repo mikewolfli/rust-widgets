@@ -123,7 +123,7 @@ impl CodeEditor {
                 (label_right - label_left + 2 * TEXT_FIT_MARGIN as i32).max(0) as u32,
                 line_box.max(1) as u32,
             );
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 label_bounds,
                 label,
                 font,

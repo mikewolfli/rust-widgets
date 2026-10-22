@@ -266,7 +266,8 @@ impl Draw for ColorHistory {
             let ink = style
                 .text_color
                 .or_else(|| {
-                    crate::style::resolved_theme_style("color_history").and_then(|s| s.text_color)
+                    crate::style::resolved_theme_style_shared("color_history")
+                        .and_then(|s| s.text_color)
                 })
                 .unwrap_or(Color::BLACK);
             background.blend(&ink, 0.08)
@@ -286,15 +287,16 @@ impl Draw for ColorHistory {
         // control has a body the user can see. Without it the constructor's empty
         // history painted only the panel and the census could not distinguish
         // "working, empty" from "broken".
-        let swatches: Vec<Color> = if self.colors.is_empty() {
-            vec![
-                Color::rgba(66, 133, 244, 255),
-                Color::rgba(219, 68, 55, 255),
-                Color::rgba(244, 180, 0, 255),
-            ]
-        } else {
-            self.colors.clone()
-        };
+        //
+        // The caller's list is borrowed, not cloned: the empty case used to fall through to
+        // `self.colors.clone()` on every frame, copying the whole history to paint it.
+        const PLACEHOLDER: [Color; 3] = [
+            Color::rgba(66, 133, 244, 255),
+            Color::rgba(219, 68, 55, 255),
+            Color::rgba(244, 180, 0, 255),
+        ];
+        let swatches: &[Color] =
+            if self.colors.is_empty() { &PLACEHOLDER } else { self.colors.as_slice() };
 
         // Draw each color swatch in a grid
         //

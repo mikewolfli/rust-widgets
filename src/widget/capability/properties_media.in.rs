@@ -12,41 +12,8 @@
 macro_rules! impl_properties_media {
     () => {
         #[cfg(not(alloc_frugal))]
-        pub(crate) const ANIMATED_IMAGE_PROPERTIES: &[PropertySchema] = &[PropertySchema::new("playing", PropertyValueKind::Bool, true, true),
-        PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
-        PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
-        PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
-        PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-        ];
-
-        #[cfg(not(alloc_frugal))]
-        pub(crate) const HERO_ANIMATION_PROPERTIES: &[PropertySchema] = &[PropertySchema::new("animation_progress", PropertyValueKind::Float, true, true),
-        PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
-        PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
-        PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
-        PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-        ];
-
-        #[cfg(not(alloc_frugal))]
-        pub(crate) const LOTTIE_WIDGET_PROPERTIES: &[PropertySchema] = &[PropertySchema::new("playing", PropertyValueKind::Bool, true, true),
-        PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
-        PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
-        PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
-        PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-        ];
-
-        #[cfg(not(alloc_frugal))]
-        pub(crate) const RIVE_WIDGET_PROPERTIES: &[PropertySchema] = &[PropertySchema::new("is_playing", PropertyValueKind::Bool, true, true),
-        PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
-        PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
-        PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
-        PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-        ];
-
-        #[cfg(not(alloc_frugal))]
-        pub(crate) const VIDEO_PLAYER_PROPERTIES: &[PropertySchema] = &[
-            PropertySchema::new("is_playing", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("volume", PropertyValueKind::Float, true, true),
+        pub(crate) const ANIMATED_IMAGE_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("playing", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -54,19 +21,61 @@ macro_rules! impl_properties_media {
         ];
 
         #[cfg(not(alloc_frugal))]
-        pub(crate) const AUDIO_VISUALIZER_PROPERTIES: &[PropertySchema] = &[PropertySchema::new("bar_count", PropertyValueKind::UInt, true, true),
-        PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
-        PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
-        PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
-        PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        pub(crate) const HERO_ANIMATION_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("animation_progress", PropertyValueKind::Float, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
         #[cfg(not(alloc_frugal))]
-        pub(crate) const CAMERA_PREVIEW_PROPERTIES: &[PropertySchema] = &[PropertySchema::new("is_active", PropertyValueKind::Bool, true, true),
-        PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
-        PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
-        PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
-        PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        pub(crate) const LOTTIE_WIDGET_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("playing", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const RIVE_WIDGET_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("is_playing", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const VIDEO_PLAYER_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("is_playing", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("volume", PropertyValueKind::Float, true, true),
+            PropertySchema::new("muted", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("playback_rate", PropertyValueKind::Float, true, true),
+            PropertySchema::new("controls_visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const AUDIO_VISUALIZER_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("bar_count", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const CAMERA_PREVIEW_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("is_active", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
     };
 }

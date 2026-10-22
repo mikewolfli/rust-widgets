@@ -30,6 +30,47 @@ impl BreadcrumbSegment {
     }
 }
 
+/// The declared shape of one breadcrumb segment, as a record.
+///
+/// This is the row shape of the `segments` property, declared beside the struct it
+/// describes (`Chip`'s `CHIP_ITEM_SCHEMA` follows the same rule) so the field names cannot
+/// drift from [`BreadcrumbSegment`]'s own fields. Both are required because
+/// [`BreadcrumbSegment::new`] requires them, and `id` is the identity a selection is held by.
+pub const BREADCRUMB_SEGMENT_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "id",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::required(
+                "label",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+        ],
+        id_field: "id",
+        ids_unique: true,
+        ids_required: true,
+    };
+
+fn breadcrumb_segment_record(
+    segment: &BreadcrumbSegment,
+) -> crate::widget::capability::RecordValue {
+    crate::widget::capability::RecordValue::new()
+        .with("id", CapabilityValue::String(segment.id.clone()))
+        .with("label", CapabilityValue::String(segment.label.clone()))
+}
+
+fn breadcrumb_segment_from_record(
+    record: &crate::widget::capability::RecordValue,
+) -> Result<BreadcrumbSegment, CapabilityAccessError> {
+    let text = |name: &str| match record.get(name) {
+        Some(CapabilityValue::String(value)) => Ok(value.clone()),
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    };
+    Ok(BreadcrumbSegment { id: text("id")?, label: text("label")? })
+}
+
 /// Breadcrumb navigation control with keyboard and mouse interaction.
 pub struct Breadcrumb {
     base: BaseWidget,
@@ -260,13 +301,19 @@ impl Widget for Breadcrumb {
 /// `Breadcrumb`'s property contract.
 ///
 /// Read semantics are carried over unchanged from the centralised
-/// `access_read_base.in.rs` dispatch. Both properties are derived counts of the
-/// segment path, so writes are refused with
-/// [`CapabilityAccessError::ReadOnlyProperty`]: the path is changed through
-/// `set_segments` / `push_segment` / `clear_segments`, not one index at a time.
+/// `access_read_base.in.rs` dispatch. The two counts are derived from the segment path, so
+/// writes to them are refused with [`CapabilityAccessError::ReadOnlyProperty`]; the path
+/// itself is replaced through the `segments` property (or, for a single change, the
+/// `set_segments` / `push_segment` / `clear_segments` methods).
 impl WidgetProperties for Breadcrumb {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            "segments" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &BREADCRUMB_SEGMENT_SCHEMA,
+                    self.segments().iter().map(breadcrumb_segment_record).collect(),
+                )))
+            }
             "segment_count" => Ok(CapabilityValue::UInt(self.segments().len() as u64)),
             "selected_index" => match self.selected_index() {
                 Some(index) => Ok(CapabilityValue::UInt(index as u64)),
@@ -278,13 +325,32 @@ impl WidgetProperties for Breadcrumb {
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
+            "segments" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                // Validated in full before anything is replaced, so a refused write leaves the
+                // live path untouched rather than half-swapped.
+                list.validate_against(&BREADCRUMB_SEGMENT_SCHEMA).map_err(|violation| {
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("segments"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                let mut segments = Vec::with_capacity(list.len());
+                for record in list.items() {
+                    segments.push(breadcrumb_segment_from_record(record)?);
+                }
+                self.set_segments(segments);
+                Ok(())
+            }
             "segment_count" | "selected_index" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["segment_count", "selected_index", BASE_PROPERTY_NAMES]
+        property_names_of!["segments", "segment_count", "selected_index", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `breadcrumb` publishes.
@@ -350,7 +416,7 @@ impl Draw for Breadcrumb {
         // the draw or across another accessor — the global manager's mutex is not
         // re-entrant.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("breadcrumb");
+        let theme = crate::style::resolved_theme_style_shared("breadcrumb");
         // `breadcrumb` resolves to the `Text` role, which carries a foreground but no
         // surface — a text control sits on whatever it was placed on. So the surface
         // comes from the theme's own background, which is what
@@ -414,7 +480,7 @@ impl Draw for Breadcrumb {
                 (segment_rect.width as i32 - self.segment_padding).max(0) as u32,
                 line.height,
             );
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 label_box,
                 &segment.label,
                 effective_font(style),
@@ -451,6 +517,59 @@ mod tests {
             BreadcrumbSegment::new("project", "Project"),
             BreadcrumbSegment::new("src", "src"),
         ]
+    }
+
+    #[test]
+    fn segments_property_round_trips_the_path() {
+        let mut breadcrumb = Breadcrumb::new(Rect::new(0, 0, 320, 28));
+        let list = crate::widget::capability::RecordList::from_items(
+            &BREADCRUMB_SEGMENT_SCHEMA,
+            vec![
+                crate::widget::capability::RecordValue::new()
+                    .with("id", CapabilityValue::String("root".to_string()))
+                    .with("label", CapabilityValue::String("Root".to_string())),
+                crate::widget::capability::RecordValue::new()
+                    .with("id", CapabilityValue::String("src".to_string()))
+                    .with("label", CapabilityValue::String("src".to_string())),
+            ],
+        );
+        breadcrumb.set("segments", CapabilityValue::Records(list)).expect("segments is writable");
+        assert_eq!(breadcrumb.segments().len(), 2);
+        // `set_segments` keeps the arm on the deepest segment, and the property write goes
+        // through it rather than restating the rule.
+        assert_eq!(breadcrumb.selected_index(), Some(1));
+        match breadcrumb.get("segments").expect("segments is readable") {
+            CapabilityValue::Records(read) => {
+                assert_eq!(read.len(), 2);
+                let first = &read.items()[0];
+                assert_eq!(first.get("id"), Some(&CapabilityValue::String("root".to_string())));
+                assert_eq!(first.get("label"), Some(&CapabilityValue::String("Root".to_string())));
+            }
+            other => panic!("segments should read back as Records, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn segments_property_refuses_duplicate_ids_and_keeps_the_live_path() {
+        let mut breadcrumb = Breadcrumb::new(Rect::new(0, 0, 320, 28));
+        breadcrumb.set_segments(sample_segments());
+        let duplicate = crate::widget::capability::RecordList::from_items(
+            &BREADCRUMB_SEGMENT_SCHEMA,
+            vec![
+                crate::widget::capability::RecordValue::new()
+                    .with("id", CapabilityValue::String("same".to_string()))
+                    .with("label", CapabilityValue::String("One".to_string())),
+                crate::widget::capability::RecordValue::new()
+                    .with("id", CapabilityValue::String("same".to_string()))
+                    .with("label", CapabilityValue::String("Two".to_string())),
+            ],
+        );
+        assert!(matches!(
+            breadcrumb.set("segments", CapabilityValue::Records(duplicate)),
+            Err(CapabilityAccessError::ConstraintViolation { .. })
+        ));
+        // Nothing was applied: a refused write leaves the live path untouched.
+        assert_eq!(breadcrumb.segments().len(), 3);
     }
 
     #[test]

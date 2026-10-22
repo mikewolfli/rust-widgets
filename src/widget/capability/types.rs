@@ -628,6 +628,23 @@ pub enum PropertyValueKind {
     /// uniqueness rule — so a malformed list is refused with the offending record and field named
     /// rather than applied.
     Records,
+    /// An ordered list of strings, carried as [`CapabilityValue::Tuple`] of
+    /// [`CapabilityValue::String`].
+    ///
+    /// # Why a list kind rather than `Records`
+    ///
+    /// A combo box's items, a roller's options and a sparkline's samples are **positional lists
+    /// with no identity**: two identical labels are legal, and there is no field to key them by.
+    /// `Records` requires a unique id per row, so declaring these as records would either reject a
+    /// legitimate duplicate label or invent an id the control does not have. The list kind is the
+    /// honest shape: order is the whole value, and each element is one scalar.
+    StringList,
+    /// An ordered list of numbers, carried as [`CapabilityValue::Tuple`] of numeric
+    /// [`CapabilityValue`]s ([`CapabilityValue::Float`] or an integer variant).
+    ///
+    /// A sample series (a sparkline) is the motivating case. A non-finite sample is refused at
+    /// the JSON boundary, because a `NaN` in a document is not a number any reader can consume.
+    NumberList,
 }
 
 /// Metadata for one readable/writable property.

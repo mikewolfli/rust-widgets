@@ -156,6 +156,21 @@ impl CodeEditor {
         self.model.borrow().lines.get(line).cloned()
     }
 
+    /// Borrows one line for the life of the returned guard, or an empty string when out of range.
+    ///
+    /// # Why a guard rather than `&str`
+    ///
+    /// The model lives behind a `RefCell`, so a returned `&str` could not outlive the borrow
+    /// guard. The paint path needs the line across several helper calls, and cloning it once per
+    /// visible line per frame was that cost this avoids. The guard is a **shared** borrow, so the
+    /// helpers it calls may take `&self` and read the same model again; nothing on that path
+    /// takes a mutable borrow.
+    pub(crate) fn line_text_borrowed(&self, line: usize) -> core::cell::Ref<'_, str> {
+        core::cell::Ref::map(self.model.borrow(), |model| {
+            model.lines.get(line).map(String::as_str).unwrap_or("")
+        })
+    }
+
     /// Returns the line containing `offset` in the joined document.
     pub fn line_of_byte_offset(&self, offset: usize) -> usize {
         self.model.borrow().line_of_byte_offset(offset)

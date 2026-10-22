@@ -825,6 +825,7 @@ impl AnimationDriver {
         }
         for id in in_flight.iter() {
             if let Some(mut entry) = animations.remove(id) {
+                property_animations.remove(id);
                 if let Some(mut cb) = entry.on_complete.take() {
                     cb();
                 }
@@ -951,6 +952,7 @@ impl AnimationDriver {
         }
         for id in in_flight.iter() {
             if let Some(mut entry) = animations.remove(id) {
+                property_animations.remove(id);
                 if let Some(mut cb) = entry.on_complete.take() {
                     cb();
                 }
@@ -962,11 +964,13 @@ impl AnimationDriver {
     /// Remove and stop a specific animation.
     pub fn remove(&mut self, id: AnimationId) {
         self.animations.remove(&id);
+        self.property_animations.remove(&id);
     }
 
     /// Remove all active animations.
     pub fn clear(&mut self) {
         self.animations.clear();
+        self.property_animations.clear();
     }
 
     /// Returns the number of active (running) animations.
@@ -1779,10 +1783,8 @@ impl Transition {
     /// to remove.
     ///
     /// So the fraction stepped is computed here, from the tempo and `delta_ms` — the same
-    /// `delta / duration` the engine would derive, made explicit so it is applied to the value
-    /// rather than to a fresh run. The engine still supplies the *interpolation syntax*
-    /// (add / advance / read back), which is why this is not simply `self.progress += ease(step)`:
-    /// there is one place that knows how to interpolate and it remains that place.
+    /// `delta / duration` the engine would derive, applied directly to the value. The easing
+    /// curve is the crate's motion curve, so a transition and the driver it mirrors agree.
     pub fn tick(&mut self, target: f32, delta_ms: u32) -> bool {
         let target = target.clamp(0.0, 1.0);
         if (self.progress - target).abs() < f32::EPSILON {
@@ -1795,29 +1797,16 @@ impl Transition {
         let step = (delta_ms as f32 / duration_ms as f32).clamp(f32::EPSILON, 1.0);
 
         let from = self.progress;
-        let mut driver = AnimationDriver::new();
-        let observed = crate::compat::Rc::new(core::cell::Cell::new(from));
-        let sink = crate::compat::Rc::clone(&observed);
-        // The config is **not** the tempo: a run priced at `delta_ms` and advanced by `delta_ms`
-        // is at 100% on the first call, so its easing is sampled at `1.0` and the value arrives
-        // at the target immediately -- the exact defect this function now avoids. One millisecond
-        // is the shortest run the engine is asked to describe, and the value is read back at
-        // once, so the figure is only a scale.
-        // **Not** zero: a `Duration::ZERO` config makes `Animation::progress_inner` substitute
-        // `f32::EPSILON` for the duration and the whole step becomes a snap, which is the same
-        // defect in a different disguise. One millisecond is the shortest run the engine is asked
-        // to describe, and the value is read back immediately, so the figure is only a scale.
-        let config = AnimationConfig::new(Duration::from_millis(1));
-        driver.add_float(config, from, target, move |value| sink.set(value));
-        driver.advance_by(Duration::from_millis(1));
-        // The engine answered with its own pacing; the crate's easing is applied to *this frame's*
-        // share, which is what keeps the curve meaningful when the driver is rebuilt per call.
+        // The interpolation is this frame's share of the remaining travel, eased by the crate's
+        // motion curve. An `AnimationDriver` used to be constructed here, advanced by 1 ms, and
+        // dropped on every call: its answer was never read, yet it cost a `HashMap`, an
+        // `Rc<Cell>` and a boxed callback per animating control per frame.
         let curve = crate::style::motion_easing();
         let next = from + (target - from) * curve.apply(step);
         // # "Still moving" is asked of the *value*, and the tolerance is one step
         //
-        // The driver above cannot reach its own end (it is rebuilt every call), so its answer says
-        // nothing about whether this transition is done. Two facts make the value the right place
+        // The step applied above is a geometric approach, so its answer says nothing about whether
+        // this transition is done. Two facts make the value the right place
         // to ask. **Reaching the target is what draws the animation's last frame**, so "needs
         // another frame" is exactly "has not reached it" — and once it has, the first arm above
         // returns `false` for every later call, so the snap does not re-trigger. And because the
@@ -2330,6 +2319,45 @@ mod tests {
         assert!((pa.to - 1.0).abs() < 1e-6);
         driver.advance();
     }
+
+    /// Property metadata must not outlive the animation it describes.
+    ///
+    /// `property_animations` was insert-only: every `animate()` call left a `PropertyAnimation`
+    /// behind after completion and after `clear()`, so a host that animates per interaction leaked
+    /// one entry (with a `String`) per call and `get_property_animation` kept returning stale data.
+    #[test]
+    fn property_metadata_is_dropped_with_the_animation() {
+        let mut driver = AnimationDriver::new();
+        let id = driver.animate(
+            "opacity",
+            0.0,
+            1.0,
+            Duration::from_millis(10),
+            EasingFunction::Linear,
+            |_, _| {},
+        );
+        assert!(driver.get_property_animation(id).is_some());
+
+        driver.advance_by(Duration::from_millis(50));
+        assert!(driver.is_empty(), "the run is complete");
+        assert!(
+            driver.get_property_animation(id).is_none(),
+            "the metadata must be removed with the animation"
+        );
+
+        // `clear` must drop the metadata too.
+        let id = driver.animate(
+            "x",
+            0.0,
+            10.0,
+            Duration::from_secs(10),
+            EasingFunction::Linear,
+            |_, _| {},
+        );
+        driver.clear();
+        assert!(driver.get_property_animation(id).is_none());
+    }
+
     #[test]
     fn animation_driver_animate_linear() {
         let mut driver = AnimationDriver::new();

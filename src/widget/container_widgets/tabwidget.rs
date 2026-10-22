@@ -1264,7 +1264,7 @@ impl Draw for TabWidget {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("tab_widget");
+        let theme = crate::style::resolved_theme_style_shared("tab_widget");
         // `tab_widget` is not a control kind in the role table, so it classifies as
         // `Surface`, whose background is `theme.colors.background` — byte-identical
         // to the window behind it. The content area's fill is therefore a step toward
@@ -1422,7 +1422,7 @@ impl Draw for TabWidget {
                 }
                 let title_band =
                     Rect { x: title_x, y: tab_line.y, width: title_width, height: tab_line.height };
-                context.draw_text_fitted(
+                context.draw_text_fitted_cow(
                     title_band,
                     &tab.title,
                     font,

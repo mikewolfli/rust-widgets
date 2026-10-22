@@ -572,7 +572,7 @@ impl Draw for ToggleButton {
             // that edge on the middle line and drew the text half a line low.
             let line = context.text_line(rect, font);
             let text_band = crate::core::Rect::new(rect.x, line.y, rect.width, line.height);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 text_band,
                 &self.text,
                 font,

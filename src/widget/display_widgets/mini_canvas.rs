@@ -220,7 +220,7 @@ impl Draw for MiniCanvas {
         // middle rung absent because the profile has no theme. A caller in that profile
         // still gets the explicit style when it set one.
         #[cfg(full_widgets)]
-        let theme = crate::style::resolved_theme_style("mini_canvas");
+        let theme = crate::style::resolved_theme_style_shared("mini_canvas");
         #[cfg(not(full_widgets))]
         let theme: Option<crate::style::WidgetStyle> = None;
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
@@ -272,9 +272,9 @@ impl Draw for MiniCanvas {
             .unwrap_or_else(|| sheet.blend(&secondary, 0.45));
         context.draw_rect(rect, border);
 
-        // Replay all stored commands.
+        // Replay all stored commands without cloning the display list.
         for cmd in &self.commands {
-            context.execute_command(cmd.clone());
+            context.execute_command_ref(cmd);
         }
     }
 }

@@ -36,7 +36,7 @@
 //! `create_cascader` on `ControlBackend`.
 
 use crate::compat::RefCell;
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -832,7 +832,7 @@ impl Cascader {
         };
         // The origin is the glyph box's top edge, so the label is centred from the measured
         // line box rather than from the fixed `21` that only fitted one font size.
-        let font = Font::simple("Sans", 12.0);
+        let font = crate::widget::metrics::role_font(self.style(), 12.0);
         let text_h = context.measure_text(display, &font).height as i32;
         context.draw_text(
             Point::new(rect.x + 8, rect.y + (rect.height as i32 - text_h) / 2),
@@ -901,6 +901,9 @@ impl Cascader {
             }
         };
         let row_ink = self.style().text_color.unwrap_or_else(|| column_surface.contrast_color());
+        // One role font for every row in this column: it used to be rebuilt per row, and on a
+        // loading row twice.
+        let row_font = crate::widget::metrics::role_font(self.style(), 12.0);
 
         context.fill_rounded_rect(column, 4, column_surface);
         context.draw_rounded_rect_stroke(column, 4, separator, 1);
@@ -932,7 +935,7 @@ impl Cascader {
             context.draw_text(
                 Point::new(row_rect.x + 8, row_rect.y + 18),
                 &option.label,
-                &Font::simple("Sans", 12.0),
+                &row_font,
                 if highlighted { on_highlight } else { row_ink },
                 HorizontalAlignment::Left,
             );
@@ -944,7 +947,7 @@ impl Cascader {
                 context.draw_text(
                     Point::new(row_rect.x + row_rect.width as i32 - 18, row_rect.y + 18),
                     "...",
-                    &Font::simple("Sans", 12.0),
+                    &row_font,
                     branch_ink,
                     HorizontalAlignment::Left,
                 );

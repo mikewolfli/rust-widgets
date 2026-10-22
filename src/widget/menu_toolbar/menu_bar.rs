@@ -448,7 +448,7 @@ impl Draw for MenuBar {
         // separate manager lock, taken and released inside `resolved_theme_style`, so no
         // guard is held across the draw (the mutex is not re-entrant).
         let style = self.base.style();
-        let themed = crate::style::resolved_theme_style("menu_bar");
+        let themed = crate::style::resolved_theme_style_shared("menu_bar");
         let themed_bg = themed.as_ref().and_then(|r| r.background_color);
         let themed_border = themed.as_ref().and_then(|r| r.border_color);
         let themed_text = themed.as_ref().and_then(|r| r.text_color);
@@ -518,7 +518,13 @@ impl Draw for MenuBar {
             // intent, and there is no midpoint left to misuse.
             let font = effective_font(self.style());
             let line = context.text_line(entry_rect, font);
-            context.draw_text_fitted(line, entry.title(), font, fg, HorizontalAlignment::Center);
+            context.draw_text_fitted_cow(
+                line,
+                entry.title(),
+                font,
+                fg,
+                HorizontalAlignment::Center,
+            );
             x += w;
         }
     }

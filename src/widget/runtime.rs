@@ -4501,13 +4501,18 @@ mod tests {
     /// thread-local observation flag is not the one the test reads. That is exactly how it flaked
     /// under the full suite while passing in isolation.
     ///
+    /// It takes `platform::stop`'s process-seam lock rather than a module-local one: a frame also
+    /// **consumes a pending stop request** (`honour_request_on_loop_thread`), so a frame test that
+    /// ran beside the stop flag's own unit test drained the request it had just recorded — the
+    /// stop test then failed only in the full suite. One lock for both seams is what makes the
+    /// two kinds of test serialize against each other.
+    ///
     /// A poison is ignored rather than propagated: the poisoning test has already failed, and the
     /// remaining tests must still be able to take the lock and report honestly.
-    static DRIVE_FRAME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// Takes [`DRIVE_FRAME_LOCK`]. Hold the guard for the whole test.
     fn serialise_drive_frame() -> std::sync::MutexGuard<'static, ()> {
-        DRIVE_FRAME_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        crate::platform::stop::TEST_SEAM_SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     #[test]
@@ -4750,6 +4755,7 @@ mod tests {
     /// thread (the install is thread-local, so that is a real risk).
     #[test]
     fn a_frame_reads_the_installed_environment_provider() {
+        let _serial = serialise_drive_frame();
         use crate::style::environment::{
             environment, install_environment, uninstall_environment, EnvironmentProvider,
         };
@@ -4808,6 +4814,7 @@ mod tests {
     /// assertion could.
     #[test]
     fn the_environment_is_read_once_per_frame() {
+        let _serial = serialise_drive_frame();
         use crate::style::environment::{
             environment, install_environment, uninstall_environment, EnvironmentProvider,
         };
@@ -4863,6 +4870,7 @@ mod tests {
     /// event delivery.
     #[test]
     fn reduced_motion_reaches_the_end_in_one_frame() {
+        let _serial = serialise_drive_frame();
         use crate::style::environment::{
             install_environment, uninstall_environment, EnvironmentProvider,
         };
@@ -7792,6 +7800,7 @@ mod tests {
     /// BLUE24 §7 criterion 2: a native redraw is **counted** by the frame ledger.
     #[test]
     fn a_native_redraw_is_counted_by_the_frame() {
+        let _serial = serialise_drive_frame();
         let id = register(Box::new(crate::widget::Label::new(
             "n".to_string(),
             crate::core::Rect::new(0, 0, 40, 16),
@@ -7814,6 +7823,7 @@ mod tests {
     /// BLUE24 §8 criterion 1: sixty still frames tick nothing and coalesce nothing.
     #[test]
     fn sixty_still_frames_cost_nothing() {
+        let _serial = serialise_drive_frame();
         let id = register(Box::new(crate::widget::Label::new(
             "still".to_string(),
             crate::core::Rect::new(0, 0, 40, 16),
@@ -7851,6 +7861,7 @@ mod tests {
     /// that reaches the end of its media was wired up.
     #[test]
     fn a_control_that_stops_animating_lets_the_frame_loop_sleep() {
+        let _serial = serialise_drive_frame();
         use crate::widget::display_widgets::progressbar::ProgressBar;
 
         let mut bar = ProgressBar::new(crate::core::Rect::new(0, 0, 160, 16));
@@ -7897,6 +7908,7 @@ mod tests {
     /// a `tick` nobody calls is exactly the shape BLUE24 §0A.1 measurement 1 is about.
     #[test]
     fn a_playing_media_player_advances_through_the_frame_loop() {
+        let _serial = serialise_drive_frame();
         use crate::widget::special_widgets::media_player::MediaPlayer;
 
         let mut player = MediaPlayer::new(crate::core::Rect::new(0, 0, 320, 200));
@@ -7942,6 +7954,7 @@ mod tests {
     /// BLUE24 §8 criterion 3: five requests for one surface submit once and coalesce four.
     #[test]
     fn one_surface_is_submitted_once_and_the_rest_are_coalesced() {
+        let _serial = serialise_drive_frame();
         let surface = register(Box::new(crate::widget::Label::new(
             "s".to_string(),
             crate::core::Rect::new(0, 0, 40, 16),
@@ -7963,6 +7976,7 @@ mod tests {
     /// BLUE24 §8 criterion 4: every repainted surface has a cause in the ledger.
     #[test]
     fn every_repaint_names_a_reason() {
+        let _serial = serialise_drive_frame();
         let id = register(Box::new(crate::widget::Button::new(
             "why".to_string(),
             crate::core::Rect::new(0, 0, 80, 32),
@@ -7995,6 +8009,7 @@ mod tests {
     /// whose submission goes through the library's own invalidation.
     #[test]
     fn two_causes_on_one_surface_record_the_first() {
+        let _serial = serialise_drive_frame();
         use crate::platform::{with_recorded_invalidations, RecordingInvalidations};
 
         // A recording backend makes `invalidate_surface` succeed, so the state path submits

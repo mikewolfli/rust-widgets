@@ -302,7 +302,7 @@ impl FloatingLabel {
             .style()
             .background_color
             .or_else(|| {
-                crate::style::resolved_theme_style("floating_label")
+                crate::style::resolved_theme_style_shared("floating_label")
                     .and_then(|t| t.background_color)
             })
             .or_else(|| {
@@ -310,7 +310,7 @@ impl FloatingLabel {
                 // background unset; a floating *label* decorates an editable field, so the
                 // field interior is read from the input role, which resolves a colour in
                 // every appearance.
-                crate::style::resolved_theme_style("line_edit")
+                crate::style::resolved_theme_style_shared("line_edit")
                     .and_then(|input| input.background_color)
             })
             .unwrap_or(Color::rgba(255, 255, 255, 255))
@@ -543,10 +543,10 @@ impl Draw for FloatingLabel {
         // field's contrast colour and a fill recedes toward the window it is painted on. Falls back
         // to the field's own background when the theme names no window role, which makes the rule a
         // no-op rather than a wrong answer.
-        let window_fill = crate::style::resolved_theme_style("window")
+        let window_fill = crate::style::resolved_theme_style_shared("window")
             .and_then(|theme| theme.background_color)
             .or_else(|| {
-                crate::style::resolved_theme_style("floating_label")
+                crate::style::resolved_theme_style_shared("floating_label")
                     .and_then(|theme| theme.background_color)
             })
             .unwrap_or(field_background);
@@ -555,16 +555,19 @@ impl Draw for FloatingLabel {
         let ink = style
             .text_color
             .or_else(|| {
-                crate::style::resolved_theme_style("floating_label").and_then(|t| t.text_color)
+                crate::style::resolved_theme_style_shared("floating_label")
+                    .and_then(|t| t.text_color)
             })
             .unwrap_or(Color::BLACK);
         let border_color = style
             .border_color
             .or_else(|| {
-                crate::style::resolved_theme_style("floating_label").and_then(|t| t.border_color)
+                crate::style::resolved_theme_style_shared("floating_label")
+                    .and_then(|t| t.border_color)
             })
             .or_else(|| {
-                crate::style::resolved_theme_style("floating_label").and_then(|t| t.text_color)
+                crate::style::resolved_theme_style_shared("floating_label")
+                    .and_then(|t| t.text_color)
             })
             .unwrap_or_else(|| ink.blend(&field_background, 0.55));
 

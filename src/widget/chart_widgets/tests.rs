@@ -227,7 +227,11 @@ fn svg_snapshot_line_chart_stable() {
     // `axis_chrome`/`axis_chrome_color`, so the same chart renders differently under light and
     // dark — which is the fix, not a regression. The pin is kept, and re-pinned deliberately:
     // dropping it would remove the only tripwire that notices an unintended chart change.
-    let expected = 16115582051530855050u64;
+    // Re-pinned by the 2026-10-23 scan: the rightmost x-axis label is now clamped by its own
+    // measured width (`plot_x + plot_w - label_width`), where clamping the *origin* to the plot's
+    // right edge let a `1000.0` label paint past the margin and over the legend column. Only that
+    // label moved; the rest of the picture is byte-identical.
+    let expected = 13316797401542142420u64;
     assert_eq!(got, expected, "line snapshot hash changed: {got}");
 }
 #[test]
@@ -254,6 +258,7 @@ fn svg_snapshot_bar_chart_stable() {
     let got = stable_hash64(&svg);
     // Re-pinned by BLUE23 §93, for the same reason as the line chart's: the engine's chrome is now
     // theme-derived rather than a light-mode literal. See that pin for the full note.
-    let expected = 17304285755429598833u64;
+    // Same re-pin as the line chart's snapshot, for the same clamped rightmost axis label.
+    let expected = 7394511860554466859u64;
     assert_eq!(got, expected, "bar snapshot hash changed: {got}");
 }

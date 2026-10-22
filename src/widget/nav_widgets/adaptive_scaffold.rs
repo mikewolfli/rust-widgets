@@ -298,7 +298,7 @@ impl Draw for AdaptiveScaffold {
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("adaptive_scaffold");
+        let theme = crate::style::resolved_theme_style_shared("adaptive_scaffold");
         let background = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -348,7 +348,7 @@ impl AdaptiveScaffold {
         // moves together on a theme switch rather than the bar keeping a literal white.
         // These are further manager locks, each taken and released inside the accessor.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("adaptive_scaffold");
+        let theme = crate::style::resolved_theme_style_shared("adaptive_scaffold");
         let bar_background = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))

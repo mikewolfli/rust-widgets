@@ -429,7 +429,7 @@ impl Draw for GridWidget {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("grid");
+        let theme = crate::style::resolved_theme_style_shared("grid");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
         let (window_fill, foreground, secondary) = {

@@ -456,7 +456,7 @@ impl Draw for CollapsiblePane {
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("collapsible_pane");
+        let theme = crate::style::resolved_theme_style_shared("collapsible_pane");
         // `collapsible_pane` is absent from `WidgetRole::for_kind_name`'s table, so it
         // classifies as `Surface` and resolves to `theme.colors.background` — the window's
         // own fill. A header painted in that colour would be byte-identical to the frame
@@ -858,7 +858,7 @@ mod tests {
         // expectation has to follow the same route or the test is asserting the old role's fill.
         // The fallback mirrors the draw's own: a theme with no container role falls back to a step
         // away from the window fill, which is one of that role's defaults.
-        let theme = crate::style::resolved_theme_style("collapsible_pane");
+        let theme = crate::style::resolved_theme_style_shared("collapsible_pane");
         let window_fill = crate::style::theme_manager()
             .current_theme()
             .map(|active| active.colors.background)

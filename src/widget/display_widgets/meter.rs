@@ -30,9 +30,11 @@ use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::role_font;
 use crate::widget::numeric::ordered_clamp_u32;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use core::fmt::Write as _;
 
 /// A colored band across part of the meter's range.
 ///
@@ -618,7 +620,7 @@ impl Draw for Meter {
         // The threshold bands are deliberately *not* themed: a caller assigns each band its
         // own colour to encode a range, so those are data, not chrome.
         let style = self.style();
-        let theme = crate::style::resolved_theme_style("meter");
+        let theme = crate::style::resolved_theme_style_shared("meter");
         // The accent the gauge's value arc is drawn in. It is **not** read from
         // `style.background_color`: this control classifies as `WidgetRole::Accent`, so that field
         // carries the accent the role assigned it — but a role's fill is also what a *container*
@@ -718,6 +720,9 @@ impl Draw for Meter {
         if self.tick_count >= 2 {
             let tick_step = arc_sweep_deg / (self.tick_count - 1) as f32;
             let label_font = tick_label_font.clone();
+            // One buffer for every tick label. `format!` built a fresh `String` per tick per
+            // frame for a value that is two or three characters long.
+            let mut tick_text = String::new();
 
             for i in 0..self.tick_count {
                 let tick_angle_deg = arc_start_deg + tick_step * i as f32 + offset;
@@ -750,8 +755,9 @@ impl Draw for Meter {
                     // is derived from the same fraction the tick was placed at
                     // rather than from an independent step that could disagree.
                     let fraction = i as f32 / (self.tick_count - 1) as f32;
-                    let text = format!("{}{}", self.value_at_fraction(fraction), self.unit);
-                    let metrics = context.measure_text(&text, &label_font);
+                    tick_text.clear();
+                    let _ = write!(tick_text, "{}{}", self.value_at_fraction(fraction), self.unit);
+                    let metrics = context.measure_text(&tick_text, &label_font);
                     let lx = center.x + (label_radius as f32 * dir_x).round() as i32;
                     let ly = center.y + (label_radius as f32 * dir_y).round() as i32;
                     // Centred on the point the tick sits at: the glyph origin is the box's
@@ -774,7 +780,7 @@ impl Draw for Meter {
                     if fits {
                         context.draw_text(
                             Point::new(label_x, label_y),
-                            &text,
+                            &tick_text,
                             &label_font,
                             tick_color,
                             HorizontalAlignment::Left,
@@ -804,7 +810,7 @@ impl Draw for Meter {
         // bottom edge is precisely the defect a raster backend hides and an SVG one
         // shows, so "it fits" is answered against the rectangle rather than the arc.
         let text = self.value_text();
-        let value_font = Font::simple("Sans", 12.0);
+        let value_font = role_font(style, 12.0);
         let metrics = context.measure_text(&text, &value_font);
         let band_top = rect.y + rect.height as i32 - reading_reserve;
         let value_y = band_top + (reading_reserve - metrics.height as i32) / 2;

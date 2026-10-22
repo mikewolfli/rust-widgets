@@ -1688,7 +1688,7 @@ impl Draw for LineEdit {
             // The field's own line box. A glyph origin is the box's top-left edge, so the
             // previous `rect.y + rect.height / 2` placed that edge on the field's middle line
             // and drew the value half a line low.
-            context.draw_text_fitted(value_box, display_text, font, text_color, value_align);
+            context.draw_text_fitted_cow(value_box, display_text, font, text_color, value_align);
         }
 
         // ── The in-field slots ──
@@ -1723,19 +1723,22 @@ impl Draw for LineEdit {
         // colour, because a refusal that is painted in the same ink as a hint is a refusal the user has
         // to read to notice.
         if let Some(row) = layout.support {
+            // The validation colour is the theme's error token, not a literal red: a theme with a
+            // different error hue (or a high-contrast palette) must see a consistent error state.
+            let error_color = crate::style::semantic_color(crate::style::SemanticColor::Error)
+                .unwrap_or(Color::rgb(200, 40, 40));
             let message = self.decorations.support_message();
             if !message.is_empty() {
-                let message_color = if self.decorations.has_error() {
-                    crate::style::resolved_theme_style("line_edit")
-                        .and_then(|theme| theme.border_color)
-                        .map(|border| border.blend(&Color::rgb(220, 40, 40), 0.6))
-                        .unwrap_or(Color::rgb(200, 40, 40))
-                } else {
-                    slot_color
-                };
+                let message_color =
+                    if self.decorations.has_error() { error_color } else { slot_color };
                 let row_line = context.text_line(row, font);
-                context.draw_text(
-                    Point::new(row.x, row_line.y),
+                // Fitted to the band before the counter: a long support message used to paint
+                // straight over the trailing `n/max` reading.
+                let message_width = layout
+                    .counter
+                    .map_or(row.width, |counter| (counter.x - row.x - 4).max(0) as u32);
+                context.draw_text_fitted_cow(
+                    Rect::new(row.x, row_line.y, message_width, row_line.height.max(1)),
                     message,
                     font,
                     message_color,
@@ -1746,8 +1749,7 @@ impl Draw for LineEdit {
                 let counter_line = context.text_line(counter_box, font);
                 // The counter is a *budget* reading, so it turns to the error colour once the value
                 // exceeds the limit — the one moment it has something to warn about.
-                let counter_color =
-                    if self.is_over_limit() { Color::rgb(200, 40, 40) } else { slot_color };
+                let counter_color = if self.is_over_limit() { error_color } else { slot_color };
                 if let Some(counter) = self.counter_text() {
                     context.draw_text(
                         Point::new(counter_box.x, counter_line.y),

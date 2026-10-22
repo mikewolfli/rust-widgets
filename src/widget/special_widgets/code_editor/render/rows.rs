@@ -61,19 +61,35 @@ impl CodeEditor {
             if painted.len() >= rows_budget {
                 break;
             }
-            let text = self.line_text(line).unwrap_or_default();
+            let text_guard = self.line_text_borrowed(line);
+            let text: &str = &text_guard;
             // One grid per line: it owns the char ↔ byte ↔ column conversion for
             // every helper below, so a CJK glyph advances two cells in the
             // backdrops, the text run and the caret alike.
-            let grid = LineGrid::new(&text, self.config.tab_width);
+            let grid = LineGrid::new(text, self.config.tab_width);
             // The measured layout of the row, when the row is not soft-wrapped.
             // Wrapped rows keep the grid: their segment boundaries are computed
             // from grid columns before any measurement exists (see `wrap_segments`),
             // and mixing the two models inside one row would put the wrap point in
             // one place and the text in another.
-            let layout =
-                if wrapped { None } else { Some(self.measure_row_layout(context, line, &text)) };
-            let runs = if layout.is_some() { self.row_runs(line, &text) } else { Vec::new() };
+            //
+            // A cached layout is reused rather than re-shaped: the cache is keyed by the text
+            // revision and every metric the measurement used (see `row_layout_key`), so a hit
+            // means the numbers still describe the glyphs on screen. A miss measures the row
+            // and stores it, which is also what the caret, selection and hit-test read.
+            let layout = if wrapped {
+                None
+            } else {
+                match self.cached_row_layout(line) {
+                    Some(cached) => Some(cached),
+                    None => {
+                        let measured = self.measure_row_layout(context, line, text);
+                        self.remember_row_layout(line, measured.clone());
+                        Some(measured)
+                    }
+                }
+            };
+            let runs = if layout.is_some() { self.row_runs(line, text) } else { Vec::new() };
             // How far a continuation row is indented: the line's own leading
             // whitespace, clamped so it can never push the wrapped text off the row.
             // Computed once per line, not per segment.
@@ -134,7 +150,7 @@ impl CodeEditor {
                         line,
                         segment_start,
                         segment_end,
-                        &text,
+                        text,
                         &geom,
                         chrome,
                     );
@@ -147,7 +163,7 @@ impl CodeEditor {
                     &font,
                     &palette,
                     line,
-                    &text,
+                    text,
                     &geom,
                     &runs,
                     segment_start,
@@ -163,7 +179,7 @@ impl CodeEditor {
                         context,
                         left,
                         y,
-                        &text,
+                        text,
                         &geom,
                         segment_start,
                         segment_end,
@@ -175,9 +191,6 @@ impl CodeEditor {
             }
             // Store the measured row for the caret, the selection and the click
             // handler, which all run with `&self` and no render context.
-            if let Some(layout) = layout {
-                self.remember_row_layout(line, layout);
-            }
             row += segments;
         }
 
@@ -275,6 +288,15 @@ impl CodeEditor {
         }
         xs.push(x);
         RowLayout::from_boundaries(xs)
+    }
+
+    /// Returns the cached layout of `line`, when one was measured for the current key.
+    ///
+    /// The entry is a clone of a shared handle (`RowLayout::xs` is an `Rc`), so a hit costs a
+    /// refcount bump rather than re-shaping the line.
+    pub(super) fn cached_row_layout(&self, line: usize) -> Option<RowLayout> {
+        let cache = self.row_layouts.borrow();
+        cache.iter().find(|(key, _)| *key == line).map(|(_, layout)| layout.clone())
     }
 
     /// Stores the row's measured geometry for the caret, selection and hit-test.

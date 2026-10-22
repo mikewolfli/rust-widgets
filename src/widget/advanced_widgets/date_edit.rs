@@ -38,6 +38,7 @@ use crate::widget::metrics::{dimensions, effective_font};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
+use std::fmt::Write as _;
 use std::rc::Rc;
 
 /// Date value (year, month, day).
@@ -786,7 +787,7 @@ impl Draw for DateEdit {
         // `background_color` (ThemeRole::Input resolves that to `None`), so the interior
         // is derived below from the theme's own background rather than left unset.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("date_edit");
+        let theme = crate::style::resolved_theme_style_shared("date_edit");
         // Read as its own lock acquisition and copied out as values, so the guard is
         // dropped before anything else touches the theme.
         let (window_fill, foreground) = {
@@ -850,7 +851,7 @@ impl Draw for DateEdit {
         // body font and the user's text scale (D09-STYLE-01).
         let font = effective_font(style);
         let line = context.text_line(rect, font);
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             Rect {
                 x: rect.x + 6,
                 y: line.y,
@@ -951,12 +952,19 @@ pub(crate) fn draw_month_grid(
             POPUP_CELL_W,
             POPUP_CELL_H,
         );
-        context.draw_text_line(cell, initial, font, muted, HorizontalAlignment::Center);
+        context.draw_text_line_cow(cell, initial, font, muted, HorizontalAlignment::Center);
     }
 
     let first = Date::new(date.year(), date.month(), 1);
     let leading = first.weekday() as u32;
     let days = first.days_in_month() as u32;
+    // The selected day's plate is the same accent every time, so it is resolved once for the
+    // grid instead of once per day, and the day label is written into one reused buffer
+    // rather than allocating a `String` for each of the ~31 cells every frame.
+    let selected_plate = crate::style::resolved_theme_style_shared("slider")
+        .and_then(|style| style.background_color)
+        .unwrap_or_else(|| plate.blend(&ink, 0.55));
+    let mut day_text = String::new();
     for day in 1..=days {
         let slot = leading + day - 1;
         let col = slot % 7;
@@ -975,31 +983,24 @@ pub(crate) fn draw_month_grid(
         );
         let this = Date::new(date.year(), date.month(), day as u8);
         let in_range = this >= *minimum && this <= *maximum;
+        day_text.clear();
+        let _ = write!(day_text, "{day}");
         if day == date.day() as u32 {
             // The selected day is the accent plate the rest of the crate marks a selection
             // with, so "this is the value" reads the same here as everywhere else.
-            let accent = crate::style::resolved_theme_style("slider")
-                .and_then(|style| style.background_color)
-                .unwrap_or_else(|| plate.blend(&ink, 0.55));
-            context.fill_rect(cell, accent);
-            context.draw_text_line(
+            context.fill_rect(cell, selected_plate);
+            context.draw_text_line_cow(
                 cell,
-                &day.to_string(),
+                &day_text,
                 font,
-                accent.contrast_color(),
+                selected_plate.contrast_color(),
                 HorizontalAlignment::Center,
             );
         } else {
             // Out-of-range days stay visible but muted: hiding them would leave the reader
             // unable to see *why* a day cannot be picked.
             let day_ink = if in_range { ink } else { muted };
-            context.draw_text_line(
-                cell,
-                &day.to_string(),
-                font,
-                day_ink,
-                HorizontalAlignment::Center,
-            );
+            context.draw_text_line_cow(cell, &day_text, font, day_ink, HorizontalAlignment::Center);
         }
     }
 }

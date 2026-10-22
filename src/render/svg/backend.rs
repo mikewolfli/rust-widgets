@@ -734,7 +734,13 @@ impl SvgPaintBackend {
         };
         let mut path = String::new();
         let mut pen_x = anchor_x;
-        for cluster in shaped.clusters() {
+        // Tracking is part of the measured advance (`shape_line` adds it between clusters) and the
+        // rasteriser adds it between clusters as it paints. This loop did neither, so a tracked
+        // font measured wider than the SVG run: glyphs drifted progressively left of the raster
+        // output and a centred label sat left of centre in the SVG snapshot.
+        let tracking = font.letter_spacing() * self.dpi_scale;
+        let cluster_count = shaped.clusters().len();
+        for (index, cluster) in shaped.clusters().iter().enumerate() {
             let glyph_width = cluster.advance.max(1.0).round() as u32;
             let display_char = cluster
                 .text
@@ -779,6 +785,9 @@ impl SvgPaintBackend {
                 }
             }
             pen_x += cluster.advance;
+            if tracking != 0.0 && index + 1 < cluster_count {
+                pen_x += tracking;
+            }
         }
         if path.is_empty() {
             // Nothing to paint — an empty string, or one whose glyphs are all blank.
@@ -1232,13 +1241,14 @@ impl PaintBackend for SvgPaintBackend {
                 }
             }
             RenderCommand::BoxShadow { rect, color, offset_x, offset_y, blur_radius, spread } => {
-                // The geometry and the colour both mirror the software backend exactly, so the two
-                // backends draw one shadow: the rect is offset and spread by the same amounts, and
-                // the colour's alpha is **halved** — the rasteriser's `(color.a * 0.5)` is the
-                // shadow's weight, and emitting the un-halved alpha here made every shadow twice as
-                // dark in the snapshot as on screen. The rect is square-cornered for the same
-                // reason: the rasteriser fills a plain rect and blurs it, so a fixed `rx` was a
-                // second, unfounded shape.
+                // The geometry mirrors the software backend exactly: the rect is offset and spread
+                // by the same amounts. The colour's alpha is used **as given** — it is the
+                // shadow's weight, and the older `* 0.5` made a level-2 shadow (alpha 60) paint at
+                // 30 no matter what the theme declared. `stdDeviation` is half the blur radius
+                // because the software path documents its radius as a Gaussian's 2-sigma point
+                // (`sigma = radius / 2`); passing the radius straight through made the SVG shadow
+                // twice as soft as the raster one. The rect is square-cornered for the same
+                // reason: the rasteriser fills a plain rect and blurs it.
                 let spread_w = sat_mul_i32(*spread, 2)
                     .saturating_add(u32_to_i32_saturating(rect.width))
                     .max(0) as u32;
@@ -1247,11 +1257,12 @@ impl PaintBackend for SvgPaintBackend {
                     .max(0) as u32;
                 let x = sat_add_i32(sat_add_i32(rect.x, *offset_x), sat_neg_i32(*spread));
                 let y = sat_add_i32(sat_add_i32(rect.y, *offset_y), sat_neg_i32(*spread));
-                let shadow = Color::rgba(color.r, color.g, color.b, (color.a as f32 * 0.5) as u8);
+                let shadow = *color;
                 let filter_attr = if *blur_radius > 0 {
                     let filter_id = format!("shadow_blur_{blur_radius}");
                     self.push_element(format!(
-                        r##"<filter id="{filter_id}"><feGaussianBlur stdDeviation="{blur_radius}" /></filter>"##
+                        r##"<filter id="{filter_id}"><feGaussianBlur stdDeviation="{}" /></filter>"##,
+                        *blur_radius as f32 / 2.0
                     ));
                     format!(r##" filter="url(#{filter_id})""##)
                 } else {

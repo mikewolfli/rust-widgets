@@ -638,7 +638,7 @@ impl Draw for FontDialog {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
-        let theme = crate::style::resolved_theme_style("font_dialog");
+        let theme = crate::style::resolved_theme_style_shared("font_dialog");
         // The window fill and the accent are read as their own lock acquisition and copied
         // out as values, so the guard is dropped before anything else touches the theme —
         // the global manager's mutex is not re-entrant.
@@ -705,7 +705,7 @@ impl Draw for FontDialog {
         let title_font = font;
         let title_label = tr!("dialog.font.select_font");
         let title_line = context.text_line(title_bar_band, title_font);
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             Rect::new(
                 rect.x + 8,
                 title_line.y,
@@ -738,7 +738,7 @@ impl Draw for FontDialog {
         let header_line = context.text_line(header_band, font);
         for (column, label) in col_labels.iter().enumerate() {
             let col_x = rect.x + 4 + column as i32 * (col_w as i32 + COL_GAP);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(col_x, header_line.y, col_w, header_line.height.max(1)),
                 label.as_str(),
                 font,
@@ -791,7 +791,7 @@ impl Draw for FontDialog {
                     } else {
                         ink
                     };
-                    context.draw_text_line(
+                    context.draw_text_line_cow(
                         Rect::new(
                             row_rect.x + 4,
                             row_rect.y,
@@ -819,7 +819,7 @@ impl Draw for FontDialog {
             // larger than the well, and the sample must be cut off rather than drawn over the
             // button row.
             context.push_clip(well.x, well.y, well.width, well.height);
-            context.draw_text_line(
+            context.draw_text_line_cow(
                 Rect::new(well.x + 6, well.y, well.width.saturating_sub(12), well.height),
                 "AaBbYyZz 0123",
                 &self.current_font,
@@ -840,11 +840,17 @@ impl Draw for FontDialog {
             super::message_box::action_row_geometry(context, font, &labels, button_band, true);
         let ok_rect = row.buttons[0];
         context.fill_rect(ok_rect, accent);
-        context.draw_text_line(ok_rect, &labels[0], font, accent_ink, HorizontalAlignment::Center);
+        context.draw_text_line_cow(
+            ok_rect,
+            &labels[0],
+            font,
+            accent_ink,
+            HorizontalAlignment::Center,
+        );
         let cancel_rect = row.buttons[1];
         context.fill_rect(cancel_rect, surface.blend(&ink, 0.1));
         context.draw_rect(cancel_rect, border);
-        context.draw_text_line(cancel_rect, &labels[1], font, ink, HorizontalAlignment::Center);
+        context.draw_text_line_cow(cancel_rect, &labels[1], font, ink, HorizontalAlignment::Center);
         // Cached for hit-testing only; assigned after the last use of the borrowed style/font so
         // the read-only borrow can end instead of forcing a `WidgetStyle` clone.
         self.ok_button = ok_rect;

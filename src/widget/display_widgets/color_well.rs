@@ -12,6 +12,7 @@ use crate::core::{Color, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
+use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -118,6 +119,7 @@ impl WidgetProperties for ColorWell {
             // previously travelled as a `String`, which meant a caller had to know the
             // spelling and could not tell the value's type from the schema.
             "color" => Ok(CapabilityValue::Color(self.color())),
+            "show_border" => Ok(CapabilityValue::Bool(self.show_border())),
             _ => base_property_get(self, name),
         }
     }
@@ -143,12 +145,16 @@ impl WidgetProperties for ColorWell {
                 self.set_color(color);
                 Ok(())
             }
+            "show_border" => {
+                self.set_show_border(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["color", BASE_PROPERTY_NAMES]
+        property_names_of!["color", "show_border", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `color_well` publishes.
@@ -195,7 +201,7 @@ impl Draw for ColorWell {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("color_well");
+        let theme = crate::style::resolved_theme_style_shared("color_well");
         // The swatch itself (`self.color`) is the datum the control exists to show,
         // so it is painted verbatim; only the surface behind a translucent swatch
         // and the border around it follow the appearance.

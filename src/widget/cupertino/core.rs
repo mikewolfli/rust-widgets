@@ -379,7 +379,7 @@ impl Draw for MaterialSnackbar {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("material_snackbar");
+        let theme = crate::style::resolved_theme_style_shared("material_snackbar");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
         let (window_fill, foreground, secondary, primary) = {
@@ -716,7 +716,7 @@ impl Draw for CupertinoAlertDialog {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's
         // mutex is not re-entrant.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("cupertino_alert_dialog");
+        let theme = crate::style::resolved_theme_style_shared("cupertino_alert_dialog");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme. The dialog is not in the role table, so it
         // classifies as `Surface` and its resolved background is the window fill itself; the
@@ -806,7 +806,7 @@ impl Draw for CupertinoAlertDialog {
         if !self.title.is_empty() {
             let title_metrics = context.measure_text("M", &title_font);
             let title_y = dialog_rect.y + ((dialog_height as i32 * 24) / 100).max(0);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(
                     dialog_rect.x + 12,
                     title_y,
@@ -825,7 +825,7 @@ impl Draw for CupertinoAlertDialog {
         if !self.message.is_empty() {
             let msg_metrics = context.measure_text("M", &msg_font);
             let msg_y = dialog_rect.y + ((dialog_height as i32 * 46) / 100).max(0);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(
                     dialog_rect.x + 12,
                     msg_y,
@@ -880,7 +880,7 @@ impl Draw for CupertinoAlertDialog {
 
             // Cancel button. Centred inside its own half of the row, which is both where the
             // user reads it and the box that keeps its label inside the panel.
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(dialog_rect.x, label_y, cell_width.max(0) as u32, label_height as u32),
                 &self.cancel_text,
                 &button_font,
@@ -889,7 +889,7 @@ impl Draw for CupertinoAlertDialog {
             );
 
             // Confirm button
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(mid_x, label_y, cell_width.max(0) as u32, label_height as u32),
                 &self.confirm_text,
                 &button_font,
@@ -898,7 +898,7 @@ impl Draw for CupertinoAlertDialog {
             );
         } else {
             // Single confirm button centered
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(dialog_rect.x, label_y, dialog_width, label_height as u32),
                 &self.confirm_text,
                 &button_font,
@@ -1178,7 +1178,7 @@ impl Draw for CupertinoSlider {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's
         // mutex is not re-entrant.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("cupertino_slider");
+        let theme = crate::style::resolved_theme_style_shared("cupertino_slider");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme. `cupertino_slider` is not in the role
         // table, so it classifies as `Surface` and its resolved background is the window
@@ -1509,7 +1509,7 @@ impl Draw for MaterialNavigationRail {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("material_navigation_rail");
+        let theme = crate::style::resolved_theme_style_shared("material_navigation_rail");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
         let (window_fill, foreground, secondary, primary) = {
@@ -1620,7 +1620,7 @@ impl Draw for MaterialNavigationRail {
                 }
             } else if !crate::widget::draw_icon_named(context, icon_rect, icon_color, &item.icon) {
                 // A character rather than a registered name: draw it as a mark in the same box.
-                context.draw_text_fitted(
+                context.draw_text_fitted_cow(
                     icon_rect,
                     &item.icon,
                     &icon_font,
@@ -1640,7 +1640,7 @@ impl Draw for MaterialNavigationRail {
                 rail_width.saturating_sub(8),
                 label_metrics.height.max(1),
             );
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 label_band,
                 &item.label,
                 &label_font,

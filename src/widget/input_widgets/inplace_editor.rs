@@ -6,7 +6,7 @@
 //! Displays text normally, and when activated (double-click), switches to an
 //! edit mode with a blinking cursor. Enter/Tab accepts changes, Escape cancels.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -457,7 +457,6 @@ impl Draw for InplaceEditor {
         // edge that was itself not the field's. The hit test reads the same box, so the
         // double-click target is the visible field.
         let rect = self.field_rect();
-        let font = Font::new("sans-serif", self.font_size, false, false);
 
         // Chrome colours resolve explicit style first, then the theme's resolved style for
         // this control, and only then a literal. The theme step is what makes an appearance
@@ -467,7 +466,14 @@ impl Draw for InplaceEditor {
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("inplace_editor");
+        // The field's font honours a caller/theme font when one is resolved, and otherwise uses
+        // this editor's own configured size. It used to hardcode `sans-serif`, so `style.font`
+        // never reached the text it renders.
+        let font = style
+            .font
+            .clone()
+            .unwrap_or_else(|| crate::core::Font::simple("sans-serif", self.font_size));
+        let theme = crate::style::resolved_theme_style_shared("inplace_editor");
         // `inplace_editor` classifies as `Input`, which *does* carry a surface
         // (`Colors::input_background`), so the resolved background is already a visible step
         // from the window. It falls back to the theme's `background` when a theme supplies

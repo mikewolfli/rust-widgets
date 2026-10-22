@@ -273,7 +273,7 @@ impl Draw for CupertinoNavigationBar {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's
         // mutex is not re-entrant.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("cupertino_navigation_bar");
+        let theme = crate::style::resolved_theme_style_shared("cupertino_navigation_bar");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme. The bar is not in the role table, so it
         // classifies as `Surface` and its resolved background is the window fill itself; the

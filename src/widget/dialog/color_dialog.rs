@@ -427,7 +427,7 @@ impl Draw for ColorDialog {
         // The **effective font** — the resolved theme/caller font — for the title, the hex readout
         // and the buttons (D09-STYLE-01).
         let font = effective_font(style);
-        let theme = crate::style::resolved_theme_style("color_dialog");
+        let theme = crate::style::resolved_theme_style_shared("color_dialog");
         // `color_dialog` is absent from `WidgetRole::for_kind_name`'s table, so it classifies
         // as `Surface` and resolves to `theme.colors.background` — the window's own fill. A
         // panel painted in that colour would be byte-identical to the frame behind it, so a
@@ -499,7 +499,7 @@ impl Draw for ColorDialog {
         let title_line = context.text_line(title_bar_band, title_font);
         self.draw_text_buf.clear();
         crate::tr_into!("color_dialog.title", &mut self.draw_text_buf);
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             Rect::new(
                 rect.x + 8,
                 title_line.y,
@@ -550,7 +550,7 @@ impl Draw for ColorDialog {
                 Self::PREVIEW_HEIGHT as u32,
             );
             let line = context.text_line(band, preview_font);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(band.x, line.y, band.width.max(1), line.height.max(1)),
                 preview_text,
                 preview_font,
@@ -574,11 +574,17 @@ impl Draw for ColorDialog {
         let row = super::message_box::action_row_geometry(context, font, &labels, band, true);
         let ok_rect = row.buttons[0];
         context.fill_rect(ok_rect, accent);
-        context.draw_text_line(ok_rect, &labels[0], font, accent_ink, HorizontalAlignment::Center);
+        context.draw_text_line_cow(
+            ok_rect,
+            &labels[0],
+            font,
+            accent_ink,
+            HorizontalAlignment::Center,
+        );
         let cancel_rect = row.buttons[1];
         context.fill_rect(cancel_rect, surface);
         context.draw_rect(cancel_rect, border);
-        context.draw_text_line(cancel_rect, &labels[1], font, ink, HorizontalAlignment::Center);
+        context.draw_text_line_cow(cancel_rect, &labels[1], font, ink, HorizontalAlignment::Center);
     }
 }
 

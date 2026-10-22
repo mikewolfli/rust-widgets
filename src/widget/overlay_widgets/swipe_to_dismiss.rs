@@ -7,13 +7,14 @@
 //! background (e.g., red "Delete"). When the swipe passes the threshold,
 //! the widget emits the `dismissed` signal.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -345,7 +346,7 @@ impl Draw for SwipeToDismiss {
             // edge, so centring is half the line box: the old `+ ascent/2 - descent/2` pair
             // only approximated a baseline-relative centre and sat the label half a line low.
             if !self.action_text.is_empty() {
-                let font = Font::new("sans-serif", 16.0, false, false);
+                let font = role_font(self.base.style(), 16.0);
                 let metrics = context.measure_text(&self.action_text, &font);
                 let text_x = bg_rect.x + (bg_rect.width as i32 - metrics.width as i32) / 2;
                 let text_y = bg_rect.y + (bg_rect.height as i32 - metrics.height as i32) / 2;

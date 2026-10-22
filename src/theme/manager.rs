@@ -936,6 +936,41 @@ pub fn resolved_theme_style(widget_name: &str) -> Option<WidgetStyle> {
     resolved_theme_style_shared(widget_name).map(|style| (*style).clone())
 }
 
+// The active palette, validated by the same revision as the style caches.
+//
+// Widgets that paint a semantic token or a layer colour read the palette directly, and a handful
+// of them did so several times in one `draw` (a table took three locks, the diff viewer five,
+// a chart up to twenty for its axis chrome and legend). The cache makes the first read of a frame
+// the only one that touches the manager; every later read is a refcount bump.
+thread_local! {
+    static ACTIVE_PALETTE_CACHE: crate::compat::RefCell<Option<(u64, Rc<Colors>)>> =
+        const { crate::compat::RefCell::new(None) };
+}
+
+/// The active theme's colour palette, shared and cached for the current theme revision.
+///
+/// Returns `None` only when no theme is active, which the global manager never produces but a
+/// caller-owned [`ThemeManager`] can. The returned value is the cache entry itself, so a hit does
+/// not clone the palette.
+pub fn active_palette_shared() -> Option<Rc<Colors>> {
+    let revision = THEME_REVISION.load(Ordering::Relaxed);
+    if let Some(colors) = ACTIVE_PALETTE_CACHE.with(|cache| {
+        cache
+            .borrow()
+            .as_ref()
+            .filter(|(cached_revision, _)| *cached_revision == revision)
+            .map(|(_, colors)| Rc::clone(colors))
+    }) {
+        return Some(colors);
+    }
+
+    let colors = Rc::new(global_theme_manager().current_theme()?.colors.clone());
+    ACTIVE_PALETTE_CACHE.with(|cache| {
+        *cache.borrow_mut() = Some((revision, Rc::clone(&colors)));
+    });
+    Some(colors)
+}
+
 /// Resolves a theme style from a widget **kind** name plus an optional CSS **class**.
 ///
 /// The counterpart of [`resolved_theme_style`] for callers that hold both names, such as the
@@ -1096,7 +1131,15 @@ impl SemanticColor {
 /// message, a completed progress run) should read — instead of a literal. Returns
 /// `None` only when no theme is active, which the global manager never produces.
 pub fn semantic_color(token: SemanticColor) -> Option<Color> {
-    global_theme_manager().current_theme().map(|theme| token.of(theme))
+    // Read through the cached palette: this is the per-severity read a banner, toast, badge and
+    // validation message make, often once per row in a list.
+    let colors = active_palette_shared()?;
+    Some(match token {
+        SemanticColor::Info => colors.info,
+        SemanticColor::Success => colors.success,
+        SemanticColor::Warning => colors.warning,
+        SemanticColor::Error => colors.error,
+    })
 }
 
 /// Sets the process-wide high-contrast override.

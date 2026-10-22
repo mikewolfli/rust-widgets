@@ -489,7 +489,7 @@ impl Draw for Action {
         }
 
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("action");
+        let theme = crate::style::resolved_theme_style_shared("action");
         let ink = style
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
@@ -532,14 +532,17 @@ impl Draw for Action {
         // a 45 px row, where 16 is the centred value).
         let line = context.text_line(rect, &font);
         let baseline = line.y;
+        // The disabled tint is computed **before** any content is painted. It used to be
+        // recomputed after the icon and label, so a disabled action kept full-strength text while
+        // its check mark and shortcut were dimmed — the same row in two weights.
+        let content_ink = self.base.disabled_ink_on(ink, highlight);
         let mut x = rect.x + 8;
         if let Some(source) = self.icon_source {
             let line_height = context.measure_text("M", &font).height;
             let side = line_height.min(rect.height).max(1);
             let icon_rect = Rect::new(x, line.y, side, side);
-            let icon_ink = self.base.disabled_ink_on(ink, highlight);
             if let Err(error) =
-                crate::widget::paint_icon(context, source.into(), icon_rect, icon_ink)
+                crate::widget::paint_icon(context, source.into(), icon_rect, content_ink)
             {
                 log::warn!("action icon could not be painted: {error:?}");
             }
@@ -549,7 +552,7 @@ impl Draw for Action {
                 Point::new(x, baseline),
                 &self.icon_text,
                 &font,
-                ink,
+                content_ink,
                 HorizontalAlignment::Left,
             );
             x += 20;
@@ -559,13 +562,10 @@ impl Draw for Action {
                 Point::new(x, baseline),
                 &self.text,
                 &font,
-                ink,
+                content_ink,
                 HorizontalAlignment::Left,
             );
         }
-        // An action that is not enabled reads as damped ink, so the disabled state
-        // follows the appearance instead of a literal grey.
-        let ink = self.base.disabled_ink_on(ink, highlight);
         if self.is_checked() && self.is_checkable() {
             // The tick is an `IconName` outline, not the `✓` (U+2713) character: no bundled face
             // covers the dingbats block, so the character fell back to an 8x8 bitmap and the check
@@ -578,7 +578,7 @@ impl Draw for Action {
                 side,
                 side,
             );
-            crate::widget::draw_icon_at(context, check_rect, ink, IconName::Check);
+            crate::widget::draw_icon_at(context, check_rect, content_ink, IconName::Check);
         }
         if !self.shortcut.is_empty() {
             let metrics = context.measure_text(&self.shortcut, &font);
@@ -586,7 +586,7 @@ impl Draw for Action {
                 Point::new(rect.x + rect.width as i32 - metrics.width as i32 - 12, baseline),
                 &self.shortcut,
                 &font,
-                ink.blend(&highlight, 0.4),
+                content_ink.blend(&highlight, 0.4),
                 HorizontalAlignment::Left,
             );
         }

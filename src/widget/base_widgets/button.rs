@@ -1092,7 +1092,7 @@ impl Draw for Button {
             // it. Without an icon the advance is zero and this is the whole content box.
             let label_box = self.label_rect();
             let label_bounds = Rect::new(label_box.x, line.y, label_box.width, line.height);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 label_bounds,
                 &self.text,
                 font,

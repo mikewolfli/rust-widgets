@@ -4,7 +4,7 @@ This chapter provides a comprehensive, module-by-module reference for the
 entire `rust_widgets` public API. Use this as a quick lookup when you need to
 find the right type, function, or trait for your task.
 
-The library version documented here is **2.8.14**. Code examples assume
+The library version documented here is **2.9.0**. Code examples assume
 `use rust_widgets::*;` or explicit paths as shown.
 
 ---
@@ -2832,7 +2832,7 @@ full C API.
 These modules are gated by the `audio`, `video` and `image` features. `desktop`, `tablet` and
 `mobile` enable all three; `mini` and `embedded` do not.
 
-Since 2.8.14, decoding runs on a worker thread in every entry point that takes a whole buffer, so
+Since 2.9.0, decoding runs on a worker thread in every entry point that takes a whole buffer, so
 the frame loop is not blocked by a long track or a large image. Each entry point also keeps its
 synchronous form, and every async one falls back to a synchronous decode when a thread cannot be
 spawned — the failure mode is "slower", never "nothing loads".

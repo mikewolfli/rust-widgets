@@ -516,7 +516,7 @@ impl Draw for Switch {
         // not the caller, and the control is free to substitute a more meaningful token;
         // when the caller set a colour it must win. Same rule, and the same mechanism, as
         // `banner.rs`.
-        let theme = crate::style::resolved_theme_style("switch");
+        let theme = crate::style::resolved_theme_style_shared("switch");
         let caller_background = if style.theme_derived { None } else { style.background_color };
         // A stripped device build has no theme module, so the semantic token cannot be read
         // and the literal below is the only rung. `#[cfg]` on the binding rather than on the
@@ -532,7 +532,7 @@ impl Draw for Switch {
         // Previously the resolved `switch:checked` value was computed and then dropped, so a theme
         // that changed it saw nothing move.
         #[cfg(device_profile)]
-        let declared_checked = crate::style::resolved_theme_style_for_state(
+        let declared_checked = crate::style::resolved_theme_style_for_state_shared(
             "switch",
             crate::style::WidgetState::Checked,
         )
@@ -547,14 +547,13 @@ impl Draw for Switch {
         let themed_track = caller_background
             .or_else(|| theme.as_ref().and_then(|resolved| resolved.background_color))
             .map(|background| {
-                let window = crate::style::theme_manager()
-                    .current_theme()
-                    .map(|active| active.colors.background);
+                // One palette read for the pair; this used to take the global theme lock twice
+                // for every switch, every frame.
+                let palette = crate::style::palette_shared();
+                let window = palette.as_ref().map(|colors| colors.background);
                 if window == Some(background) {
-                    let ink = crate::style::theme_manager()
-                        .current_theme()
-                        .map(|active| active.colors.foreground)
-                        .unwrap_or(Color::BLACK);
+                    let ink =
+                        palette.as_ref().map(|colors| colors.foreground).unwrap_or(Color::BLACK);
                     background.blend(&ink, 0.14)
                 } else {
                     background

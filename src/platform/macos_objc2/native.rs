@@ -52,7 +52,7 @@ use objc2_foundation::{
 
 // `Vec` is not in the `core` prelude and this file is compiled on profiles that have no `std`
 // prelude either; the crate's own shim is the one place that decides where it comes from.
-use crate::compat::Vec;
+use crate::compat::{MiniToString, Vec};
 
 /// The process-wide IME bridge shared by the canvas view and `Platform::ime_bridge` (B28.12).
 ///
@@ -773,7 +773,17 @@ define_class!(
 
         #[unsafe(method(accessibilityRole))]
         fn accessibility_role(&self) -> Option<&'static NSAccessibilityRole> {
-            Some(ns_accessibility_role_for(self.accessibility_role_of_widget()))
+            // The role is read from the widget registry, which does not exist under
+            // `alloc_frugal`; `isAccessibilityElement` is false there (no widget id is ever
+            // mounted), so the honest answer is "no role" rather than a fabricated one.
+            #[cfg(widgets_unstripped)]
+            {
+                Some(ns_accessibility_role_for(self.accessibility_role_of_widget()))
+            }
+            #[cfg(not(widgets_unstripped))]
+            {
+                None
+            }
         }
 
         #[unsafe(method(accessibilityLabel))]
@@ -1333,6 +1343,12 @@ impl RustWidgetsObjc2CanvasView {
         }
     }
 
+    /// Translates an AppKit key event into a widget key/text event and routes it.
+    ///
+    /// Gated with its callers (`keyDown:`/`keyUp:`): the widget runtime and the event model
+    /// do not exist under `alloc_frugal`, and an ungated method referred to types that were
+    /// cfg'd out (this is a `mini × macos` build failure, not a behavioural choice).
+    #[cfg(widgets_unstripped)]
     fn forward_key(&self, event: &NSEvent, release: bool) {
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let Some(widget_id) = self.widget_target() else {
@@ -1376,6 +1392,10 @@ impl RustWidgetsObjc2CanvasView {
 ///
 /// The constants are AppKit's own `NSAccessibilityRole` values, not display strings: VoiceOver
 /// resolves the role through them, so no localized copy passes through this crate.
+///
+/// Gated with its only caller: the role is derived from a mounted widget, which does not exist
+/// under `alloc_frugal`.
+#[cfg(widgets_unstripped)]
 fn ns_accessibility_role_for(
     role: crate::platform::accessibility::A11yRole,
 ) -> &'static NSAccessibilityRole {

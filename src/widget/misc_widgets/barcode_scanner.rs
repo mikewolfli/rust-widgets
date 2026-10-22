@@ -300,7 +300,7 @@ impl Draw for BarcodeScanner {
         // global manager's lock internally, so no guard is held across the draw (the
         // mutex is not re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("barcode_scanner");
+        let theme = crate::style::resolved_theme_style_shared("barcode_scanner");
         // The scanner's chrome faces take the **effective font** at their role sizes, so the theme
         // family and the user's text scale reach them (D09-STYLE-01).
         let small_font = role_font(style, 11.0);

@@ -8,7 +8,7 @@
 //! - Value column (right): editable text with alternating row colors
 //!   Supports row selection via click and emits a `selected` signal.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -16,6 +16,7 @@ use crate::widget::capability::coercion::expect_usize;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::role_font;
 use crate::widget::metrics::ControlMetrics;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -305,7 +306,7 @@ impl Draw for PropertyGrid {
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("property_grid");
+        let theme = crate::style::resolved_theme_style_shared("property_grid");
         let mut surface = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -369,11 +370,14 @@ impl Draw for PropertyGrid {
         let content = self.content_rect();
 
         // Header row
-        let header_font = Font::bold("Arial", 12.0);
+        let header_font = role_font(style, 12.0).with_bold(true);
+        // The name column's font is the same face as the header, so it is built once here rather
+        // than once per visible row (each `role_font` allocates its family `String`).
+        let name_font = role_font(style, 12.0).with_bold(true);
         let header_rect = Rect::new(content.x, content.y, content.width, row_height);
         context.fill_rect(header_rect, header_bg);
         let header_line = context.text_line(header_rect, &header_font);
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             Rect::new(
                 header_rect.x + 4,
                 header_line.y,
@@ -385,7 +389,7 @@ impl Draw for PropertyGrid {
             header_ink,
             HorizontalAlignment::Left,
         );
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             Rect::new(
                 header_rect.x + name_col_width as i32 + 4,
                 header_line.y,
@@ -407,7 +411,7 @@ impl Draw for PropertyGrid {
         );
 
         // Property rows
-        let value_font = Font::new("Arial", 12.0, false, false);
+        let value_font = role_font(style, 12.0);
         let mut y = separator_y + 1;
 
         #[allow(clippy::manual_checked_ops)]
@@ -444,7 +448,7 @@ impl Draw for PropertyGrid {
 
             // Name text (bold)
             let name_text_color = if !is_enabled { disabled_ink } else { ink };
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(
                     name_rect.x + 4,
                     row_line.y,
@@ -452,7 +456,7 @@ impl Draw for PropertyGrid {
                     row_line.height.max(1),
                 ),
                 &self.properties[i].name,
-                &Font::bold("Arial", 12.0),
+                &name_font,
                 name_text_color,
                 HorizontalAlignment::Left,
             );
@@ -467,7 +471,7 @@ impl Draw for PropertyGrid {
             } else {
                 ink
             };
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(
                     row_rect.x + name_col_width as i32 + 4,
                     row_line.y,

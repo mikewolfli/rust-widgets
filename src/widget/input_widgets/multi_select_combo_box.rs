@@ -474,7 +474,7 @@ impl Draw for MultiSelectComboBox {
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("multi_select_combo_box");
+        let theme = crate::style::resolved_theme_style_shared("multi_select_combo_box");
         let themed_ink = theme.as_ref().and_then(|t| t.text_color);
         let themed_border = theme.as_ref().and_then(|t| t.border_color);
 
@@ -534,7 +534,7 @@ impl Draw for MultiSelectComboBox {
         // the box's top edge, so the old `padding + 13` put a 13 px font's origin on the field's
         // middle line and drew the summary half a line low.
         let summary_line = context.text_line(geometry.text_box, font);
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             Rect::new(
                 geometry.text_box.x,
                 summary_line.y,

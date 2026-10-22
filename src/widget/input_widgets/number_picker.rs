@@ -591,7 +591,7 @@ impl Draw for NumberPicker {
             // the renderer paints downward from the origin, so using `row_center` directly put
             // a 14 px value in a 15 px row spanning `centre .. centre + 14` — half a row below
             // the band it belongs to.
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(rect.x, text_top, rect.width, text_h.max(1) as u32),
                 &label,
                 font,

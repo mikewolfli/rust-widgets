@@ -802,7 +802,7 @@ impl Draw for GridTableWidget {
             let style = self.base.style();
             (style.background_color, style.text_color)
         };
-        let theme = crate::style::resolved_theme_style("grid_table");
+        let theme = crate::style::resolved_theme_style_shared("grid_table");
         let mut surface = background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
             .unwrap_or(Color::WHITE);
@@ -882,6 +882,13 @@ impl Draw for GridTableWidget {
 
         let data_top = rect.y + header_h;
         let data_left = rect.x + rnw;
+        // The visible column spans depend only on the control's width and the column widths,
+        // not on the row being painted. Computing them per row rebuilt the same `Vec` (and
+        // re-summed every width) once per visible row per frame.
+        let spans = self.visible_column_spans(rect.x + rect.width as i32 - data_left);
+        // The effective font is borrowed from the style, so resolving it once is also what
+        // keeps the header and the cell rows on the same face.
+        let cell_font = effective_font(self.style());
 
         // ── Draw column headers ──
         {
@@ -892,7 +899,7 @@ impl Draw for GridTableWidget {
             context.draw_rect(header_rect, grid_color);
 
             let mut hx = data_left;
-            for (ci, _, cw) in self.visible_column_spans(rect.x + rect.width as i32 - data_left) {
+            for &(ci, _, cw) in &spans {
                 let cell_rect = Rect::new(hx, rect.y, cw as u32, self.header_height);
                 context.draw_rect(cell_rect, grid_color);
 
@@ -938,10 +945,10 @@ impl Draw for GridTableWidget {
                         header_scratch.as_str()
                     }
                 };
-                context.draw_text_fitted(
-                    context.text_line(cell_rect, effective_font(self.style())),
+                context.draw_text_fitted_cow(
+                    context.text_line(cell_rect, cell_font),
                     header_text,
-                    effective_font(self.style()),
+                    cell_font,
                     header_text_color,
                     HorizontalAlignment::Left,
                 );
@@ -991,10 +998,10 @@ impl Draw for GridTableWidget {
 
                 // The row-number cell is the band; centring by hand drew the digits half a line
                 // low. Right alignment keeps the numbers flush with the gutter's inner edge.
-                context.draw_text_fitted(
-                    context.text_line(cell_rect, effective_font(self.style())),
+                context.draw_text_fitted_cow(
+                    context.text_line(cell_rect, cell_font),
                     row_scratch.as_str(),
-                    effective_font(self.style()),
+                    cell_font,
                     header_text_color,
                     HorizontalAlignment::Right,
                 );
@@ -1010,7 +1017,7 @@ impl Draw for GridTableWidget {
         // The font is resolved once for the whole cell grid rather than twice per cell, and the
         // cell text is written into one reusable buffer: `data()` allocated a `String` per cell
         // per frame, which the fill path avoids for sources that override `fill_cell`.
-        let font = effective_font(self.style());
+        let font = cell_font;
         let mut cell_text = String::new();
         for ri in 0..self.visible_rows.min(rows.saturating_sub(self.scroll_row)) {
             let abs_row = self.scroll_row + ri;
@@ -1019,7 +1026,7 @@ impl Draw for GridTableWidget {
             }
 
             let mut cx = data_left;
-            for (ci, _, cw) in self.visible_column_spans(rect.x + rect.width as i32 - data_left) {
+            for &(ci, _, cw) in &spans {
                 let cell_rect = Rect::new(cx, cy, cw as u32, self.row_height);
 
                 // Selection highlight
@@ -1048,7 +1055,7 @@ impl Draw for GridTableWidget {
                     // box's *top* edge on the cell's middle line, drawing every value half a line
                     // low; `text_line` derives the centred box, and fitting keeps a long value
                     // inside its column instead of running under the next one.
-                    context.draw_text_fitted(
+                    context.draw_text_fitted_cow(
                         context.text_line(cell_rect, font),
                         &cell_text,
                         font,

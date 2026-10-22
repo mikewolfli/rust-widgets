@@ -439,7 +439,7 @@ impl Draw for ProgressDialog {
         // The **effective font** — the resolved theme/caller font — for the title, label, the
         // percentage readout and the buttons (D09-STYLE-01).
         let font = effective_font(style);
-        let theme = crate::style::resolved_theme_style("progress_dialog");
+        let theme = crate::style::resolved_theme_style_shared("progress_dialog");
         // `progress_dialog` is absent from `WidgetRole::for_kind_name`'s table, so it
         // classifies as `Surface` and resolves to `theme.colors.background` — the window's
         // own fill. A panel painted in that colour would be byte-identical to the frame
@@ -507,7 +507,7 @@ impl Draw for ProgressDialog {
         if !self.title.is_empty() {
             let title_font = font;
             let title_line = context.text_line(title_bar_band, title_font);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(
                     rect.x + 8,
                     title_line.y,
@@ -539,7 +539,7 @@ impl Draw for ProgressDialog {
         if !self.label_text.is_empty() {
             let label_band = ControlMetrics::top_band(content, label_line_h);
             let label_line = context.text_line(label_band, label_font);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(
                     content.x + 10,
                     label_line.y,
@@ -582,7 +582,7 @@ impl Draw for ProgressDialog {
             // `bar_x + bar_w/2` origin made the caption occupy only its right half and, at
             // 100%, run up to `bar_w/2 + 42` past the bar.
             let pct = (self.progress_fraction() * 100.0) as i32;
-            context.draw_text_line(
+            context.draw_text_line_cow(
                 bar_band,
                 &format!("{pct}%"),
                 font,
@@ -605,7 +605,7 @@ impl Draw for ProgressDialog {
         let btn_rect = Rect::new(btn_x, button_band.y, btn_w, button_band.height.max(1));
         context.fill_rect(btn_rect, button_fill);
         context.draw_rect(btn_rect, border);
-        context.draw_text_line(btn_rect, &labels[0], font, ink, HorizontalAlignment::Center);
+        context.draw_text_line_cow(btn_rect, &labels[0], font, ink, HorizontalAlignment::Center);
     }
 }
 

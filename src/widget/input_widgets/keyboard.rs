@@ -534,7 +534,7 @@ impl Draw for Keyboard {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("keyboard");
+        let theme = crate::style::resolved_theme_style_shared("keyboard");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme. A stripped device build has no theme
         // module, so the literals are its only rung — the same ones the `None` arm uses.
@@ -688,7 +688,7 @@ impl Draw for Keyboard {
                     } else {
                         text_color
                     };
-                    context.draw_text_line(
+                    context.draw_text_line_cow(
                         inner,
                         &label,
                         font,

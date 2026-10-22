@@ -83,7 +83,7 @@ impl EditorChrome {
         // Borrowed: `resolve` only reads the style. The clone copied the whole
         // `WidgetStyle` (`Font.family` string and gradient stops) once per editor frame.
         let style = editor.base.style();
-        let theme = crate::style::resolved_theme_style("code_editor");
+        let theme = crate::style::resolved_theme_style_shared("code_editor");
 
         // Explicit style first, then the theme's resolved style for this control, then
         // the light preset's literal. That field order is the documented precedence, so a

@@ -44,9 +44,60 @@ pub fn resolved_theme_style(_widget_name: &str) -> Option<WidgetStyle> {
     None
 }
 
+/// The shared form of [`resolved_theme_style`].
+///
+/// The theme cache already stores `Rc<WidgetStyle>`; the owned form clones it on every hit.
+/// A draw path that only reads colours should take this one so a hit is a refcount bump
+/// rather than a `WidgetStyle` clone (font-family string and gradient stops).
+#[cfg(device_profile)]
+pub fn resolved_theme_style_shared(widget_name: &str) -> Option<crate::compat::Rc<WidgetStyle>> {
+    crate::theme::resolved_theme_style_shared(widget_name)
+}
+
+/// No theme module in this profile; see [`resolved_theme_style`].
+#[cfg(not(device_profile))]
+pub fn resolved_theme_style_shared(_widget_name: &str) -> Option<crate::compat::Rc<WidgetStyle>> {
+    None
+}
+
+/// The shared form of [`resolved_theme_style_for_state`]; see
+/// [`resolved_theme_style_shared`] for why the draw path wants it.
+#[cfg(device_profile)]
+pub fn resolved_theme_style_for_state_shared(
+    kind_name: &str,
+    state: crate::style::WidgetState,
+) -> Option<crate::compat::Rc<WidgetStyle>> {
+    crate::theme::resolved_theme_style_for_state_shared(kind_name, state)
+}
+
+/// No theme module in this profile; see [`resolved_theme_style`].
+#[cfg(not(device_profile))]
+pub fn resolved_theme_style_for_state_shared(
+    _kind_name: &str,
+    _state: crate::style::WidgetState,
+) -> Option<crate::compat::Rc<WidgetStyle>> {
+    None
+}
+
 /// The resolved style for `kind_name` with an optional CSS `class`, or `None` when no
 /// theme is active or the build has no theme module.
 ///
+/// The active palette, shared and cached; the always-available counterpart of
+/// `crate::theme::active_palette_shared`.
+///
+/// A control that needs several palette fields in one `draw` should read this once instead of
+/// calling [`theme_manager`] per field: each of those calls takes the global lock.
+#[cfg(device_profile)]
+pub fn palette_shared() -> Option<crate::compat::Rc<Colors>> {
+    crate::theme::active_palette_shared()
+}
+
+/// No theme module in this profile, so there is no palette to resolve; see [`palette_shared`].
+#[cfg(not(device_profile))]
+pub fn palette_shared() -> Option<crate::compat::Rc<Colors>> {
+    None
+}
+
 /// The always-available counterpart of `crate::theme::resolved_theme_style_for`.
 #[cfg(device_profile)]
 pub fn resolved_theme_style_for(kind_name: &str, class_name: Option<&str>) -> Option<WidgetStyle> {
@@ -333,14 +384,13 @@ pub enum LayerColor {
 /// The active theme's colour for `layer`, or `None` when no theme is active.
 #[cfg(device_profile)]
 pub fn layer_color(layer: LayerColor) -> Option<Color> {
-    let manager = theme_manager();
-    let theme = manager.current_theme()?;
+    let colors = crate::theme::active_palette_shared()?;
     Some(match layer {
-        LayerColor::Scrim => theme.colors.scrim,
-        LayerColor::SurfaceContainer => theme.colors.surface_container,
-        LayerColor::SurfaceContainerHigh => theme.colors.surface_container_high,
-        LayerColor::InverseSurface => theme.colors.inverse_surface,
-        LayerColor::OnInverseSurface => theme.colors.on_inverse_surface,
+        LayerColor::Scrim => colors.scrim,
+        LayerColor::SurfaceContainer => colors.surface_container,
+        LayerColor::SurfaceContainerHigh => colors.surface_container_high,
+        LayerColor::InverseSurface => colors.inverse_surface,
+        LayerColor::OnInverseSurface => colors.on_inverse_surface,
     })
 }
 

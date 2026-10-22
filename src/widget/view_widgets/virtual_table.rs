@@ -556,7 +556,7 @@ impl Draw for VirtualTable {
             let style = self.base.style();
             (style.background_color, style.text_color, style.border_color)
         };
-        let theme = crate::style::resolved_theme_style("virtual_table");
+        let theme = crate::style::resolved_theme_style_shared("virtual_table");
         let mut surface = background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
             .unwrap_or(Color::WHITE);
@@ -568,10 +568,9 @@ impl Draw for VirtualTable {
         // panel painted in that colour would be byte-identical to the frame behind it, so a
         // resolved surface equal to the window fill is re-derived a visible step away from it,
         // the same distinction `Colors::input_background` draws for a field.
-        let window_fill = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.background)
-            .unwrap_or(Color::WHITE);
+        // One palette read for the surface, grid and accent roles (three theme locks before).
+        let palette = crate::style::palette_shared();
+        let window_fill = palette.as_ref().map(|colors| colors.background).unwrap_or(Color::WHITE);
         if surface == window_fill {
             surface = window_fill.blend(&ink, 0.08);
         }
@@ -587,9 +586,9 @@ impl Draw for VirtualTable {
         // Read the role rather than blending locally so this control and `table_widget` (same
         // `Table` kind, so the same grid) cannot drift apart: a theme that tunes its grid cannot
         // tune one without the other.
-        let cell_border = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.outline_variant)
+        let cell_border = palette
+            .as_ref()
+            .map(|colors| colors.outline_variant)
             .filter(|resolved| *resolved != surface)
             .unwrap_or_else(|| surface.blend(&ink, 0.10));
 
@@ -642,7 +641,7 @@ impl Draw for VirtualTable {
                     // the glyph box's *top* edge on the cell's middle line, so the value drew half
                     // a line low; `text_line` derives the centred box. Fitting keeps a wide value
                     // from spilling into the next column.
-                    context.draw_text_fitted(
+                    context.draw_text_fitted_cow(
                         context.text_line(cell_rect, effective_font(self.style())),
                         value,
                         effective_font(self.style()),

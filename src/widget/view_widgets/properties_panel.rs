@@ -563,7 +563,7 @@ impl Draw for PropertiesPanel {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("properties_panel");
+        let theme = crate::style::resolved_theme_style_shared("properties_panel");
         // `properties_panel` is not a control kind in the role table, so it classifies
         // as `Surface`, whose background is `theme.colors.background` — byte-identical
         // to the window behind it. The panel's own fill is therefore a step toward the
@@ -615,18 +615,25 @@ impl Draw for PropertiesPanel {
         // own `y += ROW_HEIGHT` cursor, which made a row's box depend on how many rows happened
         // to precede it and let the columns disagree about where the panel's margin was.
         let mut row = self.first_visible_row();
+        // Rows and headers are painted inside the panel's content box. A partially scrolled row
+        // used to paint its full rectangle above the box (over the margin and the border), and a
+        // category header below the box still painted after the row loop broke.
+        context.push_clip(content.x, content.y, content.width, content.height);
 
         for (category, indices) in grouped.iter() {
             // ── Category header ──
             let header_rect = self.row_rect_for(row);
             row += 1;
+            if header_rect.y >= bottom {
+                break;
+            }
             context.fill_rect(header_rect, header_background);
             // Centred through the shared primitive. Every row of this panel used to draw at
             // `y + ROW_HEIGHT / 2 + 4`: the `+ 4` was meant to compensate for the top-edge
             // origin but only halved the error, so a 12 px label in a 26 px row occupied
             // `17..29` and its descenders crossed the divider drawn at `y + ROW_HEIGHT - 1`.
             let header_line = context.text_line(header_rect, font);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect {
                     x: header_rect.x + CATEGORY_PADDING,
                     y: header_line.y,
@@ -658,7 +665,7 @@ impl Draw for PropertiesPanel {
                 // emits no `<text …></text>`.
                 let name_x = content.x + NAME_COL_LEFT;
                 if !entry.name.is_empty() {
-                    context.draw_text_fitted(
+                    context.draw_text_fitted_cow(
                         Rect {
                             x: name_x,
                             y: row_line.y,
@@ -683,7 +690,7 @@ impl Draw for PropertiesPanel {
                 context.fill_rect(value_rect, value_background);
                 let value_line = context.text_line(value_rect, font);
                 if !display.is_empty() {
-                    context.draw_text_fitted(
+                    context.draw_text_fitted_cow(
                         Rect {
                             x: value_rect.x + 2,
                             y: value_line.y,
@@ -707,6 +714,7 @@ impl Draw for PropertiesPanel {
         }
 
         // Draw border around the entire panel
+        context.pop_clip();
         context.draw_rect_stroke(geom, border, 1);
     }
 }

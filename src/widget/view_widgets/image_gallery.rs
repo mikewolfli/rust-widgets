@@ -12,13 +12,14 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::style::{MotionSlot, PropertyDriver};
-use crate::widget::capability::coercion::expect_usize;
+use crate::widget::capability::coercion::{expect_bool, expect_u32, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use std::borrow::Cow;
 
 /// Metadata for a single image in the gallery.
 #[derive(Debug, Clone)]
@@ -43,6 +44,84 @@ impl GalleryImage {
     pub fn with_label(path: &str, label: Option<&str>, width: u32, height: u32) -> Self {
         Self { path: path.to_string(), label: label.map(|s| s.to_string()), width, height }
     }
+}
+
+/// The declared shape of one gallery image, as a record.
+///
+/// Declared beside [`GalleryImage`] so the field names cannot drift from the struct's own
+/// fields. `path` is required because it is the image's identity (and nothing can be loaded
+/// without it); the label and the dimensions are optional because
+/// [`GalleryImage::new`] supplies both — "no label" is the normal case, and an omitted
+/// dimension means the `100 x 100` placeholder `add_image` uses.
+///
+/// `ids_unique` is **false** on purpose: two slots showing the same file is a legitimate
+/// gallery, so the identity field must not be turned into a uniqueness constraint.
+pub const GALLERY_IMAGE_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "path",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "label",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "width",
+                crate::widget::capability::PropertyValueKind::UInt,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "height",
+                crate::widget::capability::PropertyValueKind::UInt,
+            ),
+        ],
+        id_field: "path",
+        ids_unique: false,
+        ids_required: true,
+    };
+
+/// The dimension `GalleryImage::new` uses when the caller does not supply one.
+const GALLERY_DEFAULT_DIMENSION: u32 = 100;
+
+fn gallery_image_record(image: &GalleryImage) -> crate::widget::capability::RecordValue {
+    let mut record = crate::widget::capability::RecordValue::new()
+        .with("path", CapabilityValue::String(image.path.clone()))
+        .with("width", CapabilityValue::UInt(image.width as u64))
+        .with("height", CapabilityValue::UInt(image.height as u64));
+    // Omitted rather than written as an empty string: "no label" and "a label that is empty"
+    // are different states, and the read/write round trip has to preserve which one it was.
+    if let Some(label) = &image.label {
+        record = record.with("label", CapabilityValue::String(label.clone()));
+    }
+    record
+}
+
+fn gallery_image_from_record(
+    record: &crate::widget::capability::RecordValue,
+) -> Result<GalleryImage, CapabilityAccessError> {
+    let path = match record.get("path") {
+        Some(CapabilityValue::String(value)) if !value.trim().is_empty() => value.clone(),
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let label = match record.get("label") {
+        None | Some(CapabilityValue::Null) => None,
+        Some(CapabilityValue::String(value)) => Some(value.clone()),
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let dimension = |name: &str| -> Result<u32, CapabilityAccessError> {
+        match record.get(name) {
+            None | Some(CapabilityValue::Null) => Ok(GALLERY_DEFAULT_DIMENSION),
+            Some(CapabilityValue::UInt(value)) => {
+                u32::try_from(*value).map_err(|_| CapabilityAccessError::OutOfRange)
+            }
+            Some(CapabilityValue::Int(value)) => {
+                u32::try_from(*value).map_err(|_| CapabilityAccessError::OutOfRange)
+            }
+            Some(_) => Err(CapabilityAccessError::TypeMismatch),
+        }
+    };
+    Ok(GalleryImage { path, label, width: dimension("width")?, height: dimension("height")? })
 }
 
 /// ImageGallery — an image gallery/browser widget with thumbnails and large view.
@@ -102,6 +181,25 @@ impl ImageGallery {
         height: u32,
     ) {
         self.images.push(GalleryImage::with_label(path, label, width, height));
+        self.base.request_redraw();
+    }
+
+    /// Replaces the whole image list.
+    ///
+    /// The property route needs one entry point that swaps the list, the same way
+    /// `Breadcrumb::set_segments` does. `current_index` is clamped into the new list so the
+    /// preview never points past its end — every reader (`selected_index`, `has_next`) treats
+    /// such an index as "nothing selected". The `image_changed` signal is emitted because the
+    /// image on display has been replaced, even when the index happens to stay the same.
+    pub fn set_images(&mut self, images: Vec<GalleryImage>) {
+        self.images = images;
+        if self.images.is_empty() {
+            self.current_index = 0;
+        } else if self.current_index >= self.images.len() {
+            self.current_index = self.images.len() - 1;
+        }
+        self.image_changed.emit(self.current_index);
+        self.base.request_layout();
         self.base.request_redraw();
     }
 
@@ -317,6 +415,14 @@ impl WidgetProperties for ImageGallery {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "current_index" => Ok(CapabilityValue::UInt(self.selected_index().unwrap_or(0) as u64)),
+            "images" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &GALLERY_IMAGE_SCHEMA,
+                    self.images().iter().map(gallery_image_record).collect(),
+                )))
+            }
+            "thumbnail_size" => Ok(CapabilityValue::UInt(self.thumbnail_size() as u64)),
+            "show_thumbnails" => Ok(CapabilityValue::Bool(self.show_thumbnails())),
             _ => base_property_get(self, name),
         }
     }
@@ -327,12 +433,52 @@ impl WidgetProperties for ImageGallery {
                 self.set_current_index(expect_usize(value)?);
                 Ok(())
             }
+            "images" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                // Validated in full before anything is replaced, so a refused write leaves the
+                // live gallery untouched rather than half-swapped.
+                list.validate_against(&GALLERY_IMAGE_SCHEMA).map_err(|violation| {
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("images"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                let mut images = Vec::with_capacity(list.len());
+                for record in list.items() {
+                    images.push(gallery_image_from_record(record)?);
+                }
+                self.set_images(images);
+                Ok(())
+            }
+            "thumbnail_size" => {
+                // The setter clamps to 16..=256, so a property write outside that band would
+                // read back as a different number than it wrote. The property contract reports
+                // `OutOfRange` instead: the caller is told the write did not land.
+                let size = expect_u32(value)?;
+                if !(16..=256).contains(&size) {
+                    return Err(CapabilityAccessError::OutOfRange);
+                }
+                self.set_thumbnail_size(size);
+                Ok(())
+            }
+            "show_thumbnails" => {
+                self.set_show_thumbnails(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["current_index", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "current_index",
+            "images",
+            "thumbnail_size",
+            "show_thumbnails",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 
@@ -357,7 +503,7 @@ impl Draw for ImageGallery {
             // looks exactly as it did). The label is derived from the panel it sits on, so
             // it cannot repeat the 2.02:1 mistake on any surface.
             let style = self.base.style();
-            let theme = crate::style::resolved_theme_style("image_gallery");
+            let theme = crate::style::resolved_theme_style_shared("image_gallery");
             let fallback_bg = if !is_enabled {
                 Color::rgba(230, 230, 230, 200)
             } else {
@@ -404,7 +550,13 @@ impl Draw for ImageGallery {
             } else {
                 bg.blend(&panel_ink, disabled_weight)
             };
-            context.draw_text_fitted(line, text, font, label_color, HorizontalAlignment::Center);
+            context.draw_text_fitted_cow(
+                line,
+                text,
+                font,
+                label_color,
+                HorizontalAlignment::Center,
+            );
             return;
         }
 
@@ -423,7 +575,7 @@ impl Draw for ImageGallery {
         // defect from returning: the old form hardcoded every one of them as `rgba(2xx,2xx,2xx)`, so
         // a host that set a *light* stage through the style got white-on-white labels and no error.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("image_gallery");
+        let theme = crate::style::resolved_theme_style_shared("image_gallery");
         // The accent for the selected thumbnail, read from the role rather than from the gallery's
         // own surface. See the selected-thumbnail block below for why the surface was wrong.
         let accent_role =
@@ -481,7 +633,7 @@ impl Draw for ImageGallery {
             // beyond each side and made the label wider than the box it was centred on. Handing
             // the fitter a preview-wide box keeps the horizontal centring and elides the name at
             // the preview's edges.
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(preview_rect.x, name_y, preview_rect.width, name_metrics.height),
                 display_name,
                 font,
@@ -636,11 +788,13 @@ impl Draw for ImageGallery {
             if let Some(image) = self.images.get(img_idx) {
                 if let Some(ref label) = image.label {
                     let font = effective_font(style);
-                    let label_text = if label.len() > 10 {
+                    // Borrow the label unless it actually needs truncating. `label.clone()`
+                    // copied every visible caption per frame for the common fitting case.
+                    let label_text: Cow<'_, str> = if label.len() > 10 {
                         let boundary = crate::widget::text_utils::floor_char_boundary(label, 8);
-                        format!("{}..", &label[..boundary])
+                        Cow::Owned(format!("{}..", &label[..boundary]))
                     } else {
-                        label.clone()
+                        Cow::Borrowed(label.as_str())
                     };
                     let label_metrics = context.measure_text(&label_text, font);
                     let label_x =
@@ -803,6 +957,74 @@ mod tests {
         assert!(!g.has_next());
         assert!(!g.has_previous());
         assert_eq!(g.kind(), WidgetKind::ImageGallery);
+    }
+
+    #[test]
+    fn images_property_round_trips_the_gallery() {
+        let mut g = ImageGallery::new(Rect::new(0, 0, 400, 300));
+        let list = crate::widget::capability::RecordList::from_items(
+            &GALLERY_IMAGE_SCHEMA,
+            vec![
+                crate::widget::capability::RecordValue::new()
+                    .with("path", CapabilityValue::String("/images/a.jpg".to_string()))
+                    .with("label", CapabilityValue::String("A".to_string()))
+                    .with("width", CapabilityValue::UInt(640))
+                    .with("height", CapabilityValue::UInt(480)),
+                // An omitted label and omitted dimensions are the `add_image` shape.
+                crate::widget::capability::RecordValue::new()
+                    .with("path", CapabilityValue::String("/images/b.jpg".to_string())),
+            ],
+        );
+        g.set("images", CapabilityValue::Records(list)).expect("images is writable");
+        assert_eq!(g.image_count(), 2);
+        assert_eq!(g.images()[0].width, 640);
+        assert_eq!(g.images()[0].label.as_deref(), Some("A"));
+        assert_eq!(g.images()[1].label, None);
+        assert_eq!(g.images()[1].width, GALLERY_DEFAULT_DIMENSION);
+
+        match g.get("images").expect("images is readable") {
+            CapabilityValue::Records(read) => {
+                assert_eq!(read.len(), 2);
+                let second = &read.items()[1];
+                // "No label" stays absent rather than becoming an empty string.
+                assert_eq!(second.get("label"), None);
+                assert_eq!(
+                    second.get("path"),
+                    Some(&CapabilityValue::String("/images/b.jpg".to_string()))
+                );
+            }
+            other => panic!("images should read back as Records, got {other:?}"),
+        }
+
+        // A row with no path is refused, and the live gallery is untouched.
+        let missing_path = crate::widget::capability::RecordList::from_items(
+            &GALLERY_IMAGE_SCHEMA,
+            vec![crate::widget::capability::RecordValue::new()
+                .with("label", CapabilityValue::String("No path".to_string()))],
+        );
+        assert!(matches!(
+            g.set("images", CapabilityValue::Records(missing_path)),
+            Err(CapabilityAccessError::ConstraintViolation { .. })
+        ));
+        assert_eq!(g.image_count(), 2);
+    }
+
+    #[test]
+    fn thumbnail_properties_round_trip_and_refuse_out_of_range_sizes() {
+        let mut g = ImageGallery::new(Rect::new(0, 0, 400, 300));
+        g.set("thumbnail_size", CapabilityValue::UInt(96)).expect("thumbnail_size is writable");
+        assert_eq!(g.get("thumbnail_size"), Ok(CapabilityValue::UInt(96)));
+        // The setter clamps, so the property contract refuses instead of reporting a write that
+        // did not land.
+        assert_eq!(
+            g.set("thumbnail_size", CapabilityValue::UInt(8)),
+            Err(CapabilityAccessError::OutOfRange)
+        );
+        assert_eq!(g.thumbnail_size(), 96);
+
+        g.set("show_thumbnails", CapabilityValue::Bool(false))
+            .expect("show_thumbnails is writable");
+        assert_eq!(g.get("show_thumbnails"), Ok(CapabilityValue::Bool(false)));
     }
 
     #[test]

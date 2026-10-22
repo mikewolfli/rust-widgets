@@ -134,7 +134,9 @@ pub use reactive::ReactiveHost;
 pub(crate) use helpers::{is_generated_wire_prop, is_transparent_node, mounted_slots};
 // The prefix itself has exactly one consumer: the designer's test asserting that
 // `designer::generator::WIRE_PROP_PREFIX` and this one cannot drift. Re-exporting it only
-// for that build keeps the non-test build warning-free (principle #10).
-#[cfg(test)]
+// for that build keeps the non-test build warning-free (principle #10), and the
+// `designer_tooling` half keeps it warning-free on the profiles that have no designer at all
+// (tablet/mobile/mini/embedded), where the only reader is compiled out.
+#[cfg(all(test, designer_tooling))]
 pub(crate) use helpers::GENERATED_WIRE_PROP_PREFIX;
 pub use helpers::VIEW_GATE_PROBE;

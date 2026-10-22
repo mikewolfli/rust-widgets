@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -9,6 +9,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Command link widget for command link buttons.
@@ -262,7 +263,7 @@ impl Draw for CommandLink {
         };
         // Draw main text
         let padding = &style.padding;
-        let text_font = Font::new("Arial", 12.0, false, true);
+        let text_font = role_font(style, 12.0).with_italic(true);
         let text_x = rect.x + padding.left as i32;
         // The two lines are stacked from their **measured** line boxes rather than from the
         // literals `+ 12` and `+ 16`. Those constants pinned the layout to one particular font
@@ -279,7 +280,7 @@ impl Draw for CommandLink {
         };
         let line = context.text_line(text_band, &text_font);
         let text_y = line.y;
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             line,
             &self.text,
             &text_font,
@@ -288,7 +289,7 @@ impl Draw for CommandLink {
         );
         // Draw description if present
         if !self.description.is_empty() {
-            let desc_font = Font::new("Arial", 10.0, false, false);
+            let desc_font = role_font(style, 10.0);
             // `Color::GRAY` was a literal that never moved with the appearance; the disabled
             // ink already follows it, so an enabled description is the same ink damped toward
             // whatever the control was actually given to paint on. The disabled ink is derived
@@ -301,7 +302,7 @@ impl Draw for CommandLink {
             };
             let desc_line =
                 context.text_line(Rect { y: text_y + line.height as i32, ..text_band }, &desc_font);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 desc_line,
                 &self.description,
                 &desc_font,

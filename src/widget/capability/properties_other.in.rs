@@ -114,6 +114,15 @@ macro_rules! impl_properties_other {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const BREADCRUMB_PROPERTIES: &[PropertySchema] = &[
+            // The full path is a *property*, not only the `set_segments` command, so a document can
+            // spell the trail and a designer can edit it. Each row is a record because a segment has
+            // an identity (the id `segment_activated` reports) as well as a label.
+            PropertySchema::records(
+                "segments",
+                true,
+                true,
+                &crate::widget::special_widgets::breadcrumb::BREADCRUMB_SEGMENT_SCHEMA,
+            ),
             PropertySchema::new("segment_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("selected_index", PropertyValueKind::UInt, true, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
@@ -373,6 +382,10 @@ macro_rules! impl_properties_other {
             PropertySchema::new("thickness", PropertyValueKind::UInt, true, true),
             PropertySchema::new("sweep_angle", PropertyValueKind::UInt, true, true),
             PropertySchema::new("indeterminate", PropertyValueKind::Bool, true, true),
+            // Both are painted (`rounded` changes the cap geometry, `show_value` the label band)
+            // and had public setters, but were unreachable through the contract.
+            PropertySchema::new("rounded", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("show_value", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -566,6 +579,10 @@ macro_rules! impl_properties_other {
         pub(crate) const BADGE_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("text", PropertyValueKind::String, true, true),
             PropertySchema::new("count", PropertyValueKind::Int, true, true),
+            // A dot is the badge's "presence" mode: it draws a small disc instead of the count.
+            // The setter existed and the paint path read it, but neither the schema nor the
+            // property list mentioned it.
+            PropertySchema::new("dot_mode", PropertyValueKind::Bool, true, true),
             // The severity, which is what decides the badge's colour.
             PropertySchema::enumerated(
                 "level",
@@ -698,6 +715,8 @@ macro_rules! impl_properties_other {
         #[cfg(not(alloc_frugal))]
         pub(crate) const COLOR_WELL_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("color", PropertyValueKind::Color, true, true),
+            // The well's frame is optional, and `draw` reads this switch.
+            PropertySchema::new("show_border", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -775,6 +794,10 @@ macro_rules! impl_properties_other {
                 Constraint::Range(RangeSpec { minimum: 0.0, maximum: 1.0, step: None }),
             ]),
             PropertySchema::new("thickness", PropertyValueKind::Float, true, true),
+            // The two colours and the ring's own size are painted/laid out by the control but were
+            // unreachable through the contract, so a designer saw no route to them.
+            PropertySchema::new("progress_color", PropertyValueKind::Color, true, true),
+            PropertySchema::new("diameter", PropertyValueKind::UInt, true, true),
             PropertySchema::new("indeterminate", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
@@ -879,6 +902,10 @@ macro_rules! impl_properties_other {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const SPARKLINE_PROPERTIES: &[PropertySchema] = &[
+            // The sample series is a property as well as a command, so a document can spell it and
+            // a designer can read it back. Order is the value, so it is a `NumberList` rather
+            // than `Records`.
+            PropertySchema::new("data", PropertyValueKind::NumberList, true, true),
             PropertySchema::new("stroke_width", PropertyValueKind::Float, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),

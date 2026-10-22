@@ -234,14 +234,14 @@ impl CodeEditor {
             let tally_x = (tally_right - tally_width as i32).max(status_band.x);
             let tally =
                 Rect::new(tally_x, status_band.y, (tally_right - tally_x).max(0) as u32, 12);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 tally,
                 &diagnostics,
                 font,
                 chrome.dim_ink,
                 HorizontalAlignment::Right,
             );
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 strip,
                 &right_label,
                 font,
@@ -256,7 +256,7 @@ impl CodeEditor {
                 status_band.height,
             )
         };
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             caret_rect,
             &left_label,
             font,

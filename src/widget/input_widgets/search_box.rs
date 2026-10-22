@@ -371,7 +371,7 @@ impl Draw for SearchBox {
         let style = self.style();
         // Resolved once, because the three branches below all need it and re-resolving would
         // take the theme lock three times inside one draw.
-        let themed = crate::style::resolved_theme_style("search_box");
+        let themed = crate::style::resolved_theme_style_shared("search_box");
         let themed_bg = themed.as_ref().and_then(|resolved| resolved.background_color);
         let themed_border = themed.as_ref().and_then(|resolved| resolved.border_color);
         // Precedence: an explicit style wins, then the theme, then the original literal as a
@@ -487,7 +487,7 @@ impl Draw for SearchBox {
             // The value (and the placeholder, which shares this run) is fitted into the field's
             // text box so a centred or right-aligned value is positioned against the box it is
             // aligned within rather than against a fixed inset.
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(text_rect.x, text_line.y, text_rect.width, text_line.height),
                 display_text,
                 font,

@@ -962,7 +962,7 @@ impl Draw for ListView {
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("list_view");
+        let theme = crate::style::resolved_theme_style_shared("list_view");
         let surface = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -1068,7 +1068,7 @@ impl Draw for ListView {
                             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
                         )
                     };
-                    context.draw_text_fitted(
+                    context.draw_text_fitted_cow(
                         context.text_line(band, font),
                         &cell_text,
                         font,

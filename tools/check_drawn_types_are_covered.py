@@ -72,7 +72,12 @@ CONSTRUCTORS = "src/widget/capability/constructors.rs"
 WIDGET_GLOB = "src/widget/**/*.rs"
 
 CANONICAL = re.compile(r'canonical_name:\s*"([^"]+)"')
-DRAW_IMPL = re.compile(r"impl Draw for ([A-Za-z_][A-Za-z0-9_]*)")
+# Anchored at column 0: a production `impl Draw` is a top-level item, while every test
+# fixture is nested inside a `#[cfg(test)] mod tests` and therefore indented. The previous
+# unanchored pattern collected `Surface`/`Counter` from `widget/runtime.rs`'s test module and
+# reported them as uncovered controls. Macro-generated impls (`impl Draw for $ty`) are not
+# matched either way, because `$` is not in the type-name class.
+DRAW_IMPL = re.compile(r"^impl Draw for ([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE)
 
 #: Types that implement `Draw` with no gate covering them, and why that is accepted.
 #:

@@ -21,7 +21,7 @@
 //! themselves as they are created. A global keeps `Platform::accessibility_bridge()` and the
 //! view registration pointing at the same table without threading a pointer through every view.
 
-use crate::compat::{lock, HashMap, Mutex, String};
+use crate::compat::{lock, HashMap, MiniToString, Mutex, String};
 use crate::core::ObjectId;
 use crate::platform::accessibility::{A11yState, AccessibilityBridge};
 use std::sync::OnceLock;

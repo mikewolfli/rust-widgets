@@ -445,7 +445,7 @@ impl Draw for MapView {
         // The tile grid and the markers keep their own colours, because those encode place
         // and selection (rule #108 ③).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("map_view");
+        let theme = crate::style::resolved_theme_style_shared("map_view");
         let ink = style
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
@@ -544,7 +544,7 @@ impl Draw for MapView {
             let label_left = (sx as i32) + half + 3;
             let label_width = (rect.x + rect.width as i32 - label_left).max(0) as u32;
             if label_width > 0 {
-                context.draw_text_fitted(
+                context.draw_text_fitted_cow(
                     Rect::new(label_left, sy as i32 - half, label_width, 14),
                     &marker.label,
                     effective_font(style),
@@ -554,7 +554,7 @@ impl Draw for MapView {
             }
         }
 
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             Rect::new(rect.x + 8, rect.y + 4, rect.width.saturating_sub(16), 14),
             &format!("Center ({:.1}, {:.1})  Zoom {:.2}x", self.center_x, self.center_y, self.zoom),
             effective_font(style),

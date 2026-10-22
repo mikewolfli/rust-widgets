@@ -291,27 +291,28 @@ impl DepthChart {
 
         // A filled area under the curve, so the two sides read as volumes of available
         // size rather than as two lines crossing.
+        //
+        // The wash is a step from the side's own colour toward the pane's surface, so it
+        // follows the appearance instead of being one of two near-black slabs.
+        let wash = color.blend(&self.chrome().surface, 0.80);
         let mut running = 0.0;
-        let mut previous_x = None;
+        let mut previous_x: Option<i32> = None;
         for level in &levels {
             running += level.quantity;
             let x = to_x(level.price);
             let y = to_y(running);
             if let Some(from) = previous_x {
+                // `from.min(x)`: bids are ordered best-first, so `x` decreases as the loop
+                // advances. Anchoring at `from` with an unsigned width painted the band one
+                // step toward the spread instead of the span it belongs to.
                 context.fill_rect(
                     Rect::new(
-                        from,
+                        from.min(x),
                         y,
                         (x - from).unsigned_abs().max(1),
                         (area.bottom() - y).max(0) as u32,
                     ),
-                    // A translucent wash would need alpha compositing; a dark shade of the
-                    // same hue reads the same way and costs one fill.
-                    if color == self.bid_color {
-                        Color::rgb(14, 48, 30)
-                    } else {
-                        Color::rgb(52, 20, 22)
-                    },
+                    wash,
                 );
             }
             previous_x = Some(x);

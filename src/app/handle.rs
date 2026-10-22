@@ -1112,6 +1112,25 @@ pub fn remove_callbacks(id: ObjectId) {
             map.remove(&id);
         }
     });
+    // The layout registries are keyed by the same id and hold a `Box<dyn Layout>` each, so a
+    // create/destroy loop leaked a whole layout per window, panel and declarative container.
+    // They are registration caches, not authoritative state: once the widget is gone nothing
+    // can lay it out again.
+    LAYOUTS.with(|map| {
+        if let Ok(mut map) = map.try_borrow_mut() {
+            map.remove(&id);
+        }
+    });
+    PANEL_LAYOUTS.with(|map| {
+        if let Ok(mut map) = map.try_borrow_mut() {
+            map.remove(&id);
+        }
+    });
+    LAYOUT_CONTEXT_SCALES.with(|map| {
+        if let Ok(mut map) = map.try_borrow_mut() {
+            map.remove(&id);
+        }
+    });
     WINDOW_STATES.with(|map| {
         if let Ok(mut map) = map.try_borrow_mut() {
             map.remove(&id);
@@ -5247,6 +5266,33 @@ mod tests {
         CLICK_CALLBACKS.with(|map| {
             assert!(!map.borrow().contains_key(&id));
         });
+    }
+
+    /// Closing a widget must also drop the layouts registered against its id.
+    ///
+    /// The three layout tables are keyed by `ObjectId` and each value can own a
+    /// `Box<dyn Layout>`; they were the remaining unbounded growth in a create/destroy loop
+    /// after the mirror state tables were cleaned. Registering and removing is the whole
+    /// contract, so this test pins all three tables rather than only the one the bug report
+    /// named.
+    #[test]
+    fn remove_callbacks_cleans_up_layout_registrations() {
+        let id: ObjectId = 4242;
+        LAYOUTS.with(|map| {
+            map.borrow_mut().insert(id, Box::new(crate::layout::StackLayout::new()));
+        });
+        PANEL_LAYOUTS.with(|map| {
+            map.borrow_mut().insert(id, Box::new(crate::layout::StackLayout::new()));
+        });
+        LAYOUT_CONTEXT_SCALES.with(|map| {
+            map.borrow_mut().insert(id, 1.5);
+        });
+
+        remove_callbacks(id);
+
+        assert!(LAYOUTS.with(|map| !map.borrow().contains_key(&id)));
+        assert!(PANEL_LAYOUTS.with(|map| !map.borrow().contains_key(&id)));
+        assert!(LAYOUT_CONTEXT_SCALES.with(|map| !map.borrow().contains_key(&id)));
     }
 
     /// A refused binding on a `SurfaceHandle` must reach the same observable count as any other.

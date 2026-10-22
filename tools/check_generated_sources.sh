@@ -222,7 +222,9 @@ import sys
 
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-needle = 'body.push_str(&format!("    let {} = {expr};\\n", binding_name(path)));'
+needle = 'push_fmt(&mut body, format_args!("    let {} = {expr};\\n", binding_name(path)));'
+# The generator moved from `body.push_str(&format!(...))` to the shared `push_fmt` helper;
+# the needle must follow the shape it is proving, or this reverse injection asserts nothing.
 assert needle in text, "the injection point moved; update this script"
 text = text.replace(needle, needle.replace("let {} =", "let mut {} ="), 1)
 path.write_text(text)

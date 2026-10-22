@@ -505,18 +505,31 @@ pub fn embedded_engine_stats() -> EmbeddedEngineStats {
 ///
 /// Callers must take it for the whole mutate-assert-restore span.
 #[cfg(test)]
-pub(crate) fn embedded_test_guard() -> crate::compat::MutexGuard<'static, ()> {
+pub(crate) fn embedded_test_guard(
+) -> (crate::compat::MutexGuard<'static, ()>, std::sync::MutexGuard<'static, ()>) {
     use crate::compat::{lock, Mutex, OnceLock};
 
     static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
-    lock(GUARD.get_or_init(|| Mutex::new(())))
+    let local = lock(GUARD.get_or_init(|| Mutex::new(())));
+    // An embedded loop drives `crate::drive_frame`, which drains the **process-wide** trigger
+    // queue and consumes the **process-wide** stop request. That makes these tests frame drivers
+    // exactly like the runtime and platform tests, so they have to take the same seam lock —
+    // otherwise a running embedded loop steals a stop request another test just made (its loop
+    // then never ends) or a trigger another test just injected (its frame reports zero
+    // dispatched). Both were measured as intermittent failures in the full suite, and both
+    // disappear when this lock is held.
+    let seam = crate::platform::stop::TEST_SEAM_SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    (local, seam)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn test_guard() -> crate::compat::MutexGuard<'static, ()> {
+    fn test_guard() -> (crate::compat::MutexGuard<'static, ()>, std::sync::MutexGuard<'static, ()>)
+    {
         embedded_test_guard()
     }
 

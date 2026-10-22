@@ -7,7 +7,7 @@
 //! that lists navigation items (icon + label). It supports open/close state,
 //! item selection, and emits signals for opened, closed, and item_selected events.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -16,6 +16,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_f32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, IconItemError, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -305,7 +306,7 @@ impl Draw for NavigationDrawer {
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("navigation_drawer");
+        let theme = crate::style::resolved_theme_style_shared("navigation_drawer");
         // `navigation_drawer` is absent from `WidgetRole::for_kind_name`'s table, so it
         // classifies as `Surface` and resolves to `theme.colors.background` — the window's
         // own fill. A panel painted in that colour would be byte-identical to the frame
@@ -404,7 +405,7 @@ impl Draw for NavigationDrawer {
         context.fill_rect(header_rect, header_color);
 
         // Draw header title text
-        let font = Font::new("sans-serif", 16.0, true, false);
+        let font = role_font(style, 16.0).with_bold(true);
         let header_text = "Navigation";
         let metrics = context.measure_text(header_text, &font);
         let header_text_x = rect.x + 16;
@@ -421,8 +422,8 @@ impl Draw for NavigationDrawer {
 
         // Draw items vertically
         let item_height: u32 = 48;
-        let item_font = Font::new("sans-serif", 14.0, false, false);
-        let icon_font = Font::new("sans-serif", 16.0, false, false);
+        let item_font = role_font(style, 14.0);
+        let icon_font = role_font(style, 16.0);
         let item_metrics = context.measure_text("A", &item_font);
         let start_y = rect.y + header_height as i32;
 

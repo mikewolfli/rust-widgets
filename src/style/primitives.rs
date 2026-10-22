@@ -542,6 +542,7 @@ impl WidgetStyle {
     /// Sets the padding.
     pub fn with_padding(mut self, p: Padding) -> Self {
         self.padding = p;
+        self.theme_derived = false;
         self
     }
     /// Sets the padding from a four-level cascade.
@@ -551,6 +552,7 @@ impl WidgetStyle {
     /// to re-state the two sides that did not change.
     pub fn with_padding_spec(mut self, spec: PaddingSpec) -> Self {
         self.padding = spec.resolve();
+        self.theme_derived = false;
         self
     }
     /// Sets the gap between this control's indicator and its label.
@@ -564,21 +566,25 @@ impl WidgetStyle {
     /// Sets the margin.
     pub fn with_margin(mut self, m: Margin) -> Self {
         self.margin = m;
+        self.theme_derived = false;
         self
     }
     /// Sets the shadow.
     pub fn with_shadow(mut self, s: Shadow) -> Self {
         self.shadow = Some(s);
+        self.theme_derived = false;
         self
     }
     /// Sets the minimum touch target size (BLUE8 P4-4).
     pub fn with_touch_target(mut self, target: Size) -> Self {
         self.touch_target = Some(target);
+        self.theme_derived = false;
         self
     }
     /// Sets the background gradient.
     pub fn with_gradient(mut self, g: Gradient) -> Self {
         self.background_gradient = Some(g);
+        self.theme_derived = false;
         self
     }
     /// Sets the opacity (CSS `opacity`).
@@ -587,6 +593,7 @@ impl WidgetStyle {
     /// cannot leave `NaN` in the public [`WidgetStyle::opacity`] state (D09-STYLE-04).
     pub fn with_opacity(mut self, opacity: f32) -> Self {
         self.opacity = Some(normalized_opacity(opacity));
+        self.theme_derived = false;
         self
     }
 

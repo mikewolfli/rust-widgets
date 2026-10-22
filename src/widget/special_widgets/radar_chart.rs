@@ -602,7 +602,7 @@ impl RadarChart {
 
     /// Draws the "no data" caption.
     fn draw_placeholder(&self, context: &mut RenderContext, rect: Rect) {
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             rect,
             "No data",
             &role_font(self.style(), 12.0),
@@ -699,7 +699,13 @@ impl RadarChart {
                 metrics.height as i32,
                 rect,
             );
-            context.draw_text_fitted(bounds, label, &font, label_ink, HorizontalAlignment::Left);
+            context.draw_text_fitted_cow(
+                bounds,
+                label,
+                &font,
+                label_ink,
+                HorizontalAlignment::Left,
+            );
         }
     }
 
@@ -770,7 +776,7 @@ impl RadarChart {
             let text_x = x + SWATCH as i32 + 6;
             let row =
                 Rect::new(text_x, y, (rect.x + rect.width as i32 - text_x).max(0) as u32, SWATCH);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 row,
                 &label,
                 &font,

@@ -99,16 +99,14 @@ impl CartesianLayout {
 /// derived — a series colour is still whatever the caller supplied, because it identifies data
 /// rather than framing it (rule #108, class ③).
 pub(crate) fn axis_chrome() -> (Color, Color, Color) {
-    // The plot sits on the chart's own surface; fall back to a light one when no theme is
-    // active, which is where the previous literals came from.
-    let surface = crate::style::theme_manager()
-        .current_theme()
-        .map(|active| active.colors.background)
-        .unwrap_or(Color { r: 255, g: 255, b: 255, a: 255 });
-    let ink = crate::style::theme_manager()
-        .current_theme()
-        .map(|active| active.colors.foreground)
-        .unwrap_or(Color { r: 0, g: 0, b: 0, a: 255 });
+    axis_chrome_palette()
+}
+
+/// The surface/ink pair every chart's chrome derives from, read once per call.
+fn axis_chrome_palette() -> (Color, Color, Color) {
+    let (surface, ink) = crate::style::palette_shared()
+        .map(|colors| (colors.background, colors.foreground))
+        .unwrap_or((Color { r: 255, g: 255, b: 255, a: 255 }, Color { r: 0, g: 0, b: 0, a: 255 }));
     (surface.blend(&ink, 0.45), surface.blend(&ink, 0.70), surface.blend(&ink, 0.16))
 }
 
@@ -121,14 +119,9 @@ pub(crate) fn axis_chrome() -> (Color, Color, Color) {
 /// file at a time. This is the same derivation, named once (rule #51: a shared abstraction
 /// earns its place by removing a real duplication, and this one removes four).
 pub(crate) fn axis_chrome_color(strength: f32) -> Color {
-    let surface = crate::style::theme_manager()
-        .current_theme()
-        .map(|active| active.colors.background)
-        .unwrap_or(Color { r: 255, g: 255, b: 255, a: 255 });
-    let ink = crate::style::theme_manager()
-        .current_theme()
-        .map(|active| active.colors.foreground)
-        .unwrap_or(Color { r: 0, g: 0, b: 0, a: 255 });
+    let (surface, ink) = crate::style::palette_shared()
+        .map(|colors| (colors.background, colors.foreground))
+        .unwrap_or((Color { r: 255, g: 255, b: 255, a: 255 }, Color { r: 0, g: 0, b: 0, a: 255 }));
     surface.blend(&ink, strength)
 }
 
@@ -300,8 +293,13 @@ pub fn draw_x_ticks(
         // vertically: `plot_y + plot_h + 16` is below the plot by construction, so a plot
         // that fills its control drew the axis row outside the control. Clamping both to the
         // layout means the row is inside the rectangle the layout reserved for it.
+        // The right clamp subtracts the label's own width; clamping the *origin* to the plot's
+        // right edge let the last tick's label start there and paint past both the margin and the
+        // legend column.
         let label_width = (label.chars().count() as f32 * 10.0 * 0.6).max(10.0);
-        let label_x = (x - label_width / 2.0).clamp(layout.plot_x, layout.plot_x + layout.plot_w);
+        let min_x = layout.plot_x;
+        let max_x = (layout.plot_x + layout.plot_w - label_width).max(min_x);
+        let label_x = (x - label_width / 2.0).clamp(min_x, max_x);
         let label_y = (layout.plot_y + layout.plot_h + 16.0)
             .min(layout.plot_y + layout.plot_h + layout.tick_label_height());
         context.draw_text(&label, Point::from_f32(label_x, label_y), 10.0, label_color);

@@ -379,6 +379,7 @@ impl WidgetProperties for ProgressBar {
                 Ok(CapabilityValue::String(orientation_to_str(self.orientation()).to_string()))
             }
             "inverted_appearance" => Ok(CapabilityValue::Bool(self.is_inverted_appearance())),
+            "indeterminate" => Ok(CapabilityValue::Bool(self.is_indeterminate())),
             "direction" => {
                 Ok(CapabilityValue::String(text_direction_to_str(self.direction()).to_string()))
             }
@@ -413,6 +414,10 @@ impl WidgetProperties for ProgressBar {
                 self.set_inverted_appearance(expect_bool(value)?);
                 Ok(())
             }
+            "indeterminate" => {
+                self.set_indeterminate(expect_bool(value)?);
+                Ok(())
+            }
             "direction" => {
                 self.set_direction(expect_text_direction(value)?);
                 Ok(())
@@ -433,6 +438,7 @@ impl WidgetProperties for ProgressBar {
             "text_visible",
             "orientation",
             "inverted_appearance",
+            "indeterminate",
             "direction",
             "progress",
             BASE_PROPERTY_NAMES
@@ -499,7 +505,7 @@ impl Draw for ProgressBar {
         // done", and that reading is carried by its *extent*, not by its hue. Hardcoding it
         // meant a light and a dark window showed the same blue bar, so the switch did
         // nothing.
-        let themed = crate::style::resolved_theme_style("progress_bar");
+        let themed = crate::style::resolved_theme_style_shared("progress_bar");
         let fill = style
             .background_color
             .filter(|_| !style.theme_derived)
@@ -648,7 +654,7 @@ impl Draw for ProgressBar {
         if !text.is_empty() {
             // The value label takes the **effective font** — the resolved theme/caller font — so the
             // theme body font and the user's text scale reach it (D09-STYLE-01).
-            context.draw_text_line(
+            context.draw_text_line_cow(
                 rect,
                 &text,
                 effective_font(style),
@@ -890,7 +896,7 @@ mod tests {
     }
 
     fn fill_color() -> Color {
-        crate::style::resolved_theme_style("progress_bar")
+        crate::style::resolved_theme_style_shared("progress_bar")
             .and_then(|resolved| resolved.background_color)
             .or_else(|| crate::style::semantic_color(crate::style::SemanticColor::Info))
             .unwrap_or(Color::rgb(0, 120, 215))

@@ -562,7 +562,7 @@ impl Draw for Dropdown {
         };
         // Fitted, so a selection longer than the field is elided rather than drawn under the
         // indicator — the box it is given is the one the indicator left.
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             Rect::new(
                 geometry.label_box.x,
                 label_line.y,
@@ -610,8 +610,15 @@ impl Draw for Dropdown {
             // The row's own line box, for the same reason as the collapsed field above: a
             // halved height here places the glyph box's top edge on the row's middle line.
             let item_line = context.text_line(item_geo, font);
-            context.draw_text(
-                Point::new(item_x, item_line.y),
+            // Fitted to the row: the collapsed value was fitted but the expanded rows were not,
+            // so a long item label painted past the popup (which is not clipped).
+            context.draw_text_fitted_cow(
+                Rect::new(
+                    item_x,
+                    item_line.y,
+                    item_geo.width.saturating_sub((PADDING * 2) as u32),
+                    item_line.height.max(1),
+                ),
                 &self.items[i],
                 font,
                 item_color,

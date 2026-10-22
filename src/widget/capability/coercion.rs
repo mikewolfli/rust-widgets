@@ -179,6 +179,50 @@ pub fn expect_u32(value: CapabilityValue) -> Result<u32, CapabilityAccessError> 
     u32::try_from(raw).map_err(|_| CapabilityAccessError::TypeMismatch)
 }
 
+/// Extracts an ordered list of strings from a `Tuple` payload.
+///
+/// The list kinds (`StringList`, `NumberList`) are carried as `Tuple` of scalars, so this is the
+/// one place that turns that carrier into the Rust vector a control stores. A non-string element
+/// refuses the whole list rather than being skipped or stringified.
+pub fn expect_string_list(
+    value: CapabilityValue,
+) -> Result<crate::compat::Vec<crate::compat::String>, CapabilityAccessError> {
+    match value {
+        CapabilityValue::Tuple(items) => {
+            let mut out = crate::compat::Vec::with_capacity(items.len());
+            for item in items {
+                out.push(expect_string(item)?);
+            }
+            Ok(out)
+        }
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    }
+}
+
+/// Extracts an ordered list of finite numbers from a `Tuple` payload.
+///
+/// Integers and floats are both accepted per element (the numeric-widening rule the scalar
+/// extractors state); a non-finite float refuses the list, because a control cannot draw it and a
+/// document cannot express it.
+pub fn expect_number_list(
+    value: CapabilityValue,
+) -> Result<crate::compat::Vec<f64>, CapabilityAccessError> {
+    match value {
+        CapabilityValue::Tuple(items) => {
+            let mut out = crate::compat::Vec::with_capacity(items.len());
+            for item in items {
+                let number = expect_f64(item)?;
+                if !number.is_finite() {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                }
+                out.push(number);
+            }
+            Ok(out)
+        }
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Date / time extractors
 // ---------------------------------------------------------------------------

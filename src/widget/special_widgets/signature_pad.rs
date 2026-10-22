@@ -695,7 +695,7 @@ impl Draw for SignaturePad {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("signature_pad");
+        let theme = crate::style::resolved_theme_style_shared("signature_pad");
         // `signature_pad` is absent from `WidgetRole::for_kind_name`'s table, so it classifies
         // as `Surface` and resolves to `theme.colors.background` — the window's own fill. A pad
         // filled with that colour is byte-identical to the frame behind it, which is why

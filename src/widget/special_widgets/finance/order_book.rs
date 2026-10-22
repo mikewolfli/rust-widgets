@@ -167,11 +167,20 @@ impl OrderBookWidget {
 
     /// The levels shown on one side, best first, capped at the depth.
     pub fn levels(&self, side: BookSide) -> Vec<BookLevel> {
+        self.level_slice(side).to_vec()
+    }
+
+    /// A borrowed view of the levels drawn for `side`.
+    ///
+    /// The draw and hit-test paths only read the levels, so they must not pay for the `Vec`
+    /// `levels()` builds. `row_at` called `levels()` four times per pointer move and `draw`
+    /// five to six times per frame, copying the same handful of rows each time.
+    fn level_slice(&self, side: BookSide) -> &[BookLevel] {
         let levels = match side {
             BookSide::Bid => self.book.bids(),
             BookSide::Ask => self.book.asks(),
         };
-        levels.iter().take(self.depth).copied().collect()
+        &levels[..levels.len().min(self.depth)]
     }
 
     /// The precision to draw prices at.
@@ -182,7 +191,7 @@ impl OrderBookWidget {
         // Infer from the levels, the same way the K-line pane infers from its bars: a
         // feed's precision is a property of the data, not a setting.
         for side in [BookSide::Bid, BookSide::Ask] {
-            for level in self.levels(side) {
+            for level in self.level_slice(side) {
                 if !level.price.is_finite() {
                     continue;
                 }
@@ -228,12 +237,12 @@ impl OrderBookWidget {
             return None;
         }
         let row = (offset / row_height) as usize;
-        let bid_rows = self.levels(BookSide::Bid).len();
+        let bid_rows = self.level_slice(BookSide::Bid).len();
         if row < bid_rows {
             return Some((BookSide::Bid, row));
         }
-        let ask_row = row - self.levels(BookSide::Bid).len();
-        if ask_row < self.levels(BookSide::Ask).len() {
+        let ask_row = row - bid_rows;
+        if ask_row < self.level_slice(BookSide::Ask).len() {
             return Some((BookSide::Ask, ask_row));
         }
         None
@@ -378,7 +387,7 @@ impl Draw for OrderBookWidget {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("order_book");
+        let theme = crate::style::resolved_theme_style_shared("order_book");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
         let (window_fill, foreground, secondary) = {
@@ -417,7 +426,7 @@ impl Draw for OrderBookWidget {
         // [`draw_empty_pane`], so the message and its contrast floor are one derivation across
         // every chart in this family rather than a second copy here.
         let has_levels =
-            [BookSide::Bid, BookSide::Ask].iter().any(|side| !self.levels(*side).is_empty());
+            [BookSide::Bid, BookSide::Ask].iter().any(|side| !self.level_slice(*side).is_empty());
         if !has_levels {
             let area = PlotArea::of(geometry);
             // The empty pane's frame follows the table's own row rule rather than the plot
@@ -445,9 +454,12 @@ impl Draw for OrderBookWidget {
         let bar_span = (geometry.width as i32 / 2 - 40).max(8);
 
         // Bids first, from the top down; asks follow below them.
+        // One font for the ladder: `role_font` allocates its family `String`, and it was rebuilt
+        // twice per level per frame.
+        let level_font = role_font(self.style(), 11.0);
         let mut row = 0;
         for side in [BookSide::Bid, BookSide::Ask] {
-            let levels = self.levels(side);
+            let levels = self.level_slice(side);
             let color = if side == BookSide::Bid { self.bid_color } else { self.ask_color };
             for (index, level) in levels.iter().enumerate() {
                 let y = geometry.y + row * row_height;
@@ -492,7 +504,7 @@ impl Draw for OrderBookWidget {
                 context.draw_text(
                     Point { x: price_x, y: text_y },
                     &price_text,
-                    &role_font(self.style(), 11.0),
+                    &level_font,
                     color,
                     HorizontalAlignment::Left,
                 );
@@ -503,7 +515,7 @@ impl Draw for OrderBookWidget {
                     context.draw_text(
                         Point { x: quantity_x, y: text_y },
                         &quantity_text,
-                        &role_font(self.style(), 11.0),
+                        &level_font,
                         secondary,
                         HorizontalAlignment::Left,
                     );
@@ -514,7 +526,7 @@ impl Draw for OrderBookWidget {
 
         // The spread, drawn across the middle where the two sides meet.
         if let Some(spread) = self.book.spread() {
-            let y = geometry.y + self.levels(BookSide::Bid).len() as i32 * row_height;
+            let y = geometry.y + self.level_slice(BookSide::Bid).len() as i32 * row_height;
             context.draw_line_stroke(
                 Point { x: geometry.x, y },
                 Point { x: geometry.x + geometry.width as i32, y },

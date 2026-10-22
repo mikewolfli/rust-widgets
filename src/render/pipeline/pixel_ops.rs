@@ -718,7 +718,13 @@ pub(crate) fn write_pixel_with_mode(
     coverage: f32,
 ) {
     if matches!(mode, BlendMode::Normal) {
-        if coverage >= 1.0 {
+        // A fully covered **opaque** pixel can be stored verbatim. A translucent one cannot: the
+        // frame is straight (non-premultiplied) RGBA and is premultiplied only at blit time, so
+        // storing the colour bytes and dropping the destination leaves the backdrop's RGB under a
+        // partial alpha — a shadow or scrim drew a see-through hole in whatever it covered. Route
+        // translucent pixels through the source-over composite, which is exactly what the
+        // antialiased edge of the same shape already did.
+        if coverage >= 1.0 && color.a == 255 {
             set_pixel(frame, width, x, y, color);
         } else {
             blend_pixel_with_mode(frame, width, x, y, color, coverage, BlendMode::Normal);

@@ -454,7 +454,7 @@ impl Draw for ColorPicker {
         // grey, so the panel did not move with the appearance at all and a dark-theme picker was
         // a white card.
         let style = self.style();
-        let theme = crate::style::resolved_theme_style("color_picker");
+        let theme = crate::style::resolved_theme_style_shared("color_picker");
         let panel = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -526,7 +526,7 @@ impl Draw for ColorPicker {
             rect.width.saturating_sub(16),
             hex_height.max(1) as u32,
         );
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             hex_band,
             &hex_text,
             hex_font,

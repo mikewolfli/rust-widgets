@@ -624,7 +624,7 @@ impl Draw for CheckBox {
             } else {
                 requested.legible_on(page, 4.5).with_alpha(150)
             };
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(
                     checkbox_rect.x + checkbox_rect.width as i32 + gap,
                     line.y,

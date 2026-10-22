@@ -745,7 +745,7 @@ impl Draw for ToolBar {
             // honour the theme body font and the user's text scale (D09-STYLE-01).
             let font = effective_font(style);
             let line = context.text_line(item_band, font);
-            context.draw_text_fitted(line, item.text(), font, fg, HorizontalAlignment::Center);
+            context.draw_text_fitted_cow(line, item.text(), font, fg, HorizontalAlignment::Center);
         }
     }
 }

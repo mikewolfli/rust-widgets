@@ -362,6 +362,43 @@ impl PieChart {
             }
         }
     }
+
+    /// Paints the empty state: a panel and "No data".
+    ///
+    /// Every other chart in the crate draws its frame plus a message when it has no series,
+    /// because the no-data state is what a chart shows before its first value and is the
+    /// state most easily mistaken for a rendering failure. This control used to return
+    /// before painting anything, leaving a hole in the parent.
+    fn draw_empty_state(&self, context: &mut RenderContext, rect: Rect) {
+        let style = self.base.style();
+        let theme = crate::style::resolved_theme_style_shared("pie_chart");
+        let (window_fill, foreground) = {
+            let manager = crate::style::theme_manager();
+            match manager.current_theme() {
+                Some(active) => (active.colors.background, active.colors.foreground),
+                None => (Color::WHITE, Color::BLACK),
+            }
+        };
+        let surface = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(window_fill);
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(foreground);
+        context.fill_rect(rect, surface);
+        context.draw_rect(rect, surface.blend(&ink, 0.2));
+        let font = role_font(style, 12.0);
+        let line = context.text_line(rect, &font);
+        context.draw_text_fitted_cow(
+            line,
+            "No data",
+            &font,
+            ink.with_alpha(160),
+            HorizontalAlignment::Center,
+        );
+    }
 }
 
 /// Nudges a text box of `width`×`height` at `(x, y)` back inside `rect`.
@@ -447,13 +484,18 @@ impl WidgetProperties for PieChart {
 impl Draw for PieChart {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
-        if rect.width == 0 || rect.height == 0 || self.slices.is_empty() {
+        if rect.width == 0 || rect.height == 0 {
+            return;
+        }
+        if self.slices.is_empty() {
+            self.draw_empty_state(context, rect);
             return;
         }
 
         let is_enabled = self.base.is_enabled();
         let total = self.total_value();
         if total <= 0.0 || !total.is_finite() {
+            self.draw_empty_state(context, rect);
             return;
         }
 
@@ -548,7 +590,7 @@ impl Draw for PieChart {
                     // on the dark appearance and 2.57:1 on the light one).
                     let ink =
                         if clamped { slice_color.contrast_color() } else { slice_label_color };
-                    context.draw_text_fitted(
+                    context.draw_text_fitted_cow(
                         bounds,
                         &slice.label,
                         &label_font,
@@ -586,7 +628,7 @@ impl Draw for PieChart {
                     // the slice was the least readable thing on it. The slice colour is still
                     // data and is untouched — only the ink over it is decided per slice, which
                     // is how a chart keeps both the encoding and the label.
-                    context.draw_text_fitted(
+                    context.draw_text_fitted_cow(
                         bounds,
                         &pct_text,
                         &pct_font,

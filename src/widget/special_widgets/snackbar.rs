@@ -318,7 +318,7 @@ impl Draw for Snackbar {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("snackbar");
+        let theme = crate::style::resolved_theme_style_shared("snackbar");
         // `Snackbar` is built on `WidgetKind::StatusBar` and classifies as
         // `Surface`, whose background is `theme.colors.background` — byte-identical
         // to the window behind it. The panel's own fill is therefore a step toward
@@ -360,7 +360,7 @@ impl Draw for Snackbar {
         let bar_text = on_inverse_surface;
         // The action is a brand action, so it reads the theme's primary token rather
         // than a literal blue.
-        let action_background = crate::style::resolved_theme_style("button")
+        let action_background = crate::style::resolved_theme_style_shared("button")
             .and_then(|button| button.background_color)
             .unwrap_or_else(|| background.blend(&text_color, 0.55));
         let action_border = action_background.blend(&text_color, 0.18);
@@ -411,11 +411,24 @@ impl Draw for Snackbar {
         // — so the theme body font and the user's text scale reach them (D09-STYLE-01).
         let message_font = effective_font(style);
         let message_h = context.measure_text("M", message_font).height;
+        // The message owns the band up to the action button: it used to be drawn at its full
+        // measured width, so a longer message ran under the action label and past the bar.
+        let action_rect = self.action_rect();
         if !self.message.is_empty() {
-            context.draw_text(
-                Point::new(
-                    bar.x + SNACKBAR_PADDING_H,
+            let message_x = bar.x + SNACKBAR_PADDING_H;
+            let message_right = action_rect
+                .map(|action| action.x - SNACKBAR_PADDING_H)
+                .unwrap_or(bar.x + bar.width as i32 - SNACKBAR_PADDING_H);
+            let message_width = (message_right - message_x).max(0) as u32;
+            // Compensate the fitted draw's own inset, so the message starts at the padding and may
+            // use the whole band instead of losing six pixels to the fit margin.
+            let fit_inset = crate::render::TEXT_FIT_MARGIN as i32;
+            context.draw_text_fitted_cow(
+                Rect::new(
+                    message_x - fit_inset,
                     bar.y + (bar.height as i32 - message_h as i32) / 2,
+                    message_width + 2 * fit_inset as u32,
+                    message_h.max(1),
                 ),
                 &self.message,
                 message_font,
@@ -424,12 +437,12 @@ impl Draw for Snackbar {
             );
         }
 
-        if let Some(action_rect) = self.action_rect() {
+        if let Some(action_rect) = action_rect {
             context.fill_rect(action_rect, action_background);
             context.draw_rect(action_rect, action_border);
             if let Some(label) = &self.action_label {
                 if !label.is_empty() {
-                    context.draw_text_fitted(
+                    context.draw_text_fitted_cow(
                         Rect::new(
                             action_rect.x + 4,
                             action_rect.y + (action_rect.height as i32 - message_h as i32) / 2,

@@ -592,8 +592,8 @@ impl Draw for RichEdit {
         // The fallback name matters: the role table is keyed on **role** names, so `rich_edit`
         // (the factory name) is not in it and would classify as `Surface`, i.e. the window fill.
         // `richedit` is, and resolves to the editable interior plus the theme's foreground.
-        let theme = crate::style::resolved_theme_style("rich_edit")
-            .or_else(|| crate::style::resolved_theme_style("richedit"));
+        let theme = crate::style::resolved_theme_style_shared("rich_edit")
+            .or_else(|| crate::style::resolved_theme_style_shared("richedit"));
         // The window fill, read as its own lock acquisition and copied out as a value, so the
         // guard is dropped before anything else touches the theme.
         let window_fill = {

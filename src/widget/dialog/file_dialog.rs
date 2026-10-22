@@ -609,7 +609,7 @@ impl Draw for FileDialog {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
-        let theme = crate::style::resolved_theme_style("file_dialog");
+        let theme = crate::style::resolved_theme_style_shared("file_dialog");
         // The window fill and the accent are read as their own lock acquisition and copied
         // out as values, so the guard is dropped before anything else touches the theme —
         // the global manager's mutex is not re-entrant.
@@ -678,7 +678,7 @@ impl Draw for FileDialog {
         if !self.title.is_empty() {
             let title_font = font;
             let title_line = context.text_line(title_bar_band, title_font);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(
                     rect.x + 8,
                     title_line.y,
@@ -741,7 +741,7 @@ impl Draw for FileDialog {
                 list_rect.height,
             );
             let placeholder_line = context.text_line(placeholder_band, placeholder_font);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(
                     placeholder_band.x,
                     placeholder_line.y,
@@ -772,7 +772,7 @@ impl Draw for FileDialog {
             let sel_label_font = font;
             let sel_band = Rect::new(rect.x + 10, sel_y, 66, sel_h as u32);
             let sel_line = context.text_line(sel_band, sel_label_font);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 Rect::new(sel_band.x, sel_line.y, sel_band.width, sel_line.height.max(1)),
                 &sel_label,
                 sel_label_font,
@@ -794,7 +794,7 @@ impl Draw for FileDialog {
                     fname_rect.height,
                 );
                 let fname_line = context.text_line(fname_band, fname_font);
-                context.draw_text_fitted(
+                context.draw_text_fitted_cow(
                     fname_line,
                     fname,
                     fname_font,
@@ -816,7 +816,13 @@ impl Draw for FileDialog {
             );
             if !fname.is_empty() && band.height > 0 {
                 let line = context.text_line(band, fname_font);
-                context.draw_text_fitted(line, fname, fname_font, ink, HorizontalAlignment::Left);
+                context.draw_text_fitted_cow(
+                    line,
+                    fname,
+                    fname_font,
+                    ink,
+                    HorizontalAlignment::Left,
+                );
             }
         }
         // OK/Cancel buttons. The pair is right-aligned inside the frame through the shared
@@ -837,11 +843,17 @@ impl Draw for FileDialog {
         // contrast colour as the label — the same pairing `WidgetRole::Primary` uses.
         let ok_rect = row.buttons[0];
         context.fill_rect(ok_rect, accent);
-        context.draw_text_line(ok_rect, &labels[0], font, accent_ink, HorizontalAlignment::Center);
+        context.draw_text_line_cow(
+            ok_rect,
+            &labels[0],
+            font,
+            accent_ink,
+            HorizontalAlignment::Center,
+        );
         let cancel_rect = row.buttons[1];
         context.fill_rect(cancel_rect, surface.blend(&ink, 0.1));
         context.draw_rect(cancel_rect, border);
-        context.draw_text_line(cancel_rect, &labels[1], font, ink, HorizontalAlignment::Center);
+        context.draw_text_line_cow(cancel_rect, &labels[1], font, ink, HorizontalAlignment::Center);
     }
 }
 

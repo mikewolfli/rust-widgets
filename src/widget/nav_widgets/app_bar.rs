@@ -280,7 +280,7 @@ impl Draw for AppBar {
         // `resolved_theme_style`, so none is held across the draw or across another
         // accessor — the global manager's mutex is not re-entrant.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("app_bar");
+        let theme = crate::style::resolved_theme_style_shared("app_bar");
         let background = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -412,8 +412,21 @@ impl Draw for AppBar {
             };
             let title_y = rect.y + (bar_height as i32 - metrics.height as i32) / 2;
 
-            context.draw_text(
-                Point::new(title_x, title_y),
+            // Fitted between the two reserves. The overflow branch used to move the *origin* and
+            // then draw the full width, so a long localised title still ran under the trailing
+            // action.
+            //
+            // The band is widened by the fitted draw's own inset so a title that fits starts at
+            // `title_x` (and therefore stays centred) instead of three pixels to its right; only
+            // the elided case uses the extra room.
+            let fit_inset = crate::render::TEXT_FIT_MARGIN as i32;
+            context.draw_text_fitted_cow(
+                Rect::new(
+                    title_x - fit_inset,
+                    title_y,
+                    (available_width + 2 * fit_inset).max(1) as u32,
+                    metrics.height.max(1),
+                ),
                 &self.title,
                 &title_font,
                 text_color,
@@ -434,6 +447,7 @@ impl Draw for AppBar {
                 rect.right() - metrics.width as i32 - APP_BAR_ACTION_INSET
             };
             let action_y = rect.y + (bar_height as i32 - metrics.height as i32) / 2;
+            let fit_inset = crate::render::TEXT_FIT_MARGIN as i32;
 
             // The action is the bar's one accented affordance: when the app bar is
             // enabled it is tinted toward the resolved ink so it reads as an action
@@ -447,8 +461,13 @@ impl Draw for AppBar {
                     crate::widget::BaseWidget::disabled_ink_weight(),
                 )
             };
-            context.draw_text(
-                Point::new(action_x, action_y),
+            context.draw_text_fitted_cow(
+                Rect::new(
+                    action_x - fit_inset,
+                    action_y,
+                    (metrics.width as i32 + 2 * fit_inset).max(1) as u32,
+                    metrics.height.max(1),
+                ),
                 &self.action_text,
                 &action_font,
                 action_color,

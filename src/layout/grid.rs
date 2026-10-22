@@ -684,8 +684,12 @@ impl GridLayout {
             let mut indices: Vec<usize> = (0..self.cols as usize).collect();
             indices.sort_by(|&a, &b| self.column_stretches[b].cmp(&self.column_stretches[a]));
             let mut remaining = remainder_w;
-            for &idx in &indices {
-                let add = remaining / (self.cols - idx as u32).max(1);
+            for (slot, &idx) in indices.iter().enumerate() {
+                // Divide by the number of buckets still to be served, not by the column index: with
+                // four equal columns and 3 px left, `cols - idx` gave the first (largest-stretch)
+                // column nothing and the last column one, the opposite of the intent.
+                let buckets_left = (indices.len() - slot) as u32;
+                let add = remaining / buckets_left.max(1);
                 if add > 0 {
                     col_widths[idx] += add;
                     remaining -= add;

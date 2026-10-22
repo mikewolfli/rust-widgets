@@ -140,6 +140,8 @@ pub fn value_kind_token(kind: PropertyValueKind) -> &'static str {
         PropertyValueKind::Rect => "rect",
         PropertyValueKind::IconSpec => "icon-spec",
         PropertyValueKind::Records => "records",
+        PropertyValueKind::StringList => "string-list",
+        PropertyValueKind::NumberList => "number-list",
     }
 }
 
@@ -160,6 +162,8 @@ pub fn value_kind_from_token(token: &str) -> Option<PropertyValueKind> {
         "rect" => Some(PropertyValueKind::Rect),
         "icon-spec" => Some(PropertyValueKind::IconSpec),
         "records" => Some(PropertyValueKind::Records),
+        "string-list" => Some(PropertyValueKind::StringList),
+        "number-list" => Some(PropertyValueKind::NumberList),
         _ => None,
     }
 }

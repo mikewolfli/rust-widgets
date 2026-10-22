@@ -503,7 +503,7 @@ impl Draw for LCDNumber {
         // manager's lock internally, so no guard is held across either call or the
         // draw (the mutex is not re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("lcd_number");
+        let theme = crate::style::resolved_theme_style_shared("lcd_number");
         let theme_background = crate::style::theme_manager()
             .current_theme()
             .map(|theme| theme.colors.background)

@@ -246,6 +246,11 @@ impl TableWidget {
     ///
     /// The fast path keeps a table with no overrides on the original arithmetic, so its snapshot and
     /// every geometry assertion are unchanged.
+    ///
+    /// Test-only now: the paint path accumulates the same sum in one pass, and the hit test
+    /// (`row_at_point`) walks its own cursor, so nothing in production re-derives a column offset
+    /// from zero per cell. Kept as the reference the accumulation is asserted against.
+    #[cfg(test)]
     fn column_offset(&self, index: usize, content_width: u32) -> u32 {
         if self.column_widths.is_empty() {
             let col_w = if self.column_count() > 0 {
@@ -643,7 +648,7 @@ impl Draw for TableWidget {
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("table");
+        let theme = crate::style::resolved_theme_style_shared("table");
         let mut surface = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -657,10 +662,10 @@ impl Draw for TableWidget {
         // painted in that colour would be byte-identical to the frame behind it, so a resolved
         // surface equal to the window fill is re-derived a visible step away from it, the same
         // distinction `Colors::input_background` draws for a field.
-        let window_fill = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.background)
-            .unwrap_or(Color::WHITE);
+        // One palette read for the surface, grid and accent roles. Each of these used to take
+        // the global theme lock separately, so every table took three locks per frame.
+        let palette = crate::style::palette_shared();
+        let window_fill = palette.as_ref().map(|colors| colors.background).unwrap_or(Color::WHITE);
         if surface == window_fill {
             surface = window_fill.blend(&ink, 0.08);
         }
@@ -675,17 +680,14 @@ impl Draw for TableWidget {
         // because the grid line was a blend of the surface and the ring read `secondary`;
         // reading the two roles keeps them distinct in every appearance, and lets a theme
         // dim its grid lines without touching every control that draws one.
-        let grid_ink = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.outline_variant)
+        let grid_ink = palette
+            .as_ref()
+            .map(|colors| colors.outline_variant)
             .filter(|resolved| *resolved != surface)
             .unwrap_or_else(|| surface.blend(&ink, 0.12));
         // The focused row is a selection state, so it reads the theme's accent token and is
         // laid over the surface, which keeps it legible in either appearance.
-        let accent = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.primary)
-            .unwrap_or(Color::PRIMARY);
+        let accent = palette.as_ref().map(|colors| colors.primary).unwrap_or(Color::PRIMARY);
         let focused_bg = surface.blend(&accent, 0.30);
 
         // Draw background and border over the control's own rectangle, so the surface is
@@ -727,23 +729,34 @@ impl Draw for TableWidget {
             // reusable buffer so a model that can lend its cells allocates nothing per frame.
             let font = effective_font(style);
             let mut cell_text = String::new();
+            // Both offsets are accumulated once for the whole paint instead of re-summed per
+            // row/column. With a single `set_row_height`/`set_column_width` override the
+            // accessors walked `0..index` for every call, making one frame O(R² + R·C²) map
+            // lookups; the accumulation below is exactly what those accessors compute, in one
+            // pass, and gives the same geometry.
+            let band = self.rows_band();
+            let mut row_top = band.y;
             for r in 0..row_count {
-                // The row box comes from `row_rect`, the same derivation the hit test reads. It was
-                // a local `let row_h = 20` here and a second one in the press arm, measured from
-                // `rect.y`, so the row drawn and the row clicked were off by the header.
-                let Some(row_box) = self.row_rect(r) else { break };
+                let row_h = self.resolved_row_height(r) as i32;
+                if row_top + row_h > band.y + band.height as i32 {
+                    break;
+                }
+                let row_box = crate::core::Rect::new(band.x, row_top, band.width, row_h as u32);
+                row_top += row_h;
                 let (y, row_h) = (row_box.y, row_box.height as i32);
                 if Some(r) == current_row {
                     context.fill_rect(row_box, focused_bg);
                 } else if Some(r) == self.hovered_row {
                     context.fill_rect(row_box, hovered_bg);
                 }
+                let mut col_x = content.x;
                 for c in 0..col_count {
-                    // The column's box comes from the same two derivations the hit test and the header
-                    // read, so a click, the heading and the cell cannot disagree about which column
-                    // an x belongs to.
+                    // The column's box follows the same composition the hit test and the header
+                    // read, so a click, the heading and the cell cannot disagree about which
+                    // column an x belongs to.
                     let col_w = self.resolved_column_width(c, content.width);
-                    let x = content.x + self.column_offset(c, content.width) as i32;
+                    let x = col_x;
+                    col_x += col_w as i32;
                     cell_text.clear();
                     if model.fill_data(r, c, &mut cell_text) {
                         // The cell is the band: a text origin of `y + row_h / 2` would put the
@@ -753,7 +766,7 @@ impl Draw for TableWidget {
                         // column.
                         let cell = crate::core::Rect::new(x, y, col_w, row_h as u32);
                         if !cell_text.is_empty() {
-                            context.draw_text_fitted(
+                            context.draw_text_fitted_cow(
                                 context.text_line(cell, font),
                                 &cell_text,
                                 font,

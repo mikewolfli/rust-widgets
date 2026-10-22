@@ -802,7 +802,7 @@ impl Carousel {
     /// surface is used as-is rather than re-derived a step away from the window.
     fn chrome_colors(&self) -> (Color, Color, Color) {
         let style = self.base.style();
-        let themed = crate::style::resolved_theme_style("carousel");
+        let themed = crate::style::resolved_theme_style_shared("carousel");
         let themed_bg = themed.as_ref().and_then(|r| r.background_color);
         let themed_border = themed.as_ref().and_then(|r| r.border_color);
         let themed_text = themed.as_ref().and_then(|r| r.text_color);
@@ -870,7 +870,16 @@ impl Draw for Carousel {
         if let Some(neighbour_index) = neighbour {
             // Neighbour first, shifted so it enters from the correct side, then the
             // current page on top of it. Both are clipped to the content area so a
-            // half-dragged page cannot paint over the indicator strip.
+            // half-dragged page cannot paint over the indicator strip. The comment
+            // described this clip before it existed: `draw_page` clips only a child
+            // content widget, while the page panel, body and title were painted at the
+            // offset rectangle with no bound.
+            context.push_clip(
+                content_rect.x,
+                content_rect.y,
+                content_rect.width,
+                content_rect.height,
+            );
             let neighbour_x = (content_rect.x as f32
                 + offset as f32
                 + if offset > 0 { -(rect.width as f32) } else { rect.width as f32 })
@@ -878,15 +887,24 @@ impl Draw for Carousel {
             let neighbour_rect =
                 Rect::new(neighbour_x, content_rect.y, content_rect.width, content_rect.height);
             self.draw_page(context, neighbour_index, neighbour_rect, is_enabled);
-        }
 
-        let current_rect = Rect::new(
-            content_rect.x + offset,
-            content_rect.y,
-            content_rect.width,
-            content_rect.height,
-        );
-        self.draw_page(context, self.current_index, current_rect, is_enabled);
+            let current_rect = Rect::new(
+                content_rect.x + offset,
+                content_rect.y,
+                content_rect.width,
+                content_rect.height,
+            );
+            self.draw_page(context, self.current_index, current_rect, is_enabled);
+            context.pop_clip();
+        } else {
+            let current_rect = Rect::new(
+                content_rect.x + offset,
+                content_rect.y,
+                content_rect.width,
+                content_rect.height,
+            );
+            self.draw_page(context, self.current_index, current_rect, is_enabled);
+        }
 
         if self.indicator_drawn() {
             self.draw_indicator(context, rect);

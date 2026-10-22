@@ -625,7 +625,7 @@ impl Draw for QueryBuilder {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("query_builder");
+        let theme = crate::style::resolved_theme_style_shared("query_builder");
         // `query_builder` is not a control kind in the role table, so it classifies as
         // `Surface`, whose background is `theme.colors.background` — the window's own
         // colour. The builder is therefore a step toward the foreground, so it reads
@@ -656,17 +656,47 @@ impl Draw for QueryBuilder {
 
         let chrome = QueryBuilderChrome { background, border, text_color };
         self.draw_header(context, rect, &chrome);
+        let fonts = QueryBuilderFonts::new();
+        let bottom = rect.y + rect.height as i32;
         for index in 0..self.rows.len() {
-            self.draw_row(context, index, &chrome);
+            let Some(row_rect) = self.row_rect(index) else {
+                break;
+            };
+            // Rows past the control's bottom are not painted: the loop used to run for every
+            // condition in the model, allocating a font per row even for invisible ones.
+            if row_rect.y >= bottom {
+                break;
+            }
+            self.draw_row(context, index, &chrome, &fonts);
         }
         if self.rows.is_empty() {
             context.draw_text(
                 Point::new(rect.x + 10, rect.y + HEADER_HEIGHT as i32 + 20),
                 "No conditions",
-                &Font::simple("Sans", 11.0),
+                &fonts.small,
                 chrome.placeholder_text(),
                 HorizontalAlignment::Left,
             );
+        }
+    }
+}
+
+/// The builder's fonts, built once per paint.
+///
+/// `Font::simple` allocates its family `String`, and `draw_row` built four of them per row per
+/// frame (marker, field, operator, operand).
+struct QueryBuilderFonts {
+    body: Font,
+    small: Font,
+    tiny: Font,
+}
+
+impl QueryBuilderFonts {
+    fn new() -> Self {
+        Self {
+            body: Font::simple("Sans", 13.0),
+            small: Font::simple("Sans", 11.0),
+            tiny: Font::simple("Sans", 10.0),
         }
     }
 }
@@ -775,14 +805,19 @@ impl QueryBuilder {
         // ran five pixels past it, and the 14 px `+` spanned 21..35 in the same 20 px button.
         let chip_font = Font::simple("Sans", 11.0);
         let chip_text_h = context.measure_text("M", &chip_font).height;
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             Rect::new(
                 chip.x + 6,
                 chip.y + (chip.height as i32 - chip_text_h as i32) / 2,
                 chip.width.saturating_sub(12),
                 chip_text_h,
             ),
-            self.conjunction.as_str().to_uppercase().as_str(),
+            // A static upper-case spelling: `to_uppercase()` allocated a `String` on every
+            // repaint to label a two-valued chip.
+            match self.conjunction {
+                FilterConjunction::And => "AND",
+                FilterConjunction::Or => "OR",
+            },
             &chip_font,
             // The label sits on the chip, so it takes the chip's own contrast
             // colour rather than a literal white.
@@ -791,7 +826,7 @@ impl QueryBuilder {
         );
 
         let count_text = format!("{} condition(s)", self.rows.len());
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             Rect::new(
                 chip.x + chip.width as i32 + 10,
                 rect.y + (HEADER_HEIGHT as i32 - chip_text_h as i32) / 2,
@@ -809,7 +844,7 @@ impl QueryBuilder {
         context.fill_rounded_rect(add, 4, chrome.button());
         let add_font = Font::simple("Sans", 14.0);
         let add_text_h = context.measure_text("+", &add_font).height;
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             Rect::new(
                 add.x,
                 add.y + (add.height as i32 - add_text_h as i32) / 2,
@@ -824,7 +859,13 @@ impl QueryBuilder {
     }
 
     /// Draws one condition row: negation, field, operator, operand, remove.
-    fn draw_row(&self, context: &mut RenderContext, index: usize, chrome: &QueryBuilderChrome) {
+    fn draw_row(
+        &self,
+        context: &mut RenderContext,
+        index: usize,
+        chrome: &QueryBuilderChrome,
+        fonts: &QueryBuilderFonts,
+    ) {
         let Some(row_rect) = self.row_rect(index) else {
             return;
         };
@@ -849,7 +890,7 @@ impl QueryBuilder {
             context.draw_text(
                 Point::new(x, row_rect.y + 19),
                 "!",
-                &Font::simple("Sans", 13.0),
+                &fonts.body,
                 chrome.remove(),
                 HorizontalAlignment::Left,
             );
@@ -861,12 +902,12 @@ impl QueryBuilder {
         // wide, so a long field name must elide at 80 rather than spill into the operator. The
         // box top is the old origin (`row_rect.y + 19`), which keeps the label at the same
         // height while the fit supplies the horizontal bound.
-        let field_label =
-            self.fields.get(row.field).map_or("(field)".to_string(), |field| field.label.clone());
-        context.draw_text_fitted(
+        let field_label: &str =
+            self.fields.get(row.field).map_or("(field)", |field| field.label.as_str());
+        context.draw_text_fitted_cow(
             Rect::new(x, row_rect.y + 19, 80, 11),
-            &field_label,
-            &Font::simple("Sans", 11.0),
+            field_label,
+            &fonts.small,
             chrome.text(),
             HorizontalAlignment::Left,
         );
@@ -876,7 +917,7 @@ impl QueryBuilder {
         context.draw_text(
             Point::new(x, row_rect.y + 19),
             row.operator.as_str(),
-            &Font::simple("Sans", 10.0),
+            &fonts.tiny,
             chrome.placeholder_text(),
             HorizontalAlignment::Left,
         );
@@ -886,24 +927,24 @@ impl QueryBuilder {
         let operand_box = Rect::new(x, row_rect.y + 6, row_rect.width.saturating_sub(200), 18);
         context.fill_rect(operand_box, chrome.field());
         context.draw_rect(operand_box, chrome.border);
-        let (text, color) = if row.operand.is_empty() {
-            ("type a value".to_string(), chrome.placeholder_text())
+        let (text, color): (&str, Color) = if row.operand.is_empty() {
+            ("type a value", chrome.placeholder_text())
         } else {
-            (row.operand.clone(), chrome.text())
+            (row.operand.as_str(), chrome.text())
         };
         // The operand is host-supplied too, and it is the value most likely to be long, so it is
         // fitted to its own input box: the placement origin was `operand_box.y + 13`, so the box
         // keeps that top edge and a value wider than the box elides at its trailing edge instead
         // of painting over the row's remove button.
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             Rect::new(
                 operand_box.x + 5,
                 operand_box.y + 13,
                 operand_box.width.saturating_sub(8),
                 11,
             ),
-            &text,
-            &Font::simple("Sans", 11.0),
+            text,
+            &fonts.small,
             color,
             HorizontalAlignment::Left,
         );

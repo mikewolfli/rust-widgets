@@ -20,6 +20,13 @@ struct BoxLayoutItem {
     /// item to the cross size it *asks for* (from [`ChildInfo::hints`]) and places it
     /// within the cross extent — the same split Flutter's `crossAxisAlignment` makes.
     align: Option<Alignment>,
+    /// The cross-axis size used when `align` is set and the hint-aware path has no child info.
+    ///
+    /// `update_with_context` does not receive [`ChildInfo`] (its signature is the trait's), so an
+    /// aligned item used to be stretched there while `arrange` honoured the hint — the same layout
+    /// answered differently through its two entry points. This is the explicit cross size the
+    /// caller can supply for that entry point; `arrange` prefers it over the hint so both agree.
+    cross_size: Option<u32>,
 }
 /// Linear layout that arranges items in one direction.
 #[derive(Debug)]
@@ -94,6 +101,30 @@ impl BoxLayout {
         self.items.iter().find(|item| item.widget_id == Some(widget_id)).and_then(|item| item.align)
     }
 
+    /// The explicit cross-axis size of `widget_id`, or `None` when it uses its hint/stretch.
+    pub fn item_cross_size(&self, widget_id: ObjectId) -> Option<u32> {
+        self.items
+            .iter()
+            .find(|item| item.widget_id == Some(widget_id))
+            .and_then(|item| item.cross_size)
+    }
+
+    /// Sets (or clears, with `None`) the cross size used by an aligned item.
+    ///
+    /// Returns `false` when `widget_id` is not an item of this layout. This is the counterpart of
+    /// [`Self::set_item_alignment`] for [`Layout::update_with_context`], which has no [`ChildInfo`]
+    /// to read a preferred size from. A value larger than the band is clamped, so an aligned item
+    /// can never be placed outside its parent.
+    pub fn set_item_cross_size(&mut self, widget_id: ObjectId, size: Option<u32>) -> bool {
+        match self.items.iter_mut().find(|item| item.widget_id == Some(widget_id)) {
+            Some(item) => {
+                item.cross_size = size;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Updates inter-item spacing.
     pub fn set_spacing(&mut self, spacing: u32) {
         self.spacing = spacing;
@@ -118,6 +149,7 @@ impl BoxLayout {
             constraints: LayoutConstraints::new(0, None),
             policy: SizePolicy::Expanding,
             align: None,
+            cross_size: None,
         });
     }
 
@@ -138,6 +170,7 @@ impl BoxLayout {
             constraints: LayoutConstraints::new(size, Some(size)),
             policy: SizePolicy::Fixed,
             align: None,
+            cross_size: None,
         });
     }
     /// Sets size constraints for an existing widget item.
@@ -380,9 +413,30 @@ impl Layout for BoxLayout {
         let mut cursor_y = rect.y + top as i32;
         for (index, item) in self.items.iter().enumerate() {
             let major = majors.get(index).copied().unwrap_or(0);
+            // An aligned item shrinks to its explicit cross size and is placed within the band;
+            // with no explicit size it keeps stretching, because this entry point has no
+            // `ChildInfo` to ask. The hint-aware `arrange` prefers `cross_size` too, so both
+            // entries agree whenever the caller supplied one.
+            let mut cross = cross;
+            let mut cross_offset = 0u32;
+            if let Some(align) = item.align {
+                if let Some(requested) = item.cross_size {
+                    let band = cross;
+                    cross = requested.min(band);
+                    cross_offset = match align {
+                        Alignment::Center => (band - cross) / 2,
+                        Alignment::Right | Alignment::Bottom => band - cross,
+                        _ => 0,
+                    };
+                }
+            }
             let child_rect = match self.orientation {
-                Orientation::Horizontal => Rect::new(cursor_x, cursor_y, major, cross),
-                Orientation::Vertical => Rect::new(cursor_x, cursor_y, cross, major),
+                Orientation::Horizontal => {
+                    Rect::new(cursor_x, cursor_y.saturating_add(cross_offset as i32), major, cross)
+                }
+                Orientation::Vertical => {
+                    Rect::new(cursor_x.saturating_add(cross_offset as i32), cursor_y, cross, major)
+                }
             };
             if let Some(widget_id) = item.widget_id {
                 // Grown to the device class's minimum touch area, as the flex layout does — the two
@@ -447,8 +501,13 @@ impl Layout for BoxLayout {
             let mut cross = cross_extent;
             let mut cross_offset = 0;
             if let Some(align) = item.align {
-                if let Some(info) = info {
-                    let requested = crate::layout::hints::axis(&info.hints, cross_virtual).pref;
+                // An explicit cross size wins over the hint: the caller stated the size both
+                // entry points should use, and the hint is the fallback for the one that can
+                // read it.
+                let requested = item.cross_size.or_else(|| {
+                    info.map(|info| crate::layout::hints::axis(&info.hints, cross_virtual).pref)
+                });
+                if let Some(requested) = requested {
                     // A hint larger than the box is clamped: the box cannot give what it
                     // does not have, and overflowing the cross axis would paint outside
                     // the parent.
@@ -499,6 +558,7 @@ impl Layout for BoxLayout {
             constraints: LayoutConstraints::new(0, None),
             policy: SizePolicy::Expanding,
             align: None,
+            cross_size: None,
         });
     }
     fn remove_widget(&mut self, widget_id: ObjectId) {
@@ -524,9 +584,28 @@ impl Layout for BoxLayout {
         let mut cursor_y = rect.y + top as i32;
         for (index, item) in self.items.iter().enumerate() {
             let major = majors.get(index).copied().unwrap_or(0);
+            // The explicit cross size is honoured here too: this entry point has no `ChildInfo`
+            // either, but a caller that stated a size expects both entries to use it.
+            let mut cross = cross;
+            let mut cross_offset = 0u32;
+            if let Some(align) = item.align {
+                if let Some(requested) = item.cross_size {
+                    let band = cross;
+                    cross = requested.min(band);
+                    cross_offset = match align {
+                        Alignment::Center => (band - cross) / 2,
+                        Alignment::Right | Alignment::Bottom => band - cross,
+                        _ => 0,
+                    };
+                }
+            }
             let child_rect = match self.orientation {
-                Orientation::Horizontal => Rect::new(cursor_x, cursor_y, major, cross),
-                Orientation::Vertical => Rect::new(cursor_x, cursor_y, cross, major),
+                Orientation::Horizontal => {
+                    Rect::new(cursor_x, cursor_y.saturating_add(cross_offset as i32), major, cross)
+                }
+                Orientation::Vertical => {
+                    Rect::new(cursor_x.saturating_add(cross_offset as i32), cursor_y, cross, major)
+                }
             };
             if let Some(widget_id) = item.widget_id {
                 widgets(widget_id, child_rect);
@@ -553,6 +632,76 @@ mod tests {
 
     fn rect_of(out: &[(ObjectId, Rect)], id: ObjectId) -> Rect {
         out.iter().find(|(i, _)| *i == id).map(|(_, r)| *r).expect("the id was placed")
+    }
+
+    /// The explicit cross size is honoured by every entry point, including the one that receives
+    /// no `ChildInfo`.
+    ///
+    /// `update_with_context` used to stretch an aligned item while `arrange` shrank it to the
+    /// hint, so the same layout produced two different rects depending on how the caller drove
+    /// it. `set_item_cross_size` is the size both entries read.
+    #[test]
+    fn an_explicit_cross_size_is_honoured_by_both_entry_points() {
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        layout.add_widget(1, 1);
+        assert!(layout.set_item_alignment(1, Some(Alignment::Center)));
+        assert!(layout.set_item_cross_size(1, Some(20)));
+        assert_eq!(layout.item_cross_size(1), Some(20));
+
+        let rect = Rect::new(0, 0, 100, 100);
+        let plain = placed(&layout, rect);
+        let from_update = rect_of(&plain, 1);
+        assert_eq!(from_update.height, 20, "the explicit size replaces the 100 px band");
+        assert_eq!(from_update.y, 40, "and the item is centred in that band");
+        assert_eq!(from_update.width, 100, "the main axis still fills the box");
+
+        let context = LayoutContext {
+            layout_scale: 1.0,
+            font_scale: 1.0,
+            min_touch_size: crate::core::Size::new(0, 0),
+        };
+        let mut out = Vec::new();
+        layout.update_with_context(rect, &context, &mut |id, r| out.push((id, r)));
+        assert_eq!(
+            rect_of(&out, 1),
+            from_update,
+            "both entry points must place the item the same way"
+        );
+
+        // The hint-aware path prefers the explicit size over a conflicting hint.
+        let children = [ChildInfo::new(
+            1,
+            crate::layout::Hints {
+                width: crate::layout::AxisHints::unconstrained(),
+                height: crate::layout::AxisHints::fixed(80),
+            },
+        )];
+        let mut arranged = Vec::new();
+        layout.arrange(rect, &children, &mut |id, r| arranged.push((id, r)));
+        assert_eq!(rect_of(&arranged, 1).height, 20, "explicit size outranks the hint");
+
+        assert!(layout.set_item_cross_size(1, None));
+        assert_eq!(layout.item_cross_size(1), None);
+    }
+
+    /// An aligned item without an explicit size still stretches through the context entry, which
+    /// cannot read a hint. This is the documented fallback, not a silent guess.
+    #[test]
+    fn an_aligned_item_without_a_cross_size_keeps_the_band_in_update_with_context() {
+        let mut layout = BoxLayout::new(Orientation::Vertical, 0, 0);
+        layout.add_widget(1, 1);
+        assert!(layout.set_item_alignment(1, Some(Alignment::Center)));
+
+        let context = LayoutContext {
+            layout_scale: 1.0,
+            font_scale: 1.0,
+            min_touch_size: crate::core::Size::new(0, 0),
+        };
+        let mut out = Vec::new();
+        layout.update_with_context(Rect::new(0, 0, 100, 100), &context, &mut |id, r| {
+            out.push((id, r))
+        });
+        assert_eq!(rect_of(&out, 1).width, 100, "no size to shrink to, so it stretches");
     }
 
     /// Two items of weight `u32::MAX` must not overflow the stretch sum.

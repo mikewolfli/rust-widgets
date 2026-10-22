@@ -92,6 +92,9 @@ impl CodeEditor {
     /// Used when the highlighter or the language changes: the entry-state chain
     /// is produced *by* the highlighter, so it cannot survive a swap.
     pub(crate) fn invalidate_line_states(&mut self) {
+        // Any reason to drop the lexer state is also a reason the measured row layouts may be
+        // stale: they were measured in the token runs this state produced.
+        self.layout_lexer_generation = self.layout_lexer_generation.wrapping_add(1);
         for slot in self.line_tokens.iter_mut() {
             *slot = None;
         }

@@ -133,7 +133,8 @@ mod tests {
     ///
     /// Delegating to the one shared guard is what actually excludes them, so the fix is
     /// to remove the local lock rather than to add a second one.
-    fn test_guard() -> crate::compat::MutexGuard<'static, ()> {
+    fn test_guard() -> (crate::compat::MutexGuard<'static, ()>, std::sync::MutexGuard<'static, ()>)
+    {
         crate::render_engine::embedded::embedded_test_guard()
     }
 

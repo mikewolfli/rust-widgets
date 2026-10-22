@@ -28,6 +28,21 @@ pub trait TreeTableModel: Send + Sync {
     fn column_count(&self) -> usize;
     /// Returns cell text for node path and column.
     fn data(&self, path: &[usize], column: usize) -> Option<String>;
+    /// Writes the cell text into `out`, returning whether the cell exists.
+    ///
+    /// The default implementation delegates to [`Self::data`], so existing models keep working.
+    /// A model that can format directly should override this: the paint path asks for one cell
+    /// per visible row per column per frame, and `data`'s owned `String` is a heap allocation for
+    /// every one of them (the same reason `TableModel::fill_data` exists).
+    fn fill_data(&self, path: &[usize], column: usize, out: &mut String) -> bool {
+        match self.data(path, column) {
+            Some(text) => {
+                out.push_str(&text);
+                true
+            }
+            None => false,
+        }
+    }
     /// Optional signal emitted when model projection changes.
     fn data_changed_signal(&self) -> Option<&GenericSignal> {
         None
@@ -60,6 +75,17 @@ impl TreeTableModel for FlatTreeTableModel {
             return None;
         }
         path.first().and_then(|&index| self.rows.get(index)).cloned()
+    }
+
+    fn fill_data(&self, path: &[usize], column: usize, out: &mut String) -> bool {
+        if column != 0 {
+            return false;
+        }
+        let Some(row) = path.first().and_then(|&index| self.rows.get(index)) else {
+            return false;
+        };
+        out.push_str(row);
+        true
     }
 }
 
@@ -229,6 +255,17 @@ impl TreeTable {
         let model = self.model.as_ref()?;
         let path = self.row_path(row)?;
         model.data(path, column)
+    }
+
+    /// Writes a visible cell's text into `out`, avoiding `item`'s per-cell allocation.
+    fn fill_item(&self, row: usize, column: usize, out: &mut String) -> bool {
+        let Some(model) = self.model.as_ref() else {
+            return false;
+        };
+        let Some(path) = self.row_path(row) else {
+            return false;
+        };
+        model.fill_data(path, column, out)
     }
 
     /// Expands row when it has children.
@@ -536,7 +573,7 @@ impl Draw for TreeTable {
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style("tree_table");
+        let theme = crate::style::resolved_theme_style_shared("tree_table");
         let mut surface = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -550,10 +587,9 @@ impl Draw for TreeTable {
         // painted in that colour would be byte-identical to the frame behind it, so a resolved
         // surface equal to the window fill is re-derived a visible step away from it, the same
         // distinction `Colors::input_background` draws for a field.
-        let window_fill = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.background)
-            .unwrap_or(Color::WHITE);
+        // One palette read for the surface, grid and accent roles (three theme locks before).
+        let palette = crate::style::palette_shared();
+        let window_fill = palette.as_ref().map(|colors| colors.background).unwrap_or(Color::WHITE);
         if surface == window_fill {
             surface = window_fill.blend(&ink, 0.08);
         }
@@ -569,17 +605,14 @@ impl Draw for TreeTable {
         //
         // One source for the whole table family: `table_widget`, `virtual_table` and this control all
         // share the `Table`/`DataView` grid, so a theme cannot end up tuning one and not the others.
-        let cell_border = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.outline_variant)
+        let cell_border = palette
+            .as_ref()
+            .map(|colors| colors.outline_variant)
             .filter(|resolved| *resolved != surface)
             .unwrap_or_else(|| surface.blend(&ink, 0.10));
         // The selected row is a selection state, so it reads the theme's accent token and is
         // laid over the surface, which keeps it legible in either appearance.
-        let accent = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.primary)
-            .unwrap_or(Color::PRIMARY);
+        let accent = palette.as_ref().map(|colors| colors.primary).unwrap_or(Color::PRIMARY);
         let selected_bg = surface.blend(&accent, 0.30);
 
         context.face_with_gradient(
@@ -603,6 +636,9 @@ impl Draw for TreeTable {
 
         let row_h = self.row_height as i32;
         let col_w = self.column_width as i32;
+        // One font and one text buffer for the whole grid (see the cell loop below).
+        let cell_font = effective_font(style);
+        let mut cell_text = String::new();
 
         for row in 0..self.visible_rows.len() {
             let y = rect.y + row as i32 * row_h;
@@ -629,7 +665,10 @@ impl Draw for TreeTable {
 
                 context.draw_rect(Rect::new(x, y, self.column_width, self.row_height), cell_border);
 
-                if let Some(text) = self.item(row, col) {
+                // One buffer and one font for the whole grid: this used to build a `String` per
+                // visible cell (via `item`) and resolve the font twice per cell.
+                cell_text.clear();
+                if self.fill_item(row, col, &mut cell_text) {
                     let indent =
                         if col == 0 { self.row_depth(row).unwrap_or(0) as i32 * 14 } else { 0 };
                     // The indented cell is the band: `y + row_h / 2` as a `draw_text` origin put
@@ -640,10 +679,10 @@ impl Draw for TreeTable {
                     let text_x = x + 4 + indent;
                     let band =
                         Rect::new(text_x, y, (x + col_w - text_x).max(0) as u32, self.row_height);
-                    context.draw_text_fitted(
-                        context.text_line(band, effective_font(style)),
-                        &text,
-                        effective_font(style),
+                    context.draw_text_fitted_cow(
+                        context.text_line(band, cell_font),
+                        &cell_text,
+                        cell_font,
                         ink,
                         HorizontalAlignment::Left,
                     );

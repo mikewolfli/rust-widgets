@@ -604,7 +604,7 @@ impl Draw for DropdownMenu {
         // The **effective font** — the resolved theme/caller font — for the field's value;
         // the list rows take the same font below (D09-STYLE-01).
         let font = effective_font(style);
-        let theme = crate::style::resolved_theme_style("dropdown_menu");
+        let theme = crate::style::resolved_theme_style_shared("dropdown_menu");
         // `dropdown_menu` is not a control kind in the role table, so it classifies as
         // `Surface`, whose background is `theme.colors.background` — the colour the
         // window paints. The field is therefore a step toward the foreground, so it
@@ -660,7 +660,7 @@ impl Draw for DropdownMenu {
         // Fitted rather than drawn at a point, because an anchor alone cannot express centre/right
         // over a width.
         let value_align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             Rect::new(
                 geom.x + PADDING,
                 line.y,
@@ -800,7 +800,7 @@ impl Draw for DropdownMenu {
                 );
                 let label_align =
                     self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
-                context.draw_text_fitted(
+                context.draw_text_fitted_cow(
                     label_band,
                     &item.label,
                     item_font,

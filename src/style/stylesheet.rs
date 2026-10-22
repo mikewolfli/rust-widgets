@@ -21,6 +21,8 @@ use crate::compat::{lock, MiniToString, String, Vec};
 struct ParsedRule {
     /// The selector, matched against `(kind, class, id, state)` on every apply.
     selector: CssSelector,
+    /// Cascade weight, captured at registration so `apply_to` does not recompute it per call.
+    specificity: u32,
     /// The declarations the selector applies.
     declarations: Vec<CssDeclaration>,
 }
@@ -72,6 +74,7 @@ impl StyleSheetManager {
                     .into_iter()
                     .filter_map(|rule| {
                         CssParser::parse_selector(&rule.selector_text).map(|selector| ParsedRule {
+                            specificity: selector.specificity(),
                             selector,
                             declarations: rule.declarations,
                         })
@@ -96,8 +99,15 @@ impl StyleSheetManager {
 
     /// Apply all matching stylesheet rules to a widget style.
     ///
-    /// Rules are applied in priority order (lower first), so higher-priority
-    /// sheets override lower ones via the `style.merge()` mechanism.
+    /// Sheets are applied in priority order (lower first) so a higher-priority sheet overrides a
+    /// lower one. Within the matched set, rules are applied in cascade order — ascending
+    /// specificity, then source order — so `.primary` beats a bare `Button` rule even when the
+    /// class rule is written first.
+    ///
+    /// A sheet that failed to parse is **skipped** and reported after the valid sheets have been
+    /// applied. Returning early used to throw away every registered sheet at once, and the JSON
+    /// loader then discarded the widget's whole style, so one malformed app-wide sheet disabled
+    /// the entire CSS layer.
     pub fn apply_to(
         &self,
         kind: &str,
@@ -106,19 +116,35 @@ impl StyleSheetManager {
         state: Option<PseudoState>,
         style: &mut WidgetStyle,
     ) -> Result<(), String> {
-        // Sheets are kept in ascending priority order by `register`, so iteration order is the
-        // apply order: lower priority first, higher overrides it.
+        let mut parse_error: Option<String> = None;
+        // (specificity, source order, declarations). Rule counts are small, and this path runs at
+        // widget construction / stylesheet change, not per frame.
+        let mut matched: Vec<(u32, usize, &[CssDeclaration])> = Vec::new();
+        let mut source_order = 0usize;
+
         for sheet in &self.sheets {
             if let Some(error) = &sheet.parse_error {
-                return Err(error.clone());
+                if parse_error.is_none() {
+                    parse_error = Some(error.clone());
+                }
+                continue;
             }
             for rule in &sheet.rules {
                 if rule.selector.matches(kind, class, id, state) {
-                    CssParser::apply_declarations(&rule.declarations, style)?;
+                    matched.push((rule.specificity, source_order, &rule.declarations));
                 }
+                source_order += 1;
             }
         }
 
+        matched.sort_by_key(|(specificity, order, _)| (*specificity, *order));
+        for (_, _, declarations) in matched {
+            CssParser::apply_declarations(declarations, style)?;
+        }
+
+        if let Some(error) = parse_error {
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -335,6 +361,46 @@ mod tests {
         manager.apply_to("Button", None, None, None, &mut style).expect("apply_to should succeed");
 
         assert_eq!(style.background_color, None, "Label CSS should not apply to Button");
+    }
+
+    /// A malformed sheet is reported but must not cancel the valid sheets registered next to it.
+    #[test]
+    fn a_broken_sheet_does_not_discard_the_valid_sheets() {
+        let mut manager = StyleSheetManager::new();
+        manager.register("bad", "Button { background-color: #ff0000; ", 0);
+        manager.register("good", "Button { text-color: #123456; }", 1);
+
+        let mut style = make_style();
+        let result = manager.apply_to("Button", None, None, None, &mut style);
+
+        assert!(result.is_err(), "the malformed sheet must still be reported");
+        assert_eq!(
+            style.text_color,
+            Some(Color::rgb(0x12, 0x34, 0x56)),
+            "the valid sheet must still apply"
+        );
+    }
+
+    /// The CSS cascade applies the more specific rule last, even when it is written first.
+    #[test]
+    fn a_class_rule_overrides_a_kind_rule_written_after_it() {
+        let mut manager = StyleSheetManager::new();
+        manager.register(
+            "cascade",
+            ".primary { background-color: #ff8800; } Button { background-color: #0000ff; }",
+            0,
+        );
+
+        let mut style = make_style();
+        manager
+            .apply_to("Button", Some("primary"), None, None, &mut style)
+            .expect("apply_to should succeed");
+
+        assert_eq!(
+            style.background_color,
+            Some(Color::rgb(0xff, 0x88, 0x00)),
+            "`.primary` has higher specificity than `Button` and must win"
+        );
     }
 
     #[test]

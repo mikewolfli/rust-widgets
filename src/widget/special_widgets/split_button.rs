@@ -652,7 +652,7 @@ impl Draw for SplitButton {
         // drop-down arrow glyph and every menu row, so the control honours the theme body font and
         // the user's text scale (D09-STYLE-01).
         let font = effective_font(style);
-        let theme = crate::style::resolved_theme_style("split_button");
+        let theme = crate::style::resolved_theme_style_shared("split_button");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
         let (window_fill, foreground, secondary, primary) = {
@@ -741,7 +741,7 @@ impl Draw for SplitButton {
         // (the content item is centred, as Material M3 centres its child) —
         // the previous `x + 8` origin left-aligned it against a literal.
         let primary_box = self.primary_label_box(primary_rect);
-        context.draw_text_fitted(
+        context.draw_text_fitted_cow(
             context.text_line(primary_box, font),
             &self.text,
             font,
@@ -785,7 +785,7 @@ impl Draw for SplitButton {
                     // `SPLIT_BUTTON_PADDING_H` the trigger uses, so a menu row and the trigger
                     // it hangs from share their leading space rather than each naming it.
                     let row_box = self.primary_label_box(action_rect);
-                    context.draw_text_fitted(
+                    context.draw_text_fitted_cow(
                         context.text_line(row_box, font),
                         &action.label,
                         font,

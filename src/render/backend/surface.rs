@@ -3,7 +3,7 @@
 
 //! Software rendering surface: back buffer, surface, and configuration.
 use crate::compat::Rc;
-use crate::compat::{lock, vec, MiniToString, Mutex, OnceLock, Vec};
+use crate::compat::{lock, vec, Cow, MiniToString, Mutex, OnceLock, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::render::pixel_bytes_len;
 use crate::render::{BlendMode, PaintBackend, RenderCommand, ShapedText, TextMetrics};
@@ -336,24 +336,24 @@ pub fn text_line(
 /// accepted clusters' text; no candidate is ever re-measured. The result is the same clusters,
 /// measured with the same advances, so the fitted string — including ellipsis, CJK and the
 /// exact width boundary — is unchanged; only the cost is.
-fn fit_text_to_width(
-    text: &str,
+fn fit_text_to_width<'a>(
+    text: &'a str,
     max_width: f32,
     font: &Font,
     backend: &dyn PaintBackend,
-) -> crate::compat::String {
+) -> Cow<'a, str> {
     if text.is_empty() || max_width <= 0.0 {
-        return crate::compat::String::new();
+        return Cow::Borrowed("");
     }
     if backend.measure_text(text, font).width as f32 <= max_width {
-        return text.to_string();
+        return Cow::Borrowed(text);
     }
     // A single ellipsis stands in when the budget cannot hold any glyph at all: an empty
     // label would read as "this control has no text", which is a different statement.
     const ELLIPSIS: char = '\u{2026}';
     let ellipsis_width = backend.measure_text(&ELLIPSIS.to_string(), font).width as f32;
     if ellipsis_width > max_width {
-        return ELLIPSIS.to_string();
+        return Cow::Owned(ELLIPSIS.to_string());
     }
     let budget = max_width - ellipsis_width;
 
@@ -378,7 +378,7 @@ fn fit_text_to_width(
         rebuilt == text
     };
     if !shaped_matches_text {
-        return fit_text_to_width_by_prefix(text, budget, font, backend, ELLIPSIS);
+        return Cow::Owned(fit_text_to_width_by_prefix(text, budget, font, backend, ELLIPSIS));
     }
 
     // Tracking adds one inter-cluster gap per adjacent pair, so a run of `n` clusters carries
@@ -445,7 +445,9 @@ fn fit_text_to_width(
         // (every prefix fit), otherwise the estimate was off by more than the slack and the
         // guaranteed-exact walk takes over.
         None if length > clusters.len() => clusters.len(),
-        None => return fit_text_to_width_by_prefix(text, budget, font, backend, ELLIPSIS),
+        None => {
+            return Cow::Owned(fit_text_to_width_by_prefix(text, budget, font, backend, ELLIPSIS))
+        }
     };
 
     let mut kept = crate::compat::String::new();
@@ -454,7 +456,7 @@ fn fit_text_to_width(
     }
 
     kept.push(ELLIPSIS);
-    kept
+    Cow::Owned(kept)
 }
 
 /// The pre-D09-RENDER-03 prefix walk, kept for the bidi order the linear pass cannot use.
@@ -603,6 +605,37 @@ impl<'a> RenderContext<'a> {
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
         let rect = self.offset_rect(rect);
         self.backend.execute_command(&RenderCommand::FillRect { rect, color });
+    }
+
+    /// Draws the shadow behind a raised face.
+    ///
+    /// The command, not a plain rectangle: `BoxShadow` is the one primitive both backends already
+    /// implement with a blur (the software backend runs a three-pass box blur over the region, the
+    /// SVG backend emits a `feGaussianBlur` filter), and `SurfaceShadow::blur` was written by the
+    /// theme and then **dropped** at this point — every raised face cast an unblurred rectangle of
+    /// its own size, which reads as a 6 px hard bar under a control rather than as a shadow.
+    ///
+    /// `rect` is the face's own rectangle; `offset_x`/`offset_y` move the shadow behind it and
+    /// `spread` grows (or shrinks) it. The colour's alpha is the shadow's weight — see the
+    /// backends' `BoxShadow` arm for why the command no longer halves it.
+    pub fn draw_box_shadow(
+        &mut self,
+        rect: Rect,
+        color: Color,
+        offset_x: i32,
+        offset_y: i32,
+        blur_radius: u32,
+        spread: i32,
+    ) {
+        let rect = self.offset_rect(rect);
+        self.backend.execute_command(&RenderCommand::BoxShadow {
+            rect,
+            color,
+            offset_x,
+            offset_y,
+            blur_radius,
+            spread,
+        });
     }
 
     /// Fills `rect` with a `gradient`.
@@ -764,10 +797,8 @@ impl<'a> RenderContext<'a> {
         // 1. The shadow, behind the face. `draws_shadow` is false at `Elevation::Flat`, so a face
         //    on the flat preset emits nothing here.
         if let Some(shadow) = surface.shadow(shadow_tint) {
-            self.fill_rect(
-                Rect::new(rect.x + shadow.x, rect.y + shadow.y, rect.width, rect.height),
-                shadow.color,
-            );
+            // The box-shadow command carries the blur the theme declared; a plain fill dropped it.
+            self.draw_box_shadow(rect, shadow.color, shadow.x, shadow.y, shadow.blur, 0);
         }
         // 2. The fill. Without a gradient this is the solid, radius-clipped face `face` always
         //    drew; with one the ramp spans the full rectangle, matching `paint_with_gradient`.
@@ -986,6 +1017,29 @@ impl<'a> RenderContext<'a> {
         color: Color,
         alignment: HorizontalAlignment,
     ) -> crate::compat::String {
+        self.draw_text_fitted_cow(bounds, text, font, color, alignment).into_owned()
+    }
+
+    /// [`Self::draw_text_fitted`], returning the fitted text without materialising a `String`.
+    ///
+    /// # Why this entry point exists
+    ///
+    /// The public method promises the drawn text to its caller, which is a `String` by signature
+    /// and therefore copies even when the label already fits. Almost every call site in this crate
+    /// ignores that result: it draws a label and moves on. This crate-internal form returns the
+    /// fitted text as a [`Cow`], so the common case — a label narrower than its box — borrows from
+    /// the caller's own `&str` and allocates nothing. Truncation still allocates, because the
+    /// ellipsised string has to be built, but that is the case that was always going to allocate.
+    ///
+    /// The public method delegates here, so the two can never disagree about what is drawn.
+    pub(crate) fn draw_text_fitted_cow<'t>(
+        &mut self,
+        bounds: Rect,
+        text: &'t str,
+        font: &Font,
+        color: Color,
+        alignment: HorizontalAlignment,
+    ) -> Cow<'t, str> {
         let inset = TEXT_FIT_MARGIN as i32;
         // Both ends are inset, so the width a string may occupy is the box less one inset at
         // each end. The old form subtracted a single inset and then placed the result in the
@@ -1019,8 +1073,23 @@ impl<'a> RenderContext<'a> {
         color: Color,
         alignment: HorizontalAlignment,
     ) -> crate::compat::String {
+        self.draw_text_line_cow(bounds, text, font, color, alignment).into_owned()
+    }
+
+    /// [`Self::draw_text_line`], returning the fitted text without materialising a `String`.
+    ///
+    /// See [`Self::draw_text_fitted_cow`]: the same allocation argument applies, and the public
+    /// method delegates here so the two forms draw identically.
+    pub(crate) fn draw_text_line_cow<'t>(
+        &mut self,
+        bounds: Rect,
+        text: &'t str,
+        font: &Font,
+        color: Color,
+        alignment: HorizontalAlignment,
+    ) -> Cow<'t, str> {
         let line = self.text_line(bounds, font);
-        self.draw_text_fitted(line, text, font, color, alignment)
+        self.draw_text_fitted_cow(line, text, font, color, alignment)
     }
     /// Splits `text` into visual clusters (grapheme-like units) with per-cluster
     /// advances, as used for hit testing and caret placement.
@@ -1077,6 +1146,18 @@ impl<'a> RenderContext<'a> {
     /// and replay it during the draw pass.
     pub fn execute_command(&mut self, command: RenderCommand) {
         self.backend.execute_command(&command);
+    }
+
+    /// Executes a command that the caller still owns.
+    ///
+    /// A display list that is replayed every frame (a canvas, a mini canvas) keeps its
+    /// commands for its whole lifetime, so handing each one to [`Self::execute_command`]
+    /// forced a deep clone per command per frame — `DrawText` owns a `String` and a `Font`,
+    /// and the path commands own their point vectors. The backends already take
+    /// `&RenderCommand`, so the owned entry point above was the only reason the clone
+    /// existed.
+    pub fn execute_command_ref(&mut self, command: &RenderCommand) {
+        self.backend.execute_command(command);
     }
 }
 

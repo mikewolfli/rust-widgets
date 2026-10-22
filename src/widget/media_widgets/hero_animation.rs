@@ -243,7 +243,7 @@ impl Draw for HeroAnimation {
         // the badge and the outline all read from it and re-resolving would take the theme
         // lock several times inside one draw.
         let style = self.style();
-        let themed = crate::style::resolved_theme_style("hero_animation");
+        let themed = crate::style::resolved_theme_style_shared("hero_animation");
         let themed_bg = themed.as_ref().and_then(|resolved| resolved.background_color);
         let themed_border = themed.as_ref().and_then(|resolved| resolved.border_color);
         let themed_text = themed.as_ref().and_then(|resolved| resolved.text_color);
@@ -300,7 +300,7 @@ impl Draw for HeroAnimation {
             let metrics = context.measure_text("Hg", font);
             let first_y = rect.y + (rect.height as i32 - metrics.height as i32 * 2) / 2;
             for (index, line) in lines.iter().enumerate() {
-                context.draw_text_fitted(
+                context.draw_text_fitted_cow(
                     Rect::new(
                         rect.x,
                         first_y + index as i32 * metrics.height as i32,
@@ -386,7 +386,7 @@ impl Draw for HeroAnimation {
             (false, false) => None,
         };
         if let Some((text, color)) = label {
-            context.draw_text_fitted(label_band, text, font, color, HorizontalAlignment::Left);
+            context.draw_text_fitted_cow(label_band, text, font, color, HorizontalAlignment::Left);
         }
     }
 }

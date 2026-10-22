@@ -1158,9 +1158,11 @@ fn apply_declared_styles(widget: &mut dyn Widget, obj: &serde_json::Map<String, 
             "JSON layout: a global stylesheet failed to apply to {kind} (class {class:?}, id \
              {id:?}): {error}"
         );
-    } else {
-        widget.set_style(style);
     }
+    // The style is installed even when a sheet reported an error: `apply_to` skips a malformed
+    // sheet but still applies every valid one, so discarding the whole style here would turn one
+    // bad app-wide sheet into "no CSS at all" for every widget.
+    widget.set_style(style);
 
     // 3. Page-local inline CSS on this node.
     if let Some(css) = obj.get("css").and_then(|v| v.as_str()) {

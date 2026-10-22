@@ -195,7 +195,7 @@ impl Draw for MasonryLayout {
         // so the resolved surface is re-derived a visible step away from the window's ink
         // colour; a colour the caller set still wins.
         let style = self.base.style();
-        let themed = crate::style::resolved_theme_style("masonry_layout");
+        let themed = crate::style::resolved_theme_style_shared("masonry_layout");
         let themed_bg = themed.as_ref().and_then(|r| r.background_color);
         let themed_text = themed.as_ref().and_then(|r| r.text_color);
         // Precedence: explicit style → theme → the ORIGINAL LITERAL. The literal has to

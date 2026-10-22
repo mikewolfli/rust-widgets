@@ -5,7 +5,7 @@
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: `src/control_backend/custom/mod.rs:1` and 41 files (every backend capability is resolved through the `Platform` trait).
+//! **State:** Production callers: `src/control_backend/custom/create_widgets.rs:17` and 41 files (every backend capability is resolved through the `Platform` trait).
 
 // Platform backend implementations (one per target)
 /// Android platform backend (state-driven, JNI bridge behind `android-jni`).

@@ -11,7 +11,7 @@
 use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::widget::capability::coercion::{expect_bool, expect_f64};
+use crate::widget::capability::coercion::{expect_bool, expect_f64, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -53,6 +53,12 @@ pub struct ProgressCircle {
     value: f32,
     indeterminate: bool,
     track_color: Color,
+    /// True when the caller assigned a track colour explicitly.
+    ///
+    /// The theme's groove colour wins by default (a near-white literal made the track identical
+    /// in both appearances), but an explicit `set_track_color` must still take effect — it used to
+    /// be stored, read back, and never painted.
+    track_color_is_explicit: bool,
     progress_color: Color,
     stroke_width: f32,
     diameter: u32,
@@ -86,7 +92,8 @@ impl ProgressCircle {
             value: 0.0,
             indeterminate: false,
             track_color: Color::rgba(220, 220, 220, 200),
-            progress_color: crate::style::resolved_theme_style("progress_bar")
+            track_color_is_explicit: false,
+            progress_color: crate::style::resolved_theme_style_shared("progress_bar")
                 .and_then(|resolved| resolved.background_color)
                 .unwrap_or(Color::PRIMARY),
             stroke_width: 4.0,
@@ -177,6 +184,7 @@ impl ProgressCircle {
             return;
         }
         self.track_color = color;
+        self.track_color_is_explicit = true;
         self.base.request_redraw();
     }
 
@@ -292,6 +300,8 @@ impl WidgetProperties for ProgressCircle {
         match name {
             "value" => Ok(CapabilityValue::Float(f64::from(self.value()))),
             "thickness" => Ok(CapabilityValue::Float(f64::from(self.thickness()))),
+            "progress_color" => Ok(CapabilityValue::Color(self.progress_color())),
+            "diameter" => Ok(CapabilityValue::UInt(self.diameter() as u64)),
             "indeterminate" => Ok(CapabilityValue::Bool(self.is_indeterminate())),
             _ => base_property_get(self, name),
         }
@@ -307,6 +317,24 @@ impl WidgetProperties for ProgressCircle {
                 self.set_stroke_width(expect_f64(value)? as f32);
                 Ok(())
             }
+            "progress_color" => {
+                // Accept the declared kind; a CSS string is still accepted because the C ABI and
+                // JSON surfaces carry colours as text (the same allowance `color_well` makes).
+                let color = match value {
+                    CapabilityValue::Color(color) => color,
+                    CapabilityValue::String(raw) => match crate::core::Color::parse_hex(&raw) {
+                        Some(color) => color,
+                        None => return Err(CapabilityAccessError::TypeMismatch),
+                    },
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_progress_color(color);
+                Ok(())
+            }
+            "diameter" => {
+                self.set_diameter(expect_u32(value)?);
+                Ok(())
+            }
             "indeterminate" => {
                 self.set_indeterminate(expect_bool(value)?);
                 Ok(())
@@ -316,7 +344,14 @@ impl WidgetProperties for ProgressCircle {
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["value", "thickness", "indeterminate", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "value",
+            "thickness",
+            "progress_color",
+            "diameter",
+            "indeterminate",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `progress_circle` publishes.
@@ -358,7 +393,7 @@ impl Draw for ProgressCircle {
         // `resolved_theme_style`, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style();
-        let themed = crate::style::resolved_theme_style("progress_circle");
+        let themed = crate::style::resolved_theme_style_shared("progress_circle");
         let themed_bg = themed.as_ref().and_then(|r| r.background_color);
         // `progress_circle` is `WidgetRole::Accent`, so the theme writes a groove colour into
         // the style's background. The control's own `track_color` literal is deliberately
@@ -367,12 +402,16 @@ impl Draw for ProgressCircle {
         // stays as the enabled-state literal fallback instead.
         let fallback_track = themed_bg.unwrap_or(Color::rgba(220, 220, 220, 200));
         let surface = style.background_color.unwrap_or(fallback_track);
-        let track_color = if is_enabled {
-            surface
-        } else {
-            // A disabled control is a chrome state, so the groove is derived from the
-            // resolved colours rather than from a second hardcoded grey.
+        // An explicit `set_track_color` wins over the theme groove (it is a caller decision, like
+        // every other explicit colour in this crate); with no explicit colour the theme's groove
+        // is used, because the field's near-white literal made the track identical in both
+        // appearances. A disabled control derives its groove from the resolved colours instead.
+        let track_color = if !is_enabled {
             surface.blend(&Color::DISABLED_FOREGROUND, 0.5)
+        } else if self.track_color_is_explicit {
+            self.track_color
+        } else {
+            surface
         };
 
         // Draw track as a circle stroke
@@ -469,7 +508,7 @@ mod tests {
         // The arc's default is the token `progress_bar` fills with, so the two progress
         // controls agree; the literal is only the no-theme fallback. Asserting the literal
         // here would re-assert the defect the default was changed to remove.
-        let expected = crate::style::resolved_theme_style("progress_bar")
+        let expected = crate::style::resolved_theme_style_shared("progress_bar")
             .and_then(|resolved| resolved.background_color)
             .unwrap_or(Color::PRIMARY);
         assert_eq!(pc.progress_color(), expected);

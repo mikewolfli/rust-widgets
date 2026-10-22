@@ -610,7 +610,10 @@ impl FlexLayout {
                 // Integer arithmetic throughout, with the remainder distributed one pixel at a
                 // time from the leading edge, so the scaled sizes sum to *exactly* `main_sizes`'
                 // total rather than to a rounded approximation that could re-introduce an overhang.
-                let budget: i32 = main_sizes.iter().sum::<i32>() - leftover;
+                // `budget` cannot go negative here in a well-formed band, but gaps larger than the
+                // band make `sum - leftover` negative; a negative scaled size later becomes
+                // `4_294_967_246` at the `as u32` cast. Clamp at the source.
+                let budget: i32 = (main_sizes.iter().sum::<i32>() - leftover).max(0);
                 let scaled: Vec<i32> = main_sizes
                     .iter()
                     .map(|size| ((*size as i64 * budget as i64) / floors_sum as i64) as i32)
@@ -784,7 +787,8 @@ impl FlexLayout {
             let main_pos = *main_positions.get(i).unwrap_or(&0);
             let (cross_pos, cross_len) =
                 cross_positions.get(i).copied().unwrap_or((0, available_cross));
-            let main_len = *main_sizes.get(i).unwrap_or(&0);
+            let main_len = (*main_sizes.get(i).unwrap_or(&0)).max(0);
+            let cross_len = cross_len.max(0);
 
             let rect = if self.is_row() {
                 Rect::new(main_pos, cross_origin + cross_pos, main_len as u32, cross_len as u32)
@@ -863,7 +867,10 @@ impl FlexLayout {
             let needs_wrap = lines.last().is_some_and(|line| {
                 let used = line.iter().map(|&item| item_main(item)).sum::<i32>()
                     + gap * line.len().saturating_sub(1) as i32;
-                used > 0 && used + gap + candidate > available_main
+                // No `used > 0` guard: a line made only of zero-extent items is still a line, and
+                // suppressing the break let an oversized item share it. The condition is about the
+                // geometry (`used + gap + candidate`), not about whether anything is visible.
+                used + gap + candidate > available_main
             });
             if needs_wrap {
                 lines.push(Vec::new());
