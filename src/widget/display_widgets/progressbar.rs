@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 //! Progress bar widget.
-use crate::compat::{format, String, ToString};
+use core::fmt::Write as _;
+
+use crate::compat::{String, ToString};
 use crate::core::{Color, HorizontalAlignment, Orientation, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -295,18 +297,34 @@ impl ProgressBar {
         Some((start, visible))
     }
 
-    /// Returns formatted text for display.
-    fn format_text(&self) -> String {
+    /// Writes the display text into `out`: the percentage when the bar is determinate
+    /// and its label visible, nothing otherwise.
+    ///
+    /// Into-style (the calendar-title arrangement): the draw pass renders into its own
+    /// buffer, so a hidden or indeterminate bar costs no string at all and a shown one
+    /// costs no intermediate `format!` copy.
+    fn write_text(&self, out: &mut String) {
         if !self.text_visible {
-            return String::new();
+            return;
         }
         // An indeterminate bar has no number to show, and printing a stale one would be a
         // fabricated fact — the exact thing the state exists to avoid.
         if self.indeterminate {
-            return String::new();
+            return;
         }
         let percentage = self.progress() * 100.0;
-        format!("{}%", percentage.round() as i32)
+        let _ = write!(out, "{}%", percentage.round() as i32);
+    }
+
+    /// The display text; see [`Self::write_text`].
+    ///
+    /// Test-only: the draw pass writes into its own buffer directly, so the owned-string
+    /// convenience is kept for the test that pins the indeterminate contract.
+    #[cfg(test)]
+    fn format_text(&self) -> String {
+        let mut out = String::new();
+        self.write_text(&mut out);
+        out
     }
 }
 // Implement Widget trait
@@ -650,13 +668,14 @@ impl Draw for ProgressBar {
         } else {
             ink
         };
-        let text = self.format_text();
+        let mut text = String::new();
+        self.write_text(&mut text);
         if !text.is_empty() {
             // The value label takes the **effective font** — the resolved theme/caller font — so the
             // theme body font and the user's text scale reach it (D09-STYLE-01).
             context.draw_text_line_cow(
                 rect,
-                &text,
+                text.as_str(),
                 effective_font(style),
                 text_color,
                 HorizontalAlignment::Center,

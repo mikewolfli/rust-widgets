@@ -490,19 +490,32 @@ impl ChildLayoutAttrs {
     /// [`BorderRegion`], and `extent` is a clamped non-negative integer.
     pub fn from_value(value: &serde_json::Value) -> Self {
         let obj = value.as_object();
+        // Every integer field clamps through `u32::try_from(..).unwrap_or(u32::MAX)` rather than
+        // `as u32`: `as` reinterprets an out-of-range value (a JSON `4294967296` became `0`, i.e.
+        // a *different valid coordinate*), while the clamp is the same convention `extent` below
+        // already used and `json_u32` documents for this module.
         Self {
-            stretch: obj.and_then(|o| o.get("stretch")).and_then(|v| v.as_u64()).unwrap_or(1)
-                as u32,
-            col: obj.and_then(|o| o.get("col")).and_then(|v| v.as_u64()).map(|v| v as u32),
-            row: obj.and_then(|o| o.get("row")).and_then(|v| v.as_u64()).map(|v| v as u32),
+            stretch: obj
+                .and_then(|o| o.get("stretch"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1)
+                .min(u32::MAX as u64) as u32,
+            col: obj
+                .and_then(|o| o.get("col"))
+                .and_then(|v| v.as_u64())
+                .map(|v| u32::try_from(v).unwrap_or(u32::MAX)),
+            row: obj
+                .and_then(|o| o.get("row"))
+                .and_then(|v| v.as_u64())
+                .map(|v| u32::try_from(v).unwrap_or(u32::MAX)),
             col_span: obj
                 .and_then(|o| o.get("col_span"))
                 .and_then(|v| v.as_u64())
-                .map(|v| v as u32),
+                .map(|v| u32::try_from(v).unwrap_or(u32::MAX)),
             row_span: obj
                 .and_then(|o| o.get("row_span"))
                 .and_then(|v| v.as_u64())
-                .map(|v| v as u32),
+                .map(|v| u32::try_from(v).unwrap_or(u32::MAX)),
             region: obj
                 .and_then(|o| o.get("region"))
                 .and_then(|v| v.as_str())

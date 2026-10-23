@@ -37,24 +37,59 @@ const MEMORY_SAMPLE_TTL: Duration = Duration::from_secs(1);
 ///
 /// Returns `None` when the file is unreadable or the field is missing, which is
 /// the honest answer inside a container that hides `/proc`.
+///
+/// The answer is fixed for the life of the process (the kernel does not rewrite
+/// `MemTotal` without a reboot or a memory hotplug a running host cannot hide
+/// from us), so it is read once and memoised. A performance monitor sampling it
+/// per frame otherwise re-reads the file forever for a value that cannot change.
 pub fn total_memory_mb() -> Option<u64> {
-    let content = std::fs::read_to_string("/proc/meminfo").ok()?;
-    for line in content.lines() {
-        let Some(rest) = line.strip_prefix("MemTotal:") else {
-            continue;
-        };
-        let kb = rest.trim().trim_end_matches("kB").trim().parse::<u64>().ok()?;
-        return Some(kb / 1024);
-    }
-    None
+    static CACHE: OnceLock<Option<u64>> = OnceLock::new();
+    *CACHE.get_or_init(|| {
+        let content = std::fs::read_to_string("/proc/meminfo").ok()?;
+        for line in content.lines() {
+            let Some(rest) = line.strip_prefix("MemTotal:") else {
+                continue;
+            };
+            let kb = rest.trim().trim_end_matches("kB").trim().parse::<u64>().ok()?;
+            return Some(kb / 1024);
+        }
+        None
+    })
 }
+
+/// How long a battery-poll answer stays valid.
+const BATTERY_SAMPLE_TTL: Duration = Duration::from_secs(1);
 
 /// Reports whether any battery in `/sys/class/power_supply` is discharging.
 ///
 /// A machine with no battery (a desktop or a VM) reports `false`, which is the
 /// same answer as a charged one and is what the caller wants to know: it is not
 /// running down.
+///
+/// The answer is sampled behind the same 1 s TTL `process_memory_utilization`
+/// uses: a monitor may poll it per frame, and re-walking `/sys/class/power_supply`
+/// per frame buys nothing over a figure that is at most one second stale.
 pub fn is_on_battery() -> bool {
+    static CACHE: OnceLock<Mutex<Option<(Instant, bool)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some((sampled_at, value)) = *guard {
+            if sampled_at.elapsed() < BATTERY_SAMPLE_TTL {
+                return value;
+            }
+        }
+    }
+
+    let value = is_on_battery_uncached();
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some((Instant::now(), value));
+    }
+    value
+}
+
+/// The uncached `/sys/class/power_supply` walk, kept separate so the caching
+/// wrapper above stays the single reading point.
+fn is_on_battery_uncached() -> bool {
     let Ok(entries) = std::fs::read_dir("/sys/class/power_supply") else {
         return false;
     };

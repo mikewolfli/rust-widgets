@@ -9,6 +9,8 @@
 //! seek only move the simulated position, which advances when `tick` is called.
 //! It emits signals for playback state changes and time updates.
 
+use core::fmt::Write as _;
+
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
@@ -533,7 +535,11 @@ impl Draw for VideoPlayer {
         let seek_bar_y = control_bar_y
             + (control_bar_height as i32 - dimensions::VIDEO_SEEK_BAR_HEIGHT as i32) / 2;
         let seek_bar_height = dimensions::VIDEO_SEEK_BAR_HEIGHT;
-        let time_text = format!(
+        // Both labels render in place: `format!` built a fresh `String` for the timestamp
+        // and another for the rate every frame.
+        let mut time_text = String::new();
+        let _ = write!(
+            time_text,
             "{:02}:{:02}/{:02}:{:02}",
             (self.current_time as u32) / 60,
             (self.current_time as u32) % 60,
@@ -552,19 +558,20 @@ impl Draw for VideoPlayer {
         let fs_side = 16u32;
         let fs_box =
             Rect::new(vol_box.x - fs_side as i32 - 24, control_bar_y, fs_side, control_bar_height);
-        let rate_text = if (self.playback_rate - 1.0).abs() > 0.01 {
-            Some(format!("{:.1}x", self.playback_rate))
-        } else {
-            None
-        };
-        let rate_width = rate_text
-            .as_ref()
-            .map(|text| context.measure_text(text, font).width as i32)
-            .unwrap_or(0);
+        // The rate label is measured once and the metrics reused for both the layout and
+        // the draw; the old form measured it twice and allocated the text as an `Option<String>`.
+        let has_rate = (self.playback_rate - 1.0).abs() > 0.01;
+        let mut rate_text = String::new();
+        if has_rate {
+            let _ = write!(rate_text, "{:.1}x", self.playback_rate);
+        }
+        let rate_metrics =
+            if has_rate { Some(context.measure_text(&rate_text, font)) } else { None };
+        let rate_width = rate_metrics.as_ref().map(|m| m.width as i32).unwrap_or(0);
         // The rate label sits left of the fullscreen icon; the time label sits left of the
         // whole right-hand group. Both gaps are real, so neither label can overlap an icon.
         let rate_x = fs_box.x - rate_width - 8;
-        let time_x = if rate_text.is_some() { rate_x } else { fs_box.x } - time_width - 8;
+        let time_x = if has_rate { rate_x } else { fs_box.x } - time_width - 8;
         let seek_bar_width = (time_x - 8 - seek_bar_x).max(0) as u32;
         let seek_bar_full = Rect::new(seek_bar_x, seek_bar_y, seek_bar_width, seek_bar_height);
         context.fill_rounded_rect(
@@ -598,13 +605,11 @@ impl Draw for VideoPlayer {
         crate::widget::draw_icon_centered(context, vol_box, vol_side, Color::WHITE, vol_icon);
 
         // Playback rate indicator, in the slot reserved left of the fullscreen button.
-        if let Some(rate_text) = rate_text.as_ref() {
-            let rate_metrics = context.measure_text(rate_text, font);
-            let rate_y =
-                control_bar_y + (control_bar_height as i32 - rate_metrics.height as i32) / 2;
+        if let Some(metrics) = rate_metrics.as_ref() {
+            let rate_y = control_bar_y + (control_bar_height as i32 - metrics.height as i32) / 2;
             context.draw_text(
                 Point::new(rate_x, rate_y),
-                rate_text,
+                &rate_text,
                 font,
                 Color::rgba(255, 220, 100, 230),
                 HorizontalAlignment::Left,

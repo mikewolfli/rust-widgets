@@ -15,7 +15,7 @@ use crate::widget::capability::coercion::{expect_string_list, expect_u32, expect
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
+use crate::widget::metrics::{dimensions, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -164,8 +164,14 @@ impl Roller {
     ///
     /// This is the same choice `draw` makes, named once so `size_hint` and `item_height` cannot
     /// describe a different control from the one painted (D09-STYLE-02).
+    ///
+    /// The fallback is constructed, not borrowed from a global default: the wheel's own
+    /// `font_size` decides the drawn size when no style font is set. Going through
+    /// `effective_font` here made `item_height` and `size_hint` measure the global default
+    /// face while `draw` painted `font_size` — a `set_font_size(24)` wheel drew 24 pt rows
+    /// inside a row height scaled for 16 pt and clipped them.
     fn wheel_font(&self) -> Font {
-        effective_font(self.style()).clone()
+        self.base.style().font.clone().unwrap_or_else(|| Font::simple("sans-serif", self.font_size))
     }
 
     /// The total content height for all visible items.
@@ -410,7 +416,9 @@ impl Draw for Roller {
         let selected_text_color = selected_bg.contrast_color();
         let muted_color = text_color.blend(&bg_color, 0.47);
 
-        let font = style.font.clone().unwrap_or_else(|| Font::simple("sans-serif", self.font_size));
+        // One source of truth for the drawn face (`wheel_font`): the inline choice here
+        // could drift from the one `item_height` and `size_hint` measure with.
+        let font = self.wheel_font();
         // `item_height` derives its row from the same font, so the wheel band cannot clip the
         // glyphs it draws (D09-STYLE-02).
 

@@ -235,6 +235,12 @@ impl WaylandClipboard {
             // the data was on its way. Paste is a user action, not a frame path, so wait for the
             // worker for a bounded interval (the same 16 ms budget as the typed read) and then
             // answer honestly.
+            //
+            // The wait itself does not step through 1 ms sleeps when it can block: the read
+            // worker signals the frame-wait channel *after* it has stored the result (see the
+            // worker in `read_contents`), so a wake here means the data is already cached. Other
+            // threads' wakes only cost one extra poll, still inside the same 16 ms budget. The
+            // `alloc_frugal` profile has no wake channel and keeps the old 1 ms poll.
             for _ in 0..16 {
                 if let Some(content) = self.read_contents() {
                     return Some(match content {
@@ -253,7 +259,22 @@ impl WaylandClipboard {
                 if !lock(&self.inner).fetching {
                     break;
                 }
+                #[cfg(alloc_frugal)]
                 std::thread::sleep(std::time::Duration::from_millis(1));
+                #[cfg(not(alloc_frugal))]
+                {
+                    let observed = crate::platform::frame_wait::generation();
+                    // Re-check after taking the generation: the worker may have finished (and
+                    // woken) between the check above and now, and `wait_after` would then sleep
+                    // a full slice for data that is already there.
+                    if !lock(&self.inner).fetching {
+                        break;
+                    }
+                    crate::platform::frame_wait::wait_after(
+                        observed,
+                        std::time::Duration::from_millis(1),
+                    );
+                }
             }
             return Some(String::new());
         }

@@ -224,7 +224,44 @@ impl EmojiPicker {
         tabs
     }
 
-    /// The index of the selected tab.
+    /// The label of strip tab `index`, recent pseudo-category first when visible.
+    ///
+    /// [`Self::tabs`] builds an owned `Vec<String>` per call; `draw_tabs` and `tab_at`
+    /// asked it every frame and every mouse move. Indexing the two sources directly
+    /// keeps the same order with nothing materialised.
+    fn tab_label(&self, index: usize) -> Option<&str> {
+        if self.recent_tab_visible() {
+            if index == 0 {
+                return Some(Self::RECENT_CATEGORY);
+            }
+            self.categories.get(index - 1).map(String::as_str)
+        } else {
+            self.categories.get(index).map(String::as_str)
+        }
+    }
+
+    /// How many tabs the strip shows; see [`Self::tab_label`] for the order.
+    fn tab_count(&self) -> usize {
+        self.recent_tab_visible() as usize + self.categories.len()
+    }
+
+    /// The fixed chrome faces. Built once through `OnceLock`: `Font` owns its family
+    /// as a `String`, so a constructor call per frame was a fresh allocation for a
+    /// face that never changes (the same arrangement `effective_font`'s default uses).
+    fn sans_font_11() -> &'static Font {
+        static FONT: crate::compat::OnceLock<Font> = crate::compat::OnceLock::new();
+        FONT.get_or_init(|| Font::simple("Sans", 11.0))
+    }
+    fn sans_font_12() -> &'static Font {
+        static FONT: crate::compat::OnceLock<Font> = crate::compat::OnceLock::new();
+        FONT.get_or_init(|| Font::simple("Sans", 12.0))
+    }
+    fn sans_font_16() -> &'static Font {
+        static FONT: crate::compat::OnceLock<Font> = crate::compat::OnceLock::new();
+        FONT.get_or_init(|| Font::simple("Sans", 16.0))
+    }
+
+    /// The tab index of the selected tab.
     pub fn active_tab(&self) -> usize {
         self.active_tab
     }
@@ -406,7 +443,7 @@ impl EmojiPicker {
         // Tabs are laid out left to right at a fixed width, matching `draw_tabs`.
         let offset = (pos.x - strip.x).max(0) as u32;
         let index = (offset / Self::tab_width()) as usize;
-        if index < self.tabs().len() {
+        if index < self.tab_count() {
             Some(index)
         } else {
             None
@@ -669,23 +706,26 @@ impl EmojiPicker {
             1,
         );
 
+        // Borrowed in both branches: a placeholder is a literal, and the typed text is
+        // already owned by the control — cloning it for the draw call allocated a copy
+        // of the search string every frame.
         let (text, color) = if self.search.is_empty() {
             // A placeholder is supposed to recede, so it is the resolved ink dimmed toward
             // the field rather than a fixed grey chosen for one appearance.
-            ("Search".to_string(), ink.blend(&field, 0.45))
+            ("Search", ink.blend(&field, 0.45))
         } else {
-            (self.search.clone(), ink)
+            (self.search.as_str(), ink)
         };
         // The origin is the glyph's **top** edge, so the label is centred by half the
         // difference between the field and the line box. The fixed `+ 20` was written for
         // one font size: at 12 px the glyph box spans 20..32 in a 30 px field, so its bottom
         // two rows were painted over the separator line below.
-        let font = Font::simple("Sans", 12.0);
-        let text_h = context.measure_text("M", &font).height;
+        let font = Self::sans_font_12();
+        let text_h = context.measure_text("M", font).height;
         context.draw_text(
             Point::new(rect.x + 28, rect.y + (rect.height as i32 - text_h as i32) / 2),
-            &text,
-            &font,
+            text,
+            font,
             color,
             HorizontalAlignment::Left,
         );
@@ -703,15 +743,15 @@ impl EmojiPicker {
             self.base.style().border_radius.unwrap_or(0),
             crate::core::Color::BLACK,
         );
-        let tabs = self.tabs();
-        // One font and one accent for the whole strip: both used to be resolved per tab, so a
-        // six-tab picker built six fonts and took six theme locks per frame.
-        let tab_font = Font::simple("Sans", 11.0);
+        // Resolved once per frame, outside the loop: only one tab is active, but the
+        // theme lookup used to sit inside the loop body and run once per tab.
         let accent = crate::style::theme_manager()
             .current_theme()
             .map(|active| active.colors.primary)
             .unwrap_or_else(|| ink.legible_on(panel, 3.0));
-        for (index, tab) in tabs.iter().enumerate() {
+        // Indexed in place; see `tab_label` for why `tabs()` is not called here.
+        for index in 0..self.tab_count() {
+            let Some(tab) = self.tab_label(index) else { break };
             let tab_rect = Rect::new(
                 strip.x + (index as u32 * Self::tab_width()) as i32,
                 strip.y,
@@ -737,16 +777,14 @@ impl EmojiPicker {
                     2,
                 );
             }
-            // The recent pseudo-category is shown by a clock-ish label rather than its
-            // reserved identifier, which is not meant to be read.
-            let label: &str = if tab == Self::RECENT_CATEGORY { "Recent" } else { tab.as_str() };
+            let label: &str = if tab == Self::RECENT_CATEGORY { "Recent" } else { tab };
             // The inactive tabs are secondary by design, so they are the ink dimmed toward
             // the strip rather than a second literal.
             let color = if active { ink } else { ink.blend(&strip_bg, 0.45) };
             context.draw_text(
                 Point::new(tab_rect.x + 8, tab_rect.y + 17),
                 label,
-                &tab_font,
+                Self::sans_font_11(),
                 color,
                 HorizontalAlignment::Left,
             );
@@ -757,14 +795,14 @@ impl EmojiPicker {
     fn draw_grid(&self, context: &mut RenderContext, visible: &[&EmojiGlyph], ink: Color) {
         // One font for the whole grid: the cell glyphs used to build a fresh `Font` per cell,
         // twice (once to measure, once to draw), and the placeholder built a third.
-        let glyph_font = Font::simple("Sans", 16.0);
+        let glyph_font = Self::sans_font_16();
         if visible.is_empty() {
             let rect = self.geometry();
             // The placeholder recedes by alpha, not by being a second literal grey.
             context.draw_text(
                 Point::new(rect.x + 10, rect.y + (SEARCH_HEIGHT + TAB_HEIGHT) as i32 + 20),
                 "No glyphs",
-                &Font::simple("Sans", 11.0),
+                Self::sans_font_11(),
                 ink.with_alpha(150),
                 HorizontalAlignment::Left,
             );
@@ -792,7 +830,7 @@ impl EmojiPicker {
                     .unwrap_or_else(|| ink.legible_on(Color::rgb(252, 252, 254), 3.0));
                 context.fill_rounded_rect(cell, 4, accent.with_alpha(48));
             }
-            let metrics = context.measure_text(&glyph.symbol, &glyph_font);
+            let metrics = context.measure_text(&glyph.symbol, glyph_font);
             context.draw_text(
                 Point::new(
                     cell.x + (cell.width as i32 - metrics.width as i32) / 2,
@@ -802,7 +840,7 @@ impl EmojiPicker {
                     cell.y + (cell.height as i32 - metrics.height as i32) / 2,
                 ),
                 &glyph.symbol,
-                &glyph_font,
+                glyph_font,
                 ink,
                 HorizontalAlignment::Left,
             );

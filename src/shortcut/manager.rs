@@ -155,6 +155,11 @@ impl ShortcutManager {
         modifiers
     }
     /// Handles a framework event and triggers a shortcut when it is a key press.
+    ///
+    /// This is the host's entry point: no framework event loop calls it. The
+    /// application owns its shortcut manager and feeds key presses here from
+    /// its own dispatch path (see the module docs for the wiring and why the
+    /// framework does not pump this itself).
     pub fn handle_event(&mut self, event: &Event) -> bool {
         if let Event::KeyPress { key, modifiers } = event {
             if let Some(key) = Key::from_key_code(*key) {

@@ -761,8 +761,10 @@ impl Draw for FontDialog {
         // cannot paint over a neighbouring column or into the preview band.
         if list_h > 0 {
             let rows = (list_h as i32 / ROW_HEIGHT).max(0) as usize;
-            let size_labels: Vec<String> =
-                self.sizes.iter().map(|size| format!("{size}")).collect();
+            // One reused buffer for the size column: the labels were collected into a
+            // fresh `Vec<String>` every frame for values that are one or two digits.
+            use core::fmt::Write as _;
+            let mut size_label = String::new();
             for column in 0..3 {
                 let col_x = rect.x + 4 + column as i32 * (col_w as i32 + COL_GAP);
                 let start = self.scroll(column);
@@ -773,7 +775,14 @@ impl Draw for FontDialog {
                     let label = match column {
                         0 => self.families.get(index).map(String::as_str),
                         1 => STYLES.get(index).map(|style| style.label),
-                        _ => size_labels.get(index).map(String::as_str),
+                        _ => match self.sizes.get(index) {
+                            Some(size) => {
+                                size_label.clear();
+                                let _ = write!(size_label, "{size}");
+                                Some(size_label.as_str())
+                            }
+                            None => None,
+                        },
                     };
                     let label = match label {
                         Some(label) => label,

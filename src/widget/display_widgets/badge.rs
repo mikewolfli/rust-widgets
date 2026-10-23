@@ -8,6 +8,8 @@
 //! levels (Info, Success, Warning, Error) and a dot mode that shows only a
 //! colored dot without text. When the count is set to 0, the badge hides itself.
 
+use core::fmt::Write as _;
+
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -146,9 +148,10 @@ impl Badge {
 
     /// Returns the display string to render inside the badge.
     ///
-    /// Borrowed when the badge shows caller text or a literal, which is the common case; only a
-    /// computed count allocates. The draw path uses this rather than
-    /// [`Self::display_text`] so a badged caption does not clone itself every frame (WDGT-06).
+    /// Test-only: the draw pass renders through [`Self::display_text_into`] so a computed
+    /// count does not allocate a fresh `String` every frame; this owned-count form is kept
+    /// for the test that pins the display contract.
+    #[cfg(test)]
     fn display_text_cow(&self) -> std::borrow::Cow<'_, str> {
         if !self.text.is_empty() {
             return std::borrow::Cow::Borrowed(&self.text);
@@ -160,6 +163,24 @@ impl Badge {
         } else {
             std::borrow::Cow::Borrowed("")
         }
+    }
+
+    /// The label to render, written into `out` when it is a computed count.
+    ///
+    /// Borrowed when the badge shows caller text or a literal — the common case — so the
+    /// draw pass only owns a string when a count is actually shown.
+    fn display_text_into<'a>(&'a self, out: &'a mut String) -> &'a str {
+        if !self.text.is_empty() {
+            return self.text.as_str();
+        }
+        if self.count > 999 {
+            return "999+";
+        }
+        if self.count > 0 {
+            let _ = write!(out, "{}", self.count);
+            return out.as_str();
+        }
+        ""
     }
 
     #[cfg(test)]
@@ -326,8 +347,9 @@ impl Draw for Badge {
             style.background_color.unwrap_or_else(|| severity.legible_on(surface, 3.0))
         };
         // The count reads against the pill, so its colour is derived per-branch below from the
-        // fill it actually lands on.
-        let text_str = self.display_text_cow();
+        // fill it actually lands on. Rendered in place; see `display_text_into`.
+        let mut count_text = String::new();
+        let text_str = self.display_text_into(&mut count_text);
 
         if self.dot_mode {
             // The dot is a **fixed-size** marker, not a fraction of the caller's rectangle:
@@ -356,7 +378,7 @@ impl Draw for Badge {
         // the resolved label and the named pill metrics alone, and the pill is centred in
         // the control by [`ControlMetrics::center_in`], which clamps rather than expands.
         let font = role_font(style, dimensions::BADGE_LABEL_FONT_SIZE as f32);
-        let metrics = context.measure_text(&text_str, &font);
+        let metrics = context.measure_text(text_str, &font);
 
         let text_width = metrics.width;
         // A pill is exactly tall enough for its own line box plus the named vertical
@@ -391,7 +413,7 @@ impl Draw for Badge {
         let line = context.text_line(pill_rect, &font);
         context.draw_text_fitted_cow(
             Rect::new(line.x, line.y, line.width.max(1), line.height.max(1)),
-            &text_str,
+            text_str,
             &font,
             text_color,
             HorizontalAlignment::Center,

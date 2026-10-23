@@ -580,14 +580,16 @@ impl Draw for ShortcutEditor {
 
         // Draw filter bar
         let filter_font = role_font(style, 13.0);
-        let filter_label = if self.filter_text.is_empty() {
-            "Type to filter shortcuts...".to_string()
+        // Borrowed when idle — the placeholder is a literal, so owning it cost a string per
+        // frame — and built only while a filter is actually typed.
+        let filter_label: Cow<'_, str> = if self.filter_text.is_empty() {
+            Cow::Borrowed("Type to filter shortcuts...")
         } else {
-            format!("Filter: {}", self.filter_text)
+            Cow::Owned(format!("Filter: {}", self.filter_text))
         };
         context.draw_text_fitted_cow(
             Rect::new(rect.x + margin, y, rect.width.saturating_sub((margin * 2) as u32), 16),
-            &filter_label,
+            filter_label.as_ref(),
             &filter_font,
             if self.filter_text.is_empty() { placeholder } else { ink },
             HorizontalAlignment::Left,

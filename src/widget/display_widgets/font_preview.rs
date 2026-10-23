@@ -6,6 +6,8 @@
 //! Displays a preview of a font family at configurable sizes, with sample
 //! text, alphabet samples, and pangrams. Supports bold and italic styles.
 
+use core::fmt::Write as _;
+
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -138,6 +140,16 @@ impl FontPreview {
     /// Builds a font from current settings.
     fn build_font(&self, size: f32) -> Font {
         Font::new(&self.font_family, size, self.bold, self.italic)
+    }
+
+    /// The fixed info-line face. Built once through `OnceLock`: `Font` owns its family
+    /// as a `String`, so a constructor call per frame was a fresh allocation for a face
+    /// that never changes (the same arrangement the emoji picker's chrome faces use).
+    /// The configured font in [`Self::build_font`] stays per-call — it carries the
+    /// caller's family and varies with the properties.
+    fn info_font() -> &'static Font {
+        static FONT: crate::compat::OnceLock<Font> = crate::compat::OnceLock::new();
+        FONT.get_or_init(|| Font::new("sans-serif", 12.0, false, false))
     }
 
     /// The panel fill and the three inks its rows use, in precedence order:
@@ -273,8 +285,12 @@ impl Draw for FontPreview {
         let text_w = rect.width.saturating_sub(margin * 2);
 
         // --- Font family name and style info ---
-        let info_font = Font::new("sans-serif", 12.0, false, false);
-        let info_text = format!(
+        let info_font = Self::info_font();
+        // Rendered in place: `format!` per frame allocated a fresh `String` for a line
+        // the properties change rarely.
+        let mut info_text = String::new();
+        let _ = write!(
+            info_text,
             "{} ({}pt{}{})",
             self.font_family,
             self.font_size as u32,
@@ -287,8 +303,8 @@ impl Draw for FontPreview {
         // overflows were indistinguishable in the snapshot.
         context.draw_text_fitted_cow(
             Rect::new(rect.x + margin as i32, y as i32, text_w, info_font.size() as u32),
-            &info_text,
-            &info_font,
+            info_text.as_str(),
+            info_font,
             muted,
             HorizontalAlignment::Left,
         );

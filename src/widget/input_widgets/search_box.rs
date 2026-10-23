@@ -585,12 +585,12 @@ impl EventHandler for SearchBox {
                         }
                     }
                     127 => {
-                        // Delete — remove last character
-                        if !self.text.is_empty() {
-                            let mut next = self.text.clone();
-                            next.pop();
-                            self.set_text(next);
-                        }
+                        // Delete removes the character **after** the caret. This field has no
+                        // caret model — editing is end-anchored (Backspace pops the last
+                        // character), so the caret sits at the end and Delete is a no-op,
+                        // the same behaviour every platform toolkit shows for an
+                        // end-of-line caret. Popping the last character instead made the
+                        // two keys indistinguishable.
                     }
                     13 | 27 => {
                         // Enter / Escape — lose focus
@@ -807,6 +807,23 @@ mod tests {
 
         sb.handle_event(&Event::KeyPress { key: 8, modifiers: 0 }); // Backspace
         assert_eq!(sb.text(), "hel");
+    }
+
+    /// Delete must not remove text: this field is end-anchored, so its caret sits
+    /// after the last character and Delete (which removes forward) has nothing to
+    /// remove. Pinning this stops Delete drifting back to Backspace semantics.
+    #[test]
+    fn search_box_delete_is_a_noop() {
+        let mut sb = SearchBox::new(Rect::new(0, 0, 200, 32));
+        sb.set_text("hello");
+        sb.set_focused(true);
+
+        sb.handle_event(&Event::KeyPress { key: 127, modifiers: 0 }); // Delete
+        assert_eq!(sb.text(), "hello");
+
+        // Backspace still edits.
+        sb.handle_event(&Event::KeyPress { key: 8, modifiers: 0 }); // Backspace
+        assert_eq!(sb.text(), "hell");
     }
 
     #[test]

@@ -18,6 +18,8 @@
 //! * [`DateTimeEdit::set_datetime`] rejects an invalid or out-of-range value
 //!   silently rather than clamping it.
 //! * Ordering is by date first, then by time.
+use core::fmt::Write as _;
+
 use crate::core::{Color, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -610,7 +612,9 @@ impl Draw for DateTimeEdit {
         // The value is spelled by the caller's `display_format` when that pattern is one this control
         // can render, and by `DateTime`'s own spelling otherwise — the same rule and the same shared
         // substituter as `date_edit` and `time_edit`, so the same pattern cannot render three ways.
-        let text = super::date_edit::format_with_pattern(
+        // Into the buffer directly: the allocating wrapper built the result plus one string per token.
+        let mut text = String::new();
+        if !super::date_edit::format_with_pattern_into(
             &self.display_format,
             super::date_edit::DateTimeComponents {
                 year: Some(self.datetime.date.year()),
@@ -621,8 +625,11 @@ impl Draw for DateTimeEdit {
                 second: Some(self.datetime.time.second()),
                 millisecond: Some(self.datetime.time.msec()),
             },
-        )
-        .unwrap_or_else(|| self.datetime.to_string());
+            &mut text,
+        ) {
+            text.clear();
+            let _ = write!(text, "{}", self.datetime);
+        }
         // Vertically centred through the shared primitive: `rect.y + height / 2` puts the
         // glyph box's top edge on the field's middle line, so the value sat half a line low.
         // The **effective font** — the resolved theme/caller font — so the value honours the theme
@@ -636,7 +643,7 @@ impl Draw for DateTimeEdit {
                 width: rect.width.saturating_sub(12),
                 height: line.height,
             },
-            &text,
+            text.as_str(),
             font,
             ink,
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),

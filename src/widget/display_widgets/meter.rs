@@ -719,7 +719,6 @@ impl Draw for Meter {
         // it names.
         if self.tick_count >= 2 {
             let tick_step = arc_sweep_deg / (self.tick_count - 1) as f32;
-            let label_font = tick_label_font.clone();
             // One buffer for every tick label. `format!` built a fresh `String` per tick per
             // frame for a value that is two or three characters long.
             let mut tick_text = String::new();
@@ -757,7 +756,7 @@ impl Draw for Meter {
                     let fraction = i as f32 / (self.tick_count - 1) as f32;
                     tick_text.clear();
                     let _ = write!(tick_text, "{}{}", self.value_at_fraction(fraction), self.unit);
-                    let metrics = context.measure_text(&tick_text, &label_font);
+                    let metrics = context.measure_text(&tick_text, &tick_label_font);
                     let lx = center.x + (label_radius as f32 * dir_x).round() as i32;
                     let ly = center.y + (label_radius as f32 * dir_y).round() as i32;
                     // Centred on the point the tick sits at: the glyph origin is the box's
@@ -781,7 +780,7 @@ impl Draw for Meter {
                         context.draw_text(
                             Point::new(label_x, label_y),
                             &tick_text,
-                            &label_font,
+                            &tick_label_font,
                             tick_color,
                             HorizontalAlignment::Left,
                         );
@@ -809,7 +808,11 @@ impl Draw for Meter {
         // uses — lies wholly inside the control. A reading whose glyph box runs past the
         // bottom edge is precisely the defect a raster backend hides and an SVG one
         // shows, so "it fits" is answered against the rectangle rather than the arc.
-        let text = self.value_text();
+        // The same spelling `value_text()` produces, built into a reused buffer: the
+        // property getter keeps its own `format!` for the contract, but the paint path
+        // has no reason to allocate the reading every frame.
+        let mut text = String::new();
+        let _ = write!(text, "{}{}", self.value, self.unit);
         let value_font = role_font(style, 12.0);
         let metrics = context.measure_text(&text, &value_font);
         let band_top = rect.y + rect.height as i32 - reading_reserve;

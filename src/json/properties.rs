@@ -507,10 +507,25 @@ fn declared_schema(
 /// would make the name-driven pass apply keys the arms already consumed (`text`, `tooltip`, `id`) a
 /// second time. `children` — an array of objects, like a record list — is not published by any
 /// control as this kind, so it keeps its old route.
+///
+/// Test-only: the loader resolves the name itself (once per key) and asks
+/// [`resolved_schema_is_record_list`] with the answer.
+#[cfg(test)]
 pub(crate) fn declares_record_list(widget: &dyn crate::widget::Widget, name: &str) -> bool {
     let Some(published) = resolve_property_name(widget, name) else {
         return false;
     };
+    resolved_schema_is_record_list(widget, published)
+}
+
+/// Whether the declared schema for an **already-resolved** published name is a record list.
+///
+/// The name-resolving form is [`declares_record_list`]; this one exists so a caller that
+/// resolved the name for other reasons does not resolve it again.
+pub(crate) fn resolved_schema_is_record_list(
+    widget: &dyn crate::widget::Widget,
+    published: &str,
+) -> bool {
     declared_schema(widget, published)
         .is_some_and(|schema| schema.value_kind == PropertyValueKind::Records)
 }
@@ -537,6 +552,11 @@ pub(crate) fn apply_widget_property(
 
 /// Apply a property like [`apply_widget_property`], resolving resource icon specs through
 /// the caller's explicit resource context when one is supplied.
+///
+/// Test-only: the loader now resolves each key once and calls
+/// [`apply_resolved_property`] directly, so this self-resolving form has no production
+/// caller left.
+#[cfg(test)]
 pub(crate) fn apply_widget_property_with_icon_resolver(
     widget: &mut dyn crate::widget::Widget,
     key: &str,
@@ -546,7 +566,22 @@ pub(crate) fn apply_widget_property_with_icon_resolver(
     let Some(published) = resolve_property_name(widget, key) else {
         return ApplyOutcome::NotAProperty;
     };
+    apply_resolved_property(widget, published, value, resolver)
+}
 
+/// Apply one JSON value through the property contract using an **already-resolved**
+/// published name.
+///
+/// Split out of [`apply_widget_property_with_icon_resolver`] so a caller that needs the
+/// resolved name for its own decisions (the loader's loader-owned-key check) can resolve
+/// once and reuse the answer, instead of paying the name scan and the schema scan twice
+/// per key.
+pub(crate) fn apply_resolved_property(
+    widget: &mut dyn crate::widget::Widget,
+    published: &'static str,
+    value: &Value,
+    resolver: Option<&dyn crate::widget::icon_source::IconResourceResolver>,
+) -> ApplyOutcome {
     let declared = declared_schema(widget, published);
     let Some(capability_value) = to_capability_value_with_record_schema(
         value,

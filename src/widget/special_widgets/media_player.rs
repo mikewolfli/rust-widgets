@@ -3,6 +3,8 @@
 
 //! MediaPlayer widget.
 
+use core::fmt::Write as _;
+
 #[cfg(test)]
 use crate::core::Point;
 use crate::core::{Color, HorizontalAlignment, MediaClock, Rect};
@@ -587,8 +589,9 @@ impl Draw for MediaPlayer {
             .map(|src| src.rsplit('/').next().unwrap_or(src))
             .unwrap_or("No media");
         let state = if self.is_playing_internal() { "Playing" } else { "Paused" };
-        let vol = if self.muted { "Muted".to_string() } else { format!("Vol {}", self.volume) };
         let fs = if self.fullscreen { "Fullscreen" } else { "Window" };
+        // Rendered in place: the old `vol` string plus the join allocated two strings
+        // every frame; one buffer takes the three fields directly.
 
         // Both lines are fitted to the control's width. The title comes from a file name,
         // which has no length limit, and the status line is three joined words; neither was
@@ -609,6 +612,14 @@ impl Draw for MediaPlayer {
             ink,
             HorizontalAlignment::Left,
         );
+        let mut status = String::new();
+        let _ = write!(status, "{state} | ");
+        if self.muted {
+            status.push_str("Muted");
+        } else {
+            let _ = write!(status, "Vol {}", self.volume);
+        }
+        let _ = write!(status, " | {fs}");
         context.draw_text_fitted_cow(
             Rect::new(
                 rect.x + MEDIA_PLAYER_PADDING,
@@ -616,7 +627,7 @@ impl Draw for MediaPlayer {
                 rect.width.saturating_sub((MEDIA_PLAYER_PADDING * 2) as u32),
                 16,
             ),
-            &format!("{state} | {vol} | {fs}"),
+            status.as_str(),
             font,
             muted,
             HorizontalAlignment::Left,

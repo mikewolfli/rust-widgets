@@ -44,6 +44,36 @@ impl AndroidPlatform {}
 /// changes exactly this value.
 const FRAME_INTERVAL_MS: u64 = crate::platform::types::FRAME_INTERVAL_MS;
 
+/// Memoised display density, refreshed at most once per [`DENSITY_TTL`].
+///
+/// `nativeDispatchPointerEvent` asks for the scale on **every** pointer event (touch sampling
+/// reaches 120 Hz), and each question pays the full fifteen-step JNI probe in
+/// `android_jni::display_info` — hundreds of JNI round trips a second for a value the display
+/// keeps for its whole session. The cache keeps a foldable's density change reachable (one
+/// second late) while making the hot path a mutex-guarded read.
+#[cfg(feature = "android-jni")]
+static DENSITY_CACHE: std::sync::OnceLock<std::sync::Mutex<Option<(std::time::Instant, f32)>>> =
+    std::sync::OnceLock::new();
+
+/// The cached [`AndroidPlatform::dpi_scale_factor`] reading.
+#[cfg(feature = "android-jni")]
+fn cached_density_scale() -> f32 {
+    const DENSITY_TTL: std::time::Duration = std::time::Duration::from_secs(1);
+    let cache = DENSITY_CACHE.get_or_init(|| std::sync::Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some((sampled_at, value)) = *guard {
+            if sampled_at.elapsed() < DENSITY_TTL {
+                return value;
+            }
+        }
+    }
+    let value = crate::platform::android_jni::display_info().map(|info| info.scale).unwrap_or(1.0);
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some((std::time::Instant::now(), value));
+    }
+    value
+}
+
 impl Platform for AndroidPlatform {
     // The uniform widget-property methods are answered once, over `self.state`, by the
     // shared expansion in `platform::state_impl` rather than re-written per backend.
@@ -141,7 +171,7 @@ impl Platform for AndroidPlatform {
     fn dpi_scale_factor(&self) -> f32 {
         #[cfg(feature = "android-jni")]
         {
-            crate::platform::android_jni::display_info().map(|info| info.scale).unwrap_or(1.0)
+            cached_density_scale()
         }
         #[cfg(not(feature = "android-jni"))]
         {

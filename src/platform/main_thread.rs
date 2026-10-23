@@ -88,6 +88,11 @@ fn run_due(queue: &Mutex<Vec<Due>>) {
     let now = Instant::now();
     let due: Vec<Due> = {
         let mut guard = lock(queue);
+        // The overwhelmingly common tick finds an empty queue (a still window's frame calls this
+        // every 16 ms). Returning before the drain spares that tick the partition's two `Vec`s.
+        if guard.is_empty() {
+            return;
+        }
         let (due, later): (Vec<Due>, Vec<Due>) = guard.drain(..).partition(|item| item.at <= now);
         *guard = later;
         due

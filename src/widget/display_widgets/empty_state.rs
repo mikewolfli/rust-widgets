@@ -475,17 +475,23 @@ fn wrap_text(context: &RenderContext, text: &str, font: &Font, max_width: usize)
     let mut current_line = String::new();
 
     for word in words {
-        let candidate = if current_line.is_empty() {
-            word.to_string()
+        // Built in place: the candidate was a fresh `String` per word (`to_string` or
+        // `format!`), so a paragraph of *n* words allocated O(n) times per draw. Appending
+        // the word to the live buffer and truncating back on overflow touches no memory it
+        // does not keep.
+        let line_start = current_line.len();
+        if line_start > 0 {
+            current_line.push(' ');
+        }
+        current_line.push_str(word);
+        let metrics = context.measure_text(&current_line, font);
+        if metrics.width as usize <= max_width || line_start == 0 {
+            // Fits, or the line is a single word that overflows on its own — the old
+            // code kept such a word as the line body rather than looping forever.
         } else {
-            format!("{current_line} {word}")
-        };
-        let metrics = context.measure_text(&candidate, font);
-        if metrics.width as usize <= max_width || current_line.is_empty() {
-            current_line = candidate;
-        } else {
-            lines.push(current_line);
-            current_line = word.to_string();
+            current_line.truncate(line_start);
+            lines.push(core::mem::take(&mut current_line));
+            current_line.push_str(word);
         }
     }
     if !current_line.is_empty() {

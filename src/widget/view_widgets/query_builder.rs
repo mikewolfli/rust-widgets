@@ -35,6 +35,8 @@
 //! (`"querybuilder"`), from a CSS selector (`QueryBuilder`), and through the typed
 //! `create_query_builder` on `ControlBackend`.
 
+use core::fmt::Write as _;
+
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -825,7 +827,10 @@ impl QueryBuilder {
             HorizontalAlignment::Center,
         );
 
-        let count_text = format!("{} condition(s)", self.rows.len());
+        // Rendered in place: the count is drawn once per frame and never leaves this
+        // scope, so it writes into the buffer rather than through `format!`'s copy.
+        let mut count_text = String::new();
+        let _ = write!(count_text, "{} condition(s)", self.rows.len());
         context.draw_text_fitted_cow(
             Rect::new(
                 chip.x + chip.width as i32 + 10,
@@ -833,7 +838,7 @@ impl QueryBuilder {
                 (rect.width as i32 - (chip.x + chip.width as i32 + 10) - 38).max(1) as u32,
                 chip_text_h,
             ),
-            &count_text,
+            count_text.as_str(),
             &chip_font,
             chrome.placeholder_text(),
             HorizontalAlignment::Left,

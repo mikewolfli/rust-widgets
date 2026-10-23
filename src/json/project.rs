@@ -374,9 +374,11 @@ fn key_from_path(path: &[usize]) -> String {
         return String::from("root");
     }
     let mut key = String::from("n");
+    use core::fmt::Write as _;
     for index in path {
-        key.push('_');
-        key.push_str(&format!("{index}"));
+        // Push the digits straight into `key`: a temporary `String` per segment was
+        // allocated and dropped once per node for no benefit.
+        let _ = write!(key, "_{index}");
     }
     key
 }

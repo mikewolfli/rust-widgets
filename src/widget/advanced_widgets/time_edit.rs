@@ -22,6 +22,8 @@
 //!   clamping it.
 //! * Times are ordered chronologically, hour then minute then second then
 //!   millisecond.
+use core::fmt::Write as _;
+
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -962,7 +964,10 @@ impl Draw for TimeEdit {
             Color::BLACK,
         );
         context.draw_rect(rect, border);
-        let text = super::date_edit::format_with_pattern(
+        // Into the buffer directly: the allocating wrapper built the result plus one string
+        // per token; the same substituter as `date_edit` and `date_time_edit`.
+        let mut text = String::new();
+        if !super::date_edit::format_with_pattern_into(
             &self.display_format,
             super::date_edit::DateTimeComponents {
                 hour: Some(self.time.hour()),
@@ -971,8 +976,11 @@ impl Draw for TimeEdit {
                 millisecond: Some(self.time.msec()),
                 ..Default::default()
             },
-        )
-        .unwrap_or_else(|| self.time.to_string());
+            &mut text,
+        ) {
+            text.clear();
+            let _ = write!(text, "{}", self.time);
+        }
         // Vertically centred through the shared primitive: `rect.y + height / 2` puts the
         // glyph box's top edge on the field's middle line, so the value sat half a line low.
         // The line box is also what a caller reading this field's text position would need,
@@ -988,7 +996,7 @@ impl Draw for TimeEdit {
                 width: rect.width.saturating_sub(12),
                 height: line.height,
             },
-            &text,
+            text.as_str(),
             font,
             ink,
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),

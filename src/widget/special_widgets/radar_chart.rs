@@ -38,6 +38,8 @@
 //! `ControlBackend`. `WidgetKind::RadarChart` is its own kind rather than a
 //! `chart_type` token, because its data model is series-over-dimensions.
 
+use core::fmt::Write as _;
+
 use crate::core::{deg_to_rad, Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderContext, TEXT_FIT_MARGIN};
@@ -767,9 +769,13 @@ impl RadarChart {
         let legend_ink = chrome.legend_ink;
         let x = rect.x + rect.width as i32 - 90;
         let mut y = rect.y + 12;
+        // One buffer reused across rows: `format!` per series per frame was a fresh
+        // allocation for a label that a `write!` renders in place.
+        let mut label = String::new();
         for index in 0..self.series.len() {
             context.fill_rect(Rect::new(x, y, SWATCH, SWATCH), Self::series_color(index));
-            let label = format!("Series {}", index + 1);
+            label.clear();
+            let _ = write!(label, "Series {}", index + 1);
             // The legend strip is fixed at 90 px on the right, so the text is fitted to
             // what remains of it beside the swatch: an unfitted `Series 12` ran past the
             // control's right edge and only the raster backends hid it.
@@ -778,7 +784,7 @@ impl RadarChart {
                 Rect::new(text_x, y, (rect.x + rect.width as i32 - text_x).max(0) as u32, SWATCH);
             context.draw_text_fitted_cow(
                 row,
-                &label,
+                label.as_str(),
                 &font,
                 // The legend swatch's ink, taken from the same `chrome_colors()` the rest of
                 // the chart's chrome uses. A literal here was the one place a dark theme still
@@ -815,13 +821,16 @@ impl RadarChart {
         // hover worth doing on a chart whose polygons overlap.
         let font = role_font(self.style(), 9.0);
         let mut text_y = outer.y + 4;
+        // One buffer reused across the read-outs, for the same reason as `draw_legend`.
+        let mut label = String::new();
         for series_index in 0..self.series.len() {
             let Some(value) = self.value_at(series_index, axis) else {
                 continue;
             };
             let marker = self.vertex(center, radius, angle, value, max);
             context.fill_circle(marker, 4, Self::series_color(series_index));
-            let label = format!("{value:.1}");
+            label.clear();
+            let _ = write!(label, "{value:.1}");
             context.draw_text(
                 Point { x: outer.x + 4, y: text_y },
                 &label,

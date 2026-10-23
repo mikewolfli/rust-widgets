@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 //! Arc widget — circular progress/indicator (BLUE13 R2.1).
-use crate::compat::{format, String};
+use core::fmt::Write as _;
+
+use crate::compat::String;
 use crate::core::{deg_to_rad, Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
@@ -215,13 +217,17 @@ impl Arc {
         (deg_to_rad(start_deg + offset), deg_to_rad(end_deg + offset))
     }
 
-    /// Formats the current value as a percentage string for center display.
-    fn format_value_text(&self) -> String {
+    /// Writes the current value as a percentage into `out` for the centre display.
+    ///
+    /// Into-style (the calendar-title arrangement): the draw pass renders into its own
+    /// buffer, so a hidden reading (`show_value == false`) costs no string at all and a
+    /// shown one costs no intermediate `format!` copy.
+    fn write_value_text(&self, out: &mut String) {
         if !self.show_value {
-            return String::new();
+            return;
         }
         let pct = self.normalized_value() * 100.0;
-        format!("{}%", pct.round() as u32)
+        let _ = write!(out, "{}%", pct.round() as u32);
     }
 }
 
@@ -446,7 +452,8 @@ impl Draw for Arc {
         // painted over the ring itself. It is also dropped when it cannot fit, rather than
         // straddling the arc: a reading that covers the progress it reports is worse than no
         // reading, and the raster backend hides the overflow while the SVG one shows it.
-        let text = self.format_value_text();
+        let mut text = String::new();
+        self.write_value_text(&mut text);
         if !text.is_empty() && inner_radius > 0 {
             let font = effective_font(self.style());
             let metrics = context.measure_text(&text, font);
@@ -461,7 +468,7 @@ impl Draw for Arc {
                 let text_color = self.style().text_color.unwrap_or(Color::rgb(0, 0, 0));
                 context.draw_text(
                     Point::new(text_x, text_y),
-                    &text,
+                    text.as_str(),
                     font,
                     text_color,
                     HorizontalAlignment::Left,

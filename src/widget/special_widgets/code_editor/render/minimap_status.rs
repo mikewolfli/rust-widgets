@@ -160,16 +160,51 @@ impl CodeEditor {
         );
 
         let selected = self.selection_char_count();
-        let fold_note = if self.folded_line_count() > 0 {
-            format!("  folded:{}", self.folded_line_count())
+        // One buffer for the whole status row: the six labels were each built with
+        // `format!`, costing six heap strings per frame in the steady state. Every
+        // segment is appended here once and drawn as a slice, so a frame allocates
+        // one small buffer instead of six.
+        use core::fmt::Write as _;
+        let mut text = String::new();
+        let left_start = text.len();
+        let _ = write!(text, "{}  {} lines", self.language_name(), self.line_count());
+        // A reduced level is part of the editor's state, so it belongs on the
+        // status row: a silently disabled feature reads as a bug, while a named
+        // one reads as a decision the user can act on.
+        if let Some(note) = self.scale.notice() {
+            let _ = write!(text, "  [{note}]");
+        }
+        if self.folded_line_count() > 0 {
+            let _ = write!(text, "  folded:{}", self.folded_line_count());
+        }
+        if self.has_multiple_cursors() {
+            let _ = write!(text, "  carets:{}", self.cursors().len());
+        }
+        let diag_start = text.len();
+        let _ = write!(
+            text,
+            "E{} W{} I{}",
+            self.marker_count(MarkerSeverity::Error),
+            self.marker_count(MarkerSeverity::Warning),
+            self.marker_count(MarkerSeverity::Info)
+        );
+        let right_start = text.len();
+        if selected > 0 {
+            let _ = write!(
+                text,
+                "{} selected   Ln {}, Col {}",
+                selected,
+                self.cursor.head.line + 1,
+                self.cursor.head.column + 1
+            );
         } else {
-            String::new()
-        };
-        let caret_note = if self.has_multiple_cursors() {
-            format!("  carets:{}", self.cursors().len())
-        } else {
-            String::new()
-        };
+            let _ = write!(
+                text,
+                "Ln {}, Col {}",
+                self.cursor.head.line + 1,
+                self.cursor.head.column + 1
+            );
+        }
         // The status row is a **single band**: the label and the caret position are laid
         // out against the same rectangle and fitted inside it, so a long language name or
         // a wide selection count shortens instead of running off the editor's edge. The two
@@ -178,35 +213,12 @@ impl CodeEditor {
         // the control.
         let status_band = Rect::new(rect.x + 8, top + 5, rect.width.saturating_sub(20), 16);
         let font = self.chrome_font();
-        // A reduced level is part of the editor's state, so it belongs on the
-        // status row: a silently disabled feature reads as a bug, while a named
-        // one reads as a decision the user can act on.
-        let scale_note = match self.scale.notice() {
-            Some(note) => format!("  [{note}]"),
-            None => String::new(),
-        };
-        let left_label = format!(
-            "{}  {} lines{}{}{}",
-            self.language_name(),
-            self.line_count(),
-            scale_note,
-            fold_note,
-            caret_note
-        );
+        let (left_label, diagnostics, right_label) =
+            (&text[left_start..diag_start], &text[diag_start..right_start], &text[right_start..]);
         let caret_rect = {
             // Space between the status row's right-hand items, in pixels.
             const STATUS_ITEM_GAP: i32 = 12;
-            let right_label = if selected > 0 {
-                format!(
-                    "{} selected   Ln {}, Col {}",
-                    selected,
-                    self.cursor.head.line + 1,
-                    self.cursor.head.column + 1
-                )
-            } else {
-                format!("Ln {}, Col {}", self.cursor.head.line + 1, self.cursor.head.column + 1)
-            };
-            let width = context.measure_text(&right_label, font).width;
+            let width = context.measure_text(right_label, font).width;
             // `draw_text_fitted` insets **both** ends by `TEXT_FIT_MARGIN`, so a rect sized to the
             // measured width truncates the very label it was measured from ("Ln 1, C...").
             // Reserve the inset on both sides; the right edge stays on the band, so the label
@@ -223,27 +235,21 @@ impl CodeEditor {
             // chrome ink. It sits **left of** the caret label: both used to be right-aligned
             // into the same band, so `E0 W1 I1` was painted over `Ln 1, Col 1` and neither
             // reached the reader.
-            let diagnostics = format!(
-                "E{} W{} I{}",
-                self.marker_count(MarkerSeverity::Error),
-                self.marker_count(MarkerSeverity::Warning),
-                self.marker_count(MarkerSeverity::Info)
-            );
-            let tally_width = context.measure_text(&diagnostics, font).width + fit_padding;
+            let tally_width = context.measure_text(diagnostics, font).width + fit_padding;
             let tally_right = (strip.x - STATUS_ITEM_GAP).max(status_band.x);
             let tally_x = (tally_right - tally_width as i32).max(status_band.x);
             let tally =
                 Rect::new(tally_x, status_band.y, (tally_right - tally_x).max(0) as u32, 12);
             context.draw_text_fitted_cow(
                 tally,
-                &diagnostics,
+                diagnostics,
                 font,
                 chrome.dim_ink,
                 HorizontalAlignment::Right,
             );
             context.draw_text_fitted_cow(
                 strip,
-                &right_label,
+                right_label,
                 font,
                 chrome.dim_ink,
                 HorizontalAlignment::Right,
@@ -258,7 +264,7 @@ impl CodeEditor {
         };
         context.draw_text_fitted_cow(
             caret_rect,
-            &left_label,
+            left_label,
             font,
             chrome.dim_ink,
             HorizontalAlignment::Left,

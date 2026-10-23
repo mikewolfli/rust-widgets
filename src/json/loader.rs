@@ -622,6 +622,16 @@ impl JsonLoader {
         // Doing it by hand here would be a second implementation of that, and the second
         // one is the one that rots.
         let widget_id = mount_declared_widget(widget, parent_id, declared_id, widget_type);
+        if widget_id == 0 && !id_str.is_empty() {
+            // Name the document's own spelling of the id. The backend and mount warnings
+            // this path already logs can only name the numeric id and the widget type, so
+            // an author with two `"id": "submit_btn"` nodes could not tell which line to
+            // fix: the load succeeds and the duplicate node simply has no live control.
+            log::warn!(
+                "[json] the declared id '{id_str}' could not be claimed; another widget \
+                 already holds it and this node was not mounted"
+            );
+        }
 
         // The **live control's** kind, not a value derived from the type name.
         //
@@ -674,14 +684,24 @@ impl JsonLoader {
         // BEFORE passing to the loader (e.g. tr!("button.ok")).
         // The loader uses the literal string as-is.
         if let Some(text) = obj.get("text").and_then(|v| v.as_str()) {
-            if !text.is_empty() && !matches!(widget_key.as_ref(), "button" | "label") {
+            // `messagebox` consumed `text` (and `title`) in its `create_widget` arm, so the
+            // post-pass below would set it a second time — one avoidable round trip and a
+            // second text-changed signal per message box.
+            if !text.is_empty() && !matches!(widget_key.as_ref(), "button" | "label" | "messagebox")
+            {
                 crate::set_widget_text(widget_id, text);
             }
         }
         // Handle "title" property — BLUE4.md spec says groupbox uses "title"
         // (not "text"). For window, title is already set in create_widget.
-        // Only apply via platform API for non-window widgets.
-        if widget_key.as_ref() != "window" {
+        // Only apply via platform API for non-window widgets. The same applies to
+        // the kinds whose `create_widget` arm already consumed `title` (groupbox/panel,
+        // messagebox, filedialog): applying it again here would deliver the same
+        // text twice.
+        if !matches!(
+            widget_key.as_ref(),
+            "window" | "groupbox" | "panel" | "messagebox" | "filedialog"
+        ) {
             if let Some(title) = obj.get("title").and_then(|v| v.as_str()) {
                 if !title.is_empty() {
                     crate::set_widget_text(widget_id, title);
@@ -1136,33 +1156,47 @@ fn apply_declared_styles(widget: &mut dyn Widget, obj: &serde_json::Map<String, 
     let class = obj.get("class").and_then(|v| v.as_str());
     let id = obj.get("id").and_then(|v| v.as_str());
 
+    // One clone, one write-back. This used to clone the widget's whole style and install it
+    // once per layer — up to four deep copies per node, each briefly *applying* a non-final
+    // style that observers (mirrors, a11y, the renderer's epoch) could see as a change. A
+    // 500-node layout paid thousands of copies; and a node with no theme style and no
+    // registered app-wide sheet paid two of them for no change at all. The layers below merge
+    // into the same copy, which is installed once.
+    let mut style = widget.style().clone();
+    let mut touched = false;
+
     // 1. Active theme. The widget's **kind** determines its visual role; a node's
     //    `class` is only an override key, never a role name. Passing the class here used to
     //    replace the kind, so `<button class="primary">` was classified as `Surface` (because
     //    "primary" is not a control kind) and painted as a grey panel instead of a filled
     //    brand-coloured button — the class silently discarded the role it was meant to select.
     if let Some(theme_style) = crate::theme::resolved_theme_style_for(kind, class) {
-        let mut style = widget.style().clone();
         style.merge(&theme_style);
-        widget.set_style(style);
+        touched = true;
     }
 
-    // 2. App-wide sheets, respecting their registered priority.
-    let mut style = widget.style().clone();
-    let applied = {
-        let manager = crate::style::global_stylesheet_manager();
-        manager.apply_to(kind, class, id, None, &mut style)
-    };
-    if let Err(error) = applied {
-        log::warn!(
-            "JSON layout: a global stylesheet failed to apply to {kind} (class {class:?}, id \
-             {id:?}): {error}"
-        );
+    // 2. App-wide sheets, respecting their registered priority. Skipped entirely when none are
+    //    registered: an empty manager is the common case for a layout without app-wide CSS.
+    if !crate::style::global_stylesheet_manager().is_empty() {
+        let applied = {
+            let manager = crate::style::global_stylesheet_manager();
+            manager.apply_to(kind, class, id, None, &mut style)
+        };
+        if let Err(error) = applied {
+            log::warn!(
+                "JSON layout: a global stylesheet failed to apply to {kind} (class {class:?}, id \
+                 {id:?}): {error}"
+            );
+        }
+        // The style is installed even when a sheet reported an error: `apply_to` skips a
+        // malformed sheet but still applies every valid one, so discarding the whole style
+        // here would turn one bad app-wide sheet into "no CSS at all" for every widget.
+        touched = true;
     }
-    // The style is installed even when a sheet reported an error: `apply_to` skips a malformed
-    // sheet but still applies every valid one, so discarding the whole style here would turn one
-    // bad app-wide sheet into "no CSS at all" for every widget.
-    widget.set_style(style);
+
+    if touched {
+        widget.set_style(style);
+    }
 
     // 3. Page-local inline CSS on this node.
     if let Some(css) = obj.get("css").and_then(|v| v.as_str()) {
@@ -1258,12 +1292,23 @@ fn apply_properties_with_icon_resolver(
         if conflicting_icon_declarations && matches!(key.as_str(), "icon_text" | "icon_source") {
             continue;
         }
-        if is_loader_owned_key(key) && !crate::json::properties::declares_record_list(widget, key) {
+        // Resolve once per key. The loader-owned check and the apply below used to
+        // resolve the same name and re-scan the same schema list twice per key.
+        let published = crate::json::properties::resolve_property_name(widget, key);
+        if is_loader_owned_key(key)
+            && !published.is_some_and(|name| {
+                crate::json::properties::resolved_schema_is_record_list(widget, name)
+            })
+        {
             continue;
         }
-        match crate::json::properties::apply_widget_property_with_icon_resolver(
-            widget, key, value, resolver,
-        ) {
+        let outcome = match published {
+            Some(name) => {
+                crate::json::properties::apply_resolved_property(widget, name, value, resolver)
+            }
+            None => ApplyOutcome::NotAProperty,
+        };
+        match outcome {
             ApplyOutcome::Applied => {}
             // The control does not publish this name. It may still be a
             // construction-time key the caller's own arm consumed (`items`, …),

@@ -16,6 +16,10 @@
 //! widget cannot drift from the SVG chart renderer. Without the feature
 //! (tablet/mobile) a compact local preamble is used instead.
 
+// The fallback backdrop is the only `write!` user; cfg'd to match it.
+#[cfg(not(feature = "chart"))]
+use core::fmt::Write as _;
+
 use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -533,10 +537,14 @@ impl LineChart {
             // The axis labels take the **effective font** at their role size, so the theme family
             // and the user's text scale reach the chart chrome (D09-STYLE-01).
             let label_font = role_font(self.base.style(), 9.0);
+            // One buffer reused across all ten labels: `format!` per label per frame was
+            // a fresh allocation for a string a `write!` renders in place.
+            let mut label = String::new();
             for i in 0..=4 {
                 let t = i as f64 / 4.0;
                 let val = y_min + (y_max - y_min) * (1.0 - t);
-                let label = format!("{val:.1}");
+                label.clear();
+                let _ = write!(label, "{val:.1}");
                 let y_pos = plot_area.y + (plot_area.height as f64 * (1.0 - t)) as i32;
                 let text_y = y_pos + 4;
                 context.draw_text(
@@ -550,7 +558,8 @@ impl LineChart {
             for i in 0..=4 {
                 let t = i as f64 / 4.0;
                 let val = x_min + (x_max - x_min) * t;
-                let label = format!("{val:.1}");
+                label.clear();
+                let _ = write!(label, "{val:.1}");
                 let x_pos = plot_area.x + (plot_area.width as f64 * t) as i32;
                 context.draw_text(
                     Point::new((x_pos - 12).max(plot_area.x), bottom + 16),

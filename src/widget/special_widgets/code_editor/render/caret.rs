@@ -55,15 +55,30 @@ impl CodeEditor {
         first + self.unwrapped_x(position.line, position.column).0
     }
 
-    /// The gutter label for `line`.
+    /// The gutter label for `line`, as an owned `String`.
     ///
-    /// Extracted so the numbering rule has a direct test: the paint path emits SVG
-    /// paths, so a test cannot read the number back out of the output.
+    /// Kept for the numbering-rule test: the paint path emits SVG paths, so a test
+    /// cannot read the number back out of the output. Production callers go through
+    /// [`Self::write_line_number_label`] to reuse one buffer across the gutter.
+    #[cfg(test)]
     pub(crate) fn line_number_label(&self, line: usize) -> String {
+        let mut out = String::new();
+        self.write_line_number_label(line, &mut out);
+        out
+    }
+
+    /// Writes the gutter label for `line` into `out`, reusing its capacity.
+    ///
+    /// The gutter repaints one label per visible row per frame; `format!` gave
+    /// each row its own heap allocation. Callers clear one buffer before the loop
+    /// and pass it back every row, so steady-state painting allocates nothing.
+    pub(crate) fn write_line_number_label(&self, line: usize, out: &mut String) {
+        use core::fmt::Write as _;
+        out.clear();
         if self.config.relative_line_numbers && line != self.cursor.head.line {
-            format!("{}", line.abs_diff(self.cursor.head.line))
+            let _ = write!(out, "{}", line.abs_diff(self.cursor.head.line));
         } else {
-            format!("{}", line + 1)
+            let _ = write!(out, "{}", line + 1);
         }
     }
 

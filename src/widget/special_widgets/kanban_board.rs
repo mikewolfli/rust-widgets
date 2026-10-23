@@ -35,6 +35,8 @@
 //! CSS selector (`KanbanBoard`), and through the typed `create_kanban_board` on
 //! `ControlBackend`.
 
+use core::fmt::Write as _;
+
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::dnd::{DragPayload, DragSession, DropEffect, DropTarget};
 use crate::event::{Event, EventHandler};
@@ -976,13 +978,16 @@ impl KanbanBoard {
             header_color,
             HorizontalAlignment::Left,
         );
-        // Card count on the right of the header, or the collapsed marker.
-        let badge = if collapsed {
-            format!("({})", cards.len())
+        // Card count on the right of the header, or the collapsed marker. One buffer
+        // reused per column: the three-branch `format!`/`to_string` chain allocated a
+        // fresh `String` for every column on every frame.
+        let mut badge = String::new();
+        if collapsed {
+            let _ = write!(badge, "({})", cards.len());
         } else if let Some(limit) = wip_limit {
-            format!("{}/{}", cards.len(), limit)
+            let _ = write!(badge, "{}/{}", cards.len(), limit);
         } else {
-            cards.len().to_string()
+            let _ = write!(badge, "{}", cards.len());
         };
         let badge_metrics = context.measure_text(&badge, &badge_font);
         let badge_line = context.text_line(header_rect, &badge_font);

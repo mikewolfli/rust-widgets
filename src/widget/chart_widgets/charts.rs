@@ -343,8 +343,13 @@ pub fn draw_legend(
     }
     let hidden = series.len().saturating_sub(max_items);
     if hidden > 0 {
+        // Reused buffer, not `format!`: this row repaints every frame while the
+        // legend overflows, and the text never exceeds a handful of bytes.
+        use core::fmt::Write as _;
+        let mut summary = String::new();
+        let _ = write!(summary, "+{hidden} more");
         context.draw_text(
-            &format!("+{hidden} more"),
+            &summary,
             Point::from_f32(layout.legend_x + 26.0, cursor_y + 4.0),
             10.0,
             Color { r: 90, g: 90, b: 90, a: 255 },

@@ -900,7 +900,7 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
         // ── View controls with a lightweight data entry (VIEW-N05 unblocked these) ──
         //
         // `data_view` is an alias of `virtual_list` in the capability table, so one arm
-        // serves both canonical names. Without it both snapshots were a bare frame.
+        // serves the canonical name and its alias. Without it both snapshots were a bare frame.
         "virtual_list" | "data_view" => match widget_as_mut::<VirtualList>(widget) {
             Some(list) => {
                 list.set_rows(sample_list_rows());

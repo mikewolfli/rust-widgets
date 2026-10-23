@@ -261,10 +261,15 @@ impl BoundJsonLayout {
     /// A subtree is collected **before** anything is forgotten: `forget_node` drops a node's
     /// child list, so removing while walking would stop at the first level.
     pub fn detach(&mut self, id: ObjectId) -> Vec<ObjectId> {
+        // The visited set keeps the walk linear in the subtree's edges. A node can be
+        // pushed twice (re-registration may list one id under two parents), and the
+        // previous membership test scanned `removed` — an O(n²) walk that a large
+        // subtree deletion paid per patch apply.
+        let mut visited = crate::compat::BTreeSet::new();
         let mut removed: Vec<ObjectId> = Vec::new();
         let mut stack = vec![id];
         while let Some(current) = stack.pop() {
-            if !removed.contains(&current) {
+            if visited.insert(current) {
                 removed.push(current);
             }
             if let Some(kids) = self.children_of.get(&current) {

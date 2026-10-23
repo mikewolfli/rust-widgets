@@ -549,16 +549,18 @@ unsafe fn paint_window_tree(hwnd: HWND) {
         // (`linux/platform_impl.rs`, the `connect_draw` window painter) is the working
         // reference and calls this same function.
         //
-        // # Why the cache is not lost
+        // # Why the cached entry point is used
         //
-        // The previous code used the cached entry point to avoid re-rasterising the whole
-        // window on every expose. `render_frame_tree` has no size-keyed cache of its own, so
-        // the frame is built per paint. That is the correct trade here: a stale or partial
-        // frame is a wrong picture, whereas re-rasterising is only slow, and correctness of
-        // what is on screen outranks the saving. The clear colour must therefore cover the
-        // client area, which `render_frame_tree`'s own `begin_frame(clear)` does — and it
-        // does so even when no child paints.
-        let Some(frame) = crate::widget::runtime::render_frame_tree(
+        // `render_frame_tree_cached_shared` keys on the renderable epoch, so an expose that is
+        // not a content change (an occlusion change, a live-resize notification) reuses the last
+        // frame instead of re-rasterising the whole tree. The epoch is captured *before* painting,
+        // so a repaint a control requests while drawing still belongs to the next frame — stale
+        // bytes cannot survive a content change. The macOS window painters use this same entry
+        // point; re-rasterising would only be slow, and correctness of what is on screen is
+        // preserved by the epoch. The clear colour must cover the client area, which
+        // `render_frame_tree`'s own `begin_frame(clear)` does — and it does so even when no child
+        // paints.
+        let Some(frame) = crate::widget::runtime::render_frame_tree_cached_shared(
             widget_id,
             crate::core::Size::new(width, height),
             crate::core::Color::WHITE,

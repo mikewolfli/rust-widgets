@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 //! Calendar widget.
+use core::fmt::Write as _;
+
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -349,7 +351,7 @@ impl Calendar {
         self.base.request_redraw();
     }
 
-    /// Renders `display_month` through this calendar's `date_format` pattern.
+    /// Renders `display_month` through this calendar's `date_format` pattern into `out`.
     ///
     /// This is what makes `date_format` a live property: it was stored, published
     /// and settable from the day it was added, but `draw` painted a hardcoded
@@ -359,14 +361,35 @@ impl Calendar {
     /// specifier, so the pattern is validated with `StrftimeItems` first. An
     /// invalid pattern falls back to the `"<Month> <Year>"` rendering (the
     /// previous, always-valid paint) rather than crashing the draw pass.
-    fn formatted_month_title(&self) -> String {
+    ///
+    /// # Why the validation scan is not cached
+    ///
+    /// The scan runs over the pattern on every frame. Caching it would mean keying a
+    /// stored flag on `date_format` — new mutable state derived from a property, which
+    /// the plan deliberately does not introduce. The scan is linear in the pattern's
+    /// length (a handful of bytes) and is charged once per frame, so the cost is noise
+    /// next to the grid paint.
+    fn write_month_title(&self, out: &mut String) {
         use chrono::format::{Item, StrftimeItems};
         let valid = StrftimeItems::new(&self.date_format).all(|item| !matches!(item, Item::Error));
         if valid {
-            self.display_month.format(&self.date_format).to_string()
+            let _ = write!(out, "{}", self.display_month.format(&self.date_format));
         } else {
-            format!("{} {}", self.display_month.format("%B"), self.display_month.year())
+            let _ =
+                write!(out, "{} {}", self.display_month.format("%B"), self.display_month.year());
         }
+    }
+
+    /// The rendered month title; see [`Self::write_month_title`].
+    ///
+    /// Test-only: the draw pass writes into its own buffer via [`Self::write_month_title`]
+    /// directly, so the owned-string convenience is kept for the property tests that pin
+    /// the `date_format` contract.
+    #[cfg(test)]
+    fn formatted_month_title(&self) -> String {
+        let mut out = String::new();
+        self.write_month_title(&mut out);
+        out
     }
 
     /// Layout constants.
@@ -952,10 +975,11 @@ impl Draw for Calendar {
                 (band_right - left_edge).max(0) as u32,
                 title_line.height,
             );
-            let title = self.formatted_month_title();
+            let mut title = String::new();
+            self.write_month_title(&mut title);
             context.draw_text_fitted_cow(
                 title_bounds,
-                &title,
+                title.as_str(),
                 &title_font,
                 text_color,
                 HorizontalAlignment::Center,

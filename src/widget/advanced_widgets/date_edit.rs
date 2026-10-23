@@ -195,7 +195,8 @@ impl std::fmt::Display for Date {
     }
 }
 
-/// Substitutes a `display_format` pattern with the given component values.
+/// Substitutes a `display_format` pattern with the given component values, appending the
+/// rendering to `out` and returning whether any token substituted.
 ///
 /// # Why one formatter and not three
 ///
@@ -238,33 +239,111 @@ impl std::fmt::Display for Date {
 /// The unused components are passed as `None` by the caller: a date-only control has no hour, so
 /// `HH` in its pattern expands to nothing rather than to a plausible `00`.
 ///
-/// It returns `None` when the pattern contains **no recognised token at all**, which is the signal a
+/// Returns `false` when the pattern contains **no recognised token at all**, which is the signal a
 /// caller uses to fall back to its own fixed spelling: a pattern of `"today"` should not replace the
 /// value's display with the word "today".
-pub(crate) fn format_with_pattern(pattern: &str, components: DateTimeComponents) -> Option<String> {
+///
+/// # Why into-style
+///
+/// Every token renders straight into the caller's buffer, so a draw-pass caller spends one
+/// allocation per frame instead of one per token on top of the result string.
+/// [`format_with_pattern`] is the allocating wrapper kept for `size_hint` and the tests.
+pub(crate) fn format_with_pattern_into(
+    pattern: &str,
+    components: DateTimeComponents,
+    out: &mut String,
+) -> bool {
     /// One pattern token and the way it renders itself from the components.
     ///
     /// Named so the table below is an array of pairs rather than an array of a type whose shape has to
-    /// be read off the literal.
-    type Token = (&'static str, fn(&DateTimeComponents) -> Option<String>);
+    /// be read off the literal. Renders into the caller's buffer and reports whether the component
+    /// existed — a token with no value behind it writes nothing and is dropped rather than passed
+    /// through: the caller chose the pattern and knows which components it has, so `HH` in a date-only
+    /// pattern is a mistake to swallow, not a literal to display.
+    type Token = (&'static str, fn(&DateTimeComponents, &mut String) -> bool);
     // Longest first, so a two-character token is never eaten by its one-character prefix.
     const TOKENS: [Token; 11] = [
-        ("yyyy", |c| c.year.map(|y| format!("{y:04}"))),
-        ("SSS", |c| c.millisecond.map(|ms| format!("{ms:03}"))),
-        ("yy", |c| c.year.map(|y| format!("{:02}", y.rem_euclid(100)))),
-        ("MM", |c| c.month.map(|m| format!("{m:02}"))),
-        ("dd", |c| c.day.map(|d| format!("{d:02}"))),
-        ("HH", |c| c.hour.map(|h| format!("{h:02}"))),
-        ("mm", |c| c.minute.map(|m| format!("{m:02}"))),
-        ("ss", |c| c.second.map(|s| format!("{s:02}"))),
-        ("M", |c| c.month.map(|m| m.to_string())),
-        ("d", |c| c.day.map(|d| d.to_string())),
-        ("H", |c| c.hour.map(|h| h.to_string())),
+        ("yyyy", |c, out| match c.year {
+            Some(y) => {
+                let _ = write!(out, "{y:04}");
+                true
+            }
+            None => false,
+        }),
+        ("SSS", |c, out| match c.millisecond {
+            Some(ms) => {
+                let _ = write!(out, "{ms:03}");
+                true
+            }
+            None => false,
+        }),
+        ("yy", |c, out| match c.year {
+            Some(y) => {
+                let _ = write!(out, "{:02}", y.rem_euclid(100));
+                true
+            }
+            None => false,
+        }),
+        ("MM", |c, out| match c.month {
+            Some(m) => {
+                let _ = write!(out, "{m:02}");
+                true
+            }
+            None => false,
+        }),
+        ("dd", |c, out| match c.day {
+            Some(d) => {
+                let _ = write!(out, "{d:02}");
+                true
+            }
+            None => false,
+        }),
+        ("HH", |c, out| match c.hour {
+            Some(h) => {
+                let _ = write!(out, "{h:02}");
+                true
+            }
+            None => false,
+        }),
+        ("mm", |c, out| match c.minute {
+            Some(m) => {
+                let _ = write!(out, "{m:02}");
+                true
+            }
+            None => false,
+        }),
+        ("ss", |c, out| match c.second {
+            Some(s) => {
+                let _ = write!(out, "{s:02}");
+                true
+            }
+            None => false,
+        }),
+        ("M", |c, out| match c.month {
+            Some(m) => {
+                let _ = write!(out, "{m}");
+                true
+            }
+            None => false,
+        }),
+        ("d", |c, out| match c.day {
+            Some(d) => {
+                let _ = write!(out, "{d}");
+                true
+            }
+            None => false,
+        }),
+        ("H", |c, out| match c.hour {
+            Some(h) => {
+                let _ = write!(out, "{h}");
+                true
+            }
+            None => false,
+        }),
     ];
 
-    let mut out = crate::compat::String::new();
-    let mut rest = pattern;
     let mut substituted = false;
+    let mut rest = pattern;
     // Whether a token may start here: only at the beginning or after a non-letter. See the doc
     // comment above for the `"Today"` case this exists to fix.
     let mut at_token_start = true;
@@ -272,11 +351,7 @@ pub(crate) fn format_with_pattern(pattern: &str, components: DateTimeComponents)
         if at_token_start {
             for (token, render) in TOKENS {
                 if let Some(after) = rest.strip_prefix(token) {
-                    // A token with no value behind it is dropped rather than passed through: the
-                    // caller chose the pattern and knows which components it has, so `HH` in a
-                    // date-only pattern is a mistake to swallow, not a literal to display.
-                    if let Some(text) = render(&components) {
-                        out.push_str(&text);
+                    if render(&components, out) {
                         substituted = true;
                     }
                     rest = after;
@@ -298,7 +373,14 @@ pub(crate) fn format_with_pattern(pattern: &str, components: DateTimeComponents)
         at_token_start = !ch.is_alphabetic();
     }
 
-    if substituted {
+    substituted
+}
+
+/// The allocating wrapper around [`format_with_pattern_into`], kept for `size_hint` and the
+/// tests: a draw-pass caller uses the into-style core directly so it can reuse a buffer.
+pub(crate) fn format_with_pattern(pattern: &str, components: DateTimeComponents) -> Option<String> {
+    let mut out = crate::compat::String::new();
+    if format_with_pattern_into(pattern, components, &mut out) {
         Some(out)
     } else {
         None
@@ -832,8 +914,10 @@ impl Draw for DateEdit {
         context.draw_rect(rect, border);
         // The value is spelled by the caller's `display_format` when that pattern is one this control
         // can render, and by `Date`'s own `YYYY-MM-DD` otherwise. The fallback is what keeps an
-        // unrecognised pattern showing the value rather than the pattern's literal words.
-        let text = super::date_edit::format_with_pattern(
+        // unrecognised pattern showing the value rather than the pattern's literal words. Into the
+        // buffer directly: the allocating wrapper built the result plus one string per token.
+        let mut text = String::new();
+        if !super::date_edit::format_with_pattern_into(
             &self.display_format,
             super::date_edit::DateTimeComponents {
                 year: Some(self.date.year()),
@@ -841,8 +925,11 @@ impl Draw for DateEdit {
                 day: Some(self.date.day()),
                 ..Default::default()
             },
-        )
-        .unwrap_or_else(|| self.date.to_string());
+            &mut text,
+        ) {
+            text.clear();
+            let _ = write!(text, "{}", self.date);
+        }
         // Vertically centred through the shared primitive: `rect.y + height / 2` puts the
         // glyph box's top edge on the field's middle line, so the value sat half a line low.
         // The line box is also what a caller reading this field's text position would need,
@@ -858,7 +945,7 @@ impl Draw for DateEdit {
                 width: rect.width.saturating_sub(12),
                 height: line.height,
             },
-            &text,
+            text.as_str(),
             font,
             ink,
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),

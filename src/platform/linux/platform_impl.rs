@@ -1001,7 +1001,11 @@ impl Platform for LinuxPlatform {
                     // paint: the clear colour already fills the area.
                     return glib::Propagation::Proceed;
                 };
-                match crate::widget::runtime::render_frame_tree(
+                // The cached tree variant keys on the renderable epoch, so an expose that is
+                // not a content change (occlusion, live-resize notification) reuses the last
+                // frame instead of re-rasterising the whole tree — the same arrangement the
+                // macOS and Windows window painters use.
+                match crate::widget::runtime::render_frame_tree_cached_shared(
                     window_widget,
                     crate::core::Size::new(area_width, area_height),
                     crate::core::Color::rgb(240, 240, 240),

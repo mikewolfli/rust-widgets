@@ -7,6 +7,8 @@
 //! a thumbnail strip at the bottom. It supports keyboard navigation (arrow keys),
 //! thumbnail selection via click, and emits a signal when the selected image changes.
 
+use core::fmt::Write as _;
+
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -617,6 +619,9 @@ impl Draw for ImageGallery {
         // Draw current image info in preview area.
         if let Some(image) = self.images.get(self.current_index) {
             let font = effective_font(style);
+            // One buffer for the preview's two metadata labels (dimensions, index): `format!`
+            // built a fresh `String` for each, every frame.
+            let mut meta_text = String::new();
 
             // Draw image label / filename centered.
             let display_name = image
@@ -641,9 +646,11 @@ impl Draw for ImageGallery {
                 HorizontalAlignment::Center,
             );
 
-            // Draw dimensions.
-            let dim_text = format!("{}x{}", image.width, image.height);
-            let dim_metrics = context.measure_text(&dim_text, font);
+            // Draw dimensions. Both the dimension and index labels render into one buffer:
+            // `format!` built a fresh `String` for each, per frame.
+            meta_text.clear();
+            let _ = write!(meta_text, "{}x{}", image.width, image.height);
+            let dim_metrics = context.measure_text(&meta_text, font);
             let dim_x = preview_rect.x + (preview_rect.width as i32 - dim_metrics.width as i32) / 2;
             // Same as the filename above: half a *line box* about the band, not half an
             // ascent below it.
@@ -651,19 +658,20 @@ impl Draw for ImageGallery {
                 preview_rect.y + preview_rect.height as i32 * 2 / 3 - dim_metrics.height as i32 / 2;
             context.draw_text(
                 Point::new(dim_x, dim_y),
-                &dim_text,
+                &meta_text,
                 font,
                 dim_ink,
                 HorizontalAlignment::Left,
             );
 
             // Image index indicator.
-            let index_text = format!("{}/{}", self.current_index + 1, self.images.len());
-            let index_metrics = context.measure_text(&index_text, font);
+            meta_text.clear();
+            let _ = write!(meta_text, "{}/{}", self.current_index + 1, self.images.len());
+            let index_metrics = context.measure_text(&meta_text, font);
             let index_x =
                 preview_rect.x + preview_rect.width as i32 - index_metrics.width as i32 - 8;
-            let pill_w = index_metrics.width as u32 + 8;
-            let pill_h = index_metrics.height as u32 + 4;
+            let pill_w = index_metrics.width + 8;
+            let pill_h = index_metrics.height + 4;
             let pill_rect = Rect::new(index_x - 4, preview_rect.y + 2, pill_w, pill_h);
             // Centre the glyph box on the pill: the origin is the box's top edge, so the old
             // `+ ascent` drew the number half a line under the pill's middle.
@@ -675,7 +683,7 @@ impl Draw for ImageGallery {
             context.fill_rounded_rect(pill_rect, 3, stage.blend(&stage_ink, 0.27));
             context.draw_text(
                 Point::new(index_x, index_y),
-                &index_text,
+                &meta_text,
                 font,
                 stage_ink,
                 HorizontalAlignment::Left,

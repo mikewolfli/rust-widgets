@@ -212,6 +212,16 @@ thread_local! {
     #[allow(clippy::missing_const_for_thread_local)]
     static HOST_WINDOWS: RefCell<HashMap<ObjectId, ObjectId>> = RefCell::new(HashMap::new());
 
+    /// The inverse of [`HOST_WINDOWS`]: host id → widget id.
+    ///
+    /// Platform callbacks hand the backend *its own* window id, and that translation used to be a
+    /// linear scan of `HOST_WINDOWS` — paid by every GTK key/pointer/draw callback (thirteen call
+    /// sites, `motion_notify` at pointer-event rate). Keeping the reverse direction makes the
+    /// lookup O(1). Maintained only by [`set_host_window`] and [`unregister`], which also maintain
+    /// `HOST_WINDOWS`, so the two cannot disagree.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static HOST_TO_WIDGET: RefCell<HashMap<ObjectId, ObjectId>> = RefCell::new(HashMap::new());
+
     /// Which library window a **mounted surface** is shown in.
     ///
     /// A surface is registered with no parent (it is not a child in the widget tree —
@@ -524,7 +534,17 @@ pub fn register_with_id(
 pub fn unregister(id: ObjectId) -> bool {
     // Drop any host-window association with the widget it belonged to, so a
     // recycled or reused id cannot inherit a stale host window.
-    let _ = HOST_WINDOWS.try_with(|map| map.borrow_mut().remove(&id));
+    let removed_host = HOST_WINDOWS.try_with(|map| map.borrow_mut().remove(&id)).ok().flatten();
+    if let Some(host) = removed_host {
+        // Only drop the reverse entry while it still names this widget: a host that has since
+        // been re-associated with another widget belongs to that one now.
+        let _ = HOST_TO_WIDGET.try_with(|rev| {
+            let mut rev = rev.borrow_mut();
+            if rev.get(&host) == Some(&id) {
+                rev.remove(&host);
+            }
+        });
+    }
     let _ = SURFACE_WINDOWS.try_with(|map| map.borrow_mut().remove(&id));
     // A widget that is gone must not stay in the tab order: `focus_next` would
     // hand focus to an id that resolves to nothing, and the key that triggered
@@ -1302,7 +1322,18 @@ pub fn hovered_widget() -> Option<ObjectId> {
 pub fn set_host_window(id: ObjectId, host: ObjectId) -> bool {
     let stored = HOST_WINDOWS.try_with(|map| {
         if MOUNTED.try_with(|m| m.borrow().contains_key(&id)).unwrap_or(false) {
-            map.borrow_mut().insert(id, host);
+            let mut map = map.borrow_mut();
+            // Re-associating a widget with a new host must stop advertising the old host, or a
+            // stale `HOST_TO_WIDGET` entry would answer lookups for a window this widget no
+            // longer owns.
+            if let Some(previous) = map.insert(id, host) {
+                if previous != host {
+                    let _ = HOST_TO_WIDGET.try_with(|rev| rev.borrow_mut().remove(&previous));
+                }
+            }
+            let _ = HOST_TO_WIDGET.try_with(|rev| {
+                rev.borrow_mut().insert(host, id);
+            });
             true
         } else {
             false
@@ -1332,9 +1363,7 @@ pub fn host_window_for(id: ObjectId) -> Option<ObjectId> {
 /// Returns `None` when no widget names this host, which is correct for a window the
 /// platform built before any widget was associated with it.
 pub fn widget_id_for_host_window(host: ObjectId) -> Option<ObjectId> {
-    HOST_WINDOWS
-        .try_with(|map| map.borrow().iter().find(|(_, h)| **h == host).map(|(w, _)| *w))
-        .unwrap_or(None)
+    HOST_TO_WIDGET.try_with(|map| map.borrow().get(&host).copied()).unwrap_or(None)
 }
 
 /// Returns whether `id` refers to a mounted self-drawn widget.

@@ -22,6 +22,48 @@ use crate::platform::windows::notify;
 use crate::platform::windows::types::*;
 use crate::platform::DropEvent;
 use std::sync::atomic::Ordering;
+
+/// Re-reads a slow Windows environment fact at most once per [`ENVIRONMENT_TTL`].
+///
+/// `drive_frame` refreshes the style environment every frame, and on Windows each fact is a
+/// registry or GDI transaction: at 60 fps that is 120 registry reads a second for values a user
+/// changes on the order of days. The cache trades a one-second propagation delay for a settings
+/// change against removing that steady cost — the same shape (and TTL) the monitoring probes in
+/// `os_probes` use, and far below the rate at which anyone flips a system theme.
+#[cfg(target_os = "windows")]
+fn cached_environment_fact<T: Copy>(
+    cache: &std::sync::OnceLock<std::sync::Mutex<Option<(std::time::Instant, T)>>>,
+    read: impl FnOnce() -> T,
+) -> T {
+    const ENVIRONMENT_TTL: std::time::Duration = std::time::Duration::from_secs(1);
+    if let Some(cache) = cache.get() {
+        if let Ok(guard) = cache.lock() {
+            if let Some((sampled_at, value)) = *guard {
+                if sampled_at.elapsed() < ENVIRONMENT_TTL {
+                    return value;
+                }
+            }
+        }
+    }
+    let value = read();
+    if let Some(cache) = cache.get() {
+        if let Ok(mut guard) = cache.lock() {
+            *guard = Some((std::time::Instant::now(), value));
+        }
+    }
+    value
+}
+
+#[cfg(target_os = "windows")]
+type EnvironmentFactCache<T> =
+    std::sync::OnceLock<std::sync::Mutex<Option<(std::time::Instant, T)>>>;
+
+#[cfg(target_os = "windows")]
+static TEXT_SCALE_CACHE: EnvironmentFactCache<f32> = std::sync::OnceLock::new();
+#[cfg(target_os = "windows")]
+static SYSTEM_THEME_CACHE: EnvironmentFactCache<Option<bool>> = std::sync::OnceLock::new();
+#[cfg(target_os = "windows")]
+static DPI_SCALE_CACHE: EnvironmentFactCache<f32> = std::sync::OnceLock::new();
 // Only `set_widget_visible`'s `widgets_unstripped` body shows or hides a window, so a stripped
 // profile would import these and never use them.
 #[cfg(all(target_os = "windows", widgets_unstripped))]
@@ -463,38 +505,40 @@ impl Platform for WindowsPlatform {
     fn text_scale(&self) -> f32 {
         use winapi::um::winnt::{KEY_READ, REG_DWORD};
         use winapi::um::winreg::{RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER};
-        // SAFETY: both names are NUL-terminated UTF-16 buffers that outlive the calls; `key` is
-        // written only on success and closed on every path; `data`/`size`/`kind` are local
-        // out-parameters sized before the query.
-        unsafe {
-            let subkey: Vec<u16> = "Software\\Microsoft\\Accessibility"
-                .encode_utf16()
-                .chain(std::iter::once(0))
-                .collect();
-            let value_name: Vec<u16> =
-                "TextScaleFactor".encode_utf16().chain(std::iter::once(0)).collect();
-            let mut key = std::ptr::null_mut();
-            if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut key) != 0 {
-                return 1.0;
+        cached_environment_fact(&TEXT_SCALE_CACHE, || {
+            // SAFETY: both names are NUL-terminated UTF-16 buffers that outlive the calls; `key` is
+            // written only on success and closed on every path; `data`/`size`/`kind` are local
+            // out-parameters sized before the query.
+            unsafe {
+                let subkey: Vec<u16> = "Software\\Microsoft\\Accessibility"
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect();
+                let value_name: Vec<u16> =
+                    "TextScaleFactor".encode_utf16().chain(std::iter::once(0)).collect();
+                let mut key = std::ptr::null_mut();
+                if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut key) != 0 {
+                    return 1.0;
+                }
+                let mut data: u32 = 0;
+                let mut size = std::mem::size_of::<u32>() as u32;
+                let mut kind: u32 = 0;
+                let status = RegQueryValueExW(
+                    key,
+                    value_name.as_ptr(),
+                    std::ptr::null_mut(),
+                    &mut kind,
+                    &mut data as *mut u32 as *mut u8,
+                    &mut size,
+                );
+                RegCloseKey(key);
+                if status != 0 || kind != REG_DWORD || data == 0 {
+                    return 1.0;
+                }
+                // Stored as a percentage (`125` means 125%).
+                data as f32 / 100.0
             }
-            let mut data: u32 = 0;
-            let mut size = std::mem::size_of::<u32>() as u32;
-            let mut kind: u32 = 0;
-            let status = RegQueryValueExW(
-                key,
-                value_name.as_ptr(),
-                std::ptr::null_mut(),
-                &mut kind,
-                &mut data as *mut u32 as *mut u8,
-                &mut size,
-            );
-            RegCloseKey(key);
-            if status != 0 || kind != REG_DWORD || data == 0 {
-                return 1.0;
-            }
-            // Stored as a percentage (`125` means 125%).
-            data as f32 / 100.0
-        }
+        })
     }
 
     /// The non-Windows arm inherits the trait's "no preference reported" value.
@@ -545,44 +589,46 @@ impl Platform for WindowsPlatform {
     fn system_theme(&self) -> Option<bool> {
         use winapi::um::winnt::{KEY_READ, REG_DWORD};
         use winapi::um::winreg::{RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER};
-        // SAFETY: both names are NUL-terminated UTF-16 buffers that outlive the calls; `key` is
-        // written only on success and closed on every path; `data`/`size`/`kind` are local
-        // out-parameters sized before the query.
-        unsafe {
-            let subkey: Vec<u16> =
-                "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"
-                    .encode_utf16()
-                    .chain(std::iter::once(0))
-                    .collect();
-            let value_name: Vec<u16> =
-                "AppsUseLightTheme".encode_utf16().chain(std::iter::once(0)).collect();
-            let mut key = std::ptr::null_mut();
-            if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut key) != 0 {
-                return None;
+        cached_environment_fact(&SYSTEM_THEME_CACHE, || {
+            // SAFETY: both names are NUL-terminated UTF-16 buffers that outlive the calls; `key` is
+            // written only on success and closed on every path; `data`/`size`/`kind` are local
+            // out-parameters sized before the query.
+            unsafe {
+                let subkey: Vec<u16> =
+                    "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"
+                        .encode_utf16()
+                        .chain(std::iter::once(0))
+                        .collect();
+                let value_name: Vec<u16> =
+                    "AppsUseLightTheme".encode_utf16().chain(std::iter::once(0)).collect();
+                let mut key = std::ptr::null_mut();
+                if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut key) != 0 {
+                    return None;
+                }
+                let mut data: u32 = 0;
+                let mut size = std::mem::size_of::<u32>() as u32;
+                let mut kind: u32 = 0;
+                let status = RegQueryValueExW(
+                    key,
+                    value_name.as_ptr(),
+                    std::ptr::null_mut(),
+                    &mut kind,
+                    &mut data as *mut u32 as *mut u8,
+                    &mut size,
+                );
+                RegCloseKey(key);
+                if status != 0 || kind != REG_DWORD {
+                    return None;
+                }
+                // `0` is dark, `1` is light. Any other value is not a state this setting defines, so
+                // it is treated as "cannot tell" rather than guessed.
+                match data {
+                    0 => Some(true),
+                    1 => Some(false),
+                    _ => None,
+                }
             }
-            let mut data: u32 = 0;
-            let mut size = std::mem::size_of::<u32>() as u32;
-            let mut kind: u32 = 0;
-            let status = RegQueryValueExW(
-                key,
-                value_name.as_ptr(),
-                std::ptr::null_mut(),
-                &mut kind,
-                &mut data as *mut u32 as *mut u8,
-                &mut size,
-            );
-            RegCloseKey(key);
-            if status != 0 || kind != REG_DWORD {
-                return None;
-            }
-            // `0` is dark, `1` is light. Any other value is not a state this setting defines, so
-            // it is treated as "cannot tell" rather than guessed.
-            match data {
-                0 => Some(true),
-                1 => Some(false),
-                _ => None,
-            }
-        }
+        })
     }
 
     /// The non-Windows arm inherits the trait's honest "cannot tell".
@@ -1200,16 +1246,20 @@ impl Platform for WindowsPlatform {
     fn dpi_scale_factor(&self) -> f32 {
         #[cfg(target_os = "windows")]
         {
-            // Query the actual DPI of the primary monitor.
-            unsafe {
-                let hdc = winapi::um::winuser::GetDC(std::ptr::null_mut());
-                if hdc.is_null() {
-                    return 1.0;
+            cached_environment_fact(&DPI_SCALE_CACHE, || {
+                // Query the actual DPI of the primary monitor.
+                // SAFETY: the DC is released on every path; `GetDeviceCaps` only reads it.
+                unsafe {
+                    let hdc = winapi::um::winuser::GetDC(std::ptr::null_mut());
+                    if hdc.is_null() {
+                        return 1.0;
+                    }
+                    let dpi =
+                        winapi::um::wingdi::GetDeviceCaps(hdc, winapi::um::wingdi::LOGPIXELSX);
+                    winapi::um::winuser::ReleaseDC(std::ptr::null_mut(), hdc);
+                    dpi as f32 / 96.0
                 }
-                let dpi = winapi::um::wingdi::GetDeviceCaps(hdc, winapi::um::wingdi::LOGPIXELSX);
-                winapi::um::winuser::ReleaseDC(std::ptr::null_mut(), hdc);
-                dpi as f32 / 96.0
-            }
+            })
         }
         #[cfg(not(target_os = "windows"))]
         {

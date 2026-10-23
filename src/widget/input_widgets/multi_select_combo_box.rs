@@ -15,6 +15,8 @@
 //! `rect.x + rect.width - 18`, so the two were independent derivations from the same field
 //! and a longer summary — `"3 selected"` in a narrow form — was drawn underneath the arrow.
 
+use core::fmt::Write as _;
+
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -304,16 +306,41 @@ impl MultiSelectComboBox {
         }
     }
 
-    /// Returns the summary text shown when the dropdown is collapsed.
-    fn summary_text(&self) -> String {
+    /// Writes the summary shown when the dropdown is collapsed into `out`.
+    ///
+    /// Into-style (the calendar-title arrangement): the draw pass renders into its own
+    /// buffer, so the common literal case (`"Nothing selected"`) costs no string at all.
+    fn write_summary_text(&self, out: &mut String) {
         let selected_count = self.selected.len();
         if selected_count == 0 {
-            "Nothing selected".to_string()
+            out.push_str("Nothing selected");
         } else if selected_count <= 2 {
-            self.selected_texts().join(", ")
+            // Borrowed in place: `selected_texts` cloned every selected label into a fresh
+            // `Vec<String>` just to join it. At most two labels here, sorted borrowed and
+            // joined with the same order the owned version sorts by.
+            let mut texts: Vec<&str> = self
+                .selected
+                .iter()
+                .filter_map(|&idx| self.items.get(idx).map(|item| item.text.as_str()))
+                .collect();
+            texts.sort_unstable();
+            for (i, text) in texts.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(text);
+            }
         } else {
-            format!("{selected_count} selected")
+            let _ = write!(out, "{selected_count} selected");
         }
+    }
+
+    /// The summary text; see [`Self::write_summary_text`]. Kept for `size_hint`, which
+    /// measures the widest summary the selection can currently produce.
+    fn summary_text(&self) -> String {
+        let mut out = String::new();
+        self.write_summary_text(&mut out);
+        out
     }
 
     /// Toggles the expanded/collapsed state.
@@ -529,7 +556,8 @@ impl Draw for MultiSelectComboBox {
         let font = effective_font(style);
         let line = context.text_line(rect, font);
         let geometry = self.indicator_geometry(line.height);
-        let summary = self.summary_text();
+        let mut summary = String::new();
+        self.write_summary_text(&mut summary);
         // Fitted into the box the indicator left, on that box's own line box: a glyph origin is
         // the box's top edge, so the old `padding + 13` put a 13 px font's origin on the field's
         // middle line and drew the summary half a line low.
@@ -541,7 +569,7 @@ impl Draw for MultiSelectComboBox {
                 geometry.text_box.width,
                 summary_line.height,
             ),
-            &summary,
+            summary.as_str(),
             font,
             ink,
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),

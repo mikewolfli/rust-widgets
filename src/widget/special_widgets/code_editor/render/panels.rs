@@ -296,6 +296,9 @@ impl CodeEditor {
         // Measured in the face the numbers are drawn in, so the number and the line
         // it numbers sit on one baseline.
         let number_box = context.measure_text("0", &number_font).height as i32;
+        // Hoisted out of the row loop: both are constant for the whole gutter, and
+        // `measure_text` still pays a cache-key fingerprint per call.
+        let line_box = context.measure_text("M", self.chrome_font()).height as i32;
         let numbers_right = rect.x + GUTTER_LEFT_PAD + self.line_number_slot();
         let fold_x = rect.x + self.fold_marker_offset();
         // Folds are read **once**, not per painted row: `fold_regions()` clones the
@@ -303,6 +306,9 @@ impl CodeEditor {
         let folds = self.fold_regions();
         let active_line = self.cursor.head.line;
         let mut row = 0usize;
+        // One reusable label buffer for the whole gutter pass: `line_number_label`
+        // through `format!` was a fresh allocation per visible row per frame.
+        let mut number_buf = String::new();
         // The windowed iterator, not `visible_document_lines`: the loop below
         // stops early, but materialising the line list first would already have
         // walked the document, which is the cost this avoids.
@@ -323,10 +329,10 @@ impl CodeEditor {
                     // other line by its distance from it (Zed's
                     // `relative_line_numbers`). An absolute number on the caret line is
                     // what lets a relative gutter still answer "which line am I on".
-                    let number = self.line_number_label(line);
+                    self.write_line_number_label(line, &mut number_buf);
                     context.draw_text(
                         Point::new(numbers_right, y + (row_height as i32 - number_box) / 2),
-                        &number,
+                        number_buf.as_str(),
                         &number_font,
                         if line == active_line { chrome.ink } else { chrome.dim_ink },
                         HorizontalAlignment::Right,
@@ -335,14 +341,10 @@ impl CodeEditor {
                 // Fold affordance: a chevron on foldable lines only. The `v`/`>`
                 // pair is state; the `.` that used to fill every other row was
                 // noise that made the gutter look like it was full of artefacts.
-                let foldable = folds.iter().any(|region| region.start_line == line);
-                if foldable {
-                    let marker = if folds.iter().any(|r| r.folded && r.start_line == line) {
-                        ">"
-                    } else {
-                        "v"
-                    };
-                    let line_box = context.measure_text("M", self.chrome_font()).height as i32;
+                // One scan answers both "is foldable" and "is folded"; two `any`
+                // passes walked the whole region list twice per foldable row.
+                if let Some(region) = folds.iter().find(|region| region.start_line == line) {
+                    let marker = if region.folded { ">" } else { "v" };
                     context.draw_text(
                         Point::new(fold_x, y + (row_height as i32 - line_box) / 2),
                         marker,

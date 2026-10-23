@@ -22,6 +22,8 @@
 //! reachable by name from the declarative path and CSS selectors), publishes a
 //! property contract, and has interaction tests.
 
+use core::fmt::Write as _;
+
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -564,6 +566,7 @@ impl Draw for NumberPicker {
         // assertion measures, so it is what the loop must test too.
         let text_h = context.measure_text("M", font).height as i32;
         let frame_bottom = rect.y + rect.height as i32;
+        let mut label = String::new();
         for offset in -visible..=visible {
             let row_center = centre + (offset as i32) * row_h as i32;
             let text_top = row_center - text_h / 2;
@@ -586,14 +589,20 @@ impl Draw for NumberPicker {
             } else {
                 selected_text_color
             };
-            let label = if faded { value.to_string() } else { format!("{value}{}", self.suffix) };
+            // One buffer reused across the rows: `to_string`/`format!` per row per frame
+            // was a fresh allocation for a label a `write!` renders in place.
+            label.clear();
+            let _ = write!(label, "{value}");
+            if !faded {
+                label.push_str(&self.suffix);
+            }
             // The row's centre is where the glyph *box* centres, not where its top edge goes:
             // the renderer paints downward from the origin, so using `row_center` directly put
             // a 14 px value in a 15 px row spanning `centre .. centre + 14` — half a row below
             // the band it belongs to.
             context.draw_text_fitted_cow(
                 Rect::new(rect.x, text_top, rect.width, text_h.max(1) as u32),
-                &label,
+                label.as_str(),
                 font,
                 color,
                 HorizontalAlignment::Center,

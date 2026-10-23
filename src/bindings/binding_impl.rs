@@ -715,7 +715,6 @@ pub extern "C" fn rw_widget_property_names(
 ///
 /// `name` must be null or point to a NUL-terminated string. `out` must be null or point
 /// to a writable buffer of at least `cap` bytes.
-#[cfg(not(stripped_widgets))]
 #[no_mangle]
 pub unsafe extern "C" fn rw_widget_property_tokens(
     widget_id: u64,
@@ -724,17 +723,30 @@ pub unsafe extern "C" fn rw_widget_property_tokens(
     cap: c_uint,
 ) -> c_uint {
     c_try!({
-        if name.is_null() {
-            return 0;
+        // The gate lives in the **body**, not around the function: `rw_generated.h` declares
+        // this entry point unconditionally, and a `stripped_widgets` build that dropped the
+        // symbol would fail to link for a host that compiled against the header. Zero is this
+        // entry point's documented "no fixed set of values" answer, which is honest here — a
+        // stripped build publishes no property tokens at all (same shape as `rw_set_theme`).
+        #[cfg(stripped_widgets)]
+        {
+            let _ = (widget_id, name, out, cap);
+            0
         }
-        let name = c_str_or_default(name);
-        let tokens = crate::widget::runtime::with_widget(widget_id, |widget| {
-            crate::widget::capability::properties_trait::widget_property_tokens(widget, &name)
-                .to_vec()
-        });
-        match tokens {
-            Some(tokens) => write_space_separated(&tokens, out, cap),
-            None => 0,
+        #[cfg(not(stripped_widgets))]
+        {
+            if name.is_null() {
+                return 0;
+            }
+            let name = c_str_or_default(name);
+            let tokens = crate::widget::runtime::with_widget(widget_id, |widget| {
+                crate::widget::capability::properties_trait::widget_property_tokens(widget, &name)
+                    .to_vec()
+            });
+            match tokens {
+                Some(tokens) => write_space_separated(&tokens, out, cap),
+                None => 0,
+            }
         }
     })
 }
@@ -1130,17 +1142,24 @@ pub extern "C" fn rw_widget_scroll_to(widget_id: u64, where_: c_int) -> CBool {
 pub extern "C" fn rw_widget_list_add(widget_id: u64, text: *const c_char) -> c_uint {
     c_try!({
         let item = c_str_or_default(text);
-        let added = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
+        // One registry round trip, not two: the count is read from the same exclusive
+        // borrow that appended, instead of re-entering the registry through
+        // `rw_widget_list_count` afterwards (a second detach/reinsert cycle).
+        let outcome = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
             // Moved, not cloned: `with_widget_mut` takes an `FnOnce`, so the old `item.clone()`
             // allocated a second string that was immediately dropped.
-            crate::widget::capability::append_widget_list_item(widget, item)
+            let added = crate::widget::capability::append_widget_list_item(widget, item);
+            let count =
+                if added { crate::widget::capability::widget_list_item_count(widget) } else { 0 };
+            (added, count)
         })
-        .unwrap_or(false);
+        .unwrap_or((false, 0));
+        let (added, count) = outcome;
         if !added {
             return 0;
         }
         crate::widget::runtime::request_repaint(widget_id);
-        rw_widget_list_count(widget_id)
+        count as c_uint
     })
 }
 
@@ -2652,9 +2671,21 @@ pub extern "C" fn rw_get_widget_accessibility_name(widget_id: u64) -> *const c_c
 ///
 /// This is the C ABI half of the probe. Hosts that cannot call C but can read a string use the
 /// JSON entry point instead; both run the same probe.
-#[cfg(not(alloc_frugal))]
 pub extern "C" fn rw_platform_diagnostics() -> c_uint {
-    c_try!({ crate::platform::diagnostics::run().mask() })
+    c_try!({
+        // Gate in the body, not around the function: the generated header declares this symbol
+        // unconditionally, and an `alloc_frugal` build that dropped it would fail to link for a
+        // host that compiled against the header. A mask of 0 — "no fact measured" — is the
+        // honest answer from a profile that carries no diagnostic probe.
+        #[cfg(alloc_frugal)]
+        {
+            0
+        }
+        #[cfg(not(alloc_frugal))]
+        {
+            crate::platform::diagnostics::run().mask()
+        }
+    })
 }
 
 #[no_mangle]
@@ -2662,9 +2693,19 @@ pub extern "C" fn rw_platform_diagnostics() -> c_uint {
 ///
 /// The returned string is freshly allocated and must be released with [`rw_free_string`]. The
 /// shape is documented on `platform::diagnostics::PlatformDiagnostics::to_json`.
-#[cfg(not(alloc_frugal))]
 pub extern "C" fn rw_platform_diagnostics_json() -> *const c_char {
-    c_try!({ to_c_string_or_empty(crate::platform::diagnostics::run().to_json()) })
+    c_try!({
+        // Same reasoning as `rw_platform_diagnostics`: the header declares the symbol, so a
+        // profile without the probe returns an empty JSON object rather than a missing symbol.
+        #[cfg(alloc_frugal)]
+        {
+            to_c_string_or_empty("{}")
+        }
+        #[cfg(not(alloc_frugal))]
+        {
+            to_c_string_or_empty(crate::platform::diagnostics::run().to_json())
+        }
+    })
 }
 
 #[no_mangle]
