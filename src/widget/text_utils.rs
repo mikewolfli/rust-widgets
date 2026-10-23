@@ -5,6 +5,46 @@
 
 use crate::compat::String;
 
+/// Case-insensitive substring test, allocating nothing for an ASCII needle.
+///
+/// `needle` must already be lower-cased (callers fold the query once per filter pass, not
+/// once per candidate). For an ASCII needle the comparison is byte-wise over `str::as_bytes`
+/// and allocates nothing — the controls that filter lists per keystroke used to call
+/// `candidate.to_lowercase().contains(&lower)`, which allocated one `String` per candidate per
+/// frame while a filter was active. Non-ASCII needles keep the owned path, because folding
+/// Unicode case is not a byte-wise operation.
+pub(crate) fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if !needle.is_ascii() {
+        return haystack.to_lowercase().contains(needle);
+    }
+    let needle = needle.as_bytes();
+    let haystack = haystack.as_bytes();
+    needle.len() <= haystack.len()
+        && haystack.windows(needle.len()).any(|window| window.eq_ignore_ascii_case(needle))
+}
+
+/// Case-insensitive prefix test, allocating nothing for an ASCII needle.
+///
+/// Same contract as [`contains_ignore_ascii_case`]: `needle` is already lower-cased, and a
+/// non-ASCII needle takes the owned path. The command palette ranks a prefix match above a
+/// substring match, and it used to build a lowered copy of every candidate to answer this.
+pub(crate) fn starts_with_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if !needle.is_ascii() {
+        return haystack.to_lowercase().starts_with(needle);
+    }
+    let needle = needle.as_bytes();
+    match haystack.as_bytes().get(..needle.len()) {
+        Some(prefix) => prefix.eq_ignore_ascii_case(needle),
+        None => false,
+    }
+}
+
 /// Rounds `index` down to the nearest UTF-8 character boundary in `text`.
 ///
 /// # Why this is hand-written

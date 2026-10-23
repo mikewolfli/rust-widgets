@@ -1279,7 +1279,10 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::MobileDatePicker => match property_name {
-            "selected_date" => CapabilityValue::String(String::new()),
+            // Matches `MobileDatePicker::new`, which starts at 2025-01-01. The table used
+            // to claim the empty string, which the property route cannot write back
+            // (`parse_iso_date("")` is malformed) — a default no instance can hold.
+            "selected_date" => CapabilityValue::String("2025-01-01".to_string()),
             _ => return None,
         },
         WidgetKind::Divider => match property_name {
@@ -1344,9 +1347,12 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::QRCode => match property_name {
             "data" => CapabilityValue::String(String::new()),
-            "size" => CapabilityValue::UInt(256),
-            // The constructor's own default. The two agreeing is asserted by
-            // `declared_defaults_are_published_properties`.
+            // The constructor's own size: `(MATRIX_SIZE + 2 * quiet_zone) * module_size`
+            // = `(21 + 4) * 4` = 100. The table used to claim 256, which is not
+            // representable at all (the control quantises size to whole modules of the
+            // 25-module symbol) — a write of 256 therefore read back 250.
+            "size" => CapabilityValue::UInt(100),
+            // The constructor's own default.
             "quiet_zone" => CapabilityValue::UInt(2),
             _ => return None,
         },
@@ -1398,7 +1404,10 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::SegmentedButton => match property_name {
-            "selected_index" => CapabilityValue::UInt(0),
+            // A fresh button has no segments and no selection, so `Null` is the only
+            // default it can report — `0` would name a segment that does not exist and
+            // that the setter rejects on an empty control.
+            "selected_index" => CapabilityValue::Null,
             "selected_indices" => CapabilityValue::String(String::new()),
             "allows_multiple" => CapabilityValue::Bool(false),
             "segment_count" => CapabilityValue::UInt(0),
@@ -1406,7 +1415,9 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::NavigationStack => match property_name {
             "page_count" => CapabilityValue::UInt(0),
-            "current_page" => CapabilityValue::UInt(0),
+            // A fresh stack is empty, so it has no current page (and page 0 is not
+            // reachable until something is pushed).
+            "current_page" => CapabilityValue::Null,
             _ => return None,
         },
         WidgetKind::ProgressCircle => match property_name {
@@ -1433,9 +1444,12 @@ pub fn default_widget_property_default_value(
             "icon_source" => CapabilityValue::Null,
             "size" => CapabilityValue::Float(24.0),
             // An icon with no explicit colour follows the theme, so the schema
-            // default is the empty string rather than a colour literal: "unset" is
-            // the honest default, and `Icon::color` resolves what will be drawn.
-            "color" => CapabilityValue::String(String::new()),
+            // default is `Null` rather than a colour literal: "unset" is the honest
+            // default, `Icon::color` resolves what will be drawn, and a `Null` write
+            // clears the explicit colour again. (The empty string this used to
+            // declare was neither readable back nor writable: `Color::parse_hex("")`
+            // is a type mismatch.)
+            "color" => CapabilityValue::Null,
             _ => return None,
         },
         WidgetKind::DropdownMenu => match property_name {
@@ -1445,7 +1459,9 @@ pub fn default_widget_property_default_value(
                 &crate::widget::menu_toolbar::dropdown_menu::DROPDOWN_ITEM_SCHEMA,
             )),
             "item_count" => CapabilityValue::UInt(0),
-            "selected_index" => CapabilityValue::UInt(0),
+            // A fresh menu has no items, so there is no item 0 to select; `Null` is the
+            // state the control actually starts in (and the setter's clear value).
+            "selected_index" => CapabilityValue::Null,
             "expanded" => CapabilityValue::Bool(false),
             "alignment" => CapabilityValue::String("left".to_string()),
             _ => return None,
@@ -1563,8 +1579,11 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::DateRangePicker => match property_name {
-            "start_date" => CapabilityValue::String(String::new()),
-            "end_date" => CapabilityValue::String(String::new()),
+            // A fresh range is unselected on both ends, which is `Null` — the getter's
+            // answer and the setter's clear value. `""` is neither readable back nor
+            // writable (`parse_iso_date("")` is malformed).
+            "start_date" => CapabilityValue::Null,
+            "end_date" => CapabilityValue::Null,
             _ => return None,
         },
 

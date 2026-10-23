@@ -493,7 +493,12 @@ impl Draw for OrderBookWidget {
                 };
 
                 // Price on the outer edge, quantity beside the bar, so the two columns
-                // align vertically across every row.
+                // align vertically across every row. Each is bounded to the gap it owns:
+                // the price to the spine/bar (bids) or the panel edge (asks), and the
+                // quantity to the space between the bar and the price column. On the
+                // narrow ladders where those two would collide, the quantity is omitted —
+                // the bar already encodes size, and painting a number over the price (or
+                // past the panel edge) was the defect this bound removes.
                 let (price_x, quantity_x) = match side {
                     BookSide::Bid => (geometry.x + 6, spine - bar_span - 46),
                     BookSide::Ask => {
@@ -501,19 +506,40 @@ impl Draw for OrderBookWidget {
                     }
                 };
                 let text_y = y + (row_height - 12) / 2;
-                context.draw_text(
-                    Point { x: price_x, y: text_y },
+                // The quantity column stops short of the bar on the bid side, and short
+                // of the price column on the ask side.
+                let quantity_right = match side {
+                    BookSide::Bid => spine - bar_span - 4,
+                    BookSide::Ask => price_x - 4,
+                };
+                let quantity_drawn = quantity_x > geometry.x
+                    && quantity_right > quantity_x
+                    && quantity_x < geometry.x + geometry.width as i32 - 8;
+                let price_right = match side {
+                    BookSide::Bid => {
+                        if quantity_drawn {
+                            quantity_x - 4
+                        } else {
+                            spine - bar_span - 4
+                        }
+                    }
+                    BookSide::Ask => geometry.x + geometry.width as i32 - 2,
+                };
+                let price_width = ((price_right - price_x).max(0)) as u32;
+                context.draw_text_fitted_cow(
+                    Rect::new(price_x, text_y, price_width.max(1), 12),
                     &price_text,
                     &level_font,
                     color,
                     HorizontalAlignment::Left,
                 );
-                if quantity_x > geometry.x && quantity_x < geometry.x + geometry.width as i32 - 8 {
+                if quantity_drawn {
                     // The quantity is neutral body text. It used to read a light-on-dark
                     // literal stored at construction, so on a light theme the ladder's
                     // sizes were painted in a colour barely distinguishable from the panel.
-                    context.draw_text(
-                        Point { x: quantity_x, y: text_y },
+                    let quantity_width = (quantity_right - quantity_x) as u32;
+                    context.draw_text_fitted_cow(
+                        Rect::new(quantity_x, text_y, quantity_width.max(1), 12),
                         &quantity_text,
                         &level_font,
                         secondary,

@@ -19,6 +19,17 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+
+/// Orders two font-family names by their case-folded form without allocating.
+///
+/// The family list is sorted for display; the previous `sort_unstable_by_key(|f|
+/// f.to_lowercase())` built one `String` per element per comparison. `char::to_lowercase`
+/// yields the folded characters directly, and UTF-8 byte order equals code-point order, so
+/// comparing these streams is the same ordering the string keys produced.
+fn folded_family_cmp(a: &str, b: &str) -> core::cmp::Ordering {
+    a.chars().flat_map(char::to_lowercase).cmp(b.chars().flat_map(char::to_lowercase))
+}
+
 /// Font selection dialog.
 ///
 /// Holds the font the user is choosing and signals the outcome. It enumerates the host's
@@ -203,7 +214,10 @@ impl FontDialog {
     /// Replaces the family column with `families`.
     pub fn set_font_families(&mut self, mut families: Vec<String>) {
         families.retain(|family| !family.trim().is_empty());
-        families.sort_unstable_by_key(|family| family.to_lowercase());
+        // Sorted by the folded form without allocating: `sort_unstable_by_key(|f|
+        // f.to_lowercase())` built a fresh `String` for every comparison. Comparing the
+        // flattened `char::to_lowercase` streams is the same ordering without the copies.
+        families.sort_unstable_by(|a, b| folded_family_cmp(a, b));
         families.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
         self.families = families;
         self.family_scroll = 0;
@@ -233,7 +247,7 @@ impl FontDialog {
             && !self.families.iter().any(|candidate| candidate.eq_ignore_ascii_case(&family))
         {
             self.families.push(family);
-            self.families.sort_unstable_by_key(|family| family.to_lowercase());
+            self.families.sort_unstable_by(|a, b| folded_family_cmp(a, b));
         }
         self.family_index = self
             .families

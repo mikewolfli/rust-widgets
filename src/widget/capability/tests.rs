@@ -585,6 +585,81 @@ fn schema_defaults_are_readable_and_writable_when_declared() {
     }
 }
 
+/// The writable half of [`schema_defaults_are_readable_and_writable_when_declared`].
+///
+/// That gate proves a declared `readable` property answers its schema default, but
+/// nothing proved the `writable` half: a property could be published as writable while
+/// every write either failed or was silently discarded. For every writable property
+/// this writes the value a fresh instance **reports**, then reads it back — the
+/// round trip a consumer actually performs — and, when the schema declares a
+/// non-`Null` static default, writes that too. A `Null` default is skipped for the
+/// second half: a control whose fresh value is materialised at construction (a clock
+/// editing control starts at "now") has no static value to write, and the first half
+/// already proves its reported value round-trips. Kinds the factory cannot construct
+/// (they need constructor arguments beyond the generic ones) are skipped — the same
+/// reason the factory has a fallible `create`.
+#[cfg(not(alloc_frugal))]
+#[test]
+fn schema_defaults_write_back_through_the_property_route() {
+    let factory = WidgetFactory::new_with_defaults();
+    for capability in factory.capabilities() {
+        let name = capability.canonical_name;
+        let Some(mut widget) = factory.create(name, Rect::new(0, 0, 240, 120), "") else {
+            continue;
+        };
+        for prop in capability.properties {
+            if !prop.writable {
+                continue;
+            }
+            let Ok(reported) = factory.read_property(widget.as_ref(), prop.name) else {
+                continue;
+            };
+            write_and_assert_read_back(&factory, widget.as_mut(), name, prop.name, reported);
+            if let Ok(default) = factory.default_property_value(name, prop.name) {
+                if default != CapabilityValue::Null {
+                    write_and_assert_read_back(&factory, widget.as_mut(), name, prop.name, default);
+                }
+            }
+        }
+    }
+}
+
+/// Writes `value` to `prop` on `widget` and asserts the property route reports it back.
+#[cfg(not(alloc_frugal))]
+fn write_and_assert_read_back(
+    factory: &WidgetFactory,
+    widget: &mut dyn Widget,
+    name: &str,
+    prop: &str,
+    value: CapabilityValue,
+) {
+    factory.write_property(widget, prop, value.clone()).unwrap_or_else(|error| {
+        panic!(
+            "{name}::{prop} is declared writable but rejected its own value {value:?}: {error:?}"
+        )
+    });
+    let read_back = factory.read_property(widget, prop);
+    match (&value, read_back) {
+        // A float property stores an `f32`, while the schema default is an `f64`
+        // literal: `0.8` is not representable in `f32`, so exact equality would
+        // reject a perfectly faithful round-trip. Compare at the precision the
+        // property actually stores.
+        (CapabilityValue::Float(expected), Ok(CapabilityValue::Float(actual))) => {
+            assert_eq!(
+                *expected as f32, actual as f32,
+                "{name}::{prop} should read back the float it was just written"
+            );
+        }
+        (expected, actual) => {
+            assert_eq!(
+                actual,
+                Ok(expected.clone()),
+                "{name}::{prop} should read back the value it was just written"
+            );
+        }
+    }
+}
+
 /// The label resolution prefers a control's dedicated caption over its content.
 ///
 /// # Why this is a general assertion and not a `floating_label` special case

@@ -8,7 +8,7 @@
 //! contains text. It also supports placeholder text that is shown when the
 //! field is empty and unfocused.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -363,12 +363,14 @@ impl FloatingLabel {
         if self.show_label_above || self.travel.value() > 0.0 {
             // Float: interpolate the origin from the inline line up to the caption line. The
             // caption font is used only once the label has fully risen, so the glyphs do not
-            // change size mid-flight.
+            // change size mid-flight. The label is fitted to the field so a long one cannot
+            // paint past the field's own edge.
             let font = if self.travel.value() >= 1.0 { &label_font } else { &input_font };
             let float_y = inline_line.y
                 + ((floating_line.y - inline_line.y) as f32 * self.travel.value()) as i32;
-            context.draw_text(
-                Point::new(label_x, float_y),
+            let label_width = ((rect.width as i32) - 2 * LABEL_PADDING).max(0) as u32;
+            context.draw_text_fitted_cow(
+                Rect::new(label_x, float_y, label_width, floating_line.height.max(1)),
                 &self.label,
                 font,
                 self.label_color(ink, field_background, is_enabled),
@@ -386,8 +388,9 @@ impl FloatingLabel {
                 // legible muted label rather than whichever one the literal happened to suit.
                 self.base.disabled_ink_on(ink, field_background)
             };
-            context.draw_text(
-                Point::new(label_x, inline_line.y),
+            let label_width = ((rect.width as i32) - 2 * LABEL_PADDING).max(0) as u32;
+            context.draw_text_fitted_cow(
+                Rect::new(label_x, inline_line.y, label_width, inline_line.height.max(1)),
                 &self.label,
                 &input_font,
                 inline_ink,
@@ -612,8 +615,15 @@ impl Draw for FloatingLabel {
         let show_placeholder =
             self.text.is_empty() && !self.is_focused() && (!has_label || self.show_label_above);
         if show_placeholder && !self.placeholder.is_empty() {
-            context.draw_text(
-                Point::new(rect.x + LABEL_PADDING, input_line.y),
+            // Fitted to the field so a long hint cannot paint past its edge.
+            let band_width = ((rect.width as i32) - 2 * LABEL_PADDING).max(0) as u32;
+            context.draw_text_fitted_cow(
+                Rect::new(
+                    rect.x + LABEL_PADDING,
+                    input_line.y,
+                    band_width,
+                    input_line.height.max(1),
+                ),
                 &self.placeholder,
                 &input_font,
                 ink.blend(&field_background, 0.55),
@@ -626,8 +636,14 @@ impl Draw for FloatingLabel {
             // Disabled ink steps off the surface it is painted on, so it stays legible on either
             // appearance; a fixed `rgba(160,160,160,255)` did not move with the theme.
             let text_color = self.base.disabled_ink_on(ink, bg_color);
-            context.draw_text(
-                Point::new(rect.x + LABEL_PADDING, input_line.y),
+            let band_width = ((rect.width as i32) - 2 * LABEL_PADDING).max(0) as u32;
+            context.draw_text_fitted_cow(
+                Rect::new(
+                    rect.x + LABEL_PADDING,
+                    input_line.y,
+                    band_width,
+                    input_line.height.max(1),
+                ),
                 &self.text,
                 &input_font,
                 text_color,
@@ -722,6 +738,7 @@ impl EventHandler for FloatingLabel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::Point;
     use crate::widget::svg::render_to_svg;
     use std::sync::{Arc, Mutex};
 

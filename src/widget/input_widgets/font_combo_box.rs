@@ -786,13 +786,23 @@ impl Draw for FontComboBox {
                 // One line box per row, shared by the highlighted and plain arms so the two
                 // cannot drift by half a line while the row also changes colour.
                 let item_line = ctx.text_line(item_rect, &display_font);
+                // Fitted to the popup: a long family name used to paint past the popup's
+                // own edge.
+                let name_x = g.x + 4;
+                let name_width =
+                    ((item_rect.x + item_rect.width as i32 - 4) - name_x).max(0) as u32;
                 if i as i32 == self.current_index {
                     ctx.fill_rect(item_rect, highlight);
                     if let Some(name) = self.fonts.get(i) {
                         // The label contrasts with the highlight it sits on, so it stays legible
                         // whatever the theme's primary is.
-                        ctx.draw_text(
-                            Point::new(g.x + 4, item_line.y),
+                        ctx.draw_text_fitted_cow(
+                            Rect::new(
+                                name_x,
+                                item_line.y,
+                                name_width.max(1),
+                                item_line.height.max(1),
+                            ),
                             name,
                             &display_font,
                             highlight.contrast_color(),
@@ -800,8 +810,8 @@ impl Draw for FontComboBox {
                         );
                     }
                 } else if let Some(name) = self.fonts.get(i) {
-                    ctx.draw_text(
-                        Point::new(g.x + 4, item_line.y),
+                    ctx.draw_text_fitted_cow(
+                        Rect::new(name_x, item_line.y, name_width.max(1), item_line.height.max(1)),
                         name,
                         &display_font,
                         ink,

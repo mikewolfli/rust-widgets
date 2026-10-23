@@ -722,8 +722,16 @@ impl EmojiPicker {
         // two rows were painted over the separator line below.
         let font = Self::sans_font_12();
         let text_h = context.measure_text("M", font).height;
-        context.draw_text(
-            Point::new(rect.x + 28, rect.y + (rect.height as i32 - text_h as i32) / 2),
+        // Fitted to the field so a long query cannot paint past the box (and under the
+        // underline that closes it).
+        let search_width = ((rect.width as i32) - 28 - 8).max(0) as u32;
+        context.draw_text_fitted_cow(
+            Rect::new(
+                rect.x + 28,
+                rect.y + (rect.height as i32 - text_h as i32) / 2,
+                search_width.max(1),
+                text_h.max(1),
+            ),
             text,
             font,
             color,
@@ -779,12 +787,17 @@ impl EmojiPicker {
             }
             let label: &str = if tab == Self::RECENT_CATEGORY { "Recent" } else { tab };
             // The inactive tabs are secondary by design, so they are the ink dimmed toward
-            // the strip rather than a second literal.
+            // the strip rather than a second literal. The label is line-box centred (the
+            // fixed `+ 17` was tuned to one font size) and fitted to the tab so a long
+            // category name cannot bleed into its neighbours.
             let color = if active { ink } else { ink.blend(&strip_bg, 0.45) };
-            context.draw_text(
-                Point::new(tab_rect.x + 8, tab_rect.y + 17),
+            let label_font = Self::sans_font_11();
+            let label_line = context.text_line(tab_rect, label_font);
+            let label_width = tab_rect.width.saturating_sub(16).max(1);
+            context.draw_text_fitted_cow(
+                Rect::new(tab_rect.x + 8, label_line.y, label_width, label_line.height.max(1)),
                 label,
-                Self::sans_font_11(),
+                label_font,
                 color,
                 HorizontalAlignment::Left,
             );

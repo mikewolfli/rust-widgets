@@ -607,7 +607,7 @@ pub struct VisualLine {
 }
 
 /// One inline diagnostic row: `(visual_row, marker)`.
-pub(crate) type InlineDiagnostic = (usize, DiagnosticMarker);
+pub(crate) type InlineDiagnostic<'a> = (usize, &'a DiagnosticMarker);
 
 // ── Find & replace ───────────────────────────────────────────────────────────
 

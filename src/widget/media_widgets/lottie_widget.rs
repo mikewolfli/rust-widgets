@@ -1397,8 +1397,11 @@ impl LottieWidget {
         };
 
         let mut d = String::with_capacity(n * 32);
+        // `write!` straight into the buffer: the `format!`-then-`push_str` form
+        // allocated a temporary `String` per vertex and per cubic segment.
+        use core::fmt::Write as _;
         let (sx, sy) = map(path.vertices[0]);
-        d.push_str(&format!("M{sx} {sy}"));
+        let _ = write!(d, "M{sx} {sy}");
 
         let segment_count = if path.closed { n } else { n - 1 };
         for i in 0..segment_count {
@@ -1412,21 +1415,26 @@ impl LottieWidget {
             let (c1x, c1y) = map([v_i[0] + out_i[0], v_i[1] + out_i[1]]);
             let (c2x, c2y) = map([v_j[0] + in_j[0], v_j[1] + in_j[1]]);
             let (ex, ey) = map(v_j);
-            d.push_str(&format!("C{c1x} {c1y} {c2x} {c2y} {ex} {ey}"));
+            let _ = write!(d, "C{c1x} {c1y} {c2x} {c2y} {ex} {ey}");
         }
         if path.closed {
             d.push('Z');
         }
 
-        let mut points = vec![Point::new(0, 0); MAX_OUTLINE_POINTS];
-        let mut contour_ranges = vec![(0usize, 0usize); MAX_OUTLINE_CONTOURS];
+        // Stack scratch, as `flatten.rs`'s own callers use: this used to be two heap
+        // `vec!`s (8 KB + 512 B) allocated and dropped per path per frame. Only the
+        // used prefix is copied out — the caller reads points through the contour
+        // ranges, so the trailing scratch never needs to exist.
+        let mut scratch_points = [Point::new(0, 0); MAX_OUTLINE_POINTS];
+        let mut scratch_contours = [(0usize, 0usize); MAX_OUTLINE_CONTOURS];
         // Identity placement: `map` adds `grid` to y, so a zero grid with unit scale
         // leaves device coordinates untouched (see `IconPlacement::map`).
         let identity = IconPlacement { origin_x: 0.0, origin_y: 0.0, scale: 1.0, grid: 0.0 };
-        match flatten_paths(&[d.as_str()], identity, &mut points, &mut contour_ranges) {
+        match flatten_paths(&[d.as_str()], identity, &mut scratch_points, &mut scratch_contours) {
             Ok(count) => {
-                let ranges = contour_ranges[..count].to_vec();
-                Some((points, ranges))
+                let ranges = scratch_contours[..count].to_vec();
+                let used = ranges.iter().map(|&(_, end)| end).max().unwrap_or(0);
+                Some((scratch_points[..used].to_vec(), ranges))
             }
             Err(_) => {
                 // A path over the flattener's budget (or otherwise untessellatable)

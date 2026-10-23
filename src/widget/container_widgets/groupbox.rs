@@ -683,10 +683,14 @@ impl Draw for GroupBox {
         // Draw title text. The separator is drawn first and the label on top of it, so
         // the label's own glyph pixels are what the eye reads at the join.
         if !self.title.is_empty() {
+            // The disabled title recedes toward the surface it is painted on — the box's
+            // own background — instead of a fixed grey that sat at the wrong end of the
+            // ramp on a dark appearance.
+            let base_ink = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
             let text_color = if self.base.is_enabled() {
-                style.text_color.unwrap_or(Color::rgb(0, 0, 0))
+                base_ink
             } else {
-                Color::rgb(150, 150, 150)
+                self.base.disabled_ink_on(base_ink, style.background_color.unwrap_or(Color::WHITE))
             };
             context.draw_text(
                 Point::from_f32(title_rect.x as f32, title_rect.y as f32),

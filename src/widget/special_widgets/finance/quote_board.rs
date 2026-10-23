@@ -142,12 +142,56 @@ pub struct QuoteBoard {
     selected: Option<usize>,
     rising_color: Color,
     falling_color: Color,
+    /// Bumped on every change to the data the column ranges are measured from
+    /// (`set_quotes`, `set_columns`, `apply_sort`), so the cached ranges below can
+    /// never outlive the data they were measured from.
+    data_generation: u64,
+    /// The last `column_ranges` result with the key it was measured under.
+    ///
+    /// `column_ranges` formats and measures a bounded sample of the watchlist on every
+    /// call, and the draw calls it once per frame — far more often than column widths
+    /// actually change, since ticking prices rarely change digit counts. The key holds
+    /// everything that can move a column edge: geometry width, the inferred decimals,
+    /// the sample size, the data generation, and the resolved font (a theme switch
+    /// changes glyph advances). See `column_ranges`.
+    ranges_cache: Option<(ColumnRangesKey, alloc::vec::Vec<(i32, i32)>)>,
     /// Emitted with the symbol when a row is clicked.
     pub quote_clicked: Signal1<String>,
     /// Emitted with the symbol as the pointer moves onto a row.
     pub quote_hovered: Signal1<String>,
     /// Emitted with the symbol when the selected row changes.
     pub selection_changed: Signal1<Option<String>>,
+}
+
+/// Everything the column-range measurement depends on, compared wholesale to decide
+/// whether the cached ranges can be reused. Holds resolved `Font`s by value: `Font` is
+/// `PartialEq`, so a theme or scale change is caught without enumerating its fields.
+///
+/// The comparison is written out field by field rather than derived: this is the
+/// definition of "the same measurement inputs", and naming each member is what keeps a
+/// newly added input from silently escaping the cache key. (`Font` carries an `f32` size,
+/// so the type is not `Eq`.)
+#[derive(Clone)]
+struct ColumnRangesKey {
+    width: i32,
+    decimals: usize,
+    quote_count: usize,
+    data_generation: u64,
+    heading_font: Font,
+    body_font: Font,
+    inset: i32,
+}
+
+impl PartialEq for ColumnRangesKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.width == other.width
+            && self.decimals == other.decimals
+            && self.quote_count == other.quote_count
+            && self.data_generation == other.data_generation
+            && self.heading_font == other.heading_font
+            && self.body_font == other.body_font
+            && self.inset == other.inset
+    }
 }
 
 impl QuoteBoard {
@@ -169,6 +213,8 @@ impl QuoteBoard {
             selected: None,
             rising_color: Color::rgb(38, 166, 91),
             falling_color: Color::rgb(220, 68, 70),
+            data_generation: 0,
+            ranges_cache: None,
             quote_clicked: Signal1::new(),
             quote_hovered: Signal1::new(),
             selection_changed: Signal1::new(),
@@ -190,6 +236,7 @@ impl QuoteBoard {
     pub fn set_quotes(&mut self, quotes: Vec<Quote>) {
         self.quotes = quotes;
         self.original_order = self.quotes.clone();
+        self.data_generation = self.data_generation.wrapping_add(1);
         self.apply_sort();
         self.revalidate_selection();
         self.base.request_redraw();
@@ -207,6 +254,7 @@ impl QuoteBoard {
     /// choice the caller may be deliberately making not to have.
     pub fn set_columns(&mut self, columns: Vec<QuoteColumn>) {
         self.columns = columns;
+        self.data_generation = self.data_generation.wrapping_add(1);
         self.base.request_redraw();
     }
 
@@ -283,6 +331,10 @@ impl QuoteBoard {
     /// `app::tests::the_watchlist_starts_in_the_supplied_order` is the test that found
     /// this; it round-trips through two different sorts before checking.
     fn apply_sort(&mut self) {
+        // A sort permutes the measured sample, so the cached column ranges must not
+        // survive it. (The `set_quotes` bump above already covers the replace case;
+        // this covers the public `set_sort` path.)
+        self.data_generation = self.data_generation.wrapping_add(1);
         match self.sort {
             QuoteSort::None => {
                 if self.original_order.len() == self.quotes.len() {
@@ -369,7 +421,7 @@ impl QuoteBoard {
     /// asks for the width its own heading and values need, and the board's width is shared in
     /// proportion to those wishes — so a column that needs more gets more, and the last one
     /// still takes the rounding remainder so no strip at the right edge goes unpainted.
-    fn column_ranges(&self) -> Vec<(i32, i32)> {
+    fn column_ranges(&mut self) -> Vec<(i32, i32)> {
         let geometry = self.base.geometry();
         let width = geometry.width as i32;
         if self.columns.is_empty() || width <= 0 {
@@ -380,6 +432,27 @@ impl QuoteBoard {
         let body_font = role_font(style, BODY_FONT_SIZE);
         let decimals = self.inferred_decimals();
         let inset = self.cell_inset();
+        // The measurement pass below formats and measures a bounded sample of the
+        // watchlist; the draw calls this once per frame, and ticking prices rarely
+        // change a column's digit count. The cache skips the whole pass on frames that
+        // only repaint; the key holds everything that can move a column edge (width,
+        // decimals, sample size, data generation, resolved font), so a change to any of
+        // them remeasures. One small `Vec` clone per frame is the price of the `&self`
+        // signature — far below the pass it replaces.
+        let key = ColumnRangesKey {
+            width,
+            decimals,
+            quote_count: self.quotes.len(),
+            data_generation: self.data_generation,
+            heading_font: heading_font.clone(),
+            body_font: body_font.clone(),
+            inset,
+        };
+        if let Some((cached_key, cached_ranges)) = &self.ranges_cache {
+            if *cached_key == key {
+                return cached_ranges.clone();
+            }
+        }
         let desired: Vec<i32> = self
             .columns
             .iter()
@@ -404,13 +477,15 @@ impl QuoteBoard {
             // division, and it keeps the header aligned with the (empty) rows.
             let count = self.columns.len() as i32;
             let slot = width / count;
-            return (0..count)
+            let ranges: Vec<(i32, i32)> = (0..count)
                 .map(|index| {
                     let start = geometry.x + index * slot;
                     let w = if index == count - 1 { geometry.x + width - start } else { slot };
                     (start, w)
                 })
                 .collect();
+            self.ranges_cache = Some((key, ranges.clone()));
+            return ranges;
         }
         let mut ranges = Vec::with_capacity(self.columns.len());
         let mut x = geometry.x;
@@ -428,6 +503,7 @@ impl QuoteBoard {
             remaining -= w;
             remaining_desired -= want;
         }
+        self.ranges_cache = Some((key, ranges.clone()));
         ranges
     }
 
@@ -635,6 +711,10 @@ impl Draw for QuoteBoard {
             return;
         }
 
+        // Column ranges first, before the style borrow below: the cached-range path
+        // needs `&mut self`, and the measurement inputs are `self`-derived either way.
+        let ranges = self.column_ranges();
+
         // The pane, the header band and the row states are chrome and resolve the explicit style
         // first, then the theme's resolved style for this control, and only then a literal. Every
         // one of them used to be a fixed dark slate, so a light/dark switch left the board's
@@ -684,7 +764,6 @@ impl Draw for QuoteBoard {
         let header_text = ink.blend(&secondary, 0.45);
         let body_text = secondary;
 
-        let ranges = self.column_ranges();
         let row_height = self.row_height();
         let decimals = self.inferred_decimals();
 
@@ -760,6 +839,10 @@ impl Draw for QuoteBoard {
             return;
         }
 
+        // One resolved body font for the whole board: `role_font` re-derives the font
+        // (cloning the family string) per call, and this used to sit inside the cell
+        // loop — once per cell per frame.
+        let cell_font = role_font(style, BODY_FONT_SIZE);
         for (index, quote) in self.quotes.iter().enumerate().take(available) {
             let y = self.first_row_y() + index as i32 * row_height;
             if self.selected == Some(index) {
@@ -794,7 +877,7 @@ impl Draw for QuoteBoard {
                 } else {
                     body_text
                 };
-                let font = role_font(style, BODY_FONT_SIZE);
+                let font = &cell_font;
                 // The advance model the renderer draws with, not a per-character guess: a
                 // right-aligned number whose reserved width was a guess lands short of its
                 // column edge by the difference, and the guess drifts with every glyph that
@@ -809,7 +892,7 @@ impl Draw for QuoteBoard {
                 // keeping the label inside its column; this is that fix's other half. Fitting
                 // is the honest reading: a clipped value reads as truncated, one that has run
                 // into its neighbour reads as a corrupted table.
-                let text_width = measure_body_text(&text, &font) as i32;
+                let text_width = measure_body_text(&text, font) as i32;
                 let inset = self.cell_inset();
                 let band = if column.is_numeric() {
                     // Reserved from the trailing edge so the digits line up column-wise.
@@ -818,7 +901,7 @@ impl Draw for QuoteBoard {
                     // Reserved from the leading inset to the column's edge.
                     Rect::new(start + inset, y, (width - inset * 2).max(1) as u32, 0)
                 };
-                let line = context.text_line(Rect { height: ROW_TEXT_HEIGHT, ..band }, &font);
+                let line = context.text_line(Rect { height: ROW_TEXT_HEIGHT, ..band }, font);
                 if column.is_numeric() {
                     // A numeric cell is already exactly as wide as its measured text. Fitting
                     // it again subtracts `draw_text_fitted`'s inset at each end from that
@@ -828,7 +911,7 @@ impl Draw for QuoteBoard {
                     context.draw_text(
                         Point { x: line.x, y: line.y },
                         &text,
-                        &font,
+                        font,
                         color,
                         HorizontalAlignment::Left,
                     );
@@ -836,7 +919,7 @@ impl Draw for QuoteBoard {
                     context.draw_text_fitted_cow(
                         line,
                         &text,
-                        &font,
+                        font,
                         color,
                         HorizontalAlignment::Left,
                     );

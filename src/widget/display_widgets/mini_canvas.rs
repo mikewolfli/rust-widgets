@@ -17,7 +17,6 @@ use crate::{impl_widget_property_hooks, property_names_of};
 pub struct MiniCanvas {
     base: BaseWidget,
     commands: Vec<RenderCommand>,
-    last_mouse_pos: Point,
     /// Emitted when a click-like interaction (press then release) is detected.
     pub clicked: GenericSignal,
     /// Emitted when the mouse button is pressed over the canvas.
@@ -32,7 +31,6 @@ impl MiniCanvas {
         Self {
             base: BaseWidget::new(WidgetKind::MiniCanvas, rect, "MiniCanvas"),
             commands: Vec::new(),
-            last_mouse_pos: Point::new(0, 0),
             clicked: GenericSignal::new(),
             mouse_pressed: GenericSignal::new(),
             mouse_released: GenericSignal::new(),
@@ -173,19 +171,17 @@ impl EventHandler for MiniCanvas {
         }
         match event {
             Event::MousePress { pos, .. } => {
-                // A press outside is not an interaction; without this check the position was
-                // recorded and the event reported for any pointer-down the host routed here.
+                // A press outside is not an interaction; without this check the event was
+                // reported for any pointer-down the host routed here.
                 if !self.geometry().contains_point(*pos) {
                     return;
                 }
-                self.last_mouse_pos = *pos;
                 self.mouse_pressed.emit();
             }
             Event::MouseRelease { pos, .. } => {
                 if !self.geometry().contains_point(*pos) {
                     return;
                 }
-                self.last_mouse_pos = *pos;
                 self.mouse_released.emit();
                 self.clicked.emit();
             }

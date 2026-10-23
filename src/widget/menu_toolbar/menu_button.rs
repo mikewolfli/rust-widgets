@@ -619,11 +619,14 @@ impl Draw for MenuButton {
             text_offset_x += 22; // space for icon
         }
 
-        // ── Draw button text ──
+        // ── Draw button text, fitted to the space left of the disclosure arrow: an
+        // unbounded label ran underneath it. ──
         let text_color = if !is_enabled { disabled_ink } else { ink };
         let line = context.text_line(geom, font);
-        context.draw_text(
-            Point::new(text_offset_x, line.y),
+        let arrow_x = geom.x + geom.width as i32 - PADDING - 8;
+        let text_band_width = ((arrow_x - 4) - text_offset_x).max(0) as u32;
+        context.draw_text_fitted_cow(
+            Rect::new(text_offset_x, line.y, text_band_width, line.height.max(1)),
             &self.text,
             font,
             text_color,
@@ -631,7 +634,6 @@ impl Draw for MenuButton {
         );
 
         // ── Draw dropdown arrow ──
-        let arrow_x = geom.x + geom.width as i32 - PADDING - 8;
         let arrow_y = geom.y + geom.height as i32 / 2 - 2;
         let arrow_color = if !is_enabled { disabled_ink } else { ink };
         // Draw a small triangle pointing down (filled path)
@@ -680,6 +682,8 @@ impl Draw for MenuButton {
             context.fill_rounded_rect(menu, 4, panel);
             context.draw_rounded_rect_stroke(menu, 4, panel_border, 1);
 
+            // One resolved font for every row: it used to be rebuilt per item.
+            let item_font = effective_font(style);
             for (i, item) in self.menu_items.iter().enumerate() {
                 let item_rect = self.item_rect(i);
 
@@ -691,7 +695,6 @@ impl Draw for MenuButton {
                 // Item text
                 let item_text_color =
                     if !item.enabled { item_ink.blend(&panel, 0.5) } else { item_ink };
-                let item_font = effective_font(style);
                 let mut item_x = item_rect.x + PADDING;
 
                 // Item icon
@@ -727,8 +730,17 @@ impl Draw for MenuButton {
                 }
 
                 let item_line = context.text_line(item_rect, item_font);
-                context.draw_text(
-                    Point::new(item_x, item_line.y),
+                // Fitted between the label start and the checkmark zone: an unbounded
+                // label ran under the check glyph on checked rows (and past the popup
+                // edge on long ones).
+                let item_text_right = if item.checked {
+                    item_rect.x + item_rect.width as i32 - PADDING - 14
+                } else {
+                    item_rect.x + item_rect.width as i32 - PADDING
+                };
+                let item_text_width = (item_text_right - item_x).max(0) as u32;
+                context.draw_text_fitted_cow(
+                    Rect::new(item_x, item_line.y, item_text_width, item_line.height.max(1)),
                     &item.text,
                     item_font,
                     item_text_color,

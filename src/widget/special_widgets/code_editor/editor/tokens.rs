@@ -153,6 +153,18 @@ impl CodeEditor {
         }
     }
 
+    /// The cached spans of `line`, borrowed from the cache.
+    ///
+    /// [`Self::tokens_on_line`] returns an owned `Vec` (its signature is public API),
+    /// and the paint path was paying that clone per painted row: `row_runs` reads the
+    /// list once per row per frame, and a second time when the row is measured. The
+    /// cache is a plain field, so callers inside the crate can read it in place.
+    /// `None` means the line has not been filled yet — the owned accessor is the one
+    /// that computes.
+    pub(crate) fn cached_tokens_on_line(&self, line: usize) -> Option<&[TokenSpan]> {
+        self.line_tokens.get(line).and_then(|slot| slot.as_deref())
+    }
+
     /// Returns the token colour for a span.
     pub fn token_color(&self, span: &TokenSpan) -> Color {
         self.palette.color_for(span.kind)

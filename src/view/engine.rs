@@ -360,7 +360,9 @@ impl ViewEngine {
             // it opened is closed rather than leaked.
             if let Some(previous) = self.current.take() {
                 if let Some(old_root) = self.layout.root() {
-                    self.run_unmount_hooks(&previous, old_root, &[]);
+                    // `id_of_path` still describes the previous tree here — nothing has
+                    // rewritten it since the last mount/update.
+                    self.run_unmount_hooks(&previous, old_root, &[], &self.id_of_path);
                 }
             }
             let removed = self.layout.clear_structure();
@@ -441,17 +443,25 @@ impl ViewEngine {
     ///
     /// The reverse order of [`Self::run_mount_hooks`], and for the mirror reason: a teardown
     /// hook may need to stop something in its own subtree, so the parent must get the chance
-    /// before its children are gone. Reads ids from `id_of_path` -- the map is still populated
-    /// because the layout is not cleared until after this returns.
-    fn run_unmount_hooks(&self, node: &Node, node_id: ObjectId, path: &[usize]) {
+    /// before its children are gone. Reads ids from `lookup` — normally `id_of_path`, or a
+    /// pre-batch snapshot when reserve shadowed entries (see the update path's snapshot
+    /// decision); the map is still populated because the layout is not cleared until after
+    /// this returns.
+    fn run_unmount_hooks(
+        &self,
+        node: &Node,
+        node_id: ObjectId,
+        path: &[usize],
+        lookup: &crate::compat::HashMap<Vec<usize>, ObjectId>,
+    ) {
         if let Some(hook) = &node.on_unmount {
             hook(node_id);
         }
         for (index, child) in node.children.iter().enumerate() {
             let mut child_path = path.to_vec();
             child_path.push(index);
-            if let Some(child_id) = self.id_at(&child_path) {
-                self.run_unmount_hooks(child, child_id, &child_path);
+            if let Some(child_id) = lookup.get(&child_path).copied() {
+                self.run_unmount_hooks(child, child_id, &child_path, lookup);
             }
         }
     }
@@ -521,6 +531,24 @@ impl ViewEngine {
         // The reservations are handed to `apply` so it *adopts* these ids instead of calling
         // `create` a second time for the same node. Discarding them made one orphaned live
         // control per inserted node, permanently — see `insert_subtree`.
+        // The unmount walk (after `apply`, below) reads `id_of_path`; reserve is about to
+        // write the new subtree's ids over it. When a batch both removes a subtree and
+        // inserts one at the same path (a `child_if` branch flip between different widget
+        // types, a key change — ordinary diff output), the walk would read the *inserted*
+        // node's id at the removed root's path, match nothing, and skip the whole removed
+        // subtree's `on_unmount` hooks — leaking whatever those hooks release. When the
+        // batch has both shapes, walk against this snapshot of the pre-batch mapping;
+        // otherwise the live map already describes the tree the walk reads.
+        let unmount_lookup =
+            if report.patches.iter().any(|patch| matches!(patch, super::Patch::Insert { .. }))
+                && report.patches.iter().any(|patch| {
+                    matches!(patch, super::Patch::Remove { .. } | super::Patch::Replace { .. })
+                })
+            {
+                Some(self.id_of_path.clone())
+            } else {
+                None
+            };
         let mut reserved = self.reserve_ids_for_inserts(&next, &report.patches, create);
 
         // The overlay resolver is passed so an inserted portal lands in the overlay layer exactly
@@ -583,7 +611,11 @@ impl ViewEngine {
         // call a removed node has no path to be found at. Mounts must be resolved against the new
         // tree, so they run **after** the reindex. The walks are over the trees rather than over the
         // patch list, because a hook belongs to a node; the patches only say *which* nodes changed.
-        self.run_unmount_hooks_for_removals(&previous, &report.patches);
+        self.run_unmount_hooks_for_removals(
+            &previous,
+            &report.patches,
+            unmount_lookup.as_ref().unwrap_or(&self.id_of_path),
+        );
 
         // Sync the path map to the new tree's shape for the surviving nodes; a node the diff
         // did not mention keeps its path only if its ancestor chain is unchanged.
@@ -659,7 +691,12 @@ impl ViewEngine {
     /// Walks `previous` so the hooks being torn down are the ones the *declaration* carried, and
     /// matches a node to a removal by the id the layout recorded for its path. Parent-first, as
     /// [`Self::run_unmount_hooks`] documents.
-    fn run_unmount_hooks_for_removals(&self, previous: &Node, patches: &[super::Patch]) {
+    fn run_unmount_hooks_for_removals(
+        &self,
+        previous: &Node,
+        patches: &[super::Patch],
+        lookup: &crate::compat::HashMap<Vec<usize>, ObjectId>,
+    ) {
         let mut removed: crate::compat::HashMap<ObjectId, ()> = crate::compat::HashMap::new();
         for patch in patches {
             match patch {
@@ -672,7 +709,7 @@ impl ViewEngine {
         if removed.is_empty() {
             return;
         }
-        self.run_unmount_hooks_for_ids(previous, &[], &removed);
+        self.run_unmount_hooks_for_ids(previous, &[], &removed, lookup);
     }
 
     /// Walks `node`'s subtree, running `on_unmount` for each node of a removed/replaced subtree.
@@ -686,22 +723,24 @@ impl ViewEngine {
         node: &Node,
         path: &[usize],
         removed: &crate::compat::HashMap<ObjectId, ()>,
+        lookup: &crate::compat::HashMap<Vec<usize>, ObjectId>,
     ) {
-        // Parent-first, mirroring `run_unmount_hooks`. The id comes from `id_of_path`, which still
-        // describes `previous` because it is only rewritten by `reindex_paths` — called below this.
-        if let Some(id) = self.id_at(path) {
+        // Parent-first, mirroring `run_unmount_hooks`. The id comes from `lookup` — normally
+        // `id_of_path` itself, or its pre-batch snapshot when reserve shadowed entries (see
+        // the snapshot decision in `update_with_optional_icon_resolver`).
+        if let Some(id) = lookup.get(path).copied() {
             if removed.contains_key(&id) {
                 // The root of a removed/replaced subtree: tear down the whole subtree, parent
                 // first, so every mounted descendant gets exactly one `on_unmount`. Returning here
                 // rather than continuing the removed-set walk keeps each hook firing once.
-                self.run_unmount_hooks(node, id, path);
+                self.run_unmount_hooks(node, id, path, lookup);
                 return;
             }
         }
         for (index, child) in node.children.iter().enumerate() {
             let mut child_path = path.to_vec();
             child_path.push(index);
-            self.run_unmount_hooks_for_ids(child, &child_path, removed);
+            self.run_unmount_hooks_for_ids(child, &child_path, removed, lookup);
         }
     }
 
@@ -1072,8 +1111,8 @@ impl ViewEngine {
         next: &Node,
         patches: &[super::Patch],
         create: &dyn Fn(&Node) -> Option<ObjectId>,
-    ) -> crate::compat::HashMap<String, ObjectId> {
-        let mut reserved = crate::compat::HashMap::new();
+    ) -> super::apply::ReservedIds {
+        let mut reserved = super::apply::ReservedIds::new();
         for patch in patches {
             if let super::Patch::Insert { node, .. } = patch {
                 if let Some(path) = find_path_of(next, node) {
@@ -1081,7 +1120,12 @@ impl ViewEngine {
                     collect_new_ids(node, &path, create, &mut pending);
                     for (key, p, id) in pending {
                         self.id_of_path.insert(p, id);
-                        reserved.insert(key, id);
+                        // A queue, not a slot: one batch can insert several subtrees sharing
+                        // a key (two keyless siblings, the same key under two parents).
+                        // Overwriting handed the first subtree the second's id and orphaned
+                        // the first allocation; `insert_subtree` consumes front-to-back in
+                        // the same order this loop pushes, so the pairing is exact.
+                        reserved.entry(key).or_default().push_back(id);
                     }
                 }
             }
@@ -2107,6 +2151,113 @@ mod tests {
         engine.mount(&One(Rc::clone(&seen)), &ids.creator());
         let id = seen.borrow().expect("the mount hook ran and saw an id");
         assert_eq!(engine.id_at(&[0]), Some(id), "and the id addresses the mounted label");
+    }
+
+    /// Every id `create` returned must have been mounted: a created-but-unregistered id is a
+    /// live control leaked forever.
+    fn assert_every_created_control_is_mounted(engine: &ViewEngine, ids: &Ids, start: ObjectId) {
+        for id in start..ids.0.get() {
+            assert!(
+                engine.layout().widget_name(id).is_some(),
+                "control {id} was created but never mounted (an orphan)"
+            );
+        }
+    }
+
+    /// Two keyless same-widget inserts in one batch must not collide on their shared empty
+    /// reservation key: the queue hands each insert its own id, so no allocation is orphaned.
+    #[test]
+    fn two_keyless_inserts_in_one_batch_orphan_nothing() {
+        struct KeylessPair;
+        impl View for KeylessPair {
+            fn build(&self) -> Node {
+                Node::new("window")
+                    .key("root")
+                    .child(Node::new("button"))
+                    .child(Node::new("button"))
+            }
+        }
+
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+        // The mount's child is a *label*, so both keyless buttons are genuinely new: the
+        // diff cannot positionally match either to the old child (different widget type),
+        // and the batch carries two `Insert` patches sharing the empty reservation key.
+        engine.mount(&Text("x".into()), &ids.creator());
+        let after_mount = ids.0.get();
+
+        engine.update(&KeylessPair, &ids.creator());
+        assert_every_created_control_is_mounted(&engine, &ids, after_mount);
+        assert_eq!(engine.layout().node_count(), 3, "root + the two keyless buttons");
+    }
+
+    /// The same declared key under two different parents, for the reservation-pairing test.
+    ///
+    /// In its own function so the declarative key-uniqueness gate can excuse this chain by
+    /// name (`tools/check_view_keys_are_unique.py`): the two `x` labels belong to **different
+    /// sibling sets**, which is legal, but the gate groups literal duplicates per function.
+    fn same_key_under_two_parents_fixture() -> Node {
+        Node::new("window")
+            .key("root")
+            .child(Node::new("panel").key("p").child(Node::new("label").key("x")))
+            .child(Node::new("panel").key("q").child(Node::new("label").key("x")))
+    }
+
+    /// The same declared key under two different parents is legal, and one batch can insert
+    /// both subtrees: each must adopt the id reserved for *it*, not the last one reserved.
+    #[test]
+    fn the_same_key_under_two_parents_in_one_batch_keeps_both_reservations() {
+        struct SameKeyUnderTwoParents;
+        impl View for SameKeyUnderTwoParents {
+            fn build(&self) -> Node {
+                same_key_under_two_parents_fixture()
+            }
+        }
+
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+        engine.mount(&Text("x".into()), &ids.creator());
+        let after_mount = ids.0.get();
+
+        let report = engine.update(&SameKeyUnderTwoParents, &ids.creator());
+        // Two panel subtrees inserted; the mount's keyed label is removed (2 Inserts + 1 Remove).
+        assert_eq!(report.patches.len(), 3);
+        assert_every_created_control_is_mounted(&engine, &ids, after_mount);
+    }
+
+    /// A batch that removes a subtree and inserts one at the same path (a branch flip
+    /// between different widget types) must still run the removed subtree's `on_unmount`:
+    /// the inserted node's reservation must not shadow the removed root's id at its own path.
+    #[test]
+    fn a_remove_plus_insert_at_the_same_path_still_runs_the_unmount_hook() {
+        struct LeavingLabel(Rc<RefCell<u32>>);
+        impl View for LeavingLabel {
+            fn build(&self) -> Node {
+                let unmounts = Rc::clone(&self.0);
+                Node::new("window").key("root").child(
+                    Node::new("label")
+                        .key("gone")
+                        .on_unmount(move |_id| *unmounts.borrow_mut() += 1),
+                )
+            }
+        }
+        struct ArrivingButton;
+        impl View for ArrivingButton {
+            fn build(&self) -> Node {
+                Node::new("window").key("root").child(Node::new("button").key("here"))
+            }
+        }
+
+        let unmounts = Rc::new(RefCell::new(0));
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+        engine.mount(&LeavingLabel(Rc::clone(&unmounts)), &ids.creator());
+        assert_eq!(*unmounts.borrow(), 0, "nothing has left yet");
+
+        // The label is replaced by a different widget type at the same path: the diff emits
+        // `Insert` (the button) plus `Remove` (the label) in one batch.
+        engine.update(&ArrivingButton, &ids.creator());
+        assert_eq!(*unmounts.borrow(), 1, "the removed label's on_unmount must fire exactly once");
     }
 
     /// A view whose label is present only when `shown`, and counts its own mounts/unmounts.

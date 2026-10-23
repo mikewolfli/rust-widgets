@@ -267,7 +267,9 @@ impl AutoCompleteEdit {
         self.filtered_suggestions = self
             .suggestions
             .iter()
-            .filter(|s| s.to_lowercase().contains(&lower))
+            // Shared ASCII fast path: the previous `s.to_lowercase().contains(&lower)`
+            // allocated one `String` per suggestion per keystroke.
+            .filter(|s| crate::widget::text_utils::contains_ignore_ascii_case(s, &lower))
             .cloned()
             .collect();
         if self.filtered_suggestions.is_empty() {
@@ -640,9 +642,12 @@ impl Draw for AutoCompleteEdit {
 
             if let Some(suggestion) = self.filtered_suggestions.get(i) {
                 let item_text_x = item_rect.x + 4;
-                let item_text_y = context.text_line(item_rect, font).y;
-                context.draw_text(
-                    Point::new(item_text_x, item_text_y),
+                let item_line = context.text_line(item_rect, font);
+                // Fitted to the row: a long suggestion used to paint past the popup's
+                // own edge.
+                let item_text_width = item_rect.width.saturating_sub(8).max(1);
+                context.draw_text_fitted_cow(
+                    Rect::new(item_text_x, item_line.y, item_text_width, item_line.height.max(1)),
                     suggestion,
                     font,
                     dropdown_text,

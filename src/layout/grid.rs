@@ -710,8 +710,11 @@ impl GridLayout {
             let mut indices: Vec<usize> = (0..self.rows as usize).collect();
             indices.sort_by(|&a, &b| self.row_stretches[b].cmp(&self.row_stretches[a]));
             let mut remaining = remainder_h;
-            for &idx in &indices {
-                let add = remaining / (self.rows - idx as u32).max(1);
+            for (slot, &idx) in indices.iter().enumerate() {
+                // Same divisor rule as the column twin above: buckets still to be served,
+                // not the row's absolute index.
+                let buckets_left = (indices.len() - slot) as u32;
+                let add = remaining / buckets_left.max(1);
                 if add > 0 {
                     row_heights[idx] += add;
                     remaining -= add;
@@ -739,6 +742,13 @@ impl GridLayout {
         // cells it covers summed plus the spacing it bridges. Emitting it from every covered
         // cell would report one widget several times at several positions, and the last write
         // would win arbitrarily.
+        //
+        // `emitted` is kept sorted so the duplicate test is a binary search: the previous
+        // `Vec::contains` was linear, and this loop runs once per cell (a grid may hold up
+        // to `MAX_CELLS`). The row-major walk meets a widget **first** at its top-left
+        // cell — the only cell a spanning placement can start from — so "not emitted yet"
+        // is exactly "this is the origin cell" and no second scan (`cell_of`, itself a
+        // linear search over every cell) is needed.
         let mut emitted: Vec<ObjectId> = Vec::new();
         for row in 0..self.rows {
             for col in 0..self.cols {
@@ -747,13 +757,14 @@ impl GridLayout {
                 else {
                     continue;
                 };
-                if placement.widget_id == 0 || emitted.contains(&placement.widget_id) {
+                if placement.widget_id == 0 {
                     continue;
                 }
-                if self.cell_of(placement.widget_id) != Some((row, col)) {
-                    continue;
-                }
-                emitted.push(placement.widget_id);
+                let position = match emitted.binary_search(&placement.widget_id) {
+                    Ok(_) => continue,
+                    Err(position) => position,
+                };
+                emitted.insert(position, placement.widget_id);
 
                 let last_col = (col + placement.col_span - 1).min(self.cols - 1);
                 let last_row = (row + placement.row_span - 1).min(self.rows - 1);
@@ -860,11 +871,17 @@ impl Layout for GridLayout {
     fn child_ids(&self) -> Vec<ObjectId> {
         // One id per **widget**, not per occupied cell: a spanning widget covers several cells
         // and must not be reported several times, which is what turns a child count into a
-        // number larger than the number of children.
+        // number larger than the number of children. `seen` is kept sorted so the duplicate
+        // test is a binary search rather than a linear scan over the ids seen so far.
         let mut ids: Vec<ObjectId> = Vec::new();
+        let mut seen: Vec<ObjectId> = Vec::new();
         for cell in self.cells.iter().flatten() {
-            if !ids.contains(&cell.widget_id) {
-                ids.push(cell.widget_id);
+            match seen.binary_search(&cell.widget_id) {
+                Ok(_) => {}
+                Err(position) => {
+                    seen.insert(position, cell.widget_id);
+                    ids.push(cell.widget_id);
+                }
             }
         }
         ids
@@ -1321,6 +1338,32 @@ mod tests {
         assert!(
             bottom.y + bottom.height as i32 <= rect.y + rect.height as i32,
             "bottom row: {bottom:?}"
+        );
+    }
+
+    /// The row-remainder distribution divides by the buckets still to be served, not by the
+    /// row's absolute index: with four rows and 2 px left, the top-stretch row must not
+    /// swallow the whole remainder.
+    #[test]
+    fn row_remainder_is_shared_across_buckets_not_swallowed_by_the_largest_row() {
+        let mut grid = GridLayout::new(4, 1, 0, 0);
+        for row in 0..4 {
+            grid.set_widget(row, 0, row as ObjectId + 1);
+            grid.set_row_stretch_for_row(row, if row == 3 { 5 } else { 1 });
+        }
+
+        // 83 = 8*10 + 3: the stretch pass floors to [10, 10, 10, 51] and leaves 2 px.
+        let out = placed(&grid, Rect::new(0, 0, 40, 83));
+        let heights: Vec<u32> =
+            (0..4).map(|row| rect_of(&out, row as ObjectId + 1).height).collect();
+        assert_eq!(heights.iter().sum::<u32>(), 83, "the rows must fill the container");
+        assert_eq!(
+            heights[3], 51,
+            "the top-stretch row must keep its stretched share: {heights:?}"
+        );
+        assert!(
+            heights[1] >= 11 || heights[2] >= 11,
+            "some smaller row receives the remainder: {heights:?}"
         );
     }
 

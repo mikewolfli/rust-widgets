@@ -3,12 +3,13 @@
 
 //! VirtualTable widget backed by incremental table data source.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::core::{Color, HorizontalAlignment, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::Signal1;
+use crate::signal::{ConnectionScope, Signal1};
 use crate::widget::capability::coercion::{expect_u32, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -34,6 +35,14 @@ pub struct VirtualTable {
     /// place without any setter running (it bumps `revision()`), so a cache validated only
     /// by scroll position would keep painting stale cells.
     window_revision: u64,
+    /// Disconnects the bound source's `data_changed` subscription; replaced on rebind.
+    data_source_connection_scope: ConnectionScope,
+    /// Cache key for a revision-less source, advanced by its `data_changed` signal — the same
+    /// invalidation contract `VirtualList` and `DataGrid` apply.
+    data_generation: Arc<AtomicU64>,
+    /// `true` when the bound source has `revision() > 0` or a `data_changed` signal, i.e. the
+    /// window cache has an invalidation contract and may be kept between calls.
+    data_is_observable: bool,
     /// Emitted when visible window changes `(row_start,row_len,col_start,col_len)`.
     pub visible_window_changed: Signal1<(usize, usize, usize, usize)>,
 }
@@ -52,12 +61,34 @@ impl VirtualTable {
             overscan_columns: 1,
             window_cache: None,
             window_revision: 0,
+            data_source_connection_scope: ConnectionScope::new(),
+            data_generation: Arc::new(AtomicU64::new(0)),
+            data_is_observable: false,
             visible_window_changed: Signal1::new(),
         }
     }
 
     /// Binds data source.
     pub fn set_data_source(&mut self, source: Arc<dyn IncrementalTableDataSource>) {
+        self.data_source_connection_scope = ConnectionScope::new();
+        let revision_nonzero = source.revision() > 0;
+        let has_signal = if let Some(data_changed) = source.data_changed_signal() {
+            let redraw = self.base.redraw_requested_signal().clone();
+            let layout = self.base.layout_requested_signal().clone();
+            let generation = Arc::clone(&self.data_generation);
+            data_changed.connect_scoped(&self.data_source_connection_scope, move || {
+                // The source says its projection changed. Advancing the key is what makes the
+                // next fetch miss; a revision-less source has no other way to invalidate.
+                generation.fetch_add(1, Ordering::Relaxed);
+                redraw.emit();
+                layout.emit();
+            });
+            true
+        } else {
+            false
+        };
+        self.data_generation.fetch_add(1, Ordering::Relaxed);
+        self.data_is_observable = revision_nonzero || has_signal;
         self.data_source = Some(source);
         self.scroll_row = 0;
         self.scroll_column = 0;
@@ -69,6 +100,9 @@ impl VirtualTable {
 
     /// Clears data source.
     pub fn clear_data_source(&mut self) {
+        self.data_source_connection_scope = ConnectionScope::new();
+        self.data_is_observable = false;
+        self.data_generation.fetch_add(1, Ordering::Relaxed);
         self.data_source = None;
         self.scroll_row = 0;
         self.scroll_column = 0;
@@ -241,12 +275,21 @@ impl VirtualTable {
     /// removed.
     fn visible_window_cells(&mut self) -> Option<&Arc<Vec<Vec<Option<String>>>>> {
         let revision = self.data_source.as_ref()?.revision();
-        if self.window_cache.is_none() || self.window_revision != revision {
+        // A source with a real revision uses it; one without falls back to the generation this
+        // widget advances from `data_changed` — the same contract as `VirtualList`/`DataGrid`.
+        // A source with neither has no invalidation contract, so its window is refetched on
+        // every call instead of being served stale.
+        let cache_revision =
+            if revision > 0 { revision } else { self.data_generation.load(Ordering::Relaxed) };
+        if !self.data_is_observable
+            || self.window_cache.is_none()
+            || self.window_revision != cache_revision
+        {
             let source = self.data_source.as_ref()?;
             let (row_start, row_len, col_start, col_len) = self.visible_window();
             let data = source.fetch_window(row_start, row_len, col_start, col_len);
             self.window_cache = Some(Arc::new(data));
-            self.window_revision = revision;
+            self.window_revision = cache_revision;
         }
         self.window_cache.as_ref()
     }
@@ -659,8 +702,10 @@ mod tests {
     use super::*;
     // Gated exactly as the one test that uses it: the test is `device_profile + desktop`,
     // so on `mobile`/`tablet` an ungated import here is an unused-import warning.
+    use crate::signal::GenericSignal;
     #[cfg(all(device_profile, feature = "desktop"))]
     use crate::widget::svg::render_to_svg;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     /// The cell grid uses the weak separator role, not the frame's strength.
@@ -885,6 +930,93 @@ mod tests {
         let a = table.fetch_visible_window();
         let b = table.fetch_visible_window();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn a_revisionless_source_without_a_contract_is_refetched_not_served_stale() {
+        struct InPlaceSource {
+            generation: AtomicU64,
+            calls: AtomicUsize,
+        }
+        impl IncrementalTableDataSource for InPlaceSource {
+            fn row_count(&self) -> usize {
+                6
+            }
+            fn column_count(&self) -> usize {
+                2
+            }
+            fn data(&self, row: usize, column: usize) -> Option<String> {
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                Some(format!("gen-{}:{}:{}", self.generation.load(Ordering::Relaxed), row, column))
+            }
+            // `revision()` and `data_changed_signal()` keep the trait defaults: no versioning
+            // and no signal — no invalidation contract, so the window must not be cached.
+        }
+
+        let source =
+            Arc::new(InPlaceSource { generation: AtomicU64::new(0), calls: AtomicUsize::new(0) });
+        let mut table = VirtualTable::new(Rect::new(0, 0, 240, 80));
+        table.set_data_source(source.clone());
+
+        let first = table.fetch_visible_window();
+        let calls_after_first = source.calls.load(Ordering::Relaxed);
+        assert!(calls_after_first > 0);
+
+        // The source mutates in place. With no revision and no signal there is no way to be
+        // told, so the next fetch must go back to the source instead of serving the window
+        // built from the old content.
+        source.generation.fetch_add(1, Ordering::Relaxed);
+        let second = table.fetch_visible_window();
+        assert_ne!(first, second);
+        assert!(source.calls.load(Ordering::Relaxed) > calls_after_first);
+    }
+
+    #[test]
+    fn a_revisionless_source_is_cached_and_invalidated_by_its_signal() {
+        struct SignalSource {
+            generation: AtomicU64,
+            calls: AtomicUsize,
+            changed: GenericSignal,
+        }
+        impl IncrementalTableDataSource for SignalSource {
+            fn row_count(&self) -> usize {
+                6
+            }
+            fn column_count(&self) -> usize {
+                2
+            }
+            fn data(&self, row: usize, column: usize) -> Option<String> {
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                Some(format!("gen-{}:{}:{}", self.generation.load(Ordering::Relaxed), row, column))
+            }
+            fn data_changed_signal(&self) -> Option<&GenericSignal> {
+                Some(&self.changed)
+            }
+        }
+
+        let source = Arc::new(SignalSource {
+            generation: AtomicU64::new(0),
+            calls: AtomicUsize::new(0),
+            changed: GenericSignal::new(),
+        });
+        let mut table = VirtualTable::new(Rect::new(0, 0, 240, 80));
+        table.set_data_source(source.clone());
+
+        let _ = table.fetch_visible_window();
+        let calls_after_first = source.calls.load(Ordering::Relaxed);
+
+        // No signal fired: the cached window is reused.
+        let cached = table.fetch_visible_window();
+        assert_eq!(source.calls.load(Ordering::Relaxed), calls_after_first);
+
+        // The source mutates in place and raises `data_changed`; the generation advances and
+        // the next fetch rebuilds from the new content.
+        source.generation.fetch_add(1, Ordering::Relaxed);
+        source.changed.emit();
+        let fresh = table.fetch_visible_window();
+        assert_ne!(cached, fresh);
+        assert!(source.calls.load(Ordering::Relaxed) > calls_after_first);
+        assert!(fresh[0][0].as_deref().is_some_and(|cell| cell.starts_with("gen-1")));
     }
 
     #[test]
@@ -1189,6 +1321,11 @@ mod tests {
             }
             fn data(&self, row: usize, column: usize) -> Option<String> {
                 Some(format!("data-{}:{}", row, column))
+            }
+            // The shared-cache guarantee under test applies to sources with an invalidation
+            // contract; a contract-less source is refetched instead of served stale.
+            fn revision(&self) -> u64 {
+                1
             }
             fn fetch_window(
                 &self,

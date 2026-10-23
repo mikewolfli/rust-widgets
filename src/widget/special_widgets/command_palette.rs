@@ -194,25 +194,26 @@ impl CommandPalette {
             return Some(1);
         }
 
-        let title = entry.title.to_lowercase();
-        let id = entry.id.to_lowercase();
-        let category = entry.category.to_lowercase();
-        let keywords =
-            entry.keywords.iter().map(|keyword| keyword.to_lowercase()).collect::<Vec<_>>();
+        // Compared case-insensitively against the already-folded query without allocating:
+        // this used to build a lowered `String` for the title, the id, the category and one
+        // per keyword, for every entry, on every keystroke.
+        use crate::widget::text_utils::{
+            contains_ignore_ascii_case, starts_with_ignore_ascii_case,
+        };
 
-        if title.starts_with(query) {
+        if starts_with_ignore_ascii_case(&entry.title, query) {
             return Some(120);
         }
-        if title.contains(query) {
+        if contains_ignore_ascii_case(&entry.title, query) {
             return Some(100);
         }
-        if id.contains(query) {
+        if contains_ignore_ascii_case(&entry.id, query) {
             return Some(80);
         }
-        if category.contains(query) {
+        if contains_ignore_ascii_case(&entry.category, query) {
             return Some(60);
         }
-        if keywords.iter().any(|keyword| keyword.contains(query)) {
+        if entry.keywords.iter().any(|keyword| contains_ignore_ascii_case(keyword, query)) {
             return Some(50);
         }
 

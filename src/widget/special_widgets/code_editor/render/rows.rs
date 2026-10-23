@@ -7,6 +7,7 @@
 //! parent; these are the paint helpers it calls.
 
 use super::*;
+use crate::special_widgets::code_editor::TokenSpan;
 
 impl CodeEditor {
     /// Draws source rows and returns the document line index painted per row.
@@ -221,7 +222,19 @@ impl CodeEditor {
     pub(super) fn row_runs(&self, line: usize, text: &str) -> Vec<(usize, usize, TokenKind)> {
         let mut runs: Vec<(usize, usize, TokenKind)> = Vec::new();
         let mut pen = 0usize;
-        for span in self.tokens_on_line(line) {
+        // Borrowed from the cache: `tokens_on_line` returns an owned `Vec`, and this
+        // reads the list per painted row (and again when the row is measured). The
+        // owned fallback runs only for a line the paint path has not filled, so the
+        // behaviour for unprepared lines is unchanged.
+        let computed;
+        let spans: &[TokenSpan] = match self.cached_tokens_on_line(line) {
+            Some(cached) => cached,
+            None => {
+                computed = self.tokens_on_line(line);
+                &computed
+            }
+        };
+        for span in spans {
             let start = floor_char_boundary(text, span.start.min(text.len()));
             let end = floor_char_boundary(text, span.end.min(text.len()));
             if start > pen {
@@ -293,24 +306,28 @@ impl CodeEditor {
     /// Returns the cached layout of `line`, when one was measured for the current key.
     ///
     /// The entry is a clone of a shared handle (`RowLayout::xs` is an `Rc`), so a hit costs a
-    /// refcount bump rather than re-shaping the line.
+    /// refcount bump rather than re-shaping the line. Entries are kept sorted by line
+    /// (`remember_row_layout` inserts in place), so the lookup is a binary search: the
+    /// painter asks once per painted row, and the row count is the viewport.
     pub(super) fn cached_row_layout(&self, line: usize) -> Option<RowLayout> {
         let cache = self.row_layouts.borrow();
-        cache.iter().find(|(key, _)| *key == line).map(|(_, layout)| layout.clone())
+        cache.binary_search_by_key(&line, |(key, _)| *key).ok().map(|index| cache[index].1.clone())
     }
 
     /// Stores the row's measured geometry for the caret, selection and hit-test.
     pub(super) fn remember_row_layout(&self, line: usize, layout: RowLayout) {
         let mut cache = self.row_layouts.borrow_mut();
-        match cache.iter_mut().find(|(key, _)| *key == line) {
-            Some(slot) => slot.1 = layout,
-            None => cache.push((line, layout)),
+        match cache.binary_search_by_key(&line, |(key, _)| *key) {
+            Ok(index) => cache[index].1 = layout,
+            Err(index) => cache.insert(index, (line, layout)),
         }
     }
 
     /// Drops layouts for lines that were not painted this frame.
     pub(super) fn prune_row_layouts(&self, painted: &[usize]) {
-        self.row_layouts.borrow_mut().retain(|(line, _)| painted.contains(line));
+        // `painted` ascends (the paint loop walks rows top to bottom), so membership is
+        // a binary search; a linear `contains` scanned it once per cached entry.
+        self.row_layouts.borrow_mut().retain(|(line, _)| painted.binary_search(line).is_ok());
     }
 
     /// Measured x of a character boundary, when the line has been painted.

@@ -184,6 +184,37 @@ impl ShortcutEditor {
         false
     }
 
+    /// Restores every shortcut that declares [`ShortcutEntry::default_keys`] to those
+    /// keys, emitting `shortcut_changed` for each entry that actually moved.
+    ///
+    /// This is the reader that makes `default_keys` live state rather than a field the
+    /// caller stores and nothing reads: a binding's shipped default is declared at
+    /// construction and the control can put it back. Entries whose defaults are empty
+    /// (the builder was never called) are left alone — "no default declared" is not
+    /// "the default is unbound", so it must not silently clear a user's binding.
+    /// Like [`Self::update_shortcut_keys`], this is a programmatic assignment, so the
+    /// `editable` flag (which governs the UI) does not gate it.
+    pub fn reset_all_shortcuts(&mut self) {
+        let before = self.shortcuts.clone();
+        let mut changed: Vec<(String, Vec<String>)> = Vec::new();
+        for entry in &mut self.shortcuts {
+            if entry.default_keys.is_empty() || entry.keys == entry.default_keys {
+                continue;
+            }
+            entry.keys = entry.default_keys.clone();
+            changed.push((entry.id.clone(), entry.keys.clone()));
+        }
+        if changed.is_empty() {
+            return;
+        }
+        self.table_generation = self.table_generation.wrapping_add(1);
+        self.record_shortcut_state(before);
+        for (id, keys) in changed {
+            self.shortcut_changed.emit((id, keys));
+        }
+        self.base.request_redraw();
+    }
+
     /// Sets the filter text for searching shortcuts.
     pub fn set_filter(&mut self, text: &str) {
         let text = text.to_string();
@@ -375,10 +406,10 @@ impl ShortcutEditor {
             .find(|entry| {
                 entry.editable
                     && (lower.is_empty()
-                        || entry.name.to_lowercase().contains(&lower)
-                        || entry.id.to_lowercase().contains(&lower)
-                        || entry.category.to_lowercase().contains(&lower)
-                        || entry.keys.iter().any(|k| k.to_lowercase().contains(&lower)))
+                        || contains_ignore_ascii_case(&entry.name, &lower)
+                        || contains_ignore_ascii_case(&entry.id, &lower)
+                        || contains_ignore_ascii_case(&entry.category, &lower)
+                        || entry.keys.iter().any(|k| contains_ignore_ascii_case(k, &lower)))
             })
             .map(|entry| entry.id.clone());
 
@@ -500,10 +531,15 @@ impl WidgetProperties for ShortcutEditor {
     ///
     /// `set_filter_text` assigns the filter string and needs a payload, so it is
     /// answered through the property route — the capability publishes no zero-argument
-    /// action.
+    /// action for it. `reset_all_shortcuts` needs no payload and restores every entry
+    /// that declared default keys, emitting one `shortcut_changed` per entry.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "set_filter_text" => Err(CapabilityAccessError::OutOfRange),
+            "reset_all_shortcuts" => {
+                self.reset_all_shortcuts();
+                Ok(())
+            }
             _ => Err(CapabilityAccessError::UnknownCommand),
         }
     }
@@ -801,22 +837,10 @@ fn keycode_to_name(key: u32, modifiers: u32) -> String {
 
 /// Case-insensitive substring test for the shortcut filter.
 ///
-/// `needle` is already lower-cased. For an ASCII needle the comparison allocates nothing;
-/// the previous `to_lowercase().contains()` allocated one `String` per field per entry per
-/// frame while a filter was active. Non-ASCII needles keep the owned path, because folding
-/// Unicode case is not a byte-wise operation.
-fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
-    if needle.is_empty() {
-        return true;
-    }
-    if !needle.is_ascii() {
-        return haystack.to_lowercase().contains(needle);
-    }
-    let needle = needle.as_bytes();
-    let haystack = haystack.as_bytes();
-    needle.len() <= haystack.len()
-        && haystack.windows(needle.len()).any(|window| window.eq_ignore_ascii_case(needle))
-}
+// The one case-insensitive substring implementation lives in `text_utils`, shared with the
+// other filter-driven controls (`auto_complete_edit`, `cascader`, `mention`) that used to
+// allocate a lowered `String` per candidate per keystroke.
+use crate::widget::text_utils::contains_ignore_ascii_case;
 
 #[cfg(test)]
 mod tests {

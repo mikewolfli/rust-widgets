@@ -303,7 +303,19 @@ impl CodeEditor {
         let fold_x = rect.x + self.fold_marker_offset();
         // Folds are read **once**, not per painted row: `fold_regions()` clones the
         // model's list, and asking it inside the loop was one clone per line per frame.
-        let folds = self.fold_regions();
+        // Sorted here so the per-row lookup is a binary search rather than a scan of
+        // the whole fold list (O(rows × folds)); the clone is local, so sorting it is
+        // free of side effects.
+        let mut folds = self.fold_regions();
+        folds.sort_by_key(|region| region.start_line);
+        // One pass over the markers, sorted by (line, severity rank): the per-row
+        // severity lookup used to scan every marker for every visible row, which is
+        // O(rows × markers) on a linted file. The first entry for a line has the
+        // lowest rank, and the lowest rank is the highest severity — the same rule
+        // the old per-row helper applied.
+        let mut severities: Vec<(usize, MarkerSeverity)> =
+            self.markers.iter().map(|marker| (marker.line, marker.severity)).collect();
+        severities.sort_by_key(|(line, severity)| (*line, severity.rank()));
         let active_line = self.cursor.head.line;
         let mut row = 0usize;
         // One reusable label buffer for the whole gutter pass: `line_number_label`
@@ -343,7 +355,8 @@ impl CodeEditor {
                 // noise that made the gutter look like it was full of artefacts.
                 // One scan answers both "is foldable" and "is folded"; two `any`
                 // passes walked the whole region list twice per foldable row.
-                if let Some(region) = folds.iter().find(|region| region.start_line == line) {
+                if let Ok(index) = folds.binary_search_by_key(&line, |region| region.start_line) {
+                    let region = &folds[index];
                     let marker = if region.folded { ">" } else { "v" };
                     context.draw_text(
                         Point::new(fold_x, y + (row_height as i32 - line_box) / 2),
@@ -355,7 +368,12 @@ impl CodeEditor {
                 }
                 // Severity dot, at the gutter's leading edge so it never collides
                 // with the digits. The top-most severity wins.
-                if let Some(severity) = self.highest_severity_on_line(line) {
+                let severity_index = severities.partition_point(|(l, _)| *l < line);
+                let severity = severities
+                    .get(severity_index)
+                    .filter(|(l, _)| *l == line)
+                    .map(|(_, severity)| *severity);
+                if let Some(severity) = severity {
                     let diameter = 5u32;
                     let dot_y = y + (row_height as i32 - diameter as i32) / 2 + 1;
                     context.fill_rect(

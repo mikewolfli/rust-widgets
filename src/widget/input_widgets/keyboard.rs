@@ -20,6 +20,7 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use std::borrow::Cow;
 
 /// The key code this board's own layout table gives its Shift key.
 ///
@@ -301,16 +302,27 @@ impl Keyboard {
     }
 
     /// Get the display label for a key, respecting shift/lowercase state.
-    fn key_display_label(&self, key: &KeyDefinition) -> String {
+    ///
+    /// Borrowed when the label is already in the case the state asks for (the default
+    /// board is lowercase, so the common frame allocates nothing); only a label that
+    /// actually has to change case is rebuilt. The draw calls this once per key per
+    /// frame, and the owned `String` it used to return meant one allocation per key.
+    fn key_display_label<'k>(&self, key: &'k KeyDefinition) -> Cow<'k, str> {
         // Only letter keys are affected by shift.
-        if key.key_code >= 65 && key.key_code <= 90 {
+        if (65..=90).contains(&key.key_code) {
             if self.shift || !self.lowercase {
-                key.label.to_uppercase()
+                if key.label.chars().all(|ch| !ch.is_lowercase()) {
+                    Cow::Borrowed(key.label.as_str())
+                } else {
+                    Cow::Owned(key.label.to_uppercase())
+                }
+            } else if key.label.chars().all(|ch| !ch.is_uppercase()) {
+                Cow::Borrowed(key.label.as_str())
             } else {
-                key.label.to_lowercase()
+                Cow::Owned(key.label.to_lowercase())
             }
         } else {
-            key.label.clone()
+            Cow::Borrowed(key.label.as_str())
         }
     }
 }

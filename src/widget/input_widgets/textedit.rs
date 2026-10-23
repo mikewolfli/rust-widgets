@@ -987,6 +987,13 @@ impl WidgetProperties for TextEdit {
                 _ => return Err(CapabilityAccessError::TypeMismatch),
             },
             "max_length" => match value {
+                // `Null` is the getter's "no limit" answer (and the schema default), so
+                // the setter must accept it — `LineEdit` already does, and a property
+                // whose read cannot be written back is a broken round trip.
+                CapabilityValue::Null => {
+                    self.set_max_length(None);
+                    return Ok(());
+                }
                 CapabilityValue::UInt(limit) => {
                     let limit =
                         usize::try_from(limit).map_err(|_| CapabilityAccessError::OutOfRange)?;

@@ -430,11 +430,22 @@ struct ApplyServices<'a> {
 }
 
 /// [`apply_with_reservations`] with a portal-host resolver.
+/// Ids allocated for a batch's inserted subtrees before `apply` runs, keyed by the node's
+/// declared key (the empty string for a keyless node).
+///
+/// The value is a **queue**, not a single id: one batch can legally insert several subtrees
+/// that share a key (two keyless siblings, or the same key under two different parents), and
+/// a single id per key made the second reservation overwrite the first — the first subtree
+/// then adopted the second's id and the first allocated control was never mounted. Both
+/// sides traverse in the same order (patches in order, children in declaration order), so
+/// front-to-back pairing is exact.
+pub type ReservedIds = crate::compat::HashMap<String, crate::compat::VecDeque<ObjectId>>;
+
 pub fn apply_with_reserved_and_overlay(
     layout: &mut crate::json::BoundJsonLayout,
     patches: &[Patch],
     create: &dyn Fn(&Node) -> Option<ObjectId>,
-    reserved: &mut crate::compat::HashMap<String, ObjectId>,
+    reserved: &mut ReservedIds,
     overlay: Option<OverlayHost<'_>>,
 ) -> ApplyReport {
     apply_with_reserved_overlay_and_icon_resolver(layout, patches, create, reserved, overlay, None)
@@ -467,7 +478,7 @@ pub fn apply_with_reserved_overlay_and_icon_resolver(
     layout: &mut crate::json::BoundJsonLayout,
     patches: &[Patch],
     create: &dyn Fn(&Node) -> Option<ObjectId>,
-    reserved: &mut crate::compat::HashMap<String, ObjectId>,
+    reserved: &mut ReservedIds,
     overlay: Option<OverlayHost<'_>>,
     resolver: Option<&dyn IconResourceResolver>,
 ) -> ApplyReport {
@@ -482,14 +493,14 @@ pub fn apply_with_reserved_overlay_and_icon_resolver(
 /// [`apply`], but adopting ids the caller already allocated for the batch's own insertions.
 ///
 /// `reserved` is keyed by the inserted node's declared key (the empty string for a keyless
-/// node) and is consumed as the nodes are created. See [`insert_subtree`] for why this exists:
-/// without it, every inserted node would be constructed twice, leaving one orphaned control
-/// per insertion.
+/// node) and is consumed in insertion order as the nodes are created. See [`insert_subtree`]
+/// for why this exists: without it, every inserted node would be constructed twice, leaving
+/// one orphaned control per insertion.
 pub fn apply_with_reservations(
     layout: &mut crate::json::BoundJsonLayout,
     patches: &[Patch],
     create: &dyn Fn(&Node) -> Option<ObjectId>,
-    reserved: &mut crate::compat::HashMap<String, ObjectId>,
+    reserved: &mut ReservedIds,
 ) -> ApplyReport {
     apply_with_reserved_and_overlay(layout, patches, create, reserved, None)
 }
@@ -499,7 +510,7 @@ fn apply_one(
     layout: &mut crate::json::BoundJsonLayout,
     patch: &Patch,
     create: &dyn Fn(&Node) -> Option<ObjectId>,
-    reserved: &mut crate::compat::HashMap<String, ObjectId>,
+    reserved: &mut ReservedIds,
     report: &mut ApplyReport,
     services: ApplyServices<'_>,
 ) {
@@ -583,19 +594,22 @@ fn is_mounted(layout: &crate::json::BoundJsonLayout, id: ObjectId) -> bool {
 
 /// Create `node` and its declared subtree under `parent`, returning how many nodes were made.
 ///
-/// `reserved` maps a node's declared key (or its empty key for a keyless node) to an id the
-/// caller has **already allocated** for that node. When an entry exists, the id is adopted
-/// rather than `create` being called again: `ViewEngine::reserve_ids_for_inserts` has to know
-/// the ids of a batch's newly inserted nodes before `apply` runs, and the only way to learn an
-/// id is to call `create`. Calling it twice for one node produced a second live control and
-/// orphaned the first — one leaked widget per inserted node, forever.
+/// `reserved` maps a node's declared key (or its empty key for a keyless node) to a queue of
+/// ids the caller has **already allocated** for nodes with that key. When a queue is
+/// non-empty, the front id is adopted rather than `create` being called again:
+/// `ViewEngine::reserve_ids_for_inserts` has to know the ids of a batch's newly inserted
+/// nodes before `apply` runs, and the only way to learn an id is to call `create`. Calling
+/// it twice for one node produced a second live control and orphaned the first — one leaked
+/// widget per inserted node, forever. The queue (not a single slot) is what lets one batch
+/// carry several inserts that share a key: both sides traverse in the same order, so
+/// front-to-back pairing is exact.
 fn insert_subtree(
     layout: &mut crate::json::BoundJsonLayout,
     parent: ObjectId,
     index: usize,
     node: &Node,
     create: &dyn Fn(&Node) -> Option<ObjectId>,
-    reserved: &mut crate::compat::HashMap<String, ObjectId>,
+    reserved: &mut ReservedIds,
     report: &mut ApplyReport,
     services: ApplyServices<'_>,
 ) -> usize {
@@ -639,7 +653,7 @@ fn insert_subtree(
     }
 
     let reservation_key = node.key.clone().unwrap_or_default();
-    let reserved_id = reserved.remove(&reservation_key);
+    let reserved_id = reserved.get_mut(&reservation_key).and_then(|queue| queue.pop_front());
 
     let id = match reserved_id.or_else(|| create(node)) {
         Some(id) if id != 0 => id,

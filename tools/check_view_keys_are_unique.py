@@ -78,6 +78,9 @@ INTENTIONAL_DUPLICATE_TESTS = {
         "asserts `TreeIndex` refuses to map an ambiguous key, so it must build a collision",
     "duplicated_sibling_fixture":
         "builds the deliberate collision that test needs, named so the gate can excuse it precisely",
+    "same_key_under_two_parents_fixture":
+        "the same key under two different parents is legal and is exactly what this fixture \
+         builds: one batch must insert both subtrees, each adopting its own reserved id",
 }
 
 # `Node::new("button")` … optionally chained `.key("ok")`.

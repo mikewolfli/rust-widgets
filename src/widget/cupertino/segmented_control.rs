@@ -384,13 +384,31 @@ impl Draw for CupertinoSegmentedControl {
             } else {
                 unselected
             };
-            context.draw_text(
-                Point::new(text_x, text_y),
-                seg,
-                &font,
-                color,
-                HorizontalAlignment::Left,
-            );
+            let seg_right = seg_x + seg_w - 2;
+            if text_x >= seg_x + 2 && text_x + metrics.width as i32 <= seg_right {
+                context.draw_text(
+                    Point::new(text_x, text_y),
+                    seg,
+                    &font,
+                    color,
+                    HorizontalAlignment::Left,
+                );
+            } else {
+                // A label wider than its segment is centred-and-ellipsised rather than
+                // painted over its neighbours.
+                context.draw_text_fitted_cow(
+                    Rect::new(
+                        seg_x + 2,
+                        text_y,
+                        ((seg_w - 4).max(0)) as u32,
+                        metrics.height.max(1),
+                    ),
+                    seg,
+                    &font,
+                    color,
+                    HorizontalAlignment::Center,
+                );
+            }
         }
     }
 }

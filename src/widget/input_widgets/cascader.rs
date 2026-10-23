@@ -395,7 +395,11 @@ impl Cascader {
         siblings
             .iter()
             .enumerate()
-            .filter(|(_, option)| option.label.to_lowercase().contains(&needle))
+            // Shared ASCII fast path: the previous `label.to_lowercase().contains(..)`
+            // allocated one `String` per option per keystroke.
+            .filter(|(_, option)| {
+                crate::widget::text_utils::contains_ignore_ascii_case(&option.label, &needle)
+            })
             .map(|(index, _)| index)
             .collect()
     }
@@ -831,11 +835,19 @@ impl Cascader {
             text_color
         };
         // The origin is the glyph box's top edge, so the label is centred from the measured
-        // line box rather than from the fixed `21` that only fitted one font size.
+        // line box rather than from the fixed `21` that only fitted one font size. It is
+        // also fitted to the space left of the chevron: an unbounded label ran into the
+        // disclosure arrow (and past the field on a narrow layout).
         let font = crate::widget::metrics::role_font(self.style(), 12.0);
         let text_h = context.measure_text(display, &font).height as i32;
-        context.draw_text(
-            Point::new(rect.x + 8, rect.y + (rect.height as i32 - text_h) / 2),
+        let label_width = ((rect.width as i32) - 8 - 22).max(0) as u32;
+        context.draw_text_fitted_cow(
+            Rect::new(
+                rect.x + 8,
+                rect.y + (rect.height as i32 - text_h) / 2,
+                label_width,
+                text_h.max(1) as u32,
+            ),
             display,
             &font,
             color,
@@ -932,8 +944,12 @@ impl Cascader {
                 // accent's contrast colour, which is legible on that fill by construction.
                 context.fill_rect(row_rect, highlight_surface);
             }
-            context.draw_text(
-                Point::new(row_rect.x + 8, row_rect.y + 18),
+            let row_line = context.text_line(row_rect, &row_font);
+            // Fitted to the space left of the branch chevron / pending ellipsis zone (the
+            // rightmost 20px of the row): an unbounded label ran underneath it.
+            let label_width = ((row_rect.width as i32) - 8 - 20).max(0) as u32;
+            context.draw_text_fitted_cow(
+                Rect::new(row_rect.x + 8, row_line.y, label_width, row_line.height.max(1)),
                 &option.label,
                 &row_font,
                 if highlighted { on_highlight } else { row_ink },
@@ -945,7 +961,7 @@ impl Cascader {
                 // click that has nothing to open. The row stays in place so the tree does
                 // not jump when the children arrive.
                 context.draw_text(
-                    Point::new(row_rect.x + row_rect.width as i32 - 18, row_rect.y + 18),
+                    Point::new(row_rect.x + row_rect.width as i32 - 18, row_line.y),
                     "...",
                     &row_font,
                     branch_ink,

@@ -227,6 +227,19 @@ impl DropdownMenu {
         self.items.iter().position(|item| item.value == selected)
     }
 
+    /// Clears the selection, so no item reads as chosen.
+    ///
+    /// The `None` half of the `selected_index` property: the getter answers `Null`
+    /// when nothing is selected, so the setter must be able to return to that state.
+    /// No `item_selected` fires — nothing was selected.
+    pub fn clear_selection(&mut self) {
+        if self.selected_value.is_none() {
+            return;
+        }
+        self.selected_value = None;
+        self.base.request_redraw();
+    }
+
     /// Selects the item at `index`.
     ///
     /// Mirrors what a click on that row does: an in-range, enabled item becomes
@@ -548,7 +561,15 @@ impl WidgetProperties for DropdownMenu {
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
-            "selected_index" => self.set_selected_index(expect_usize(value)?),
+            // `Null` is the getter's "nothing selected" answer and the schema default,
+            // so it must be writable back.
+            "selected_index" => match value {
+                CapabilityValue::Null => {
+                    self.clear_selection();
+                    Ok(())
+                }
+                other => self.set_selected_index(expect_usize(other)?),
+            },
             "expanded" => {
                 if expect_bool(value)? {
                     self.expand();

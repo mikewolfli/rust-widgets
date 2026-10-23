@@ -33,6 +33,17 @@ use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
 
+/// The mask's monospace face, initialised once.
+///
+/// `Font::simple` allocates its family string, and every caller asked for the same
+/// literal face: the hit test rebuilt it on each pointer move and the painter once per
+/// frame. The face and size are fixed, so one process-wide initialisation is the whole
+/// cache.
+fn mask_font() -> &'static Font {
+    static FONT: crate::compat::OnceLock<Font> = crate::compat::OnceLock::new();
+    FONT.get_or_init(|| Font::simple("monospace", 13.0))
+}
+
 /// A parsed segment in the mask — either a literal character or an input placeholder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MaskSegment {
@@ -652,7 +663,7 @@ impl MaskedEdit {
     /// boundary rather than the one before it, which is what a user pointing at a glyph expects.
     fn display_position_at_x(&self, x: i32) -> usize {
         let field = self.field_rect();
-        let font = Font::simple("monospace", 13.0);
+        let font = mask_font();
         let cell = font.size().max(1.0) as i32 * 3 / 5; // the shaper's 0.6 factor, in pixels
         let cell = cell.max(1);
         let origin = field.x + dimensions::TEXT_FIELD_PADDING_H as i32;
@@ -781,7 +792,7 @@ impl Draw for MaskedEdit {
         // it is also what the hit test uses, so the clickable area is the visible one.
         let geom = self.field_rect();
         let is_enabled = self.base.is_enabled();
-        let font = Font::simple("monospace", 13.0);
+        let font = mask_font();
 
         // ── Background ──
         //
@@ -898,7 +909,7 @@ impl Draw for MaskedEdit {
         // `context.text_line` is what places the box: it returns the field's own line box, so
         // the ink is vertically centred in the *field* rather than beginning on the point the
         // field happens to be centred on.
-        let line = context.text_line(geom, &font);
+        let line = context.text_line(geom, font);
         let inner_top = line.y;
         let inner_height = line.height;
 
@@ -928,7 +939,7 @@ impl Draw for MaskedEdit {
                 context.draw_text_fitted_cow(
                     text_bounds,
                     &self.raw_text,
-                    &font,
+                    font,
                     text_color,
                     self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
                 );
@@ -1017,7 +1028,7 @@ impl Draw for MaskedEdit {
                         context.draw_text(
                             Point::new(draw_x, inner_top),
                             ch.encode_utf8(&mut glyph),
-                            &font,
+                            font,
                             mask_ink,
                             value_align,
                         );
@@ -1062,7 +1073,7 @@ impl Draw for MaskedEdit {
                             context.draw_text(
                                 Point::new(draw_x, inner_top),
                                 glyph,
-                                &font,
+                                font,
                                 caret_ink,
                                 value_align,
                             );
@@ -1070,7 +1081,7 @@ impl Draw for MaskedEdit {
                             context.draw_text(
                                 Point::new(draw_x, inner_top),
                                 glyph,
-                                &font,
+                                font,
                                 char_color,
                                 value_align,
                             );

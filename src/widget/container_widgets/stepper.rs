@@ -23,7 +23,7 @@
 //! collision with the shared table's vocabulary for one with this crate's own history; naming both here
 //! removes the ambiguity at the point of search instead.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -261,7 +261,6 @@ impl Draw for Stepper {
         let is_enabled = self.base.is_enabled();
         let value_text = self.value.to_string();
         let font = crate::core::Font::default_ui();
-        let text_metrics = context.measure_text(&value_text, &font);
 
         // Chrome colours resolve explicit style first, then the theme's resolved
         // style for this control, and only then a literal. The theme step is what
@@ -356,16 +355,22 @@ impl Draw for Stepper {
             IconName::Plus,
         );
 
-        // --- Value text (center of the row, not of the control) ---
-        let text_x = band.x + (band.width as i32 - text_metrics.width as i32) / 2;
+        // --- Value text (centred in the gap between the two buttons) ---
+        //
+        // The old centre of the whole band coincided with the gap's centre only while the
+        // value was narrow; a wide one ran underneath both buttons. The minus and plus
+        // buttons are mirror images, so for a fitting value the position is unchanged.
+        let gap_left = (minus_rect.x + minus_rect.width as i32 + 2).max(band.x);
+        let gap_right = plus_rect.x - 2;
+        let gap_width = ((gap_right - gap_left).max(0)) as u32;
         let value_line = context.text_line(band, &font);
         let value_color = if !is_enabled { disabled_text } else { text_color };
-        context.draw_text(
-            Point::new(text_x, value_line.y),
+        context.draw_text_fitted_cow(
+            Rect::new(gap_left, value_line.y, gap_width.max(1), value_line.height.max(1)),
             &value_text,
             &font,
             value_color,
-            HorizontalAlignment::Left,
+            HorizontalAlignment::Center,
         );
     }
 }

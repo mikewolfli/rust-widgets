@@ -115,11 +115,25 @@ impl RenderScene {
             backend.apply_render_config(next);
         }
         backend.begin_frame(clear);
-        let mut order = self.layers.iter().collect::<Vec<_>>();
-        order.sort_by_key(|layer| layer.z_index());
-        for layer in order {
-            for command in layer.commands() {
-                backend.execute_command(command);
+        // Layers are usually pushed in paint order already; collecting and sorting a
+        // `Vec` here allocated on every frame. The sorted copy is only built when the
+        // order actually differs — `sort_by_key` is stable, so `<=` is the exact
+        // condition under which the sorted order equals the current one.
+        let already_ordered =
+            self.layers.windows(2).all(|pair| pair[0].z_index() <= pair[1].z_index());
+        if already_ordered {
+            for layer in &self.layers {
+                for command in layer.commands() {
+                    backend.execute_command(command);
+                }
+            }
+        } else {
+            let mut order = self.layers.iter().collect::<Vec<_>>();
+            order.sort_by_key(|layer| layer.z_index());
+            for layer in order {
+                for command in layer.commands() {
+                    backend.execute_command(command);
+                }
             }
         }
         backend.end_frame();
@@ -176,6 +190,21 @@ impl RenderScene {
         AutoRenderBackend::CpuSoftware
     }
 }
+/// The compose backend, reused across frames.
+///
+/// `SoftwarePaintBackend::new` allocates a full-frame front **and** back buffer, and
+/// this path built a fresh one for every composed frame only to copy the result into
+/// the target and drop it. `set_size` resizes in place (the buffers keep their
+/// capacity), so a steady-size window allocates on the first frame only. A `Mutex`
+/// rather than a thread-local: the `mini` (no_std) build has no `thread_local!`, and
+/// composition is a single-threaded UI operation, so the uncontended lock is a few
+/// nanoseconds. `begin_frame(clear)` clears the reused buffer, so no frame can see
+/// the previous one.
+fn compose_backend_cache() -> &'static Mutex<Option<SoftwarePaintBackend>> {
+    static CACHE: OnceLock<Mutex<Option<SoftwarePaintBackend>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
 fn compose_scene_to_surface_software(
     scene: &RenderScene,
     surface: &mut SoftwareSurface,
@@ -184,13 +213,18 @@ fn compose_scene_to_surface_software(
 ) {
     #[cfg(feature = "quality-management")]
     let start_time = std::time::Instant::now();
-    let mut backend = SoftwarePaintBackend::new(surface.size(), surface.dpi_scale());
-    backend.set_size(surface.size());
-    backend.apply_render_config(surface.render_config());
-    scene.compose_with_backend_config(&mut backend, clear, config);
-    // Copy the rendered frame (front buffer after present) into the surface's back buffer,
-    // then present (swap back→front) to display it.
-    surface.buffer.back.copy_from_slice(backend.frame_rgba());
+    {
+        let mut cached = lock(compose_backend_cache());
+        let backend = cached
+            .get_or_insert_with(|| SoftwarePaintBackend::new(surface.size(), surface.dpi_scale()));
+        backend.set_size(surface.size());
+        backend.set_dpi_scale(surface.dpi_scale());
+        backend.apply_render_config(surface.render_config());
+        scene.compose_with_backend_config(backend, clear, config);
+        // Copy the rendered frame (front buffer after present) into the surface's back buffer,
+        // then present (swap back→front) to display it.
+        surface.buffer.back.copy_from_slice(backend.frame_rgba());
+    }
     surface.buffer.present();
     // Frame timing is recorded here now that the software path is the auto scene backend, so the
     // quality manager's frame statistics keep measuring real frames (D09-GPU-01).

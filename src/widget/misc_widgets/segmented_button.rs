@@ -588,16 +588,33 @@ impl Draw for SegmentedButton {
             }
 
             if !label.is_empty() {
-                context.draw_text(
-                    Point::new(
-                        (start_x + icon_width as i32 + icon_gap as i32).max(seg_rect.x),
-                        text_y.max(seg_rect.y),
-                    ),
-                    &label,
-                    &font,
-                    text_color,
-                    HorizontalAlignment::Left,
-                );
+                let label_x = (start_x + icon_width as i32 + icon_gap as i32).max(seg_rect.x);
+                let label_y = text_y.max(seg_rect.y);
+                let label_right = seg_rect.x + seg_width as i32 - 2;
+                if label_x + metrics.width as i32 <= label_right {
+                    context.draw_text(
+                        Point::new(label_x, label_y),
+                        &label,
+                        &font,
+                        text_color,
+                        HorizontalAlignment::Left,
+                    );
+                } else {
+                    // A caption wider than its segment is ellipsised rather than painted
+                    // over the neighbouring segment.
+                    context.draw_text_fitted_cow(
+                        Rect::new(
+                            label_x,
+                            label_y,
+                            ((label_right - label_x).max(0)) as u32,
+                            metrics.height.max(1),
+                        ),
+                        &label,
+                        &font,
+                        text_color,
+                        HorizontalAlignment::Left,
+                    );
+                }
             }
         }
     }

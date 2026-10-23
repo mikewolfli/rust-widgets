@@ -1056,12 +1056,21 @@ impl WidgetProperties for Icon {
                 self.set_size(expect_f64(value)? as f32);
                 Ok(())
             }
-            "color" => {
-                let raw = expect_string(value)?;
-                let color = Color::parse_hex(&raw).ok_or(CapabilityAccessError::TypeMismatch)?;
-                self.set_color(color);
-                Ok(())
-            }
+            "color" => match value {
+                // `Null` restores "follow the theme", which is the state a fresh icon
+                // starts in; the getter then reports whatever the theme resolves.
+                CapabilityValue::Null => {
+                    self.clear_color();
+                    Ok(())
+                }
+                other => {
+                    let raw = expect_string(other)?;
+                    let color =
+                        Color::parse_hex(&raw).ok_or(CapabilityAccessError::TypeMismatch)?;
+                    self.set_color(color);
+                    Ok(())
+                }
+            },
             _ => base_property_set(self, name, value),
         }
     }

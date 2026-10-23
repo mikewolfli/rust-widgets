@@ -46,19 +46,12 @@ use crate::widget::chart_widgets::types::ChartContext;
 /// ```
 pub struct ChartContextAdapter<'ctx, 'backend> {
     inner: &'ctx mut RenderContext<'backend>,
-    /// Colour most recently set through `set_fill_color`/`set_stroke_color`.
-    ///
-    /// The chart engine calls these before drawing, so remembering them lets the
-    /// explicit `color` arguments win while still honouring the stateful setters
-    /// for any caller that relies on them.
-    fill_color: Color,
-    stroke_color: Color,
 }
 
 impl<'ctx, 'backend> ChartContextAdapter<'ctx, 'backend> {
     /// Wraps `inner` for use by the chart engine.
     pub fn new(inner: &'ctx mut RenderContext<'backend>) -> Self {
-        Self { inner, fill_color: Color::BLACK, stroke_color: Color::BLACK }
+        Self { inner }
     }
 
     /// Rounds a chart-space coordinate to a device pixel.
@@ -190,12 +183,16 @@ impl ChartContext for ChartContextAdapter<'_, '_> {
         self.draw_polygon(&points, color);
     }
 
-    fn set_fill_color(&mut self, color: Color) {
-        self.fill_color = color;
+    fn set_fill_color(&mut self, _color: Color) {
+        // Each draw call carries its own colour, so a stateful setter has nothing to
+        // apply here. This is a no-op for API compatibility with stateful chart
+        // backends — the same contract `SvgChartContext` documents. (It previously
+        // stored the colour, which nothing ever read: dead state with a doc comment
+        // claiming the setters were honoured.)
     }
 
-    fn set_stroke_color(&mut self, color: Color) {
-        self.stroke_color = color;
+    fn set_stroke_color(&mut self, _color: Color) {
+        // See `set_fill_color`.
     }
 }
 

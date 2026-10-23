@@ -354,6 +354,19 @@ impl QueryBuilder {
         }
     }
 
+    /// Clears the focused row, so no row is being edited.
+    ///
+    /// The `None` half of the property round-trip: the getter answers `Null` when
+    /// nothing is active, so the setter must accept `Null` to clear it (the same
+    /// contract `tree_view`'s `focused_node` publishes).
+    pub fn clear_active_row(&mut self) {
+        if self.active_row.is_none() {
+            return;
+        }
+        self.active_row = None;
+        self.base.request_redraw();
+    }
+
     /// The rows whose operand is empty, which are not yet part of the query.
     ///
     /// A row with no operand is *incomplete*: a user who has chosen a field but not
@@ -568,10 +581,16 @@ impl WidgetProperties for QueryBuilder {
                 self.set_conjunction(conjunction);
                 Ok(())
             }
-            "active_row" => {
-                self.set_active_row(expect_usize(value)?);
-                Ok(())
-            }
+            "active_row" => match value {
+                CapabilityValue::Null => {
+                    self.clear_active_row();
+                    Ok(())
+                }
+                other => {
+                    self.set_active_row(expect_usize(other)?);
+                    Ok(())
+                }
+            },
             // Derived from the row list, which is written through `add_row` /
             // `remove_row` / `set_row_*`.
             "row_count" | "incomplete_row_count" | "field_count" => {
@@ -675,7 +694,7 @@ impl Draw for QueryBuilder {
             context.draw_text(
                 Point::new(rect.x + 10, rect.y + HEADER_HEIGHT as i32 + 20),
                 "No conditions",
-                &fonts.small,
+                fonts.small,
                 chrome.placeholder_text(),
                 HorizontalAlignment::Left,
             );
@@ -683,22 +702,27 @@ impl Draw for QueryBuilder {
     }
 }
 
-/// The builder's fonts, built once per paint.
+/// The builder's fonts, built once.
 ///
 /// `Font::simple` allocates its family `String`, and `draw_row` built four of them per row per
-/// frame (marker, field, operator, operand).
+/// frame (marker, field, operator, operand). The shared faces are now initialised once for
+/// the process — the three roles are fixed (family and size are literals), so a static per
+/// role is the whole cache.
 struct QueryBuilderFonts {
-    body: Font,
-    small: Font,
-    tiny: Font,
+    body: &'static Font,
+    small: &'static Font,
+    tiny: &'static Font,
 }
 
 impl QueryBuilderFonts {
     fn new() -> Self {
+        static BODY: crate::compat::OnceLock<Font> = crate::compat::OnceLock::new();
+        static SMALL: crate::compat::OnceLock<Font> = crate::compat::OnceLock::new();
+        static TINY: crate::compat::OnceLock<Font> = crate::compat::OnceLock::new();
         Self {
-            body: Font::simple("Sans", 13.0),
-            small: Font::simple("Sans", 11.0),
-            tiny: Font::simple("Sans", 10.0),
+            body: BODY.get_or_init(|| Font::simple("Sans", 13.0)),
+            small: SMALL.get_or_init(|| Font::simple("Sans", 11.0)),
+            tiny: TINY.get_or_init(|| Font::simple("Sans", 10.0)),
         }
     }
 }
@@ -805,8 +829,11 @@ impl QueryBuilder {
         // (`chip.y + 14`, `rect.y + 21`, `add.y + 14`) were written for one font: the origin is
         // the glyph's **top** edge, so an 11 px chip label spanned 21..32 in a 20 px chip and
         // ran five pixels past it, and the 14 px `+` spanned 21..35 in the same 20 px button.
-        let chip_font = Font::simple("Sans", 11.0);
-        let chip_text_h = context.measure_text("M", &chip_font).height;
+        // The chip's face is fixed text, so it is initialised once for the process
+        // instead of allocating its family string on every paint.
+        static CHIP_FONT: crate::compat::OnceLock<Font> = crate::compat::OnceLock::new();
+        let chip_font = CHIP_FONT.get_or_init(|| Font::simple("Sans", 11.0));
+        let chip_text_h = context.measure_text("M", chip_font).height;
         context.draw_text_fitted_cow(
             Rect::new(
                 chip.x + 6,
@@ -820,7 +847,7 @@ impl QueryBuilder {
                 FilterConjunction::And => "AND",
                 FilterConjunction::Or => "OR",
             },
-            &chip_font,
+            chip_font,
             // The label sits on the chip, so it takes the chip's own contrast
             // colour rather than a literal white.
             chip_color.contrast_color(),
@@ -839,7 +866,7 @@ impl QueryBuilder {
                 chip_text_h,
             ),
             count_text.as_str(),
-            &chip_font,
+            chip_font,
             chrome.placeholder_text(),
             HorizontalAlignment::Left,
         );
@@ -847,8 +874,9 @@ impl QueryBuilder {
         // The add button, at the right.
         let add = Rect::new(rect.x + rect.width as i32 - 30, rect.y + 7, 22, 20);
         context.fill_rounded_rect(add, 4, chrome.button());
-        let add_font = Font::simple("Sans", 14.0);
-        let add_text_h = context.measure_text("+", &add_font).height;
+        static ADD_FONT: crate::compat::OnceLock<Font> = crate::compat::OnceLock::new();
+        let add_font = ADD_FONT.get_or_init(|| Font::simple("Sans", 14.0));
+        let add_text_h = context.measure_text("+", add_font).height;
         context.draw_text_fitted_cow(
             Rect::new(
                 add.x,
@@ -857,7 +885,7 @@ impl QueryBuilder {
                 add_text_h,
             ),
             "+",
-            &add_font,
+            add_font,
             chrome.text(),
             HorizontalAlignment::Center,
         );
@@ -895,7 +923,7 @@ impl QueryBuilder {
             context.draw_text(
                 Point::new(x, row_rect.y + 19),
                 "!",
-                &fonts.body,
+                fonts.body,
                 chrome.remove(),
                 HorizontalAlignment::Left,
             );
@@ -912,7 +940,7 @@ impl QueryBuilder {
         context.draw_text_fitted_cow(
             Rect::new(x, row_rect.y + 19, 80, 11),
             field_label,
-            &fonts.small,
+            fonts.small,
             chrome.text(),
             HorizontalAlignment::Left,
         );
@@ -922,7 +950,7 @@ impl QueryBuilder {
         context.draw_text(
             Point::new(x, row_rect.y + 19),
             row.operator.as_str(),
-            &fonts.tiny,
+            fonts.tiny,
             chrome.placeholder_text(),
             HorizontalAlignment::Left,
         );
@@ -949,7 +977,7 @@ impl QueryBuilder {
                 11,
             ),
             text,
-            &fonts.small,
+            fonts.small,
             color,
             HorizontalAlignment::Left,
         );
@@ -1544,6 +1572,11 @@ mod tests {
         // An out-of-range index is ignored rather than stored.
         b.set("active_row", CapabilityValue::UInt(9)).unwrap();
         assert_eq!(b.active_row(), Some(0));
+        // `Null` is the getter's "no active row" answer and the schema default, so the
+        // setter must accept it; it is what the writable gate writes back.
+        b.set("active_row", CapabilityValue::Null).unwrap();
+        assert_eq!(b.active_row(), None);
+        assert_eq!(b.get("active_row").unwrap(), CapabilityValue::Null);
     }
 
     #[test]

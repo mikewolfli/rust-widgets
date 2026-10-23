@@ -399,21 +399,31 @@ impl Draw for NavigationDrawer {
         // Draw a subtle right border on the panel
         context.draw_rect_stroke(panel_rect, border.with_alpha_f32(0.2), 1);
 
+        // Everything inside the panel is clipped to it: during the slide animation a
+        // partially-open drawer used to paint the header title and item labels past the
+        // panel's leading edge, floating over the scrim.
+        context.push_clip(panel_rect.x, panel_rect.y, panel_rect.width, panel_rect.height);
+
         // Draw header area
         let header_height: u32 = 60;
         let header_rect = Rect::new(rect.x, rect.y, panel_width, header_height);
         context.fill_rect(header_rect, header_color);
 
-        // Draw header title text
+        // Draw header title text, fitted to the visible panel: during the slide the
+        // title must not read past the panel's own edge.
         let font = role_font(style, 16.0).with_bold(true);
         let header_text = "Navigation";
-        let metrics = context.measure_text(header_text, &font);
         let header_text_x = rect.x + 16;
         // The origin is the glyph box's top edge, so centring on the header is half the line
         // box; the old `+ ascent/2` sat the title half a line below the header's middle.
-        let header_text_y = rect.y + (header_height as i32 - metrics.height as i32) / 2;
-        context.draw_text(
-            Point::new(header_text_x, header_text_y),
+        let header_line = context.text_line(header_rect, &font);
+        context.draw_text_fitted_cow(
+            Rect::new(
+                header_text_x,
+                header_line.y,
+                panel_width.saturating_sub(24),
+                header_line.height.max(1),
+            ),
             header_text,
             &font,
             ink,
@@ -429,6 +439,11 @@ impl Draw for NavigationDrawer {
 
         for (i, item) in self.items.iter().enumerate() {
             let y_offset = start_y + (i as i32 * item_height as i32);
+            // Rows beginning below the panel are skipped outright: the clip below would
+            // hide them, but skipping keeps the draw list bounded to the visible rows.
+            if y_offset >= rect.y + rect.height as i32 {
+                break;
+            }
             let item_rect = Rect::new(rect.x, y_offset, panel_width, item_height);
 
             // Highlight selected item
@@ -466,17 +481,23 @@ impl Draw for NavigationDrawer {
                 );
             }
 
-            // Draw label
+            // Draw label, fitted to the visible panel: the clip keeps the glyphs inside
+            // during the slide, and the fit keeps a long label from touching the panel's
+            // right border once it is fully open.
             let icon_width: u32 = 24;
             let label_x = rect.x + 16 + icon_width as i32 + 8;
             let label_color = if i == self.selected_index { accent } else { ink };
-            context.draw_text(
-                Point::new(label_x, text_center_y),
-                &item.label,
-                &item_font,
-                label_color,
-                HorizontalAlignment::Left,
-            );
+            let label_line = context.text_line(item_rect, &item_font);
+            let label_band_width = ((rect.x + panel_width as i32 - 8) - label_x).max(0) as u32;
+            if label_band_width > 0 {
+                context.draw_text_fitted_cow(
+                    Rect::new(label_x, label_line.y, label_band_width, label_line.height.max(1)),
+                    &item.label,
+                    &item_font,
+                    label_color,
+                    HorizontalAlignment::Left,
+                );
+            }
 
             // Draw divider line between items
             if i > 0 {
@@ -487,6 +508,8 @@ impl Draw for NavigationDrawer {
                 );
             }
         }
+
+        context.pop_clip();
     }
 }
 

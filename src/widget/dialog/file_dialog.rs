@@ -412,9 +412,14 @@ impl WidgetProperties for FileDialog {
             "modal" => Ok(CapabilityValue::Bool(self.is_modal())),
             "mode" => Ok(CapabilityValue::String(file_dialog_mode_token(self.mode()).into())),
             "directory" => Ok(CapabilityValue::String(self.directory().to_string())),
-            "selected_file" => {
-                Ok(CapabilityValue::String(self.selected_file().unwrap_or_default().to_string()))
-            }
+            "selected_file" => Ok(match self.selected_file() {
+                // No selection is `Null`, exactly the schema default and the value the
+                // setter accepts to clear: an empty-name `""` would be a third spelling
+                // of "nothing selected", and the setter's `Null` arm could never be read
+                // back. (`tree_view`'s optional node properties answer the same way.)
+                Some(path) => CapabilityValue::String(path.to_string()),
+                None => CapabilityValue::Null,
+            }),
             _ => base_property_get(self, name),
         }
     }

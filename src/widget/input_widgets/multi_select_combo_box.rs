@@ -17,7 +17,7 @@
 
 use core::fmt::Write as _;
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -642,12 +642,16 @@ impl Draw for MultiSelectComboBox {
                 crate::widget::draw_icon_at(context, tick, checkbox_color, IconName::Check);
             }
 
-            // Item text
+            // Item text: line-box centred in the row (the fixed `+18` sat the label a
+            // half line below the checkbox, which is centred), and fitted between the
+            // checkbox and the row's right edge.
             let item_text_x = checkbox_x + checkbox_size as i32 + 6;
-            let item_text_y = item_rect.y + 18;
+            let item_line = context.text_line(item_rect, font);
             let item_color = if item.enabled { ink } else { ink.blend(&field, 0.6) };
-            context.draw_text(
-                Point::new(item_text_x, item_text_y),
+            let text_band_width =
+                ((item_rect.x + item_rect.width as i32 - 8) - item_text_x).max(0) as u32;
+            context.draw_text_fitted_cow(
+                Rect::new(item_text_x, item_line.y, text_band_width, item_line.height.max(1)),
                 &item.text,
                 font,
                 item_color,

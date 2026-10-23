@@ -253,16 +253,27 @@ impl WidgetProperties for NavigationStack {
             // The stack has no random-access setter: pages move only through
             // `push` / `pop`, so an out-of-range index is refused rather than
             // silently ignored, and a valid one is reached by popping down to it.
-            "current_page" => {
-                let target = expect_usize(value)?;
-                if target >= self.page_count() {
-                    return Err(CapabilityAccessError::UnsupportedOnWidget);
+            "current_page" => match value {
+                // `Null` is the getter's "no page" answer and means an empty stack —
+                // the only state in which this model reports no current page. Every
+                // page still leaves through `pop`, the single mutation path.
+                CapabilityValue::Null => {
+                    while self.page_count() > 0 {
+                        self.pop();
+                    }
+                    Ok(())
                 }
-                while self.page_count() > target + 1 {
-                    self.pop();
+                other => {
+                    let target = expect_usize(other)?;
+                    if target >= self.page_count() {
+                        return Err(CapabilityAccessError::UnsupportedOnWidget);
+                    }
+                    while self.page_count() > target + 1 {
+                        self.pop();
+                    }
+                    Ok(())
                 }
-                Ok(())
-            }
+            },
             "page_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }

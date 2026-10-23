@@ -971,8 +971,28 @@ impl KanbanBoard {
         let title_font = role_font(self.base.style(), 12.0);
         let desc_font = role_font(self.base.style(), 10.0);
         let header_line = context.text_line(header_rect, &header_font);
-        context.draw_text(
-            Point::new(header_rect.x + CARD_PADDING, header_line.y),
+        // The badge is measured first so the title knows where to stop: an unbounded
+        // title ran underneath the count on the right.
+        let mut badge = String::new();
+        if collapsed {
+            let _ = write!(badge, "({})", cards.len());
+        } else if let Some(limit) = wip_limit {
+            let _ = write!(badge, "{}/{}", cards.len(), limit);
+        } else {
+            let _ = write!(badge, "{}", cards.len());
+        }
+        let badge_metrics = context.measure_text(&badge, &badge_font);
+        let badge_line = context.text_line(header_rect, &badge_font);
+        let badge_x =
+            header_rect.x + header_rect.width as i32 - CARD_PADDING - badge_metrics.width as i32;
+        let title_width = ((badge_x - 6) - (header_rect.x + CARD_PADDING)).max(0) as u32;
+        context.draw_text_fitted_cow(
+            Rect::new(
+                header_rect.x + CARD_PADDING,
+                header_line.y,
+                title_width,
+                header_line.height.max(1),
+            ),
             title,
             &header_font,
             header_color,
@@ -981,23 +1001,8 @@ impl KanbanBoard {
         // Card count on the right of the header, or the collapsed marker. One buffer
         // reused per column: the three-branch `format!`/`to_string` chain allocated a
         // fresh `String` for every column on every frame.
-        let mut badge = String::new();
-        if collapsed {
-            let _ = write!(badge, "({})", cards.len());
-        } else if let Some(limit) = wip_limit {
-            let _ = write!(badge, "{}/{}", cards.len(), limit);
-        } else {
-            let _ = write!(badge, "{}", cards.len());
-        };
-        let badge_metrics = context.measure_text(&badge, &badge_font);
-        let badge_line = context.text_line(header_rect, &badge_font);
         context.draw_text(
-            Point::new(
-                header_rect.x + header_rect.width as i32
-                    - CARD_PADDING
-                    - badge_metrics.width as i32,
-                badge_line.y,
-            ),
+            Point::new(badge_x, badge_line.y),
             &badge,
             &badge_font,
             chrome.muted_text(),

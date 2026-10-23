@@ -195,14 +195,22 @@ pub fn rasterize_draw_commands_rgba8(
                     rect_for_line(*from, *to, *line_width),
                     combine(clip, current_clip),
                 );
+                // Clamp the segment to the clip before stepping: a degenerate endpoint far
+                // outside the framebuffer used to walk billions of no-op Bresenham steps
+                // (and overflow the i32 error term) before reaching the visible region.
+                let Some(clip_rect) = clip_rect else { continue };
+                let Some((clipped_from, clipped_to)) = clip_segment_to_rect(*from, *to, &clip_rect)
+                else {
+                    continue;
+                };
                 draw_line_cpu_rgba8(
                     &mut pixels,
                     width,
-                    *from,
-                    *to,
+                    clipped_from,
+                    clipped_to,
                     *color,
                     *line_width,
-                    clip_rect,
+                    Some(clip_rect),
                     blend,
                 );
             }
@@ -609,6 +617,48 @@ fn draw_image_scaled_cpu_rgba8(
 /// nothing, so the whole line vanished (N-S-65). The result is additionally
 /// widened by half the line width on each side, and is always at least 1px in
 /// each axis so a single point is still drawable.
+/// Clamp a segment to `rect` (Liang–Barsky), returning the trimmed endpoints.
+///
+/// `draw_line_cpu_rgba8` walks from one endpoint to the other, so an endpoint far outside
+/// the framebuffer makes it step through billions of invisible pixels first. Trimming the
+/// segment to the clip bounds the walk to the visible region. Endpoints fully inside `rect`
+/// are returned unchanged (t₀=0, t₁=1), so in-bounds rendering is pixel-identical. Returns
+/// `None` when the segment misses the rect entirely.
+fn clip_segment_to_rect(
+    from: (i32, i32),
+    to: (i32, i32),
+    rect: &PixelRect,
+) -> Option<((i32, i32), (i32, i32))> {
+    let (x0, y0) = (from.0 as f64, from.1 as f64);
+    let (dx, dy) = (to.0 as f64 - x0, to.1 as f64 - y0);
+    // Inclusive pixel bounds: `right()`/`bottom()` are exclusive.
+    let (left, top) = (rect.x as f64, rect.y as f64);
+    let (right, bottom) = (rect.right() as f64 - 1.0, rect.bottom() as f64 - 1.0);
+    let (mut t0, mut t1) = (0.0f64, 1.0f64);
+    // (p, q) per boundary: the segment stays inside while p*t <= q.
+    for (p, q) in [(-dx, x0 - left), (dx, right - x0), (-dy, y0 - top), (dy, bottom - y0)] {
+        if p == 0.0 {
+            if q < 0.0 {
+                return None;
+            }
+            continue;
+        }
+        let t = q / p;
+        if p < 0.0 {
+            t0 = t0.max(t);
+        } else {
+            t1 = t1.min(t);
+        }
+        if t0 > t1 {
+            return None;
+        }
+    }
+    let clamp = |v: f64| v.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32;
+    let start = (clamp(x0 + t0 * dx), clamp(y0 + t0 * dy));
+    let end = (clamp(x0 + t1 * dx), clamp(y0 + t1 * dy));
+    Some((start, end))
+}
+
 fn rect_for_line(from: (i32, i32), to: (i32, i32), line_width: u32) -> PixelRect {
     let (min_x, max_x) = (from.0.min(to.0), from.0.max(to.0));
     let (min_y, max_y) = (from.1.min(to.1), from.1.max(to.1));
@@ -803,23 +853,28 @@ fn draw_line_cpu_rgba8(
     let mut sink = PixelSink { pixels, width: fb_width, mode: blend };
     let (mut x0, mut y0) = from;
     let (x1, y1) = to;
-    let dx = (x1 - x0).abs();
-    let dy = -(y1 - y0).abs();
+    // i64 keeps the deltas and the error term overflow-free for extreme endpoints (the
+    // bounding-box helper is already widened the same way); the visible behaviour for
+    // in-bounds geometry is unchanged.
+    let dx = (x1 as i64 - x0 as i64).abs();
+    let dy = -(y1 as i64 - y0 as i64).abs();
     let sx = if x0 < x1 { 1 } else { -1 };
     let sy = if y0 < y1 { 1 } else { -1 };
     let mut err = dx + dy;
-    let half_w = (line_width as i32 / 2).max(1);
+    let half_w = (line_width as i64 / 2).max(1);
+    let x_lo = clip_rect.x as i64;
+    let x_hi = clip_rect.right() as i64;
+    let y_lo = clip_rect.y as i64;
+    let y_hi = clip_rect.bottom() as i64;
     loop {
-        // Draw a small square around each point for thickness
-        for thick_y in (y0 - half_w + 1)..=(y0 + half_w) {
-            for thick_x in (x0 - half_w + 1)..=(x0 + half_w) {
-                if thick_x >= clip_rect.x
-                    && thick_x < clip_rect.right()
-                    && thick_y >= clip_rect.y
-                    && thick_y < clip_rect.bottom()
-                {
-                    sink.set(thick_x as u32, thick_y as u32, color);
-                }
+        // Draw a small square around each point for thickness, pre-clamped to the clip so an
+        // extreme endpoint cannot overflow `y0 ± half_w` and the inner loop needs no
+        // per-pixel bounds check.
+        let thick_y = (y0 as i64 - half_w + 1).max(y_lo)..=((y0 as i64 + half_w).min(y_hi - 1));
+        let thick_x = (x0 as i64 - half_w + 1).max(x_lo)..=((x0 as i64 + half_w).min(x_hi - 1));
+        for thick_y in thick_y {
+            for thick_x in thick_x.clone() {
+                sink.set(thick_x as u32, thick_y as u32, color);
             }
         }
         if x0 == x1 && y0 == y1 {
@@ -850,16 +905,21 @@ fn fill_circle_cpu_rgba8(
         None => return,
     };
     let mut sink = PixelSink { pixels, width: fb_width, mode: blend };
-    let r = radius as i32;
+    // All circle math in i64: with the radius bounded only by `u32`, `r * r` overflows an
+    // `i32` past ~46k and a debug build panics on degenerate geometry before the clip can
+    // prune the loop.
+    let r = radius as i64;
     let r2 = r * r;
-    let x_start = clip_rect.x.max(center.0 - r);
-    let y_start = clip_rect.y.max(center.1 - r);
-    let x_end = clip_rect.right().min(center.0 + r + 1);
-    let y_end = clip_rect.bottom().min(center.1 + r + 1);
+    let cx = center.0 as i64;
+    let cy = center.1 as i64;
+    let x_start = clip_rect.x.max((cx - r).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+    let y_start = clip_rect.y.max((cy - r).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+    let x_end = clip_rect.right().min((cx + r + 1).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+    let y_end = clip_rect.bottom().min((cy + r + 1).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
     for y in y_start..y_end {
         for x in x_start..x_end {
-            let dx = x - center.0;
-            let dy = y - center.1;
+            let dx = x as i64 - cx;
+            let dy = y as i64 - cy;
             if dx * dx + dy * dy <= r2 {
                 sink.set(x as u32, y as u32, color);
             }
@@ -881,17 +941,23 @@ fn draw_circle_cpu_rgba8(
         None => return,
     };
     let mut sink = PixelSink { pixels, width: fb_width, mode: blend };
-    let r = radius as i32;
-    let outer_r2 = (r + width as i32) * (r + width as i32);
-    let inner_r2 = (r - width as i32).max(0) * (r - width as i32).max(0);
-    let x_start = clip_rect.x.max(center.0 - r - width as i32);
-    let y_start = clip_rect.y.max(center.1 - r - width as i32);
-    let x_end = clip_rect.right().min(center.0 + r + width as i32 + 1);
-    let y_end = clip_rect.bottom().min(center.1 + r + width as i32 + 1);
+    let r = radius as i64;
+    let outer = r + width as i64;
+    let inner = (r - width as i64).max(0);
+    let outer_r2 = outer * outer;
+    let inner_r2 = inner * inner;
+    let cx = center.0 as i64;
+    let cy = center.1 as i64;
+    let x_start = clip_rect.x.max((cx - outer).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+    let y_start = clip_rect.y.max((cy - outer).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+    let x_end =
+        clip_rect.right().min((cx + outer + 1).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+    let y_end =
+        clip_rect.bottom().min((cy + outer + 1).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
     for y in y_start..y_end {
         for x in x_start..x_end {
-            let dx = x - center.0;
-            let dy = y - center.1;
+            let dx = x as i64 - cx;
+            let dy = y as i64 - cy;
             let d2 = dx * dx + dy * dy;
             if d2 <= outer_r2 && d2 >= inner_r2 {
                 sink.set(x as u32, y as u32, color);
@@ -927,12 +993,17 @@ fn draw_arc_cpu_rgba8(
         None => return,
     };
     let mut sink = PixelSink { pixels, width: fb_width, mode: blend };
-    let r = arc.radius as i32;
+    let r = arc.radius as i64;
     let r2 = r * r;
-    let x_start = clip_rect.x.max(arc.center.0 - r);
-    let y_start = clip_rect.y.max(arc.center.1 - r);
-    let x_end = clip_rect.right().min(arc.center.0 + r + 1);
-    let y_end = clip_rect.bottom().min(arc.center.1 + r + 1);
+    // Loop invariants hoisted out of the per-pixel loop.
+    let outer_r2 = (r + 1) * (r + 1);
+    let inner_r2 = (r - 1).max(0) * (r - 1).max(0);
+    let cx = arc.center.0 as i64;
+    let cy = arc.center.1 as i64;
+    let x_start = clip_rect.x.max((cx - r).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+    let y_start = clip_rect.y.max((cy - r).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+    let x_end = clip_rect.right().min((cx + r + 1).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+    let y_end = clip_rect.bottom().min((cy + r + 1).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
     let (sa, ea) = if (arc.start_angle - arc.end_angle).abs() < 0.001 {
         // Full circle
         (0.0, std::f32::consts::TAU)
@@ -948,16 +1019,11 @@ fn draw_arc_cpu_rgba8(
     let is_full_circle = (ea - sa) >= std::f32::consts::TAU - 0.001;
     for y in y_start..y_end {
         for x in x_start..x_end {
-            let dx = x - arc.center.0;
-            let dy = y - arc.center.1;
+            let dx = x as i64 - cx;
+            let dy = y as i64 - cy;
             let d2 = dx * dx + dy * dy;
-            let inside_circle = if arc.filled {
-                d2 <= r2
-            } else {
-                let outer_r2 = (r + 1) * (r + 1);
-                let inner_r2 = (r - 1).max(0) * (r - 1).max(0);
-                d2 <= outer_r2 && d2 >= inner_r2
-            };
+            let inside_circle =
+                if arc.filled { d2 <= r2 } else { d2 <= outer_r2 && d2 >= inner_r2 };
             if !inside_circle {
                 continue;
             }
@@ -2413,6 +2479,109 @@ mod tests {
         assert!(
             err.contains("exceeds the largest supported framebuffer"),
             "expected an explicit size error, got: {err}"
+        );
+    }
+
+    // --- Degenerate geometry: extreme coordinates must not overflow the i32
+    // rasteriser arithmetic nor walk invisible pixels for billions of steps. ---
+
+    /// Liang–Barsky trimming: in-bounds segments pass through unchanged, complete
+    /// misses return `None`, and partial crossings are trimmed to the visible part.
+    #[test]
+    fn clip_segment_trims_extreme_endpoints() {
+        let viewport = rect(0, 0, 100, 100);
+
+        // Fully inside: returned unchanged (t₀=0, t₁=1).
+        assert_eq!(clip_segment_to_rect((10, 10), (20, 20), &viewport), Some(((10, 10), (20, 20))));
+
+        // Fully outside: no intersection with any boundary.
+        assert_eq!(clip_segment_to_rect((-50, -50), (-10, -10), &viewport), None);
+        assert_eq!(clip_segment_to_rect((200, 0), (300, 100), &viewport), None);
+
+        // Crossing the whole viewport: trimmed to the border pixels.
+        assert_eq!(
+            clip_segment_to_rect((-1000, 50), (2000, 50), &viewport),
+            Some(((0, 50), (99, 50)))
+        );
+
+        // One endpoint inside, one far below the viewport.
+        assert_eq!(
+            clip_segment_to_rect((50, 50), (50, 10_000), &viewport),
+            Some(((50, 50), (50, 99)))
+        );
+    }
+
+    /// A line whose endpoints sit at the i32 extremes must rasterize promptly and
+    /// stay inside the framebuffer. Before the segment trim this walked ~2·10⁹
+    /// invisible pixels (and overflowed the i32 error term) before reaching the
+    /// visible region.
+    #[test]
+    fn extreme_endpoint_line_rasterizes_within_framebuffer() {
+        let pixels = rasterize_draw_commands_rgba8(
+            32,
+            32,
+            &[WgpuDrawCommand::DrawLine {
+                from: (i32::MIN, 16),
+                to: (i32::MAX, 16),
+                color: RED,
+                width: 1,
+                clip: None,
+            }],
+        )
+        .expect("rasterizes");
+
+        // The visible middle of the segment is painted, edge to edge...
+        assert_eq!(pixel(&pixels, 32, 0, 16), [255, 0, 0, 255]);
+        assert_eq!(pixel(&pixels, 32, 15, 16), [255, 0, 0, 255]);
+        assert_eq!(pixel(&pixels, 32, 31, 16), [255, 0, 0, 255]);
+        // ...and nothing outside that row is touched.
+        assert_eq!(pixel(&pixels, 32, 15, 15), [0, 0, 0, 0]);
+        assert_eq!(pixel(&pixels, 32, 15, 17), [0, 0, 0, 0]);
+    }
+
+    /// Circles far outside the visible region must not panic on the (debug-build)
+    /// `i32` overflow of `r * r` and must not paint a single pixel. The arc variant
+    /// keeps its centre inside the viewport so the per-pixel `dx*dx + dy*dy` math
+    /// really runs with a radius that overflows `i32` when squared.
+    #[test]
+    fn huge_offscreen_circles_do_not_panic_or_paint() {
+        let pixels = rasterize_draw_commands_rgba8(
+            16,
+            16,
+            &[
+                // Right edge of the fill ends one pixel left of the viewport.
+                WgpuDrawCommand::FillCircle {
+                    center: (-2_000_000_001, 8),
+                    radius: 2_000_000_000,
+                    color: RED,
+                    clip: None,
+                },
+                // Ring centred far past the top-right corner: the clip still walks
+                // the viewport, every pixel must fail the ring test in i64.
+                WgpuDrawCommand::DrawCircle {
+                    center: (2_000_000_000, 2_000_000_000),
+                    radius: 1_999_999_999,
+                    color: RED,
+                    width: 3,
+                    clip: None,
+                },
+                // Ring centred inside the viewport with a radius that dwarfs it.
+                WgpuDrawCommand::DrawArc {
+                    center: (8, 8),
+                    radius: 2_000_000_000,
+                    start_angle: 0.0,
+                    end_angle: 1.0,
+                    color: RED,
+                    filled: false,
+                    clip: None,
+                },
+            ],
+        )
+        .expect("rasterizes");
+
+        assert!(
+            pixels.iter().all(|&b| b == 0),
+            "offscreen / unreachable circles must not paint anything"
         );
     }
 }

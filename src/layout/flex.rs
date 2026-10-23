@@ -861,23 +861,26 @@ impl FlexLayout {
             cross
         };
 
+        // One pass over the items: `item_main` was re-summed over the current line for
+        // every candidate (O(n²) on a single long line) and again per line below.
+        let main_sizes: Vec<i32> = (0..self.items.len()).map(item_main).collect();
         let mut lines: Vec<Vec<usize>> = Vec::new();
-        for index in 0..self.items.len() {
-            let candidate = item_main(index);
-            let needs_wrap = lines.last().is_some_and(|line| {
-                let used = line.iter().map(|&item| item_main(item)).sum::<i32>()
-                    + gap * line.len().saturating_sub(1) as i32;
-                // No `used > 0` guard: a line made only of zero-extent items is still a line, and
-                // suppressing the break let an oversized item share it. The condition is about the
-                // geometry (`used + gap + candidate`), not about whether anything is visible.
-                used + gap + candidate > available_main
-            });
-            if needs_wrap {
+        // Running `used` of the current line: sum of its items' main sizes plus the gaps
+        // between them.
+        let mut line_used = 0i32;
+        for (index, &candidate) in main_sizes.iter().enumerate() {
+            let needs_wrap = !lines.is_empty() && line_used + gap + candidate > available_main;
+            // No `used > 0` guard: a line made only of zero-extent items is still a line, and
+            // suppressing the break let an oversized item share it. The condition is about the
+            // geometry (`used + gap + candidate`), not about whether anything is visible.
+            if needs_wrap || lines.is_empty() {
                 lines.push(Vec::new());
+                line_used = 0;
             }
-            if lines.is_empty() {
-                lines.push(Vec::new());
+            if lines.last().is_some_and(|line| !line.is_empty()) {
+                line_used += gap;
             }
+            line_used += candidate;
             lines
                 .last_mut()
                 .expect("a line was just pushed above, so the list is non-empty")
@@ -934,12 +937,12 @@ impl FlexLayout {
         }
 
         for (line_index, line) in lines.iter().enumerate() {
-            let intrinsic_total = line.iter().map(|&index| item_main(index)).sum::<i32>();
+            let intrinsic_total: i32 = line.iter().map(|&index| main_sizes[index]).sum();
             let gaps = gap * line.len().saturating_sub(1) as i32;
             let remaining = available_main - intrinsic_total - gaps;
             let total_grow =
                 line.iter().map(|&index| self.items[index].flex_grow.max(0.0)).sum::<f32>();
-            let mut sizes: Vec<i32> = line.iter().map(|&index| item_main(index)).collect();
+            let mut sizes: Vec<i32> = line.iter().map(|&index| main_sizes[index]).collect();
             if remaining > 0 && total_grow > 0.0 {
                 for (slot, &index) in line.iter().enumerate() {
                     let extra = (remaining as f32 * self.items[index].flex_grow / total_grow)

@@ -59,38 +59,55 @@ impl CodeEditor {
         self.base.request_redraw();
     }
 
-    /// Returns the top severity on `line`, where errors outrank warnings.
-    pub(crate) fn highest_severity_on_line(&self, line: usize) -> Option<MarkerSeverity> {
-        self.markers
-            .iter()
-            .filter(|marker| marker.line == line)
-            .map(|marker| marker.severity)
-            .min_by_key(|severity| severity.rank())
-    }
-
-    pub(crate) fn inline_diagnostics(&self) -> Vec<InlineDiagnostic> {
+    /// Returns every marker paired with the visual row it belongs to, in paint order.
+    ///
+    /// Markers are **borrowed**, not cloned: `DiagnosticMarker` owns its message
+    /// string, so the old `(row, marker.clone())` list allocated once per marker per
+    /// call, and a frame calls this from both the painter and the row count. The
+    /// word-wrap branch also re-summed `0..marker.line` for every marker
+    /// (O(markers × line)); it now walks the document once and looks each marker's
+    /// line up in the resulting table. Folding still needs the visible-line table, but
+    /// a missing line (a marker inside a fold) is dropped from the paint list, as
+    /// before.
+    pub(crate) fn inline_diagnostics(&self) -> Vec<InlineDiagnostic<'_>> {
         if self.markers.is_empty() {
             return Vec::new();
         }
-        let mut result: Vec<InlineDiagnostic> = if self.folded_lines.is_empty() {
-            // Nothing is hidden, so a marker's visual row is its line number when
-            // wrapping is off. Building a line-to-row table here would walk the
-            // whole document on every frame for no reason.
+        let mut result: Vec<InlineDiagnostic<'_>> = if self.folded_lines.is_empty() {
             if !self.config.word_wrap {
-                self.markers.iter().map(|marker| (marker.line, marker.clone())).collect()
+                // Nothing is hidden, so a marker's visual row is its line number when
+                // wrapping is off. Building a line-to-row table here would walk the
+                // whole document on every frame for no reason.
+                self.markers.iter().map(|marker| (marker.line, marker)).collect()
             } else {
                 let columns = self.text_columns().max(1);
+                // Distinct marker lines ascend once, then one walk accumulates the
+                // visual rows; each marker looks its line up by binary search.
+                let mut lines: Vec<usize> = self.markers.iter().map(|marker| marker.line).collect();
+                lines.sort_unstable();
+                lines.dedup();
+                let mut rows_by_line: Vec<(usize, usize)> = Vec::with_capacity(lines.len());
+                let mut row = 0usize;
+                let mut previous = 0usize;
+                for &line in &lines {
+                    for skipped in previous..line {
+                        row += self.line_len(skipped).max(1).div_ceil(columns);
+                    }
+                    previous = line;
+                    rows_by_line.push((line, row));
+                }
                 self.markers
                     .iter()
-                    .map(|marker| {
-                        let row: usize = (0..marker.line)
-                            .map(|line| self.line_len(line).max(1).div_ceil(columns))
-                            .sum();
-                        (row, marker.clone())
+                    .filter_map(|marker| {
+                        rows_by_line
+                            .binary_search_by_key(&marker.line, |(line, _)| *line)
+                            .ok()
+                            .map(|index| (rows_by_line[index].1, marker))
                     })
                     .collect()
             }
         } else {
+            // `visible_lines()` ascends, so the table is searchable in place.
             let mut rows_by_line: Vec<(usize, usize)> = Vec::new();
             let mut row = 0usize;
             for line in self.visible_document_lines() {
@@ -101,9 +118,9 @@ impl CodeEditor {
                 .iter()
                 .filter_map(|marker| {
                     rows_by_line
-                        .iter()
-                        .find(|(line, _)| *line == marker.line)
-                        .map(|(_, row)| (*row, marker.clone()))
+                        .binary_search_by_key(&marker.line, |(line, _)| *line)
+                        .ok()
+                        .map(|index| (rows_by_line[index].1, marker))
                 })
                 .collect()
         };

@@ -78,9 +78,13 @@ impl MentionCandidate {
             return true;
         }
         let query = query.to_lowercase();
-        self.display.to_lowercase().contains(&query)
-            || self.id.to_lowercase().contains(&query)
-            || self.description.to_lowercase().contains(&query)
+        // Shared ASCII fast path: three `to_lowercase()` allocations per candidate per
+        // keystroke used to run here. The query is still folded once per call, which is
+        // the per-filter-pass cost the other filter controls also pay.
+        use crate::widget::text_utils::contains_ignore_ascii_case;
+        contains_ignore_ascii_case(&self.display, &query)
+            || contains_ignore_ascii_case(&self.id, &query)
+            || contains_ignore_ascii_case(&self.description, &query)
     }
 }
 
@@ -705,6 +709,12 @@ impl Draw for Mention {
         // (D09-STYLE-01).
         let field_font = self.field_font();
         let field_line = context.text_line(rect, &field_font);
+        // The field is an editable input: its text, the mention underlines and the caret
+        // are all positioned by measurement, so clipping the group to the field (rather
+        // than ellipsising the text) keeps every position honest while a long line can
+        // no longer paint past the field's own edge. The popup below is drawn after the
+        // clip is popped, so it is unaffected.
+        context.push_clip(rect.x, rect.y, rect.width, rect.height);
         context.draw_text(
             Point::new(rect.x + 8, field_line.y),
             &self.text,
@@ -745,7 +755,10 @@ impl Draw for Mention {
                 text_color,
                 1,
             );
+            context.pop_clip();
             self.draw_popup(context);
+        } else {
+            context.pop_clip();
         }
     }
 }
@@ -815,16 +828,27 @@ impl Mention {
             let ink = if highlighted { on_highlight } else { row_ink };
             let popup_font = self.field_font();
             let row_line = context.text_line(row, &popup_font);
-            context.draw_text(
-                Point::new(row.x + 8, row_line.y),
+            // The value column stops where the description starts; the description stops
+            // at the row's right padding. Neither ran out of room before, so a long pair
+            // overlapped or painted past the popup edge.
+            let display_width = ((row.x + 112) - (row.x + 8)).max(0) as u32;
+            context.draw_text_fitted_cow(
+                Rect::new(row.x + 8, row_line.y, display_width.max(1), row_line.height.max(1)),
                 &candidate.display,
                 &popup_font,
                 ink,
                 HorizontalAlignment::Left,
             );
             if !candidate.description.is_empty() {
-                context.draw_text(
-                    Point::new(row.x + 120, row_line.y),
+                let description_width =
+                    ((row.x + row.width as i32 - 8) - (row.x + 120)).max(0) as u32;
+                context.draw_text_fitted_cow(
+                    Rect::new(
+                        row.x + 120,
+                        row_line.y,
+                        description_width.max(1),
+                        row_line.height.max(1),
+                    ),
                     &candidate.description,
                     &popup_font,
                     // The description is a hint beside a value, so on a highlighted row it damps

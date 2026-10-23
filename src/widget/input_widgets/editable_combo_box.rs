@@ -19,7 +19,7 @@
 //! `rect.x + 6` with no bound and the indicator placed independently at
 //! `rect.x + rect.width - 20`.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -613,12 +613,19 @@ impl Draw for EditableComboBox {
                 context.fill_rounded_rect(item_rect, 2, highlight);
             }
 
-            // Item text
+            // Item text: the row's own line box (the fixed `+18` placed the glyph box's
+            // top edge 18px down a 28px row, half a line below centre) and fitted to the
+            // row so a long entry cannot paint past the popup.
             let item_text_x = item_rect.x + 8;
-            let item_text_y = item_rect.y + 18;
+            let item_line = context.text_line(item_rect, font);
             let item_color = self.base.disabled_ink_on(ink, field);
-            context.draw_text(
-                Point::new(item_text_x, item_text_y),
+            context.draw_text_fitted_cow(
+                Rect::new(
+                    item_text_x,
+                    item_line.y,
+                    item_rect.width.saturating_sub(16),
+                    item_line.height.max(1),
+                ),
                 item,
                 font,
                 item_color,

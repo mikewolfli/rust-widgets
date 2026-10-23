@@ -99,7 +99,6 @@ pub struct GridTableWidget {
 
     // Cached visibility
     visible_rows: usize,
-    visible_columns: usize,
 
     // ── Signals ──
     /// Emitted when a cell is selected: `(row, column)`.
@@ -156,7 +155,6 @@ impl GridTableWidget {
             resize_start_x: 0,
             resize_start_width: 0,
             visible_rows: 0,
-            visible_columns: 0,
             cell_selected: Signal1::new(),
             cell_double_clicked: Signal1::new(),
             sort_changed: Signal1::new(),
@@ -190,7 +188,6 @@ impl GridTableWidget {
         self.sort_specs.clear();
         self.column_widths.clear();
         self.visible_rows = 0;
-        self.visible_columns = 0;
         self.resizing_column = None;
         self.base.request_layout();
         self.base.request_redraw();
@@ -381,30 +378,20 @@ impl GridTableWidget {
         let rect = self.base.geometry();
         let rh = self.row_height.max(1) as i32;
         let header_h = self.header_height as i32;
-        let rnw = self.row_number_width as i32;
 
         let data_h = (rect.height as i32).saturating_sub(header_h).max(0);
-        let data_w = (rect.width as i32).saturating_sub(rnw).max(0);
 
         self.visible_rows = if rh > 0 { (data_h / rh) as usize } else { 0 };
-        self.visible_columns = 0;
 
-        // `data_w` is an *extent*, which is what the fit test wants: "would this column end past the
-        // data area".
-        let mut acc = 0i32;
+        // The column count is still ensured here: the table learns it here so the paint
+        // loop can ask for each column's span. The former `visible_columns` count was
+        // computed from a separate accumulation and never read by any drawing path (the
+        // columns are bounded by the spans the paint loop walks), so it was removed
+        // rather than kept in step with a second rule.
         let cols = self.column_count();
         self.ensure_column_widths(cols);
-        for ci in 0..cols {
-            let iw = self.column_width(ci) as i32;
-            if acc + iw > data_w {
-                break;
-            }
-            acc += iw;
-            self.visible_columns += 1;
-        }
 
         self.visible_rows = self.visible_rows.max(1);
-        self.visible_columns = self.visible_columns.max(1);
     }
 
     // -----------------------------------------------------------------------
@@ -1687,15 +1674,11 @@ mod tests {
         let mut tbl = GridTableWidget::new(Rect::new(0, 0, 600, 400));
         tbl.set_data_source(Arc::new(TestSource { rows: 50, cols: 20 }));
         tbl.ensure_column_widths(20);
-        // All cols default to 120, so with 600px width and 48px row-number gutter,
-        // we should fit 4 columns (552/120 ≈ 4)
         tbl.column_widths.fill(120);
         tbl.update_visibility();
 
         // 400px height - 28px header = 372px data area, / 24px row height ≈ 15 rows
         assert_eq!(tbl.visible_rows, 15);
-        // 600px - 48px = 552px data width, / 120px per col = 4 full cols
-        assert_eq!(tbl.visible_columns, 4);
     }
 
     // -----------------------------------------------------------------------

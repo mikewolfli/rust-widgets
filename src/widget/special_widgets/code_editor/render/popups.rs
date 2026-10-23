@@ -26,6 +26,11 @@ impl CodeEditor {
         let font = self.chrome_font();
         let line_box = context.measure_text("M", font).height as i32;
         let label_dy = (MIN_TOUCH_TARGET - line_box).max(0) / 2;
+        // One buffer for the whole list: rebuilding the sigil and label with `format!`
+        // allocated one or two `String`s per row per frame. Clearing and rewriting
+        // reuses the capacity across rows and keeps the single draw call per row.
+        use core::fmt::Write as _;
+        let mut label = String::new();
         for (index, item) in self.completion.items.iter().enumerate() {
             let row_y = rect.y + index as i32 * MIN_TOUCH_TARGET;
             if index == self.completion.selected {
@@ -34,11 +39,15 @@ impl CodeEditor {
                     chrome.popup_selected,
                 );
             }
-            let sigil = item.kind.map(|kind| format!("{} ", kind)).unwrap_or_default();
-            let label = match &item.detail {
-                Some(detail) => format!("{}{}  {}", sigil, item.label, detail),
-                None => format!("{}{}", sigil, item.label),
-            };
+            label.clear();
+            if let Some(kind) = item.kind {
+                let _ = write!(label, "{} ", kind);
+            }
+            label.push_str(&item.label);
+            if let Some(detail) = &item.detail {
+                label.push_str("  ");
+                label.push_str(detail);
+            }
             // Vertically centred by the measured line box, not by a literal `+19`:
             // a row is `MIN_TOUCH_TARGET` tall and the face's box is a different height,
             // so the constant put the label near the row's bottom edge.
