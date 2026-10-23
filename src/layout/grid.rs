@@ -307,8 +307,11 @@ impl GridLayout {
     /// cells is a decision the caller must make explicitly through `remove_widget`.
     ///
     /// The logical extent stays exactly addressable: a requested extent whose product would
-    /// exceed [`Self::MAX_CELLS`] is reduced to the cap, so `rows * cols` always equals the
-    /// cell array's length and no logical cell can lack a storage slot.
+    /// exceed [`Self::MAX_CELLS`] is **refused** rather than reduced. Reducing it (the previous
+    /// behaviour) shrank the column count as well, which re-indexed every existing placement into
+    /// a different cell and dropped stretch weights — a silent rewrite of the caller's layout
+    /// rather than a refusal. `false` is the same deterministic answer [`Self::add_widget`] gives
+    /// to a request that cannot fit.
     ///
     /// Returns whether the grid grew.
     pub fn grow_to_fit(&mut self, row: u32, col: u32) -> bool {
@@ -317,8 +320,11 @@ impl GridLayout {
         if needed_rows <= self.rows && needed_cols <= self.cols {
             return false;
         }
-        let (new_rows, new_cols) =
-            Self::fit_extent(self.rows.max(needed_rows), self.cols.max(needed_cols));
+        let new_rows = self.rows.max(needed_rows);
+        let new_cols = self.cols.max(needed_cols);
+        if new_rows as u64 * new_cols as u64 > Self::MAX_CELLS as u64 {
+            return false;
+        }
         if new_rows == self.rows && new_cols == self.cols {
             return false;
         }
@@ -654,7 +660,11 @@ impl GridLayout {
                     // clamping each row independently let every row claim the full height,
                     // so the later rows were placed past the bottom edge (a 60px container
                     // with two 500px rows put the second row at y=60 with a height of 60).
-                    (available_height as i32 - current_y).max(0).min(height as i32) as u32
+                    //
+                    // The clamp is in `u32`: `height as i32` inverted for a height above
+                    // `i32::MAX` (it became negative, so `.min` selected it and the cast back
+                    // returned the full height), which skipped this clamp entirely.
+                    height.min(available_height.saturating_sub(current_y.max(0) as u32))
                 }
                 RowSizing::Fill => (available_height as u64
                     * self.row_stretches[row as usize] as u64)
@@ -1262,6 +1272,42 @@ mod tests {
         let grid = GridLayout::new(1001, 1000, 0, 0);
         assert!(grid.total_cells() <= 1_000_000);
         assert_eq!(grid.total_cells(), grid.rows() as usize * grid.cols() as usize);
+    }
+
+    /// Growth never shrinks an axis to satisfy the cell cap.
+    ///
+    /// `grow_to_fit` routed the requested extent through `fit_extent`, which reduces **both**
+    /// axes. A 1×600 000 grid asked for a second row therefore came back 2×500 000: every
+    /// placement at column ≥ 500 000 was re-indexed into a different cell by the copy loop and
+    /// 100 000 column stretch weights were discarded — a silent rewrite rather than a refusal.
+    #[test]
+    fn growing_a_grid_at_the_cell_cap_never_drops_columns() {
+        let mut grid = GridLayout::new(1, 600_000, 0, 0);
+        grid.set_widget(0, 599_999, 7);
+        assert_eq!(grid.cell_of(7), Some((0, 599_999)));
+
+        // A second row would need 1 200 000 slots, past the 1 000 000 cap.
+        grid.set_widget(1, 0, 8);
+
+        assert_eq!(grid.cols(), 600_000, "growth may not shrink a column count the caller set");
+        assert_eq!(grid.rows(), 1, "the refused growth must leave the row count alone");
+        assert_eq!(grid.cell_of(7), Some((0, 599_999)), "the existing placement must not move");
+        assert_eq!(grid.cell_of(8), None, "the refused placement must not be stored elsewhere");
+    }
+
+    /// A `RowSizing::Fixed` height is clamped in `u32`, not through `i32`.
+    ///
+    /// `height as i32` inverted for a height above `i32::MAX` (it became negative), so `.min`
+    /// selected it and the cast back returned the full height: the clamp to the room still
+    /// available was skipped entirely and every row claimed billions of pixels.
+    #[test]
+    fn a_fixed_row_above_i32_max_is_still_clamped_to_the_container() {
+        let mut grid = GridLayout::new(1, 1, 0, 0).with_row_sizing(RowSizing::Fixed(3_000_000_000));
+        grid.set_widget(0, 0, 1);
+
+        let out = placed(&grid, Rect::new(0, 0, 40, 50));
+
+        assert_eq!(rect_of(&out, 1), Rect::new(0, 0, 40, 50));
     }
 
     /// A growing placement cannot silently drop a widget: after `set_widget_spanning` the

@@ -44,6 +44,37 @@ fn mask_font() -> &'static Font {
     FONT.get_or_init(|| Font::simple("monospace", 13.0))
 }
 
+/// One painted cell's advance, in the painter's own space.
+///
+/// The mask painter advances one cell per segment at a fixed width (see the `draw` body, which
+/// documents why the font's reported advance is not the right unit). The hit test has to divide
+/// by **this** number: it used to derive `font.size() * 3 / 5` (7 px at the 13 px face), so from
+/// the eighth character on a click landed one cell to the left of the glyph under the pointer.
+const MASK_CELL_WIDTH: i32 = 8;
+
+/// Where the run of segments begins inside the field, in pixels.
+///
+/// `Right`/`Center` hang the whole run off the trailing edge by the cells it would fill. Shared
+/// by the painter and the hit test: the hit test ignored it entirely, so under a non-left
+/// alignment every click landed up to half a field away from the glyph it pointed at.
+fn mask_start_shift(
+    geom: Rect,
+    padding: i32,
+    segments: usize,
+    alignment: HorizontalAlignment,
+) -> i32 {
+    let max_cells = (geom.width.saturating_sub(padding as u32 * 2)) / MASK_CELL_WIDTH as u32;
+    if segments as u32 > max_cells {
+        return 0;
+    }
+    let spare = (max_cells - segments as u32) as i32;
+    match alignment {
+        HorizontalAlignment::Left => 0,
+        HorizontalAlignment::Center => spare / 2 * MASK_CELL_WIDTH,
+        HorizontalAlignment::Right => spare * MASK_CELL_WIDTH,
+    }
+}
+
 /// A parsed segment in the mask — either a literal character or an input placeholder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MaskSegment {
@@ -658,17 +689,18 @@ impl MaskedEdit {
     /// a face change moves the click target with the glyphs.
     ///
     /// The result saturates at the number of mask segments, which is the space the caret addresses —
-    /// clicking past the end of the value must land at its end, not past the mask. Adding half a cell
-    /// before dividing is what makes a click in the *middle* of a character select that character's
-    /// boundary rather than the one before it, which is what a user pointing at a glyph expects.
+    /// clicking past the end of the value must land at its end, not past the mask. The cell is the
+    /// painter's own cell (one segment wide), so `floor(x / cell)` is the segment the pointer is
+    /// **on**: the previous form added half a cell before dividing, which snapped to the nearest
+    /// *boundary* and so made the second half of every glyph belong to the next cell.
     fn display_position_at_x(&self, x: i32) -> usize {
         let field = self.field_rect();
-        let font = mask_font();
-        let cell = font.size().max(1.0) as i32 * 3 / 5; // the shaper's 0.6 factor, in pixels
-        let cell = cell.max(1);
-        let origin = field.x + dimensions::TEXT_FIELD_PADDING_H as i32;
+        let padding = dimensions::TEXT_FIELD_PADDING_H as i32;
+        let alignment = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
+        let origin =
+            field.x + padding + mask_start_shift(field, padding, self.segments.len(), alignment);
         let offset = (x - origin).max(0);
-        let index = (offset + cell / 2) / cell;
+        let index = offset / MASK_CELL_WIDTH;
         (index as usize).min(self.segments.len())
     }
 
@@ -955,26 +987,12 @@ impl Draw for MaskedEdit {
         let value_align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
         // One cell's advance in the painter's own space, which is the unit the segment walk below
         // advances by. Declared here because the alignment shift and the walk both read it.
-        let char_width = 8u32;
+        let char_width = MASK_CELL_WIDTH as u32;
         // The run the segments walk to the field's trailing edge, in the painter's own unit; the
         // number of character cells a mask can fill.
-        let max_cells = (geom.width.saturating_sub(padding as u32 * 2)) / char_width;
-        // Where the run begins. `Right`/`Center` hang the whole run off the trailing edge by the
-        // cells it would fill, and a mask wider than the field is left as-is so the overflow is
-        // clipped at the trailing edge rather than pushed off the leading one.
-        let start_shift = if self.segments.len() as u32 <= max_cells {
-            match value_align {
-                HorizontalAlignment::Left => 0,
-                HorizontalAlignment::Center => {
-                    (max_cells - self.segments.len() as u32) as i32 / 2 * char_width as i32
-                }
-                HorizontalAlignment::Right => {
-                    (max_cells - self.segments.len() as u32) as i32 * char_width as i32
-                }
-            }
-        } else {
-            0
-        };
+        // Where the run begins. Shared with the hit test (`mask_start_shift`), so a click and the
+        // glyphs it lands on cannot disagree about the alignment shift.
+        let start_shift = mask_start_shift(geom, padding, self.segments.len(), value_align);
 
         // Draw each segment
         let mut raw_idx = 0;
@@ -1024,13 +1042,18 @@ impl Draw for MaskedEdit {
                     MaskSegment::Literal { ch } => {
                         // Drawn from the character's own UTF-8 bytes: `ch.to_string()` allocated a
                         // `String` per mask segment per frame.
+                        // One glyph per cell: the block offset (`start_shift`) is the alignment, so
+                        // the glyph itself is left-aligned in its own cell. Passing `value_align`
+                        // again shifted the glyph by **its own** advance, so a right-aligned mask
+                        // drew every character one cell left of the cell the painter positioned —
+                        // and the caret/selection band stayed on the empty cell it had left.
                         let mut glyph = [0u8; 4];
                         context.draw_text(
                             Point::new(draw_x, inner_top),
                             ch.encode_utf8(&mut glyph),
                             font,
                             mask_ink,
-                            value_align,
+                            HorizontalAlignment::Left,
                         );
                         display_x += char_width as i32;
                     }
@@ -1075,7 +1098,7 @@ impl Draw for MaskedEdit {
                                 glyph,
                                 font,
                                 caret_ink,
-                                value_align,
+                                HorizontalAlignment::Left,
                             );
                         } else {
                             context.draw_text(
@@ -1083,7 +1106,7 @@ impl Draw for MaskedEdit {
                                 glyph,
                                 font,
                                 char_color,
-                                value_align,
+                                HorizontalAlignment::Left,
                             );
                         }
 
@@ -2020,5 +2043,46 @@ mod tests {
         });
         me.handle_event(&Event::TextInput { text: "12".to_string() });
         assert_eq!(*captured.lock().unwrap(), Some("12".to_string()));
+    }
+
+    /// A click resolves to the cell whose glyph is under the pointer, at every alignment.
+    ///
+    /// The hit test divided by `font.size() * 3 / 5` (7 px at the 13 px face) while the painter
+    /// advances one 8 px cell per segment, and it ignored the `Right`/`Center` block shift
+    /// entirely — so from the eighth character on (and under any non-left alignment) a click
+    /// landed on the neighbouring cell.
+    #[test]
+    fn a_click_lands_on_the_glyph_under_the_pointer() {
+        let mut edit = MaskedEdit::new(Rect::new(0, 0, 200, 28));
+        edit.set_mask("000-000");
+        let field = edit.field_rect();
+        let padding = dimensions::TEXT_FIELD_PADDING_H as i32;
+        let origin = field.x + padding;
+        let segments = edit.segments.len();
+        assert_eq!(segments, 7, "the mask has seven cells");
+
+        for cell in 0..segments {
+            let x = origin + cell as i32 * MASK_CELL_WIDTH + MASK_CELL_WIDTH / 2;
+            assert_eq!(edit.display_position_at_x(x), cell, "cell {cell} must answer its index");
+        }
+        assert_eq!(edit.display_position_at_x(origin - 100), 0, "before the run saturates at 0");
+        assert_eq!(
+            edit.display_position_at_x(field.x + field.width as i32 + 100),
+            segments,
+            "past the mask saturates at its length"
+        );
+
+        // A right-aligned run is shifted as a block; the hit test must move with it.
+        edit.set_alignment(crate::core::Alignment::Right);
+        let shift = mask_start_shift(field, padding, segments, HorizontalAlignment::Right);
+        assert!(shift > 0, "a seven-cell mask in a 200 px field leaves room to shift");
+        for cell in 0..segments {
+            let x = origin + shift + cell as i32 * MASK_CELL_WIDTH + MASK_CELL_WIDTH / 2;
+            assert_eq!(
+                edit.display_position_at_x(x),
+                cell,
+                "right alignment: cell {cell} must answer its index"
+            );
+        }
     }
 }

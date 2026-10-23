@@ -273,6 +273,20 @@ impl ChildInfo {
         children.iter().find(|child| child.id == id)
     }
 
+    /// The child at `index` when it is the one named by `id`, else a full scan.
+    ///
+    /// `CompositeBuilder` hands a layout its children in declaration order, so the positional
+    /// probe answers the common case with one slice index; the scan is the fallback for a caller
+    /// whose slice is ordered differently. Calling [`find`](Self::find) for every item made a
+    /// 200-child row 40 000 id comparisons per arrange pass, on the path every composite takes.
+    pub(crate) fn find_at(
+        children: &[ChildInfo],
+        index: usize,
+        id: ObjectId,
+    ) -> Option<&ChildInfo> {
+        children.get(index).filter(|child| child.id == id).or_else(|| Self::find(children, id))
+    }
+
     /// The room this child is asking for on both axes: its preferred extent plus its own
     /// margins.
     ///

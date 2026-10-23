@@ -162,10 +162,16 @@ CENSUS_JSON="$(rw_run_bounded "$STEP_BUDGET" cargo run --no-default-features --f
     --example control_rendering_census 2>/dev/null)"
 NO_LONGER_BLIND="$(awk '!/^#/ && NF>0 {print $1}' "$EXEMPT" | sort -u | while read -r name; do
     [ -z "$name" ] && continue
+    # `|| found=$?` keeps the fitter's exit status while making the failure a condition
+    # context: the awk still exits 1 for every control that is (correctly) still
+    # theme-blind, and a POSIX `set -e` shell must not treat that normal answer as a
+    # gate failure — a bare failing statement here killed `sh` runs silently while
+    # bash's command-substitution leniency let them pass.
+    found=0
     printf '%s\n' "$CENSUS_JSON" | awk -v n="$name" '
         NF>0 && $1==n && $(NF-1)=="yes" {found=1}
-        END {exit found ? 0 : 1}'
-    if [ $? -eq 0 ]; then echo "$name"; fi
+        END {exit found ? 0 : 1}' || found=$?
+    if [ "$found" -eq 0 ]; then echo "$name"; fi
 done)"
 if [ -n "$NO_LONGER_BLIND" ]; then
     echo "  FAIL  these exemptions are no longer needed — the control now follows the"

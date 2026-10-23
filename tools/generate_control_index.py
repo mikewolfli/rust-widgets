@@ -44,6 +44,16 @@ WIDGET_SRC = ROOT / "src" / "widget"
 KIND_SRC = ROOT / "src" / "widget" / "kind.rs"
 DEFAULT_OUTPUT = ROOT / "control.md"
 
+# A widget type is constructed by `Type::new(..)` / `Type::with_…(..)`, possibly behind a
+# module path and possibly wrapped (`Box::new(..)`, `label(.., Box::new(..))`). The path
+# prefix is the part the previous pattern could not see: on
+# `Box::new(crate::widget::dialog::AlertDialog::new(..))` it matched `Box::new(` first and
+# reported the *box* as the constructed type, so the lookup found no source file and the
+# control was listed as `unclassified`.
+TYPE_CONSTRUCTION = re.compile(
+    r"(?:[A-Za-z_][A-Za-z0-9_]*::)*([A-Z][A-Za-z0-9_]*)\s*::\s*(?:new|with_[a-z0-9_]+)"
+)
+
 
 def widget_kind_count() -> int:
     """The number of `WidgetKind` variants, parsed from the enum itself.
@@ -144,7 +154,7 @@ def control_families() -> dict[str, str]:
     files = source_families()
     types = declared_types()
     targets = constructor_targets()
-    built = constructed_types()
+    built = constructed_types(types)
     families: dict[str, str] = {}
     for name, canonical in alias_names().items():
         # Most specific first: the declared type of whatever the constructor builds, then the
@@ -189,14 +199,32 @@ def constructor_targets() -> dict[str, str]:
     return targets
 
 
-def constructed_types() -> dict[str, str]:
+def constructed_types(declared: dict[str, str]) -> dict[str, str]:
     """Maps a constructor function to the widget type it constructs.
 
     Several factory names are **aliases of another control** (`panel` builds a `GroupBox`,
     `table` builds a `TableWidget`, `data_view` builds a virtual list). Their family is the
     family of the type actually constructed, which is the only answer that tells a reader
-    where the drawing code lives. The first `Xxx::new(` or `Xxx::with_` in the function body
-    is that type.
+    where the drawing code lives. The first construction in the function body whose name is
+    declared as a type under `src/widget/` is that control.
+
+    # Why the pattern has to see module paths
+
+    A constructor may name its type through a full path —
+    `Box::new(crate::widget::dialog::AlertDialog::new(..))` — and may hand it to a helper
+    (`label(geometry, text, Box::new(..))`). The previous pattern matched `Type::new` with no
+    path prefix, so on those bodies the first thing it matched was `Box::new(` and it reported
+    the **box** as the constructed type: the lookup then found no source file and the control
+    was listed as `unclassified`. It also preferred any `Box::new(X::..)` over the first
+    construction, so a constructor that *wraps a child* resolved to the child
+    (`create_swipe_to_dismiss` reported `Label`) instead of the control it builds.
+
+    # Why the candidate set is the declared types
+
+    `Box`, `Vec` and `Rc` sit in the same syntactic position as the control, but so does
+    `Arc` — a real control in this crate (`create_arc` builds `Arc::new(..)`). A hard-coded
+    list of wrapper names would have to guess which of those is a widget; asking the source
+    tree answers it instead.
     """
     source = (ROOT / "src" / "widget" / "capability" / "constructors.rs").read_text(
         encoding="utf-8"
@@ -207,13 +235,16 @@ def constructed_types() -> dict[str, str]:
         name = re.match(r"([a-z0-9_]+)", body)
         if not name:
             continue
-        # `Box::new(Xxx::new(..))` names the constructed type inside the box; the plain
-        # `Xxx::new` form is the fallback for a constructor that returns the widget directly.
-        boxed = re.search(r"Box::new\(\s*([A-Z][A-Za-z0-9_]*)\s*::", body)
-        direct = re.search(r"([A-Z][A-Za-z0-9_]*)\s*::\s*(?:new|with_)", body)
-        constructed = boxed or direct
+        constructed = next(
+            (
+                match.group(1)
+                for match in TYPE_CONSTRUCTION.finditer(body)
+                if normalise(match.group(1)) in declared
+            ),
+            None,
+        )
         if constructed:
-            types[name.group(1)] = constructed.group(1)
+            types[name.group(1)] = constructed
         else:
             # A constructor that delegates to another one (`data_view` builds a virtual
             # list) states its type one hop away; follow that hop. The function's own name is

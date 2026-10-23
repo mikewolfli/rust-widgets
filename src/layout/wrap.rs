@@ -468,9 +468,10 @@ impl Layout for WrapLayout {
         let sized: Vec<WrapChild> = self
             .children
             .iter()
-            .map(|child| WrapChild {
+            .enumerate()
+            .map(|(index, child)| WrapChild {
                 widget_id: child.widget_id,
-                size: match ChildInfo::find(children, child.widget_id) {
+                size: match ChildInfo::find_at(children, index, child.widget_id) {
                     Some(info) => info.resolved_size(child.size),
                     None => child.size,
                 },
@@ -512,14 +513,18 @@ impl Layout for WrapLayout {
         // The field had no reader at all before this, so a 2x text preference grew the glyphs (via
         // the theme's font token) and left every gap at its nominal size.
         let scale = context.layout_scale.max(context.font_scale);
-        let scaled_padding = (self.padding.max(0) as f32 * scale).max(0.0) as i32;
+        // Rounded, not truncated: `FlexLayout`, `BoxLayout`, `BorderLayout` and `FlowLayout` all
+        // round the same `max(layout_scale, font_scale)` product. Truncating made a 3 px gap 5 px
+        // in a flex row and 4 px in a wrap row at 1.5x, so the two containers disagreed about the
+        // same device by one pixel per gap.
+        let scaled_padding = (self.padding.max(0) as f32 * scale).max(0.0).round() as i32;
 
         // Use scaled spacing inside the content rect by temporarily wrapping.
         let scaled = WrapLayout {
             direction: self.direction,
             alignment: self.alignment,
-            spacing: (self.spacing as f32 * scale) as i32,
-            run_spacing: self.run_spacing.map(|spacing| (spacing as f32 * scale) as i32),
+            spacing: (self.spacing as f32 * scale).round() as i32,
+            run_spacing: self.run_spacing.map(|spacing| (spacing as f32 * scale).round() as i32),
             padding: scaled_padding,
             children: self.children.clone(),
         };
@@ -794,6 +799,32 @@ mod tests {
         assert_eq!(first.y, 8 - (first.height as i32 - 20) / 2);
         // The sibling keeps its own slot: growing one child must not shift the others.
         assert_eq!(second.x, 54 - (second.width as i32 - 30) / 2);
+    }
+
+    /// A wrap layout scales its gap the same way a flex row does: rounding, not truncation.
+    ///
+    /// `FlexLayout`, `BoxLayout`, `BorderLayout` and `FlowLayout` all round the
+    /// `max(layout_scale, font_scale)` product; `WrapLayout` truncated, so at 1.5× a 3 px gap was
+    /// 5 px in a flex row and 4 px in a wrap row on the same device.
+    #[test]
+    fn wrap_layout_rounds_its_scaled_gap_like_a_flex_row() {
+        let mut layout = WrapLayout::new(WrapDirection::Horizontal, WrapAlignment::Start, 3, 3);
+        layout.add_widget(1, 0);
+        layout.add_widget(2, 0);
+        layout.set_child_size(1, Size::new(10, 10));
+        layout.set_child_size(2, Size::new(10, 10));
+
+        let context =
+            LayoutContext { layout_scale: 1.5, font_scale: 1.0, min_touch_size: Size::new(0, 0) };
+        let mut rects = HashMap::new();
+        layout.update_with_context(Rect::new(0, 0, 200, 100), &context, &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+
+        // padding 3 * 1.5 = 4.5 -> 5 (truncation gave 4); gap 3 * 1.5 = 4.5 -> 5 (truncation
+        // gave 4), so the second child starts at 5 + 10 + 5 = 20.
+        assert_eq!(rects.get(&1).expect("item 1 was laid out").x, 5);
+        assert_eq!(rects.get(&2).expect("item 2 was laid out").x, 20);
     }
 
     #[test]

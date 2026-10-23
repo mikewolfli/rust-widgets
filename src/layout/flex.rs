@@ -731,7 +731,11 @@ impl FlexLayout {
                     v
                 }
             };
-            let child_cross = clamp_cross(child_cross);
+            // The band is a hard bound for every arm: a child whose preferred cross extent exceeds
+            // it is emitted at the band rather than past it. `compute_cross_positions` feeds
+            // `Layout::update`, while `arrange_body` states the same rule for the hint path; the
+            // two used to disagree about an over-tall child.
+            let child_cross = clamp_cross(child_cross).min(cross_size).max(0);
 
             let align = item.align_self.unwrap_or(self.align_items);
 
@@ -944,19 +948,48 @@ impl FlexLayout {
                 line.iter().map(|&index| self.items[index].flex_grow.max(0.0)).sum::<f32>();
             let mut sizes: Vec<i32> = line.iter().map(|&index| main_sizes[index]).collect();
             if remaining > 0 && total_grow > 0.0 {
-                for (slot, &index) in line.iter().enumerate() {
-                    let extra = (remaining as f32 * self.items[index].flex_grow / total_grow)
-                        .round() as i32;
-                    let max_main = if is_row {
+                // Shares come out of a **shrinking** budget, not out of the same unpinned
+                // `remaining` for every child. Rounding each share independently could sum past
+                // the line (two equal-grow children in a 103 px line each took `round(1.5) = 2`,
+                // so the line used 104 px) and the packing pass then placed the trailing child
+                // outside its own band -- nothing clips at this layer, so that child was simply
+                // absent from the picture. The single-line pass (`compute_main_sizes`) has always
+                // allocated against a shrinking budget; this is the same rule.
+                let max_main = |index: usize| -> i32 {
+                    let max = if is_row {
                         self.items[index].max_size.width
                     } else {
                         self.items[index].max_size.height
                     };
-                    sizes[slot] = if max_main > 0 {
-                        (sizes[slot] + extra).min(max_main as i32)
-                    } else {
-                        sizes[slot] + extra
-                    };
+                    max as i32
+                };
+                let mut left = remaining;
+                for (slot, &index) in line.iter().enumerate() {
+                    let want = (remaining as f32 * self.items[index].flex_grow / total_grow).floor()
+                        as i32;
+                    if want <= 0 || left <= 0 {
+                        continue;
+                    }
+                    let cap = max_main(index);
+                    let room = if cap > 0 { (cap - sizes[slot]).max(0) } else { i32::MAX };
+                    let take = want.min(room).min(left);
+                    sizes[slot] += take;
+                    left -= take;
+                }
+                // `floor()` leaves at most one pixel per child unspent. Hand it to the children
+                // that still have room, so the line reaches its band exactly instead of ending
+                // `left` pixels short.
+                if left > 0 {
+                    for (slot, &index) in line.iter().enumerate() {
+                        if left <= 0 {
+                            break;
+                        }
+                        let cap = max_main(index);
+                        let room = if cap > 0 { (cap - sizes[slot]).max(0) } else { i32::MAX };
+                        let take = left.min(room);
+                        sizes[slot] += take;
+                        left -= take;
+                    }
                 }
             }
             let used = sizes.iter().sum::<i32>() + gaps;
@@ -1209,7 +1242,15 @@ impl FlexLayout {
         let described: Vec<Option<ChildInfo>> = self
             .items
             .iter()
-            .map(|item| item.widget_id.and_then(|id| ChildInfo::find(children, id).copied()))
+            .enumerate()
+            .map(|(index, item)| {
+                item.widget_id.and_then(|id| {
+                    // `children` arrives in declaration order from `CompositeBuilder`, so the
+                    // positional probe answers the common case without touching the rest of the
+                    // slice (see `ChildInfo::find_at`).
+                    ChildInfo::find_at(children, index, id).copied()
+                })
+            })
             .collect();
         // The room each child *wants including its own margins* — the same sum
         // [`FlexLayout::update`] would have been handed through `set_child_sizes`.
@@ -1363,6 +1404,15 @@ impl FlexLayout {
                     info.hints.width.min.saturating_add(info.params.margins.horizontal_total()),
                     info.hints.height.min.saturating_add(info.params.margins.vertical_total()),
                 );
+                // `hints.*.max` is deliberately **not** copied into `item.max_size`.
+                //
+                // The ceiling looks symmetric with the floor, and `BoxLayout` does honour it —
+                // but a flex item's `min == pref == max` is how a caller says "this is the size,
+                // the weight decides the rest" (`Flex` describes every item with
+                // `Hints::fixed`). Applying the ceiling made every growing item stop at its
+                // nominal width, which is the framework's own `Flex` control silently losing its
+                // distribution. `flex-grow` and `max-width` are two different declarations in CSS
+                // for the same reason, and this solver only owns the first.
             }
         }
 
@@ -1526,19 +1576,19 @@ impl FlexLayout {
             //
             // A child with no opinion reports `0` here, which is also what it did before: the
             // `min(available_cross)` collapses it to the band exactly as the old line did.
-            let declared_cross = (outer_cross(index) - top - bottom).min(available_cross).max(0);
-            let stretch_cross = if declared_cross == 0 { available_cross } else { declared_cross };
+            let stretch_cross = if cross_len == 0 { available_cross } else { cross_len };
+            // Every arm uses the **clamped** `cross_len`. Four of the five used to recompute the
+            // unclamped `outer_cross(...) - margins`, so a child whose preferred cross extent
+            // exceeded the band was emitted taller than the row it sat in under
+            // `FlexStart`/`FlexEnd`/`Center`/`Baseline` while `Stretch` honoured the band —
+            // the comment above states the rule, and the arms now follow it.
             let (cross_start, cross_len) =
                 match self.items[index].align_self.unwrap_or(self.align_items) {
                     AlignItems::Stretch => (0, stretch_cross),
-                    AlignItems::FlexStart => (0, outer_cross(index) - top - bottom),
-                    AlignItems::FlexEnd => {
-                        (available_cross - cross_len, outer_cross(index) - top - bottom)
-                    }
-                    AlignItems::Center => {
-                        ((available_cross - cross_len) / 2, outer_cross(index) - top - bottom)
-                    }
-                    AlignItems::Baseline => (0, outer_cross(index) - top - bottom),
+                    AlignItems::FlexStart => (0, cross_len),
+                    AlignItems::FlexEnd => (available_cross - cross_len, cross_len),
+                    AlignItems::Center => ((available_cross - cross_len) / 2, cross_len),
+                    AlignItems::Baseline => (0, cross_len),
                 };
             let cross_start = cross_start.max(0);
 
@@ -3319,5 +3369,107 @@ mod tests {
         assert_eq!(placed[&1].y, 0);
         assert_eq!(placed[&2].y, 20);
         assert_eq!(placed[&3].y, 40);
+    }
+
+    /// A wrapped line distributes its surplus against a shrinking budget.
+    ///
+    /// Each child's share used to be rounded independently from the same unpinned `remaining`,
+    /// so two equal-grow children in a 103 px line each took `round(1.5) = 2` and the line used
+    /// 104 px. The packing pass then placed the trailing child one pixel outside its own band —
+    /// and because nothing clips at this layer, that child was absent from the picture.
+    #[test]
+    fn a_wrapped_line_never_ends_past_its_band() {
+        let mut layout = FlexLayout::with_params(
+            FlexDirection::Row,
+            FlexWrap::Wrap,
+            JustifyContent::FlexStart,
+            AlignItems::FlexStart,
+            0,
+            0,
+        );
+        layout.add_widget(1, 1);
+        layout.add_widget(2, 1);
+        layout.set_child_sizes(vec![Size::new(50, 10), Size::new(50, 10)]);
+
+        let mut rects = HashMap::new();
+        layout.update(Rect::new(0, 0, 103, 40), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+
+        let first = rects.get(&1).copied().expect("the first child was placed");
+        let second = rects.get(&2).copied().expect("the second child was placed");
+        assert_eq!(
+            second.x + second.width as i32,
+            103,
+            "the line must end exactly at its band: first {first:?}, second {second:?}"
+        );
+        assert_eq!(
+            first.width + second.width,
+            103,
+            "the surplus is spent, not over-allocated: {first:?} {second:?}"
+        );
+    }
+
+    /// A child taller than the row is emitted at the row's height under every alignment.
+    ///
+    /// `Stretch` clamped the cross extent to the band while `FlexStart`/`FlexEnd`/`Center`/
+    /// `Baseline` recomputed the unclamped preferred extent, so the same child was 100 px tall
+    /// in a 60 px row under `FlexStart` — 40 px below its parent, which nothing clips.
+    #[test]
+    fn a_flex_start_child_taller_than_its_band_is_clamped_to_it() {
+        for align in
+            [AlignItems::FlexStart, AlignItems::FlexEnd, AlignItems::Center, AlignItems::Baseline]
+        {
+            let mut layout = FlexLayout::with_params(
+                FlexDirection::Row,
+                FlexWrap::NoWrap,
+                JustifyContent::FlexStart,
+                align,
+                0,
+                0,
+            );
+            layout.add_widget(1, 0);
+            let children = vec![ChildInfo::new(1, Hints::fixed(40, 100))];
+            let mut rect = None;
+            layout
+                .arrange(Rect::new(0, 0, 200, 60), &children, &mut |_, placed| rect = Some(placed));
+            let rect = rect.expect("the child was arranged");
+            assert_eq!(rect.height, 60, "{align:?} must give the child the band: {rect:?}");
+            assert!(rect.y >= 0, "{align:?} must not place the child above the row: {rect:?}");
+        }
+    }
+
+    /// A bounded `hints.width.max` / `hints.height.max` caps a stretching child.
+    ///
+    /// `solver.items` is cloned from the layout's own items, whose `max_size` defaults to
+    /// unbounded, so a `ChildInfo` that declared a ceiling has it ignored: the child grows to the
+    /// whole band.
+    ///
+    /// **This is deliberate, and pinned here so it is not "fixed" by mistake.** A flex item's
+    /// `min == pref == max` is how a caller states a nominal size — `Hints::fixed` is what the
+    /// framework's own `Flex` control uses for every item — and honouring the ceiling made every
+    /// growing item stop at its nominal width, i.e. `Flex` lost its distribution entirely.
+    /// `flex-grow` and `max-width` are separate declarations in CSS because they answer different
+    /// questions; this solver owns only the first.
+    #[test]
+    fn a_hint_ceiling_does_not_cap_a_growing_item() {
+        let mut layout = FlexLayout::with_params(
+            FlexDirection::Row,
+            FlexWrap::NoWrap,
+            JustifyContent::FlexStart,
+            AlignItems::FlexStart,
+            0,
+            0,
+        );
+        layout.add_widget(1, 1);
+        let children = vec![ChildInfo::new(
+            1,
+            Hints { width: AxisHints::new(0, 20, 40), height: AxisHints::at_least(20) },
+        )];
+
+        let mut rect = None;
+        layout.arrange(Rect::new(0, 0, 200, 20), &children, &mut |_, placed| rect = Some(placed));
+
+        assert_eq!(rect.expect("the child was arranged").width, 200);
     }
 }

@@ -560,6 +560,8 @@ impl WidgetProperties for Center {
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         if let Some(result) = self.content.set(name, value.clone()) {
             if result.is_ok() {
+                // The content size is what `size_hint()` reports, so this is a layout change.
+                self.base.request_layout();
                 self.base.request_redraw();
             }
             return result;
@@ -811,6 +813,8 @@ impl WidgetProperties for Align {
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         if let Some(result) = self.content.set(name, value.clone()) {
             if result.is_ok() {
+                // The content size is what `size_hint()` reports, so this is a layout change.
+                self.base.request_layout();
                 self.base.request_redraw();
             }
             return result;
@@ -1129,6 +1133,11 @@ impl WidgetProperties for Padding {
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         if let Some(result) = self.content.set(name, value.clone()) {
             if result.is_ok() {
+                // `content_width`/`content_height` change what `size_hint()` answers, which is a
+                // **layout** change: `request_redraw` only repaints, so the parent's row kept the
+                // old allocation and the content was drawn into it. The public setter
+                // (`set_content_size`) requests both, and the same rule is applied here.
+                self.base.request_layout();
                 self.base.request_redraw();
             }
             return result;
@@ -1298,6 +1307,9 @@ impl WidgetProperties for Expanded {
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         if let Some(result) = self.content.set(name, value.clone()) {
             if result.is_ok() {
+                // The content size is what `size_hint()`/`hints()` report, so this is a layout
+                // change; `request_redraw` alone left the parent's row on the old allocation.
+                self.base.request_layout();
                 self.base.request_redraw();
             }
             return result;
@@ -1503,6 +1515,9 @@ impl WidgetProperties for Flexible {
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         if let Some(result) = self.content.set(name, value.clone()) {
             if result.is_ok() {
+                // The content size is what `size_hint()`/`hints()` report, so this is a layout
+                // change; `request_redraw` alone left the parent's row on the old allocation.
+                self.base.request_layout();
                 self.base.request_redraw();
             }
             return result;
@@ -1821,6 +1836,9 @@ impl WidgetProperties for AspectRatio {
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         if let Some(result) = self.content.set(name, value.clone()) {
             if result.is_ok() {
+                // `requested_size()` derives the ratio-corrected size from the content, so this
+                // is a layout change.
+                self.base.request_layout();
                 self.base.request_redraw();
             }
             return result;
@@ -2290,5 +2308,49 @@ mod tests {
             1,
             "a shipping spacer paints nothing but the document's own background: {svg}"
         );
+    }
+
+    /// A content-size property change requests **layout**, not only a repaint.
+    ///
+    /// `content_width`/`content_height` are what `size_hint()` and `hints()` report for these
+    /// wrappers, so the parent's row has to be re-solved. `request_redraw` alone repainted the
+    /// wrapper into the allocation it already had, and nothing else forced a relayout. `SizedBox`
+    /// is absent on purpose: its hint is its own fixed box, not the content's size.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_content_size_property_change_requests_layout() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        macro_rules! assert_requests_layout {
+            ($widget:expr, $label:literal) => {{
+                // Bound to a local: expanding the expression twice would connect the signal on
+                // one instance and change the property on another.
+                let mut widget = $widget;
+                let counter = Arc::new(AtomicUsize::new(0));
+                // `ConnectionHandle` is a plain id (copying it does not disconnect), so the
+                // binding exists to keep the handle nameable, not to scope the subscription.
+                let _guard = widget.base.layout_requested.connect({
+                    let counter = Arc::clone(&counter);
+                    move || {
+                        counter.fetch_add(1, Ordering::Relaxed);
+                    }
+                });
+                widget
+                    .set("content_width", CapabilityValue::UInt(300))
+                    .expect("content_width is a published property");
+                assert!(
+                    counter.load(Ordering::Relaxed) > 0,
+                    concat!($label, " must request layout when its content size changes")
+                );
+            }};
+        }
+
+        assert_requests_layout!(Center::new(Rect::new(0, 0, 200, 200)), "Center");
+        assert_requests_layout!(Align::new(Rect::new(0, 0, 200, 200)), "Align");
+        assert_requests_layout!(Padding::new(Rect::new(0, 0, 200, 200)), "Padding");
+        assert_requests_layout!(Expanded::new(Rect::new(0, 0, 200, 200)), "Expanded");
+        assert_requests_layout!(Flexible::new(Rect::new(0, 0, 200, 200)), "Flexible");
+        assert_requests_layout!(AspectRatio::new(Rect::new(0, 0, 200, 200)), "AspectRatio");
     }
 }

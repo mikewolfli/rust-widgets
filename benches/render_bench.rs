@@ -1,5 +1,6 @@
 #[cfg(not(target_arch = "wasm32"))]
 use criterion::{criterion_group, criterion_main, Criterion};
+#[cfg(not(feature = "mini"))]
 #[cfg(not(target_arch = "wasm32"))]
 use std::hint::black_box;
 

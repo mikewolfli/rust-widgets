@@ -1828,8 +1828,12 @@ pub fn dispatch_pointer_event(
 /// library's hit test, so a host that uses it for touches must do its own — which is why
 /// the pointer path above exists and is the one the integration documents name.
 ///
-/// Returns whether the widget accepted the event: `false` when the id is not a live widget,
-/// when the control is disabled, or when a modal blocks it.
+/// Returns whether the widget accepted the event: `false` when the id is not a live widget, or
+/// when a modal blocks it. A **disabled** control is refused by the pointer router
+/// ([`dispatch_pointer_event`]) before delivery, which is where the crate's "the router skips
+/// disabled controls when delivering" rule lives; this entry point delivers to whatever live id it
+/// is handed, so a host that routes input straight to a control it has disabled must check its own
+/// state.
 #[cfg(not(alloc_frugal))]
 pub fn dispatch_event(widget_id: crate::core::ObjectId, event: &crate::event::Event) -> bool {
     crate::widget::runtime::dispatch_event(widget_id, event)

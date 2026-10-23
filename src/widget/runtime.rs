@@ -791,14 +791,17 @@ pub fn clear_focus() -> bool {
 /// what makes a Tab press observable to the controls themselves.
 pub fn focus_next(forward: bool) -> Option<ObjectId> {
     let previous = focused_widget();
+    // The tab order keeps disabled and hidden controls in it on purpose (see `is_focusable`), so
+    // the **step** skips them. Delivering `FocusGained` to a control that refuses input left the
+    // key swallowed with no visible focus change, and asked the IME for a candidate window over
+    // a control the user cannot type into.
     let next = FOCUS
         .try_with(|focus| {
             let mut focus = focus.borrow_mut();
-            if forward {
-                focus.focus_next()
-            } else {
-                focus.focus_previous()
-            }
+            focus.focus_next_matching(forward, |id| {
+                read_widget(id, |widget| widget.is_enabled() && widget.is_visible())
+                    .unwrap_or(false)
+            })
         })
         .ok()
         .flatten()?;
@@ -951,6 +954,16 @@ fn with_child_ids<R>(widget_id: ObjectId, f: impl FnOnce(&[ObjectId]) -> R) -> O
 /// window it is containment in client coordinates — which is the space `point` is documented to be
 /// in above.
 pub fn widget_at(root: ObjectId, point: Point) -> Option<ObjectId> {
+    widget_at_inner(root, point, false)
+}
+
+/// [`widget_at`], optionally without applying `root`'s own bounds.
+///
+/// `trust_root` exists for an open popup: its painted list extends past its own rectangle, and
+/// the control has already answered `contains_point` for the press (that answer is what selected
+/// it), so applying the geometry bound here would reject exactly the rows that hang outside the
+/// field — the case this descent exists to serve.
+fn widget_at_inner(root: ObjectId, point: Point, trust_root: bool) -> Option<ObjectId> {
     let bounds = read_widget(root, |widget| widget.geometry())?;
     // A **window** root's geometry is written in the operating system's space (the position it was
     // asked to open at), while its children are written in client coordinates. `frame_origin` is
@@ -973,7 +986,7 @@ pub fn widget_at(root: ObjectId, point: Point) -> Option<ObjectId> {
             // the `local` point captured above. Every other node is tested normally: a control is
             // addressed in its parent's space, which is the space its own rectangle is written in.
             if current == root {
-                if !root_rect.contains_point(local) {
+                if !trust_root && !root_rect.contains_point(local) {
                     return Err(());
                 }
             } else if !widget_accepts_point(current, point) {
@@ -1052,32 +1065,29 @@ pub fn dispatch_pointer_event(root: ObjectId, event: &Event, point: Point) -> bo
     // An open popup is modal for the gesture that dismisses it: a press outside the popup is
     // delivered to the popup (which hides itself) and goes no further. Checking the grab before
     // hit-testing is what keeps the press from reaching the control the popup covers.
+    //
+    // A press **inside** the popup is hit-tested *from* the popup. The grab used to leave that
+    // case to `widget_at(root, ..)`, which refuses to descend through an ancestor whose own
+    // bounds reject the point — so a list hanging below its parent's rectangle (a combo box in a
+    // panel, a drop-down in a form row) could never receive a row click, while the popup stayed
+    // open. `widget_at` treats a non-window root's `frame_origin` as its own top-left, so a
+    // popup works as the origin of the descent.
     #[cfg(not(alloc_frugal))]
-    if event.starts_pointer_gesture() {
-        if let Some(popup) = popup_grab() {
-            // A grab belongs to the window whose popup set it. A press in another window must
-            // be routed normally, not swallowed by this one — and the check also keeps two
-            // windows in one process (or two tests on one thread) from interfering.
-            if top_level_window_of(popup) == Some(root) {
-                let still_open = read_widget(popup, |widget| widget.is_visible()).unwrap_or(false);
-                if !still_open {
-                    // The popup closed itself (an item was chosen, Escape, a programmatic
-                    // close).
-                    clear_popup_grab();
-                } else if !widget_accepts_point(popup, point) {
-                    let handled = dispatch_event(popup, event);
-                    // The control's own outside-press arm hides it. Clearing here is what makes
-                    // the grab one-shot even when it chooses to stay open for a padded click.
-                    clear_popup_grab();
-                    return handled;
-                }
-            } else if !read_widget(popup, |widget| widget.is_visible()).unwrap_or(false) {
-                clear_popup_grab();
-            }
+    let pointer_origin = if event.starts_pointer_gesture() {
+        match popup_press_route(root, point, event) {
+            Ok(origin) => origin,
+            Err(handled) => return handled,
         }
-    }
+    } else {
+        popup_hover_origin(root, point)
+    };
+    #[cfg(alloc_frugal)]
+    let pointer_origin: Option<ObjectId> = None;
 
-    let target = widget_at(root, point);
+    let target = match pointer_origin {
+        Some(popup) => widget_at_inner(popup, point, true),
+        None => widget_at(root, point),
+    };
     dispatch_hover_transition(target, point);
     // A control that captured the pointer keeps receiving events even when the
     // cursor leaves it — that is what lets a drag continue past its origin widget.
@@ -1111,6 +1121,15 @@ pub fn dispatch_pointer_event(root: ObjectId, event: &Event, point: Point) -> bo
     }
     match target {
         Some(target) if !modal_blocks(target) => {
+            // A disabled control takes no input: no focus move, no pointer capture, no delivery.
+            // The router owns this rule (see the module's focus docs: "the router skips disabled
+            // controls when delivering, not when ordering"), so a control that relies on it — a
+            // third-party widget that does not re-check its own enabled flag — is not fed input
+            // while disabled. The capture branch above deliberately does **not** apply it: a
+            // gesture that began on an enabled control must still receive its ending event.
+            if !read_widget(target, |widget| widget.is_enabled()).unwrap_or(false) {
+                return false;
+            }
             // A press on an interactive control makes it the keyboard's target.
             //
             // This is the production caller the focus entry point never had: the router moved
@@ -1267,6 +1286,12 @@ pub fn clear_modals() {
 /// the pair balanced — exactly one `MouseLeave` for the widget left, one
 /// `MouseEnter` for the widget entered, and neither when the pointer stays put.
 fn dispatch_hover_transition(hovered: Option<ObjectId>, point: Point) {
+    // A widget a modal blocks receives no input, so it must not record a hover either: the
+    // `MouseEnter` below is refused by `dispatch_event`, while `HOVERED` would still hold the
+    // widget — breaking the pair invariant stated above, reporting a hover for a control the
+    // user cannot touch, and publishing its cursor (an I-beam behind a dialog) through
+    // `Platform::set_cursor`.
+    let hovered = hovered.filter(|id| !modal_blocks(*id));
     let previous = HOVERED.with(|last| *last.borrow());
     if previous != hovered {
         HOVERED.with(|last| *last.borrow_mut() = hovered);
@@ -1285,8 +1310,13 @@ fn dispatch_hover_transition(hovered: Option<ObjectId>, point: Point) {
     // position because one control may want different shapes in different regions
     // (an editor's text is an I-beam, its minimap is an arrow). A platform call is
     // made only when the answer or the target window changed.
+    //
+    // `read_widget`, not `with_widget`: this runs on **every** pointer move, and the detaching
+    // variant removes the entry, installs two guards and re-inserts it — ~ten hash operations to
+    // read one `&self` getter. `read_widget` is the read-only shape documented for exactly this
+    // kind of query.
     let icon = hovered
-        .and_then(|id| with_widget(id, |widget| widget.cursor_icon_at(point)))
+        .and_then(|id| read_widget(id, |widget| widget.cursor_icon_at(point)))
         .unwrap_or(crate::platform::CursorIcon::Default);
     let key = (hovered.or(previous), icon);
     if LAST_CURSOR.with(|last| *last.borrow()) == key {
@@ -2660,6 +2690,65 @@ pub(crate) fn clear_popup_grab_for(popup: ObjectId) {
 #[cfg(not(alloc_frugal))]
 fn popup_grab() -> Option<ObjectId> {
     POPUP_GRAB.try_with(|slot| slot.get()).ok().flatten()
+}
+
+/// Where a press that an open popup's grab governs should be routed.
+///
+/// * `Ok(Some(popup))` — the press is inside the popup; the caller hit-tests **from the popup**
+///   so a list that extends past its parent's rectangle still receives its row clicks.
+/// * `Ok(None)` — no grab applies to this window, so the press is routed normally.
+/// * `Err(handled)` — the press was outside the popup and has already been delivered to it
+///   (which is what hides it); the caller must return `handled` unchanged.
+#[cfg(not(alloc_frugal))]
+fn popup_press_route(
+    root: ObjectId,
+    point: Point,
+    event: &Event,
+) -> Result<Option<ObjectId>, bool> {
+    let Some(popup) = popup_grab() else {
+        return Ok(None);
+    };
+    // A grab belongs to the window whose popup set it. A press in another window must be routed
+    // normally, not swallowed by this one — and the check also keeps two windows in one process
+    // (or two tests on one thread) from interfering.
+    if top_level_window_of(popup) != Some(root) {
+        if !read_widget(popup, |widget| widget.is_visible()).unwrap_or(false) {
+            clear_popup_grab();
+        }
+        return Ok(None);
+    }
+    // The popup closed itself (an item was chosen, Escape, a programmatic close).
+    if !read_widget(popup, |widget| widget.is_visible()).unwrap_or(false) {
+        clear_popup_grab();
+        return Ok(None);
+    }
+    if widget_accepts_point(popup, point) {
+        return Ok(Some(popup));
+    }
+    let handled = dispatch_event(popup, event);
+    // The control's own outside-press arm hides it. Clearing here is what makes the grab one-shot
+    // even when it chooses to stay open for a padded click.
+    clear_popup_grab();
+    Err(handled)
+}
+
+/// The popup that owns **non-press** pointer input at `point`, if any.
+///
+/// While a grab is active the popup owns the pointer for the window, so a move or a wheel over
+/// its list has to reach it even though the list extends past its parent's rectangle — otherwise
+/// the row highlight the pointer produces would stop at the container's own edge, and the press
+/// that *is* routed correctly would have no preceding hover. Unlike [`popup_press_route`] this
+/// neither dispatches an outside press nor clears the grab: only a press ends the grab.
+#[cfg(not(alloc_frugal))]
+fn popup_hover_origin(root: ObjectId, point: Point) -> Option<ObjectId> {
+    let popup = popup_grab()?;
+    if top_level_window_of(popup) != Some(root) {
+        return None;
+    }
+    if !read_widget(popup, |widget| widget.is_visible()).unwrap_or(false) {
+        return None;
+    }
+    widget_accepts_point(popup, point).then_some(popup)
 }
 
 /// A host callback observing the IME pre-edit updates delivered to one widget.
@@ -6794,6 +6883,173 @@ mod tests {
         unregister(parent);
         unregister(first);
         unregister(second);
+    }
+
+    /// A press inside an open popup is routed **from the popup**, even when the popup hangs
+    /// below the container that owns it.
+    ///
+    /// The grab only intercepted presses the popup *rejected*; a press inside the list fell
+    /// through to `widget_at(root, ..)`, which refuses to descend through an ancestor whose own
+    /// bounds reject the point. A combo box inside a panel therefore had an unclickable list
+    /// whenever the list crossed the panel's bottom edge. The menu code already re-parents its
+    /// popup to the window to dodge this; this is the fix that makes the general case work.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_press_inside_a_popup_below_its_parent_reaches_the_popup() {
+        use crate::widget::input_widgets::ComboBox;
+
+        let mut combo = ComboBox::new(Rect::new(0, 60, 120, 32));
+        combo.set_items(vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]);
+        let combo = register(Box::new(combo)).expect("mount");
+
+        let mut panel =
+            crate::widget::container_widgets::groupbox::GroupBox::new(Rect::new(0, 0, 200, 100));
+        panel.add_child(combo);
+        let panel = register(Box::new(panel)).expect("mount");
+        // `BaseWidget::add_child` writes only the parent's list, and it resolves the parent in the
+        // **registry** id space — which exists only once the parent is mounted. The host therefore
+        // mounts first and links through the registry, exactly as `add_child_linked` expects.
+        with_widget_mut(panel, |widget| {
+            widget.base_mut().add_child_linked(combo);
+        });
+
+        let window = register(Box::new(crate::widget::Window::new(
+            "popup host".to_string(),
+            Rect::new(0, 0, 400, 300),
+        )))
+        .expect("mount");
+        with_widget_mut(window, |widget| {
+            widget.base_mut().add_child_linked(panel);
+        });
+
+        // Open the list through the control's own press path, so the grab records the *registry*
+        // id (a control reports its own id, which the router normalises — but only once mounted).
+        let field = Point::new(20, 70);
+        assert!(dispatch_pointer_event(
+            window,
+            &Event::MousePress { pos: field, button: 1, modifiers: 0 },
+            field,
+        ));
+        assert!(
+            read_widget(combo, |widget| widget.has_open_popup()).unwrap_or(false),
+            "the press must open the list"
+        );
+
+        // A row of the list, below the panel's own bottom edge (y = 100).
+        let row = (101..300)
+            .map(|y| Point::new(20, y))
+            .find(|p| read_widget(combo, |widget| widget.contains_point(*p)).unwrap_or(false))
+            .expect("the open list extends below its parent");
+
+        assert!(dispatch_pointer_event(
+            window,
+            &Event::MousePress { pos: row, button: 1, modifiers: 0 },
+            row,
+        ));
+        assert!(
+            !read_widget(combo, |widget| widget.has_open_popup()).unwrap_or(true),
+            "choosing a row must reach the combo box and close its list"
+        );
+
+        unregister(window);
+        unregister(panel);
+        unregister(combo);
+    }
+
+    /// Tab steps over disabled and hidden controls instead of landing on them.
+    ///
+    /// The tab order keeps them (a user must be able to move *past* a disabled control), so the
+    /// traversal is where the skip belongs. Without it, Tab moved focus onto a control that
+    /// refuses input: no visible focus change, and the following keystrokes were swallowed.
+    #[test]
+    fn tab_skips_disabled_and_hidden_controls() {
+        let mount = |x: i32| {
+            register(Box::new(crate::widget::Button::new(
+                "ok".to_string(),
+                Rect::new(x, 0, 80, 32),
+            )))
+            .expect("mount")
+        };
+        let first = mount(0);
+        let disabled = mount(100);
+        let hidden = mount(200);
+        let last = mount(300);
+        with_widget_mut(disabled, |widget| widget.set_enabled(false));
+        with_widget_mut(hidden, |widget| widget.hide());
+
+        assert_eq!(focus_next(true), Some(first), "the first control is focusable");
+        assert_eq!(
+            focus_next(true),
+            Some(last),
+            "the disabled and hidden controls must be stepped over"
+        );
+        assert_eq!(focused_widget(), Some(last));
+
+        assert_eq!(focus_next(false), Some(first), "and the skip applies backwards too");
+
+        for id in [first, disabled, hidden, last] {
+            unregister(id);
+        }
+    }
+
+    /// Hover does not enter a control a modal blocks.
+    ///
+    /// `dispatch_hover_transition` wrote `HOVERED` without consulting `modal_blocks`, while the
+    /// `MouseEnter` it sends is refused — so the pair invariant broke, `hovered_widget()` reported
+    /// a control behind a dialog, and its cursor (an I-beam) was published to the platform.
+    #[test]
+    fn hover_does_not_enter_a_widget_behind_a_modal() {
+        let (parent, first, second) = tree_with_two_children();
+        set_geometry(first, Rect::new(10, 10, 100, 50));
+        set_geometry(second, Rect::new(150, 10, 100, 50));
+        clear_hover(Point::new(0, 0));
+        assert!(enter_modal(second));
+
+        let over_first = Point::new(20, 20);
+        let _ = dispatch_pointer_event(parent, &Event::MouseMove { pos: over_first }, over_first);
+
+        assert_eq!(
+            hovered_widget(),
+            None,
+            "a modal must keep the widget behind it out of the hover state"
+        );
+
+        exit_modal(second);
+        let _ = dispatch_pointer_event(parent, &Event::MouseMove { pos: over_first }, over_first);
+        assert_eq!(hovered_widget(), Some(first), "and hover resumes once the modal is gone");
+
+        unregister(parent);
+        unregister(first);
+        unregister(second);
+    }
+
+    /// The router refuses a press on a disabled control, without arming focus or capture.
+    ///
+    /// The public documentation promised this (`dispatch_event`'s "false when the control is
+    /// disabled") while the router had no such check: a third-party control relying on the
+    /// contract accepted input while disabled. The check lives in the router because the
+    /// capture branch must still deliver the *end* of a gesture that began on an enabled control.
+    #[test]
+    fn a_press_on_a_disabled_control_is_refused_by_the_router() {
+        let id = register(Box::new(crate::widget::Button::new(
+            "ok".to_string(),
+            Rect::new(0, 0, 80, 32),
+        )))
+        .expect("mount");
+        with_widget_mut(id, |widget| widget.set_enabled(false));
+
+        let point = Point::new(10, 10);
+        assert!(
+            !dispatch_pointer_event(
+                id,
+                &Event::MousePress { pos: point, button: 1, modifiers: 0 },
+                point,
+            ),
+            "a disabled control takes no input"
+        );
+        assert_eq!(capturing_widget(), None, "and the router must not arm a capture for it");
+
+        unregister(id);
     }
 
     /// A window root's geometry is in screen space while its children are in client space.

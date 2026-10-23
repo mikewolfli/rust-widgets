@@ -3354,8 +3354,10 @@ pub extern "C" fn rw_dispatch_pointer_event(
 /// cannot express. Those use [`rw_dispatch_key_event`], [`rw_dispatch_text_event`] and
 /// [`rw_dispatch_wheel_event`] below.
 ///
-/// Returns whether the widget accepted it: `false` when the id is not a live widget, when the
-/// control is disabled, when a modal blocks it, or when `event_code` is unknown.
+/// Returns whether the widget accepted it: `false` when the id is not a live widget, when a modal
+/// blocks it, or when `event_code` is unknown. A **disabled** control is refused by
+/// [`rw_dispatch_pointer_event`] before delivery; this entry point delivers to the live id it is
+/// given, so a host that routes input straight to a control it disabled must check its own state.
 #[no_mangle]
 pub extern "C" fn rw_dispatch_event_to_widget(
     widget_id: u64,

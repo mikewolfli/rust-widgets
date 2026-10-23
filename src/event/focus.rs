@@ -176,27 +176,50 @@ impl FocusManager {
         Some(next)
     }
 
-    /// Move focus to the previous widget in the tab order (wraps around).
+    /// Move focus to the previous widget in tab order (wraps around).
     /// Returns the newly focused widget, if any.
     pub fn focus_previous(&mut self) -> Option<ObjectId> {
-        if self.focusable_widgets.is_empty() {
+        self.focus_next_matching(false, |_| true)
+    }
+
+    /// Move focus forward or backward to the next widget `accept` allows, wrapping around.
+    ///
+    /// # Why the order is not filtered instead
+    ///
+    /// [`Widget::is_focusable`](crate::widget::Widget::is_focusable) deliberately keeps a
+    /// disabled control in the tab order — a user must be able to move *past* it — so the skip
+    /// belongs in the traversal, not in the registration. Without it, Tab landed on a disabled
+    /// (or hidden) control, told the IME to open a candidate window for it, and delivered the
+    /// following keystrokes to a handler that returns early: the key was swallowed with no
+    /// visible focus change anywhere.
+    ///
+    /// `accept` is asked at most once per candidate and the walk stops after a full cycle, so a
+    /// caller whose predicate rejects everything gets `None` and focus does not move.
+    pub fn focus_next_matching(
+        &mut self,
+        forward: bool,
+        mut accept: impl FnMut(ObjectId) -> bool,
+    ) -> Option<ObjectId> {
+        let len = self.focusable_widgets.len();
+        if len == 0 {
             return None;
         }
-        let current = self.focused_widget;
-        let pos = current.and_then(|id| self.focusable_widgets.iter().position(|&x| x == id));
-        let prev_index = match pos {
-            Some(idx) => {
-                if idx == 0 {
-                    self.focusable_widgets.len() - 1
-                } else {
-                    idx - 1
-                }
+        let start =
+            self.focused_widget.and_then(|id| self.focusable_widgets.iter().position(|&x| x == id));
+        for step in 1..=len {
+            let index = match (start, forward) {
+                (Some(index), true) => (index + step) % len,
+                (Some(index), false) => (index + len - (step % len)) % len,
+                (None, true) => step - 1,
+                (None, false) => len - step,
+            };
+            let candidate = self.focusable_widgets[index];
+            if accept(candidate) {
+                self.set_focus(candidate);
+                return Some(candidate);
             }
-            None => self.focusable_widgets.len() - 1,
-        };
-        let prev = self.focusable_widgets[prev_index];
-        self.set_focus(prev);
-        Some(prev)
+        }
+        None
     }
 
     // --- Accessibility callback wiring ---

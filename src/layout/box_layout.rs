@@ -485,7 +485,7 @@ impl Layout for BoxLayout {
         let mut cursor_y = rect.y + top as i32;
         for (index, item) in self.items.iter().enumerate() {
             let cross_virtual = self.orientation == Orientation::Horizontal;
-            let info = item.widget_id.and_then(|id| ChildInfo::find(children, id));
+            let info = item.widget_id.and_then(|id| ChildInfo::find_at(children, index, id));
             let mut major = majors.get(index).copied().unwrap_or(0);
             // N03: the hint's main-axis bounds are the converged form of
             // `LayoutConstraints`/`SizePolicy`. Applying them here means the hint-aware path

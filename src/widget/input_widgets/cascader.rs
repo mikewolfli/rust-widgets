@@ -596,9 +596,19 @@ impl Cascader {
     /// `cascader_choosing_from_an_earlier_level_discards_the_deeper_path` caught.
     /// `draw_overlay` and `row_at` both call this, so they cannot disagree again.
     fn level_rect(&self, level: usize) -> Rect {
+        self.level_rect_for(level, self.filtered_indices(level).len())
+    }
+
+    /// [`Self::level_rect`] for a caller that already has the level's row count.
+    ///
+    /// `level_rect` derives the count by filtering the siblings, which allocates an index `Vec`.
+    /// `draw_overlay` filters once per level to paint the rows, so asking for the rectangle
+    /// through `level_rect` filtered the same level a second time — two allocations per open
+    /// level per frame, on a list that can be thousands of options long. The geometry is a pure
+    /// function of the count, so it belongs in a form both callers can share.
+    fn level_rect_for(&self, level: usize, rows: usize) -> Rect {
         let rect = self.geometry();
-        let rows = self.filtered_indices(level).len() as u32;
-        let height = (rows * ROW_HEIGHT).max(ROW_HEIGHT);
+        let height = (rows as u32 * ROW_HEIGHT).max(ROW_HEIGHT);
         Rect::new(
             rect.x + (level as i32) * LEVEL_INDENT,
             rect.y + rect.height as i32,
@@ -866,8 +876,10 @@ impl Cascader {
     /// Draws every open level as a column, deepest last so it paints on top.
     fn draw_overlay(&self, context: &mut RenderContext) {
         for level in 0..self.visible_level_count() {
-            let column = self.level_rect(level);
+            // Filter once: the rows are handed to `draw_level` as they are, and the column's
+            // height comes from their count rather than from a second `filtered_indices` call.
             let visible = self.filtered_indices(level);
+            let column = self.level_rect_for(level, visible.len());
             self.draw_level(context, level, column, &visible);
         }
     }

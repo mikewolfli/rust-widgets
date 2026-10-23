@@ -3,7 +3,7 @@
 
 //! Keyboard-aware layout manager — shifts content upward when the mobile keyboard appears,
 //! preventing the focused input from being obscured.
-use super::{Layout, LayoutContext};
+use super::{ChildInfo, Layout, LayoutContext};
 use crate::compat::{fmt, Any, Box, Vec};
 use crate::core::{ObjectId, Rect};
 use crate::style::animation::EasingFunction;
@@ -223,6 +223,29 @@ impl Layout for KeyboardAwareLayout {
         let adjusted = Rect::new(rect.x, rect.y - self.current_offset, rect.width, rect.height);
         self.inner.update_with_context(adjusted, context, widgets);
     }
+
+    /// Forwards the hint channel to the inner layout, shifted like [`Self::update`].
+    ///
+    /// Both `arrange` entry points were missing, so the trait defaults fell back to
+    /// `update`/`update_with_context`: a keyboard-aware wrapper driven through the hint path
+    /// silently discarded every `ChildInfo` (sizing hints, margins, fill/stretch) and, on the
+    /// context-aware path, the device scale and touch floor as well. Each wrapper method that
+    /// the inner layout implements has to be forwarded or the wrapper is not transparent.
+    fn arrange(&self, rect: Rect, children: &[ChildInfo], out: &mut dyn FnMut(ObjectId, Rect)) {
+        let adjusted = Rect::new(rect.x, rect.y - self.current_offset, rect.width, rect.height);
+        self.inner.arrange(adjusted, children, out);
+    }
+
+    fn arrange_with_context(
+        &self,
+        rect: Rect,
+        children: &[ChildInfo],
+        context: &LayoutContext,
+        out: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let adjusted = Rect::new(rect.x, rect.y - self.current_offset, rect.width, rect.height);
+        self.inner.arrange_with_context(adjusted, children, context, out);
+    }
 }
 
 #[cfg(test)]
@@ -230,6 +253,7 @@ mod tests {
     use super::*;
     use crate::compat::HashMap;
     use crate::layout::stack::StackLayout;
+    use crate::layout::{FlexLayout, Hints};
 
     /// Helper to collect update results into a HashMap.
     fn collect_update(layout: &dyn Layout, rect: Rect) -> HashMap<ObjectId, Rect> {
@@ -454,5 +478,44 @@ mod tests {
         let inner: Box<dyn Layout> = Box::new(StackLayout::new());
         let layout = KeyboardAwareLayout::new(inner, 200);
         let _inner = layout.into_inner();
+    }
+
+    /// The hint channel must survive the wrapper.
+    ///
+    /// `arrange`/`arrange_with_context` were not forwarded, so the trait defaults rerouted the
+    /// call into `update`/`update_with_context` and the inner layout never saw the `ChildInfo`
+    /// list: every hint-derived size (and, on the context path, the device scale and touch floor)
+    /// was silently dropped while `update_with_context` produced the scaled result. The flex inner
+    /// layout below reports `0` for a child it was told nothing about (no `set_child_sizes`) and
+    /// the hint's `30` when the channel arrives, which is what makes the two paths distinguishable.
+    #[test]
+    fn a_keyboard_aware_wrapper_keeps_the_inner_layouts_hints() {
+        fn hinted_size(via_context: bool) -> u32 {
+            let inner: Box<dyn Layout> = Box::new(FlexLayout::new());
+            let mut layout = KeyboardAwareLayout::new(inner, 0);
+            layout.add_widget(1, 0);
+            let children = vec![ChildInfo::new(1, Hints::fixed(30, 20))];
+            let mut width = None;
+            if via_context {
+                layout.arrange_with_context(
+                    Rect::new(0, 0, 100, 40),
+                    &children,
+                    &LayoutContext::default(),
+                    &mut |_, rect| width = Some(rect.width),
+                );
+            } else {
+                layout.arrange(Rect::new(0, 0, 100, 40), &children, &mut |_, rect| {
+                    width = Some(rect.width)
+                });
+            }
+            width.expect("the child was arranged")
+        }
+
+        assert_eq!(hinted_size(false), 30, "`arrange` must reach the inner layout's hint path");
+        assert_eq!(
+            hinted_size(true),
+            30,
+            "`arrange_with_context` must reach it too, not fall back to `update`"
+        );
     }
 }

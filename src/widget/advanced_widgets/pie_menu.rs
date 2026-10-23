@@ -5,6 +5,11 @@
 //!
 //! A circular popup menu that displays items as radial slices.
 //! Users hover to highlight and click to select an item.
+//!
+//! A slice is icon-led: a typed icon (`set_item_icon_source`) or a text stand-in
+//! (`icon_text`) is drawn instead of the label when one is present. The hovered item's
+//! name reads out in the centre hub — the label's legible moment — and the idle hub keeps
+//! its centre dot.
 
 use std::f32::consts::TAU;
 
@@ -739,11 +744,41 @@ impl PieMenu {
         None
     }
 
+    /// Samples a circle into a contour of `segments` points, wound by `clockwise`.
+    ///
+    /// One sample per two pixels of arc, bounded at both ends: the floor keeps a small radius
+    /// round instead of polygonal, and the ceiling keeps a large one affordable (a full circle at
+    /// the largest radius here is 256 points, against the ~2 300 one-pixel line commands the
+    /// previous strip approximation emitted for the same shape).
+    ///
+    /// The first point is not repeated at the end — a contour is implicitly closed by the fill.
+    fn circle_contour(center: Point, radius: f32, clockwise: bool) -> Vec<Point> {
+        let segments = (radius.abs() * TAU / 2.0).ceil().clamp(32.0, 256.0) as u32;
+        let step = TAU / segments as f32 * if clockwise { -1.0 } else { 1.0 };
+        (0..segments)
+            .map(|index| {
+                let angle = index as f32 * step;
+                Point::from_f32(
+                    center.x as f32 + radius * angle.cos(),
+                    center.y as f32 + radius * angle.sin(),
+                )
+            })
+            .collect()
+    }
+
     /// Fills the whole donut track — the ring the slices are cut from.
     ///
     /// Painted before any slice, so an open menu with no items is still a visible ring rather
-    /// than nothing at all. Built the same way as [`Self::fill_slice`] — dense arcs at a range of
-    /// radii — so the track and the wedges it carries are drawn by one technique.
+    /// than nothing at all.
+    ///
+    /// # Why this is one filled path and not a fan of circle strokes
+    ///
+    /// The track used to be approximated by drawing one-pixel circle strokes at a range of radii,
+    /// one strip per **two** pixels of band (`strips = band * 0.5`). Every gap between two strips
+    /// was therefore unpainted, so what reached the frame was a half-covered mesh whose holes
+    /// showed the window behind: on the dark appearance — where the ring is only ~12 levels above
+    /// the window — the disc read as a speckled, muddy blob. Two oppositely wound contours filled
+    /// with the non-zero rule are the exact shape, with no gaps and no anti-aliased seams.
     fn fill_ring(
         &self,
         context: &mut RenderContext,
@@ -752,32 +787,31 @@ impl PieMenu {
         inner_r: f32,
         color: Color,
     ) {
-        let cx = center.x as f32;
-        let cy = center.y as f32;
-
-        let strips = ((outer_r - inner_r) * 0.5).clamp(4.0, 30.0) as u32;
-        let strip_count = strips.max(4);
-        let full_circle = core::f32::consts::TAU;
-
-        for i in 0..strip_count {
-            let frac = i as f32 / strip_count as f32;
-            let r = inner_r + frac * (outer_r - inner_r);
-            let sub_segments = ((r * full_circle * 0.25) as u32).clamp(8, 96);
-            let step_a = full_circle / sub_segments as f32;
-            for j in 0..sub_segments {
-                let a1 = j as f32 * step_a;
-                let a2 = a1 + step_a;
-                context.draw_line_stroke(
-                    Point::from_f32(cx + r * a1.cos(), cy + r * a1.sin()),
-                    Point::from_f32(cx + r * a2.cos(), cy + r * a2.sin()),
-                    color,
-                    1,
-                );
-            }
+        let inner = inner_r.max(0.0).min(outer_r.max(0.0));
+        let outer = outer_r.max(0.0);
+        if outer <= 0.0 {
+            return;
+        }
+        let mut points = Self::circle_contour(center, outer, false);
+        let mut contours = vec![(0usize, points.len())];
+        if inner > 0.0 {
+            // Opposite winding turns the inner circle into a hole: with the same winding the
+            // non-zero rule would count both crossings and paint the hub as part of the ring.
+            let hole_start = points.len();
+            points.extend(Self::circle_contour(center, inner, true));
+            contours.push((hole_start, points.len()));
+        }
+        if let Err(error) = context.fill_path_non_zero(&points, &contours, color) {
+            log::warn!("pie menu track could not be filled: {error:?}");
         }
     }
 
-    /// Fills a pie slice wedge by drawing dense radial lines.
+    /// Fills the annular wedge between two angles.
+    ///
+    /// One closed contour — the outer arc, then the inner arc back — filled with the non-zero
+    /// rule. The previous form was the same strip fan as the track, so each wedge was striped at
+    /// the same two-pixel pitch and showed the track through its own gaps; the two radial edge
+    /// strokes it needed to close the shape are part of this polygon and are gone with it.
     #[allow(clippy::too_many_arguments)]
     fn fill_slice(
         &self,
@@ -789,45 +823,40 @@ impl PieMenu {
         angle_end: f32,
         color: Color,
     ) {
-        let cx = center.x as f32;
-        let cy = center.y as f32;
         let delta_angle = angle_end - angle_start;
-
-        // Number of radial strips to approximate the fill
-        let strips = ((outer_r - inner_r) * 0.5).clamp(4.0, 30.0) as u32;
-        let strip_count = strips.max(4);
-
-        for i in 0..strip_count {
-            let frac = i as f32 / strip_count as f32;
-            let r = inner_r + frac * (outer_r - inner_r);
-
-            let sub_segments = (r * delta_angle * 0.25).clamp(4.0, 20.0) as u32;
-            let sub_segments = sub_segments.clamp(3, 20);
-            let step_a = delta_angle / sub_segments as f32;
-
-            for j in 0..sub_segments {
-                let a1 = angle_start + j as f32 * step_a;
-                let a2 = angle_start + (j + 1) as f32 * step_a;
-                context.draw_line_stroke(
-                    Point::from_f32(cx + r * a1.cos(), cy + r * a1.sin()),
-                    Point::from_f32(cx + r * a2.cos(), cy + r * a2.sin()),
-                    color,
-                    1,
-                );
-            }
+        let outer = outer_r.max(0.0);
+        let inner = inner_r.max(0.0).min(outer);
+        if outer <= 0.0 || !delta_angle.is_finite() || delta_angle == 0.0 {
+            return;
         }
 
-        // Side edges
-        let inner_start =
-            Point::from_f32(cx + inner_r * angle_start.cos(), cy + inner_r * angle_start.sin());
-        let outer_start =
-            Point::from_f32(cx + outer_r * angle_start.cos(), cy + outer_r * angle_start.sin());
-        let inner_end =
-            Point::from_f32(cx + inner_r * angle_end.cos(), cy + inner_r * angle_end.sin());
-        let outer_end =
-            Point::from_f32(cx + outer_r * angle_end.cos(), cy + outer_r * angle_end.sin());
-        context.draw_line_stroke(inner_start, outer_start, color, 1);
-        context.draw_line_stroke(inner_end, outer_end, color, 1);
+        // One sample per two pixels of the outer arc, bounded so a thin sliver still encloses an
+        // area (a contour needs three points) and a large sweep stays affordable.
+        let steps = (outer * delta_angle.abs() / 2.0).ceil().clamp(8.0, 256.0) as u32;
+        let mut points = Vec::with_capacity(steps as usize * 2 + 2);
+        for index in 0..=steps {
+            let angle = angle_start + delta_angle * (index as f32 / steps as f32);
+            points.push(Point::from_f32(
+                center.x as f32 + outer * angle.cos(),
+                center.y as f32 + outer * angle.sin(),
+            ));
+        }
+        if inner > 0.0 {
+            for index in (0..=steps).rev() {
+                let angle = angle_start + delta_angle * (index as f32 / steps as f32);
+                points.push(Point::from_f32(
+                    center.x as f32 + inner * angle.cos(),
+                    center.y as f32 + inner * angle.sin(),
+                ));
+            }
+        } else {
+            // A full pie closes at the centre instead of along an inner arc.
+            points.push(center);
+        }
+        let contour = (0usize, points.len());
+        if let Err(error) = context.fill_path_non_zero(&points, &[contour], color) {
+            log::warn!("pie menu slice could not be filled: {error:?}");
+        }
     }
 
     /// The fill the enabled, un-highlighted wedges take: one visible step off the track
@@ -1035,6 +1064,22 @@ impl EventHandler for PieMenu {
     }
 }
 
+/// The label box for the hub readout, centred on the hub and inscribed in the hub disc.
+///
+/// The box's own half diagonal stays inside the circle (`√(0.85² + 0.45²) ≈ 0.96 < 1` in
+/// units of the hub radius), so a label the fitter keeps inside the box never crosses the
+/// ring — the fitter elides it first.
+fn hub_label_box(cx: f32, cy: f32, inner_r: f32) -> Rect {
+    let box_w = (inner_r * 1.7).max(1.0) as u32;
+    let box_h = (inner_r * 0.9).max(1.0) as u32;
+    Rect::new(
+        (cx - box_w as f32 / 2.0).round() as i32,
+        (cy - box_h as f32 / 2.0).round() as i32,
+        box_w,
+        box_h,
+    )
+}
+
 impl Draw for PieMenu {
     fn draw(&mut self, context: &mut RenderContext) {
         if !self.is_visible() {
@@ -1239,8 +1284,27 @@ impl Draw for PieMenu {
             }
         }
 
-        // Draw a small center dot
-        context.fill_circle(center, 3, border);
+        // The hovered item's name reads out in the hub. A slice led by a typed icon paints
+        // no label at all, so the hub is where the name becomes legible — the readout
+        // weapon-wheel menus use. The idle hub keeps its centre dot.
+        let hub_label = self
+            .hovered_index
+            .and_then(|i| self.items.get(i))
+            .filter(|item| item.is_enabled())
+            .map(|item| item.text());
+        if let Some(label) = hub_label {
+            let label_box = hub_label_box(cx, cy, inner_r);
+            context.draw_text_fitted_cow(
+                label_box,
+                label,
+                font,
+                self.text_color.unwrap_or(ink),
+                HorizontalAlignment::Center,
+            );
+        } else {
+            // Draw a small center dot
+            context.fill_circle(center, 3, border);
+        }
     }
 }
 
@@ -1810,6 +1874,105 @@ mod tests {
         let closed_svg = render_to_svg(&mut closed);
         assert!(closed_svg.starts_with("<svg"));
         assert!(!closed_svg.contains("circle"), "a closed menu draws no ring");
+    }
+
+    /// The track and the wedges are **filled shapes**, not a mesh of one-pixel strokes.
+    ///
+    /// The fills used to be approximated by one circle stroke per two pixels of band, so half of
+    /// every ring was unpainted and the window showed through the gaps — on the dark appearance
+    /// the disc read as a speckled, muddy mesh (2305 `<line>` elements for the census snapshot).
+    /// This pins the shape rather than the look: a handful of fills, and lines only for the
+    /// separators and the two borders.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn the_ring_and_its_wedges_are_filled_shapes() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut menu = PieMenu::new(Point::new(50, 50), 40.0);
+        for label in ["Cut", "Copy", "Paste"] {
+            menu.add_item(label);
+        }
+        menu.show_at(Point::new(50, 50));
+        while menu.tick(1000) {}
+
+        let svg = render_to_svg(&mut menu);
+        let paths = svg.matches("<path").count();
+        let lines = svg.matches("<line").count();
+
+        assert!(
+            paths >= 4,
+            "the track and three wedges are filled paths, not strokes: {paths} paths\n{svg}"
+        );
+        assert!(
+            lines <= 12,
+            "only the separators and the two border circles may be lines: {lines}\n{svg}"
+        );
+    }
+
+    /// The hovered item's name reads out in the hub, and an icon-led wedge paints no label.
+    ///
+    /// The SVG backend emits text as glyph geometry (never a `<text>` element), so the
+    /// readout is pinned relationally: hovering an icon-led slice adds glyph paths and
+    /// retires the centre dot's circle, and leaving restores the idle frame exactly.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn the_hovered_item_reads_out_in_the_hub() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
+        let save = menu.add_item("Save document");
+        menu.set_item_icon_source(save, Some(IconSource::Builtin(crate::widget::IconName::Save)))
+            .expect("the item exists");
+        let copy = menu.add_item("Copy files");
+        menu.set_item_icon_source(copy, Some(IconSource::Builtin(crate::widget::IconName::Save)))
+            .expect("the item exists");
+        menu.show_at(Point::new(100, 100));
+        while menu.tick(1000) {}
+
+        let resting = render_to_svg(&mut menu);
+        let resting_paths = resting.matches("<path").count();
+        let resting_circles = resting.matches("<circle").count();
+
+        // Hovering an icon-led slice (its angular bisector) adds the hub readout's glyphs
+        // and retires the centre dot.
+        menu.handle_event(&Event::MouseMove { pos: Point::new(100, 154) });
+        assert_eq!(menu.hovered_index(), Some(0));
+        while menu.tick(1000) {}
+        let hovered = render_to_svg(&mut menu);
+        let hovered_paths = hovered.matches("<path").count();
+        let hovered_circles = hovered.matches("<circle").count();
+        assert!(
+            hovered_paths > resting_paths,
+            "the hub gains the hovered name's glyphs: {resting_paths} -> {hovered_paths}\n{hovered}"
+        );
+        assert_eq!(
+            hovered_circles + 1,
+            resting_circles,
+            "the centre dot yields to the readout: {resting_circles} -> {hovered_circles}\n{hovered}"
+        );
+
+        // Leaving returns the hub to the idle dot: byte-for-byte the resting frame.
+        menu.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
+        while menu.tick(1000) {}
+        let left = render_to_svg(&mut menu);
+        assert_eq!(left, resting, "leaving clears the hub readout and restores the idle frame");
+    }
+
+    /// The hub readout's box is inscribed in the hub disc, so a label the fitter keeps
+    /// inside the box also stays inside the circle.
+    #[test]
+    fn the_hub_label_box_fits_inside_the_hub_disc() {
+        for inner_r in [4.0_f32, 12.0, 28.0, 80.0, 200.0] {
+            let r = hub_label_box(0.0, 0.0, inner_r);
+            let half_w = r.width as f32 / 2.0;
+            let half_h = r.height as f32 / 2.0;
+            assert!(
+                half_w.hypot(half_h) <= inner_r + 0.5,
+                "box corner {half_w},{half_h} leaves the disc r={inner_r}"
+            );
+            assert!(
+                (r.x as f32 + half_w).abs() <= 1.0 && (r.y as f32 + half_h).abs() <= 1.0,
+                "box is not centred on the hub: r={inner_r}, rect={r:?}"
+            );
+        }
     }
 
     /// 15. Disabled state blocks events

@@ -578,6 +578,30 @@ impl MdiArea {
         let prev = if current == 0 { self.subwindows.len() - 1 } else { current - 1 };
         self.set_active_sub_window(self.subwindows[prev].widget);
     }
+    /// The index of the sub-window whose close button is under `pos`, topmost first.
+    ///
+    /// The button is chrome of a *frame*, so the test walks the frames in paint order (highest
+    /// z-order first) exactly as [`Self::sub_window_at_position`] does, and skips a sub-window
+    /// whose frame draws no title bar (a `TabbedView` frame names itself through the tab strip).
+    fn close_button_at(&self, pos: Point) -> Option<usize> {
+        let mut sorted_indices: Vec<usize> = (0..self.subwindows.len()).collect();
+        sorted_indices.sort_by_key(|&i| -self.subwindows[i].z_order);
+        for index in sorted_indices {
+            if !self.subwindows[index].closable {
+                continue;
+            }
+            let Some(placement) = self.subwindow_placement(index) else {
+                continue;
+            };
+            if !placement.title_bar {
+                continue;
+            }
+            if close_button_rect(placement.frame).contains_point(pos) {
+                return Some(index);
+            }
+        }
+        None
+    }
     /// Returns sub-window at position.
     fn sub_window_at_position(&self, pos: Point) -> Option<usize> {
         // Check from top (highest z-order) to bottom
@@ -731,6 +755,14 @@ impl EventHandler for MdiArea {
                         hit_subwindow = true;
                         self.set_active_sub_window(self.subwindows[index].widget);
                     }
+                } else if let Some(index) = self.close_button_at(*pos) {
+                    // The ✕ closes the window it belongs to — which is what the glyph says and
+                    // what `remove_sub_window` (the area's own public close path) does. The press
+                    // is *consumed* here: `hit_subwindow` stays false so it is neither
+                    // re-targeted at the window it just closed nor at whichever window the
+                    // removal activated.
+                    let widget = self.subwindows[index].widget;
+                    self.remove_sub_window(widget);
                 } else if let Some(index) = self.sub_window_at_position(*pos) {
                     hit_subwindow = true;
                     self.set_active_sub_window(self.subwindows[index].widget);
@@ -757,6 +789,28 @@ const CLOSE_SIZE: i32 = 12;
 /// Width reserved at the trailing edge of a sub-window's title bar for the close button
 /// and its margins. Used to bound the title so the two cannot overlap.
 const CLOSE_SIZE_SUM: u32 = 22;
+
+/// Inset of the close button from the frame's trailing edge, in logical pixels.
+///
+/// `CLOSE_SIZE_SUM` is `CLOSE_SIZE + 2 * CLOSE_BUTTON_INSET`, so the title's reserved band and
+/// the button's own box are derived from the same layout instead of two literals.
+const CLOSE_BUTTON_INSET: i32 = 5;
+
+/// The close button's box inside a sub-window's title bar.
+///
+/// Shared by the painter and the hit test. The ✕ was painted for every closable sub-window but
+/// nothing hit-tested it, so a click on it activated the window and changed nothing — a drawn
+/// affordance with no handler. Both sides now read this one derivation, so the glyph and the
+/// click area cannot drift.
+fn close_button_rect(frame: Rect) -> Rect {
+    let y = frame.y + (TITLE_BAR_HEIGHT - CLOSE_SIZE) / 2;
+    Rect::new(
+        frame.x + frame.width as i32 - CLOSE_SIZE - CLOSE_BUTTON_INSET,
+        y,
+        CLOSE_SIZE as u32,
+        CLOSE_SIZE as u32,
+    )
+}
 
 /// Height of a sub-window's title bar, in logical pixels.
 const TITLE_BAR_HEIGHT: i32 = 24;
@@ -920,17 +974,31 @@ impl Draw for MdiArea {
             Background::Pattern => {
                 // Draw pattern background: the checker alternates between the surface and one step
                 // off it, so the weave reads on either appearance.
+                //
+                // The base fill comes first. The loops below truncate to whole tiles, so without it
+                // the right and bottom remainders (up to 19 px each) kept whatever the parent had
+                // painted, and an area narrower or shorter than one tile painted *nothing*.
                 let pattern_size = 20;
                 let alt = area.blend(&ink, 0.06);
-                for y in 0..(rect.height / pattern_size) as i32 {
-                    for x in 0..(rect.width / pattern_size) as i32 {
+                context.fill_rect(rect, area);
+                let columns = rect.width.div_ceil(pattern_size);
+                let rows = rect.height.div_ceil(pattern_size);
+                for y in 0..rows as i32 {
+                    let cell_y = rect.y + y * pattern_size as i32;
+                    let cell_height = (rect.height as i32 - y * pattern_size as i32)
+                        .min(pattern_size as i32)
+                        .max(0) as u32;
+                    for x in 0..columns as i32 {
                         let color = if (x + y) % 2 == 0 { area } else { alt };
+                        let cell_width = (rect.width as i32 - x * pattern_size as i32)
+                            .min(pattern_size as i32)
+                            .max(0) as u32;
                         context.fill_rect(
                             Rect::new(
-                                (rect.x as f32 + x as f32 * pattern_size as f32) as i32,
-                                (rect.y as f32 + y as f32 * pattern_size as f32) as i32,
-                                pattern_size,
-                                pattern_size,
+                                rect.x + x * pattern_size as i32,
+                                cell_y,
+                                cell_width,
+                                cell_height,
                             ),
                             color,
                         );
@@ -1030,9 +1098,11 @@ impl Draw for MdiArea {
                 );
                 // Draw close button if closable
                 if subwindow.closable {
+                    // One geometry for the ✕ and for the click that dismisses it: the button used
+                    // to be positioned from the title's line box here and not hit-tested at all.
+                    let close = close_button_rect(frame_rect);
+                    let (close_x, close_y) = (close.x, close.y);
                     let close_size = CLOSE_SIZE;
-                    let close_x = frame_rect.x + frame_rect.width as i32 - close_size - 5;
-                    let close_y = title_line.y + (title_line.height as i32 - close_size) / 2;
                     let close_color = if is_active {
                         primary.contrast_color()
                     } else {
@@ -1975,6 +2045,58 @@ mod tests {
         assert_eq!(
             windowed_area.subwindow_placement(0).expect("placed").frame,
             Rect::new(10, 10, 120, 90)
+        );
+    }
+
+    /// The ✕ closes the window it belongs to instead of activating it.
+    ///
+    /// The button was painted for every closable sub-window but no code hit-tested it: a press on
+    /// it resolved to the frame and called `set_active_sub_window`, so a drawn "close" affordance
+    /// did nothing — and the press was then forwarded into the window it had just "activated".
+    #[test]
+    fn mdi_close_button_closes_the_sub_window() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.add_sub_window(widget_id_1(), Rect::new(20, 20, 200, 150));
+        area.add_sub_window(widget_id_2(), Rect::new(240, 20, 200, 150));
+        assert_eq!(
+            area.active_sub_window(),
+            Some(widget_id_1()),
+            "the first window is active before any press"
+        );
+
+        // Close the **inactive** window, so the assertion below distinguishes "closed it" from
+        // "activated it".
+        let frame = area.subwindow_placement(1).expect("placed").frame;
+        let close = close_button_rect(frame);
+        let pos = Point::new(close.x + close.width as i32 / 2, close.y + close.height as i32 / 2);
+        area.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
+
+        assert_eq!(area.sub_window_count(), 1, "the ✕ must close its own window");
+        assert_eq!(
+            area.sub_window(0).map(|window| window.widget()),
+            Some(widget_id_1()),
+            "the surviving window is the untouched one"
+        );
+        assert_eq!(
+            area.active_sub_window(),
+            Some(widget_id_1()),
+            "closing an inactive window must not activate it"
+        );
+    }
+
+    /// The checker background reaches the work area's own edges.
+    ///
+    /// The tile loops truncated to whole tiles and never filled the base, so the right and bottom
+    /// remainders (up to 19 px each) kept whatever the parent had painted — and an area smaller
+    /// than one tile painted nothing at all.
+    #[test]
+    fn mdi_pattern_background_covers_its_whole_rect() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 250, 250));
+        area.set_background(Background::Pattern);
+        let svg = render_to_svg(&mut area);
+        assert!(
+            svg.contains(r#"<rect x="0" y="0" width="250" height="250" fill="rgba"#),
+            "the checker must start from a base fill covering the whole work area"
         );
     }
 }

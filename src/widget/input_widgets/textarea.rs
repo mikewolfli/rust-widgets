@@ -1263,6 +1263,23 @@ impl Draw for TextArea {
         let first_line = context.text_line(first_band, font);
         let text_top = first_line.y;
 
+        // ── Clip to the field's inner box ──
+        //
+        // This area has no soft wrap and no horizontal scroll, so a line longer than the field
+        // was painted straight across the control's right edge and over its neighbours (the
+        // runtime only clips a widget whose `children_clip()` is set, which a text area does not
+        // override). The selection band and the caret followed the same overflow. Clipping keeps
+        // the visible part exactly where it was — the origin does not move, so no existing
+        // layout shifts — and makes the field a window onto its own content, which is the same
+        // answer `code_editor` and `properties_panel` already give.
+        let inner = Rect::new(
+            origin_x,
+            rect.y.saturating_add(1),
+            rect.width.saturating_sub(2 * dimensions::TEXT_FIELD_PADDING_H),
+            rect.height.saturating_sub(2),
+        );
+        context.push_clip(inner.x, inner.y, inner.width, inner.height);
+
         if self.text.is_empty() && !self.placeholder.is_empty() && !self.focused {
             // Draw placeholder in gray, on the same first-line box the value would use.
             context.draw_text(
@@ -1304,7 +1321,11 @@ impl Draw for TextArea {
                         let left = origin_x + self.text_advance(&self.text[line_start..from]);
                         let width = self.text_advance(&self.text[from..to]);
                         if width > 0 {
-                            context.draw_rect(
+                            // `fill_rect`, not `draw_rect`: the latter is a one-pixel outline,
+                            // so a selected run painted a hollow box around the glyphs (the
+                            // glyphs themselves were not highlighted at all). `TextEdit` fills
+                            // the same band from the same arithmetic.
+                            context.fill_rect(
                                 Rect::new(left, y, width as u32, LINE_H as u32),
                                 highlight,
                             );
@@ -1350,6 +1371,7 @@ impl Draw for TextArea {
                 text_color,
             );
         }
+        context.pop_clip();
     }
 }
 
@@ -2310,6 +2332,65 @@ mod tests {
         // added rects is what distinguishes "per line" from "one full-height bar".
         let added = selected.matches("<rect").count() - unselected.matches("<rect").count();
         assert_eq!(added, 2, "one band per line the range touches");
+    }
+
+    /// The selection band is **filled**, not merely outlined.
+    ///
+    /// `draw_rect` is a one-pixel outline (see `RenderContext::draw_rect`), so the band used to
+    /// paint a hollow box around the run: the glyphs were not highlighted, and the field colour
+    /// inside the box was unchanged. `TextEdit` fills the same arithmetic with `fill_rect`, and
+    /// this pins the text area to that shape.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn the_selection_band_is_filled_not_outlined() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut ta = area("abcdef");
+        let plain = crate::widget::svg::render_to_svg(&mut ta);
+        ta.set_cursor_pos(0);
+        ta.select_with_modifiers(3, crate::shortcut::Modifiers::SHIFT);
+        let selected = crate::widget::svg::render_to_svg(&mut ta);
+
+        /// Every `<rect ... />` element, as an owned string so the two renders can be diffed.
+        fn rects(svg: &str) -> crate::compat::Vec<String> {
+            svg.split("<rect ")
+                .skip(1)
+                .filter_map(|chunk| chunk.split_once("/>"))
+                .map(|(element, _)| element.to_string())
+                .collect()
+        }
+
+        let before = rects(&plain);
+        let added: crate::compat::Vec<String> =
+            rects(&selected).into_iter().filter(|r| !before.contains(r)).collect();
+        assert_eq!(added.len(), 1, "the selection adds exactly one rectangle: {added:?}");
+        let band = &added[0];
+        assert!(
+            band.contains("fill=\"rgba") && !band.contains("fill=\"none\""),
+            "the band must be filled, not an outline: {band}"
+        );
+        assert!(!band.contains("stroke="), "an outline would carry a stroke: {band}");
+    }
+
+    /// A long line is clipped to the field rather than painted over its neighbours.
+    ///
+    /// This area has no soft wrap and no horizontal scroll, so the run used to be emitted
+    /// straight across the control's right edge (the runtime only clips a widget whose
+    /// `children_clip()` is set, which a text area does not override). The clip rectangle is the
+    /// field's **inner box**, which is also where the caret and the selection band stop.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_long_line_is_clipped_to_the_fields_inner_box() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut ta = TextArea::new("x".repeat(200), Rect::new(0, 0, 120, 60));
+        let svg = crate::widget::svg::render_to_svg(&mut ta);
+
+        let padding = crate::widget::metrics::dimensions::TEXT_FIELD_PADDING_H;
+        let expected =
+            format!(r#"<rect x="{padding}" y="1" width="{}" height="58" />"#, 120 - 2 * padding);
+        assert!(
+            svg.contains(&expected),
+            "the value must be clipped to the field's inner box ({expected})"
+        );
     }
 
     // ─── Scrolling ───

@@ -338,9 +338,10 @@ impl Layout for FlowLayout {
         let sizes: Vec<Size> = self
             .children
             .iter()
-            .map(|child| {
+            .enumerate()
+            .map(|(index, child)| {
                 let fallback = child.size_hint();
-                ChildInfo::find(children, child.widget_id)
+                ChildInfo::find_at(children, index, child.widget_id)
                     .map_or(fallback, |info| info.resolved_size(fallback))
             })
             .collect();

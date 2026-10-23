@@ -37,14 +37,14 @@
 
 | 分组 | 控件数 | 本节 |
 |---|---|---|
-| Base controls (`base_widgets`) | 7 | [跳转](#base-controls) |
+| Base controls (`base_widgets`) | 6 | [跳转](#base-controls) |
 | Input controls (`input_widgets`) | 29 | [跳转](#input-controls) |
 | Display controls (`display_widgets`) | 27 | [跳转](#display-controls) |
-| Containers (`container_widgets`) | 25 | [跳转](#containers) |
+| Containers (`container_widgets`) | 27 | [跳转](#containers) |
 | Navigation (`nav_widgets`) | 7 | [跳转](#navigation) |
 | Menus and toolbars (`menu_toolbar`) | 9 | [跳转](#menus-and-toolbars) |
-| Dialogs (`dialog`) | 14 | [跳转](#dialogs) |
-| Overlays (`overlay_widgets`) | 4 | [跳转](#overlays) |
+| Dialogs (`dialog`) | 17 | [跳转](#dialogs) |
+| Overlays (`overlay_widgets`) | 5 | [跳转](#overlays) |
 | Views (`view_widgets`) | 14 | [跳转](#views) |
 | Charts (`chart_widgets`) | 5 | [跳转](#charts) |
 | Specialised controls (`special_widgets`) | 32 | [跳转](#specialised-controls) |
@@ -54,12 +54,11 @@
 | Cupertino (iOS-style) (`cupertino`) | 8 | [跳转](#cupertino-ios-style) |
 | Web (`web_widgets`) | 1 | [跳转](#web) |
 | Core controls (`root`) | 2 | [跳转](#core-controls) |
-| unclassified (`unclassified`) | 5 | [跳转](#unclassified) |
 | **合计** | **213** | |
 
 ## Base controls
 
-`base_widgets` — 7 个控件。
+`base_widgets` — 6 个控件。
 
 | 控件 | 深色 | 浅色 |
 |---|---|---|
@@ -68,7 +67,6 @@
 | `frame` | ![frame (dark)](snapshots/svg/frame.svg) | ![frame (light)](snapshots/svg/frame.light.svg) |
 | `label` | ![label (dark)](snapshots/svg/label.svg) | ![label (light)](snapshots/svg/label.light.svg) |
 | `radio_button` | ![radio_button (dark)](snapshots/svg/radio_button.svg) | ![radio_button (light)](snapshots/svg/radio_button.light.svg) |
-| `swipe_to_dismiss` | ![swipe_to_dismiss (dark)](snapshots/svg/swipe_to_dismiss.svg) | ![swipe_to_dismiss (light)](snapshots/svg/swipe_to_dismiss.light.svg) |
 | `toggle_button` | ![toggle_button (dark)](snapshots/svg/toggle_button.svg) | ![toggle_button (light)](snapshots/svg/toggle_button.light.svg) |
 
 ## Input controls
@@ -143,7 +141,7 @@
 
 ## Containers
 
-`container_widgets` — 25 个控件。
+`container_widgets` — 27 个控件。
 
 | 控件 | 深色 | 浅色 |
 |---|---|---|
@@ -167,6 +165,8 @@
 | `safe_area` | ![safe_area (dark)](snapshots/svg/safe_area.svg) | ![safe_area (light)](snapshots/svg/safe_area.light.svg) |
 | `scroll_area` | ![scroll_area (dark)](snapshots/svg/scroll_area.svg) | ![scroll_area (light)](snapshots/svg/scroll_area.light.svg) |
 | `sized_box` | ![sized_box (dark)](snapshots/svg/sized_box.svg) | ![sized_box (light)](snapshots/svg/sized_box.light.svg) |
+| `spacer` | ![spacer (dark)](snapshots/svg/spacer.svg) | ![spacer (light)](snapshots/svg/spacer.light.svg) |
+| `split_layout` | ![split_layout (dark)](snapshots/svg/split_layout.svg) | ![split_layout (light)](snapshots/svg/split_layout.light.svg) |
 | `splitter` | ![splitter (dark)](snapshots/svg/splitter.svg) | ![splitter (light)](snapshots/svg/splitter.light.svg) |
 | `stacked_widget` | ![stacked_widget (dark)](snapshots/svg/stacked_widget.svg) | ![stacked_widget (light)](snapshots/svg/stacked_widget.light.svg) |
 | `stepper` | ![stepper (dark)](snapshots/svg/stepper.svg) | ![stepper (light)](snapshots/svg/stepper.light.svg) |
@@ -205,12 +205,15 @@
 
 ## Dialogs
 
-`dialog` — 14 个控件。
+`dialog` — 17 个控件。
 
 | 控件 | 深色 | 浅色 |
 |---|---|---|
+| `about_dialog` | ![about_dialog (dark)](snapshots/svg/about_dialog.svg) | ![about_dialog (light)](snapshots/svg/about_dialog.light.svg) |
+| `alert_dialog` | ![alert_dialog (dark)](snapshots/svg/alert_dialog.svg) | ![alert_dialog (light)](snapshots/svg/alert_dialog.light.svg) |
 | `bottom_sheet` | ![bottom_sheet (dark)](snapshots/svg/bottom_sheet.svg) | ![bottom_sheet (light)](snapshots/svg/bottom_sheet.light.svg) |
 | `color_dialog` | ![color_dialog (dark)](snapshots/svg/color_dialog.svg) | ![color_dialog (light)](snapshots/svg/color_dialog.light.svg) |
+| `confirm_dialog` | ![confirm_dialog (dark)](snapshots/svg/confirm_dialog.svg) | ![confirm_dialog (light)](snapshots/svg/confirm_dialog.light.svg) |
 | `dialog` | ![dialog (dark)](snapshots/svg/dialog.svg) | ![dialog (light)](snapshots/svg/dialog.light.svg) |
 | `file_dialog` | ![file_dialog (dark)](snapshots/svg/file_dialog.svg) | ![file_dialog (light)](snapshots/svg/file_dialog.light.svg) |
 | `find_replace_dialog` | ![find_replace_dialog (dark)](snapshots/svg/find_replace_dialog.svg) | ![find_replace_dialog (light)](snapshots/svg/find_replace_dialog.light.svg) |
@@ -226,7 +229,7 @@
 
 ## Overlays
 
-`overlay_widgets` — 4 个控件。
+`overlay_widgets` — 5 个控件。
 
 | 控件 | 深色 | 浅色 |
 |---|---|---|
@@ -234,6 +237,7 @@
 | `fab` | ![fab (dark)](snapshots/svg/fab.svg) | ![fab (light)](snapshots/svg/fab.light.svg) |
 | `refresh_control` | ![refresh_control (dark)](snapshots/svg/refresh_control.svg) | ![refresh_control (light)](snapshots/svg/refresh_control.light.svg) |
 | `splash_screen` | ![splash_screen (dark)](snapshots/svg/splash_screen.svg) | ![splash_screen (light)](snapshots/svg/splash_screen.light.svg) |
+| `swipe_to_dismiss` | ![swipe_to_dismiss (dark)](snapshots/svg/swipe_to_dismiss.svg) | ![swipe_to_dismiss (light)](snapshots/svg/swipe_to_dismiss.light.svg) |
 
 ## Views
 
@@ -383,16 +387,4 @@
 |---|---|---|
 | `tool_box` | ![tool_box (dark)](snapshots/svg/tool_box.svg) | ![tool_box (light)](snapshots/svg/tool_box.light.svg) |
 | `window` | ![window (dark)](snapshots/svg/window.svg) | ![window (light)](snapshots/svg/window.light.svg) |
-
-## unclassified
-
-`unclassified` — 5 个控件。
-
-| 控件 | 深色 | 浅色 |
-|---|---|---|
-| `about_dialog` | ![about_dialog (dark)](snapshots/svg/about_dialog.svg) | ![about_dialog (light)](snapshots/svg/about_dialog.light.svg) |
-| `alert_dialog` | ![alert_dialog (dark)](snapshots/svg/alert_dialog.svg) | ![alert_dialog (light)](snapshots/svg/alert_dialog.light.svg) |
-| `confirm_dialog` | ![confirm_dialog (dark)](snapshots/svg/confirm_dialog.svg) | ![confirm_dialog (light)](snapshots/svg/confirm_dialog.light.svg) |
-| `spacer` | ![spacer (dark)](snapshots/svg/spacer.svg) | ![spacer (light)](snapshots/svg/spacer.light.svg) |
-| `split_layout` | ![split_layout (dark)](snapshots/svg/split_layout.svg) | ![split_layout (light)](snapshots/svg/split_layout.light.svg) |
 

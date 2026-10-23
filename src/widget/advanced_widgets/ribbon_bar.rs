@@ -38,11 +38,9 @@ use crate::{impl_widget_property_hooks, property_names_of};
 // ── Layout constants ──────────────────────────────────────────────────────────
 
 const TAB_HEIGHT: i32 = 20;
-const TAB_MIN_WIDTH: u32 = 50;
 const TAB_SPACING: i32 = 1;
 const PANEL_TOP_MARGIN: i32 = 2; // gap between tab row and content panel
 const GROUP_PADDING: i32 = 4;
-const GROUP_MIN_WIDTH: u32 = 80;
 const LARGE_ICON_SIZE: i32 = 32;
 const SMALL_ICON_SIZE: i32 = 16;
 const ITEM_SPACING: i32 = 4;
@@ -221,8 +219,14 @@ pub struct RibbonBar {
     minimized: bool,
     // Interaction state
     hovered_tab: Option<usize>,
-    hovered_item: Option<(usize, usize, usize)>, // (group, item)
+    hovered_item: Option<(usize, usize, usize)>, // (tab, group, item)
     minimize_hovered: bool,
+    /// The panel a tab click opens over a minimized ribbon (Office semantics).
+    ///
+    /// The click leaves `minimized` set, so the state is "minimized, with the clicked tab's
+    /// panel shown"; the pointer leaving the bar, a second click on the open tab, or
+    /// choosing an item from the panel takes it back down.
+    temporarily_expanded: bool,
 
     /// Emitted when the current tab changes; payload is the new tab index.
     pub current_tab_changed: Signal1<usize>,
@@ -338,6 +342,7 @@ impl RibbonBar {
             hovered_tab: None,
             hovered_item: None,
             minimize_hovered: false,
+            temporarily_expanded: false,
             current_tab_changed: Signal1::new(),
             item_triggered: Signal1::new(),
         }
@@ -560,6 +565,9 @@ impl RibbonBar {
             return;
         }
         self.expanded = expanded;
+        if !expanded {
+            self.temporarily_expanded = false;
+        }
         self.base.request_redraw();
     }
 
@@ -582,6 +590,7 @@ impl RibbonBar {
         self.minimized = minimized;
         if minimized {
             self.expanded = false;
+            self.temporarily_expanded = false;
         }
         self.base.request_redraw();
     }
@@ -598,6 +607,7 @@ impl RibbonBar {
         self.current_tab_index = 0;
         self.hovered_tab = None;
         self.hovered_item = None;
+        self.temporarily_expanded = false;
     }
 
     // ── Layout helpers ────────────────────────────────────────────────────
@@ -621,7 +631,13 @@ impl RibbonBar {
         if total_tabs == 0 {
             return None;
         }
-        let tab_w = (avail / total_tabs).max(TAB_MIN_WIDTH as i32) as u32;
+        // The crate's fit rule (`nav_widgets::tab_bar` documents it): when the tabs do not
+        // fit at a readable width they shrink to `available / count` instead of running
+        // past the strip, and the spacing counts into the fit — `count` widths plus
+        // `count - 1` gaps is what has to land inside the reserve.
+        let gaps = (total_tabs - 1) * TAB_SPACING;
+        let fit_width = ((avail - gaps).max(total_tabs)) / total_tabs;
+        let tab_w = fit_width.max(1) as u32;
         let x_offset = row.x + index as i32 * (tab_w as i32 + TAB_SPACING);
         Some(Rect::new(x_offset, row.y, tab_w, row.height))
     }
@@ -657,13 +673,17 @@ impl RibbonBar {
             _ => return Vec::new(),
         };
         let total = groups.len() as i32;
-        // Divide available width equally among groups
+        // Divide available width equally among groups. The paddings count into the fit —
+        // `total` widths plus `total` paddings must land inside the panel — so when the
+        // equal share would not fit, it shrinks to `available / count` (the rule
+        // `nav_widgets::tab_bar` applies to its tabs) instead of laying the last groups out
+        // past the panel edge.
         let pad = GROUP_PADDING * 2;
         let avail_w = (panel.width as i32).saturating_sub(pad * total);
         if total == 0 || avail_w <= 0 {
             return Vec::new();
         }
-        let group_w = (avail_w / total).max(GROUP_MIN_WIDTH as i32) as u32;
+        let group_w = (avail_w / total).max(1) as u32;
         let mut result = Vec::with_capacity(groups.len());
         let mut x = panel.x + GROUP_PADDING;
         for (i, _) in groups.iter().enumerate() {
@@ -697,7 +717,10 @@ impl RibbonBar {
 
     /// Hit-test: given a position, returns which (group, item) is under the cursor.
     fn hit_item(&self, pos: Point) -> Option<(usize, usize, usize)> {
-        if self.minimized || !self.expanded {
+        // `minimized` alone does not hide the items: a tab click temporarily expands the
+        // panel over a minimized ribbon (leaving `minimized` set), and the items must hit
+        // there. `expanded` is the one flag the picture is drawn from.
+        if !self.expanded {
             return None;
         }
         for (gi, group) in self.group_rects() {
@@ -769,9 +792,15 @@ impl RibbonBar {
         // Layout: Large items first (one per row), then small items in a grid
         let mut current_y = group_rect.y + ITEM_SPACING;
 
-        // Large items
+        // Large items, bounded by the group title rule the small rows already honour —
+        // without the bound a stack of large items laid itself out past the group and the
+        // panel into the window below.
+        let bottom = group_rect.y + group_rect.height as i32 - GROUP_TITLE_HEIGHT;
         for &li in &large_items {
             let item_h = LARGE_ICON_SIZE + 16 + ITEM_SPACING; // icon + label + spacing
+            if current_y + item_h > bottom {
+                break;
+            }
             let ir = Rect::new(cx, current_y, cw as u32, item_h as u32);
             result.push((li, ir));
             current_y += item_h + ITEM_SPACING;
@@ -806,11 +835,11 @@ impl RibbonBar {
         context.fill_rect(btn_rect, bg);
         context.draw_rect(btn_rect, palette.border);
 
-        // Draw arrow: ^ when expanded, v when minimized
+        // Draw arrow: ^ when the panel is shown, v when it is closed
         let mid_x = btn_rect.x + btn_rect.width as i32 / 2;
         let mid_y = btn_rect.y + btn_rect.height as i32 / 2;
         let arrow_color = palette.ink;
-        if self.minimized {
+        if !self.expanded {
             // Downward arrow (v)
             context.draw_line(
                 Point::new(mid_x - 3, mid_y - 1),
@@ -858,8 +887,10 @@ impl RibbonBar {
         let border = palette.border;
 
         context.fill_rect(tab_rect, bg);
-        // Bottom edge of current tab blends into panel
-        if is_current {
+        // Bottom edge of the current tab blends into the panel — only when the panel is
+        // actually shown; over a minimized ribbon the active tab is an ordinary tab with a
+        // closed bottom edge, or it would read as merging into nothing.
+        if is_current && self.expanded {
             // Overdraw bottom border so it merges with the panel
             let bottom =
                 Rect::new(tab_rect.x, tab_rect.y + tab_rect.height as i32 - 1, tab_rect.width, 2);
@@ -892,7 +923,10 @@ impl RibbonBar {
 
     /// Draws the content panel for the current tab (groups + items).
     fn draw_panel(&self, context: &mut RenderContext, palette: &RibbonPalette) {
-        if self.minimized || !self.expanded {
+        // `expanded` is the one flag the picture is drawn from: `set_minimized(true)` forces
+        // it down, and a temporarily expanded panel (a tab click over a minimized ribbon)
+        // holds it up while `minimized` stays set.
+        if !self.expanded {
             return;
         }
         let panel = self.panel_rect();
@@ -1044,9 +1078,9 @@ impl RibbonBar {
                 }
             }
 
-            // ── Group separator line (right edge) ──
+            // ── Group separator line, between groups only ──
             let sep_x = gr.x + gr.width as i32 + GROUP_PADDING;
-            if sep_x < panel.x + panel.width as i32 {
+            if *gi + 1 < groups.len() && sep_x < panel.x + panel.width as i32 {
                 context.draw_line(
                     Point::new(sep_x, gr.y),
                     Point::new(sep_x, gr.y + gr.height as i32 - GROUP_TITLE_HEIGHT),
@@ -1225,17 +1259,31 @@ impl EventHandler for RibbonBar {
                 if self.minimize_button_rect().contains(*pos) {
                     self.minimized = !self.minimized;
                     self.expanded = !self.minimized;
+                    self.temporarily_expanded = false;
                     self.base.request_redraw();
                     return;
                 }
 
-                // Check tab header click
+                // Check tab header click. Over a minimized ribbon a tab click opens that
+                // tab's panel temporarily (Office semantics): `minimized` stays set, and
+                // the pointer leaving the bar, a second click on the open tab, or picking
+                // an item takes the panel back down.
                 if let Some(tab_idx) = self.hit_tab(*pos) {
                     if self.current_tab_index != tab_idx {
                         self.set_current_tab(tab_idx);
+                        if self.minimized && !self.expanded {
+                            self.temporarily_expanded = true;
+                            self.expanded = true;
+                            self.base.request_redraw();
+                        }
+                    } else if self.minimized && self.expanded {
+                        // The open tab was clicked again: the panel goes back down.
+                        self.temporarily_expanded = false;
+                        self.expanded = false;
+                        self.base.request_redraw();
                     } else if self.minimized {
-                        // Clicking the active tab while minimized expands it
-                        self.minimized = false;
+                        // Clicking the active tab while minimized opens its panel.
+                        self.temporarily_expanded = true;
                         self.expanded = true;
                         self.base.request_redraw();
                     }
@@ -1250,9 +1298,35 @@ impl EventHandler for RibbonBar {
                                 item.set_checked(!item.is_checked());
                             }
                             self.item_triggered.emit((tab, gi, ii));
+                            // An item chosen from a temporarily opened panel collapses it,
+                            // the way the ribbon goes away once the command is picked.
+                            if self.temporarily_expanded {
+                                self.temporarily_expanded = false;
+                                self.expanded = false;
+                            }
                             self.base.request_redraw();
                         }
                     }
+                }
+            }
+
+            Event::MouseLeave { .. } => {
+                // Every hover slot is painted, so leaving has to clear all three — and a
+                // panel opened over a minimized ribbon closes when the pointer leaves the
+                // bar (Office semantics).
+                let changed = self.hovered_tab.is_some()
+                    || self.hovered_item.is_some()
+                    || self.minimize_hovered
+                    || self.temporarily_expanded;
+                self.hovered_tab = None;
+                self.hovered_item = None;
+                self.minimize_hovered = false;
+                if self.temporarily_expanded {
+                    self.temporarily_expanded = false;
+                    self.expanded = false;
+                }
+                if changed {
+                    self.base.request_redraw();
                 }
             }
 
@@ -1389,5 +1463,158 @@ mod tests {
         ribbon.set_item_checked(tab, group, item, true);
         assert_eq!(ribbon.item_checked(tab, group, item), Some(true));
         assert_eq!(ribbon.item_checked(99, 99, 99), None);
+    }
+
+    /// A tab click over a minimized ribbon opens that tab's panel temporarily (Office
+    /// semantics), and picking an item from it takes the panel back down.
+    #[test]
+    fn a_minimized_ribbon_opens_the_clicked_tab_temporarily() {
+        let mut ribbon = RibbonBar::new(Rect::new(0, 0, 480, 160));
+        let home = ribbon.add_tab("Home");
+        let clipboard = ribbon.add_group(home, "Clipboard");
+        let paste = ribbon.add_item(home, clipboard, "Paste");
+        ribbon.item_mut(home, clipboard, paste).expect("added item").set_checkable(true);
+        let insert = ribbon.add_tab("Insert");
+        let tables = ribbon.add_group(insert, "Tables");
+        let table = ribbon.add_item(insert, tables, "Table");
+        ribbon.item_mut(insert, tables, table).expect("added item").set_checkable(true);
+
+        ribbon.set_minimized(true);
+        assert!(!ribbon.is_expanded());
+
+        // Clicking the *other* tab opens its panel; the ribbon stays minimized underneath.
+        let tr = ribbon.tab_rect(insert).expect("tab rect");
+        ribbon.handle_event(&Event::mouse_press(tr.x + tr.width as i32 / 2, tr.y + 2, 1));
+        assert_eq!(ribbon.current_tab(), insert);
+        assert!(ribbon.is_expanded(), "the clicked tab's panel opens over the minimized ribbon");
+        assert!(ribbon.is_minimized(), "the ribbon stays minimized underneath");
+
+        // The temporary panel's items are hittable, and choosing one collapses the panel.
+        let (_, gr) = ribbon.group_rects()[0];
+        let rects = ribbon.compute_item_rects(0, &gr);
+        let (_, ir) = rects.first().copied().expect("the temporary panel laid out its item");
+        ribbon.handle_event(&Event::mouse_press(
+            ir.x + ir.width as i32 / 2,
+            ir.y + ir.height as i32 / 2,
+            1,
+        ));
+        assert_eq!(
+            ribbon.item_checked(insert, tables, 0),
+            Some(true),
+            "the item was triggered from the temporary panel"
+        );
+        assert!(!ribbon.is_expanded(), "choosing from the temporary panel collapses it");
+        assert!(ribbon.is_minimized());
+    }
+
+    /// The pointer leaving the bar clears every hover slot and closes a temporarily opened
+    /// panel.
+    #[test]
+    fn the_pointer_leaving_clears_hover_and_closes_the_temporary_panel() {
+        let mut ribbon = RibbonBar::new(Rect::new(0, 0, 480, 160));
+        let home = ribbon.add_tab("Home");
+        let clipboard = ribbon.add_group(home, "Clipboard");
+        ribbon.add_item(home, clipboard, "Paste");
+
+        let tr = ribbon.tab_rect(home).expect("tab rect");
+        ribbon.handle_event(&Event::MouseMove { pos: Point::new(tr.x + 2, tr.y + 2) });
+        assert_eq!(ribbon.hovered_tab, Some(home));
+
+        ribbon.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
+        assert_eq!(ribbon.hovered_tab, None, "leaving clears the tab hover");
+        assert_eq!(ribbon.hovered_item, None);
+
+        // And a panel opened over a minimized ribbon closes when the pointer leaves.
+        ribbon.set_minimized(true);
+        ribbon.handle_event(&Event::mouse_press(tr.x + 2, tr.y + 2, 1));
+        assert!(ribbon.is_expanded(), "the click opened the active tab's panel");
+        ribbon.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
+        assert!(!ribbon.is_expanded(), "leaving the bar closes the temporary panel");
+        assert!(ribbon.is_minimized());
+    }
+
+    /// Large items stop at the group title rule; a stack of them must not lay itself out
+    /// past the group into the window below.
+    #[test]
+    fn large_items_that_do_not_fit_stop_at_the_group_title() {
+        let mut ribbon = RibbonBar::new(Rect::new(0, 0, 480, 160));
+        let home = ribbon.add_tab("Home");
+        let group = ribbon.add_group(home, "Shapes");
+        for label in ["One", "Two", "Three", "Four"] {
+            ribbon.add_large_item(home, group, label);
+        }
+
+        let (_, gr) = ribbon.group_rects()[0];
+        let rects = ribbon.compute_item_rects(0, &gr);
+        assert!(!rects.is_empty(), "at least one large item fits");
+        let bottom = gr.y + gr.height as i32 - GROUP_TITLE_HEIGHT;
+        for (_, r) in &rects {
+            assert!(
+                r.y + r.height as i32 <= bottom,
+                "item rect {:?} crosses the title rule at {bottom}",
+                r
+            );
+        }
+        assert!(rects.len() < 4, "four large items cannot fit one group: the rest must be dropped");
+    }
+
+    /// Group separators are drawn **between** groups only, so a one-group ribbon has no
+    /// separator line at all (the SVG backend emits every stroked line as `<line`, and the
+    /// minimize button's arrow accounts for the other two).
+    #[test]
+    fn the_group_separator_appears_only_between_groups() {
+        let mut one = RibbonBar::new(Rect::new(0, 0, 480, 160));
+        let home = one.add_tab("Home");
+        let g = one.add_group(home, "Clipboard");
+        one.add_item(home, g, "Paste");
+        let lines_one = crate::widget::svg::render_to_svg(&mut one).matches("<line").count();
+
+        let mut two = RibbonBar::new(Rect::new(0, 0, 480, 160));
+        let home = two.add_tab("Home");
+        let g0 = two.add_group(home, "Clipboard");
+        two.add_item(home, g0, "Paste");
+        let g1 = two.add_group(home, "Font");
+        two.add_item(home, g1, "Bold");
+        let lines_two = crate::widget::svg::render_to_svg(&mut two).matches("<line").count();
+
+        assert_eq!(lines_two, lines_one + 1, "exactly one rule was added for the second group");
+    }
+
+    /// Tabs (and groups) that cannot fit at a readable width shrink to `available / count`
+    /// — the rule `nav_widgets::tab_bar` applies — instead of running past the bar.
+    #[test]
+    fn tabs_that_cannot_fit_shrink_instead_of_running_past_the_bar() {
+        let mut ribbon = RibbonBar::new(Rect::new(0, 0, 200, 160));
+        for i in 0..8 {
+            ribbon.add_tab(format!("Tab {i}"));
+        }
+        let geom = ribbon.geometry();
+        let reserve = MINIMIZE_BUTTON_SIZE + MINIMIZE_MARGIN * 2;
+        let right_limit = geom.x + geom.width as i32 - reserve;
+        for i in 0..8 {
+            let r = ribbon.tab_rect(i).expect("tab rect");
+            assert!(
+                r.x >= geom.x && r.x + r.width as i32 <= right_limit,
+                "tab {i} at {:?} leaves the strip (limit {right_limit})",
+                r
+            );
+        }
+
+        // The same rule keeps groups inside the panel when their minimums would not fit.
+        let tab = ribbon.add_tab("Home");
+        for i in 0..5 {
+            let g = ribbon.add_group(tab, format!("G{i}"));
+            ribbon.add_item(tab, g, "X");
+        }
+        ribbon.set_current_tab(tab);
+        let panel = ribbon.panel_rect();
+        for (_, gr) in ribbon.group_rects() {
+            assert!(
+                gr.x + gr.width as i32 <= panel.x + panel.width as i32,
+                "group at {:?} runs past the panel {:?}",
+                gr,
+                panel
+            );
+        }
     }
 }
