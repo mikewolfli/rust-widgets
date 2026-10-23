@@ -244,8 +244,22 @@ pub struct PieMenu {
     /// by `draw` to scale the ring out as the menu opens — so the declaration and the picture
     /// are the same fact.
     animation_progress: PropertyDriver,
-    hover_color: Color,
-    text_color: Color,
+    /// The caller's hover highlight, or `None` while the highlight follows the active
+    /// theme's `primary` token.
+    ///
+    /// The field used to be a plain `Color` seeded with `rgb(0, 120, 215)` — a fixed blue
+    /// painted identically on every appearance, the same theme-blindness the sibling
+    /// `menu` popup shed when its hovered row moved onto the theme's primary. An unset
+    /// colour resolves through [`Self::theme_hover_color`] (the fixed literal only when
+    /// no theme is active) and [`PieMenu::set_hover_color`] still wins when the caller
+    /// states one.
+    hover_color: Option<Color>,
+    /// The caller's label ink, or `None` while labels follow the resolved theme ink.
+    ///
+    /// It used to be a fixed `rgb(30, 30, 30)` — a near-black that only reads on light
+    /// wedges. An unset colour is drawn in the same `ink` `draw` already resolves for the
+    /// ring's chrome, so labels and chrome move with the theme together.
+    text_color: Option<Color>,
     /// Emitted with the index whose selection was applied. Fires from user
     /// clicks and from [`PieMenu::set_current_index`] — so programmatic
     /// selection is indistinguishable from a click, and a slot that reacts by
@@ -297,8 +311,8 @@ impl PieMenu {
             // ring unfurling is a larger movement than a pointer reaction, so it is priced by
             // the theme's `slow` token.
             animation_progress: PropertyDriver::at(0.0, MotionSlot::Slow),
-            hover_color: Color::rgb(0, 120, 215),
-            text_color: Color::rgb(30, 30, 30),
+            hover_color: None,
+            text_color: None,
             triggered: Signal1::new(),
             triggered_text: Signal1::new(),
             about_to_show: GenericSignal::new(),
@@ -591,34 +605,62 @@ impl PieMenu {
         self.animation_progress.is_moving()
     }
 
-    /// Returns the hover highlight color.
+    /// Returns the hover highlight colour: the caller's override, or the theme-derived
+    /// [`Self::theme_hover_color`] when none was set.
     pub fn hover_color(&self) -> Color {
-        self.hover_color
+        self.hover_color.unwrap_or_else(Self::theme_hover_color)
     }
 
-    /// Sets the hover highlight color. Does not request a redraw.
+    /// Sets the hover highlight colour, overriding the theme-derived default, and
+    /// requests a redraw.
     pub fn set_hover_color(&mut self, color: Color) {
-        if self.hover_color == color {
+        if self.hover_color == Some(color) {
             return;
         }
-        self.hover_color = color;
+        self.hover_color = Some(color);
         // Both colours are read by `draw` (the highlight fill, and the hovered label's contrast
         // colour), so without this the change was invisible until something else forced a frame.
         self.base.request_redraw();
     }
 
-    /// Returns the text color for labels.
+    /// Returns the label colour: the caller's override, or the theme-derived
+    /// [`Self::theme_text_color`] when none was set.
     pub fn text_color(&self) -> Color {
-        self.text_color
+        self.text_color.unwrap_or_else(Self::theme_text_color)
     }
 
-    /// Sets the text color for labels. Does not request a redraw.
+    /// Sets the text colour for labels, overriding the theme-derived default, and
+    /// requests a redraw.
     pub fn set_text_color(&mut self, color: Color) {
-        if self.text_color == color {
+        if self.text_color == Some(color) {
             return;
         }
-        self.text_color = color;
+        self.text_color = Some(color);
         self.base.request_redraw();
+    }
+
+    /// The hover highlight an unset colour resolves to: the active theme's `primary`
+    /// token, or the control's pre-theme blue when no theme is active.
+    ///
+    /// One derivation shared by [`Self::hover_color`], `draw` and the tests, so the
+    /// getter cannot drift from the picture. It takes the manager lock itself and
+    /// returns an owned `Color`, so it must not be called while a lock is held.
+    fn theme_hover_color() -> Color {
+        let manager = crate::style::theme_manager();
+        match manager.current_theme() {
+            Some(active) => active.colors.primary,
+            None => Color::rgb(0, 120, 215),
+        }
+    }
+
+    /// The label ink an unset colour resolves to: the active theme's foreground token,
+    /// or the control's pre-theme near-black when no theme is active.
+    fn theme_text_color() -> Color {
+        let manager = crate::style::theme_manager();
+        match manager.current_theme() {
+            Some(active) => active.colors.foreground,
+            None => Color::rgb(30, 30, 30),
+        }
     }
 
     /// Returns the currently hovered item index, if any.
@@ -788,23 +830,18 @@ impl PieMenu {
         context.draw_line_stroke(inner_end, outer_end, color, 1);
     }
 
-    /// Returns a colour for the slice at index `i`, cycling through a pleasant palette.
-    fn slice_color(&self, i: usize) -> Color {
-        const PALETTE: &[Color] = &[
-            Color::rgb(173, 216, 230), // light blue
-            Color::rgb(255, 182, 193), // light pink
-            Color::rgb(152, 251, 152), // pale green
-            Color::rgb(255, 218, 185), // peach
-            Color::rgb(216, 191, 216), // thistle
-            Color::rgb(255, 228, 181), // moccasin
-            Color::rgb(175, 238, 238), // turquoise
-            Color::rgb(255, 239, 213), // papaya whip
-            Color::rgb(221, 160, 221), // plum
-            Color::rgb(176, 224, 230), // powder blue
-            Color::rgb(240, 230, 140), // khaki
-            Color::rgb(255, 192, 203), // pink
-        ];
-        PALETTE[i % PALETTE.len()]
+    /// The fill the enabled, un-highlighted wedges take: one visible step off the track
+    /// ring, derived from the colours `draw` has already resolved.
+    ///
+    /// This used to cycle a fixed twelve-pastel palette (light blue, light pink, pale
+    /// green, …). Those pastels are *menu chrome*, not data — a pie menu is a popup whose
+    /// wedges are buttons, the same reading that lets the sibling `menu` paint its rows
+    /// in the theme's surface and primary — so a dark window read as a ring of pastel
+    /// wedges no theme could reach. The wedges now take a single tone derived from the
+    /// themed ring and ink (the pair the track, hub and border derive from), which the
+    /// separators and the `primary` hover highlight distinguish.
+    fn slice_color(&self, ring: Color, ink: Color) -> Color {
+        ring.blend(&ink, 0.08)
     }
 }
 
@@ -1086,17 +1123,22 @@ impl Draw for PieMenu {
         // as a menu that has been opened with nothing to offer.
         self.fill_ring(context, center, outer_r, inner_r, ring);
 
+        // The highlight and the enabled wedges' fill resolve once per frame, before the loop:
+        // `hover_color` takes the manager lock, which is not re-entrant, so it must not be
+        // acquired per wedge (and per-wedge recomputation of a constant blend is waste).
+        let hover_fill = self.hover_color();
+        let wedge_fill = self.slice_color(ring, ink);
         // Draw each slice
         for (i, item) in self.items.iter().enumerate() {
             let is_hovered = self.hovered_index == Some(i);
-            // A disabled slice takes the themed track rather than a fixed light grey, so it reads
-            // as a muted wedge on either appearance.
+            // A disabled slice takes the themed track — the fill an enabled wedge sits one
+            // visible step above — so it reads as a muted wedge on either appearance.
             let base_color = if !item.is_enabled() {
                 ring
             } else if is_hovered {
-                self.hover_color
+                hover_fill
             } else {
-                self.slice_color(i)
+                wedge_fill
             };
 
             self.fill_slice(
@@ -1148,11 +1190,13 @@ impl Draw for PieMenu {
             let ly = cy + label_r * mid_angle.sin();
 
             // A highlighted label takes the contrast colour of the accent it sits on, so it is not
-            // a fixed white that may vanish on a light accent.
+            // a fixed white that may vanish on a light accent. An unset label colour follows the
+            // same ink the ring's chrome resolves, so labels move with the theme instead of a
+            // fixed near-black that only reads on light wedges.
             let text_color = if self.hovered_index == Some(i) {
-                self.hover_color.contrast_color()
+                hover_fill.contrast_color()
             } else {
-                self.text_color
+                self.text_color.unwrap_or(ink)
             };
             if let Some(source) = item.icon_source() {
                 let icon_rect =
@@ -1232,9 +1276,11 @@ mod tests {
         assert!(menu.is_enabled());
         assert!(menu.items().is_empty());
 
-        // Default colors
-        assert_eq!(menu.hover_color(), Color::rgb(0, 120, 215));
-        assert_eq!(menu.text_color(), Color::rgb(30, 30, 30));
+        // Default colours follow the active theme — the fixed literals only when no theme is
+        // active — so the assertions are anchored to the same derivations the getters use and
+        // hold whichever appearance the process happens to be in.
+        assert_eq!(menu.hover_color(), PieMenu::theme_hover_color());
+        assert_eq!(menu.text_color(), PieMenu::theme_text_color());
 
         // Geometry: centered at (200,200) with radius 100 => rect (100, 100, 200, 200)
         let geom = menu.geometry();
@@ -1865,21 +1911,21 @@ mod tests {
     }
 
     /// 19. Hover color and text color
+    ///
+    /// An unset colour follows the theme derivation; an explicit colour wins over it —
+    /// the split every themed colour field in the crate now takes.
     #[test]
     fn test_hover_and_text_colors() {
         let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
 
-        // Default hover color
-        assert_eq!(menu.hover_color(), Color::rgb(0, 120, 215));
+        // An unset colour resolves through the theme derivation...
+        assert_eq!(menu.hover_color(), PieMenu::theme_hover_color());
+        assert_eq!(menu.text_color(), PieMenu::theme_text_color());
 
-        // Change hover color
+        // ...and an explicit colour wins over it.
         menu.set_hover_color(Color::rgb(255, 0, 0));
         assert_eq!(menu.hover_color(), Color::rgb(255, 0, 0));
 
-        // Default text color
-        assert_eq!(menu.text_color(), Color::rgb(30, 30, 30));
-
-        // Change text color
         menu.set_text_color(Color::rgb(255, 255, 255));
         assert_eq!(menu.text_color(), Color::rgb(255, 255, 255));
     }
@@ -2095,5 +2141,41 @@ mod tests {
             2,
             "a new text colour owes a frame"
         );
+    }
+
+    /// An unset highlight and unset label ink follow the appearance — the light and dark
+    /// derivations differ — while an explicit colour wins under either.
+    ///
+    /// The wedges' default fill is the themed ring's step, so the *rendered* light/dark
+    /// difference of the whole menu is asserted one level up, by
+    /// `p3_chrome_follows_the_appearance_unless_exempted_as_data` (the control is
+    /// deliberately absent from the data-colour exemption table).
+    #[test]
+    fn the_unset_colours_follow_the_appearance() {
+        let _guard = crate::style::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+
+        let resolved = || {
+            let menu = PieMenu::new(Point::new(100, 100), 80.0);
+            (menu.hover_color(), menu.text_color())
+        };
+
+        crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Light);
+        let (light_hover, light_text) = resolved();
+        crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Dark);
+        let (dark_hover, dark_text) = resolved();
+
+        assert_ne!(light_hover, dark_hover, "an unset highlight is chrome and must move");
+        assert_ne!(light_text, dark_text, "unset label ink is chrome and must move");
+
+        // An explicit colour overrides the theme under either appearance.
+        let mut pinned = PieMenu::new(Point::new(100, 100), 80.0);
+        pinned.set_hover_color(Color::rgb(255, 0, 0));
+        pinned.set_text_color(Color::rgb(255, 255, 255));
+        for mode in [crate::theme::AppearanceMode::Light, crate::theme::AppearanceMode::Dark] {
+            crate::theme::global_theme_manager().set_appearance(mode);
+            assert_eq!(pinned.hover_color(), Color::rgb(255, 0, 0), "under {mode:?}");
+            assert_eq!(pinned.text_color(), Color::rgb(255, 255, 255), "under {mode:?}");
+        }
     }
 }

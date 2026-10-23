@@ -85,6 +85,10 @@ pub struct GridTableWidget {
     // Selection
     selected_cell: Option<(usize, usize)>,
     selection_mode: GridTableSelectionMode,
+    /// The row the pointer is over, for the hover tint. Row-level (not cell-level) to match
+    /// `table_widget`: a whole-row tint is the affordance the family shares, and a cell-sized
+    /// one flickers as the pointer crosses column boundaries.
+    hovered_row: Option<usize>,
 
     // Per-column state
     column_widths: Vec<u32>,
@@ -149,6 +153,7 @@ impl GridTableWidget {
             selected_bg: Self::DEFAULT_SELECTED_BG,
             selected_cell: None,
             selection_mode: GridTableSelectionMode::Cell,
+            hovered_row: None,
             column_widths: Vec::new(),
             sort_specs: Vec::new(),
             resizing_column: None,
@@ -837,6 +842,9 @@ impl Draw for GridTableWidget {
         } else {
             self.selected_bg
         };
+        // The hover tint is the same accent blend every row family member uses (`table_widget`
+        // :722): visible next to the surface, clearly weaker than the selection fill.
+        let hovered_bg = surface.blend(&accent, 0.12);
         // A cell's own text is the ink, not a second literal: it used to be a fixed
         // blue-black that vanished on a dark surface.
         let cell_text_color = ink;
@@ -1030,6 +1038,8 @@ impl Draw for GridTableWidget {
 
                 if is_selected {
                     context.fill_rect(cell_rect, selected_bg);
+                } else if Some(abs_row) == self.hovered_row {
+                    context.fill_rect(cell_rect, hovered_bg);
                 }
 
                 // Grid lines
@@ -1135,6 +1145,20 @@ impl EventHandler for GridTableWidget {
                         self.update_visibility();
                         self.base.request_redraw();
                     }
+                } else {
+                    // Row hover: read from the same hit test the press arm uses, so the tint
+                    // and the click can never disagree about which row the pointer is on.
+                    let hovered = self.cell_at_point(*pos).map(|(row, _)| row);
+                    if hovered != self.hovered_row {
+                        self.hovered_row = hovered;
+                        self.base.request_redraw();
+                    }
+                }
+            }
+
+            Event::MouseLeave { .. } => {
+                if self.hovered_row.take().is_some() {
+                    self.base.request_redraw();
                 }
             }
 

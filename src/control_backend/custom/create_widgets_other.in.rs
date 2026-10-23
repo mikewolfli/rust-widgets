@@ -441,5 +441,38 @@ macro_rules! impl_other_widgets {
                 )
             }
         }
+        #[cfg(full_widgets)]
+        fn create_tag(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::Tag, parent, "", x, y, width, height)
+        }
+        #[cfg(full_widgets)]
+        fn create_gauge(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::Gauge, parent, "", x, y, width, height)
+        }
+        #[cfg(full_widgets)]
+        fn create_clock(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::Clock, parent, "", x, y, width, height)
+        }
     };
 }

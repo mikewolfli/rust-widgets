@@ -96,6 +96,8 @@ use crate::widget::input_widgets::rich_edit::RichEdit;
 #[cfg(full_widgets)]
 use crate::widget::input_widgets::textedit::TextEdit;
 #[cfg(full_widgets)]
+use crate::widget::menu_toolbar::menu::Menu;
+#[cfg(full_widgets)]
 use crate::widget::menu_toolbar::status_bar::StatusBar;
 #[cfg(full_widgets)]
 use crate::widget::menu_toolbar::tool_button::ToolButton;
@@ -149,9 +151,18 @@ use crate::widget::web_widgets::web_view::WebView;
 // there because its kind is shared with another control, so the concrete-type check
 // is the only way to tell which capability a mounted widget belongs to.
 #[cfg(full_widgets)]
+use crate::widget::advanced_widgets::time_edit::TimeEdit;
+#[cfg(full_widgets)]
 use crate::widget::container_widgets::groupbox::GroupBox;
 #[cfg(full_widgets)]
+use crate::widget::container_widgets::splitter::Splitter;
+#[cfg(full_widgets)]
 use crate::widget::container_widgets::toolbox::ToolBox;
+// The one concrete type behind four capability names. `password_edit`, `phone_input` and
+// `email_input` are `LineEdit` with a constructor-installed mode or grammar, not a second
+// widget, so the tie-break row below answers all four with the same concrete check.
+#[cfg(full_widgets)]
+use crate::widget::input_widgets::lineedit::LineEdit;
 
 /// Shared capability value and error types (`CapabilityValue`,
 /// `CapabilityAccessError`, …) exchanged through the property contract below.
@@ -397,6 +408,8 @@ fn alias_factory_name(kind: crate::widget::WidgetKind) -> &'static str {
         crate::widget::WidgetKind::UndoView => "list_view",
         crate::widget::WidgetKind::CheckListBox => "list_box",
         crate::widget::WidgetKind::DirectoryDialog => "file_dialog",
+        // `ContextMenu` is `Menu` under a role name (`pub type ContextMenu = Menu;`), so the
+        // kind resolves to the control it aliases.
         crate::widget::WidgetKind::ContextMenu => "menu",
         crate::widget::WidgetKind::Wizard => "wizard_dialog",
         crate::widget::WidgetKind::DockPanel => "dock_widget",
@@ -1387,6 +1400,23 @@ impl WidgetFactory {
             // `WidgetKind::GroupBox`, which `panel` shares because `Panel` is a
             // `pub type` for `GroupBox`.
             "group_box" | "panel" => self::coercion::widget_as::<GroupBox>(widget).is_some(),
+            // `WidgetKind::LineEdit`. Three validated variants share the kind with the plain
+            // field, and all four are the same concrete control: the variant is a constructor
+            // that installs an echo mode or a grammar. One concrete check therefore answers
+            // every row, exactly as `table_widget` / `table` does above.
+            "line_edit" | "password_edit" | "phone_input" | "email_input" => {
+                self::coercion::widget_as::<LineEdit>(widget).is_some()
+            }
+            // `WidgetKind::Splitter`. `split_layout` is the two-pane spelling of the same
+            // control, so one concrete check answers both rows — the same shape as
+            // `table_widget` / `table` below.
+            "splitter" | "split_layout" => self::coercion::widget_as::<Splitter>(widget).is_some(),
+            // `WidgetKind::TimePicker`. `time_edit` is the field and `time_picker` the kind's own
+            // spelling of it, so one concrete check answers both rows.
+            "time_edit" | "time_picker" => self::coercion::widget_as::<TimeEdit>(widget).is_some(),
+            // `WidgetKind::Menu`. `context_menu` is the role spelling of the same control, so
+            // one concrete check answers both rows.
+            "menu" | "context_menu" => self::coercion::widget_as::<Menu>(widget).is_some(),
             // `WidgetKind::Table`
             "data_grid" => self::coercion::widget_as::<DataGrid>(widget).is_some(),
             "virtual_table" => self::coercion::widget_as::<VirtualTable>(widget).is_some(),

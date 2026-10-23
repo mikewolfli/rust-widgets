@@ -917,14 +917,21 @@ fn every_kind_with_a_constructor_has_a_resolvable_factory_name() {
 
 #[test]
 fn a_kind_alias_reaches_the_same_capability_as_its_canonical_spelling() {
-    // `context_menu` is an alias of `menu` (the kinds are the same control, as
-    // `src/widget/mod.rs` records with `pub type ContextMenu = Menu;`), so both
-    // spellings must land on one capability row rather than two.
+    // `context_menu` is the role spelling of `menu` (`src/widget/mod.rs` records the decision
+    // with `pub type ContextMenu = Menu;`), so the two names are two rows over **one control**:
+    // same kind, same property table, same published events. They are distinct canonical names
+    // — each is addressable in its own right — which is the `table_widget` / `table` shape.
     let factory = WidgetFactory::new_with_defaults();
-    let by_alias = factory.capability("context_menu").expect("context_menu must resolve");
+    let by_role = factory.capability("context_menu").expect("context_menu must resolve");
     let by_name = factory.capability("menu").expect("menu must resolve");
-    assert_eq!(by_alias.canonical_name, by_name.canonical_name);
-    assert_eq!(by_alias.kind, by_name.kind);
+    assert_eq!(by_role.kind, by_name.kind, "one control reports one kind");
+    assert_eq!(
+        by_role.properties, by_name.properties,
+        "two names over one control must publish one property table"
+    );
+    let role_events: Vec<&str> = by_role.events.iter().map(|event| event.name).collect();
+    let name_events: Vec<&str> = by_name.events.iter().map(|event| event.name).collect();
+    assert_eq!(role_events, name_events, "and one event list");
 }
 
 #[test]
@@ -1552,4 +1559,65 @@ fn controls_with_no_published_events_keep_none_on_purpose() {
             capability.events.len()
         );
     }
+}
+
+/// The validated text-input variants are real controls over the one `LineEdit` model.
+///
+/// `password_edit` installs the masking echo mode; `phone_input` / `email_input` install a
+/// grammar that filters every path into the model and publishes `valid`. The property route
+/// must see all of that, not just a differently-named plain field.
+#[cfg(not(alloc_frugal))]
+#[test]
+fn the_validated_input_variants_publish_their_grammar() {
+    let factory = WidgetFactory::new_with_defaults();
+    let rect = Rect::new(0, 0, 220, 24);
+
+    let password = factory.create("password_edit", rect, "").expect("password field");
+    assert_eq!(
+        factory.read_property(password.as_ref(), "echo_mode"),
+        Ok(CapabilityValue::String("password".to_string())),
+        "a password field masks by default, before any caller sets the mode"
+    );
+
+    let mut phone = factory.create("phone_input", rect, "").expect("phone field");
+    // Empty is not an error.
+    assert_eq!(factory.read_property(phone.as_ref(), "valid"), Ok(CapabilityValue::Bool(true)));
+    // Letters never reach the model.
+    factory
+        .write_property(phone.as_mut(), "text", CapabilityValue::String("call me".to_string()))
+        .expect("text is writable");
+    assert_eq!(
+        factory.read_property(phone.as_ref(), "text"),
+        Ok(CapabilityValue::String(String::new()))
+    );
+    // A too-short value is reported through the property route.
+    factory
+        .write_property(phone.as_mut(), "text", CapabilityValue::String("123".to_string()))
+        .expect("text is writable");
+    assert_eq!(factory.read_property(phone.as_ref(), "valid"), Ok(CapabilityValue::Bool(false)));
+    assert_ne!(
+        factory.read_property(phone.as_ref(), "validation_message"),
+        Ok(CapabilityValue::String(String::new())),
+        "an invalid value carries its message"
+    );
+    factory
+        .write_property(phone.as_mut(), "text", CapabilityValue::String("555 123 4567".to_string()))
+        .expect("text is writable");
+    assert_eq!(factory.read_property(phone.as_ref(), "valid"), Ok(CapabilityValue::Bool(true)));
+
+    let mut email = factory.create("email_input", rect, "").expect("email field");
+    factory
+        .write_property(email.as_mut(), "text", CapabilityValue::String("name@domain".to_string()))
+        .expect("text is writable");
+    assert_eq!(factory.read_property(email.as_ref(), "valid"), Ok(CapabilityValue::Bool(false)));
+    factory
+        .write_property(
+            email.as_mut(),
+            "text",
+            CapabilityValue::String("name@domain.com".to_string()),
+        )
+        .expect("text is writable");
+    assert_eq!(factory.read_property(email.as_ref(), "valid"), Ok(CapabilityValue::Bool(true)));
+    // The derived pair is not writable: the text already determines both.
+    assert!(factory.write_property(email.as_mut(), "valid", CapabilityValue::Bool(false)).is_err());
 }

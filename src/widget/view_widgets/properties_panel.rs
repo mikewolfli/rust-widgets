@@ -144,6 +144,12 @@ pub struct PropertiesPanel {
     /// `value_display_text` allocated a `String` per visible row per frame;
     /// formatting is now done once per value change instead of once per paint.
     display_cache: RefCell<Option<Vec<String>>>,
+    /// The entry index the pointer is over, or `None`.
+    ///
+    /// Stored as an entry index rather than a visual row so a scroll cannot
+    /// leave the highlight on whatever visual row the entry used to occupy;
+    /// category headers are separators and are never hovered.
+    hovered_entry: Option<usize>,
 }
 
 impl PropertiesPanel {
@@ -157,6 +163,7 @@ impl PropertiesPanel {
             property_changed: Signal1::new(),
             grouped_cache: RefCell::new(None),
             display_cache: RefCell::new(None),
+            hovered_entry: None,
         }
     }
 
@@ -411,6 +418,34 @@ impl PropertiesPanel {
         self.row_owner(row_rect.y - content.y + self.scroll_offset)
     }
 
+    /// The entry index under `pos`, or `None` when the pointer is over a category
+    /// header or outside the content box.
+    ///
+    /// The same inverse walk [`Self::row_owner`] performs, minus the editable
+    /// filter: hover follows the pointer's fact, and a read-only entry is still
+    /// a row the pointer can be over.
+    fn entry_index_at(&self, pos: crate::core::Point) -> Option<usize> {
+        let content = self.content_box();
+        if !content.contains_point(pos) {
+            return None;
+        }
+        let target = (pos.y - content.y + self.scroll_offset) as usize / ROW_HEIGHT as usize;
+        let mut row = 0usize;
+        for (_, indices) in self.grouped_indices().iter() {
+            if row == target {
+                return None; // a category header
+            }
+            row += 1;
+            for &index in indices {
+                if row == target {
+                    return Some(index);
+                }
+                row += 1;
+            }
+        }
+        None
+    }
+
     /// Maps a visual row's vertical offset within the scrolled content back to the name of the
     /// entry it carries, or `None` when the offset falls on a category header.
     ///
@@ -593,6 +628,14 @@ impl Draw for PropertiesPanel {
         // than the previous literal grey.
         let value_color = text_color;
         let readonly_value_color = text_color.blend(&value_background, 0.5);
+        // A hovered entry is pointer position, not a committed selection, so it reads the
+        // accent at a **lighter** weight than the row background — the same surface/accent
+        // pair the table family uses for its row tint, so the two grids hover alike.
+        let accent = crate::style::palette_shared()
+            .as_ref()
+            .map(|colors| colors.primary)
+            .unwrap_or(Color::PRIMARY);
+        let hovered_bg = background.blend(&accent, 0.12);
 
         // ── Background ──
         context.fill_rect(geom, background);
@@ -657,8 +700,13 @@ impl Draw for PropertiesPanel {
                     continue;
                 }
 
-                // Alternate row background
-                context.fill_rect(row_rect, row_background);
+                // Alternate row background — or the hover tint when the pointer is over this
+                // entry. The stored hover is an entry index, so it follows its row through a
+                // scroll instead of lighting whatever visual row it used to occupy.
+                context.fill_rect(
+                    row_rect,
+                    if Some(index) == self.hovered_entry { hovered_bg } else { row_background },
+                );
                 let row_line = context.text_line(row_rect, font);
 
                 // Property name. Guarded on the text being non-empty so a nameless entry
@@ -750,6 +798,28 @@ impl EventHandler for PropertiesPanel {
                         }
                     }
                 }
+            }
+            Event::MouseMove { pos, .. } => {
+                // A disabled panel is read-only, so it shows no hover affordance either —
+                // the same gate its press arm applies.
+                if self.base.is_enabled() {
+                    // Hover is the entry under the pointer, from the same inverse walk the
+                    // press uses, so a highlight cannot land on a row a click would not
+                    // reach. `MouseMove` fires far more often than the highlight changes,
+                    // so the redraw is requested only on an actual change.
+                    let hovered = self.entry_index_at(*pos);
+                    if hovered != self.hovered_entry {
+                        self.hovered_entry = hovered;
+                        self.base.request_redraw();
+                    }
+                }
+                self.base.handle_event(event);
+            }
+            Event::MouseLeave { .. } => {
+                if self.hovered_entry.take().is_some() {
+                    self.base.request_redraw();
+                }
+                self.base.handle_event(event);
             }
             Event::Wheel { delta, modifiers: _ } => {
                 self.scroll_offset = (self.scroll_offset - delta.y * 3).max(0);
@@ -1164,5 +1234,45 @@ mod tests {
 
         panel.set_property_value("greeting", PropertyValue::Text("Hi".to_string()));
         assert_eq!(panel.display_texts().as_slice(), &[String::from("Hi")]);
+    }
+
+    /// Hover is the entry under the pointer, resolved through the same row walk the
+    /// press uses: headers stay unlit, entries resolve to their index and leaving
+    /// the panel clears the highlight instead of freezing it in place.
+    #[test]
+    fn hover_follows_the_pointer_across_headers_and_entries() {
+        let mut panel = PropertiesPanel::new(Rect::new(0, 0, 300, 400));
+        panel.add_property(make_text_property("name", "Alice", Some("General")));
+        panel.add_property(make_bool_property("enabled", true, Some("General")));
+
+        // Visual row 0 is the category header — a separator, never hovered.
+        let header = panel.row_rect_for(0);
+        panel.handle_event(&Event::MouseMove { pos: Point::new(header.x + 10, header.y + 13) });
+        assert_eq!(panel.hovered_entry, None);
+
+        // Rows 1 and 2 carry entries 0 and 1 respectively.
+        let first = panel.row_rect_for(1);
+        panel.handle_event(&Event::MouseMove { pos: Point::new(first.x + 10, first.y + 13) });
+        assert_eq!(panel.hovered_entry, Some(0));
+
+        let second = panel.row_rect_for(2);
+        panel.handle_event(&Event::MouseMove { pos: Point::new(second.x + 10, second.y + 13) });
+        assert_eq!(panel.hovered_entry, Some(1));
+
+        panel.handle_event(&Event::MouseLeave { pos: Point::new(-1, -1) });
+        assert_eq!(panel.hovered_entry, None);
+    }
+
+    /// A disabled panel is read-only, so it shows no hover affordance either — the
+    /// same gate its press arm applies before an edit is accepted.
+    #[test]
+    fn a_disabled_panel_shows_no_hover() {
+        let mut panel = PropertiesPanel::new(Rect::new(0, 0, 300, 400));
+        panel.add_property(make_text_property("name", "Alice", Some("General")));
+        panel.set_enabled(false);
+
+        let first = panel.row_rect_for(1);
+        panel.handle_event(&Event::MouseMove { pos: Point::new(first.x + 10, first.y + 13) });
+        assert_eq!(panel.hovered_entry, None);
     }
 }

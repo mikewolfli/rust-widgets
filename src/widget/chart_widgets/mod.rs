@@ -47,6 +47,9 @@ pub mod adapter;
 pub mod bar_chart;
 #[cfg(widgets_unstripped)]
 pub mod charts;
+/// Gauge — a radial dial showing one value against a range.
+#[cfg(full_widgets)]
+pub mod gauge;
 #[cfg(widgets_unstripped)]
 pub mod layout;
 pub mod line_chart;

@@ -10,8 +10,8 @@
 #           placeholder is not a lie, so it is not required to be answered
 # failed  = declarations that disagree with the implementation
 
-controls   188
-skipped    192
+controls   213
+skipped    217
 failed     0
 
 ## skipped entries (each with its reason)
@@ -42,6 +42,9 @@ failed     0
 - date_edit::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - time_edit::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - line_edit::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- password_edit::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- phone_input::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- email_input::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - list_view::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - tree_view::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - table_widget::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
@@ -52,6 +55,7 @@ failed     0
 - virtual_list::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - data_view::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - menu::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- context_menu::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - menu_bar::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - tool_bar::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - ribbon_bar::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
@@ -208,6 +212,27 @@ failed     0
 - tool_button::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - status_bar::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 - property_grid::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- spacer::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- center::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- align::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- sized_box::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- padding::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- expanded::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- flexible::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- intrinsic_width::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- aspect_ratio::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- flex::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- flow_layout::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- wrap_layout::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- split_layout::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- accordion::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- tag::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- clock::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- gauge::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- alert_dialog::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- confirm_dialog::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- about_dialog::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
+- time_picker::geometry: declared neither readable nor writable, so it promises nothing and Q1 does not require it to be answered
 
 ## failed entries
 

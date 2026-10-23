@@ -30,11 +30,16 @@
 # `composite.rs` and the per-control suites, and would be asserted only in their *spelling* by a
 # lexical scan. `tools/check_composite_assembly_rules.py`'s header states that split explicitly.
 #
+# Since the performance round, no control assembles factory children through `CompositeBuilder`
+# any more: the ten former consumers are painted interiors or content hosts now, each documented
+# in its own file. The gate states that fact instead of pretending otherwise — the *positive*
+# halves of rules 1 and 2 apply to a control that creates children (none exists today; if one
+# appears, the gate checks it automatically), and the *negative* halves apply to every host.
+#
 # # Reverse injection
 #
-# `--inject` removes the layout call from a migrated composite and requires the gate to fail, then
-# does the same for the factory call. Without it, a check that had quietly stopped reading its
-# input would pass against any tree.
+# `--inject` breaks each enforceable rule in live code and requires the gate to fail. Without
+# it, a check that had quietly stopped reading its input would pass against any tree.
 #
 # Usage: tools/check_composite_assembly_rules.sh
 set -euo pipefail

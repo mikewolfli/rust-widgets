@@ -43,6 +43,12 @@ pub struct VirtualTable {
     /// `true` when the bound source has `revision() > 0` or a `data_changed` signal, i.e. the
     /// window cache has an invalidation contract and may be kept between calls.
     data_is_observable: bool,
+    /// The row the pointer is over, as the data source's own **absolute** row index.
+    ///
+    /// Stored absolutely like `grid_table` stores its hover, so a scroll moves the
+    /// highlight with its row instead of lighting whatever viewport-local index the
+    /// row used to sit at.
+    hovered_row: Option<usize>,
     /// Emitted when visible window changes `(row_start,row_len,col_start,col_len)`.
     pub visible_window_changed: Signal1<(usize, usize, usize, usize)>,
 }
@@ -64,6 +70,7 @@ impl VirtualTable {
             data_source_connection_scope: ConnectionScope::new(),
             data_generation: Arc::new(AtomicU64::new(0)),
             data_is_observable: false,
+            hovered_row: None,
             visible_window_changed: Signal1::new(),
         }
     }
@@ -562,6 +569,22 @@ impl EventHandler for VirtualTable {
         }
 
         match event {
+            Event::MouseMove { pos, .. } => {
+                // Hover is the absolute row under the pointer, from the same `cell_at`
+                // derivation `cell_rect` paints through, so a highlight cannot land on a
+                // row a click would not reach. `MouseMove` fires far more often than the
+                // highlight changes, so the redraw is requested only on an actual change.
+                let hovered = self.cell_at(*pos).map(|(row, _)| row);
+                if hovered != self.hovered_row {
+                    self.hovered_row = hovered;
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseLeave { .. } => {
+                if self.hovered_row.take().is_some() {
+                    self.base.request_redraw();
+                }
+            }
             Event::Wheel { delta, .. } => {
                 if delta.y < 0 {
                     self.set_scroll_row(self.scroll_row.saturating_add(1));
@@ -634,6 +657,11 @@ impl Draw for VirtualTable {
             .map(|colors| colors.outline_variant)
             .filter(|resolved| *resolved != surface)
             .unwrap_or_else(|| surface.blend(&ink, 0.10));
+        // A hovered row reads the same accent at a **lighter** weight than a selection:
+        // it is pointer position, not a committed state. The accent comes from the same
+        // palette read above, so the hover costs no extra theme lock.
+        let accent = palette.as_ref().map(|colors| colors.primary).unwrap_or(Color::PRIMARY);
+        let hovered_bg = surface.blend(&accent, 0.12);
 
         context.face_with_gradient(
             rect,
@@ -675,6 +703,29 @@ impl Draw for VirtualTable {
             .skip(leading_rows)
             .take(visible_rows)
             .map(|row| row.iter().skip(leading_cols).take(visible_columns));
+        // The hovered row's viewport-local index, when the absolute hover is inside the
+        // window actually painted. The band is drawn once, spanning the full row, before
+        // the cells stroke over it — a whole-row tint is the affordance the family shares,
+        // and a cell-sized one flickers as the pointer crosses column boundaries.
+        let hovered_local = self
+            .hovered_row
+            .and_then(|abs| abs.checked_sub(self.scroll_row))
+            .filter(|local| *local < visible_rows);
+        if let Some(local_row) = hovered_local {
+            // The band's top and height are the cell band's own: `INSET + row * stride`
+            // tall and `stride - 2` high, so the tint covers the row's cells and the
+            // 2 px gaps between them as one continuous stripe.
+            const INSET: i32 = 2;
+            context.fill_rect(
+                Rect::new(
+                    rect.x + INSET,
+                    rect.y + INSET + local_row as i32 * self.row_height as i32,
+                    rect.width.saturating_sub(4),
+                    self.row_height.saturating_sub(2),
+                ),
+                hovered_bg,
+            );
+        }
         for (row_index, row) in visible.enumerate() {
             for (column_index, cell) in row.enumerate() {
                 let cell_rect = self.cell_rect(rect, row_index, column_index);
@@ -1379,5 +1430,52 @@ mod tests {
             "after invalidation the window must begin at the new fetch origin"
         );
         assert_eq!(fetches.load(Ordering::SeqCst), 2, "a scroll must invalidate and re-fetch once");
+    }
+
+    /// Hover is the absolute row under the pointer, resolved through the same `cell_at`
+    /// derivation the paint reads, and leaving the table clears the highlight.
+    #[test]
+    fn virtual_table_hover_follows_the_pointer() {
+        let mut table = VirtualTable::new(Rect::new(0, 0, 320, 200));
+        table.set_data_source(Arc::new(StaticSource));
+
+        let cell = table.cell_rect(table.geometry(), 0, 0);
+        table.handle_event(&Event::MouseMove {
+            pos: crate::core::Point::new(cell.x + 5, cell.y + 5),
+        });
+        assert_eq!(table.hovered_row, Some(0));
+
+        // A lower viewport row lights its own absolute index.
+        let cell = table.cell_rect(table.geometry(), 2, 1);
+        table.handle_event(&Event::MouseMove {
+            pos: crate::core::Point::new(cell.x + 5, cell.y + 5),
+        });
+        assert_eq!(table.hovered_row, Some(2));
+
+        table.handle_event(&Event::MouseLeave { pos: crate::core::Point::new(-1, -1) });
+        assert_eq!(table.hovered_row, None);
+    }
+
+    /// The hover is stored absolutely, so scrolling moves the highlight with its row:
+    /// the same pointer position after a scroll names a different absolute row.
+    #[test]
+    fn virtual_table_hover_is_absolute_across_a_scroll() {
+        let mut table = VirtualTable::new(Rect::new(0, 0, 320, 200));
+        table.set_data_source(Arc::new(StaticSource));
+
+        let cell = table.cell_rect(table.geometry(), 0, 0);
+        table.handle_event(&Event::MouseMove {
+            pos: crate::core::Point::new(cell.x + 5, cell.y + 5),
+        });
+        assert_eq!(table.hovered_row, Some(0));
+
+        table.set_scroll_row(5);
+        assert_eq!(table.hovered_row, Some(0), "the row the pointer was on did not change");
+
+        // The pointer has not moved, but the row now under it is global row 5.
+        table.handle_event(&Event::MouseMove {
+            pos: crate::core::Point::new(cell.x + 5, cell.y + 5),
+        });
+        assert_eq!(table.hovered_row, Some(5));
     }
 }

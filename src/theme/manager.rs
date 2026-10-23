@@ -23,6 +23,12 @@ static THEME_REVISION: AtomicU64 = AtomicU64::new(0);
 /// Marks the process-wide theme as changed, so cached resolutions are no longer used.
 fn note_theme_mutation() {
     THEME_REVISION.fetch_add(1, Ordering::Relaxed);
+    // The revision only makes the *next* paint resolve the new colours; this arms the
+    // paint itself. Every control paints differently after a theme change while no
+    // control's own state changed, so without it an idle, event-driven host kept the
+    // frame it already drew until unrelated input arrived.
+    #[cfg(not(alloc_frugal))]
+    crate::widget::runtime::arm_global_repaint();
 }
 
 /// Theme registry and active-theme resolver.
@@ -1626,6 +1632,28 @@ mod macos_preset_tests {
             Theme::dark().colors.primary,
             dark.colors.primary,
             "the built-in dark preset must stay as it was"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A theme mutation must arm the next frame's full repaint.
+    ///
+    /// The theme revision alone only makes the *next* paint resolve the new colours; it
+    /// does not ask for that paint. Without the arming below, an idle event-driven host
+    /// kept the frame it already drew, so a light/dark switch appeared to do nothing until
+    /// unrelated input arrived.
+    #[test]
+    fn a_theme_mutation_arms_a_full_repaint() {
+        let before = crate::widget::runtime::global_repaint_epoch_for_test();
+        note_theme_mutation();
+        assert_eq!(
+            crate::widget::runtime::global_repaint_epoch_for_test(),
+            before + 1,
+            "a theme change must arm exactly one full repaint"
         );
     }
 }

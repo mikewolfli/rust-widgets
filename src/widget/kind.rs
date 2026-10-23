@@ -660,6 +660,72 @@ pub enum WidgetKind {
     /// position, so adding a control cannot rearrange the ones already there.
     #[cfg(widgets_unstripped)]
     SegmentedControl,
+    /// Spacer — an empty, invisible area that consumes free space in a linear layout.
+    ///
+    /// Its whole behaviour is the two layout channels every control already has:
+    /// [`Widget::hints`](crate::widget::Widget::hints) says how much room it asks for and
+    /// [`Widget::default_layout_params`](crate::widget::Widget::default_layout_params) says
+    /// it should absorb the leftover. Painting nothing is the contract, not an omission.
+    #[cfg(widgets_unstripped)]
+    Spacer,
+    /// Center — centres its single content child, optionally at a fraction of the parent.
+    #[cfg(widgets_unstripped)]
+    Center,
+    /// Align — places its single content child at one of nine anchor positions.
+    #[cfg(widgets_unstripped)]
+    Align,
+    /// SizedBox — a box with a fixed width and height.
+    #[cfg(widgets_unstripped)]
+    SizedBox,
+    /// Padding — insets its content child by four independent edge paddings.
+    #[cfg(widgets_unstripped)]
+    Padding,
+    /// Expanded — a child that takes the leftover room along the main axis, weighted.
+    #[cfg(widgets_unstripped)]
+    Expanded,
+    /// Flexible — a child that may shrink to its floor but only grows up to its preferred size.
+    #[cfg(widgets_unstripped)]
+    Flexible,
+    /// IntrinsicWidth — a box whose width is its content's own width.
+    #[cfg(widgets_unstripped)]
+    IntrinsicWidth,
+    /// AspectRatio — a box that derives one extent from the other through a fixed ratio.
+    #[cfg(widgets_unstripped)]
+    AspectRatio,
+    /// Flex — a linear layout that distributes children by weight along one axis.
+    #[cfg(widgets_unstripped)]
+    Flex,
+    /// FlowLayout — places children in reading order, starting a new run when full.
+    #[cfg(widgets_unstripped)]
+    FlowLayout,
+    /// WrapLayout — places fixed-size children and wraps them onto the next run when full.
+    ///
+    /// Distinct from [`Self::FlowLayout`]: a flow run is sized by its children's own hints and
+    /// its direction follows the writing mode, whereas a wrap run is a fixed-size grid of cells
+    /// whose line breaking is the control's published configuration.
+    #[cfg(widgets_unstripped)]
+    WrapLayout,
+    /// Tag — a compact pill-shaped label used to categorise or filter content.
+    #[cfg(widgets_unstripped)]
+    Tag,
+    /// Gauge — a radial dial showing one value against a range.
+    #[cfg(widgets_unstripped)]
+    Gauge,
+    /// Clock — an analog clock face showing a time of day.
+    #[cfg(widgets_unstripped)]
+    Clock,
+    /// Accordion — a vertical stack of collapsible sections, one expanded at a time or many.
+    #[cfg(widgets_unstripped)]
+    Accordion,
+    /// AlertDialog — a modal notice with one acknowledging action.
+    #[cfg(widgets_unstripped)]
+    AlertDialog,
+    /// ConfirmDialog — a modal question with an accept and a cancel action.
+    #[cfg(widgets_unstripped)]
+    ConfirmDialog,
+    /// AboutDialog — the standard application-information dialog.
+    #[cfg(widgets_unstripped)]
+    AboutDialog,
 }
 
 impl WidgetKind {
@@ -1009,6 +1075,44 @@ impl WidgetKind {
             Self::DropZone => "DropZone",
             #[cfg(widgets_unstripped)]
             Self::SegmentedControl => "SegmentedControl",
+            #[cfg(widgets_unstripped)]
+            Self::Spacer => "Spacer",
+            #[cfg(widgets_unstripped)]
+            Self::Center => "Center",
+            #[cfg(widgets_unstripped)]
+            Self::Align => "Align",
+            #[cfg(widgets_unstripped)]
+            Self::SizedBox => "SizedBox",
+            #[cfg(widgets_unstripped)]
+            Self::Padding => "Padding",
+            #[cfg(widgets_unstripped)]
+            Self::Expanded => "Expanded",
+            #[cfg(widgets_unstripped)]
+            Self::Flexible => "Flexible",
+            #[cfg(widgets_unstripped)]
+            Self::IntrinsicWidth => "IntrinsicWidth",
+            #[cfg(widgets_unstripped)]
+            Self::AspectRatio => "AspectRatio",
+            #[cfg(widgets_unstripped)]
+            Self::Flex => "Flex",
+            #[cfg(widgets_unstripped)]
+            Self::FlowLayout => "FlowLayout",
+            #[cfg(widgets_unstripped)]
+            Self::WrapLayout => "WrapLayout",
+            #[cfg(widgets_unstripped)]
+            Self::Tag => "Tag",
+            #[cfg(widgets_unstripped)]
+            Self::Gauge => "Gauge",
+            #[cfg(widgets_unstripped)]
+            Self::Clock => "Clock",
+            #[cfg(widgets_unstripped)]
+            Self::Accordion => "Accordion",
+            #[cfg(widgets_unstripped)]
+            Self::AlertDialog => "AlertDialog",
+            #[cfg(widgets_unstripped)]
+            Self::ConfirmDialog => "ConfirmDialog",
+            #[cfg(widgets_unstripped)]
+            Self::AboutDialog => "AboutDialog",
         }
     }
 

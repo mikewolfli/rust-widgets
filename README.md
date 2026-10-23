@@ -15,7 +15,7 @@ services at all.
 
 ## Highlights
 
-- **181 widget kinds** — inputs, tables, trees, docks, dialogs, media, charts, editors and more,
+- **200 widget kinds** — inputs, tables, trees, docks, dialogs, media, charts, editors and more,
   with one implementation shared by every platform.
 - **Reproducible output** — SVG and pixel snapshots are committed per control and per appearance,
   so a visual change is a reviewable diff rather than a screenshot in a chat.

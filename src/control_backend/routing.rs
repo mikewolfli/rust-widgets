@@ -243,6 +243,25 @@ mod tests {
             WidgetKind::TreeTable
             | WidgetKind::Breadcrumb
             | WidgetKind::SignaturePad
+            | WidgetKind::Spacer
+            | WidgetKind::Center
+            | WidgetKind::Align
+            | WidgetKind::SizedBox
+            | WidgetKind::Padding
+            | WidgetKind::Expanded
+            | WidgetKind::Flexible
+            | WidgetKind::IntrinsicWidth
+            | WidgetKind::AspectRatio
+            | WidgetKind::Flex
+            | WidgetKind::FlowLayout
+            | WidgetKind::WrapLayout
+            | WidgetKind::Tag
+            | WidgetKind::Gauge
+            | WidgetKind::Clock
+            | WidgetKind::Accordion
+            | WidgetKind::AlertDialog
+            | WidgetKind::ConfirmDialog
+            | WidgetKind::AboutDialog
             | WidgetKind::DropZone => ControlRoutePreference::CustomRequired,
         }
     }

@@ -546,6 +546,10 @@ pub fn default_widget_property_default_value(
             "prefix" | "suffix" | "helper" | "error" => CapabilityValue::String(String::new()),
             "counter" => CapabilityValue::Null,
             "over_limit" => CapabilityValue::Bool(false),
+            // A field without a grammar (`line_edit`, `password_edit`) is valid and has no
+            // message; `phone_input` / `email_input` start empty, which both grammars accept.
+            "valid" => CapabilityValue::Bool(true),
+            "validation_message" => CapabilityValue::String(String::new()),
             "alignment" => CapabilityValue::String("left".to_string()),
             _ => return None,
         },
@@ -1718,6 +1722,143 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::BezierCurveEditor => match property_name {
             "snap_to_grid" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+
+        // ── Layout family ───────────────────────────────────────────
+        //
+        // These mirror the constructors' own initial state. A wrapper's content box starts empty
+        // at zero size, so both content setters are writable from the schema default; the
+        // distribution controls start with no items, which is why their counts are zero.
+        WidgetKind::Spacer => match property_name {
+            "flex" => CapabilityValue::UInt(1),
+            "base_size" => CapabilityValue::UInt(0),
+            "paint_hint" => CapabilityValue::Bool(true),
+            _ => return None,
+        },
+        WidgetKind::Center => match property_name {
+            "content" => CapabilityValue::String(String::new()),
+            "content_width" | "content_height" => CapabilityValue::UInt(0),
+            "width_factor" | "height_factor" => CapabilityValue::Float(1.0),
+            _ => return None,
+        },
+        WidgetKind::Align => match property_name {
+            "content" => CapabilityValue::String(String::new()),
+            "content_width" | "content_height" => CapabilityValue::UInt(0),
+            "alignment" => CapabilityValue::String("centre".to_string()),
+            _ => return None,
+        },
+        WidgetKind::SizedBox | WidgetKind::IntrinsicWidth => match property_name {
+            "content" => CapabilityValue::String(String::new()),
+            "content_width" | "content_height" => CapabilityValue::UInt(0),
+            // `SizedBox` also publishes the fixed box it asks its parent for. A freshly built box
+            // starts at its own geometry, which the schema cannot know; the honest default is the
+            // one value the constructor can produce for any geometry.
+            "box_width" | "box_height" => CapabilityValue::UInt(0),
+            _ => return None,
+        },
+        WidgetKind::Padding => match property_name {
+            "content" => CapabilityValue::String(String::new()),
+            "content_width" | "content_height" => CapabilityValue::UInt(0),
+            "padding_top" | "padding_right" | "padding_bottom" | "padding_left" => {
+                CapabilityValue::UInt(0)
+            }
+            _ => return None,
+        },
+        WidgetKind::Expanded => match property_name {
+            "content" => CapabilityValue::String(String::new()),
+            "content_width" | "content_height" => CapabilityValue::UInt(0),
+            "flex" => CapabilityValue::UInt(1),
+            _ => return None,
+        },
+        WidgetKind::Flexible => match property_name {
+            "content" => CapabilityValue::String(String::new()),
+            "content_width" | "content_height" => CapabilityValue::UInt(0),
+            "flex" => CapabilityValue::UInt(1),
+            "fit" => CapabilityValue::String("loose".to_string()),
+            _ => return None,
+        },
+        WidgetKind::AspectRatio => match property_name {
+            "content" => CapabilityValue::String(String::new()),
+            "content_width" | "content_height" => CapabilityValue::UInt(0),
+            // The constructor's own default, so the schema and the control agree.
+            "ratio" => CapabilityValue::Float(f64::from(16.0_f32 / 9.0)),
+            "respect_parent" => CapabilityValue::Bool(true),
+            _ => return None,
+        },
+        WidgetKind::Flex => match property_name {
+            "item_count" => CapabilityValue::UInt(0),
+            "direction" => CapabilityValue::String("row".to_string()),
+            "wrap" => CapabilityValue::String("no_wrap".to_string()),
+            "justify_content" => CapabilityValue::String("flex_start".to_string()),
+            "align_items" => CapabilityValue::String("stretch".to_string()),
+            "gap" => CapabilityValue::UInt(0),
+            _ => return None,
+        },
+        WidgetKind::FlowLayout => match property_name {
+            "item_count" => CapabilityValue::UInt(0),
+            "direction" => CapabilityValue::String("horizontal".to_string()),
+            "alignment" => CapabilityValue::String("start".to_string()),
+            "spacing" | "padding" => CapabilityValue::UInt(8),
+            "wrap" => CapabilityValue::Bool(true),
+            _ => return None,
+        },
+        WidgetKind::WrapLayout => match property_name {
+            "item_count" => CapabilityValue::UInt(0),
+            "direction" => CapabilityValue::String("horizontal".to_string()),
+            "alignment" => CapabilityValue::String("start".to_string()),
+            "spacing" | "padding" => CapabilityValue::UInt(8),
+            // `null` is the documented "follow the item spacing" state.
+            "run_spacing" => CapabilityValue::Null,
+            _ => return None,
+        },
+        WidgetKind::Accordion => match property_name {
+            "section_count" | "expanded_count" => CapabilityValue::UInt(0),
+            "single_expand" => CapabilityValue::Bool(true),
+            _ => return None,
+        },
+
+        // ── Small display controls ──────────────────────────────────
+        WidgetKind::Tag => match property_name {
+            "text" => CapabilityValue::String(String::new()),
+            "tone" => CapabilityValue::String("neutral".to_string()),
+            "selected" | "closable" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::Clock => match property_name {
+            "hour" | "minute" | "second" => CapabilityValue::UInt(0),
+            "show_seconds" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::Gauge => match property_name {
+            "value" | "minimum" => CapabilityValue::Float(0.0),
+            "maximum" => CapabilityValue::Float(100.0),
+            "label" | "unit" => CapabilityValue::String(String::new()),
+            "thickness" => CapabilityValue::UInt(10),
+            _ => return None,
+        },
+
+        // ── Menus and modal notices ────────────────────────────────
+        WidgetKind::ContextMenu => match property_name {
+            "item_count" => CapabilityValue::UInt(0),
+            "open" => CapabilityValue::Bool(false),
+            "highlighted_index" => CapabilityValue::Null,
+            _ => return None,
+        },
+        WidgetKind::AlertDialog => match property_name {
+            "title" | "message" => CapabilityValue::String(String::new()),
+            "button_text" => CapabilityValue::String("OK".to_string()),
+            _ => return None,
+        },
+        WidgetKind::ConfirmDialog => match property_name {
+            "title" | "message" => CapabilityValue::String(String::new()),
+            "accept_text" => CapabilityValue::String("OK".to_string()),
+            "reject_text" => CapabilityValue::String("Cancel".to_string()),
+            _ => return None,
+        },
+        WidgetKind::AboutDialog => match property_name {
+            "title" => CapabilityValue::String("About".to_string()),
+            "application_name" | "version" | "message" => CapabilityValue::String(String::new()),
             _ => return None,
         },
 

@@ -714,6 +714,40 @@ fn schema_and_contract_publish_the_same_names() {
     );
 }
 
+/// A schema table must not declare the same property name twice.
+///
+/// # Why this test exists
+///
+/// `INDICATOR_CHART_PROPERTIES` shipped with `enabled`/`visible`/`tooltip`/`geometry`
+/// declared both at the head and the tail of the table (found when the declaration
+/// alignment census listed `indicator_chart::geometry` twice). A duplicated row is a
+/// copy-paste artifact a reader cannot interpret: if the two copies ever disagree about
+/// `readable`/`writable`, which one wins depends on which lookup order the consumer
+/// happens to use, and the census double-counts the placeholder rows either way. No
+/// lookup can be fixed on the duplicated row's behalf, so the declaration itself must
+/// be unique.
+#[test]
+fn every_schema_declares_each_property_at_most_once() {
+    let factory = WidgetFactory::new_with_defaults();
+
+    let mut duplicated = alloc::vec::Vec::new();
+    for capability in factory.capabilities() {
+        let mut seen = alloc::vec::Vec::new();
+        for schema in capability.properties {
+            if seen.contains(&schema.name) {
+                duplicated.push((capability.canonical_name, schema.name));
+            }
+            seen.push(schema.name);
+        }
+    }
+
+    assert!(
+        duplicated.is_empty(),
+        "these schema tables declare the same property more than once, so a reader \
+         cannot tell which row governs (widget, property): {duplicated:?}"
+    );
+}
+
 /// Every schema row marked `false,false` must genuinely not be served.
 ///
 /// # Why this test exists

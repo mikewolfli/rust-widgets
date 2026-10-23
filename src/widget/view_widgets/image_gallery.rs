@@ -86,6 +86,16 @@ pub const GALLERY_IMAGE_SCHEMA: crate::widget::capability::RecordSchema =
 /// The dimension `GalleryImage::new` uses when the caller does not supply one.
 const GALLERY_DEFAULT_DIMENSION: u32 = 100;
 
+/// Gap between neighbouring thumbnails in the strip.
+const THUMB_SPACING: u32 = 6;
+/// Inset of the first thumbnail from the strip's left edge.
+const THUMB_PADDING: i32 = 8;
+/// Gap between a thumbnail and the strip's top edge.
+const THUMB_TOP_GAP: i32 = 4;
+/// The strip's chrome around the thumbnail row — margins plus the caption band —
+/// which is what makes the strip taller than `thumbnail_size`.
+const THUMB_STRIP_CHROME: u32 = 28;
+
 fn gallery_image_record(image: &GalleryImage) -> crate::widget::capability::RecordValue {
     let mut record = crate::widget::capability::RecordValue::new()
         .with("path", CapabilityValue::String(image.path.clone()))
@@ -149,6 +159,11 @@ pub struct ImageGallery {
     /// It rests at `1.0`: a gallery built and seeded is already showing its first image, so it must
     /// not animate that one into place.
     reveal: PropertyDriver,
+    /// The image the pointer is over in the thumbnail strip, or `None`.
+    ///
+    /// Indexed like `current_index`; only thumbnails the strip actually paints can
+    /// hover, so an image scrolled out of the strip never carries the highlight.
+    hovered_thumb: Option<usize>,
     /// Emitted when the selected image changes. Passes the new index.
     pub image_changed: Signal1<usize>,
 }
@@ -164,6 +179,7 @@ impl ImageGallery {
             show_thumbnails: true,
             // At rest settled: the first image is already there when the gallery is built.
             reveal: PropertyDriver::at(1.0, MotionSlot::Normal),
+            hovered_thumb: None,
             image_changed: Signal1::new(),
         }
     }
@@ -305,6 +321,72 @@ impl ImageGallery {
     /// Returns whether there is a previous image available.
     pub fn has_previous(&self) -> bool {
         self.current_index > 0 && !self.images.is_empty()
+    }
+
+    /// The preview area: the control's box minus the thumbnail strip's height.
+    ///
+    /// `draw` and the press arm both derived this inline, which is how the two
+    /// copies could drift; both now read this one derivation.
+    fn preview_rect(&self) -> Rect {
+        let rect = self.geometry();
+        let thumb_strip_height =
+            if self.show_thumbnails { self.thumbnail_size + THUMB_STRIP_CHROME } else { 0 };
+        Rect::new(rect.x, rect.y, rect.width, rect.height.saturating_sub(thumb_strip_height))
+    }
+
+    /// The thumbnail strip's shared layout: its box, how many thumbnails fit, and
+    /// the image index of the first visible slot.
+    ///
+    /// `None` when the strip is hidden or the gallery is empty — the two guards
+    /// `draw` and the press arm each applied inline. Both now read this, so a
+    /// painted slot, a hovered slot and a clickable slot are the same computation.
+    fn strip_layout(&self) -> Option<(Rect, usize, usize)> {
+        if !self.show_thumbnails || self.images.is_empty() {
+            return None;
+        }
+        let rect = self.geometry();
+        let preview = self.preview_rect();
+        let strip = Rect::new(
+            rect.x,
+            preview.y + preview.height as i32,
+            rect.width,
+            self.thumbnail_size + THUMB_STRIP_CHROME,
+        );
+        let thumb_total = self.thumbnail_size + THUMB_SPACING;
+        let max_visible = strip.width.checked_div(thumb_total).map_or(1, |v| v.max(1) as usize);
+        let start_offset = if self.current_index >= max_visible / 2 {
+            (self.current_index - max_visible / 2)
+                .min(self.images.len().saturating_sub(max_visible))
+        } else {
+            0
+        };
+        Some((strip, max_visible, start_offset))
+    }
+
+    /// The box of the `i`-th visible slot in `strip`, which paints image
+    /// `start_offset + i`.
+    fn thumbnail_rect(strip: Rect, thumbnail_size: u32, i: usize) -> Rect {
+        Rect::new(
+            strip.x + THUMB_PADDING + (i as u32 * (thumbnail_size + THUMB_SPACING)) as i32,
+            strip.y + THUMB_TOP_GAP,
+            thumbnail_size,
+            thumbnail_size,
+        )
+    }
+
+    /// The image index under `pos`, when it is over a thumbnail the strip paints.
+    fn thumbnail_at(&self, pos: Point) -> Option<usize> {
+        let (strip, max_visible, start_offset) = self.strip_layout()?;
+        for i in 0..max_visible.min(self.images.len()) {
+            let img_idx = start_offset + i;
+            if img_idx >= self.images.len() {
+                break;
+            }
+            if Self::thumbnail_rect(strip, self.thumbnail_size, i).contains_point(pos) {
+                return Some(img_idx);
+            }
+        }
+        None
     }
 
     /// The navigation-arrow hit boxes inside `preview`, `(previous, next)`, each `None` when that
@@ -562,10 +644,8 @@ impl Draw for ImageGallery {
             return;
         }
 
-        // ── Large preview area ──────────────────────────────────────────
-        let thumb_strip_height = if self.show_thumbnails { self.thumbnail_size + 28 } else { 0 };
-        let preview_rect =
-            Rect::new(rect.x, rect.y, rect.width, rect.height.saturating_sub(thumb_strip_height));
+        // ── Large preview area ──────────────────────────────────────
+        let preview_rect = self.preview_rect();
 
         // The preview is a **photo stage**: it is the one surface in the crate that is darker
         // than any appearance, because a preview is judged against a neutral dark ground in every
@@ -713,17 +793,13 @@ impl Draw for ImageGallery {
             }
         }
 
-        // ── Thumbnail strip ─────────────────────────────────────────────
-        if !self.show_thumbnails {
+        // ── Thumbnail strip ─────────────────────────────────────
+        // The strip's box, visible count and first slot all come from the same
+        // derivation the hit test reads, so a painted slot and a clickable slot
+        // cannot drift apart.
+        let Some((strip_rect, max_visible, start_offset)) = self.strip_layout() else {
             return;
-        }
-
-        let strip_rect = Rect::new(
-            rect.x,
-            preview_rect.y + preview_rect.height as i32,
-            rect.width,
-            thumb_strip_height,
-        );
+        };
         // The strip is the **stage's own bottom band**, so it is derived from the stage: on the
         // default dark stage this is the old `rgba(50,50,50,255)` (one step of ink toward the
         // stage's contrast colour is `(30,30,30)` -> `(50,50,50)`, which is where that literal came
@@ -748,21 +824,10 @@ impl Draw for ImageGallery {
             .unwrap_or(Color::rgba(80, 140, 220, 200));
         let thumb_selected = accent;
         let thumb_resting = strip.blend(&stage_ink, 0.22);
-
-        let thumb_spacing = 6u32;
-        let thumb_total = self.thumbnail_size + thumb_spacing;
-        let strip_padding = 8i32;
-
-        // Calculate which thumbnails are visible.
-        let max_visible =
-            strip_rect.width.checked_div(thumb_total).map_or(1, |v| v.max(1) as usize);
-
-        let start_offset = if self.current_index >= max_visible / 2 {
-            (self.current_index - max_visible / 2)
-                .min(self.images.len().saturating_sub(max_visible))
-        } else {
-            0
-        };
+        // A hovered thumbnail is pointer position, not the current image, so it leans
+        // toward the accent only partway — visibly above the resting tile, clearly
+        // below the selected one.
+        let thumb_hover = thumb_resting.blend(&accent, 0.30);
 
         for i in 0..max_visible.min(self.images.len()) {
             let img_idx = start_offset + i;
@@ -770,14 +835,17 @@ impl Draw for ImageGallery {
                 break;
             }
 
-            let thumb_x = strip_rect.x + strip_padding + (i as u32 * thumb_total) as i32;
-            let thumb_y = strip_rect.y + 4;
-
-            let thumb_rect = Rect::new(thumb_x, thumb_y, self.thumbnail_size, self.thumbnail_size);
+            let thumb_rect = Self::thumbnail_rect(strip_rect, self.thumbnail_size, i);
 
             // Thumbnail background.
             let is_selected = img_idx == self.current_index;
-            let thumb_bg = if is_selected { thumb_selected } else { thumb_resting };
+            let thumb_bg = if is_selected {
+                thumb_selected
+            } else if Some(img_idx) == self.hovered_thumb {
+                thumb_hover
+            } else {
+                thumb_resting
+            };
             context.fill_rounded_rect(thumb_rect, 3, thumb_bg);
 
             // Draw a placeholder pattern inside the thumbnail.
@@ -805,12 +873,12 @@ impl Draw for ImageGallery {
                         Cow::Borrowed(label.as_str())
                     };
                     let label_metrics = context.measure_text(&label_text, font);
-                    let label_x =
-                        thumb_x + (self.thumbnail_size as i32 - label_metrics.width as i32) / 2;
+                    let label_x = thumb_rect.x
+                        + (self.thumbnail_size as i32 - label_metrics.width as i32) / 2;
                     // Top-aligned caption under the thumbnail, not a centred box: the origin
                     // is already the glyph box's top edge, so the declared-baseline `+ ascent`
                     // only dropped the caption on top of the row below it.
-                    let label_y = thumb_y + self.thumbnail_size as i32 + 2;
+                    let label_y = thumb_rect.y + self.thumbnail_size as i32 + 2;
                     context.draw_text(
                         Point::new(label_x, label_y),
                         &label_text,
@@ -841,15 +909,14 @@ impl EventHandler for ImageGallery {
                         return;
                     }
 
-                    let thumb_strip_height =
-                        if self.show_thumbnails { self.thumbnail_size + 28 } else { 0 };
-                    let preview_height = rect.height.saturating_sub(thumb_strip_height);
-                    let preview_rect = Rect::new(rect.x, rect.y, rect.width, preview_height);
+                    let preview_rect = self.preview_rect();
 
                     // Check if clicked on navigation arrows in preview area. The boxes come from
                     // `arrow_boxes`, the same derivation `draw` paints through, so an arrow is
                     // clickable exactly where it is drawn.
-                    if pos.y >= preview_rect.y && pos.y < preview_rect.y + preview_height as i32 {
+                    if pos.y >= preview_rect.y
+                        && pos.y < preview_rect.y + preview_rect.height as i32
+                    {
                         let (previous, next) = self.arrow_boxes(preview_rect, 24);
                         if let Some(arrow) = previous {
                             if arrow.contains_point(*pos) {
@@ -866,57 +933,27 @@ impl EventHandler for ImageGallery {
                         return;
                     }
 
-                    // Check if clicked on a thumbnail.
-                    if self.show_thumbnails {
-                        let strip_rect = Rect::new(
-                            rect.x,
-                            preview_rect.y + preview_height as i32,
-                            rect.width,
-                            thumb_strip_height,
-                        );
-
-                        if pos.y >= strip_rect.y && pos.y < strip_rect.y + strip_rect.height as i32
-                        {
-                            let thumb_spacing = 6u32;
-                            let thumb_total = self.thumbnail_size + thumb_spacing;
-                            let strip_padding = 8i32;
-
-                            let max_visible = strip_rect
-                                .width
-                                .checked_div(thumb_total)
-                                .map_or(1, |v| v.max(1) as usize);
-
-                            let start_offset = if self.current_index >= max_visible / 2 {
-                                (self.current_index - max_visible / 2)
-                                    .min(self.images.len().saturating_sub(max_visible))
-                            } else {
-                                0
-                            };
-
-                            for i in 0..max_visible.min(self.images.len()) {
-                                let img_idx = start_offset + i;
-                                if img_idx >= self.images.len() {
-                                    break;
-                                }
-
-                                let thumb_x =
-                                    strip_rect.x + strip_padding + (i as u32 * thumb_total) as i32;
-                                let thumb_y = strip_rect.y + 4;
-
-                                let thumb_rect = Rect::new(
-                                    thumb_x,
-                                    thumb_y,
-                                    self.thumbnail_size,
-                                    self.thumbnail_size,
-                                );
-
-                                if thumb_rect.contains_point(*pos) {
-                                    self.set_current_index(img_idx);
-                                    return;
-                                }
-                            }
-                        }
+                    // Check if clicked on a thumbnail. The slot boxes come from the same
+                    // `strip_layout`/`thumbnail_rect` derivation `draw` paints through, so a
+                    // click selects exactly the tile that was painted.
+                    if let Some(img_idx) = self.thumbnail_at(*pos) {
+                        self.set_current_index(img_idx);
                     }
+                }
+            }
+            Event::MouseMove { pos, .. } => {
+                // Hover is the thumbnail under the pointer, from the same slot boxes the
+                // paint and the press read. `MouseMove` fires far more often than the
+                // highlight changes, so the redraw is requested only on an actual change.
+                let hovered = self.thumbnail_at(*pos);
+                if hovered != self.hovered_thumb {
+                    self.hovered_thumb = hovered;
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseLeave { .. } => {
+                if self.hovered_thumb.take().is_some() {
+                    self.base.request_redraw();
                 }
             }
             Event::KeyPress { key, modifiers: _ } => {
@@ -1246,5 +1283,36 @@ mod tests {
         g.add_image_with_size("/img/test.jpg", Some("Café ☕ Gallery Preview"), 800, 600);
         let svg = render_to_svg(&mut g);
         assert!(!svg.is_empty(), "rendering with multibyte label must not panic");
+    }
+
+    /// Hover is the image under the pointer, resolved through the same slot boxes
+    /// the paint and the press read, and leaving the gallery clears the highlight
+    /// instead of freezing it in place.
+    #[test]
+    fn image_gallery_hover_follows_the_pointer() {
+        let mut g = make_gallery(Rect::new(0, 0, 400, 300));
+
+        let (strip, _, start_offset) = g.strip_layout().expect("the strip is visible");
+        let first = ImageGallery::thumbnail_rect(strip, g.thumbnail_size(), 0);
+        g.handle_event(&Event::MouseMove { pos: Point::new(first.x + 10, first.y + 10) });
+        assert_eq!(g.hovered_thumb, Some(start_offset));
+
+        // Above the strip (in the preview) nothing hovers.
+        g.handle_event(&Event::MouseMove { pos: Point::new(200, 50) });
+        assert_eq!(g.hovered_thumb, None);
+
+        g.handle_event(&Event::MouseLeave { pos: Point::new(-1, -1) });
+        assert_eq!(g.hovered_thumb, None);
+    }
+
+    /// A hidden strip has no slots, so no pointer position can hover a thumbnail —
+    /// the same guard the paint path applies before it draws the strip.
+    #[test]
+    fn image_gallery_hover_needs_a_visible_strip() {
+        let mut g = make_gallery(Rect::new(0, 0, 400, 300));
+        g.set_show_thumbnails(false);
+
+        assert!(g.strip_layout().is_none());
+        assert!(g.thumbnail_at(Point::new(10, 280)).is_none());
     }
 }

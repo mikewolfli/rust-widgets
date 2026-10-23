@@ -123,5 +123,148 @@ macro_rules! impl_container_widgets {
         ) -> ObjectId {
             self.mount_widget_of_kind(WidgetKind::DockWidget, parent, title, x, y, width, height)
         }
+        #[cfg(full_widgets)]
+        fn create_spacer(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::Spacer, parent, "", x, y, width, height)
+        }
+        #[cfg(full_widgets)]
+        fn create_center(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::Center, parent, "", x, y, width, height)
+        }
+        #[cfg(full_widgets)]
+        fn create_align(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::Align, parent, "", x, y, width, height)
+        }
+        #[cfg(full_widgets)]
+        fn create_sized_box(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::SizedBox, parent, "", x, y, width, height)
+        }
+        #[cfg(full_widgets)]
+        fn create_padding(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::Padding, parent, "", x, y, width, height)
+        }
+        #[cfg(full_widgets)]
+        fn create_expanded(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::Expanded, parent, "", x, y, width, height)
+        }
+        #[cfg(full_widgets)]
+        fn create_flexible(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::Flexible, parent, "", x, y, width, height)
+        }
+        #[cfg(full_widgets)]
+        fn create_intrinsic_width(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::IntrinsicWidth, parent, "", x, y, width, height)
+        }
+        #[cfg(full_widgets)]
+        fn create_aspect_ratio(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::AspectRatio, parent, "", x, y, width, height)
+        }
+        #[cfg(full_widgets)]
+        fn create_flex(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::Flex, parent, "", x, y, width, height)
+        }
+        #[cfg(full_widgets)]
+        fn create_flow_layout(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::FlowLayout, parent, "", x, y, width, height)
+        }
+        #[cfg(full_widgets)]
+        fn create_wrap_layout(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::WrapLayout, parent, "", x, y, width, height)
+        }
+        #[cfg(full_widgets)]
+        fn create_accordion(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::Accordion, parent, "", x, y, width, height)
+        }
     };
 }

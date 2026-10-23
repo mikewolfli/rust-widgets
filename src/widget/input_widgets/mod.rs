@@ -24,6 +24,8 @@ pub mod font_combo_box;
 pub mod ime_preedit;
 #[cfg(widgets_unstripped)]
 pub mod inplace_editor;
+/// The input grammars a single-line field can enforce.
+pub mod input_validator;
 pub mod keyboard;
 pub mod lineedit;
 pub mod listbox;
@@ -72,7 +74,7 @@ pub use ime_preedit::ImePreedit;
 #[cfg(widgets_unstripped)]
 pub use inplace_editor::InplaceEditor;
 pub use keyboard::Keyboard;
-pub use lineedit::{EchoMode, LineEdit};
+pub use lineedit::{EchoMode, InputValidator, LineEdit};
 pub use listbox::{ListBox, SelectionMode};
 #[cfg(widgets_unstripped)]
 pub use masked_edit::MaskedEdit;

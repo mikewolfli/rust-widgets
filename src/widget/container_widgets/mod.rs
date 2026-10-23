@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 //! Container widgets: tab widgets, scroll areas, MDI areas, etc.
+/// Accordion — a vertical stack of collapsible sections.
+#[cfg(full_widgets)]
+pub mod accordion;
 #[cfg(widgets_unstripped)]
 pub mod carousel;
 #[cfg(widgets_unstripped)]
@@ -9,6 +12,13 @@ pub mod collapsible_pane;
 #[cfg(widgets_unstripped)]
 pub mod dockwidget;
 pub mod groupbox;
+/// The layout-family wrapper controls (`Spacer`, `Center`, `Align`, `SizedBox`, `Padding`,
+/// `Expanded`, `Flexible`, `IntrinsicWidth`, `AspectRatio`).
+#[cfg(full_widgets)]
+pub mod layout_family;
+/// The layout-family distribution controls (`Flex`, `FlowLayout`, `WrapLayout`).
+#[cfg(full_widgets)]
+pub mod linear_layouts;
 #[cfg(widgets_unstripped)]
 pub mod masonry_layout;
 #[cfg(widgets_unstripped)]
@@ -27,6 +37,8 @@ pub mod tabwidget;
 #[cfg(widgets_unstripped)]
 pub mod toolbox;
 // Re-export container widgets
+#[cfg(full_widgets)]
+pub use accordion::{Accordion, AccordionSection};
 #[cfg(widgets_unstripped)]
 pub use carousel::{Carousel, WidgetAndDraw};
 #[cfg(widgets_unstripped)]
@@ -34,6 +46,13 @@ pub use collapsible_pane::CollapsiblePane;
 #[cfg(widgets_unstripped)]
 pub use dockwidget::DockWidget;
 pub use groupbox::GroupBox;
+#[cfg(full_widgets)]
+pub use layout_family::{
+    Align, AlignPosition, AspectRatio, Center, Content, Expanded, FlexFit, Flexible,
+    IntrinsicWidth, Padding, SizedBox, Spacer, DEFAULT_ASPECT_RATIO,
+};
+#[cfg(full_widgets)]
+pub use linear_layouts::{Flex, FlexItemSpec, FlowLayout, WrapLayout};
 #[cfg(widgets_unstripped)]
 pub use masonry_layout::{MasonryItem, MasonryLayout};
 #[cfg(widgets_unstripped)]

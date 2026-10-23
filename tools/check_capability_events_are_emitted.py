@@ -96,6 +96,30 @@ PRODUCER_ELSEWHERE: dict[str, tuple[str, str]] = {
     ),
     "fab": ("FAB", "`fab` is the short name for the `FAB` struct"),
     "lcd_number": ("LCDNumber", "the type is spelled `LCDNumber`, not `LcdNumber`"),
+    "password_edit": (
+        "LineEdit",
+        "the password field is a `LineEdit` in password echo mode",
+    ),
+    "phone_input": (
+        "LineEdit",
+        "the phone field is a `LineEdit` carrying the phone grammar",
+    ),
+    "email_input": (
+        "LineEdit",
+        "the email field is a `LineEdit` carrying the email grammar",
+    ),
+    "split_layout": (
+        "Splitter",
+        "`split_layout` is the two-pane spelling of the `Splitter` control",
+    ),
+    "time_picker": (
+        "TimeEdit",
+        "`time_picker` is the kind's own spelling of the `TimeEdit` control",
+    ),
+    "context_menu": (
+        "Menu",
+        "`context_menu` is the role spelling of `Menu` (`pub type ContextMenu = Menu;`)",
+    ),
 }
 
 # Emitting type -> the capability whose events it owns, for types that serve two capabilities.

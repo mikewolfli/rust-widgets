@@ -13,6 +13,7 @@ use crate::compat::String;
 /// `candidate.to_lowercase().contains(&lower)`, which allocated one `String` per candidate per
 /// frame while a filter was active. Non-ASCII needles keep the owned path, because folding
 /// Unicode case is not a byte-wise operation.
+#[cfg(not(alloc_frugal))]
 pub(crate) fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return true;
@@ -31,6 +32,7 @@ pub(crate) fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
 /// Same contract as [`contains_ignore_ascii_case`]: `needle` is already lower-cased, and a
 /// non-ASCII needle takes the owned path. The command palette ranks a prefix match above a
 /// substring match, and it used to build a lowered copy of every candidate to answer this.
+#[cfg(not(alloc_frugal))]
 pub(crate) fn starts_with_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return true;

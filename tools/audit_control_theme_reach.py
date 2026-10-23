@@ -44,7 +44,15 @@ import sys
 PROPERTIES = "src/widget/capability/properties.rs"
 CONSTRUCTORS = "src/widget/capability/constructors.rs"
 
-KIND_AND_NAME = re.compile(r'kind:\s*WidgetKind::(\w+),\s*canonical_name:\s*"([^"]+)"')
+# Aliases sit between `canonical_name` and `properties` in every declaration (measured across the
+# whole table), and a constructor can be named after an alias: `create_textarea` for `text_area`,
+# `create_web_view` for `web_engine_view`. Without reading aliases those two controls can never
+# resolve, and the scan reports them as unresolved noise every run. Some declarations carry a
+# comment between the fields (e.g. `check_box`), so the alias list is read from a window after
+# the anchor instead of requiring adjacency.
+CAPABILITY_ANCHOR = re.compile(r'kind:\s*WidgetKind::(\w+),\s*canonical_name:\s*"([^"]+)"')
+ALIAS_LIST = re.compile(r'aliases:\s*&\[([^\]]*)\]')
+ALIAS_NAME = re.compile(r'"(\w+)"')
 STRUCT = re.compile(r"pub struct (\w+)")
 # The constructor search is bounded by the **next** `pub fn` rather than by a brace count: the
 # bodies contain nested blocks, and a `[\s\S]{0,800}` window overran into the following function,
@@ -58,13 +66,38 @@ THEME_REACH = re.compile(
     r"\.style\(\)|theme_manager\(\)|resolved_theme_style|"
     r"colors\.(?:background|foreground|primary|secondary|surface_container|outline|error|scrim)|"
     r"axis_chrome|layer_color|semantic_color|contrast_color\(\)|legible_on\(|"
-    r"FocusRing::|StateOverlay"
+    r"FocusRing::|StateOverlay|"
+    # Cross-file theme helpers: a control whose *own* file never names the theme can still be
+    # themed through a shared resolver in a sibling module. `resolve_palette`/`wrapper_palette`
+    # are layout_family's palette resolvers (flex/flow/wrap layouts draw through them), and
+    # `for_active_appearance` is code_editor's SyntaxPalette constructor. Without these names the
+    # scan reported five already-correct controls as theme-blind (measured: every one of them
+    # renders differently across the dark/light snapshot pairs).
+    r"resolve_palette|wrapper_palette|for_active_appearance"
 )
 
 
-def build_index() -> tuple[dict[str, str], dict[str, list[tuple[str, bool]]], dict[str, str]]:
+# Constructors may spell the type differently from `X::new`: `Dialog::with_title` is the dialog
+# constructor, and `create_data_view` delegates to `create_virtual_list` rather than naming any
+# type at all. The type search therefore accepts `::with_*` and follows one delegation hop.
+TYPE_CALL = re.compile(r"\b(\w+)::(?:new|with_\w+)\b")
+DELEGATION = re.compile(r"\bcreate_(\w+)\(")
+
+
+def build_index() -> tuple[dict[str, str], dict[str, list[tuple[str, bool]]], dict[str, str], dict[str, list[str]]]:
     properties = pathlib.Path(PROPERTIES).read_text(encoding="utf-8")
-    canonical = {name: kind for kind, name in KIND_AND_NAME.findall(properties)}
+    canonical: dict[str, str] = {}
+    aliases: dict[str, list[str]] = {}
+    anchors = list(CAPABILITY_ANCHOR.finditer(properties))
+    for index, anchor in enumerate(anchors):
+        kind, name = anchor.group(1), anchor.group(2)
+        canonical[name] = kind
+        # One declaration's window ends where the next begins; aliases always fall inside it.
+        window_end = anchors[index + 1].start() if index + 1 < len(anchors) else len(properties)
+        window = properties[anchor.end():window_end]
+        alias_match = ALIAS_LIST.search(window)
+        names = [name] + (ALIAS_NAME.findall(alias_match.group(1)) if alias_match else [])
+        aliases[name] = names
 
     sources = {p: open(p, encoding="utf-8", errors="ignore").read() for p in glob.glob("src/**/*.rs", recursive=True)}
 
@@ -76,36 +109,62 @@ def build_index() -> tuple[dict[str, str], dict[str, list[tuple[str, bool]]], di
         for match in STRUCT.finditer(text):
             name = match.group(1)
             structs.setdefault(name, []).append((path, f"impl Draw for {name}" in text))
-    return canonical, structs, sources
+    return canonical, structs, sources, aliases
 
 
-def locate(name: str, constructors: str, structs: dict[str, list[tuple[str, bool]]]):
+def constructed_type(body: str, constructors: str, structs, depth: int = 0) -> str | None:
+    """The struct a constructor body builds: `X::new`, `X::with_*`, or one delegation hop."""
+    for type_match in TYPE_CALL.finditer(body):
+        type_name = type_match.group(1)
+        if type_name in structs:
+            return type_name
+    # A constructor that only forwards (`create_data_view` -> `create_virtual_list`) names no
+    # type; follow the call it makes and read *that* constructor instead. One hop with a depth
+    # bound keeps a delegation cycle from looping.
+    if depth < 3:
+        for delegate in DELEGATION.finditer(body):
+            target = delegate.group(1)
+            for match in CONSTRUCTOR.finditer(constructors):
+                if match.group(1) != target:
+                    continue
+                resolved = constructed_type(match.group(2).replace("\\\n", " "), constructors, structs, depth + 1)
+                if resolved is not None:
+                    return resolved
+    return None
+
+
+def locate(name: str, aliases: list[str], constructors: str, structs):
     """The type `create_<name>` constructs, and the file that declares it.
 
-    Searches every constructor whose name is exactly `create_<name>`, not a prefix match:
+    Searches every constructor whose name matches exactly, never by prefix:
     `create_chart` and `create_chart_widget` are different functions, and a prefix search
-    would answer for the wrong one.
+    would answer for the wrong one. The candidates are the canonical name, every declared
+    alias, and the name with its underscores stripped (the `create_textarea` spelling).
     """
-    for match in CONSTRUCTOR.finditer(constructors):
-        if match.group(1) != name:
-            continue
-        body = match.group(2).replace("\\\n", " ")
-        for type_match in re.finditer(r"\b(\w+)::new\b", body):
-            type_name = type_match.group(1)
-            if type_name in structs:
-                files = sorted(structs[type_name], key=lambda entry: not entry[1])
-                return files[0][0], type_name
+    candidates: list[str] = []
+    for candidate in [name] + aliases + [name.replace("_", "")]:
+        if candidate not in candidates:
+            candidates.append(candidate)
+    for candidate in candidates:
+        for match in CONSTRUCTOR.finditer(constructors):
+            if match.group(1) != candidate:
+                continue
+            type_name = constructed_type(match.group(2).replace("\\\n", " "), constructors, structs)
+            if type_name is None:
+                continue
+            files = sorted(structs[type_name], key=lambda entry: not entry[1])
+            return files[0][0], type_name
     return None, None
 
 
 def main() -> int:
     theme_blind_only = "--theme-blind-only" in sys.argv
-    canonical, structs, sources = build_index()
+    canonical, structs, sources, aliases = build_index()
     constructors = sources.get(CONSTRUCTORS, "")
 
     rows = []
     for name in sorted(canonical):
-        path, type_name = locate(name, constructors, structs)
+        path, type_name = locate(name, aliases.get(name, [name]), constructors, structs)
         if path is None:
             rows.append((name, canonical[name], None, None, 0, False))
             continue

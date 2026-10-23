@@ -240,6 +240,38 @@ pub fn create_line_edit(geometry: Rect, text: &str) -> Box<dyn Widget> {
     Box::new(line_edit)
 }
 
+/// Creates a password field: a [`LineEdit`] whose echo mode masks the value.
+pub fn create_password_edit(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    let mut field = LineEdit::new(geometry);
+    field.set_echo_mode(crate::widget::input_widgets::EchoMode::Password);
+    if !text.is_empty() {
+        field.set_text(text.to_string());
+    }
+    Box::new(field)
+}
+
+/// Creates a phone-number field: only phone characters are accepted, and `valid` reports
+/// whether the value holds 7 to 15 digits.
+pub fn create_phone_input(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    let mut field = LineEdit::new(geometry);
+    field.set_validator(Some(crate::widget::input_widgets::InputValidator::Phone));
+    if !text.is_empty() {
+        field.set_text(text.to_string());
+    }
+    Box::new(field)
+}
+
+/// Creates an e-mail field: whitespace is refused and `valid` reports whether the value is
+/// `local@domain.tld`.
+pub fn create_email_input(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    let mut field = LineEdit::new(geometry);
+    field.set_validator(Some(crate::widget::input_widgets::InputValidator::Email));
+    if !text.is_empty() {
+        field.set_text(text.to_string());
+    }
+    Box::new(field)
+}
+
 #[cfg(full_widgets)]
 /// Creates a list view with no rows or columns. `text` is applied as the
 /// control's label.
@@ -1586,4 +1618,240 @@ pub fn create_indicator_chart(geometry: Rect, text: &str) -> Box<dyn Widget> {
     let widget =
         crate::widget::special_widgets::finance::indicator_chart::IndicatorChart::new(geometry);
     label(geometry, text, Box::new(widget))
+}
+
+// ── Layout family ───────────────────────────────────────────────────────────
+//
+// Each constructor builds the control in its documented initial state. `text` is applied as the
+// control's label where the control has one; the wrappers publish their content as the `content`
+// property, so the shared `label` helper (which writes `text`/`title`) would not reach it. They
+// therefore set `content` explicitly.
+
+#[cfg(full_widgets)]
+/// Creates a spacer with `flex = 1` and the design-time hint enabled. `text` is ignored: a
+/// spacer has no label.
+pub fn create_spacer(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::container_widgets::Spacer::new(geometry))
+}
+
+/// The content box a wrapper's constructor gives a labelled control.
+///
+/// A wrapper created with a label must also say how big that label's content is: the
+/// control paints nothing for a zero-extent content box, so a "centre holding Sample" with
+/// no content size would render as an empty frame. Three quarters of the width and two
+/// thirds of the height is the proportion that shows a wrapper's own box *and* its content
+/// inset from it, which is exactly what the control is for.
+#[cfg(full_widgets)]
+fn labelled_content_size(geometry: Rect) -> crate::core::Size {
+    crate::core::Size::new((geometry.width * 3 / 4).max(1), (geometry.height * 2 / 3).max(1))
+}
+
+#[cfg(full_widgets)]
+/// Creates a centre wrapper whose content is the caller's text.
+pub fn create_center(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    let mut control = crate::widget::container_widgets::Center::new(geometry);
+    if !text.is_empty() {
+        control.set_content_label(text.to_string());
+        control.set_content_size(labelled_content_size(geometry));
+    }
+    Box::new(control)
+}
+
+#[cfg(full_widgets)]
+/// Creates an align wrapper whose content is the caller's text.
+pub fn create_align(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    let mut control = crate::widget::container_widgets::Align::new(geometry);
+    if !text.is_empty() {
+        control.set_content_label(text.to_string());
+        control.set_content_size(labelled_content_size(geometry));
+    }
+    Box::new(control)
+}
+
+#[cfg(full_widgets)]
+/// Creates a fixed-size box matching its geometry, labelled with the caller's text.
+pub fn create_sized_box(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    let mut control = crate::widget::container_widgets::SizedBox::new(geometry);
+    if !text.is_empty() {
+        control.set_content_label(text.to_string());
+        control.set_content_size(labelled_content_size(geometry));
+    }
+    Box::new(control)
+}
+
+#[cfg(full_widgets)]
+/// Creates a padding wrapper with zero insets, labelled with the caller's text.
+pub fn create_padding(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    let mut control = crate::widget::container_widgets::Padding::new(geometry);
+    if !text.is_empty() {
+        control.set_content_label(text.to_string());
+        control.set_content_size(labelled_content_size(geometry));
+    }
+    Box::new(control)
+}
+
+#[cfg(full_widgets)]
+/// Creates a weight-1 expanded child labelled with the caller's text.
+pub fn create_expanded(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    let mut control = crate::widget::container_widgets::Expanded::new(geometry);
+    if !text.is_empty() {
+        control.set_content_label(text.to_string());
+        control.set_content_size(labelled_content_size(geometry));
+    }
+    Box::new(control)
+}
+
+#[cfg(full_widgets)]
+/// Creates a weight-1, loose-fit flexible child labelled with the caller's text.
+pub fn create_flexible(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    let mut control = crate::widget::container_widgets::Flexible::new(geometry);
+    if !text.is_empty() {
+        control.set_content_label(text.to_string());
+        control.set_content_size(labelled_content_size(geometry));
+    }
+    Box::new(control)
+}
+
+#[cfg(full_widgets)]
+/// Creates an intrinsic-width wrapper labelled with the caller's text.
+pub fn create_intrinsic_width(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    let mut control = crate::widget::container_widgets::IntrinsicWidth::new(geometry);
+    if !text.is_empty() {
+        control.set_content_label(text.to_string());
+        // An intrinsic-width wrapper's content width *is* its own width, so the default is the
+        // label's advance rather than a fraction of the control.
+        let advance = (text.chars().count() as u32).saturating_mul(8).max(16);
+        control.set_content_size(crate::core::Size::new(advance, geometry.height));
+    }
+    Box::new(control)
+}
+
+#[cfg(full_widgets)]
+/// Creates a 16:9 aspect-ratio box labelled with the caller's text.
+pub fn create_aspect_ratio(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    let mut control = crate::widget::container_widgets::AspectRatio::new(geometry);
+    if !text.is_empty() {
+        control.set_content_label(text.to_string());
+        control.set_content_size(labelled_content_size(geometry));
+    }
+    Box::new(control)
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty row-direction flex. `text` is applied as the control's label.
+pub fn create_flex(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    let mut control = crate::widget::container_widgets::Flex::new(geometry);
+    if !text.is_empty() {
+        // A distribution control with no items paints nothing, so a labelled one is built with a
+        // single item carrying that label. Its size is the item model's, not the label's.
+        control.add_item(crate::widget::container_widgets::FlexItemSpec::new(
+            text,
+            crate::core::Size::new(geometry.width / 2, geometry.height / 2),
+        ));
+    }
+    label(geometry, text, Box::new(control))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty, wrapping flow. `text` is applied as the control's label.
+pub fn create_flow_layout(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    let mut control = crate::widget::container_widgets::FlowLayout::new(geometry);
+    if !text.is_empty() {
+        // A distribution control with no items paints nothing, so a labelled one is built with a
+        // single item carrying that label. Its size is the item model's, not the label's.
+        control.add_item(crate::widget::container_widgets::FlexItemSpec::new(
+            text,
+            crate::core::Size::new(geometry.width / 2, geometry.height / 2),
+        ));
+    }
+    label(geometry, text, Box::new(control))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty wrap layout. `text` is applied as the control's label.
+pub fn create_wrap_layout(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    let mut control = crate::widget::container_widgets::WrapLayout::new(geometry);
+    if !text.is_empty() {
+        // A distribution control with no items paints nothing, so a labelled one is built with a
+        // single item carrying that label. Its size is the item model's, not the label's.
+        control.add_item(crate::widget::container_widgets::FlexItemSpec::new(
+            text,
+            crate::core::Size::new(geometry.width / 2, geometry.height / 2),
+        ));
+    }
+    label(geometry, text, Box::new(control))
+}
+
+#[cfg(full_widgets)]
+/// Creates the two-pane spelling of the splitter. `text` is applied as the control's label.
+pub fn create_split_layout(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(crate::widget::Splitter::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates an accordion with one section titled by the caller's text.
+///
+/// A section is added rather than left empty for the same reason a labelled wrapper gets a
+/// content size: an accordion with no sections paints only its outline, which says nothing
+/// about what the control is.
+pub fn create_accordion(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    let mut control = crate::widget::container_widgets::Accordion::new(geometry);
+    if !text.is_empty() {
+        control.add_section("section", text, "");
+    }
+    label(geometry, text, Box::new(control))
+}
+
+// ── Small display controls, menus and modal notices ─────────────────────────
+
+#[cfg(full_widgets)]
+/// Creates a neutral, closable-off tag labelled with the caller's text.
+pub fn create_tag(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::display_widgets::tag::Tag::new(text, geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates a clock at midnight. `text` is applied as the control's label.
+pub fn create_clock(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(crate::widget::display_widgets::clock::Clock::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates a gauge reading `0` of `0..=100`. `text` is applied as the control's label.
+pub fn create_gauge(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(crate::widget::chart_widgets::gauge::Gauge::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates the role-spelled name of the menu: the same control `menu` builds.
+///
+/// `text` is applied as the control's label.
+pub fn create_context_menu(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    Box::new(Menu::new(text, geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates an alert dialog with the caller's text as its message.
+pub fn create_alert_dialog(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::dialog::AlertDialog::new("", text, geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates a confirm dialog with the caller's text as its message.
+pub fn create_confirm_dialog(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::dialog::ConfirmDialog::new("", text, geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates an about dialog named by the caller's text, with no version and no message.
+pub fn create_about_dialog(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::dialog::AboutDialog::new(text, "", geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates the kind-spelled name of the time field: the same control `time_edit` builds.
+///
+/// `text` is applied as the control's label.
+pub fn create_time_picker(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(TimeEdit::new(geometry)))
 }

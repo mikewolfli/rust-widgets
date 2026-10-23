@@ -36,12 +36,17 @@
 
 | Widget | Windows | Linux/X11 | macOS | Wayland | Mobile | Harmony | Embedded/Stub | C |
 | --- |--- |--- |--- |--- |--- |--- |--- |--- |
+| **AboutDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Accordion** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Action** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **ActivityIndicator** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **AdaptiveScaffold** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **AlertDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Align** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **AnimatedImage** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **AppBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Arc** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **AspectRatio** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **AudioVisualizer** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **AutoCompleteEdit** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Avatar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -60,10 +65,12 @@
 | **Canvas** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Carousel** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Cascader** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Center** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Chart** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **CheckBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **CheckListBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Chip** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Clock** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **CollapsiblePane** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **ColorDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **ColorHistory** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -72,6 +79,7 @@
 | **ColumnView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **ComboBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **CommandLink** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **ConfirmDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **ContextMenu** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **CupertinoAlertDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **CupertinoDatePicker** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -97,15 +105,20 @@
 | **EditableComboBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **EmojiPicker** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **EmptyState** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Expanded** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **FAB** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **FileDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **FindReplaceDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Flex** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Flexible** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **FloatingLabel** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **FlowLayout** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **FontComboBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **FontDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **FontPreview** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Frame** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **FreeformShape** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Gauge** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Grid** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **GridTable** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **GroupBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -118,6 +131,7 @@
 | **IndicatorChart** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **InplaceEditor** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **InputDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **IntrinsicWidth** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **KanbanBoard** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Keyboard** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **LCDNumber** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -150,6 +164,7 @@
 | **NumberPicker** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **OrderBook** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **OtpInput** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Padding** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Pagination** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Panel** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **PieChart** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -182,8 +197,10 @@
 | **SegmentedControl** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **ShortcutEditor** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **SignaturePad** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **SizedBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **SkeletonLoader** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Slider** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
+| **Spacer** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Sparkline** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **SpinBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **Spinner** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -198,6 +215,7 @@
 | **TabView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **TabWidget** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Table** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Tag** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **TagInput** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **TextArea** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **TextEdit** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -226,12 +244,13 @@
 | **Window** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **Wizard** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **WizardDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **WrapLayout** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 
 ---
 
-Total widgets: 190 (181 WidgetKind variants plus 9 documented WebEngine wrapper types)
+Total widgets: 209 (200 WidgetKind variants plus 9 documented WebEngine wrapper types)
 
-C-ABI typed constructors: 22 of 190 widget types. The remainder are reachable through `rw_create_widget_of_kind`, which takes a factory name at run time.
+C-ABI typed constructors: 22 of 209 widget types. The remainder are reachable through `rw_create_widget_of_kind`, which takes a factory name at run time.
 
 ---
 

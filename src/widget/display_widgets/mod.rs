@@ -6,6 +6,9 @@
 pub mod arc;
 #[cfg(widgets_unstripped)]
 pub mod badge;
+/// Clock — an analog clock face showing a time of day.
+#[cfg(full_widgets)]
+pub mod clock;
 #[cfg(widgets_unstripped)]
 pub mod color_history;
 #[cfg(widgets_unstripped)]
@@ -54,6 +57,9 @@ pub mod skeleton_loader;
 pub mod slider;
 pub mod spinner;
 pub mod switch;
+/// Tag — a single tone-coloured label with an optional close glyph.
+#[cfg(full_widgets)]
+pub mod tag;
 
 // Re-export shared helpers.
 mod draw_helpers;

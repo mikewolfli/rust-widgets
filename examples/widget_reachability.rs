@@ -405,6 +405,26 @@ fn exhaustive(kind: WidgetKind) -> &'static str {
         OrderBook => "OrderBook",
         QuoteBoard => "QuoteBoard",
         IndicatorChart => "IndicatorChart",
+        // Added when the control-gap audit was closed.
+        Spacer => "Spacer",
+        Center => "Center",
+        Align => "Align",
+        SizedBox => "SizedBox",
+        Padding => "Padding",
+        Expanded => "Expanded",
+        Flexible => "Flexible",
+        IntrinsicWidth => "IntrinsicWidth",
+        AspectRatio => "AspectRatio",
+        Flex => "Flex",
+        FlowLayout => "FlowLayout",
+        WrapLayout => "WrapLayout",
+        Tag => "Tag",
+        Gauge => "Gauge",
+        Clock => "Clock",
+        Accordion => "Accordion",
+        AlertDialog => "AlertDialog",
+        ConfirmDialog => "ConfirmDialog",
+        AboutDialog => "AboutDialog",
     }
 }
 

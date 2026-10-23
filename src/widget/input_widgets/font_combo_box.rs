@@ -745,7 +745,9 @@ impl Draw for FontComboBox {
             Point::new(arrow_center_x + 3, arrow_center_y - 2),
             arrow_color,
         );
-        let font_name = self.current_font().family().to_string();
+        // Borrowed, not copied: this is one draw per frame and the family name already lives
+        // in the control's own `Font`.
+        let font_name = self.current_font().family();
         // The field's own line box. A glyph origin is the box's top-left edge, so the old
         // `g.y + g.height / 2 + 5` put that edge on the field's middle line and drew the
         // selected family half a line low.
@@ -759,7 +761,7 @@ impl Draw for FontComboBox {
                 geometry.value_box.width,
                 value_line.height,
             ),
-            &font_name,
+            font_name,
             &value_font,
             ink,
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),

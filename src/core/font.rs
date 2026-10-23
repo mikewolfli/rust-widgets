@@ -1,15 +1,30 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use crate::compat::{format, String};
+use crate::compat::{format, Arc, String};
+
+/// Converts a caller's family name into the shared form the descriptor stores.
+///
+/// One allocation at construction (the same one `String` already paid), and every
+/// later `Font::clone` becomes a refcount bump: `role_font` and `with_size` derive a
+/// face from an existing one, and the frame path does that for every control it
+/// paints — with an owned `String` family each of those copies reallocated the name.
+fn font_family(family: impl Into<String>) -> Arc<str> {
+    Arc::from(family.into())
+}
 
 /// Font descriptor used by text rendering and themes.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(from = "FontSerde"))]
 pub struct Font {
     /// Font family name.
-    family: String,
+    ///
+    /// Shared rather than owned: `Font` is `Clone` and is cloned constantly (once per control
+    /// per frame via `role_font`), so the name is a counted reference instead of a copied
+    /// `String`. The serialised form is unchanged — `Serialize` is written out by hand below
+    /// and emits `self.family()` as a plain string.
+    family: Arc<str>,
     /// Font point size.
     size: f32,
     /// Font weight in CSS-like scale (100..=900).
@@ -187,7 +202,7 @@ impl Font {
     }
     /// Sets the font family (mutable setter for CSS parser integration).
     pub fn set_family(&mut self, family: impl Into<String>) -> &mut Self {
-        self.family = family.into();
+        self.family = font_family(family);
         self
     }
     /// Creates a `FontBuilder` for ergonomic construction.
@@ -214,9 +229,15 @@ impl Font {
     }
     /// Creates a font descriptor with explicit weight.
     pub fn with_weight(family: impl Into<String>, size: f32, weight: u16, italic: bool) -> Self {
+        Self::with_weight_shared(font_family(family), size, weight, italic)
+    }
+
+    /// [`Self::with_weight`] for a family that is already shared, so a derivation does not
+    /// allocate another copy of the name.
+    fn with_weight_shared(family: Arc<str>, size: f32, weight: u16, italic: bool) -> Self {
         let normalized_weight = Self::normalize_weight(weight);
         Self {
-            family: family.into(),
+            family,
             size,
             weight: normalized_weight,
             bold: normalized_weight >= Self::BOLD_WEIGHT,
@@ -399,7 +420,7 @@ impl Font {
     /// a fresh font from a family name, so it has no prior value to preserve. Keeping the two paths
     /// separate is what stops the drop from being reintroduced one constructor at a time.
     fn derived(&self, size: f32, weight: u16, italic: bool) -> Self {
-        let mut derived = Font::with_weight(&self.family, size, weight, italic);
+        let mut derived = Font::with_weight_shared(Arc::clone(&self.family), size, weight, italic);
         derived.letter_spacing = self.letter_spacing;
         derived.word_spacing = self.word_spacing;
         derived.line_height = self.line_height;
@@ -412,7 +433,7 @@ impl Font {
 
     /// [`Self::with_family`]'s body, so the caller above can keep one funnel.
     fn with_family_name(mut self, family: impl Into<String>) -> Self {
-        self.family = family.into();
+        self.family = font_family(family);
         self
     }
     /// Returns font size as i32 (rounded and clamped to the signed range).
@@ -507,6 +528,32 @@ impl Default for Font {
         Self::default_ui()
     }
 }
+/// Serialises field-for-field exactly as the derived implementation did, so a theme file
+/// written by an older build reads back unchanged.
+///
+/// A manual implementation is required because `family` is an `Arc<str>`: the derived form
+/// would need serde's `rc` feature to emit it at all, and what this format has always
+/// carried is the plain family string, not anything about the shared allocation.
+#[cfg(feature = "serde")]
+impl serde::Serialize for Font {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("Font", 8)?;
+        state.serialize_field("family", self.family())?;
+        state.serialize_field("size", &self.size)?;
+        state.serialize_field("weight", &self.weight)?;
+        state.serialize_field("bold", &self.bold)?;
+        state.serialize_field("italic", &self.italic)?;
+        state.serialize_field("letter_spacing", &self.letter_spacing)?;
+        state.serialize_field("word_spacing", &self.word_spacing)?;
+        state.serialize_field("line_height", &self.line_height)?;
+        state.end()
+    }
+}
+
 #[cfg(feature = "serde")]
 #[derive(serde::Deserialize)]
 struct FontSerde {
@@ -536,7 +583,7 @@ impl From<FontSerde> for Font {
             Font::normalize_weight(value.weight)
         };
         Font {
-            family: value.family,
+            family: font_family(value.family),
             size: value.size,
             weight: normalized_weight,
             bold: normalized_weight >= Font::BOLD_WEIGHT,
@@ -661,6 +708,49 @@ impl FontBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shared family name must still serialise as the plain string the format has
+    /// always carried.
+    ///
+    /// `family` is an `Arc<str>` so that cloning a derived face does not reallocate the
+    /// name, which made `Serialize` hand-written (the derive would need serde's `rc`
+    /// feature to emit it at all). This pins the output shape so the hand-written impl and
+    /// the derived one cannot drift.
+    #[cfg(feature = "serde_json")]
+    #[test]
+    fn a_font_serialises_as_the_plain_field_set_a_theme_file_expects() {
+        let font = Font::new("DejaVu Sans", 13.0, true, false);
+        let value: serde_json::Value =
+            serde_json::to_value(&font).expect("a font serialises to JSON");
+        let object = value.as_object().expect("a font serialises as an object");
+        assert_eq!(object.len(), 8, "exactly the declared fields, no shared-handle fields");
+        assert_eq!(object.get("family"), Some(&serde_json::Value::from("DejaVu Sans")));
+        assert_eq!(object.get("size"), Some(&serde_json::Value::from(13.0f32)));
+        assert_eq!(object.get("weight"), Some(&serde_json::Value::from(Font::BOLD_WEIGHT)));
+        assert_eq!(object.get("bold"), Some(&serde_json::Value::from(true)));
+        assert_eq!(object.get("italic"), Some(&serde_json::Value::from(false)));
+        for key in ["letter_spacing", "word_spacing", "line_height"] {
+            assert_eq!(object.get(key), Some(&serde_json::Value::from(0.0f32)), "{key}");
+        }
+
+        let back: Font = serde_json::from_value(value).expect("deserialises back");
+        assert_eq!(back, font);
+    }
+
+    #[test]
+    fn deriving_a_face_shares_its_family_allocation() {
+        let base = Font::new("DejaVu Sans", 13.0, false, false);
+        let derived = base.with_size(20.0).with_bold(true);
+        assert!(
+            Arc::ptr_eq(&base.family, &derived.family),
+            "a derived face must share the family name rather than copy it — this is the \
+             allocation the paint path used to pay once per control per frame"
+        );
+        assert_eq!(derived.family(), "DejaVu Sans");
+        assert_eq!(derived.size(), 20.0);
+        assert!(derived.is_bold());
+    }
+
     #[test]
     fn font_default_and_validation_contract() {
         let font = Font::default_ui();

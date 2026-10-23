@@ -68,7 +68,14 @@ pub struct LineChart {
     y_min: Option<f64>,
     y_max: Option<f64>,
     show_grid: bool,
-    grid_color: Color,
+    /// The caller's grid colour, or `None` while the grid follows the chart chrome.
+    ///
+    /// The field used to be a plain `Color` seeded with `rgba(200, 200, 200, 120)`, which
+    /// is the *light-theme* grid painted unbounded on every appearance: near-invisible on a
+    /// light surface and too bright on a dark one. `axis_chrome` already derives the grid
+    /// strength for every other chart, so an unset grid now resolves to that same value and
+    /// [`LineChart::set_grid_color`] still wins when the caller states one.
+    grid_color: Option<Color>,
     show_labels: bool,
 }
 
@@ -90,7 +97,7 @@ impl LineChart {
             y_min: None,
             y_max: None,
             show_grid: true,
-            grid_color: Color::rgba(200, 200, 200, 120),
+            grid_color: None,
             show_labels: true,
         }
     }
@@ -235,18 +242,24 @@ impl LineChart {
         self.show_grid
     }
 
-    /// Sets the grid line color.
+    /// Sets the grid line color, overriding the theme-derived default.
     pub fn set_grid_color(&mut self, color: Color) {
-        if self.grid_color == color {
+        if self.grid_color == Some(color) {
             return;
         }
-        self.grid_color = color;
+        self.grid_color = Some(color);
         self.base.request_redraw();
     }
 
-    /// Returns the current grid color.
+    /// Returns the colour the grid is drawn in: the caller's override, or the chart
+    /// chrome's grid strength when none was set.
+    ///
+    /// `axis_chrome_color(0.16)` is the third member of [`axis_chrome`]'s triple — the grid
+    /// derivation every chart shares — named directly because the triple itself is only
+    /// compiled in the engine-less build.
     pub fn grid_color(&self) -> Color {
         self.grid_color
+            .unwrap_or_else(|| crate::widget::chart_widgets::charts::axis_chrome_color(0.16))
     }
 
     /// Enables or disables axis labels.
@@ -449,8 +462,11 @@ impl Draw for LineChart {
 
         // ── Filled area under the line ──
         if self.fill_area {
+            // The disabled fill is the same disabled ink the line uses, held at the fill's
+            // own alpha — a fixed grey here was a third grey in the picture and did not
+            // track the disabled ink on either appearance.
             let fill_color =
-                if is_enabled { self.fill_color } else { Color::rgba(200, 200, 200, 60) };
+                if is_enabled { self.fill_color } else { disabled_color.with_alpha(60) };
             let baseline_y = plot_area.y + plot_area.height as i32;
             for pair in self.data.windows(2) {
                 let left = map(pair[0].0, pair[0].1);
@@ -511,7 +527,7 @@ impl LineChart {
             1,
         );
 
-        let grid_color = if is_enabled { self.grid_color } else { disabled_color };
+        let grid_color = if is_enabled { self.grid_color() } else { disabled_color };
         if self.show_grid {
             for i in 0..=4 {
                 let t = i as f64 / 4.0;
@@ -697,6 +713,20 @@ mod tests {
         assert!(!lc.show_labels());
         lc.set_grid_color(Color::LIGHT_GRAY);
         assert_eq!(lc.grid_color(), Color::LIGHT_GRAY);
+    }
+
+    /// An unset grid follows the shared chart chrome; an explicit colour wins.
+    #[test]
+    fn an_unset_grid_follows_the_chart_chrome() {
+        let chart = LineChart::new(Rect::new(0, 0, 300, 200));
+        assert_eq!(
+            chart.grid_color(),
+            crate::widget::chart_widgets::charts::axis_chrome_color(0.16),
+            "the default grid must be the same derivation every other chart uses"
+        );
+        let mut overridden = chart;
+        overridden.set_grid_color(Color::LIGHT_GRAY);
+        assert_eq!(overridden.grid_color(), Color::LIGHT_GRAY);
     }
 
     #[test]

@@ -64,8 +64,22 @@ pub struct LineEdit {
     /// Borrowed from [`crate::style::CursorBlink`] rather than reimplemented, so this field's caret
     /// keeps the tempo and phase logic of every other caret in the crate.
     cursor_blink: crate::style::CursorBlink,
-    /// The uncommitted input-method composition, or `None` when no IME session is active.
+    /// The grammar this field enforces as text arrives, or `None` for a free-form field.
     ///
+    /// See [`InputValidator`]: the filter and the validity rule share the field's single
+    /// insertion path, so a `phone_input` / `email_input` can never hold a value its own
+    /// grammar rejects through typing, pasting or a programmatic write.
+    validator: Option<InputValidator>,
+    /// Whether the current text satisfies [`Self::validator`]. True for a field without one.
+    valid: bool,
+    /// The message for the current invalid value, or `""` when it is valid.
+    validation_message: &'static str,
+    /// Whether the current `error` decoration was written by the validator.
+    ///
+    /// Only an error the validator set is cleared by it: a caller's own refusal message must
+    /// not disappear because the text happened to become valid for the field's grammar.
+    validation_error_active: bool,
+    /// The uncommitted input-method composition, or `None` when no IME session is active.
     /// # Why the preedit is a field of the *field*, and not an overlay widget
     ///
     /// [`crate::widget::input_widgets::ime_preedit::ImePreedit`] draws a composition string with an
@@ -119,6 +133,12 @@ pub struct LineEdit {
 /// it.
 pub use crate::platform::EchoMode;
 
+/// An input grammar a text field enforces as the user types.
+///
+/// Defined in [`input_validator`](super::input_validator) and re-exported here so
+/// `lineedit::InputValidator` keeps naming it: the field is what carries the grammar.
+pub use super::input_validator::InputValidator;
+
 /// The [`EchoMode`] a published token names, or `None` for an unknown token.
 fn echo_mode_from_token(token: &str) -> Option<EchoMode> {
     match token {
@@ -141,6 +161,10 @@ impl LineEdit {
             cursor_position: 0,
             selection_start: None,
             read_only: false,
+            validator: None,
+            valid: true,
+            validation_message: "",
+            validation_error_active: false,
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
@@ -158,6 +182,66 @@ impl LineEdit {
     /// Returns current text.
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// The grammar this field enforces, or `None` for a free-form field.
+    pub fn validator(&self) -> Option<InputValidator> {
+        self.validator
+    }
+
+    /// Sets the grammar, revalidating the current value.
+    ///
+    /// The `phone_input` / `email_input` constructors are the usual callers; a host that wants
+    /// one control to switch grammars can use it directly.
+    pub fn set_validator(&mut self, validator: Option<InputValidator>) {
+        if self.validator == validator {
+            return;
+        }
+        self.validator = validator;
+        self.revalidate();
+        self.base.request_redraw();
+    }
+
+    /// Whether the current value satisfies the field's grammar (true without a validator).
+    pub fn is_valid(&self) -> bool {
+        self.valid
+    }
+
+    /// The message for the current invalid value, or `""` when it is valid.
+    pub fn validation_message(&self) -> &'static str {
+        self.validation_message
+    }
+
+    /// Recomputes validity and mirrors it into the `error` decoration.
+    ///
+    /// Only a message the validator wrote is cleared here: a caller's own refusal text must
+    /// survive a value that happens to satisfy the grammar.
+    fn revalidate(&mut self) {
+        let Some(validator) = self.validator else {
+            self.valid = true;
+            self.validation_message = "";
+            return;
+        };
+        let (valid, message) = validator.check(&self.text);
+        self.valid = valid;
+        self.validation_message = message;
+        if valid {
+            if self.validation_error_active {
+                self.validation_error_active = false;
+                if !self.decorations.error.is_empty() {
+                    let mut next = self.decorations.clone();
+                    next.error.clear();
+                    self.set_decorations(next);
+                }
+            }
+        } else if self.decorations.error.as_str() != message {
+            let mut next = self.decorations.clone();
+            next.error = message.to_string();
+            self.set_decorations(next);
+            self.validation_error_active = true;
+        } else {
+            self.validation_error_active = true;
+        }
     }
 
     /// How the field's value is aligned within its own box.
@@ -220,6 +304,14 @@ impl LineEdit {
     /// Sets text and emits text_changed signal if different.
     pub fn set_text(&mut self, text: impl Into<String>) {
         let text = text.into();
+        // The grammar is a property of the field, not of the typing path: a value it cannot
+        // represent must not enter the model from a programmatic write either. Surrounding
+        // whitespace is trimmed here (not on a keystroke, where a space is a separator the
+        // user is typing *between* groups).
+        let text = match self.validator {
+            Some(validator) => validator.filter(&text).trim().to_string(),
+            None => text,
+        };
         // `max_length` is enforced here as well as in `insert_text`.
         //
         // # Why the two paths have to agree
@@ -240,6 +332,7 @@ impl LineEdit {
             return;
         }
         self.text = text;
+        self.revalidate();
         if !self.restoring_history {
             let before = self.history_target.borrow().clone();
             *self.history_target.borrow_mut() = self.text.clone();
@@ -667,6 +760,16 @@ impl LineEdit {
             }
         } else {
             text
+        };
+        // The grammar filters what may enter the model, before the caret/selection math so the
+        // insertion length is the filtered one. A plain field pays nothing here.
+        let filtered;
+        let effective_text = match self.validator {
+            Some(validator) => {
+                filtered = validator.filter(effective_text);
+                filtered.as_str()
+            }
+            None => effective_text,
         };
         // Handle selection
         let mut new_text = self.text.clone();
@@ -1180,6 +1283,10 @@ impl WidgetProperties for LineEdit {
                 None => Ok(CapabilityValue::Null),
             },
             "over_limit" => Ok(CapabilityValue::Bool(self.is_over_limit())),
+            "valid" => Ok(CapabilityValue::Bool(self.is_valid())),
+            "validation_message" => {
+                Ok(CapabilityValue::String(self.validation_message().to_string()))
+            }
             "alignment" => Ok(CapabilityValue::String(
                 horizontal_alignment_to_str(self.alignment()).to_string(),
             )),
@@ -1233,6 +1340,8 @@ impl WidgetProperties for LineEdit {
             // Derived from the value and the limit: a writer would be a second way to say what the
             // text already determines, and one of the two would be able to disagree.
             "counter" | "over_limit" => Err(CapabilityAccessError::ReadOnlyProperty),
+            // Derived from the value and the field's grammar, exactly like the two above.
+            "valid" | "validation_message" => Err(CapabilityAccessError::ReadOnlyProperty),
             "cursor_position" => {
                 self.set_cursor_position(expect_usize(value)?);
                 Ok(())
@@ -1260,6 +1369,8 @@ impl WidgetProperties for LineEdit {
             "error",
             "counter",
             "over_limit",
+            "valid",
+            "validation_message",
             "alignment",
             BASE_PROPERTY_NAMES
         ]
@@ -3567,5 +3678,72 @@ mod composition_tests {
         assert_eq!(*seen.lock().unwrap(), vec!["hi".to_string()]);
         assert!(field.undo(), "committed text is on the undo stack like any other edit");
         assert_eq!(field.text(), "");
+    }
+
+    /// The phone grammar filters what may enter the model and reports the digit span.
+    #[test]
+    fn the_phone_grammar_filters_and_reports() {
+        let mut field = LineEdit::new(Rect::new(0, 0, 200, 24));
+        field.set_validator(Some(InputValidator::Phone));
+        // Letters are refused at the insertion path; the separators and digits survive.
+        field.insert_str("1 (555) 123-4567 x9");
+        assert_eq!(field.text(), "1 (555) 123-4567 9");
+        assert!(field.is_valid(), "twelve digits is a valid phone number");
+
+        // A programmatic write is trimmed and filtered too.
+        field.set_text("  +44 20 7946 0958  ");
+        assert_eq!(field.text(), "+44 20 7946 0958");
+        assert!(field.is_valid());
+
+        // Too few digits is reported, with the message in the error decoration.
+        field.set_text("123");
+        assert!(!field.is_valid());
+        assert!(!field.validation_message().is_empty());
+        assert_eq!(field.error_text(), field.validation_message());
+
+        // Nothing typed is not an error, and the validator's message is cleared.
+        field.set_text("");
+        assert!(field.is_valid());
+        assert_eq!(field.error_text(), "");
+    }
+
+    /// The e-mail grammar refuses whitespace and checks the `local@domain.tld` shape.
+    #[test]
+    fn the_email_grammar_validates_shape() {
+        let mut field = LineEdit::new(Rect::new(0, 0, 200, 24));
+        field.set_validator(Some(InputValidator::Email));
+        field.insert_str("name @domain");
+        assert_eq!(field.text(), "name@domain", "whitespace never enters the model");
+        assert!(!field.is_valid(), "a domain without a dot is not an address");
+
+        field.set_text("name@domain.com");
+        assert!(field.is_valid());
+        assert_eq!(field.validation_message(), "");
+
+        // One '@' and non-empty labels are part of the rule.
+        for invalid in ["@domain.com", "name@.com", "name@domain.", "a@b@c.com"] {
+            field.set_text(invalid);
+            assert!(!field.is_valid(), "{invalid} must be rejected");
+        }
+    }
+
+    /// A caller's own refusal message survives a value that satisfies the grammar.
+    #[test]
+    fn the_validator_only_clears_its_own_error() {
+        let mut field = LineEdit::new(Rect::new(0, 0, 200, 24));
+        field.set_validator(Some(InputValidator::Email));
+        field.set_text("not-an-address");
+        assert_eq!(field.error_text(), field.validation_message());
+
+        field.set_text("name@domain.com");
+        assert_eq!(field.error_text(), "", "the validator clears the message it wrote");
+
+        field.set_error_text("This address is already registered");
+        assert!(field.is_valid());
+        assert_eq!(
+            field.error_text(),
+            "This address is already registered",
+            "a caller's refusal must not be cleared by the field's own grammar"
+        );
     }
 }

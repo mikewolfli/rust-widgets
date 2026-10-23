@@ -786,6 +786,24 @@ class RustWidgets:
         L.rw_bindings_api_version.argtypes = []
         L.rw_bindings_api_version.restype = c_uint
 
+        L.rw_platform_diagnostics.argtypes = []
+        L.rw_platform_diagnostics.restype = c_uint
+
+        L.rw_platform_diagnostics_json.argtypes = []
+        L.rw_platform_diagnostics_json.restype = c_void_p
+
+        L.rw_system_font_count.argtypes = []
+        L.rw_system_font_count.restype = c_uint
+
+        L.rw_system_font_family.argtypes = [c_uint]
+        L.rw_system_font_family.restype = c_void_p
+
+        L.rw_system_font_style.argtypes = [c_uint]
+        L.rw_system_font_style.restype = c_void_p
+
+        L.rw_refresh_system_fonts.argtypes = []
+        L.rw_refresh_system_fonts.restype = c_uint
+
         # ------------------------------------------------------------------ #
         # Render configuration                                               #
         # ------------------------------------------------------------------ #
@@ -1975,6 +1993,45 @@ class RustWidgets:
     def platform_dpi_scale_factor(self) -> float:
         """Return the platform's DPI scale factor."""
         return self.lib.rw_platform_dpi_scale_factor()
+
+    def platform_diagnostics(self) -> int:
+        """Run the unified platform diagnostic probe; return the mask of passed facts.
+
+        Bit order is published in ``platform::diagnostics`` and is stable across
+        platforms. A fact the backend honestly does not have is skipped, not
+        failed, so the mask answers "which facts are measured here".
+        """
+        return self.lib.rw_platform_diagnostics()
+
+    def platform_diagnostics_json(self) -> str:
+        """Run the diagnostic probe and return its JSON form.
+
+        Names every fact the backend skipped, which the mask alone cannot.
+        """
+        ptr = self.lib.rw_platform_diagnostics_json()
+        return self._decode_and_free(self.lib, ptr)
+
+    def system_font_count(self) -> int:
+        """Return the number of entries in the host's installed-font snapshot.
+
+        The first call returns 0 and starts a background query; a later call
+        reads the installed list. Never blocks the calling thread.
+        """
+        return self.lib.rw_system_font_count()
+
+    def system_font_family(self, index: int) -> str:
+        """Return the family name at ``index``, or ``""`` when out of range."""
+        ptr = self.lib.rw_system_font_family(index)
+        return self._decode_and_free(self.lib, ptr)
+
+    def system_font_style(self, index: int) -> str:
+        """Return the style name at ``index`` (e.g. ``"Regular"``), or ``""``."""
+        ptr = self.lib.rw_system_font_style(index)
+        return self._decode_and_free(self.lib, ptr)
+
+    def refresh_system_fonts(self) -> int:
+        """Re-query the host's installed fonts; return the new count."""
+        return self.lib.rw_refresh_system_fonts()
 
     def platform_capability_contract(self, profile_code: int) -> int:
         """Negotiate a capability contract for a runtime profile.

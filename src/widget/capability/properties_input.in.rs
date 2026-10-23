@@ -237,6 +237,11 @@ macro_rules! impl_properties_input {
             // Derived from the value's length and `max_length`, so readable but not writable.
             PropertySchema::new("counter", PropertyValueKind::String, true, false),
             PropertySchema::new("over_limit", PropertyValueKind::Bool, true, false),
+            // Derived from the value and the field's grammar (see `InputValidator`): readable
+            // so a form can drive its own submit state, not writable for the same reason the
+            // counter is not — the text already determines both.
+            PropertySchema::new("valid", PropertyValueKind::Bool, true, false),
+            PropertySchema::new("validation_message", PropertyValueKind::String, true, false),
             // The value's horizontal alignment. Only the three horizontal tokens are accepted: the
             // value is centred vertically in the field band by the field's own layout, so a
             // `top`/`bottom` write would be one the control could never honour.

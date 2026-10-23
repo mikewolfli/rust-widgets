@@ -164,3 +164,43 @@ src/widget/view_widgets/query_builder.rs QueryBuilder backlog
 src/widget/view_widgets/virtual_table.rs VirtualTable backlog
 src/widget/web_widgets/web_engine.rs WebEngineView backlog
 src/widget/window.rs Window backlog
+
+# ── N10 additions: fixed-chrome, with the reason each is permanent ─────────────
+#
+# All of these came from the N9 control/layout batch, which postdated this table.
+#
+#   * `gauge` / `clock` — a fixed default footprint (a dial canvas): the label/unit text is
+#     drawn *inside* the footprint, not measured to produce it. Routing through
+#     `ControlMetrics` would be the same number with more ceremony (header shape 1).
+#   * `alert_dialogs` (alert / confirm / about) — the default *footprint* of a dialog, the
+#     same shape `wizard` and `menu` already hold (header: "a container's own default
+#     footprint").
+#   * `accordion` — the stacked height of its own section chrome (`HEADER_HEIGHT` /
+#     `BODY_HEIGHT`); it reports the laid-out height of pieces it already fixed, and no
+#     text is measured at hint time (header shape 3).
+#   * `layout_family`: `Spacer` (`base_size`, its own chrome), `SizedBox` (`fixed`, a hard
+#     constraint that *is* the control), `Center`/`Align`/`Expanded`/`Flexible`/
+#     `IntrinsicWidth` (`content.size()` — delegation to a real child, header shape 2),
+#     `Padding` (child size plus its own insets), `AspectRatio` (`requested_size()`, its own
+#     derived geometry).
+#   * `linear_layouts`: `Flex`/`FlowLayout`/`WrapLayout` — the summed laid-out extents of
+#     their items plus the gaps: reporting, not computing (header shape 3).
+src/widget/chart_widgets/gauge.rs Gauge fixed-chrome
+src/widget/container_widgets/accordion.rs Accordion fixed-chrome
+src/widget/container_widgets/layout_family.rs Spacer fixed-chrome
+src/widget/container_widgets/layout_family.rs Center fixed-chrome
+src/widget/container_widgets/layout_family.rs Align fixed-chrome
+src/widget/container_widgets/layout_family.rs SizedBox fixed-chrome
+src/widget/container_widgets/layout_family.rs Padding fixed-chrome
+src/widget/container_widgets/layout_family.rs Expanded fixed-chrome
+src/widget/container_widgets/layout_family.rs Flexible fixed-chrome
+src/widget/container_widgets/layout_family.rs IntrinsicWidth fixed-chrome
+src/widget/container_widgets/layout_family.rs AspectRatio fixed-chrome
+src/widget/container_widgets/linear_layouts.rs Flex fixed-chrome
+src/widget/container_widgets/linear_layouts.rs FlowLayout fixed-chrome
+src/widget/container_widgets/linear_layouts.rs WrapLayout fixed-chrome
+src/widget/dialog/alert_dialogs.rs AlertDialog fixed-chrome
+src/widget/dialog/alert_dialogs.rs ConfirmDialog fixed-chrome
+src/widget/dialog/alert_dialogs.rs AboutDialog fixed-chrome
+src/widget/display_widgets/clock.rs Clock fixed-chrome
+src/widget/special_widgets/code_editor/editor/widget_impl.rs CodeEditor backlog

@@ -1036,5 +1036,50 @@ macro_rules! impl_properties_other {
             PropertySchema::new("period", PropertyValueKind::UInt, true, true),
             PropertySchema::new("show_reference_levels", PropertyValueKind::Bool, true, true),
         ];
+
+        // ── Small display controls ────────────────────────────────────────
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const TAG_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::enumerated(
+                "tone",
+                true,
+                true,
+                &["neutral", "primary", "success", "warning", "error"],
+            ),
+            PropertySchema::new("selected", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("closable", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const CLOCK_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("hour", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("minute", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("second", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("show_seconds", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const GAUGE_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("value", PropertyValueKind::Float, true, true),
+            PropertySchema::new("minimum", PropertyValueKind::Float, true, true),
+            PropertySchema::new("maximum", PropertyValueKind::Float, true, true),
+            PropertySchema::new("label", PropertyValueKind::String, true, true),
+            PropertySchema::new("unit", PropertyValueKind::String, true, true),
+            PropertySchema::new("thickness", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
     };
 }

@@ -212,5 +212,42 @@ macro_rules! impl_properties_dialog {
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
+
+        // ── Modal notices ──────────────────────────────────────────────────
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const ALERT_DIALOG_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("title", PropertyValueKind::String, true, true),
+            PropertySchema::new("message", PropertyValueKind::String, true, true),
+            PropertySchema::new("button_text", PropertyValueKind::String, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const CONFIRM_DIALOG_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("title", PropertyValueKind::String, true, true),
+            PropertySchema::new("message", PropertyValueKind::String, true, true),
+            PropertySchema::new("accept_text", PropertyValueKind::String, true, true),
+            PropertySchema::new("reject_text", PropertyValueKind::String, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const ABOUT_DIALOG_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("title", PropertyValueKind::String, true, true),
+            PropertySchema::new("application_name", PropertyValueKind::String, true, true),
+            PropertySchema::new("version", PropertyValueKind::String, true, true),
+            PropertySchema::new("message", PropertyValueKind::String, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
     };
 }

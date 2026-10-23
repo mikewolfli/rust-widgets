@@ -1709,6 +1709,11 @@ pub fn drive_frame(delta_ms: u32) -> FrameOutcome {
     // Step 0 -- the device facts, so every control in this frame sees one set of them.
     crate::style::environment::refresh_environment();
 
+    // Step 0b -- a global input changed (theme, text scale, locale) since the last frame:
+    // repaint every window and mounted surface once. Armed instead of performed at the
+    // mutation site to keep the non-reentrant theme lock out of the platform path.
+    flush_global_repaint();
+
     // Step 1 -- input first, so this frame's animation targets are this frame's state.
     let events_dispatched = crate::drain_triggers();
 
@@ -3185,6 +3190,75 @@ pub fn request_repaint(id: ObjectId) {
     request_repaint_because(id, RepaintReason::Explicit);
 }
 
+/// Epoch of the last global-input change (see [`arm_global_repaint`]).
+static GLOBAL_REPAINT_EPOCH: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+thread_local! {
+    /// The global-repaint epoch this loop thread last repainted everything for.
+    static GLOBAL_REPAINT_SEEN: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
+/// Arms one full repaint of every window and mounted surface for the next frame.
+///
+/// # Why this is armed rather than performed here
+///
+/// The callers are global-input mutations (the active theme, the text scale, the
+/// locale): every control paints differently afterwards, but no control's own state
+/// changed, so nothing in the widget layer would ask for a frame. The theme mutation
+/// runs while the theme manager's **non-reentrant** mutex is held, and invalidating a
+/// surface there could re-enter that lock through a synchronous platform paint, so the
+/// mutation only bumps this epoch and wakes the loop; [`drive_frame`] performs the
+/// invalidation outside the lock on the thread that owns the widgets.
+///
+/// A still, event-driven host therefore repaints after a theme change instead of
+/// keeping the frame it already drew until the user happens to move the mouse.
+pub(crate) fn arm_global_repaint() {
+    GLOBAL_REPAINT_EPOCH.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    crate::platform::frame_wait::wake();
+}
+
+/// The epoch a theme mutation bumps, so `theme::manager` can assert it armed the repaint.
+#[cfg(test)]
+pub(crate) fn global_repaint_epoch_for_test() -> u64 {
+    GLOBAL_REPAINT_EPOCH.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// Performs the full repaint `arm_global_repaint` requested, once per epoch.
+fn flush_global_repaint() {
+    let epoch = GLOBAL_REPAINT_EPOCH.load(core::sync::atomic::Ordering::Relaxed);
+    let last = GLOBAL_REPAINT_SEEN.with(|seen| seen.replace(epoch));
+    if epoch == last {
+        return;
+    }
+    // A backend can honour a window or a mounted surface; a control inside either is
+    // covered by that ancestor's repaint (the same split `request_repaint_subtree`
+    // makes). `surface_window_for` reads its own thread-local, so it is safe inside the
+    // registry borrow; the parent walk is not, hence the two-phase collection.
+    let mut targets: alloc::vec::Vec<(ObjectId, Rect)> = alloc::vec::Vec::new();
+    let mut maybe_windowless: alloc::vec::Vec<(ObjectId, Rect)> = alloc::vec::Vec::new();
+    let _ = MOUNTED.try_with(|map| {
+        for (id, entry) in map.borrow().iter() {
+            let rect = entry.widget.geometry();
+            if entry.widget.kind() == crate::widget::WidgetKind::Window
+                || surface_window_for(*id).is_some()
+            {
+                targets.push((*id, rect));
+            } else {
+                maybe_windowless.push((*id, rect));
+            }
+        }
+    });
+    for (id, rect) in maybe_windowless {
+        if top_level_window_of(id).is_none() {
+            targets.push((id, rect));
+        }
+    }
+    for (id, rect) in targets {
+        mark_dirty_rect(id, rect);
+        request_repaint_because(id, RepaintReason::Explicit);
+    }
+}
+
 /// Records that the mounted **surface** `surface` is shown inside library window `window`.
 ///
 /// Called by the mount path, the only caller that knows both ids. Returns `false` when
@@ -4465,6 +4539,43 @@ mod tests {
     use crate::widget::special_widgets::code_editor::CodeEditor;
 
     // ── BLUE23 §3.3 -- the animation bus ────────────────────────────────────────
+
+    /// One arming buys exactly one full repaint of every window/surface.
+    ///
+    /// This is the mechanism behind "a theme switch repaints an idle window": the theme
+    /// mutation only arms the epoch (it runs under the non-reentrant theme lock), and the
+    /// loop thread performs the invalidation once. A second frame must not repeat it, or
+    /// every theme change would pin the window awake forever.
+    #[test]
+    fn an_armed_global_repaint_repaints_once_and_then_stops() {
+        let id = register(Box::new(crate::widget::Button::new(
+            "ok".to_string(),
+            crate::core::Rect::new(0, 0, 80, 32),
+        )))
+        .expect("mount");
+        let _unmount = MountGuard(id);
+        // Consume anything an earlier test on this thread armed, so "first frame" below
+        // cannot be satisfied by a stale epoch.
+        let _ = drive_frame(0);
+
+        // `renderable_epoch` is what a repaint request records; a standalone mounted control
+        // has no platform surface for `invalidate_surface` to accept, so the ledger counter
+        // (`repaints_submitted`) stays zero here even though the request was made.
+        let before = renderable_epoch();
+        arm_global_repaint();
+        let _ = drive_frame(0);
+        let after_armed = renderable_epoch();
+        assert_ne!(
+            after_armed, before,
+            "the armed frame must request a repaint for the mounted widget"
+        );
+        let _ = drive_frame(0);
+        assert_eq!(
+            renderable_epoch(),
+            after_armed,
+            "one arming must buy exactly one full repaint, not a permanently awake loop"
+        );
+    }
 
     /// A hovered button *is* animating, and the bus advances it to rest.
     ///

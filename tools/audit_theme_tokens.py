@@ -24,20 +24,39 @@ ROLE_TABLE = pathlib.Path("src/theme/types.rs")
 
 
 def load_roles():
-    """Parse the `"name" | "name" => Self::Role` arms out of the role table."""
+    """Parse the `"name" | "name" => Self::Role` arms out of the role table.
+
+    The parse is line-based on purpose. The first version matched one nested-quantifier
+    regex (`((?:\s*\|?\s*"[a-z]+"\s*)+)`) over the whole function body, and its
+    near-misses backtracked exponentially: the audit hung on the real table for minutes
+    with no output. Accumulating the quoted names line by line and binding them on the
+    arm's `=>` reads the same arms in linear time.
+    """
     text = ROLE_TABLE.read_text()
     start = text.index("pub fn for_kind_name")
-    end = text.index("fn ", start + 10)
-    body = text[start:end]
+    # The function closes at a top-level brace; the previous `next "fn "` boundary ran
+    # past it into the colour struct that follows, feeding the old regex thousands of
+    # characters it had no business scanning.
+    body = text[start : text.index("\n}", start)]
+
     roles = {}
-    for m in re.finditer(r"((?:\s*\|?\s*\"[a-z]+\"\s*)+)\s*=>\s*\{\s*(Self::\w+)", body):
-        names = re.findall(r'"([a-z]+)"', m.group(1))
-        for n in names:
-            roles[n] = m.group(2).replace("Self::", "")
-    for m in re.finditer(r"((?:\s*\|?\s*\"[a-z]+\"\s*)+)\s*=>\s*(Self::\w+)", body):
-        names = re.findall(r'"([a-z]+)"', m.group(1))
-        for n in names:
-            roles.setdefault(n, m.group(2).replace("Self::", ""))
+    pending = []
+    for line in body.split("\n"):
+        stripped = line.strip()
+        # Doc comments and attributes carry quoted lowercase words that are not arm
+        # names ("a thin line", `default_info`), so they neither join nor reset a
+        # pending name list.
+        if stripped.startswith("//") or stripped.startswith("#["):
+            continue
+        names = re.findall(r'"([a-z]+)"', stripped)
+        pending.extend(names)
+        target = re.search(r"=>\s*\{?\s*Self::(\w+)", stripped)
+        if target:
+            for name in pending:
+                roles[name] = target.group(1)
+            pending = []
+        elif not names:
+            pending = []
     return roles
 
 

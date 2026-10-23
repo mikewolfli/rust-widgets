@@ -193,6 +193,10 @@ impl WidgetRole {
             | "richedit"
             | "dateedit"
             | "timeedit"
+            // The `TimePicker` kind's own spelling (`time_picker` is its canonical row), so both
+            // names of the time field classify as a field. Without this the kind's spelling fell
+            // through to `Surface` and the field was filled with the window's own colour.
+            | "timepicker"
             | "datetimeedit"
             | "inplaceeditor"
             | "shortcuteditor"

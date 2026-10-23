@@ -32,6 +32,9 @@ impl WidgetFactory {
         self.register(window_capability(), create_window);
         self.register(group_box_capability(), create_group_box);
         self.register(line_edit_capability(), create_line_edit);
+        self.register(password_edit_capability(), create_password_edit);
+        self.register(phone_input_capability(), create_phone_input);
+        self.register(email_input_capability(), create_email_input);
         self.register(arc_capability(), create_arc);
         self.register(spinner_capability(), create_spinner);
         self.register(roller_capability(), create_roller);
@@ -185,6 +188,32 @@ impl WidgetFactory {
             self.register(adaptive_scaffold_capability(), create_adaptive_scaffold);
             self.register(wizard_dialog_capability(), create_wizard_dialog);
             self.register(safe_area_capability(), create_safe_area);
+            // Layout family and small display controls added while closing the control-gap
+            // audit. Each has its own kind, so no tie-break row is needed for them.
+            self.register(spacer_capability(), create_spacer);
+            self.register(center_capability(), create_center);
+            self.register(align_capability(), create_align);
+            self.register(sized_box_capability(), create_sized_box);
+            self.register(padding_capability(), create_padding);
+            self.register(expanded_capability(), create_expanded);
+            self.register(flexible_capability(), create_flexible);
+            self.register(intrinsic_width_capability(), create_intrinsic_width);
+            self.register(aspect_ratio_capability(), create_aspect_ratio);
+            self.register(flex_capability(), create_flex);
+            self.register(flow_layout_capability(), create_flow_layout);
+            self.register(wrap_layout_capability(), create_wrap_layout);
+            // `split_layout` shares `WidgetKind::Splitter` with `splitter`, so both names need a
+            // row in the concrete-type tie-break table.
+            self.register(split_layout_capability(), create_split_layout);
+            self.register(accordion_capability(), create_accordion);
+            self.register(tag_capability(), create_tag);
+            self.register(clock_capability(), create_clock);
+            self.register(gauge_capability(), create_gauge);
+            self.register(context_menu_capability(), create_context_menu);
+            self.register(alert_dialog_capability(), create_alert_dialog);
+            self.register(confirm_dialog_capability(), create_confirm_dialog);
+            self.register(about_dialog_capability(), create_about_dialog);
+            self.register(time_picker_capability(), create_time_picker);
             self.register(cupertino_alert_dialog_capability(), create_cupertino_alert_dialog);
             self.register(cupertino_slider_capability(), create_cupertino_slider);
             self.register(tooltip_capability(), create_tooltip);
@@ -312,6 +341,8 @@ mod tests {
         //    itself a registered factory name: `panel` and `dock_widget` are, while `menu_item` is
         //    a theme-classification name only (a row is built by its owning `Menu`, never by a
         //    factory call on its own name).
+        // `ContextMenu` is `Menu` under a role name, so it stays a child-only alias row; the
+        // `context_menu` capability is a second *name* over the `Menu` control, not a second type.
         let child_only = [
             (WidgetKind::Panel, "panel", true),
             (WidgetKind::DockPanel, "dock_widget", true),

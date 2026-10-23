@@ -1,0 +1,1136 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+// SPDX-License-Identifier: MIT
+
+//! `AlertDialog`, `ConfirmDialog` and `AboutDialog` — the three modal notices a form needs.
+//!
+//! # Three controls, one card
+//!
+//! All three draw the same card: a severity glyph beside the title, a wrapped message, and a
+//! right-aligned action row. What differs is the *action set* and therefore the events, and the
+//! severity the glyph announces:
+//!
+//! | control | actions | events | glyph |
+//! |---|---|---|---|
+//! | [`AlertDialog`] | one acknowledgement | `accepted` | warning triangle |
+//! | [`ConfirmDialog`] | accept / reject | `accepted`, `rejected` | question mark |
+//! | [`AboutDialog`] | one dismissal | `closed` | information mark |
+//!
+//! They are three capabilities and three kinds rather than one control with a mode flag,
+//! because the *published contract* differs: a designer wiring an `AlertDialog` must not be
+//! offered a `rejected` wire that the control can never fire.
+//!
+//! # Where the card is painted
+//!
+//! Inside the control's own geometry. Placement — centring over the window, the scrim, the
+//! modal grab — belongs to the host, which is why none of these controls moves its own
+//! rectangle. The shared card painter lives in this module because all three use it; a second
+//! copy would be the "two answers to one question" defect.
+
+use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
+use crate::event::{Event, EventHandler};
+use crate::render::RenderContext;
+use crate::signal::GenericSignal;
+use crate::style::SemanticColor;
+use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
+
+/// The padding inside the card, in logical pixels.
+const CARD_PADDING: u32 = 16;
+/// The corner radius of the card.
+const CARD_RADIUS: u32 = 8;
+/// The height of one action button.
+const BUTTON_HEIGHT: u32 = 28;
+/// The gap between two action buttons.
+const BUTTON_GAP: u32 = 8;
+/// The horizontal padding inside a button.
+const BUTTON_PADDING: u32 = 12;
+/// The distance between the title's line box and the message's.
+const TITLE_GAP: u32 = 4;
+/// The gutter between a card's severity glyph and the text that starts after it.
+const ICON_TITLE_GAP: u32 = 8;
+
+/// The card's resolved colours and font.
+struct CardPalette {
+    surface: Color,
+    ink: Color,
+    accent: Color,
+    border: Color,
+    font: Font,
+    title_font: Font,
+}
+
+/// Resolves the card palette from the control's style and the active theme.
+///
+/// The theme read holds the manager's lock, so the guard is confined to the block that copies
+/// the colours out — a guard held across the drawing calls would deadlock the first time a
+/// primitive took it again.
+fn card_palette(base: &BaseWidget, role: &str) -> CardPalette {
+    let style = base.style();
+    let themed = crate::style::resolved_theme_style_shared(role);
+    let (window_background, window_foreground, accent, outline) = {
+        let manager = crate::style::theme_manager();
+        match manager.current_theme() {
+            Some(theme) => (
+                theme.colors.background,
+                theme.colors.foreground,
+                theme.colors.primary,
+                theme.colors.outline,
+            ),
+            None => (Color::WHITE, Color::BLACK, Color::PRIMARY, Color::rgb(190, 190, 190)),
+        }
+    };
+    let surface = style
+        .background_color
+        .or_else(|| themed.as_ref().and_then(|resolved| resolved.background_color))
+        .unwrap_or(window_background);
+    let ink = style
+        .text_color
+        .or_else(|| themed.as_ref().and_then(|resolved| resolved.text_color))
+        .unwrap_or(window_foreground);
+    let accent = themed.as_ref().and_then(|resolved| resolved.border_color).unwrap_or(accent);
+    let border = style
+        .border_color
+        .or_else(|| themed.as_ref().and_then(|resolved| resolved.border_color))
+        .unwrap_or(outline);
+    let font = style
+        .font
+        .clone()
+        .or_else(|| themed.as_ref().and_then(|resolved| resolved.font.clone()))
+        .unwrap_or_else(|| Font::simple("Arial", 12.0));
+    let title_font = Font::simple(font.family(), font.size() + 2.0);
+    CardPalette { surface, ink, accent, border, font, title_font }
+}
+
+/// The severity glyph a dialog card draws beside its title.
+///
+/// Each dialog fixes its own icon, so unlike the message box there is no icon property to set:
+/// an alert warns, a confirmation asks, an about card informs. The glyphs are the shared
+/// [`IconName`] outlines, not text symbols — `⚠`/`✗` are covered by no bundled face, so drawing
+/// them through the text pipeline fell back to bitmap blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CardIcon {
+    /// The warning triangle, drawn for an [`AlertDialog`].
+    Warning,
+    /// The question mark, drawn for a [`ConfirmDialog`].
+    Question,
+    /// The information mark, drawn for an [`AboutDialog`].
+    Info,
+}
+
+impl CardIcon {
+    /// The outline glyph drawn for this severity, from the shared icon registry.
+    fn name(self) -> IconName {
+        match self {
+            CardIcon::Warning => IconName::Warning,
+            CardIcon::Question => IconName::Help,
+            CardIcon::Info => IconName::Info,
+        }
+    }
+
+    /// The severity glyph for a dialog role: an alert warns, a confirmation asks, an about card
+    /// informs. The role is the dialog's identity here — the same key the palette resolves by —
+    /// so the mapping lives beside it instead of travelling through one more parameter.
+    fn for_role(role: &str) -> Option<Self> {
+        match role {
+            "alert_dialog" => Some(CardIcon::Warning),
+            "confirm_dialog" => Some(CardIcon::Question),
+            "about_dialog" => Some(CardIcon::Info),
+            _ => None,
+        }
+    }
+
+    /// The colour for this severity: the theme's semantic token, so the glyph follows the active
+    /// appearance instead of staying light-blue on a dark dialog.
+    fn color(self) -> Color {
+        let token = match self {
+            CardIcon::Warning => SemanticColor::Warning,
+            CardIcon::Question | CardIcon::Info => SemanticColor::Info,
+        };
+        // `semantic_color` takes and releases the manager's lock and returns an owned colour, so
+        // no guard outlives the call.
+        crate::style::semantic_color(token).unwrap_or_else(|| self.color_fallback())
+    }
+
+    /// The literal last resort behind [`Self::color`], used only when no theme is active and
+    /// therefore no token can be resolved.
+    fn color_fallback(self) -> Color {
+        match self {
+            CardIcon::Warning => Color::rgb(255, 140, 0),
+            CardIcon::Question | CardIcon::Info => Color::rgb(0, 120, 215),
+        }
+    }
+}
+
+/// The width one glyph advance occupies, which is the renderer's measurement contract.
+fn advance(font: &Font) -> u32 {
+    font.size().ceil().max(1.0) as u32
+}
+
+/// The action row's button rectangles, laid out right to left in `labels` order.
+///
+/// Returned in `labels` order (the first label is the leftmost button), so a caller indexing
+/// the row by its own button index cannot be off by a mirror.
+fn button_rects(rect: Rect, labels: &[&str], font: &Font) -> Vec<Rect> {
+    if labels.is_empty() || rect.width == 0 || rect.height == 0 {
+        return Vec::new();
+    }
+    let glyph = advance(font);
+    let height = BUTTON_HEIGHT.min(rect.height);
+    let y = rect
+        .y
+        .saturating_add(rect.height as i32)
+        .saturating_sub(CARD_PADDING as i32)
+        .saturating_sub(height as i32);
+    let mut right = rect.x.saturating_add(rect.width as i32).saturating_sub(CARD_PADDING as i32);
+    let mut rects = vec![Rect::new(0, 0, 0, 0); labels.len()];
+    for (index, label) in labels.iter().enumerate().rev() {
+        let width = (label.chars().count() as u32)
+            .saturating_mul(glyph)
+            .saturating_add(2 * BUTTON_PADDING)
+            .min(rect.width);
+        let x = right.saturating_sub(width as i32);
+        rects[index] = Rect::new(x, y, width, height);
+        right = x.saturating_sub(BUTTON_GAP as i32);
+    }
+    rects
+}
+
+/// Breaks `text` into lines of at most `columns` characters, on word boundaries.
+///
+/// A word longer than the line is hard-split rather than dropped, so a long URL in a message is
+/// still readable instead of vanishing. The renderer's advance is one glyph per cluster, so a
+/// character budget and a pixel budget are the same number.
+fn wrap_words(text: &str, columns: usize) -> Vec<String> {
+    if columns == 0 {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut current_len = 0usize;
+    for word in text.split_whitespace() {
+        let mut remaining = word;
+        loop {
+            let space = usize::from(!current.is_empty());
+            let room = columns.saturating_sub(current_len + space);
+            if room == 0 {
+                lines.push(std::mem::take(&mut current));
+                current_len = 0;
+                continue;
+            }
+            let take = remaining.chars().count().min(room);
+            if take == 0 {
+                break;
+            }
+            if space == 1 {
+                current.push(' ');
+                current_len += 1;
+            }
+            let split: String = remaining.chars().take(take).collect();
+            current.push_str(&split);
+            current_len += take;
+            remaining = &remaining[split.len()..];
+            if remaining.is_empty() {
+                break;
+            }
+            // The word continues on the next line.
+            lines.push(std::mem::take(&mut current));
+            current_len = 0;
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+/// Paints the shared card, its title, its severity glyph and its message, and returns the
+/// action row's rects. The glyph comes from `role`, so a caller cannot mismatch them.
+fn paint_card(
+    ctx: &mut RenderContext,
+    base: &BaseWidget,
+    role: &str,
+    title: &str,
+    message: &str,
+    extra_lines: &[String],
+    buttons: &[&str],
+    hovered: Option<usize>,
+) -> Vec<Rect> {
+    let rect = base.geometry();
+    if rect.width == 0 || rect.height == 0 {
+        return Vec::new();
+    }
+    let palette = card_palette(base, role);
+    // The card is a raised surface: a fill a hair off the window's own, over a border, which is
+    // what makes it read as a panel in both appearances.
+    ctx.fill_rounded_rect(rect, CARD_RADIUS, palette.surface);
+    ctx.draw_rounded_rect_stroke(rect, CARD_RADIUS, palette.border, 1);
+
+    let glyph = advance(&palette.font);
+    let content_width = rect.width.saturating_sub(2 * CARD_PADDING);
+
+    // The title, then the message below it. Both are bounded to the content box. The severity
+    // icon, when present, shares the title's row: the text starts after it, so a title never
+    // collides with its own glyph, and a card without a title still reserves the icon's line so
+    // the message cannot start underneath it.
+    let mut y = rect.y.saturating_add(CARD_PADDING as i32);
+    let mut text_left = rect.x.saturating_add(CARD_PADDING as i32);
+    let mut text_width = content_width;
+    if let Some(icon) = CardIcon::for_role(role) {
+        // One glyph square, sized from the title's own metrics and clamped to the card, so a
+        // squeezed card shrinks the glyph instead of letting it escape the frame.
+        let side = advance(&palette.title_font).max(12).min(rect.width).min(rect.height);
+        let icon_rect = Rect::new(text_left, y, side, side);
+        crate::widget::draw_icon_at(ctx, icon_rect, icon.color(), icon.name());
+        let gutter = side as i32 + ICON_TITLE_GAP as i32;
+        text_left = text_left.saturating_add(gutter);
+        text_width = text_width.saturating_sub(gutter as u32);
+        if title.is_empty() {
+            y = y.saturating_add(side as i32).saturating_add(TITLE_GAP as i32);
+        }
+    }
+    if !title.is_empty() {
+        let band = Rect::new(text_left, y, text_width, advance(&palette.title_font) + 4);
+        ctx.draw_text_line(
+            band,
+            title,
+            &palette.title_font,
+            palette.ink,
+            HorizontalAlignment::Left,
+        );
+        y = y.saturating_add(band.height as i32).saturating_add(TITLE_GAP as i32);
+    }
+
+    let max_columns = (content_width / glyph.max(1)).max(1) as usize;
+    let line_height = glyph + 2;
+    let body_ink = palette.ink.with_alpha_f32(0.85);
+
+    // Extra label/value lines (the `AboutDialog`'s application and version rows) come before
+    // the message, because they identify the subject rather than describe it.
+    for line in extra_lines {
+        let band =
+            Rect::new(rect.x.saturating_add(CARD_PADDING as i32), y, content_width, line_height);
+        ctx.draw_text_line(band, line, &palette.font, body_ink, HorizontalAlignment::Left);
+        y = y.saturating_add(line_height as i32);
+    }
+
+    for line in wrap_words(message, max_columns) {
+        // A message longer than the card is cut at the action row rather than painted over it.
+        if y + line_height as i32
+            > rect
+                .y
+                .saturating_add(rect.height as i32)
+                .saturating_sub(CARD_PADDING as i32)
+                .saturating_sub(BUTTON_HEIGHT as i32)
+                .saturating_sub(BUTTON_GAP as i32)
+        {
+            break;
+        }
+        let band =
+            Rect::new(rect.x.saturating_add(CARD_PADDING as i32), y, content_width, line_height);
+        ctx.draw_text_line(band, &line, &palette.font, body_ink, HorizontalAlignment::Left);
+        y = y.saturating_add(line_height as i32);
+    }
+
+    let rects = button_rects(rect, buttons, &palette.font);
+    for (index, rect) in rects.iter().enumerate() {
+        let (fill, text_ink, border) = if hovered == Some(index) {
+            (palette.accent, palette.accent.contrast_color(), palette.accent)
+        } else {
+            (
+                palette.accent.with_alpha_f32(0.12),
+                palette.accent,
+                palette.accent.with_alpha_f32(0.6),
+            )
+        };
+        ctx.fill_rounded_rect(*rect, 4, fill);
+        ctx.draw_rounded_rect_stroke(*rect, 4, border, 1);
+        ctx.draw_text_line(
+            *rect,
+            buttons[index],
+            &palette.font,
+            text_ink,
+            HorizontalAlignment::Center,
+        );
+    }
+    rects
+}
+
+/// The index of the button under `point`, if any.
+fn button_at(rects: &[Rect], point: crate::core::Point) -> Option<usize> {
+    rects.iter().position(|rect| rect.contains(point))
+}
+
+// ── AlertDialog ─────────────────────────────────────────────────────────────
+
+/// AlertDialog — a modal notice with one acknowledging action.
+pub struct AlertDialog {
+    base: BaseWidget,
+    title: String,
+    message: String,
+    button_text: String,
+    hovered: Option<usize>,
+    /// Emitted when the acknowledgement button is pressed.
+    pub accepted: GenericSignal,
+}
+
+impl AlertDialog {
+    /// Creates an alert titled `title` with `message` and an "OK" action.
+    pub fn new(title: &str, message: &str, geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::AlertDialog, geometry, "AlertDialog"),
+            title: title.to_string(),
+            message: message.to_string(),
+            button_text: "OK".to_string(),
+            hovered: None,
+            accepted: GenericSignal::new(),
+        }
+    }
+
+    /// The dialog's title.
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    /// Replaces the dialog's title.
+    pub fn set_title(&mut self, title: String) {
+        if self.title == title {
+            return;
+        }
+        self.title = title;
+        self.base.request_redraw();
+    }
+
+    /// The dialog's message.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// Replaces the dialog's message.
+    pub fn set_message(&mut self, message: String) {
+        if self.message == message {
+            return;
+        }
+        self.message = message;
+        self.base.request_redraw();
+    }
+
+    /// The acknowledgement button's label.
+    pub fn button_text(&self) -> &str {
+        &self.button_text
+    }
+
+    /// Replaces the acknowledgement button's label.
+    pub fn set_button_text(&mut self, button_text: String) {
+        if self.button_text == button_text {
+            return;
+        }
+        self.button_text = button_text;
+        self.base.request_redraw();
+    }
+
+    /// The action row's rects.
+    fn buttons(&self) -> Vec<Rect> {
+        let font = card_palette(&self.base, "alert_dialog").font;
+        button_rects(self.geometry(), &[self.button_text.as_str()], &font)
+    }
+}
+
+impl Widget for AlertDialog {
+    fn base(&self) -> &BaseWidget {
+        &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        Size::new(320, 160)
+    }
+
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "accepted" => Some(EventSignalRef::unit("accepted", &self.accepted)),
+            _ => None,
+        }
+    }
+
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+impl WidgetProperties for AlertDialog {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "title" => Ok(CapabilityValue::String(self.title.clone())),
+            "message" => Ok(CapabilityValue::String(self.message.clone())),
+            "button_text" => Ok(CapabilityValue::String(self.button_text.clone())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "title" => {
+                self.set_title(expect_string(value)?);
+                Ok(())
+            }
+            "message" => {
+                self.set_message(expect_string(value)?);
+                Ok(())
+            }
+            "button_text" => {
+                self.set_button_text(expect_string(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["title", "message", "button_text", BASE_PROPERTY_NAMES]
+    }
+}
+
+impl Draw for AlertDialog {
+    fn draw(&mut self, ctx: &mut RenderContext) {
+        paint_card(
+            ctx,
+            &self.base,
+            "alert_dialog",
+            &self.title,
+            &self.message,
+            &[],
+            &[self.button_text.as_str()],
+            self.hovered,
+        );
+    }
+}
+
+impl EventHandler for AlertDialog {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+        match event {
+            Event::MouseMove { pos } => {
+                let hovered = button_at(&self.buttons(), *pos);
+                if hovered != self.hovered {
+                    self.hovered = hovered;
+                    self.base.request_redraw();
+                }
+            }
+            Event::MousePress { pos, button: 1, .. }
+                if button_at(&self.buttons(), *pos).is_some() =>
+            {
+                self.accepted.emit();
+                self.base.request_redraw();
+            }
+            _ => {}
+        }
+    }
+}
+
+// ── ConfirmDialog ──────────────────────────────────────────────────────────────────────────
+
+/// ConfirmDialog — a modal question with an accept and a reject action.
+///
+/// `accept_text` is the confirming action and `reject_text` the dismissing one. Order in the
+/// action row follows the platform convention this crate's other dialogs use: the confirming
+/// action on the right, so `Enter` and the rightmost button agree.
+pub struct ConfirmDialog {
+    base: BaseWidget,
+    title: String,
+    message: String,
+    accept_text: String,
+    reject_text: String,
+    hovered: Option<usize>,
+    /// Emitted when the confirming action is pressed.
+    pub accepted: GenericSignal,
+    /// Emitted when the dismissing action is pressed.
+    pub rejected: GenericSignal,
+}
+
+impl ConfirmDialog {
+    /// Creates a question titled `title` with "Cancel" / "OK" actions.
+    pub fn new(title: &str, message: &str, geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::ConfirmDialog, geometry, "ConfirmDialog"),
+            title: title.to_string(),
+            message: message.to_string(),
+            accept_text: "OK".to_string(),
+            reject_text: "Cancel".to_string(),
+            hovered: None,
+            accepted: GenericSignal::new(),
+            rejected: GenericSignal::new(),
+        }
+    }
+
+    /// The dialog's title.
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    /// Replaces the dialog's title.
+    pub fn set_title(&mut self, title: String) {
+        if self.title == title {
+            return;
+        }
+        self.title = title;
+        self.base.request_redraw();
+    }
+
+    /// The dialog's message.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// Replaces the dialog's message.
+    pub fn set_message(&mut self, message: String) {
+        if self.message == message {
+            return;
+        }
+        self.message = message;
+        self.base.request_redraw();
+    }
+
+    /// The confirming action's label.
+    pub fn accept_text(&self) -> &str {
+        &self.accept_text
+    }
+
+    /// Replaces the confirming action's label.
+    pub fn set_accept_text(&mut self, text: String) {
+        if self.accept_text == text {
+            return;
+        }
+        self.accept_text = text;
+        self.base.request_redraw();
+    }
+
+    /// The dismissing action's label.
+    pub fn reject_text(&self) -> &str {
+        &self.reject_text
+    }
+
+    /// Replaces the dismissing action's label.
+    pub fn set_reject_text(&mut self, text: String) {
+        if self.reject_text == text {
+            return;
+        }
+        self.reject_text = text;
+        self.base.request_redraw();
+    }
+
+    /// The action row's labels, left to right: reject, then accept.
+    fn labels(&self) -> [&str; 2] {
+        [self.reject_text.as_str(), self.accept_text.as_str()]
+    }
+
+    /// The action row's rects, in [`Self::labels`] order.
+    fn buttons(&self) -> Vec<Rect> {
+        let font = card_palette(&self.base, "confirm_dialog").font;
+        let labels = self.labels();
+        button_rects(self.geometry(), &labels, &font)
+    }
+}
+
+impl Widget for ConfirmDialog {
+    fn base(&self) -> &BaseWidget {
+        &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        Size::new(360, 170)
+    }
+
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "accepted" => Some(EventSignalRef::unit("accepted", &self.accepted)),
+            "rejected" => Some(EventSignalRef::unit("rejected", &self.rejected)),
+            _ => None,
+        }
+    }
+
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+impl WidgetProperties for ConfirmDialog {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "title" => Ok(CapabilityValue::String(self.title.clone())),
+            "message" => Ok(CapabilityValue::String(self.message.clone())),
+            "accept_text" => Ok(CapabilityValue::String(self.accept_text.clone())),
+            "reject_text" => Ok(CapabilityValue::String(self.reject_text.clone())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "title" => {
+                self.set_title(expect_string(value)?);
+                Ok(())
+            }
+            "message" => {
+                self.set_message(expect_string(value)?);
+                Ok(())
+            }
+            "accept_text" => {
+                self.set_accept_text(expect_string(value)?);
+                Ok(())
+            }
+            "reject_text" => {
+                self.set_reject_text(expect_string(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["title", "message", "accept_text", "reject_text", BASE_PROPERTY_NAMES]
+    }
+}
+
+impl Draw for ConfirmDialog {
+    fn draw(&mut self, ctx: &mut RenderContext) {
+        let labels = self.labels();
+        paint_card(
+            ctx,
+            &self.base,
+            "confirm_dialog",
+            &self.title,
+            &self.message,
+            &[],
+            &labels,
+            self.hovered,
+        );
+    }
+}
+
+impl EventHandler for ConfirmDialog {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+        match event {
+            Event::MouseMove { pos } => {
+                let hovered = button_at(&self.buttons(), *pos);
+                if hovered != self.hovered {
+                    self.hovered = hovered;
+                    self.base.request_redraw();
+                }
+            }
+            Event::MousePress { pos, button: 1, .. } => match button_at(&self.buttons(), *pos) {
+                // Index 0 is the reject action and index 1 the accept action; the row is
+                // returned in label order, so this is the same order the painter drew.
+                Some(0) => self.rejected.emit(),
+                Some(_) => self.accepted.emit(),
+                None => {}
+            },
+            _ => {}
+        }
+    }
+}
+
+// ── AboutDialog ─────────────────────────────────────────────────────────────
+
+/// AboutDialog — the standard application-information dialog.
+///
+/// Shows the application name, its version and a short message, and one dismissing action.
+/// The three facts are separate properties rather than one pre-formatted line, so a designer
+/// can bind the version to a release source without rebuilding the text.
+pub struct AboutDialog {
+    base: BaseWidget,
+    title: String,
+    application_name: String,
+    version: String,
+    message: String,
+    hovered: Option<usize>,
+    /// Emitted when the dismissal action is pressed.
+    pub closed: GenericSignal,
+}
+
+impl AboutDialog {
+    /// Creates an about dialog whose dismissal action reads "Close".
+    pub fn new(application_name: &str, version: &str, geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::AboutDialog, geometry, "AboutDialog"),
+            title: "About".to_string(),
+            application_name: application_name.to_string(),
+            version: version.to_string(),
+            message: String::new(),
+            hovered: None,
+            closed: GenericSignal::new(),
+        }
+    }
+
+    /// The dialog's title.
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    /// Replaces the dialog's title.
+    pub fn set_title(&mut self, title: String) {
+        if self.title == title {
+            return;
+        }
+        self.title = title;
+        self.base.request_redraw();
+    }
+
+    /// The application's name.
+    pub fn application_name(&self) -> &str {
+        &self.application_name
+    }
+
+    /// Replaces the application's name.
+    pub fn set_application_name(&mut self, name: String) {
+        if self.application_name == name {
+            return;
+        }
+        self.application_name = name;
+        self.base.request_redraw();
+    }
+
+    /// The application's version.
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    /// Replaces the application's version.
+    pub fn set_version(&mut self, version: String) {
+        if self.version == version {
+            return;
+        }
+        self.version = version;
+        self.base.request_redraw();
+    }
+
+    /// The descriptive message.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// Replaces the descriptive message.
+    pub fn set_message(&mut self, message: String) {
+        if self.message == message {
+            return;
+        }
+        self.message = message;
+        self.base.request_redraw();
+    }
+
+    /// The two identity lines painted above the message.
+    fn identity_lines(&self) -> Vec<String> {
+        let mut lines = Vec::with_capacity(2);
+        if !self.application_name.is_empty() {
+            lines.push(self.application_name.clone());
+        }
+        if !self.version.is_empty() {
+            lines.push(std::format!("Version {}", self.version));
+        }
+        lines
+    }
+
+    /// The action row's rects.
+    fn buttons(&self) -> Vec<Rect> {
+        let font = card_palette(&self.base, "about_dialog").font;
+        button_rects(self.geometry(), &["Close"], &font)
+    }
+}
+
+impl Widget for AboutDialog {
+    fn base(&self) -> &BaseWidget {
+        &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
+    }
+
+    fn size_hint(&self) -> Size {
+        Size::new(360, 200)
+    }
+
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "closed" => Some(EventSignalRef::unit("closed", &self.closed)),
+            _ => None,
+        }
+    }
+
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+impl WidgetProperties for AboutDialog {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "title" => Ok(CapabilityValue::String(self.title.clone())),
+            "application_name" => Ok(CapabilityValue::String(self.application_name.clone())),
+            "version" => Ok(CapabilityValue::String(self.version.clone())),
+            "message" => Ok(CapabilityValue::String(self.message.clone())),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "title" => {
+                self.set_title(expect_string(value)?);
+                Ok(())
+            }
+            "application_name" => {
+                self.set_application_name(expect_string(value)?);
+                Ok(())
+            }
+            "version" => {
+                self.set_version(expect_string(value)?);
+                Ok(())
+            }
+            "message" => {
+                self.set_message(expect_string(value)?);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of!["title", "application_name", "version", "message", BASE_PROPERTY_NAMES]
+    }
+}
+
+impl Draw for AboutDialog {
+    fn draw(&mut self, ctx: &mut RenderContext) {
+        let lines = self.identity_lines();
+        paint_card(
+            ctx,
+            &self.base,
+            "about_dialog",
+            &self.title,
+            &self.message,
+            &lines,
+            &["Close"],
+            self.hovered,
+        );
+    }
+}
+
+impl EventHandler for AboutDialog {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+        match event {
+            Event::MouseMove { pos } => {
+                let hovered = button_at(&self.buttons(), *pos);
+                if hovered != self.hovered {
+                    self.hovered = hovered;
+                    self.base.request_redraw();
+                }
+            }
+            Event::MousePress { pos, button: 1, .. }
+                if button_at(&self.buttons(), *pos).is_some() =>
+            {
+                self.closed.emit();
+                self.base.request_redraw();
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Point;
+
+    /// Records how many times a payload-free signal fired.
+    fn counter(signal: &GenericSignal) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        signal.connect({
+            let seen = std::sync::Arc::clone(&seen);
+            move || {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        seen
+    }
+
+    #[test]
+    fn an_alert_acknowledges_through_the_property_independent_path() {
+        let mut dialog =
+            AlertDialog::new("Heads up", "Something happened.", Rect::new(0, 0, 320, 160));
+        let fired = counter(&dialog.accepted);
+        let rect = dialog.buttons()[0];
+        dialog.handle_event(&Event::MousePress {
+            pos: Point::new(rect.x + 1, rect.y + 1),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(fired.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(dialog.kind(), WidgetKind::AlertDialog);
+    }
+
+    #[test]
+    fn an_alert_press_outside_the_action_does_nothing() {
+        let mut dialog = AlertDialog::new("Heads up", "Body", Rect::new(0, 0, 320, 160));
+        let fired = counter(&dialog.accepted);
+        dialog.handle_event(&Event::MousePress { pos: Point::new(4, 4), button: 1, modifiers: 0 });
+        assert_eq!(fired.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_confirm_dialog_routes_each_action_to_its_own_signal() {
+        let mut dialog =
+            ConfirmDialog::new("Delete?", "This cannot be undone.", Rect::new(0, 0, 360, 170));
+        let accepted = counter(&dialog.accepted);
+        let rejected = counter(&dialog.rejected);
+        let rects = dialog.buttons();
+        assert_eq!(rects.len(), 2);
+
+        dialog.handle_event(&Event::MousePress {
+            pos: Point::new(rects[0].x + 1, rects[0].y + 1),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(rejected.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        dialog.handle_event(&Event::MousePress {
+            pos: Point::new(rects[1].x + 1, rects[1].y + 1),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn the_action_row_is_laid_out_right_to_left_without_mirroring() {
+        let dialog = ConfirmDialog::new("q", "m", Rect::new(0, 0, 360, 170));
+        let rects = dialog.buttons();
+        assert!(rects[0].x < rects[1].x, "reject is left of accept: {rects:?}");
+        // Both buttons are inside the card.
+        for rect in &rects {
+            assert!(rect.x >= 0 && rect.x + rect.width as i32 <= 360);
+        }
+    }
+
+    #[test]
+    fn an_about_dialog_closes_and_shows_its_identity() {
+        let mut dialog = AboutDialog::new("Widgets", "2.9.0", Rect::new(0, 0, 360, 200));
+        let fired = counter(&dialog.closed);
+        assert_eq!(
+            dialog.identity_lines(),
+            vec!["Widgets".to_string(), "Version 2.9.0".to_string()]
+        );
+        let rect = dialog.buttons()[0];
+        dialog.handle_event(&Event::MousePress {
+            pos: Point::new(rect.x + 1, rect.y + 1),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(fired.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn every_dialog_field_round_trips_through_the_property_route() {
+        let mut alert = AlertDialog::new("", "", Rect::new(0, 0, 320, 160));
+        alert.set("title", CapabilityValue::String("T".to_string())).expect("writable");
+        alert.set("message", CapabilityValue::String("M".to_string())).expect("writable");
+        alert.set("button_text", CapabilityValue::String("Got it".to_string())).expect("writable");
+        assert_eq!(alert.get("button_text"), Ok(CapabilityValue::String("Got it".to_string())));
+
+        let mut confirm = ConfirmDialog::new("", "", Rect::new(0, 0, 360, 170));
+        confirm.set("accept_text", CapabilityValue::String("Yes".to_string())).expect("writable");
+        confirm.set("reject_text", CapabilityValue::String("No".to_string())).expect("writable");
+        assert_eq!(confirm.get("accept_text"), Ok(CapabilityValue::String("Yes".to_string())));
+
+        let mut about = AboutDialog::new("", "", Rect::new(0, 0, 360, 200));
+        about
+            .set("application_name", CapabilityValue::String("App".to_string()))
+            .expect("writable");
+        about.set("version", CapabilityValue::String("1.0".to_string())).expect("writable");
+        assert_eq!(about.get("version"), Ok(CapabilityValue::String("1.0".to_string())));
+    }
+
+    #[test]
+    fn a_message_wraps_on_word_boundaries() {
+        assert_eq!(
+            wrap_words("one two three", 7),
+            vec!["one two".to_string(), "three".to_string()]
+        );
+        assert_eq!(wrap_words("short", 20), vec!["short".to_string()]);
+        // A word longer than the line is hard-split rather than dropped.
+        assert_eq!(
+            wrap_words("abcdefgh", 3),
+            vec!["abc".to_string(), "def".to_string(), "gh".to_string()]
+        );
+        assert!(wrap_words("anything", 0).is_empty());
+    }
+
+    #[test]
+    fn every_dialog_paints_its_title_and_action() {
+        let mut alert = AlertDialog::new("Notice", "Body text", Rect::new(0, 0, 320, 160));
+        let svg = crate::widget::svg::render_to_svg(&mut alert);
+        // Title, one message line and one button label.
+        let boxes = crate::widget::svg::text_ink_boxes(&svg);
+        assert_eq!(boxes.len(), 3, "{svg}");
+        the_severity_glyph_leads_the_row(&svg);
+
+        let mut confirm = ConfirmDialog::new("Q", "M", Rect::new(0, 0, 360, 170));
+        let svg = crate::widget::svg::render_to_svg(&mut confirm);
+        // Title, one message line and two button labels.
+        let boxes = crate::widget::svg::text_ink_boxes(&svg);
+        assert_eq!(boxes.len(), 4, "{svg}");
+        the_severity_glyph_leads_the_row(&svg);
+
+        let mut about = AboutDialog::new("App", "1.0", Rect::new(0, 0, 360, 200));
+        let svg = crate::widget::svg::render_to_svg(&mut about);
+        // Title, name, version and button.
+        let boxes = crate::widget::svg::text_ink_boxes(&svg);
+        assert_eq!(boxes.len(), 4, "{svg}");
+        the_severity_glyph_leads_the_row(&svg);
+    }
+
+    /// The severity glyph is the only non-text path in a card's document: every painted string is
+    /// a glyph path marked `data-text`, the icon outline is not, and the card's own chrome is
+    /// rects. One path therefore means the glyph sits beside the title, at the card's top-left.
+    fn the_severity_glyph_leads_the_row(svg: &str) {
+        let glyph_paths = svg
+            .lines()
+            .filter(|line| line.contains("<path") && !line.contains("data-text"))
+            .count();
+        assert_eq!(glyph_paths, 1, "exactly one icon path expected: {svg}");
+    }
+
+    #[test]
+    fn each_dialog_severity_maps_to_its_own_glyph() {
+        assert_eq!(CardIcon::Warning.name(), IconName::Warning);
+        assert_eq!(CardIcon::Question.name(), IconName::Help);
+        assert_eq!(CardIcon::Info.name(), IconName::Info);
+    }
+
+    #[test]
+    fn a_severity_falls_back_to_a_readable_literal_without_a_theme() {
+        // The literals stand in for the semantic tokens only when no theme resolves them; they
+        // must stay distinct so a warning never reads as an information mark.
+        assert_ne!(CardIcon::Warning.color_fallback(), CardIcon::Info.color_fallback());
+        assert_eq!(CardIcon::Question.color_fallback(), CardIcon::Info.color_fallback());
+    }
+}

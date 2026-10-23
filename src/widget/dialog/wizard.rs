@@ -494,6 +494,15 @@ impl Draw for WizardDialog {
             let total_width = total_steps as u32 * spacing;
             let start_x = rect.x + (rect.width.saturating_sub(total_width) / 2) as i32;
 
+            // One face per role for the whole strip: `role_font` re-derives the font (cloning
+            // its family string) and this loop used to rebuild the number face every step and
+            // the title face once or twice per step.
+            let number_font = role_font(style, 11.0).with_bold(true);
+            let title_font_plain = role_font(style, 9.0);
+            let title_font_active = role_font(style, 9.0).with_bold(true);
+            // One reusable buffer for the step numbers, cleared per step.
+            let mut number_scratch = String::new();
+
             for i in 0..total_steps {
                 let cx = start_x + (i as u32 * spacing + spacing / 2) as i32;
                 let cy = rect.y + step_indicator_height as i32 / 2;
@@ -526,9 +535,13 @@ impl Draw for WizardDialog {
                 // Step number inside circle. Centred on the circle rather than offset by a
                 // fixed `-4 / -6` written for a one-digit label: the offset put a two-digit
                 // step to the right of centre, and the label was never fitted at all.
-                let label = format!("{}", i + 1);
-                let label_font = role_font(style, 11.0).with_bold(true);
-                let label_metrics = context.measure_text(&label, &label_font);
+                let label = {
+                    number_scratch.clear();
+                    use core::fmt::Write as _;
+                    let _ = write!(number_scratch, "{}", i + 1);
+                    number_scratch.as_str()
+                };
+                let label_metrics = context.measure_text(label, &number_font);
                 let label_box = Rect::new(
                     cx - circle_radius as i32,
                     cy - circle_radius as i32,
@@ -543,8 +556,8 @@ impl Draw for WizardDialog {
                         label_box.width,
                         label_metrics.height.max(1),
                     ),
-                    &label,
-                    &label_font,
+                    label,
+                    &number_font,
                     text_color,
                     HorizontalAlignment::Center,
                 );
@@ -553,11 +566,8 @@ impl Draw for WizardDialog {
                 // truncates inside its column instead of over the neighbouring step; the
                 // former byte-slice truncation also panicked on a multi-byte character
                 // boundary, which a fitted draw cannot.
-                let title_font = if is_active {
-                    role_font(style, 9.0).with_bold(true)
-                } else {
-                    role_font(style, 9.0)
-                };
+                let title_font: &crate::core::Font =
+                    if is_active { &title_font_active } else { &title_font_plain };
                 let title_color = if !is_enabled {
                     self.base.disabled_ink_on(ink, surface)
                 } else if is_active {
@@ -565,7 +575,7 @@ impl Draw for WizardDialog {
                 } else {
                     ink
                 };
-                let title_metrics = context.measure_text("M", &title_font);
+                let title_metrics = context.measure_text("M", title_font);
                 let title_y = cy + circle_radius as i32 + 2;
                 context.draw_text_fitted_cow(
                     Rect::new(
@@ -575,7 +585,7 @@ impl Draw for WizardDialog {
                         title_metrics.height.max(1),
                     ),
                     &self.steps[i].title,
-                    &title_font,
+                    title_font,
                     title_color,
                     HorizontalAlignment::Center,
                 );

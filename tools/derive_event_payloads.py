@@ -74,6 +74,13 @@ PRODUCER_ELSEWHERE: dict[str, str] = {
     "freeform_shape": "FreeformShapeWidget",
     "fab": "FAB",
     "lcd_number": "LCDNumber",
+    # The two-pane spelling of the splitter: one control under two names, as
+    # `table_widget` / `table` is.
+    "split_layout": "Splitter",
+    # The time field's kind spelling: one control under two names.
+    "time_picker": "TimeEdit",
+    # The menu's role spelling: one control under two names.
+    "context_menu": "Menu",
 }
 
 # Capabilities served by one struct whose name the convention does not reach.

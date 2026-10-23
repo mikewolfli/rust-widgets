@@ -2441,4 +2441,213 @@ pub trait ControlBackend: Send + Sync {
     ) -> ObjectId {
         0
     }
+    /// Create about dialog control.
+    fn create_about_dialog(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create accordion control.
+    fn create_accordion(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create alert dialog control.
+    fn create_alert_dialog(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create align wrapper control.
+    fn create_align(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create aspect-ratio box control.
+    fn create_aspect_ratio(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create centre wrapper control.
+    fn create_center(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create clock face control.
+    fn create_clock(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create confirm dialog control.
+    fn create_confirm_dialog(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create expanded child control.
+    fn create_expanded(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create flex distribution control.
+    fn create_flex(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create flexible child control.
+    fn create_flexible(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create flow layout control.
+    fn create_flow_layout(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create gauge dial control.
+    fn create_gauge(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create intrinsic-width wrapper control.
+    fn create_intrinsic_width(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create padding wrapper control.
+    fn create_padding(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create fixed-size box control.
+    fn create_sized_box(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create spacer control.
+    fn create_spacer(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create tag control.
+    fn create_tag(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create wrap layout control.
+    fn create_wrap_layout(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
 }

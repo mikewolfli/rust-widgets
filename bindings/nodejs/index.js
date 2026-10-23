@@ -660,7 +660,15 @@ function loadFunctions(libName) {
     rw_platform_capabilities: [uint, []],
     rw_platform_capability_contract: [uint, [uint]],
     rw_platform_dpi_scale_factor: [cfloat, []],
+    rw_platform_diagnostics: [uint, []],
+    rw_platform_diagnostics_json: [charPtr, []],
     rw_bindings_api_version: [uint, []],
+
+    // ── System fonts ─────────────────────────────────────────────────
+    rw_system_font_count: [uint, []],
+    rw_system_font_family: [charPtr, [uint]],
+    rw_system_font_style: [charPtr, [uint]],
+    rw_refresh_system_fonts: [uint, []],
 
     // ── Binding status (language-specific) ─────────────────────────────
     rw_nodejs_binding_status: [uint, []],
@@ -828,6 +836,9 @@ class RustWidgets {
       lib,
       "rw_mobile_backend_name",
     );
+    this._platformDiagnosticsJson = wrapStringFn(lib, "rw_platform_diagnostics_json");
+    this._systemFontFamily = wrapStringFn(lib, "rw_system_font_family");
+    this._systemFontStyle = wrapStringFn(lib, "rw_system_font_style");
 
     RustWidgets._instance = this;
   }
@@ -1605,6 +1616,45 @@ class RustWidgets {
 
   platformDpiScaleFactor() {
     return this._lib.rw_platform_dpi_scale_factor();
+  }
+
+  /**
+   * Run the unified platform diagnostic probe; returns the mask of passed facts.
+   * Bit order is published in `platform::diagnostics` and is stable across platforms.
+   */
+  platformDiagnostics() {
+    return this._lib.rw_platform_diagnostics();
+  }
+
+  /**
+   * Run the unified platform diagnostic probe; returns its JSON form. Names every
+   * fact the backend skipped, which the mask alone cannot.
+   */
+  platformDiagnosticsJson() {
+    return this._platformDiagnosticsJson();
+  }
+
+  /**
+   * Number of entries in the host's installed-font snapshot. The first call
+   * returns 0 and starts a background query; a later call reads the list.
+   */
+  systemFontCount() {
+    return this._lib.rw_system_font_count();
+  }
+
+  /** The family name at `index`, or "" when the index is past the end. */
+  systemFontFamily(index) {
+    return this._systemFontFamily(index);
+  }
+
+  /** The style name at `index` (e.g. "Regular"), or "" when unavailable. */
+  systemFontStyle(index) {
+    return this._systemFontStyle(index);
+  }
+
+  /** Re-query the host's installed fonts; returns the new count. */
+  refreshSystemFonts() {
+    return this._lib.rw_refresh_system_fonts();
   }
 
   bindingsApiVersion() {

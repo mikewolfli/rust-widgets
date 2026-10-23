@@ -63,6 +63,12 @@ pub struct PropertyGrid {
     base: BaseWidget,
     properties: Vec<PropertyItem>,
     selected_index: Option<usize>,
+    /// The property row the pointer is over, or `None`.
+    ///
+    /// Stored as an entry index like `selected_index`, so a scroll moves the
+    /// highlight with its row instead of lighting whatever index the row used
+    /// to occupy.
+    hovered_row: Option<usize>,
     scroll_offset: u32,
     /// Emitted when a property row is selected via click.
     pub selected: Signal1<usize>,
@@ -99,12 +105,32 @@ impl PropertyGrid {
     fn max_scroll(&self) -> u32 {
         (self.properties.len() as u32).saturating_sub(self.visible_row_count())
     }
+
+    /// The property row under `pos`, or `None` when the pointer is over the header,
+    /// past the last painted row or outside the rows entirely.
+    ///
+    /// The exact inverse of the press arm's mapping, so a highlight cannot land on
+    /// a row a click would not select.
+    fn row_index_at(&self, pos: Point) -> Option<usize> {
+        let content = self.content_rect();
+        let click_y = pos.y - content.y;
+        if click_y < FIRST_ROW_TOP as i32 {
+            return None;
+        }
+        let row_in_view = (click_y as u32 - FIRST_ROW_TOP) / ROW_HEIGHT;
+        if row_in_view >= self.visible_row_count() {
+            return None;
+        }
+        let row_index = row_in_view + self.scroll_offset;
+        ((row_index as usize) < self.properties.len()).then_some(row_index as usize)
+    }
     /// Creates a new PropertyGrid with the given geometry.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::PropertyGrid, geometry, "PropertyGrid"),
             properties: Vec::new(),
             selected_index: None,
+            hovered_row: None,
             scroll_offset: 0,
             selected: Signal1::new(),
         }
@@ -347,6 +373,10 @@ impl Draw for PropertyGrid {
         // derived from it rather than picked as further literals.
         let selected_row = surface.blend(&accent, 0.30);
         let name_column = surface.blend(&ink, 0.10);
+        // A hovered row is pointer position, not a committed selection, so it reads the
+        // accent at a **lighter** weight than the selected row — the same surface/accent
+        // pair the table family uses for its row tint.
+        let hovered_row_bg = surface.blend(&accent, 0.12);
         // Row separators are a subdivision of the surface, not a second literal grey.
         let row_separator = surface.blend(&ink, 0.12);
         let disabled_ink = ink.blend(&surface, 0.55);
@@ -428,9 +458,12 @@ impl Draw for PropertyGrid {
             let row_rect = Rect::new(content.x, y, content.width, row_height);
             let is_selected = self.selected_index == Some(i);
 
-            // Alternating row background
+            // Alternating row background — the hover tint sits between the plain bands
+            // and the selection, so the three states stay visually ordered.
             if is_selected {
                 context.fill_rect(row_rect, selected_row);
+            } else if Some(i) == self.hovered_row {
+                context.fill_rect(row_rect, hovered_row_bg);
             } else if i % 2 == 0 {
                 context.fill_rect(row_rect, striped_row);
             } else {
@@ -557,6 +590,27 @@ impl EventHandler for PropertyGrid {
                         self.base.request_redraw();
                     }
                 }
+            }
+            Event::MouseMove { pos, .. } => {
+                // Hover is the row under the pointer, from the same inverse mapping the
+                // press uses, so a highlight cannot land on a row a click would not select.
+                // `MouseMove` fires far more often than the highlight changes, so the
+                // redraw is requested only on an actual change.
+                let hovered = if self.base.contains_point_with_touch_expansion(*pos) {
+                    self.row_index_at(*pos)
+                } else {
+                    None
+                };
+                if hovered != self.hovered_row {
+                    self.hovered_row = hovered;
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseLeave { .. } => {
+                if self.hovered_row.take().is_some() {
+                    self.base.request_redraw();
+                }
+                self.base.handle_event(event);
             }
             Event::Wheel { delta, .. } => {
                 // `max_scroll` and the visible count both come from the shared helpers, so the
@@ -1083,5 +1137,52 @@ mod tests {
         long.handle_event(&Event::KeyPress { key: 35, modifiers: 0 });
         assert!(long.scroll_offset <= long.max_scroll());
         assert_eq!(long.selected_index(), Some(49));
+    }
+
+    /// Hover is the row under the pointer, resolved through the same inverse mapping
+    /// the press uses: the header and the blank area under the last row stay unlit,
+    /// painted rows resolve to their entry index, and leaving the panel clears the
+    /// highlight instead of freezing it in place.
+    #[test]
+    fn property_grid_hover_follows_the_pointer() {
+        let mut pg = PropertyGrid::new(Rect::new(0, 0, 300, 200));
+        for i in 0..10 {
+            pg.add_property(format!("p{i}"), format!("v{i}"), true);
+        }
+        assert_eq!(pg.visible_row_count(), 7);
+
+        let rows_top = pg.content_rect().y + FIRST_ROW_TOP as i32;
+
+        // The header band is not a row.
+        pg.handle_event(&Event::MouseMove { pos: Point::new(10, pg.content_rect().y + 12) });
+        assert_eq!(pg.hovered_row, None);
+
+        // Row 0 and row 1 light their own entries.
+        pg.handle_event(&Event::MouseMove { pos: Point::new(10, rows_top + 12) });
+        assert_eq!(pg.hovered_row, Some(0));
+        pg.handle_event(&Event::MouseMove {
+            pos: Point::new(10, rows_top + ROW_HEIGHT as i32 + 12),
+        });
+        assert_eq!(pg.hovered_row, Some(1));
+
+        // The blank area under the last painted row stays unlit (7 of 10 fit).
+        pg.handle_event(&Event::MouseMove { pos: Point::new(10, 196) });
+        assert_eq!(pg.hovered_row, None);
+
+        pg.handle_event(&Event::MouseLeave { pos: Point::new(-1, -1) });
+        assert_eq!(pg.hovered_row, None);
+    }
+
+    /// `handle_event` returns early for a disabled grid, so no mouse move can arm a
+    /// hover affordance on a control that also refuses to select.
+    #[test]
+    fn property_grid_disabled_shows_no_hover() {
+        let mut pg = PropertyGrid::new(Rect::new(0, 0, 300, 200));
+        pg.add_property("A", "1", true);
+        pg.set_enabled(false);
+
+        let rows_top = pg.content_rect().y + FIRST_ROW_TOP as i32;
+        pg.handle_event(&Event::MouseMove { pos: Point::new(10, rows_top + 12) });
+        assert_eq!(pg.hovered_row, None);
     }
 }

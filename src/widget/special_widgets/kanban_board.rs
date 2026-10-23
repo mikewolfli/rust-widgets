@@ -832,8 +832,18 @@ impl Draw for KanbanBoard {
         // all chrome states of the same surface.
         let chrome = BoardChrome { background, border, text_color };
 
+        // One face per role for the whole board: these were resolved inside `draw_column`, so a
+        // board of N columns re-derived (and re-allocated the family string of) four fonts per
+        // column per frame.
+        let fonts = ColumnFonts {
+            header: role_font(self.base.style(), 13.0),
+            badge: role_font(self.base.style(), 11.0),
+            title: role_font(self.base.style(), 12.0),
+            desc: role_font(self.base.style(), 10.0),
+        };
+
         for index in 0..self.columns.len() {
-            self.draw_column(context, index, &chrome);
+            self.draw_column(context, index, &chrome, &fonts);
         }
         // The drag overlay is painted last so the card follows the pointer over
         // every column rather than being clipped to the one it started in.
@@ -854,6 +864,17 @@ struct BoardChrome {
     border: Color,
     /// The resolved foreground, used for text and as the tint direction.
     text_color: Color,
+}
+
+/// The four faces a column draws with, resolved once per paint.
+///
+/// `role_font` re-derives the font from the style (cloning its family string), so resolving
+/// these inside `draw_column` cost four allocations per column per frame.
+struct ColumnFonts {
+    header: crate::core::Font,
+    badge: crate::core::Font,
+    title: crate::core::Font,
+    desc: crate::core::Font,
 }
 
 impl BoardChrome {
@@ -935,7 +956,13 @@ impl BoardChrome {
 
 impl KanbanBoard {
     /// Draws one column: its background, header, cards and the drop preview.
-    fn draw_column(&mut self, context: &mut RenderContext, index: usize, chrome: &BoardChrome) {
+    fn draw_column(
+        &mut self,
+        context: &mut RenderContext,
+        index: usize,
+        chrome: &BoardChrome,
+        fonts: &ColumnFonts,
+    ) {
         let Some(column_rect) = self.column_rect(index) else {
             return;
         };
@@ -966,11 +993,11 @@ impl KanbanBoard {
         // A WIP limit is only worth showing when it is reached, which is the state a
         // user has to act on.
         let header_color = if at_limit { chrome.at_limit() } else { chrome.text() };
-        let header_font = role_font(self.base.style(), 13.0);
-        let badge_font = role_font(self.base.style(), 11.0);
-        let title_font = role_font(self.base.style(), 12.0);
-        let desc_font = role_font(self.base.style(), 10.0);
-        let header_line = context.text_line(header_rect, &header_font);
+        let header_font = &fonts.header;
+        let badge_font = &fonts.badge;
+        let title_font = &fonts.title;
+        let desc_font = &fonts.desc;
+        let header_line = context.text_line(header_rect, header_font);
         // The badge is measured first so the title knows where to stop: an unbounded
         // title ran underneath the count on the right.
         let mut badge = String::new();
@@ -981,8 +1008,8 @@ impl KanbanBoard {
         } else {
             let _ = write!(badge, "{}", cards.len());
         }
-        let badge_metrics = context.measure_text(&badge, &badge_font);
-        let badge_line = context.text_line(header_rect, &badge_font);
+        let badge_metrics = context.measure_text(&badge, badge_font);
+        let badge_line = context.text_line(header_rect, badge_font);
         let badge_x =
             header_rect.x + header_rect.width as i32 - CARD_PADDING - badge_metrics.width as i32;
         let title_width = ((badge_x - 6) - (header_rect.x + CARD_PADDING)).max(0) as u32;
@@ -994,7 +1021,7 @@ impl KanbanBoard {
                 header_line.height.max(1),
             ),
             title,
-            &header_font,
+            header_font,
             header_color,
             HorizontalAlignment::Left,
         );
@@ -1004,7 +1031,7 @@ impl KanbanBoard {
         context.draw_text(
             Point::new(badge_x, badge_line.y),
             &badge,
-            &badge_font,
+            badge_font,
             chrome.muted_text(),
             HorizontalAlignment::Left,
         );
@@ -1021,7 +1048,7 @@ impl KanbanBoard {
             // Clipped to the column so a card taller than the remaining space does
             // not paint over the column beside it.
             context.push_clip(column_rect.x, column_rect.y, column_rect.width, column_rect.height);
-            self.draw_card(context, card, card_rect, position, chrome, &title_font, &desc_font);
+            self.draw_card(context, card, card_rect, position, chrome, title_font, desc_font);
             context.pop_clip();
         }
     }

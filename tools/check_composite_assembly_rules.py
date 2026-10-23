@@ -33,6 +33,33 @@ Two rules of the nine are lexical and mechanical, and this gate enforces them:
       padding scales with the font while its gaps do not. The check is that a *placing* composite
       reaches a layout through one of the four entry points.
 
+# The assembly family is empty; the host family is what remains (measured, not assumed)
+
+The rules above were written when ten controls assembled factory children through
+`CompositeBuilder`. **No control does any more**: `grep -rln CompositeBuilder::new src/widget/`
+now answers `src/widget/composite.rs` alone — the channel's own definition. The performance round
+rewrote each former consumer as one of two documented shapes, with the reasoning in the file:
+
+  * **Painted interior** — the interior elements are rows/columns of *paint*, not widgets:
+    `split_button` (`assemble_face`, "Why this is arithmetic and not an assembled row"),
+    `tool_bar` (:435), `menu` (:675, fixed-height rows), `status_bar`, `spin_box`, `combo_box`,
+    `tab_view` (:312), `tab_widget` (:810, "one pass of integer additions"),
+    `scroll_area`'s bands (:695).
+  * **Content host** — the control puts *caller-supplied* children on the tree via
+    `add_child` / `add_child_linked` and has no arrangement of its own to derive — the shape the
+    header below already held out of scope for `dialog_widget`. Surviving examples:
+    `scroll_area::set_content`, `tab_widget::{add_tab, insert_tab}`, `group_box`.
+
+A gate whose subject vanished has two honest options: report the emptiness, or pretend. This gate
+reports it: the *positive* halves of rules 1 and 2 (must reach the factory; must reach a layout)
+apply only to a control that **creates** children, and since none does, they are asserted as a
+measured fact about the family rather than checked per file. The **negative** halves — no concrete
+`Type::new(..)`, no child rectangle derived from another rect's origin plus a literal — still
+apply to every host, because they are exactly the defects a host can still commit. The checked
+count below therefore counts hosts, and the `checked == 0` guard stays: if no control put a
+child on the tree at all, that would mean the membership rule went blind, and the gate must say
+so rather than pass.
+
 # What this gate deliberately does not attempt
 
 Stated so the coverage is not over-read:
@@ -105,6 +132,11 @@ CONCRETE_CTOR = re.compile(
 LAYOUT_ENTRY = re.compile(
     r"CompositeBuilder::new|\.arrange\(|\.add_widget\(|Layout::arrange\(\s*|layout\.add_widget\("
 )
+# Whether a control *originates* child widgets at all. A factory call creates them through the
+# registry; a concrete constructor creates them directly (and is separately a rule-1 defect).
+# Neither spelling means the control only hosts caller-supplied children — the family the
+# positive rules do not apply to (see the header's "The assembly family is empty").
+CREATES_CHILDREN = re.compile(FACTORY_CALL.pattern + "|" + CONCRETE_CTOR.pattern)
 # Rule 9: the band an `arrange` is handed, so the check is about the *argument* rather than about
 # any invented rect in the function.
 ARRANGES_INTO = re.compile(r"\.arrange\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)", re.DOTALL)
@@ -159,12 +191,21 @@ PLACEMENT_LITERAL = re.compile(
     r"[^,]+,\s*[0-9]+\s*,"
 )
 # A child put on the tree. This is the membership test for "is a composite".
-HAS_CHILDREN = re.compile(r"\.add_child\(|CompositeBuilder::new|builder\.add")
+#
+# `add_child_linked` is the current spelling of the host move (`set_content`, `add_tab`,
+# `insert_item`, ...); plain `add_child` in a host is itself a §B.6 rule-5 defect that
+# `check_rule_5_paired_links` reports, but it still *is* the membership shape — a host that
+# links one-sided is a broken host, not an absent one.
+HAS_CHILDREN = re.compile(r"\.add_child\(|\.add_child_linked\(|CompositeBuilder::new|builder\.add")
 
-# Reverse-injection target: the line in `split_button`'s production code that hands the children to
-# a layout. `--inject` replaces it with hand-computed placement and requires the gate to notice, so
-# a check that silently stopped reading its input cannot pass.
-INJECTION_TARGET = "builder.arrange(band, &mut |_, rect| placed.push(rect));"
+# Reverse-injection target: the line in `scroll_area::set_content` that puts the caller's
+# content widget on the tree. It is the membership anchor of a *live* family member, so an
+# injection next to it proves the gate reads real input. (The previous target — `split_button`'s
+# `builder.arrange(band, ..)` line — no longer exists: the performance round replaced that
+# assembly with arithmetic documented in the file, and an injection at a vanished line would be
+# a proof that the gate reads nothing at all.)
+HOST_ANCHOR = "            self.base.add_child_linked(widget_id);"
+HOST_FILE = "src/widget/container_widgets/scrollarea.rs"
 
 
 def is_composite(text: str) -> bool:
@@ -172,14 +213,9 @@ def is_composite(text: str) -> bool:
     return bool(HAS_CHILDREN.search(text))
 
 
-def check_rule_1_factory_creation(path: pathlib.Path, text: str, name: str) -> list[str]:
-    """[1] A composite's children must come from `WidgetFactory::create`."""
+def rule_1_no_concrete_types(path: pathlib.Path, text: str, name: str) -> list[str]:
+    """[1, negative] No composite may construct a concrete child-widget type."""
     findings: list[str] = []
-    if not FACTORY_CALL.search(text):
-        findings.append(
-            f"{name}: {path} assembles children but never reaches `WidgetFactory`, so its children "
-            f"are concrete types that a stripped profile may not compile (§B.6 rule 1)"
-        )
     concrete = CONCRETE_CTOR.search(text)
     if concrete:
         line = text[: concrete.start()].count("\n") + 1
@@ -191,21 +227,42 @@ def check_rule_1_factory_creation(path: pathlib.Path, text: str, name: str) -> l
     return findings
 
 
-def check_rule_2_layout_placement(path: pathlib.Path, text: str, name: str) -> list[str]:
-    """[2] A composite's children must be positioned by a `Layout`, not by arithmetic."""
+def rule_2_no_hand_placed_child(path: pathlib.Path, text: str, name: str) -> list[str]:
+    """[2, negative] No child rectangle may be derived from another rect's origin plus literals."""
     findings: list[str] = []
-    if not LAYOUT_ENTRY.search(text):
-        findings.append(
-            f"{name}: {path} assembles children but never reaches a `Layout` "
-            f"(`CompositeBuilder::arrange`, `Layout::arrange`, or `add_widget`), so their "
-            f"rectangles come from arithmetic (§B.6 rule 2)"
-        )
     for match in PLACEMENT_LITERAL.finditer(text):
         line = text[: match.start()].count("\n") + 1
         findings.append(
             f"{name}: {path}:{line} derives a child rectangle from another rectangle's origin "
             f"plus a literal (`{match.group(0).strip()}`). §B.6 rule 2 requires a `Layout` to "
             f"place it, or the offset does not scale with `layout_scale`/`font_scale`"
+        )
+    return findings
+
+
+def check_rule_1_factory_creation(path: pathlib.Path, text: str, name: str) -> list[str]:
+    """[1] A composite's children must come from `WidgetFactory::create`.
+
+    The positive half applies only to a control that *creates* children; the caller decides (see
+    `run`). The negative half applies to every family member, host or assembler.
+    """
+    findings = rule_1_no_concrete_types(path, text, name)
+    if not FACTORY_CALL.search(text):
+        findings.append(
+            f"{name}: {path} assembles children but never reaches `WidgetFactory`, so its children "
+            f"are concrete types that a stripped profile may not compile (§B.6 rule 1)"
+        )
+    return findings
+
+
+def check_rule_2_layout_placement(path: pathlib.Path, text: str, name: str) -> list[str]:
+    """[2] A composite's children must be positioned by a `Layout`, not by arithmetic."""
+    findings = rule_2_no_hand_placed_child(path, text, name)
+    if not LAYOUT_ENTRY.search(text):
+        findings.append(
+            f"{name}: {path} assembles children but never reaches a `Layout` "
+            f"(`CompositeBuilder::arrange`, `Layout::arrange`, or `add_widget`), so their "
+            f"rectangles come from arithmetic (§B.6 rule 2)"
         )
     return findings
 
@@ -467,6 +524,7 @@ def run() -> list[str]:
     findings += check_rule_5_paired_links()
     findings += check_rule_9_band_is_the_callers_room()
     checked = 0
+    assemblers = 0
     for name, path_str in COMPOSITES:
         path = pathlib.Path(path_str)
         if not path.exists():
@@ -477,92 +535,93 @@ def run() -> list[str]:
             # Not a composite by the membership rule; skip rather than invent a finding.
             continue
         checked += 1
-        findings += check_rule_1_factory_creation(path, text, name)
-        findings += check_rule_2_layout_placement(path, text, name)
+        if CREATES_CHILDREN.search(text):
+            # An assembling composite: the positive obligations (factory, layout) are live for
+            # it, on top of the negative ones every family member carries.
+            assemblers += 1
+            findings += check_rule_1_factory_creation(path, text, name)
+            findings += check_rule_2_layout_placement(path, text, name)
+        else:
+            # A content host: the child is caller-supplied, so the positive halves have nothing
+            # to say (the same reason `dialog_widget` is out of scope — see the header). The
+            # negative halves are exactly the defects a host can still commit.
+            findings += rule_1_no_concrete_types(path, text, name)
+            findings += rule_2_no_hand_placed_child(path, text, name)
     if checked == 0:
         findings.append("no composite was recognised; the membership rule or the file list is wrong")
-    print(f"composites checked: {checked} of {len(COMPOSITES)} listed")
+    print(
+        f"composites checked: {checked} of {len(COMPOSITES)} listed "
+        f"({assemblers} assemble their own children; the rest host caller-supplied ones)"
+    )
     return findings
 
 
 def inject() -> int:
-    """Break §B.6 rule 2 in one composite and require the gate to notice."""
-    name, path_str = COMPOSITES[0]
-    path = pathlib.Path(path_str)
+    """Break §B.6 rule 2's negative half in a live host and require the gate to notice."""
+    name = "scroll_area"
+    path = pathlib.Path(HOST_FILE)
     original = path.read_text()
-    # Replace the layout call with hand-computed placement, which is precisely the defect.
+    # Replace the host link with hand-computed child placement, which is precisely the defect:
+    # a child rectangle derived from another rectangle's origin plus literals.
     broken = original.replace(
-        INJECTION_TARGET,
-        "placed.push(Rect::new(band.x + 8, band.y, 10, 10));\n"
-        "        placed.push(Rect::new(band.x + 26, band.y, 10, 10));",
+        HOST_ANCHOR,
+        "let _probe = Rect::new(rect.x + 8, rect.y, 10, 10);\n" + HOST_ANCHOR,
+        1,
     )
     if broken == original:
-        print(f"❌ injection point not found in {path_str}; this gate cannot prove it reads the file")
+        print(f"❌ injection point not found in {HOST_FILE}; this gate cannot prove it reads the file")
         return 1
     try:
         path.write_text(broken)
-        found = check_rule_2_layout_placement(path, production_part(broken), name)
+        found = rule_2_no_hand_placed_child(path, production_part(broken), name)
     finally:
         path.write_text(original)
     if found:
-        print(f"✅ reverse injection: removing the layout call from {name} is detected")
+        print(f"✅ reverse injection: a hand-derived child rectangle in {name} is detected")
         return 0
-    print(f"❌ reverse injection: removing the layout call from {name} was NOT detected")
+    print(f"❌ reverse injection: a hand-derived child rectangle in {name} was NOT detected")
     return 1
 
 
 def inject_rule_9() -> int:
-    """Break §B.6 rule 9 (the band is the caller's room) and require the gate to notice.
+    """The rule-9 defect shape has no live file to break.
 
-    The injection restores exactly the shape the rule was written for — `tab_view`'s band
-    derived from the tabs' own measured widths — so the check is proven against the defect that
-    motivated it rather than against a synthetic string.
+    Both shapes the rule was written for (`tab_view`'s invented run, `menu`'s popup-height band)
+    lived in files the performance round rewrote as painted interiors — the `arrange` calls are
+    gone, so there is nothing left to inject *and* the scan stays honest (it iterates files that
+    name `CompositeBuilder::new`, which today is `composite.rs` alone). The scan is kept as a
+    tripwire for a reintroduced consumer; fabricating a consumer just to inject against it would
+    prove nothing about the real tree. This gate's proof that it reads its input rests on the
+    three injections that still target live code (`inject`, `inject_rule_1`, `inject_rule_5`).
     """
-    path_str = "src/widget/nav_widgets/tab_view.rs"
-    path = pathlib.Path(path_str)
-    original = path.read_text()
-    broken = original.replace(
-        "            let run = strip;",
-        "            let run = Rect::new(0, 0, widths_total as u32, height);",
-        1,
-    )
-    if broken == original:
-        print(f"❌ rule-9 injection point not found in {path_str}")
-        return 1
-    try:
-        path.write_text(broken)
-        found = check_rule_9_band_is_the_callers_room()
-    finally:
-        path.write_text(original)
-    if found:
-        print("✅ reverse injection: a band invented from a bare extent is detected")
-        return 0
-    print("❌ reverse injection: a band invented from a bare extent was NOT detected")
-    return 1
+    print("ℹ️  rule-9 injection retired: its defect shape had no live consumer left (see docstring)")
+    return 0
 
 
 def inject_rule_1() -> int:
-    """Break §B.6 rule 1 and require the gate to notice."""
-    name, path_str = COMPOSITES[0]
-    path = pathlib.Path(path_str)
+    """Break §B.6 rule 1's negative half in a live host and require the gate to notice."""
+    name = "scroll_area"
+    path = pathlib.Path(HOST_FILE)
     original = path.read_text()
+    # A host that constructs a concrete widget type couples itself to a type a stripped profile
+    # may not compile — the defect the negative half exists for.
     broken = original.replace(
-        'let factory = WidgetFactory::new_with_defaults();',
-        'let _unused_factory = 0;',
+        HOST_ANCHOR,
+        "let _probe = Panel::new(Rect::new(0, 0, 4, 4));\n" + HOST_ANCHOR,
         1,
     )
     if broken == original:
-        print(f"❌ rule-1 injection point not found in {path_str}")
+        print(f"❌ rule-1 injection point not found in {HOST_FILE}")
         return 1
     try:
         path.write_text(broken)
-        found = check_rule_1_factory_creation(path, production_part(broken), name)
+        found = rule_1_no_concrete_types(path, production_part(broken), name)
     finally:
         path.write_text(original)
     if found:
-        print(f"✅ reverse injection: removing the factory from {name} is detected")
+        print(f"✅ reverse injection: a concrete constructor in {name} is detected")
         return 0
-    print(f"❌ reverse injection: removing the factory from {name} was NOT detected")
+    print(f"❌ reverse injection: a concrete constructor in {name} was NOT detected")
     return 1
 
 
@@ -577,8 +636,8 @@ def main() -> int:
         for finding in findings:
             print(f"   {finding}")
         return 1
-    print("✅ composite assembly: every composite creates its children through the factory and")
-    print("   places them with a layout")
+    print("✅ composite family: every member that creates children reaches the factory and a layout;")
+    print("   every host carries no concrete constructor and no hand-derived child rectangle")
     return 0
 
 

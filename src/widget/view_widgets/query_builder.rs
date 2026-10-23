@@ -183,6 +183,11 @@ pub struct QueryBuilder {
     conjunction: FilterConjunction,
     /// Which row is focused for editing, if any.
     active_row: Option<usize>,
+    /// The row the pointer is over, or `None`.
+    ///
+    /// Indexed like `active_row`, and kept honest across `remove_row` for the
+    /// same reason: a transient highlight must not name a row that is gone.
+    hovered_row: Option<usize>,
     /// Emitted whenever the produced expression changes, with the new expression.
     pub query_changed: Signal1<FilterExpr>,
 }
@@ -198,6 +203,7 @@ impl QueryBuilder {
             rows: Vec::new(),
             conjunction: FilterConjunction::And,
             active_row: None,
+            hovered_row: None,
             query_changed: Signal1::new(),
         }
     }
@@ -255,6 +261,13 @@ impl QueryBuilder {
         self.active_row = match self.active_row {
             Some(active) if active == index => None,
             Some(active) if active > index => Some(active - 1),
+            other => other,
+        };
+        // The hover follows its row the same way, so the highlight cannot land on
+        // a different condition than the one the pointer was over.
+        self.hovered_row = match self.hovered_row {
+            Some(hovered) if hovered == index => None,
+            Some(hovered) if hovered > index => Some(hovered - 1),
             other => other,
         };
         self.emit_query();
@@ -769,6 +782,14 @@ impl QueryBuilderChrome {
         self.background.blend(&self.text_color, 0.08)
     }
 
+    /// The row the pointer is over. Pointer position, not a committed edit, so it
+    /// reads the accent slot at the family's lighter hover weight — the same
+    /// surface/accent pair the table family uses for its row tint (the accent is
+    /// reached through the resolved border, as the AND chip does).
+    fn hovered_row(&self) -> Color {
+        self.background.blend(&self.border, 0.12)
+    }
+
     /// The row separator lines.
     fn separator(&self) -> Color {
         self.background.blend(&self.text_color, 0.1)
@@ -908,6 +929,8 @@ impl QueryBuilder {
         let active = self.active_row == Some(index);
         if active {
             context.fill_rect(row_rect, chrome.active_row());
+        } else if self.hovered_row == Some(index) {
+            context.fill_rect(row_rect, chrome.hovered_row());
         }
         context.draw_line_stroke(
             Point::new(row_rect.x, row_rect.y),
@@ -1006,6 +1029,22 @@ impl EventHandler for QueryBuilder {
             return;
         }
         match event {
+            Event::MouseMove { pos, .. } => {
+                // Hover is the row under the pointer, from the same `row_at` the press
+                // uses, so a highlight cannot land on a row a click would not reach.
+                // `MouseMove` fires far more often than the highlight changes, so the
+                // redraw is requested only on an actual change.
+                let hovered = self.row_at(*pos);
+                if hovered != self.hovered_row {
+                    self.hovered_row = hovered;
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseLeave { .. } => {
+                if self.hovered_row.take().is_some() {
+                    self.base.request_redraw();
+                }
+            }
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 let rect = self.geometry();
                 let header = Rect::new(rect.x, rect.y, rect.width, HEADER_HEIGHT);
@@ -1620,5 +1659,49 @@ mod tests {
         // An explicit field with no operators still offers one, so a row can be made.
         let bare = FilterField::new(2, "Bare", Vec::new());
         assert_eq!(bare.default_operator(), FilterOperator::Contains);
+    }
+
+    /// Hover is the row under the pointer, from the same `row_at` the press uses,
+    /// and leaving the builder clears the highlight instead of freezing it.
+    #[test]
+    fn query_builder_hover_follows_the_pointer() {
+        let mut b = builder();
+        b.add_row(0);
+        b.add_row(0);
+
+        b.handle_event(&Event::mouse_move(30, 60));
+        assert_eq!(b.hovered_row, Some(0));
+
+        b.handle_event(&Event::mouse_move(30, 79));
+        assert_eq!(b.hovered_row, Some(1));
+
+        // Above the first row (in the header) and below the last row, nothing hovers.
+        b.handle_event(&Event::mouse_move(30, 5));
+        assert_eq!(b.hovered_row, None);
+        b.handle_event(&Event::mouse_move(30, 140));
+        assert_eq!(b.hovered_row, None);
+
+        b.handle_event(&Event::mouse_leave(-1, -1));
+        assert_eq!(b.hovered_row, None);
+    }
+
+    /// The hover follows its row through a removal exactly as `active_row` does,
+    /// so the highlight never names a row that is gone.
+    #[test]
+    fn query_builder_hover_survives_a_removal_honestly() {
+        let mut b = builder();
+        b.add_row(0);
+        b.add_row(0);
+        b.add_row(0);
+        b.handle_event(&Event::mouse_move(30, 79));
+        assert_eq!(b.hovered_row, Some(1));
+
+        // Removing a row before the hovered one shifts the highlight down with it.
+        b.remove_row(0).expect("row 0");
+        assert_eq!(b.hovered_row, Some(0));
+
+        // Removing the hovered row clears it.
+        b.remove_row(0).expect("row 0");
+        assert_eq!(b.hovered_row, None);
     }
 }

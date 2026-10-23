@@ -368,7 +368,10 @@ pub(crate) fn time_edit_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::TimePicker,
         canonical_name: "time_edit",
-        aliases: &["time_picker"],
+        // `time_picker` is no longer an alias here: it is its own canonical row over the same
+        // control (see `time_picker_capability`), and a name may not be both an alias and a
+        // canonical spelling — the alias index would answer it twice.
+        aliases: &["time_input"],
         properties: TIME_EDIT_PROPERTIES,
         events: events_of!("time_edit"),
         commands: &[
@@ -386,6 +389,50 @@ pub(crate) fn line_edit_capability() -> WidgetCapability {
         kind: WidgetKind::LineEdit,
         canonical_name: "line_edit",
         aliases: &["text_input", "input"],
+        properties: LINE_EDIT_PROPERTIES,
+        events: events_of!("line_edit"),
+        commands: &["clear", "select_all"],
+    }
+}
+
+/// A `LineEdit` that echoes dots — the password-entry form of the same control.
+///
+/// Same kind and the same property table as `line_edit`: the constructor installs the echo
+/// mode, which is the one fact a caller would otherwise have to remember to set after
+/// construction (and could forget between two fields of a form).
+pub(crate) fn password_edit_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::LineEdit,
+        canonical_name: "password_edit",
+        aliases: &["password_input", "password_line_edit"],
+        properties: LINE_EDIT_PROPERTIES,
+        events: events_of!("line_edit"),
+        commands: &["clear", "select_all"],
+    }
+}
+
+/// A `LineEdit` that accepts phone-number characters and reports `valid`.
+///
+/// The grammar is the field's own (see `InputValidator`), so typing, pasting and a
+/// programmatic `text` write all pass through it and `valid` always describes the value the
+/// field actually holds.
+pub(crate) fn phone_input_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::LineEdit,
+        canonical_name: "phone_input",
+        aliases: &["phone_edit", "telephone_input"],
+        properties: LINE_EDIT_PROPERTIES,
+        events: events_of!("line_edit"),
+        commands: &["clear", "select_all"],
+    }
+}
+
+/// A `LineEdit` that enforces an e-mail shape and reports `valid`.
+pub(crate) fn email_input_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::LineEdit,
+        canonical_name: "email_input",
+        aliases: &["email_edit", "email_field"],
         properties: LINE_EDIT_PROPERTIES,
         events: events_of!("line_edit"),
         commands: &["clear", "select_all"],
@@ -566,7 +613,31 @@ pub(crate) fn menu_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Menu,
         canonical_name: "menu",
-        aliases: &["context_menu"],
+        // `context_menu` is no longer an alias here: it is its own canonical row over the same
+        // control (see `context_menu_capability`), and a name may not be both.
+        aliases: &["drop_down_menu"],
+        properties: MENU_PROPERTIES,
+        events: events_of!("menu"),
+        commands: &["clear", "add_action", "add_separator"],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `context_menu` — the role spelling of [`menu`](Self::menu).
+///
+/// # Why this is a name, not a second control
+///
+/// `src/widget/mod.rs` already records the design decision with `pub type ContextMenu = Menu;`:
+/// "Context menus are ordinary menus shown at the pointer; the difference is in how the caller
+/// shows them, not in the type." A second type would duplicate the popup placement, the entry
+/// model and the activation events for no behavioural gain (rules #54 and #101), so this is the
+/// same row `table_widget` / `table` and `time_edit` / `time_picker` use: one control, two
+/// canonical names, so a caller that thinks in roles can address it.
+pub(crate) fn context_menu_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Menu,
+        canonical_name: "context_menu",
+        aliases: &["context_actions"],
         properties: MENU_PROPERTIES,
         events: events_of!("menu"),
         commands: &["clear", "add_action", "add_separator"],
@@ -2587,5 +2658,293 @@ pub(crate) fn property_grid_capability() -> WidgetCapability {
         properties: PROPERTY_GRID_PROPERTIES,
         events: events_of!("property_grid"),
         commands: &["add_property", "set_value", "clear", "set_selected_index"],
+    }
+}
+
+// ── Layout family ───────────────────────────────────────────────────────────
+//
+// The wrapper controls (`Spacer`, `Center`, `Align`, `SizedBox`, `Padding`, `Expanded`,
+// `Flexible`, `IntrinsicWidth`, `AspectRatio`) and the distribution controls (`Flex`,
+// `FlowLayout`, `WrapLayout`). Each owns a single- or multi-item model and positions it by the
+// rule its name states; see `container_widgets::layout_family` and `container_widgets::
+// linear_layouts` for why each is a control rather than a mode of another.
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn spacer_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Spacer,
+        canonical_name: "spacer",
+        aliases: &["flexible_space"],
+        properties: SPACER_PROPERTIES,
+        events: &[],
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn center_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Center,
+        canonical_name: "center",
+        aliases: &["centre", "center_widget"],
+        properties: CENTER_PROPERTIES,
+        events: &[],
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn align_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Align,
+        canonical_name: "align",
+        aliases: &["alignment_widget"],
+        properties: ALIGN_PROPERTIES,
+        events: &[],
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn sized_box_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::SizedBox,
+        canonical_name: "sized_box",
+        aliases: &["size_box"],
+        properties: SIZED_BOX_PROPERTIES,
+        events: &[],
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn padding_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Padding,
+        canonical_name: "padding",
+        aliases: &["padding_widget"],
+        properties: PADDING_PROPERTIES,
+        events: &[],
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn expanded_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Expanded,
+        canonical_name: "expanded",
+        aliases: &["expand"],
+        properties: EXPANDED_PROPERTIES,
+        events: &[],
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn flexible_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Flexible,
+        canonical_name: "flexible",
+        aliases: &["flex_child"],
+        properties: FLEXIBLE_PROPERTIES,
+        events: &[],
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn intrinsic_width_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::IntrinsicWidth,
+        canonical_name: "intrinsic_width",
+        aliases: &["shrink_wrap"],
+        properties: INTRINSIC_WIDTH_PROPERTIES,
+        events: &[],
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn aspect_ratio_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::AspectRatio,
+        canonical_name: "aspect_ratio",
+        aliases: &["ratio_box"],
+        properties: ASPECT_RATIO_PROPERTIES,
+        events: &[],
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn flex_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Flex,
+        canonical_name: "flex",
+        aliases: &["flex_box"],
+        properties: FLEX_PROPERTIES,
+        events: &[],
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn flow_layout_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::FlowLayout,
+        canonical_name: "flow_layout",
+        aliases: &["flow"],
+        properties: FLOW_LAYOUT_PROPERTIES,
+        events: &[],
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn wrap_layout_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::WrapLayout,
+        canonical_name: "wrap_layout",
+        aliases: &["wrap"],
+        properties: WRAP_LAYOUT_PROPERTIES,
+        events: &[],
+        commands: &[],
+    }
+}
+
+/// `split_layout` — the two-pane spelling of [`splitter`](Self::splitter).
+///
+/// # Why a second name over the same control
+///
+/// A split *layout* is two panes and a draggable divider; a splitter is that same widget with
+/// an arbitrary pane count. The concrete type, the properties and the events are therefore
+/// identical, and the established pattern for "one control, two names" (`table_widget` /
+/// `table`, `tool_box` / `toolbox`) applies. A separate type would duplicate the drag
+/// machinery for no behavioural gain.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn split_layout_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Splitter,
+        canonical_name: "split_layout",
+        aliases: &["split_view"],
+        properties: SPLITTER_PROPERTIES,
+        events: events_of!("splitter"),
+        commands: &["set_orientation"],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn accordion_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Accordion,
+        canonical_name: "accordion",
+        aliases: &["collapsible_list"],
+        properties: ACCORDION_PROPERTIES,
+        events: events_of!("accordion"),
+        commands: &[],
+    }
+}
+
+// ── Small display controls ──────────────────────────────────────────────────
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn tag_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Tag,
+        canonical_name: "tag",
+        aliases: &["label_tag"],
+        properties: TAG_PROPERTIES,
+        events: events_of!("tag"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn clock_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Clock,
+        canonical_name: "clock",
+        aliases: &["analog_clock"],
+        properties: CLOCK_PROPERTIES,
+        events: &[],
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn gauge_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Gauge,
+        canonical_name: "gauge",
+        aliases: &["dial_gauge"],
+        properties: GAUGE_PROPERTIES,
+        events: &[],
+        commands: &[],
+    }
+}
+
+// ── Menus and dialogs ───────────────────────────────────────────────────────
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn alert_dialog_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::AlertDialog,
+        canonical_name: "alert_dialog",
+        aliases: &["notice_dialog"],
+        properties: ALERT_DIALOG_PROPERTIES,
+        events: events_of!("alert_dialog"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn confirm_dialog_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::ConfirmDialog,
+        canonical_name: "confirm_dialog",
+        aliases: &["confirmation_dialog"],
+        properties: CONFIRM_DIALOG_PROPERTIES,
+        events: events_of!("confirm_dialog"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+pub(crate) fn about_dialog_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::AboutDialog,
+        canonical_name: "about_dialog",
+        aliases: &["about_box"],
+        properties: ABOUT_DIALOG_PROPERTIES,
+        events: events_of!("about_dialog"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `time_picker` — the kind's own spelling of [`time_edit`](Self::time_edit).
+///
+/// # Why a second name over the same control
+///
+/// `WidgetKind::TimePicker` is the variant the time field reports, and `time_edit` was already
+/// published with `time_picker` as an alias. A canonical row makes the kind's own spelling a
+/// first-class name — the same shape `table_widget` / `table` and `splitter` / `split_layout`
+/// use — without introducing a second time field, which would give one concept two
+/// implementations (rules #54 and #101).
+pub(crate) fn time_picker_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::TimePicker,
+        canonical_name: "time_picker",
+        aliases: &["time_field"],
+        properties: TIME_EDIT_PROPERTIES,
+        events: events_of!("time_edit"),
+        commands: &[
+            "set_time",
+            "set_minimum_time",
+            "set_maximum_time",
+            "set_display_format",
+            "set_clock_popup",
+        ],
     }
 }

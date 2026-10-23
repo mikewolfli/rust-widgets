@@ -33,7 +33,14 @@ import sys
 
 FAMILIES = ("src/widget/view_widgets/*.rs", "src/widget/container_widgets/*.rs")
 ROW_SEPARATOR = re.compile(r"draw_line|draw_line_stroke|row_separator|separator")
-HOVER = re.compile(r"hovered_row|hovered_index|hovered_cell|hovered_item|base\.is_hovered")
+# The family's actual hover-field names. A control hovers whatever its rows carry:
+# a properties panel hovers an *entry*, a gallery a *thumbnail*, a tree a *node* —
+# each is that control's row hover, so all spellings count as M1 (renaming a
+# control's field to match this grep would be the tail wagging the dog).
+HOVER = re.compile(
+    r"hovered_row|hovered_index|hovered_cell|hovered_item|hovered_entry"
+    r"|hovered_thumb|hovered_node|base\.is_hovered"
+)
 
 
 def main() -> int:

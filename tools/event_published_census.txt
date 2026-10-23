@@ -2,11 +2,17 @@
 # Generated from src/widget/capability/properties.rs by tools/derive_event_payloads.py.
 # This file is the census the event payload table is derived from; edit it to publish or
 # withdraw a name, and re-run the tool.
+
+about_dialog: closed
+accordion: section_toggled
 action: triggered, toggled, hovered, changed
 adaptive_scaffold: nav_selected
+alert_dialog: accepted
+align:
 animated_image: animation_finished, frame_changed
 app_bar: back_pressed, action_pressed
 arc: changed
+aspect_ratio:
 audio_visualizer:
 auto_complete_edit: text_changed, suggestion_selected
 avatar:
@@ -25,9 +31,11 @@ candlestick_chart: bar_clicked, bar_hovered, bar_unhovered
 canvas: mouse_pressed, mouse_released, mouse_moved, double_clicked
 carousel: page_changed
 cascader: selection_changed
+center:
 chart: data_point_clicked, data_point_hovered, data_point_unhovered
 check_box: toggled, state_changed
 chip: chip_toggled
+clock:
 code_editor: text_changed, cursor_moved, selection_changed, tab_changed, fold_changed, search_changed, completion_changed
 collapsible_pane: toggled
 color_dialog: color_selected, accepted, rejected
@@ -37,6 +45,8 @@ color_well: clicked
 combo_box: current_index_changed, current_text_changed, activated, popup_visibility_changed
 command_link: clicked, hovered
 command_palette: command_activated, query_changed
+confirm_dialog: accepted, rejected
+context_menu: triggered, triggered_index, about_to_show, submenu_requested, about_to_hide
 cupertino_alert_dialog: confirmed, cancelled
 cupertino_date_picker: date_changed
 cupertino_navigation_bar: back_pressed
@@ -60,16 +70,21 @@ dropdown_menu: item_selected
 editable_combo_box: text_changed, item_selected
 emoji_picker: glyph_chosen
 empty_state: action_pressed
+expanded:
 fab: clicked
 file_dialog: file_selected, files_selected, accepted, rejected, current_changed
 find_replace_dialog: find_next, find_previous, replace, replace_all, close
+flex:
+flexible:
 floating_label: text_changed
+flow_layout:
 font_combo_box: current_font_changed, current_index_changed, activated, text_edited, popup_shown, popup_hidden
 font_dialog: font_selected, accepted, rejected
 font_preview:
 frame:
 freeform_shape: clicked, hovered_changed, pressed_changed
 gantt_widget: task_selected
+gauge:
 grid: cell_clicked, cell_hovered
 grid_table: cell_selected, cell_double_clicked, sort_changed, header_clicked
 group_box: toggled
@@ -82,6 +97,7 @@ ime_preedit:
 indicator_chart: bar_clicked, bar_hovered
 inplace_editor: edit_accepted, edit_cancelled
 input_dialog: text_value_changed, int_value_changed, double_value_changed, accepted, rejected
+intrinsic_width:
 kanban_board: card_moved, card_activated
 keyboard: key_pressed, enter_pressed, backspace_pressed, space_pressed
 label:
@@ -117,6 +133,7 @@ notification_center: notification_selected, notification_activated, unread_count
 number_picker: value_changed
 order_book: level_clicked, level_hovered, level_unhovered
 otp_input: value_changed, completed
+padding:
 pagination: page_changed
 panel: toggled
 pie_chart:
@@ -149,14 +166,17 @@ segmented_button: selected_changed
 segmented_control: selection_changed
 shortcut_editor: shortcut_changed
 signature_pad: changed, stroke_completed
+sized_box:
 skeleton_loader:
 slider: value_changed, slider_moved, slider_pressed, slider_released
 snackbar: action_triggered, dismissed
+spacer:
 sparkline:
 spin_box: value_changed, editing_finished
 spinner:
 splash_screen: finished, skipped
 split_button: triggered, action_selected, menu_toggled
+split_layout: pane_layout_changed, orientation_changed
 splitter: pane_layout_changed, orientation_changed
 stacked_widget: current_changed
 status_bar: message_changed
@@ -168,11 +188,13 @@ tab_view: tab_changed
 tab_widget: current_changed, tab_close_requested, tab_moved
 table: selection_changed, focused_row_changed
 table_widget: selection_changed, focused_row_changed
+tag: closed
 tag_input: tags_changed
 terminal_view: command_submitted
 text_area: changed
 text_edit: text_changed
 time_edit: popup_visibility_changed, time_changed
+time_picker: popup_visibility_changed, time_changed
 timeline_widget: item_selected
 toast: dismissed
 toast_stack: toast_activated, toast_dismissed
@@ -190,3 +212,4 @@ volume_chart: bar_clicked, bar_hovered
 web_engine_view: loading_started, loading_finished, title_changed, url_changed, error_occurred, navigation_state_changed, page_created, page_destroyed, console_message, download_requested, certificate_error
 window: closed
 wizard_dialog: finished, cancelled, step_changed
+wrap_layout:

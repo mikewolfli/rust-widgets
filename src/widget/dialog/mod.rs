@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Dialog widgets.
+pub mod alert_dialogs;
 pub mod bottom_sheet;
 pub mod color_dialog;
 pub mod dialog_widget;
@@ -18,6 +19,7 @@ pub mod progress_dialog;
 pub mod tooltip;
 pub mod wizard;
 // Re-export dialog types
+pub use alert_dialogs::{AboutDialog, AlertDialog, ConfirmDialog};
 pub use bottom_sheet::BottomSheet;
 pub use color_dialog::ColorDialog;
 pub use dialog_widget::Dialog;

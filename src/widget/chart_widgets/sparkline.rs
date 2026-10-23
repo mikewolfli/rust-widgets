@@ -55,10 +55,23 @@ const SPARKLINE_PLOT_MARGIN: i32 = 4;
 pub struct Sparkline {
     base: BaseWidget,
     data: Vec<f64>,
-    line_color: Color,
+    /// The caller's trace colour, or `None` while the trace follows the theme's
+    /// success token.
+    ///
+    /// The field used to be a plain `Color` seeded with `Color::SUCCESS`, which is a
+    /// fixed green painted identically on every appearance — the dark and light
+    /// snapshots were byte-for-byte the same, so a theme author restyling success had
+    /// no way to reach the widget. An unset colour now resolves through
+    /// [`crate::style::semantic_color`] (falling back to `Color::SUCCESS` only when no
+    /// theme is active) and [`Sparkline::set_color`] still wins when the caller states
+    /// one.
+    line_color: Option<Color>,
     stroke_width: f32,
     show_last_point: bool,
-    last_point_color: Color,
+    /// The caller's highlight-dot colour, or `None` while the dot is derived from the
+    /// resolved trace colour (the trace darkened, preserving the documented "darker
+    /// dot" default).
+    last_point_color: Option<Color>,
     min: Option<f64>,
     max: Option<f64>,
 }
@@ -66,16 +79,16 @@ pub struct Sparkline {
 impl Sparkline {
     /// Creates a new Sparkline widget with the given geometry.
     ///
-    /// Defaults: green line, stroke width 1.5, last point highlight enabled with
-    /// a darker green dot.
+    /// Defaults: a trace in the theme's success colour, stroke width 1.5, last point
+    /// highlight enabled with a dot derived from (darker than) the trace.
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::Sparkline, geometry, "Sparkline"),
             data: Vec::new(),
-            line_color: Color::SUCCESS,
+            line_color: None,
             stroke_width: 1.5,
             show_last_point: true,
-            last_point_color: Color::rgba(34, 139, 34, 255),
+            last_point_color: None,
             min: None,
             max: None,
         }
@@ -95,19 +108,24 @@ impl Sparkline {
         &self.data
     }
 
-    /// Sets the line color.
+    /// Sets the line color, overriding the theme-derived default. The last-point dot
+    /// follows the same explicit colour, as it always has.
     pub fn set_color(&mut self, color: Color) {
-        if self.line_color == color && self.last_point_color == color {
+        if self.line_color == Some(color) && self.last_point_color == Some(color) {
             return;
         }
-        self.line_color = color;
-        self.last_point_color = color;
+        self.line_color = Some(color);
+        self.last_point_color = Some(color);
         self.base.request_redraw();
     }
 
-    /// Returns the current line color.
+    /// Returns the colour the trace is drawn in: the caller's override, or the theme's
+    /// success token when none was set.
     pub fn line_color(&self) -> Color {
-        self.line_color
+        self.line_color.unwrap_or_else(|| {
+            crate::style::semantic_color(crate::style::SemanticColor::Success)
+                .unwrap_or(Color::SUCCESS)
+        })
     }
 
     /// Sets the stroke width of the line.
@@ -139,18 +157,20 @@ impl Sparkline {
         self.show_last_point
     }
 
-    /// Sets the color used for the last-point highlight dot.
+    /// Sets the color used for the last-point highlight dot, overriding the
+    /// trace-derived default.
     pub fn set_last_point_color(&mut self, color: Color) {
-        if self.last_point_color == color {
+        if self.last_point_color == Some(color) {
             return;
         }
-        self.last_point_color = color;
+        self.last_point_color = Some(color);
         self.base.request_redraw();
     }
 
-    /// Returns the current last-point highlight color.
+    /// Returns the colour the highlight dot is drawn in: the caller's override, or the
+    /// resolved trace colour darkened, keeping the dot visibly part of the same series.
     pub fn last_point_color(&self) -> Color {
-        self.last_point_color
+        self.last_point_color.unwrap_or_else(|| self.line_color().blend(&Color::BLACK, 0.3))
     }
 
     /// Clears all data values.
@@ -278,7 +298,9 @@ impl Draw for Sparkline {
         }
 
         let is_enabled = self.base.is_enabled();
-        let line_color = if is_enabled { self.line_color } else { Color::DISABLED_FOREGROUND };
+        // Resolve both colours before any painting: `semantic_color` takes the theme lock
+        // itself and returns an owned `Color`, so nothing holds a lock across the draw calls.
+        let line_color = if is_enabled { self.line_color() } else { Color::DISABLED_FOREGROUND };
 
         let (y_min, y_max) = self.resolve_y_range();
 
@@ -328,7 +350,7 @@ impl Draw for Sparkline {
         // ── Draw last-point highlight dot ──
         if self.show_last_point {
             let dot_color =
-                if is_enabled { self.last_point_color } else { Color::DISABLED_FOREGROUND };
+                if is_enabled { self.last_point_color() } else { Color::DISABLED_FOREGROUND };
             let last = map_at(n - 1, self.data[n - 1]);
             context.fill_circle(last, dot_radius, dot_color);
         }
@@ -351,9 +373,43 @@ mod tests {
         let sl = Sparkline::new(Rect::new(0, 0, 80, 24));
         assert_eq!(sl.kind(), WidgetKind::Sparkline);
         assert!(sl.data().is_empty());
-        assert_eq!(sl.line_color(), Color::SUCCESS);
+        assert_eq!(
+            sl.line_color(),
+            crate::style::semantic_color(crate::style::SemanticColor::Success)
+                .unwrap_or(Color::SUCCESS),
+            "the default trace must be the theme's success token"
+        );
         assert!((sl.stroke_width() - 1.5).abs() < f32::EPSILON);
         assert!(sl.show_last_point());
+    }
+
+    /// An unset sparkline follows the theme's success token; an explicit colour wins.
+    #[test]
+    fn an_unset_sparkline_follows_the_success_token() {
+        let sl = Sparkline::new(Rect::new(0, 0, 80, 24));
+        assert_eq!(
+            sl.line_color(),
+            crate::style::semantic_color(crate::style::SemanticColor::Success)
+                .unwrap_or(Color::SUCCESS),
+            "the default trace must be the same derivation the theme defines"
+        );
+        let mut overridden = Sparkline::new(Rect::new(0, 0, 80, 24));
+        overridden.set_color(Color::WARNING);
+        assert_eq!(overridden.line_color(), Color::WARNING);
+        overridden.set_color(Color::INFO);
+        assert_eq!(overridden.line_color(), Color::INFO);
+        assert_eq!(overridden.last_point_color(), Color::INFO);
+    }
+
+    /// The unset dot is derived from the resolved trace (darker), so it tracks the
+    /// theme together with the line instead of carrying its own fixed literal.
+    #[test]
+    fn an_unset_dot_is_derived_from_the_resolved_trace() {
+        let sl = Sparkline::new(Rect::new(0, 0, 80, 24));
+        assert_eq!(sl.last_point_color(), sl.line_color().blend(&Color::BLACK, 0.3));
+        let mut overridden = Sparkline::new(Rect::new(0, 0, 80, 24));
+        overridden.set_last_point_color(Color::ERROR);
+        assert_eq!(overridden.last_point_color(), Color::ERROR);
     }
 
     #[test]

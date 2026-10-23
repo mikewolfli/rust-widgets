@@ -142,5 +142,38 @@ macro_rules! impl_dialog_widgets {
                 height,
             )
         }
+        #[cfg(full_widgets)]
+        fn create_alert_dialog(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::AlertDialog, parent, "", x, y, width, height)
+        }
+        #[cfg(full_widgets)]
+        fn create_confirm_dialog(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::ConfirmDialog, parent, "", x, y, width, height)
+        }
+        #[cfg(full_widgets)]
+        fn create_about_dialog(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::AboutDialog, parent, "", x, y, width, height)
+        }
     };
 }

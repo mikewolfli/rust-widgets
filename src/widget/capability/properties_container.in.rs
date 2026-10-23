@@ -257,5 +257,227 @@ macro_rules! impl_properties_container {
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
+
+        // ── Layout family ──────────────────────────────────────────────────
+        //
+        // The wrapper controls share three content property names; the distribution controls
+        // share `item_count` and the per-axis tokens. Every enum below lists exactly the
+        // tokens its parser accepts, so a value read from the schema can be written back.
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const SPACER_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("flex", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("base_size", PropertyValueKind::UInt, true, true),
+            // The design-time dashed frame. A shipping application turns it off.
+            PropertySchema::new("paint_hint", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const CENTER_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("content", PropertyValueKind::String, true, true),
+            PropertySchema::new("content_width", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("content_height", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("width_factor", PropertyValueKind::Float, true, true),
+            PropertySchema::new("height_factor", PropertyValueKind::Float, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const ALIGN_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("content", PropertyValueKind::String, true, true),
+            PropertySchema::new("content_width", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("content_height", PropertyValueKind::UInt, true, true),
+            PropertySchema::enumerated(
+                "alignment",
+                true,
+                true,
+                &[
+                    "top_left",
+                    "top_centre",
+                    "top_right",
+                    "centre_left",
+                    "centre",
+                    "centre_right",
+                    "bottom_left",
+                    "bottom_centre",
+                    "bottom_right",
+                ],
+            ),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const SIZED_BOX_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("content", PropertyValueKind::String, true, true),
+            PropertySchema::new("content_width", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("content_height", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("box_width", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("box_height", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const PADDING_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("content", PropertyValueKind::String, true, true),
+            PropertySchema::new("content_width", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("content_height", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("padding_top", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("padding_right", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("padding_bottom", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("padding_left", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const EXPANDED_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("content", PropertyValueKind::String, true, true),
+            PropertySchema::new("content_width", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("content_height", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("flex", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const FLEXIBLE_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("content", PropertyValueKind::String, true, true),
+            PropertySchema::new("content_width", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("content_height", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("flex", PropertyValueKind::UInt, true, true),
+            PropertySchema::enumerated("fit", true, true, &["loose", "tight"]),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const INTRINSIC_WIDTH_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("content", PropertyValueKind::String, true, true),
+            PropertySchema::new("content_width", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("content_height", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const ASPECT_RATIO_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("content", PropertyValueKind::String, true, true),
+            PropertySchema::new("content_width", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("content_height", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("ratio", PropertyValueKind::Float, true, true),
+            PropertySchema::new("respect_parent", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const FLEX_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::enumerated(
+                "direction",
+                true,
+                true,
+                &["row", "row_reverse", "column", "column_reverse"],
+            ),
+            PropertySchema::enumerated("wrap", true, true, &["no_wrap", "wrap", "wrap_reverse"]),
+            PropertySchema::enumerated(
+                "justify_content",
+                true,
+                true,
+                &[
+                    "flex_start",
+                    "flex_end",
+                    "center",
+                    "space_between",
+                    "space_around",
+                    "space_evenly",
+                ],
+            ),
+            PropertySchema::enumerated(
+                "align_items",
+                true,
+                true,
+                &["stretch", "flex_start", "flex_end", "center", "baseline"],
+            ),
+            PropertySchema::new("gap", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const FLOW_LAYOUT_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::enumerated("direction", true, true, &["horizontal", "vertical"]),
+            PropertySchema::enumerated(
+                "alignment",
+                true,
+                true,
+                &["start", "center", "end", "space_between", "space_around"],
+            ),
+            PropertySchema::new("spacing", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("padding", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("wrap", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const WRAP_LAYOUT_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::enumerated("direction", true, true, &["horizontal", "vertical"]),
+            PropertySchema::enumerated(
+                "alignment",
+                true,
+                true,
+                &["start", "center", "end", "space_between", "space_around"],
+            ),
+            PropertySchema::new("spacing", PropertyValueKind::UInt, true, true),
+            // `null` means "follow the item spacing"; it is a documented state, not an
+            // impossible sentinel.
+            PropertySchema::new("run_spacing", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("padding", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const ACCORDION_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("section_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("single_expand", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("expanded_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
     };
 }
