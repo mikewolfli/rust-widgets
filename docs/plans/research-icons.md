@@ -607,7 +607,6 @@ from a hardcoded 0.82 or a hardcoded 24.
 // src/widget/icons/mod.rs
 
 /// How an icon box is derived from the text it sits beside.
-///
 /// `cap_height_ratio` comes from the *measured* face metrics the crate already
 /// resolves through `crate::render::text` — never a literal. U-14
 /// (docs/plans/blue24.md §12) is the record of what a literal costs: a wrong

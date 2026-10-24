@@ -78,7 +78,7 @@ pub fn draw_image(&mut self, x: i32, y: i32, width: u32, height: u32, data: &[u8
 
 - **位置**: `src/widget/base_widgets/button/mod.rs`
 - **描述**: `Button` 提供 `text()/set_text()` 但没有任何图标字段或方法。
-- **影响**: 标准 GUI 框架（Qt, Win32, Cocoa）的按钮普遍支持图标。业务中带图标的按钮是常见需求。
+- **影响**: 标准 GUI 框架（参考工具包, Win32, Cocoa）的按钮普遍支持图标。业务中带图标的按钮是常见需求。
 - **建议**: 添加 `icon: Option<Image>` 字段和 `set_icon(Image)`/`icon() -> Option<&Image>` 方法。`set_default(bool)`/`is_default()` 添加默认按钮语义（按 Enter 触发）。
 - **工作量**: 小
 
@@ -215,7 +215,7 @@ pub fn draw_image(&mut self, x: i32, y: i32, width: u32, height: u32, data: &[u8
 ### P2-5: `Menu` 使用 `Signal1<String>` 作为 triggered 信号（标准使用 `Signal1<usize>`）
 
 - **位置**: `src/widget/menu_toolbar/menu.rs`
-- **描述**: 菜单的 `triggered: Signal1<String>` 发送菜单项文本。标准 GUI 框架（如 Qt）使用索引，因为文本可能重复，索引是可靠的标识。
+- **描述**: 菜单的 `triggered: Signal1<String>` 发送菜单项文本。标准 GUI 框架（如 参考工具包）使用索引，因为文本可能重复，索引是可靠的标识。
 - **影响**: 如果两个菜单项有相同文本，无法区分触发的是哪一个。
 - **建议**: 添加 `triggered_index: Signal1<usize>` 信号，保留 `triggered` 向后兼容。
 - **工作量**: 小
@@ -329,10 +329,10 @@ pub fn draw_image(&mut self, x: i32, y: i32, width: u32, height: u32, data: &[u8
 | `DatePicker` | `DateEdit`（已在 `new()` 中使用 `WidgetKind::DatePicker`） | `pub type DatePicker = DateEdit;` | 极小（1 行） |
 | `TimePicker` | `TimeEdit`（已在 `new()` 中使用 `WidgetKind::TimePicker`） | `pub type TimePicker = TimeEdit;` | 极小（1 行） |
 | `DateTimePicker` | `DateTimeEdit`（已在 `new()` 中使用 `WidgetKind::DateTimePicker`） | `pub type DateTimePicker = DateTimeEdit;` | 极小（1 行） |
-| `DataView` | `TableView` / `TableWidget`（通用表格/数据视图，Qt 中 QDataView 语义等价） | `pub type DataView = TableWidget;` | 极小（1 行） |
-| `PropertyGrid` | `TreeView`（属性网格本质上是两列表格+树形层级，Qt 中基于 QTreeView 实现） | `pub type PropertyGrid = TreeView;` | 极小（1 行） |
-| `ColumnView` | `TreeView`（列视图是树形层级的一种平面展示形式，Qt 中 QColumnView 基于 QTreeView） | `pub type ColumnView = TreeView;` | 极小（1 行） |
-| `UndoView` | `ListView`（撤销操作历史是列表展示，Qt 中 QUndoView 基于 QListView） | `pub type UndoView = ListView;` | 极小（1 行） |
+| `DataView` | `TableView` / `TableWidget`（通用表格/数据视图，参考工具包 中 data view 语义等价） | `pub type DataView = TableWidget;` | 极小（1 行） |
+| `PropertyGrid` | `TreeView`（属性网格本质上是两列表格+树形层级，参考工具包 中基于 tree view 实现） | `pub type PropertyGrid = TreeView;` | 极小（1 行） |
+| `ColumnView` | `TreeView`（列视图是树形层级的一种平面展示形式，参考工具包 中 column view 基于 tree view） | `pub type ColumnView = TreeView;` | 极小（1 行） |
+| `UndoView` | `ListView`（撤销操作历史是列表展示，参考工具包 中 undo view 基于 list view） | `pub type UndoView = ListView;` | 极小（1 行） |
 | `CollapsiblePane` | **无直接等价**。`ToolBox` 提供可展开/折叠的 item 列表，但语义上不等价（ToolBox 是 Tab 风格切换，CollapsiblePane 是独立可折叠面板）。建议新建 `CollapsiblePane` 结构体（轻量封装 `GroupBox` + 折叠状态），或待后续实现。 | 暂不映射 | 中（新建） |
 
 #### 现有类型别名参考（已存在的模式）

@@ -275,6 +275,19 @@ jobs:
             echo "::endgroup::"
           done
 
+      # The `3d` feature is not in `default`, so every step above compiles the 2D path with it
+      # off. These two steps are the "on" half of the matrix. The spelling is explicit
+      # (`--features "desktop,3d"`) rather than `--all-features`, because the latter turns on
+      # `desktop` and `mini` together and `mini` is `no_std`; that command can never build and
+      # is deliberately absent from this workflow (see the note above the desktop test step).
+      - name: Cargo check (3d on)
+        run: cargo check --no-default-features --features "desktop,3d" --all-targets
+
+      - name: Cargo clippy (3d on, deny warnings)
+        run: >-
+          cargo clippy --all-targets --no-default-features --features "desktop,3d"
+          -- -D warnings
+
       # The opt-in `icons` feature is **not** part of any device profile, so none of the
       # steps above compiles it — and a test that never runs is not a test. Until this job
       # existed, `tests/icon_census_test.rs` and `tests/icon_data_integrity_test.rs` were

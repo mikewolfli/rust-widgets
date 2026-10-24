@@ -830,6 +830,34 @@ impl GlyphSource for VectorSource {
     }
 }
 
+/// Rasterises `ch` from `face` into a fresh coverage buffer for the glyph atlas.
+///
+/// This is the same [`VectorSource::paint_in_face`] the [`GlyphSource`] path uses, with the same
+/// parse cache and the same per-cell coverage cache, so the bytes it returns are byte-identical to
+/// an uncached paint that selected the same face. A face with no glyph for `ch`, or one whose
+/// outline does not fit the fixed scratch, answers `None` and the atlas falls back to the active
+/// stack rather than fabricating ink.
+///
+/// The buffer is one coverage byte per cell pixel. Colour ink needs four bytes per pixel and is
+/// deliberately not represented here: the atlas caches coverage, and a colour-only character falls
+/// through the active stack to the next 1-bit face, exactly as a direct paint with a
+/// coverage-sized buffer does.
+pub(crate) fn rasterize_face(
+    face: FaceBytes,
+    ch: char,
+    cell: Cell,
+) -> Option<crate::compat::Vec<u8>> {
+    if cell.is_empty() {
+        return None;
+    }
+    let mut out = crate::compat::vec![0u8; cell.area()];
+    super::font_assets::with_parsed_face(face, |parsed| {
+        VectorSource::paint_in_face(ch, cell, &mut out, face, parsed)
+    })
+    .flatten()
+    .map(|_| out)
+}
+
 impl VectorSource {
     /// Rasterises `ch` using an already-parsed `face`.
     ///
@@ -1235,7 +1263,7 @@ mod tests {
         // lock: a parallel registration of a CJK-covering face would make this assert the wrong
         // source.
         #[cfg(all(feature = "runtime-fonts", feature = "text-shaping"))]
-        let _guard = crate::render::text::runtime_fonts::test_lock();
+        let _guard = crate::render::text::runtime_fonts::runtime_fonts_test_guard();
         let cell = Cell::new(32, 32);
         let mut out = vec![0u8; cell.area()];
         for (ch, label) in [

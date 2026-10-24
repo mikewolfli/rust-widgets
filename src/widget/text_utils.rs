@@ -1,9 +1,19 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! Byte-index helpers shared by the text-editing controls.
+//! Byte-index helpers and text-fitting primitives shared by the controls.
+//!
+//! The byte-index helpers answer "where may a caret stand?". The elision and wrap
+//! helpers answer "how does a string fit a box?" without every control inventing its
+//! own budget arithmetic. Both families return byte ranges, because every slice in
+//! this crate is in bytes; the character budget is converted exactly once here.
 
-use crate::compat::String;
+use core::ops::Range;
+
+use crate::compat::{Cow, String, Vec};
+
+/// The single-character ellipsis used by the shared elision helpers.
+const ELLIPSIS: &str = "\u{2026}";
 
 /// Case-insensitive substring test, allocating nothing for an ASCII needle.
 ///
@@ -122,6 +132,162 @@ pub fn next_char_boundary(text: &str, offset: usize) -> usize {
         Some(ch) => boundary + ch.len_utf8(),
         None => text.len(),
     }
+}
+
+/// Shortens `text` to at most `max_chars` **characters**, ending it with `…`.
+///
+/// # Why this is shared
+///
+/// Controls used to truncate with `format!("{}...", &text[..byte_boundary])`, which
+/// counted bytes and reserved three glyphs for a three-byte ASCII ellipsis. The
+/// character budget is the one a reader sees, and `…` is one glyph, so the shared
+/// answer keeps one more real character in every truncated label.
+///
+/// A string that already fits is returned **borrowed**, so the common case allocates
+/// nothing. `max_chars <= 1` keeps no label text and returns the ellipsis alone; a
+/// budget of zero therefore yields one glyph rather than an empty box, which is the
+/// same floor the previous `"..."` rule used.
+///
+/// # Guarantee
+///
+/// The returned text contains at most `max_chars.max(1)` characters and is always a
+/// valid UTF-8 slice of `text` plus the ellipsis; a multi-byte character is never
+/// split.
+pub fn elide_end(text: &str, max_chars: usize) -> Cow<'_, str> {
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        return Cow::Borrowed(text);
+    }
+    if max_chars <= 1 {
+        return Cow::Borrowed(ELLIPSIS);
+    }
+    let keep = max_chars - 1;
+    let mut out = String::with_capacity(text.len().min(max_chars.saturating_mul(4)));
+    out.extend(text.chars().take(keep));
+    out.push('\u{2026}');
+    Cow::Owned(out)
+}
+
+/// Shortens `text` to at most `max_chars` **characters**, eliding the middle.
+///
+/// Paths and URLs keep their identifying head **and** tail, which end-elision throws
+/// away (`/Users/…/widget.rs` instead of `/Users/mikewolfli/Desk…`). The head receives
+/// the extra character when the budget is odd, so the split is deterministic.
+///
+/// Same borrow rule and floor as [`elide_end`]: fitting text is borrowed, and a budget
+/// of one or less yields the ellipsis alone.
+pub fn elide_middle(text: &str, max_chars: usize) -> Cow<'_, str> {
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        return Cow::Borrowed(text);
+    }
+    if max_chars <= 1 {
+        return Cow::Borrowed(ELLIPSIS);
+    }
+    let keep = max_chars - 1;
+    let head = keep.div_ceil(2);
+    let tail = keep - head;
+    let head_end = byte_index_of_char(text, head);
+    let tail_start = byte_index_of_char(text, char_count - tail);
+    let mut out = String::with_capacity(text.len().min(max_chars.saturating_mul(4)));
+    out.push_str(&text[..head_end]);
+    out.push('\u{2026}');
+    out.push_str(&text[tail_start..]);
+    Cow::Owned(out)
+}
+
+/// Shortens `text` so its measured width fits `max_width`.
+///
+/// `measure` is the caller's renderer measurement (for example
+/// [`crate::render::RenderContext::measure_text`]); keeping it a callback means this
+/// primitive serves both the paint path and the pre-layout path without importing a
+/// backend. The ellipsis is included in the budget, and the largest fitting prefix is
+/// found by binary search over character boundaries — never bytes, so a CJK or emoji
+/// label cannot be cut mid-character.
+///
+/// Returns the input borrowed when it already fits. When even the ellipsis is wider
+/// than `max_width`, returns an empty borrowed slice: the honest answer is "nothing
+/// fits", not a glyph that overflows the box.
+pub fn elide_to_width<'a>(
+    text: &'a str,
+    max_width: u32,
+    measure: &mut dyn FnMut(&str) -> u32,
+) -> Cow<'a, str> {
+    if measure(text) <= max_width {
+        return Cow::Borrowed(text);
+    }
+    if max_width == 0 || measure(ELLIPSIS) > max_width {
+        return Cow::Borrowed("");
+    }
+
+    let char_count = text.chars().count();
+    let mut low = 0usize;
+    let mut high = char_count;
+    while low < high {
+        let mid = (low + high).div_ceil(2);
+        let end = byte_index_of_char(text, mid);
+        let mut candidate = String::with_capacity(end + ELLIPSIS.len());
+        candidate.push_str(&text[..end]);
+        candidate.push('\u{2026}');
+        if measure(&candidate) <= max_width {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    if low == char_count {
+        // The full text measured wider above, so a fitting prefix cannot own every
+        // character; this arm is defensive and keeps the borrow contract total.
+        return Cow::Borrowed(text);
+    }
+    let end = byte_index_of_char(text, low);
+    let mut out = String::with_capacity(end + ELLIPSIS.len());
+    out.push_str(&text[..end]);
+    out.push('\u{2026}');
+    Cow::Owned(out)
+}
+
+/// Splits `text` into visual lines of at most `max_chars` characters.
+///
+/// Returns **byte** ranges into `text`, excluding the newline separators. An empty
+/// line (including the line after a trailing newline) is reported as an empty range,
+/// so a caller can draw the blank row it represents. `max_chars == 0` means "no
+/// wrapping": the whole string is one range.
+///
+/// The split is greedy and respects existing `\n` breaks. Character counting is done
+/// with `char_indices`, and each range ends after a complete character, so slicing the
+/// returned ranges can never split UTF-8.
+pub fn wrap_char_ranges(text: &str, max_chars: usize) -> Vec<Range<usize>> {
+    let mut out = Vec::new();
+    if max_chars == 0 {
+        out.push(0..text.len());
+        return out;
+    }
+
+    let mut paragraph_start = 0usize;
+    for paragraph in text.split('\n') {
+        if paragraph.is_empty() {
+            out.push(paragraph_start..paragraph_start);
+        } else {
+            let mut line_start = 0usize;
+            let mut count = 0usize;
+            for (index, ch) in paragraph.char_indices() {
+                count += 1;
+                if count == max_chars {
+                    let end = index + ch.len_utf8();
+                    out.push(paragraph_start + line_start..paragraph_start + end);
+                    line_start = end;
+                    count = 0;
+                }
+            }
+            if line_start < paragraph.len() {
+                out.push(paragraph_start + line_start..paragraph_start + paragraph.len());
+            }
+        }
+        paragraph_start += paragraph.len() + 1;
+    }
+    out
 }
 
 /// Removes the selected range from `text`, returning the caret position to place.
@@ -279,5 +445,67 @@ mod tests {
         assert_eq!(first_visible_row_for(9, 5, 3), 7, "below it scrolls just enough");
         assert_eq!(first_visible_row_for(6, 5, 3), 5, "inside it leaves the origin alone");
         assert_eq!(first_visible_row_for(6, 5, 0), 5, "a zero-height viewport keeps the origin");
+    }
+
+    /// End elision counts characters, borrows fitting text, and never splits a glyph.
+    #[test]
+    fn end_elision_respects_the_character_budget() {
+        assert!(matches!(elide_end("hello", 5), Cow::Borrowed("hello")));
+        assert_eq!(elide_end("hello world", 8), "hello w\u{2026}");
+        assert_eq!(elide_end("hello", 1), "\u{2026}");
+        assert_eq!(elide_end("hello", 0), "\u{2026}");
+        // 7 characters, 21 bytes: a byte budget would keep only two of them.
+        assert_eq!(
+            elide_end("\u{4e16}\u{754c}\u{4f60}\u{597d}\u{4e16}\u{754c}\u{4f60}", 5),
+            "\u{4e16}\u{754c}\u{4f60}\u{597d}\u{2026}"
+        );
+        assert_eq!(elide_end("\u{e9}\u{4e16}\u{1f389}", 2), "\u{e9}\u{2026}");
+    }
+
+    /// Middle elision keeps both identifying ends and is symmetric about the budget.
+    #[test]
+    fn middle_elision_keeps_both_ends() {
+        assert!(matches!(elide_middle("abc", 3), Cow::Borrowed("abc")));
+        assert_eq!(elide_middle("abcdefghij", 6), "abc\u{2026}ij");
+        assert_eq!(elide_middle("abcdefghij", 5), "ab\u{2026}ij");
+        assert_eq!(elide_middle("abc", 1), "\u{2026}");
+        assert_eq!(
+            elide_middle("/Users/alice/Desktop/workspace/file.rs", 14),
+            "/Users/\u{2026}ile.rs"
+        );
+    }
+
+    /// Width elision uses the supplied measurement and the same character boundaries.
+    #[test]
+    fn width_elision_finds_the_largest_fitting_prefix() {
+        // One unit per character, so the budget is easy to reason about.
+        let mut measure = |value: &str| value.chars().count() as u32;
+        assert_eq!(elide_to_width("abcdef", 6, &mut measure), "abcdef");
+        assert_eq!(elide_to_width("abcdef", 4, &mut measure), "abc\u{2026}");
+        assert_eq!(elide_to_width("abcdef", 1, &mut measure), "\u{2026}");
+        assert_eq!(elide_to_width("abcdef", 0, &mut measure), "");
+        // A width budget of 3 keeps two characters plus the ellipsis.
+        assert_eq!(
+            elide_to_width("\u{4e16}\u{754c}\u{4f60}\u{597d}", 3, &mut measure),
+            "\u{4e16}\u{754c}\u{2026}"
+        );
+    }
+
+    /// Wrapping reports byte ranges, preserves explicit newlines, and keeps blank lines.
+    #[test]
+    fn wrapping_returns_byte_ranges_on_character_boundaries() {
+        assert_eq!(wrap_char_ranges("abcdef", 3), vec![0..3, 3..6]);
+        assert_eq!(wrap_char_ranges("ab\ncd", 2), vec![0..2, 3..5]);
+        assert_eq!(wrap_char_ranges("ab\n", 2), vec![0..2, 3..3]);
+        assert_eq!(wrap_char_ranges("", 4), vec![0..0]);
+        assert_eq!(wrap_char_ranges("a\u{e9}\u{4e16}\u{1f389}b", 2), vec![0..3, 3..10, 10..11]);
+        // No wrapping bound means one range for the whole value.
+        assert_eq!(wrap_char_ranges("ab\ncd", 0), vec![0..5]);
+
+        let ranges = wrap_char_ranges("\u{4e16}\u{754c}\u{4f60}\u{597d}", 2);
+        for range in ranges {
+            assert!("\u{4e16}\u{754c}\u{4f60}\u{597d}".is_char_boundary(range.start));
+            assert!("\u{4e16}\u{754c}\u{4f60}\u{597d}".is_char_boundary(range.end));
+        }
     }
 }

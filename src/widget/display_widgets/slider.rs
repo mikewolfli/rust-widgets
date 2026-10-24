@@ -13,7 +13,9 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{
+    dimensions, focus_ring_color, ControlMetrics, FocusRing, FOCUS_RING_WIDTH,
+};
 use crate::widget::numeric::ordered_clamp_i32;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -484,6 +486,22 @@ impl Slider {
         }
         self.direction = direction;
         self.base.request_redraw();
+    }
+
+    /// The handle's own square, in control coordinates.
+    ///
+    /// Derived from the same [`Self::value_to_pixel_pos`] mapping and [`ControlMetrics`]
+    /// centring the paint path uses, so the keyboard focus ring frames the handle that is
+    /// actually on screen rather than a second estimate of its position.
+    fn handle_rect(&self) -> Rect {
+        let radius = (SLIDER_SIZE / 2.0) as u32;
+        let side = radius * 2;
+        let disc = ControlMetrics::centered_disc(self.geometry(), side);
+        let centre = self.value_to_pixel_pos(self.value) as i32;
+        match self.orientation {
+            Orientation::Horizontal => Rect::new(centre - radius as i32, disc.y, side, side),
+            Orientation::Vertical => Rect::new(disc.x, centre - radius as i32, side, side),
+        }
     }
 }
 /// Slider actions.
@@ -1061,6 +1079,25 @@ impl Draw for Slider {
                         }
                     }
                 }
+            }
+        }
+
+        // ── Keyboard focus ring ──
+        //
+        // The handle is the part the arrow keys move, so the ring frames it rather than the
+        // whole groove. Gated on the *reason* focus arrived: a pointer press focuses the
+        // slider without painting a ring under the cursor, while Tab and Shortcut draw one.
+        if self.base.draws_focus_ring() {
+            let ring = FocusRing::for_control(self.handle_rect(), (SLIDER_SIZE / 2.0) as u32);
+            if ring.is_drawable() {
+                // The fallback is the handle's contrasting tone; an active theme overrides
+                // it with its declared `outline` token.
+                context.draw_rounded_rect_stroke(
+                    ring.rect,
+                    ring.radius,
+                    focus_ring_color(handle_color.contrast_color()),
+                    FOCUS_RING_WIDTH,
+                );
             }
         }
     }
@@ -2102,5 +2139,50 @@ mod tests {
                 crate::widget::svg::render_widget_to_svg(&mut slider, Rect::new(0, 0, 200, 30));
             assert!(svg.starts_with("<svg"), "{orientation:?}: the draw must produce a document");
         }
+    }
+
+    /// Keyboard focus paints the ring on the handle; a pointer press does not.
+    ///
+    /// The slider reported `WidgetState::Focused` for keyboard focus but painted no ring, so
+    /// the state had no visible consumer. The ring is the only 2 px stroke the control emits,
+    /// which makes its presence observable in the render.
+    #[test]
+    fn a_keyboard_focused_slider_paints_the_ring_and_pointer_focus_does_not() {
+        // The ring's colour reads the process-wide theme; hold the guard so a concurrent
+        // appearance switch cannot change this render mid-assertion.
+        let _guard = crate::style::theme_test_guard();
+        let mut keyboard = make_slider();
+        keyboard.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        assert!(keyboard.base.draws_focus_ring(), "Tab focus must ask for a ring");
+        let focused = crate::widget::svg::render_to_svg(&mut keyboard);
+        assert!(
+            focused.lines().any(|line| line.contains("stroke-width=\"2\"")),
+            "keyboard focus must paint the ring around the handle: {focused}"
+        );
+
+        let mut pointer = make_slider();
+        pointer.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Pointer });
+        let unfocused = crate::widget::svg::render_to_svg(&mut pointer);
+        assert!(
+            !unfocused.lines().any(|line| line.contains("stroke-width=\"2\"")),
+            "pointer focus must not paint a ring: {unfocused}"
+        );
+    }
+
+    /// The ring follows the handle to both ends of the travel.
+    #[test]
+    fn the_slider_focus_ring_tracks_the_handle() {
+        let mut slider = make_slider();
+        slider.set_value(100);
+        let at_maximum = slider.handle_rect();
+        slider.set_value(0);
+        let at_minimum = slider.handle_rect();
+        assert!(
+            at_maximum.x > at_minimum.x,
+            "the ring must move with the value: {:?} vs {:?}",
+            at_maximum,
+            at_minimum
+        );
+        assert_eq!(at_maximum.y, at_minimum.y, "a horizontal slider's handle keeps one row");
     }
 }

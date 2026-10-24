@@ -152,9 +152,9 @@ impl CoverageSlot {
 static COVERAGE_CACHE: crate::compat::Mutex<[CoverageSlot; COVERAGE_CACHE_SLOTS]> =
     crate::compat::Mutex::new([CoverageSlot::EMPTY; COVERAGE_CACHE_SLOTS]);
 
-/// A parsed face, held for reuse across glyphs and frames.
+/// One parsed face held on this thread.
 ///
-/// # Why the parse has to be cached separately from the coverage answer
+/// # Why the parse is cached separately from the coverage answer
 ///
 /// [`face_for_char`] caches *which* face covers a character, but every caller then parsed those
 /// bytes again: `ttf_parser::Face::parse` walks the table directory, and it ran once per glyph, per
@@ -165,18 +165,24 @@ static COVERAGE_CACHE: crate::compat::Mutex<[CoverageSlot; COVERAGE_CACHE_SLOTS]
 /// The parsed value is borrowed from the face's own bytes, and a compiled face is `&'static`, so a
 /// parsed `ttf_parser::Face<'static>` can be held here without copying the font. That is what makes
 /// the reuse a borrow rather than an allocation.
+///
+/// # Why the cache is per-thread and keyed by name
+///
+/// Painting happens on one thread at a time, so a `thread_local!` entry needs no lock and no
+/// `unsafe` `Send`/`Sync` wrapper. The key is the family name together with the address of the
+/// bytes: the name is what callers and [`crate::render::text::GlyphKey`] speak, while the address
+/// proves the cached parse still describes the same font. A host that replaces a face under one
+/// name therefore misses the old entry instead of reading a stale parse.
 #[cfg(any(
     feature = "text-shaping",
     feature = "fonts-vector-latin",
     feature = "fonts-complex",
     cjk_outline_face
 ))]
-struct ParsedFaceSlot {
-    /// Identity of the face the parse belongs to.
-    ///
-    /// A face is identified by the **address of its bytes**, not by its name: two builds can ship
-    /// different bytes under one family, and the address is what proves a parse describes the font
-    /// it is being used for. `FaceBytes::bytes` is `&'static [u8]`, so the address is stable.
+struct NamedParsedFace {
+    /// The face's family name, as the caller spelled it.
+    name: &'static str,
+    /// The address of the face's bytes, which identifies the bytes a parse came from.
     bytes: *const u8,
     /// The parsed face, or `None` when the bytes are not a face this crate can read. Caching the
     /// *failure* matters as much as caching the success: a miss would otherwise re-parse on every
@@ -184,56 +190,40 @@ struct ParsedFaceSlot {
     face: Option<ttf_parser::Face<'static>>,
 }
 
-// SAFETY: `ttf_parser::Face` borrows its bytes and holds only offsets into them; it performs no
-// interior mutation and is `Send + Sync`, so sharing one parsed face between threads is sound. The
-// pointer identifies a `&'static [u8]`, which outlives the process's font registry.
-#[cfg(any(
-    feature = "text-shaping",
-    feature = "fonts-vector-latin",
-    feature = "fonts-complex",
-    cjk_outline_face
-))]
-unsafe impl Send for ParsedFaceSlot {}
-#[cfg(any(
-    feature = "text-shaping",
-    feature = "fonts-vector-latin",
-    feature = "fonts-complex",
-    cjk_outline_face
-))]
-unsafe impl Sync for ParsedFaceSlot {}
-
-/// How many parsed faces are held at once.
+/// How many parsed faces one thread keeps.
 ///
-/// A build has at most four compiled faces plus a handful of host-registered ones, and a frame
-/// practically draws from one or two, so four slots cover the working set with room for the
-/// Latin+CJK mix a mixed line produces. A miss re-parses and replaces the least useful slot, which
-/// costs one parse rather than being wrong.
+/// A build has at most a handful of compiled faces plus the faces a host registers, and a frame
+/// practically draws from one or two. Eight slots cover a mixed Latin/CJK line plus a host face
+/// without evicting the working set. A miss re-parses and drops the oldest slot, which costs one
+/// parse rather than being wrong.
 #[cfg(any(
     feature = "text-shaping",
     feature = "fonts-vector-latin",
     feature = "fonts-complex",
     cjk_outline_face
 ))]
-const PARSED_FACE_SLOTS: usize = 4;
+const NAMED_FACE_SLOTS: usize = 8;
 
-/// The process-wide parsed-face cache, most-recently-used first.
 #[cfg(any(
     feature = "text-shaping",
     feature = "fonts-vector-latin",
     feature = "fonts-complex",
     cjk_outline_face
 ))]
-static PARSED_FACES: crate::compat::Mutex<[Option<ParsedFaceSlot>; PARSED_FACE_SLOTS]> =
-    crate::compat::Mutex::new([None, None, None, None]);
+thread_local! {
+    /// Faces already parsed on this thread, oldest first.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static NAMED_PARSED_FACES: crate::compat::RefCell<crate::compat::Vec<NamedParsedFace>> =
+        crate::compat::RefCell::new(crate::compat::Vec::new());
+}
 
-/// Runs `f` against `bytes` parsed as a face, parsing it only when the cache does not hold it.
+/// Runs `f` against `face` parsed as a face, parsing it only when this thread has not already.
 ///
 /// # Why a closure rather than returning the face
 ///
-/// A parsed face is borrowed from a `Mutex`-guarded slot, so handing it out would either borrow the
-/// lock for the caller's whole rasterisation or require an owned copy of the font. The closure keeps
-/// the lock scoped to the call: the caller does its work and the guard is released on return, which
-/// is the same discipline [`face_for_char`] already uses for its own cache.
+/// A parsed face is borrowed from the thread-local cache, so handing it out would borrow the cache
+/// for the caller's whole rasterisation. The closure keeps the borrow scoped to the call: the
+/// caller does its work and the entry is returned on exit.
 ///
 /// Returns `None` when the bytes are not a readable face, matching the un-cached
 /// `ttf_parser::Face::parse(...).ok()?` this replaces.
@@ -247,35 +237,43 @@ pub fn with_parsed_face<R>(
     face: FaceBytes,
     f: impl FnOnce(&ttf_parser::Face<'_>) -> R,
 ) -> Option<R> {
-    let key = face.bytes.as_ptr();
-    let mut cache = crate::compat::lock(&PARSED_FACES);
+    let name = face.name;
+    let bytes = face.bytes.as_ptr();
 
-    // A hit is self-contained: the slot holds the parse for exactly these bytes.
-    if let Some(index) = cache.iter().position(|slot| slot.as_ref().is_some_and(|s| s.bytes == key))
-    {
-        let slot = cache[index].as_ref()?;
-        return slot.face.as_ref().map(f);
-    }
+    // Take the entry out so the closure can call back into this function without a second borrow
+    // of the cache. The entry goes back in below.
+    let entry = NAMED_PARSED_FACES.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        match cache.iter().position(|slot| slot.name == name && slot.bytes == bytes) {
+            Some(index) => cache.remove(index),
+            None => {
+                NamedParsedFace { name, bytes, face: ttf_parser::Face::parse(face.bytes, 0).ok() }
+            }
+        }
+    });
 
-    let parsed = ttf_parser::Face::parse(face.bytes, 0).ok();
-    // A miss with an unreadable face is cached too, so a character only the tofu path can draw does
-    // not re-parse the candidate faces on every glyph of every frame.
-    let answer = parsed.as_ref().map(f);
+    let answer = entry.face.as_ref().map(f);
 
-    // Most-recently-used first: shift the residents down and take slot 0. `take` moves the value
-    // out without requiring `Clone` (a parsed face owns no font data, but it is still not `Copy`).
-    // A frame draws from one or two faces, so the head of the list is what lookups want.
-    for index in (1..PARSED_FACE_SLOTS).rev() {
-        cache[index] = cache[index - 1].take();
-    }
-    cache[0] = Some(ParsedFaceSlot { bytes: key, face: parsed });
+    NAMED_PARSED_FACES.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        // A re-entrant call may already have restored an entry for these bytes; one copy is
+        // enough. Anything else keeps the cache bounded.
+        if !cache.iter().any(|slot| slot.name == name && slot.bytes == bytes) {
+            cache.push(entry);
+            if cache.len() > NAMED_FACE_SLOTS {
+                cache.remove(0);
+            }
+        }
+    });
+
     answer
 }
 
-/// Drops every cached parse, so the next `with_parsed_face` reads the font again.
+/// Drops every parse cached on this thread, so the next `with_parsed_face` reads the font again.
 ///
-/// Called from [`invalidate_face_cache`] so a host that registers or clears faces does not keep
-/// reading a parse taken before the change.
+/// Called from [`invalidate_face_cache`] when a host registers or clears a face. Other threads keep
+/// their own entries, which is safe: an entry is keyed by the address of the bytes it was parsed
+/// from, so a different face registered under the same name cannot be served by it.
 #[cfg(any(
     feature = "text-shaping",
     feature = "fonts-vector-latin",
@@ -283,11 +281,10 @@ pub fn with_parsed_face<R>(
     cjk_outline_face
 ))]
 pub fn clear_parsed_faces() {
-    let mut cache = crate::compat::lock(&PARSED_FACES);
-    *cache = [None, None, None, None];
+    NAMED_PARSED_FACES.with(|cache| cache.borrow_mut().clear());
 }
 
-/// A face parsed by the **shaper**, held for reuse across measurement and shaping passes.
+/// One shaper-parsed face held on this thread, keyed like [`NamedParsedFace`].
 ///
 /// # Why this is a second cache and not the first one
 ///
@@ -300,57 +297,63 @@ pub fn clear_parsed_faces() {
 /// `draw_text` shapes the real string, so a single label shaped the font **twice per frame** — and
 /// every control in the window does the same. Measured, one `measure_text("M")` cost ~18us.
 #[cfg(feature = "text-shaping")]
-struct ShaperFaceSlot {
-    /// Identity of the face, by the address of its bytes (see [`ParsedFaceSlot::bytes`]).
+struct NamedShaperFace {
+    /// The face's family name, as the caller spelled it.
+    name: &'static str,
+    /// The address of the face's bytes, which identifies the bytes a parse came from.
     bytes: *const u8,
     /// The parsed face, or `None` when the shaper cannot read these bytes.
     face: Option<rustybuzz::Face<'static>>,
 }
 
-// SAFETY: `rustybuzz::Face` borrows its bytes and exposes no interior mutation through a shared
-// reference, so it is safe to share between threads. The pointer identifies a `&'static [u8]`.
 #[cfg(feature = "text-shaping")]
-unsafe impl Send for ShaperFaceSlot {}
-#[cfg(feature = "text-shaping")]
-unsafe impl Sync for ShaperFaceSlot {}
+thread_local! {
+    /// Shaper faces already parsed on this thread, oldest first.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static NAMED_SHAPER_FACES: crate::compat::RefCell<crate::compat::Vec<NamedShaperFace>> =
+        crate::compat::RefCell::new(crate::compat::Vec::new());
+}
 
-/// The process-wide shaper-face cache, most-recently-used first.
-#[cfg(feature = "text-shaping")]
-static SHAPER_FACES: crate::compat::Mutex<[Option<ShaperFaceSlot>; PARSED_FACE_SLOTS]> =
-    crate::compat::Mutex::new([None, None, None, None]);
-
-/// Runs `f` against `bytes` parsed by the shaper, parsing only when the cache does not hold it.
+/// Runs `f` against `face` parsed by the shaper, parsing only when this thread has not already.
 ///
-/// See [`with_parsed_face`] for why this takes a closure: the parsed face is borrowed from a
-/// `Mutex`-guarded slot, so the lock is scoped to the call rather than to the caller's work.
+/// See [`with_parsed_face`] for why this takes a closure and how the entry is keyed.
 #[cfg(feature = "text-shaping")]
 pub fn with_shaper_face<R>(
     face: FaceBytes,
     f: impl FnOnce(&rustybuzz::Face<'_>) -> R,
 ) -> Option<R> {
-    let key = face.bytes.as_ptr();
-    let mut cache = crate::compat::lock(&SHAPER_FACES);
+    let name = face.name;
+    let bytes = face.bytes.as_ptr();
 
-    if let Some(index) = cache.iter().position(|slot| slot.as_ref().is_some_and(|s| s.bytes == key))
-    {
-        let slot = cache[index].as_ref()?;
-        return slot.face.as_ref().map(f);
-    }
+    let entry = NAMED_SHAPER_FACES.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        match cache.iter().position(|slot| slot.name == name && slot.bytes == bytes) {
+            Some(index) => cache.remove(index),
+            None => {
+                NamedShaperFace { name, bytes, face: rustybuzz::Face::from_slice(face.bytes, 0) }
+            }
+        }
+    });
 
-    let parsed = rustybuzz::Face::from_slice(face.bytes, 0);
-    let answer = parsed.as_ref().map(f);
-    for index in (1..PARSED_FACE_SLOTS).rev() {
-        cache[index] = cache[index - 1].take();
-    }
-    cache[0] = Some(ShaperFaceSlot { bytes: key, face: parsed });
+    let answer = entry.face.as_ref().map(f);
+
+    NAMED_SHAPER_FACES.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if !cache.iter().any(|slot| slot.name == name && slot.bytes == bytes) {
+            cache.push(entry);
+            if cache.len() > NAMED_FACE_SLOTS {
+                cache.remove(0);
+            }
+        }
+    });
+
     answer
 }
 
-/// Drops every cached shaper parse; the shaper counterpart of [`clear_parsed_faces`].
+/// Drops every shaper parse cached on this thread; the counterpart of [`clear_parsed_faces`].
 #[cfg(feature = "text-shaping")]
 pub fn clear_shaper_faces() {
-    let mut cache = crate::compat::lock(&SHAPER_FACES);
-    *cache = [None, None, None, None];
+    NAMED_SHAPER_FACES.with(|cache| cache.borrow_mut().clear());
 }
 
 /// Bumped by every change to the face list, so entries from before it are ignored.
@@ -473,9 +476,9 @@ fn set_slot_generation(slot: usize, generation: u32) {
 #[cfg(feature = "runtime-fonts")]
 pub(crate) fn invalidate_face_cache() {
     FACE_GENERATION.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
-    // Both parse caches are keyed by byte address rather than by generation, so a registered face
-    // would otherwise keep reading a parse the registry no longer stands behind. Dropping the
-    // residents costs one parse per face on the next frame and cannot serve stale bytes.
+    // The parse caches are per-thread and keyed by name plus the address of the bytes, so another
+    // thread cannot serve a parse for different bytes under the same name. This thread's entries
+    // are dropped deterministically, which costs one parse per face on its next frame.
     clear_parsed_faces();
     clear_shaper_faces();
 }

@@ -101,6 +101,11 @@ fn dropdown_item_record(
 ///
 /// Each item has a value (string identifier), a display label, an optional
 /// icon, an enabled state, and optional children for cascading submenus.
+///
+/// `Clone` is what lets an open child panel hold its own rows while the item tree it came from
+/// stays owned by the control: a submenu that borrowed the tree could not outlive a mutation of
+/// the parent list.
+#[derive(Clone, Debug)]
 pub struct DropdownItem {
     /// Unique value identifier for this item.
     pub value: String,
@@ -145,6 +150,134 @@ impl DropdownItem {
     }
 }
 
+/// The colours one dropdown list is painted with.
+///
+/// Resolved once per frame so the field's list and a child panel cannot drift apart: both read
+/// the same palette, and a theme change moves them together.
+#[derive(Clone, Copy)]
+struct ListPalette {
+    text: Color,
+    disabled_text: Color,
+    highlight: Color,
+    separator: Color,
+}
+
+/// One list paint: the panel, the rows it shows, and what to mark as selected.
+struct ListPaint<'a> {
+    panel: Rect,
+    items: &'a [DropdownItem],
+    first: usize,
+    end: usize,
+    alignment: crate::core::Alignment,
+    icon_sources: &'a [(crate::compat::String, IconSource)],
+    selected_value: Option<&'a str>,
+    highlight_selection: bool,
+}
+
+/// Paints the rows of one dropdown list.
+///
+/// The field's own list and a branch's child panel both come through here, so a submenu row is
+/// the same row the parent list would draw — including its icon, alignment and disclosure arrow.
+fn draw_item_list(
+    context: &mut RenderContext,
+    paint: ListPaint<'_>,
+    style: &crate::style::WidgetStyle,
+    palette: ListPalette,
+) {
+    let item_font = effective_font(style);
+    for index in paint.first..paint.end {
+        let Some(item) = paint.items.get(index) else {
+            continue;
+        };
+        let row = Rect::new(
+            paint.panel.x,
+            paint.panel.y + (index - paint.first) as i32 * ITEM_HEIGHT,
+            paint.panel.width,
+            ITEM_HEIGHT as u32,
+        );
+
+        let is_selected = paint.highlight_selection
+            && paint.selected_value.is_some_and(|value| item.value.as_str() == value);
+        if is_selected {
+            context.fill_rounded_rect(row, 2, palette.highlight);
+        }
+
+        let item_text_color = if !item.enabled { palette.disabled_text } else { palette.text };
+        let mut item_x = row.x + PADDING;
+
+        // Item icon
+        let icon_source =
+            paint.icon_sources.iter().find(|(id, _)| id == &item.value).map(|(_, s)| *s);
+        if let Some(source) = icon_source {
+            let icon_line = context.text_line(row, item_font);
+            let side = icon_line.height.clamp(1, 16);
+            let icon_rect = Rect::new(item_x, icon_line.y, side, side);
+            if let Err(error) =
+                crate::widget::paint_icon(context, source.into(), icon_rect, item_text_color)
+            {
+                log::warn!("dropdown menu item icon failed: {error:?}");
+            }
+            item_x += 20;
+        } else if let Some(ref item_icon) = item.icon {
+            let icon_font = Font::simple("sans-serif", 13.0);
+            // The icon and the label share the row, so both take their origin from the line
+            // box centred in it rather than from the row's raw midpoint.
+            let icon_line = context.text_line(row, &icon_font);
+            context.draw_text(
+                Point::new(item_x, icon_line.y),
+                item_icon,
+                &icon_font,
+                item_text_color,
+                HorizontalAlignment::Left,
+            );
+            item_x += 20;
+        }
+
+        // Item label, aligned in the same inner box the field's value uses.
+        let item_line = context.text_line(row, item_font);
+        let label_band = Rect::new(
+            item_x,
+            item_line.y,
+            (row.x + row.width as i32 - PADDING - item_x).max(0) as u32,
+            item_line.height,
+        );
+        let label_align = paint.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
+        context.draw_text_fitted_cow(
+            label_band,
+            &item.label,
+            item_font,
+            item_text_color,
+            label_align,
+        );
+
+        // Submenu indicator if item has children
+        if !item.children.is_empty() && item.enabled {
+            let sub_x = row.x + row.width as i32 - PADDING - 8;
+            let sub_y = row.y + row.height as i32 / 2 - 4;
+            context.execute_command(RenderCommand::DrawPath {
+                points: vec![
+                    Point::new(sub_x, sub_y),
+                    Point::new(sub_x, sub_y + 8),
+                    Point::new(sub_x + 5, sub_y + 4),
+                ],
+                closed: true,
+                color: palette.disabled_text,
+                filled: true,
+                width: 1,
+            });
+        }
+
+        // Separator line
+        if index + 1 < paint.end {
+            context.draw_line(
+                Point::new(row.x + 4, row.y + row.height as i32),
+                Point::new(row.x + row.width as i32 - 4, row.y + row.height as i32),
+                palette.separator,
+            );
+        }
+    }
+}
+
 /// DropdownMenu widget — a text field with a dropdown list.
 ///
 /// Displays the currently selected value (or placeholder) with a dropdown
@@ -165,6 +298,13 @@ pub struct DropdownMenu {
     reveal: PopupReveal,
     /// Scroll offset for the item list.
     scroll_offset: usize,
+    /// The open child panel's rows. One level is opened at a time: opening another branch
+    /// replaces whatever child panel was showing.
+    submenu_open: Option<Vec<DropdownItem>>,
+    /// The rectangle the open child panel occupies, computed when the branch opens.
+    submenu_panel: Option<Rect>,
+    /// The top-level row the pointer last addressed, so Right can open its submenu.
+    active_index: Option<usize>,
     /// How the field's value and each item's label are aligned within their own row.
     ///
     /// Both runs take the same value because they are the same column of text seen twice -- what the
@@ -178,6 +318,8 @@ pub struct DropdownMenu {
     alignment: crate::core::Alignment,
     /// Emitted when an item is selected, providing the item's value.
     pub item_selected: Signal1<String>,
+    /// Emitted when a branch row opens its child panel, carrying the branch's label.
+    pub submenu_requested: Signal1<String>,
 }
 
 impl DropdownMenu {
@@ -191,8 +333,12 @@ impl DropdownMenu {
             expanded: false,
             reveal: PopupReveal::new(false),
             scroll_offset: 0,
+            submenu_open: None,
+            submenu_panel: None,
+            active_index: None,
             alignment: crate::core::Alignment::Left,
             item_selected: Signal1::new(),
+            submenu_requested: Signal1::new(),
         }
     }
 
@@ -326,6 +472,9 @@ impl DropdownMenu {
         let removed = self.items.len() < len_before;
         if removed {
             self.item_icon_sources.retain(|(id, _)| id != value);
+            // The child panel holds a snapshot of the removed row's subtree, so it can no
+            // longer be trusted to describe the list that is still there.
+            self.collapse_submenu();
             // Clear selection if the removed item was selected
             if self.selected_value.as_deref() == Some(value) {
                 self.selected_value = None;
@@ -347,6 +496,7 @@ impl DropdownMenu {
     /// answer rather than keeping an association the caller may have broken.
     pub fn items_mut(&mut self) -> &mut Vec<DropdownItem> {
         self.item_icon_sources.clear();
+        self.collapse_submenu();
         &mut self.items
     }
 
@@ -377,19 +527,30 @@ impl DropdownMenu {
         self.expanded = true;
         self.reveal.set_open(true);
         self.scroll_offset = 0;
+        self.submenu_open = None;
+        self.submenu_panel = None;
+        self.active_index = None;
         self.clamp_scroll();
         #[cfg(not(alloc_frugal))]
         crate::widget::runtime::set_popup_grab(self.id());
         self.base.request_redraw();
     }
 
-    /// Collapses the dropdown to hide the item list.
+    /// Collapses the dropdown, including any open child panel.
     pub fn collapse(&mut self) {
         self.expanded = false;
         self.reveal.set_open(false);
+        self.submenu_open = None;
+        self.submenu_panel = None;
+        self.active_index = None;
         #[cfg(not(alloc_frugal))]
         crate::widget::runtime::clear_popup_grab_for(self.id());
         self.base.request_redraw();
+    }
+
+    /// Whether a branch's child panel is currently showing.
+    pub fn is_submenu_open(&self) -> bool {
+        self.submenu_open.is_some()
     }
 
     /// Toggles the expanded state.
@@ -420,6 +581,136 @@ impl DropdownMenu {
         self.base.request_redraw();
     }
 
+    /// The child panel's rectangle for `item_count` rows anchored to `anchor_row`.
+    fn child_panel_rect(parent: Rect, anchor_row: Rect, item_count: usize) -> Rect {
+        let height = (item_count as u32 * ITEM_HEIGHT as u32).max(1);
+        Rect::new(parent.x + parent.width as i32, anchor_row.y, parent.width, height)
+    }
+
+    /// Row `index` inside a child panel.
+    fn submenu_row_rect(panel: Rect, index: usize) -> Rect {
+        Rect::new(panel.x, panel.y + index as i32 * ITEM_HEIGHT, panel.width, ITEM_HEIGHT as u32)
+    }
+
+    /// Collapses the open child panel, leaving the field's list open.
+    fn collapse_submenu(&mut self) {
+        if self.submenu_open.is_none() && self.submenu_panel.is_none() {
+            return;
+        }
+        self.submenu_open = None;
+        self.submenu_panel = None;
+        // The runtime clears the grab before delivering the outside press that collapsed
+        // this level. The parent list is still open, so it must take the grab back or a
+        // second outside press would reach the control behind it.
+        #[cfg(not(alloc_frugal))]
+        if self.expanded {
+            crate::widget::runtime::set_popup_grab(self.id());
+        }
+        self.base.request_redraw();
+    }
+
+    /// Opens the submenu of the top-level item at `index` to the right of the list.
+    ///
+    /// Activating a branch is not a selection: no [`Self::item_selected`] fires and the list
+    /// stays expanded, which is the difference between a row that leads somewhere and a row
+    /// that does something.
+    fn open_submenu(&mut self, index: usize) {
+        let Some(item) = self.items.get(index) else {
+            return;
+        };
+        if !item.enabled || item.children.is_empty() {
+            return;
+        }
+        let label = item.label.clone();
+        let children = item.children.clone();
+        self.submenu_requested.emit(label);
+        let parent = self.dropdown_rect();
+        let anchor_row = self.item_rect(index);
+        self.submenu_panel = Some(Self::child_panel_rect(parent, anchor_row, children.len()));
+        self.submenu_open = Some(children);
+        self.active_index = Some(index);
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::set_popup_grab(self.id());
+        self.base.request_redraw();
+    }
+
+    /// Activates a top-level row: a branch opens its child panel, a leaf selects.
+    fn activate_top_level(&mut self, index: usize) {
+        let Some(item) = self.items.get(index) else {
+            return;
+        };
+        if !item.enabled {
+            return;
+        }
+        let value = item.value.clone();
+        let is_branch = !item.children.is_empty();
+        if is_branch {
+            self.open_submenu(index);
+        } else {
+            self.selected_value = Some(value.clone());
+            self.item_selected.emit(value);
+            self.collapse();
+        }
+    }
+
+    /// Activates a row inside the open child panel.
+    fn activate_submenu_row(&mut self, index: usize) {
+        let Some(panel) = self.submenu_panel else {
+            return;
+        };
+        let Some(item) = self.submenu_open.as_ref().and_then(|items| items.get(index)) else {
+            return;
+        };
+        if !item.enabled {
+            return;
+        }
+        let value = item.value.clone();
+        let label = item.label.clone();
+        let children = item.children.clone();
+        if children.is_empty() {
+            self.selected_value = Some(value.clone());
+            self.item_selected.emit(value);
+            self.collapse();
+        } else {
+            self.submenu_requested.emit(label);
+            let anchor_row = Self::submenu_row_rect(panel, index);
+            self.submenu_panel = Some(Self::child_panel_rect(panel, anchor_row, children.len()));
+            self.submenu_open = Some(children);
+            self.base.request_redraw();
+        }
+    }
+
+    /// The index of the enabled top-level row a Right key should open.
+    fn keyboard_branch_index(&self) -> Option<usize> {
+        self.active_index
+            .filter(|index| {
+                self.items.get(*index).is_some_and(|item| item.enabled && !item.children.is_empty())
+            })
+            .or_else(|| {
+                // Only rows the list is actually showing can be opened: a branch scrolled out
+                // of the window has no row to anchor its child panel to.
+                let end = (self.scroll_offset + self.max_visible_items()).min(self.items.len());
+                (self.scroll_offset..end).find(|index| {
+                    self.items
+                        .get(*index)
+                        .is_some_and(|item| item.enabled && !item.children.is_empty())
+                })
+            })
+    }
+
+    /// The child-panel row at `pos`, when one is enabled.
+    fn hit_test_submenu_item(&self, pos: Point) -> Option<usize> {
+        let panel = self.submenu_panel?;
+        let items = self.submenu_open.as_ref()?;
+        if !panel.contains_point(pos) {
+            return None;
+        }
+        items.iter().enumerate().find_map(|(index, item)| {
+            let row = Self::submenu_row_rect(panel, index);
+            (item.enabled && row.contains_point(pos)).then_some(index)
+        })
+    }
+
     /// Computes the dropdown list rectangle below the text field.
     fn dropdown_rect(&self) -> Rect {
         let geom = self.geometry();
@@ -433,7 +724,7 @@ impl DropdownMenu {
         let drop = self.dropdown_rect();
         Rect::new(
             drop.x,
-            drop.y + (index - self.scroll_offset) as i32 * ITEM_HEIGHT,
+            drop.y + index.saturating_sub(self.scroll_offset) as i32 * ITEM_HEIGHT,
             drop.width,
             ITEM_HEIGHT as u32,
         )
@@ -471,13 +762,15 @@ impl Widget for DropdownMenu {
         &mut self.base
     }
 
-    /// The field **and** the expanded list accept the pointer.
+    /// The field, the expanded list, and a child panel all accept the pointer.
     ///
-    /// The list hangs below the field's own rectangle; without this override a click on a row was
-    /// rejected by the hit test and never reached `hit_test_item`.
+    /// The list hangs below the field's own rectangle and a child panel to its right; without
+    /// this override a click on either was rejected by the hit test and never reached
+    /// `hit_test_item`.
     fn contains_point(&self, point: crate::core::Point) -> bool {
         self.base().contains_point_with_touch_expansion(point)
             || (self.expanded && self.dropdown_rect().contains_point(point))
+            || self.submenu_panel.is_some_and(|panel| panel.contains_point(point))
     }
 
     fn has_open_popup(&self) -> bool {
@@ -519,6 +812,11 @@ impl Widget for DropdownMenu {
         match name {
             "item_selected" => {
                 Some(EventSignalRef::mapped("item_selected", &self.item_selected, |v| {
+                    CapabilityValue::String(v.clone())
+                }))
+            }
+            "submenu_requested" => {
+                Some(EventSignalRef::mapped("submenu_requested", &self.submenu_requested, |v| {
                     CapabilityValue::String(v.clone())
                 }))
             }
@@ -739,6 +1037,12 @@ impl Draw for DropdownMenu {
         //
         // `reveal.is_closed()` is checked rather than just the flag, so a list that is closing
         // keeps painting until it has finished shrinking instead of vanishing on the click.
+        let palette = ListPalette {
+            text: text_color,
+            disabled_text: disabled_text_color,
+            highlight: item_highlight,
+            separator,
+        };
         if self.expanded && !self.items.is_empty() {
             let drop = self.dropdown_rect();
             let revealed = self.reveal.revealed(
@@ -761,100 +1065,21 @@ impl Draw for DropdownMenu {
 
             // Draw visible items
             let end = (self.scroll_offset + self.max_visible_items()).min(self.items.len());
-            for i in self.scroll_offset..end {
-                let item = &self.items[i];
-                let ir = self.item_rect(i);
-
-                // Highlight selected item
-                let is_selected = self.selected_value.as_deref() == Some(&item.value);
-                if is_selected {
-                    context.fill_rounded_rect(ir, 2, item_highlight);
-                }
-
-                let item_text_color = if !item.enabled { disabled_text_color } else { text_color };
-                // The item label takes the **effective font**, so the theme body font and the
-                // user's text scale reach the list rows (D09-STYLE-01).
-                let item_font = effective_font(style);
-                let mut item_x = ir.x + PADDING;
-
-                // Item icon
-                if let Some(source) = self.item_icon_source(&item.value) {
-                    let icon_line = context.text_line(ir, item_font);
-                    let side = icon_line.height.clamp(1, 16);
-                    let icon_rect = Rect::new(item_x, icon_line.y, side, side);
-                    if let Err(error) = crate::widget::paint_icon(
-                        context,
-                        source.into(),
-                        icon_rect,
-                        item_text_color,
-                    ) {
-                        log::warn!("dropdown menu item {i} icon failed: {error:?}");
-                    }
-                    item_x += 20;
-                } else if let Some(ref item_icon) = item.icon {
-                    let icon_font = Font::simple("sans-serif", 13.0);
-                    // The icon and the label share the row, so both take their origin from the
-                    // line box centred in it rather than from the row's raw midpoint — that
-                    // midpoint is the glyph *top* edge, which sat both half a line low.
-                    let icon_line = context.text_line(ir, &icon_font);
-                    context.draw_text(
-                        Point::new(item_x, icon_line.y),
-                        item_icon,
-                        &icon_font,
-                        item_text_color,
-                        HorizontalAlignment::Left,
-                    );
-                    item_x += 20;
-                }
-
-                // Item label
-                let item_line = context.text_line(ir, item_font);
-                // The label is aligned in the same inner box the field's value uses, so the two
-                // columns line up. The band starts where the icon (if any) pushed it, so an icon
-                // shifts the whole label run rather than only its left-aligned form. Fitted rather
-                // than drawn at a point, so centre/right are expressible over the remaining width.
-                let label_band = Rect::new(
-                    item_x,
-                    item_line.y,
-                    (ir.x + ir.width as i32 - PADDING - item_x).max(0) as u32,
-                    item_line.height,
-                );
-                let label_align =
-                    self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
-                context.draw_text_fitted_cow(
-                    label_band,
-                    &item.label,
-                    item_font,
-                    item_text_color,
-                    label_align,
-                );
-
-                // Submenu indicator if item has children
-                if !item.children.is_empty() && item.enabled {
-                    let sub_x = ir.x + ir.width as i32 - PADDING - 8;
-                    let sub_y = ir.y + ir.height as i32 / 2 - 4;
-                    context.execute_command(RenderCommand::DrawPath {
-                        points: vec![
-                            Point::new(sub_x, sub_y),
-                            Point::new(sub_x, sub_y + 8),
-                            Point::new(sub_x + 5, sub_y + 4),
-                        ],
-                        closed: true,
-                        color: disabled_text_color,
-                        filled: true,
-                        width: 1,
-                    });
-                }
-
-                // Separator line
-                if i + 1 < end {
-                    context.draw_line(
-                        Point::new(ir.x + 4, ir.y + ir.height as i32),
-                        Point::new(ir.x + ir.width as i32 - 4, ir.y + ir.height as i32),
-                        separator,
-                    );
-                }
-            }
+            draw_item_list(
+                context,
+                ListPaint {
+                    panel: drop,
+                    items: &self.items,
+                    first: self.scroll_offset,
+                    end,
+                    alignment: self.alignment,
+                    icon_sources: &self.item_icon_sources,
+                    selected_value: self.selected_value.as_deref(),
+                    highlight_selection: true,
+                },
+                style,
+                palette,
+            );
 
             // Scroll indicators if content is scrollable. Each is a `ChevronUp`/`ChevronDown`
             // **icon outline**, not the `▲`/`▼` text glyph (U+25B2/U+25BC are covered by no
@@ -886,6 +1111,32 @@ impl Draw for DropdownMenu {
                 context.pop_clip();
             }
         }
+
+        // ── Draw the child panel ──
+        //
+        // It hangs to the right of the list, outside the list's reveal clip, so it is painted after
+        // the clip is popped. One level only: opening another branch replaces what is shown.
+        if let (Some(children), Some(panel)) = (self.submenu_open.as_ref(), self.submenu_panel) {
+            let panel_fill =
+                if effects.transparency { background.with_alpha(230) } else { background };
+            context.fill_rounded_rect(panel, 4, panel_fill);
+            context.draw_rounded_rect_stroke(panel, 4, border, 2);
+            draw_item_list(
+                context,
+                ListPaint {
+                    panel,
+                    items: children,
+                    first: 0,
+                    end: children.len(),
+                    alignment: self.alignment,
+                    icon_sources: &self.item_icon_sources,
+                    selected_value: None,
+                    highlight_selection: false,
+                },
+                style,
+                palette,
+            );
+        }
     }
 }
 
@@ -897,30 +1148,44 @@ impl EventHandler for DropdownMenu {
 
         match event {
             Event::MousePress { pos, button, .. } => {
-                if *button == 1 {
-                    if self.geometry().contains_point(*pos) {
-                        // Click on the text field — toggle expand
-                        self.toggle();
-                    } else if self.expanded {
-                        // Check if click is on a dropdown item
-                        if let Some(idx) = self.hit_test_item(*pos) {
-                            let value = self.items[idx].value.clone();
-                            self.selected_value = Some(value.clone());
-                            self.item_selected.emit(value);
-                            self.collapse();
+                if *button != 1 {
+                    return;
+                }
+                if self.geometry().contains_point(*pos) {
+                    // Click on the text field — toggle expand
+                    self.toggle();
+                } else if self.expanded {
+                    if self.submenu_open.is_some() {
+                        if let Some(index) = self.hit_test_submenu_item(*pos) {
+                            self.activate_submenu_row(index);
+                        } else if let Some(index) = self.hit_test_item(*pos) {
+                            self.active_index = Some(index);
+                            self.activate_top_level(index);
                         } else {
-                            // Click outside the dropdown — collapse
-                            self.collapse();
+                            // An outside click collapses one level: the child panel first,
+                            // the list itself on the next click.
+                            self.collapse_submenu();
                         }
+                    } else if let Some(index) = self.hit_test_item(*pos) {
+                        self.active_index = Some(index);
+                        self.activate_top_level(index);
+                    } else {
+                        // Click outside the dropdown — collapse
+                        self.collapse();
                     }
                 }
             }
-            Event::KeyPress { key, modifiers: _ } => {
-                if *key == key_codes::ESCAPE && self.expanded {
-                    // Escape — collapse
-                    self.collapse();
+            Event::KeyPress { key, modifiers: _ } => match *key {
+                key_codes::ESCAPE if self.submenu_open.is_some() => self.collapse_submenu(),
+                key_codes::ESCAPE if self.expanded => self.collapse(),
+                key_codes::RIGHT if self.expanded && self.submenu_open.is_none() => {
+                    if let Some(index) = self.keyboard_branch_index() {
+                        self.open_submenu(index);
+                    }
                 }
-            }
+                key_codes::LEFT if self.submenu_open.is_some() => self.collapse_submenu(),
+                _ => { /* Other keys are not relevant */ }
+            },
             Event::Wheel { delta, modifiers: _ } => {
                 let capacity = self.max_visible_items();
                 if self.expanded && self.items.len() > capacity {
@@ -944,6 +1209,7 @@ impl EventHandler for DropdownMenu {
 mod tests {
     use super::*;
     use crate::widget::svg::render_to_svg;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     #[test]
@@ -1104,6 +1370,107 @@ mod tests {
 
         dm.handle_event(&Event::key_press(27, 0));
         assert!(!dm.is_expanded());
+    }
+
+    /// A dropdown with one branch row ("Documents") and one leaf row ("Quit").
+    fn dropdown_with_branch() -> DropdownMenu {
+        let mut dm = DropdownMenu::new(Rect::new(0, 0, 200, 30));
+        dm.add_item(DropdownItem::new("docs", "Documents").with_children(vec![
+            DropdownItem::new("pdf", "PDF"),
+            DropdownItem::new("txt", "Text"),
+        ]));
+        dm.add_item(DropdownItem::new("quit", "Quit"));
+        dm
+    }
+
+    /// Activating a branch opens the child panel to the right and leaves the list expanded.
+    #[test]
+    fn dropdown_menu_branch_opens_its_child_panel_without_selecting() {
+        let mut dm = dropdown_with_branch();
+        let selected = Arc::new(AtomicUsize::new(0));
+        let count = selected.clone();
+        dm.item_selected.connect(move |_| {
+            count.fetch_add(1, Ordering::SeqCst);
+        });
+
+        dm.expand();
+        let row = dm.item_rect(0);
+        dm.handle_event(&Event::mouse_press(row.x + 5, row.y + 5, 1));
+
+        assert!(dm.is_expanded(), "a branch activation must not collapse the list");
+        assert_eq!(selected.load(Ordering::SeqCst), 0, "a branch is not a selection");
+        assert!(dm.is_submenu_open());
+        let panel = dm.submenu_panel.expect("the child panel has a rectangle");
+        assert!(panel.x >= dm.dropdown_rect().x + dm.dropdown_rect().width as i32);
+        assert!(dm.contains_point(Point::new(panel.x + 5, panel.y + 5)));
+    }
+
+    /// The branch's own label is what `submenu_requested` carries.
+    #[test]
+    fn dropdown_menu_submenu_requested_carries_the_branch_label() {
+        let mut dm = dropdown_with_branch();
+        let label = Arc::new(Mutex::new(String::new()));
+        let captured = label.clone();
+        dm.submenu_requested.connect(move |text| {
+            *captured.lock().unwrap() = text.to_string();
+        });
+
+        dm.expand();
+        let row = dm.item_rect(0);
+        dm.handle_event(&Event::mouse_press(row.x + 5, row.y + 5, 1));
+        assert_eq!(*label.lock().unwrap(), "Documents");
+    }
+
+    /// Escape collapses one level: the child panel first, then the list.
+    #[test]
+    fn dropdown_menu_escape_collapses_the_child_panel_first() {
+        let mut dm = dropdown_with_branch();
+        dm.expand();
+        let row = dm.item_rect(0);
+        dm.handle_event(&Event::mouse_press(row.x + 5, row.y + 5, 1));
+        assert!(dm.is_submenu_open());
+
+        dm.handle_event(&Event::key_press(27, 0));
+        assert!(dm.is_expanded(), "the first Escape returns to the parent list");
+        assert!(!dm.is_submenu_open());
+
+        dm.handle_event(&Event::key_press(27, 0));
+        assert!(!dm.is_expanded());
+    }
+
+    /// Choosing a leaf in the child panel emits its value and closes the whole popup.
+    #[test]
+    fn dropdown_menu_child_leaf_selection_emits_item_selected() {
+        let mut dm = dropdown_with_branch();
+        let selected = Arc::new(Mutex::new(None));
+        let captured = selected.clone();
+        dm.item_selected.connect(move |value| {
+            *captured.lock().unwrap() = Some(value.to_string());
+        });
+
+        dm.expand();
+        let branch = dm.item_rect(0);
+        dm.handle_event(&Event::mouse_press(branch.x + 5, branch.y + 5, 1));
+        let panel = dm.submenu_panel.expect("the child panel has a rectangle");
+        dm.handle_event(&Event::mouse_press(panel.x + 5, panel.y + 5, 1));
+
+        assert_eq!(selected.lock().unwrap().as_deref(), Some("pdf"));
+        assert_eq!(dm.selected_value(), Some("pdf".to_string()));
+        assert!(!dm.is_expanded(), "a leaf selection closes the whole popup");
+        assert!(!dm.is_submenu_open());
+    }
+
+    /// Right opens the branch, Left returns to the parent list.
+    #[test]
+    fn dropdown_menu_right_opens_a_branch_and_left_returns_to_the_list() {
+        let mut dm = dropdown_with_branch();
+        dm.expand();
+
+        dm.handle_event(&Event::key_press(39, 0));
+        assert!(dm.is_submenu_open());
+        dm.handle_event(&Event::key_press(37, 0));
+        assert!(!dm.is_submenu_open());
+        assert!(dm.is_expanded());
     }
 
     #[test]

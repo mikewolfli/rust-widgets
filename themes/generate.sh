@@ -17,6 +17,11 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 PROFILE="desktop"
+# The macOS presets name the host's system UI face only when the runtime face registry can
+# actually register it (P2-3). Generating with `runtime-fonts` is what lets a macOS host write
+# `macos-light.json` / `macos-dark.json` that carry that family; on a host without the face the
+# same presets honestly fall back to the compiled family. The flag changes no other preset field.
+GENERATOR_FEATURES="$PROFILE,runtime-fonts"
 
 mkdir -p themes
 
@@ -43,8 +48,14 @@ fn generate() {
 
     let mut manager = ThemeManager::new();
     manager.register_theme(Theme::dark());
+    // The macOS presets are registered here, from their constructors, rather than checked in as
+    // hand-written JSON: the files then cannot disagree with the structs they describe. The two
+    // presets record the host facts they read (accent, metrics profile, system UI family), so the
+    // generated files describe the machine the generator ran on.
+    manager.register_theme(Theme::macos_light());
+    manager.register_theme(Theme::macos_dark());
 
-    for name in ["default", "dark"] {
+    for name in ["default", "dark", "macos-light", "macos-dark"] {
         assert!(manager.set_theme(name), "preset {name} must be registered");
         let path = format!("themes/{name}.json");
         manager.save_theme(&path).unwrap_or_else(|e| panic!("saving {path}: {e}"));
@@ -53,4 +64,4 @@ fn generate() {
 }
 RUST
 
-cargo test --no-default-features --features "$PROFILE" --test "$TEST_NAME" -- --nocapture
+cargo test --no-default-features --features "$GENERATOR_FEATURES" --test "$TEST_NAME" -- --nocapture

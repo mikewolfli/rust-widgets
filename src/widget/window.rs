@@ -7,6 +7,8 @@ use crate::core::{Color, ObjectId, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
+#[cfg(device_profile)]
+use crate::theme::Material;
 use crate::widget::capability::coercion::{expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -20,6 +22,13 @@ pub struct Window {
     title_bar_height: u32,
     close_button_size: u32,
     button_spacing: u32,
+    /// The semantic material the window's client surface asks for.
+    ///
+    /// Only a device build has the theme module that defines [`Material`]; a stripped build
+    /// paints its own background and has no material vocabulary to name, so the field and
+    /// its accessors are absent rather than carrying a duplicate local enum.
+    #[cfg(device_profile)]
+    material: Material,
     /// Emitted when the window is closed.
     pub closed: GenericSignal,
 }
@@ -32,6 +41,8 @@ impl Window {
             title_bar_height: 32,
             close_button_size: 14,
             button_spacing: 40,
+            #[cfg(device_profile)]
+            material: Material::None,
             closed: GenericSignal::new(),
         }
     }
@@ -97,6 +108,36 @@ impl Window {
             return;
         }
         self.button_spacing = spacing;
+        self.base.request_redraw();
+    }
+
+    /// The material the window asks its client surface to use.
+    ///
+    /// [`Material::None`] is the default and means "the window paints its own background":
+    /// [`Window`] then emits exactly the fill it emitted before materials existed.
+    #[cfg(device_profile)]
+    pub fn material(&self) -> Material {
+        self.material
+    }
+
+    /// Requests `material` for the window's client surface.
+    ///
+    /// This is the semantic request, not a colour: the drawing code asks
+    /// [`ThemeManager::material_layer`](crate::theme::ThemeManager::material_layer) for the
+    /// layer the active theme assigns to the material and, when the host asked to reduce
+    /// transparency, asks for
+    /// [`ThemeManager::material_surface`](crate::theme::ThemeManager::material_surface)
+    /// instead. A caller therefore never reads the environment or the palette to draw a
+    /// material, which is what keeps the accessibility decision in one place.
+    ///
+    /// The setter requests a redraw only when the value changes, so re-stating the current
+    /// material does not schedule a frame.
+    #[cfg(device_profile)]
+    pub fn set_material(&mut self, material: Material) {
+        if self.material == material {
+            return;
+        }
+        self.material = material;
         self.base.request_redraw();
     }
 
@@ -286,6 +327,45 @@ impl Draw for Window {
         // top-left strip that would then show through as the clear colour. Normalising to
         // the client origin makes the fill match the space the children use.
         let client = Rect::new(0, 0, rect.width, rect.height);
+
+        // A material replaces the window's own background fill with a composed surface.
+        //
+        // # Why the fill is *not* painted inside the layer
+        //
+        // A layer captures what is behind the window, blurs it, applies the material's tint and
+        // then composites its foreground over the result. Painting the opaque theme background
+        // inside the layer would cover the blurred backdrop, turning the material back into an
+        // ordinary fill and making `reduce_transparency` unobservable. The window therefore
+        // contributes no opaque foreground of its own: the layer *is* its surface, and controls
+        // hosted by the window are painted by the runtime as their own draw calls.
+        //
+        // # The reduced-transparency branch
+        //
+        // When the host asked for opaque surfaces, `material_layer` answers `None` and the arm
+        // below draws the palette colour that stands in for the material. Branching on the
+        // theme's resolution rather than reading the environment here is what keeps the
+        // accessibility decision in one place.
+        //
+        // # The default is byte-identical
+        //
+        // `Material::None` skips this block entirely and falls through to the original single
+        // fill, so a window that never asks for a material emits exactly the commands (and
+        // therefore the pixels) it emitted before.
+        #[cfg(device_profile)]
+        {
+            let material = self.material;
+            if material != Material::None {
+                let manager = crate::style::theme_manager();
+                match manager.material_layer(material) {
+                    Some((blur_radius, tint)) => {
+                        context.push_material_layer(client, blur_radius, tint);
+                        context.pop_layer();
+                    }
+                    None => context.fill_rect(client, manager.material_surface(material)),
+                }
+                return;
+            }
+        }
         context.fill_rect(client, bg_color);
     }
 }
@@ -293,3 +373,216 @@ impl Draw for Window {
 // For full application integration, use the platform event loop via crate::run().
 // The platform backend (macOS: NSApp().run(), Windows: message loop, etc.)
 // handles all event dispatch and rendering coordination.
+
+#[cfg(all(test, device_profile))]
+mod material_draw_tests {
+    use super::*;
+    use crate::compat::Vec;
+    use crate::core::Font;
+    use crate::render::{
+        LayerEffect, PaintBackend, RenderCommand, RenderContext, ShapedText, SoftwarePaintBackend,
+        SoftwareRenderConfig, TextMetrics,
+    };
+    use crate::style::environment::{
+        install_environment, uninstall_environment, DefaultEnvironment, EnvironmentProvider,
+    };
+    use crate::theme::Material;
+    use alloc::boxed::Box;
+
+    /// A backend that records every command in draw order and still rasterises it.
+    ///
+    /// Wrapping the software backend is what lets one draw be asserted **both** as a command
+    /// stream (did the window request a material layer?) and as pixels (did the default material
+    /// change what is painted?). A recorder that only counted commands would miss a change in the
+    /// fill, and a pixel-only assertion could not see a layer that composites to the same colour.
+    struct Recorder {
+        commands: Vec<RenderCommand>,
+        inner: SoftwarePaintBackend,
+    }
+
+    impl Recorder {
+        fn new(size: Size) -> Self {
+            Self { commands: Vec::new(), inner: SoftwarePaintBackend::new(size, 1.0) }
+        }
+    }
+
+    impl PaintBackend for Recorder {
+        fn begin_frame(&mut self, clear: Color) {
+            self.inner.begin_frame(clear);
+        }
+        fn end_frame(&mut self) {
+            self.inner.end_frame();
+        }
+        fn execute_command(&mut self, command: &RenderCommand) {
+            self.commands.push(command.clone());
+            self.inner.execute_command(command);
+        }
+        fn size(&self) -> Size {
+            self.inner.size()
+        }
+        fn set_size(&mut self, size: Size) {
+            self.inner.set_size(size);
+        }
+        fn dpi_scale(&self) -> f32 {
+            self.inner.dpi_scale()
+        }
+        fn set_dpi_scale(&mut self, scale: f32) {
+            self.inner.set_dpi_scale(scale);
+        }
+        fn measure_text(&self, text: &str, font: &Font) -> TextMetrics {
+            self.inner.measure_text(text, font)
+        }
+        fn shape_text(&self, text: &str, font: &Font) -> crate::compat::Rc<ShapedText> {
+            self.inner.shape_text(text, font)
+        }
+        fn frame_rgba(&self) -> &[u8] {
+            self.inner.frame_rgba()
+        }
+        fn apply_render_config(&mut self, config: SoftwareRenderConfig) {
+            self.inner.apply_render_config(config);
+        }
+    }
+
+    /// Draws `window` once and returns its command stream and final pixels.
+    fn render(window: &mut Window) -> (Vec<RenderCommand>, Vec<u8>) {
+        let mut backend = Recorder::new(Size::new(320, 240));
+        backend.begin_frame(Color::BLACK);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            window.draw(&mut context);
+        }
+        backend.end_frame();
+        let pixels = backend.inner.frame_rgba().to_vec();
+        (backend.commands, pixels)
+    }
+
+    fn is_layer_push(command: &RenderCommand) -> bool {
+        matches!(command, RenderCommand::PushLayer { .. })
+    }
+
+    /// The default material is the identity: it emits the same pixels and the same single fill
+    /// as an explicit `Material::None`, and never opens a layer.
+    #[test]
+    fn the_default_material_paints_the_same_bytes_as_none() {
+        let _guard = crate::theme::theme_test_guard();
+        let frame = Rect::new(0, 0, 320, 240);
+
+        let mut implicit = Window::new("implicit".to_string(), frame);
+        assert_eq!(implicit.material(), Material::None, "a new window asks for no material");
+        let (implicit_commands, implicit_pixels) = render(&mut implicit);
+
+        let mut explicit = Window::new("explicit".to_string(), frame);
+        explicit.set_material(Material::None);
+        let (explicit_commands, explicit_pixels) = render(&mut explicit);
+
+        assert_eq!(
+            implicit_pixels, explicit_pixels,
+            "the default material must paint byte-identical pixels to an explicit None"
+        );
+        assert!(
+            implicit_commands.iter().all(|command| !is_layer_push(command)),
+            "Material::None must not request a material layer"
+        );
+        assert_eq!(
+            implicit_commands.len(),
+            explicit_commands.len(),
+            "the default and an explicit None must emit the same command stream shape"
+        );
+        assert_eq!(
+            implicit_commands
+                .iter()
+                .filter(|command| matches!(command, RenderCommand::FillRect { .. }))
+                .count(),
+            1,
+            "the default window is its own background and nothing else"
+        );
+    }
+
+    /// A non-default material requests the theme's backdrop layer for the client rect instead of
+    /// painting the opaque theme background.
+    #[test]
+    fn a_material_window_requests_a_backdrop_layer() {
+        let _guard = crate::theme::theme_test_guard();
+        // `DefaultEnvironment` reports no reduced transparency, so the material must ask for a
+        // layer rather than degrade.
+        let previous = install_environment(Box::new(DefaultEnvironment));
+
+        let mut window = Window::new("material".to_string(), Rect::new(0, 0, 320, 240));
+        window.set_material(Material::Sidebar);
+        assert_eq!(window.material(), Material::Sidebar);
+        let (commands, _) = render(&mut window);
+
+        let (bounds, effect) = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::PushLayer { bounds, effect } => Some((*bounds, *effect)),
+                _ => None,
+            })
+            .expect("a material window must request a backdrop layer");
+        assert_eq!(bounds, Rect::new(0, 0, 320, 240), "the layer covers the client area");
+        match effect {
+            Some(LayerEffect::BackdropBlurTint { radius, .. }) => assert_eq!(
+                radius,
+                Material::Sidebar
+                    .backdrop_blur_radius()
+                    .expect("a sidebar material has a blur radius"),
+                "the requested blur is the material's own radius"
+            ),
+            other => {
+                panic!("a sidebar material must ask for a tinted backdrop blur, got {other:?}")
+            }
+        }
+        assert!(
+            commands.iter().any(|command| matches!(command, RenderCommand::PopLayer)),
+            "every pushed layer must be popped in the same draw"
+        );
+        assert!(
+            !commands.iter().any(|command| matches!(command, RenderCommand::FillRect { .. })),
+            "the window contributes no opaque fill under a composed material"
+        );
+
+        drop(previous);
+        uninstall_environment();
+    }
+
+    /// Reduced transparency removes the layer and paints the palette surface the material
+    /// degrades to.
+    #[test]
+    fn reduced_transparency_paints_the_opaque_material_surface() {
+        struct ReducedTransparency;
+        impl EnvironmentProvider for ReducedTransparency {
+            fn reduce_transparency(&self) -> bool {
+                true
+            }
+        }
+
+        let _guard = crate::theme::theme_test_guard();
+        let previous = install_environment(Box::new(ReducedTransparency));
+
+        // Read the expected colour while holding the manager, then release it before drawing: the
+        // draw path takes the same lock, and a guard held across it would deadlock.
+        let expected = { crate::style::theme_manager().material_surface(Material::Sidebar) };
+        assert_eq!(expected.a, 255, "the degraded surface is opaque");
+
+        let mut window = Window::new("reduced".to_string(), Rect::new(0, 0, 320, 240));
+        window.set_material(Material::Sidebar);
+        let (commands, _) = render(&mut window);
+
+        assert!(
+            !commands.iter().any(is_layer_push),
+            "a host that reduced transparency must not receive a backdrop layer"
+        );
+        let fill = commands
+            .iter()
+            .find_map(|command| match command {
+                RenderCommand::FillRect { rect, color } => Some((*rect, *color)),
+                _ => None,
+            })
+            .expect("a degraded material is painted as an opaque fill");
+        assert_eq!(fill.0, Rect::new(0, 0, 320, 240));
+        assert_eq!(fill.1, expected, "the fill is the material's palette surface");
+
+        drop(previous);
+        uninstall_environment();
+    }
+}

@@ -13,6 +13,7 @@ use crate::render::pipeline::pixel_ops::{
     line_stroke_coverage_grid, pixel_visible, rounded_rect_coverage, rounded_rect_coverage_grid,
     rounded_rect_effective_radius, write_pixel_with_mode, GlyphDrawConfig,
 };
+use crate::render::BlendMode;
 // Imported separately because it only exists when a colour face does — see its own docs.
 #[cfg(feature = "fonts-emoji-color")]
 use crate::render::pipeline::pixel_ops::blend_color_glyph;
@@ -40,21 +41,81 @@ macro_rules! blend_pixel_clipped {
     };
 }
 
+/// The part of a destination rectangle that is inside the surface and the active clip.
+///
+/// Returns `(left, top, right, bottom)` with `right`/`bottom` exclusive, or `None` when nothing
+/// is visible. The rectangle is intersected **once** rather than tested per pixel: the clip test
+/// costs about as much as the 4-byte write it guards, and a fill or a blit is the hottest loop a
+/// software backend runs.
+fn visible_bounds(
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    screen: (u32, u32),
+    clip: Option<(i32, i32, u32, u32)>,
+) -> Option<(i32, i32, i32, i32)> {
+    let mut left = x.max(0);
+    let mut top = y.max(0);
+    // Computed in `i64` so a rectangle wider than `i32::MAX` (a caller's arithmetic error, but one
+    // that must not turn into a wrapped *negative* right edge) saturates instead of folding.
+    let mut right = (x as i64 + width as i64).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+    let mut bottom = (y as i64 + height as i64).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+    right = right.min(screen.0 as i32);
+    bottom = bottom.min(screen.1 as i32);
+    if let Some((clip_x, clip_y, clip_width, clip_height)) = clip {
+        left = left.max(clip_x);
+        top = top.max(clip_y);
+        right = right.min(clip_x.saturating_add(clip_width as i32));
+        bottom = bottom.min(clip_y.saturating_add(clip_height as i32));
+    }
+    if right <= left || bottom <= top {
+        return None;
+    }
+    Some((left, top, right, bottom))
+}
+
 impl SoftwareSurface {
     /// Fills a rectangle with a solid color.
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
         let size = self.buffer.size();
+        if rect.width == 0 || rect.height == 0 {
+            return;
+        }
         let clip = self.current_clip();
-        let x0 = rect.x.max(0) as u32;
-        let y0 = rect.y.max(0) as u32;
-        let x1 = rect.right().max(0) as u32;
-        let y1 = rect.bottom().max(0) as u32;
-        let x1 = x1.min(size.width);
-        let y1 = y1.min(size.height);
+        let Some((left, top, right, bottom)) = visible_bounds(
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height,
+            (size.width, size.height),
+            clip,
+        ) else {
+            return;
+        };
+        let blend = self.blend_mode;
+        let width = size.width;
         let frame = self.buffer.back_mut();
-        for y in y0..y1 {
-            for x in x0..x1 {
-                set_pixel_clipped!(self.blend_mode, clip, frame, size.width, x, y, color);
+        // An opaque fill under `Normal` blending is a store, so the rectangle is one pattern-filled
+        // row followed by row copies. This is the background every window paints each frame; the
+        // per-pixel clip test and the per-pixel blend dispatch were pure overhead over a `memcpy`.
+        if matches!(blend, BlendMode::Normal) && color.a == 255 {
+            let pattern = [color.r, color.g, color.b, color.a];
+            let row_len = (right - left) as usize * 4;
+            let stride = width as usize * 4;
+            let mut start = top as usize * stride + left as usize * 4;
+            for chunk in frame[start..start + row_len].chunks_exact_mut(4) {
+                chunk.copy_from_slice(&pattern);
+            }
+            for _ in top + 1..bottom {
+                frame.copy_within(start..start + row_len, start + stride);
+                start += stride;
+            }
+            return;
+        }
+        for y in top..bottom {
+            for x in left..right {
+                write_pixel_with_mode(blend, frame, width, x as u32, y as u32, color, 1.0);
             }
         }
     }
@@ -902,9 +963,23 @@ impl SoftwareSurface {
     }
     /// Draws an RGBA image at the specified position and size.
     /// Pixels are copied directly from the source data, performing alpha blending.
+    ///
+    /// # Why the destination rectangle is intersected first
+    ///
+    /// Every pixel used to re-test the surface bounds and the clip. A blit is the hottest loop a
+    /// software backend has — the tree painter composites one per widget layer per frame — and the
+    /// per-pixel tests cost more than the blend itself for an opaque image. The visible destination
+    /// rectangle is therefore computed once, and only that rectangle is walked.
+    ///
+    /// # Why an opaque row is a `memcpy`
+    ///
+    /// An opaque run has no compositing to do: the result is the source bytes. Testing the row's
+    /// alpha channel costs one byte compare per pixel and short-circuits on the first translucent
+    /// one, so the common case (an icon, a widget layer captured over a background) becomes one
+    /// `copy_from_slice` per row. The blend path is unchanged for everything else, so output is
+    /// byte-identical either way.
     pub fn draw_image(&mut self, x: i32, y: i32, width: u32, height: u32, data: &[u8]) {
         let size = self.buffer.size();
-        let clip = self.current_clip();
         if width == 0 || height == 0 {
             return;
         }
@@ -912,50 +987,203 @@ impl SoftwareSurface {
         if data.len() < expected_len {
             return;
         }
-        let frame = self.buffer.back_mut();
+        let clip = self.current_clip();
         let screen_width = size.width;
         let screen_height = size.height;
-        for row in 0..height {
-            let sy = y + row as i32;
-            if sy < 0 || sy as u32 >= screen_height {
+        let Some((left, top, right, bottom)) =
+            visible_bounds(x, y, width, height, (screen_width, screen_height), clip)
+        else {
+            return;
+        };
+        let stride = width as usize;
+        let frame = self.buffer.back_mut();
+        for row in top..bottom {
+            let columns = (right - left) as usize;
+            let source_start = (row - y) as usize * stride + (left - x) as usize;
+            let source = &data[source_start * 4..(source_start + columns) * 4];
+            let destination_start = (row as u32 * screen_width + left as u32) as usize * 4;
+            if source.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 255) {
+                frame[destination_start..destination_start + columns * 4].copy_from_slice(source);
                 continue;
             }
-            for col in 0..width {
-                let sx = x + col as i32;
-                if sx < 0 || sx as u32 >= screen_width {
-                    continue;
-                }
-                if !pixel_visible(clip, sx, sy) {
-                    continue;
-                }
-                let src_idx = ((row as usize) * (width as usize) + (col as usize)) * 4;
-                let r = data[src_idx];
-                let g = data[src_idx + 1];
-                let b = data[src_idx + 2];
-                let a = data[src_idx + 3];
-                let dst_idx = ((sy as u32) * screen_width + (sx as u32)) as usize * 4;
-                if a == 255 {
-                    frame[dst_idx] = r;
-                    frame[dst_idx + 1] = g;
-                    frame[dst_idx + 2] = b;
-                    frame[dst_idx + 3] = 255;
-                } else if a > 0 {
-                    let src_alpha = a as f32 / 255.0;
-                    let dst_alpha = frame[dst_idx + 3] as f32 / 255.0;
-                    let out_alpha = src_alpha + dst_alpha * (1.0 - src_alpha);
-                    if out_alpha > 0.0 {
-                        let src_weight = src_alpha / out_alpha;
-                        let dst_weight = dst_alpha * (1.0 - src_alpha) / out_alpha;
-                        frame[dst_idx] =
-                            (r as f32 * src_weight + frame[dst_idx] as f32 * dst_weight) as u8;
-                        frame[dst_idx + 1] =
-                            (g as f32 * src_weight + frame[dst_idx + 1] as f32 * dst_weight) as u8;
-                        frame[dst_idx + 2] =
-                            (b as f32 * src_weight + frame[dst_idx + 2] as f32 * dst_weight) as u8;
-                        frame[dst_idx + 3] = (out_alpha * 255.0) as u8;
-                    }
-                }
+            for (offset, pixel) in source.as_chunks::<4>().0.iter().enumerate() {
+                blend_source_pixel(
+                    frame,
+                    screen_width,
+                    (left as usize + offset) as u32,
+                    row as u32,
+                    pixel[0],
+                    pixel[1],
+                    pixel[2],
+                    pixel[3],
+                );
             }
         }
     }
+
+    /// Draws an RGBA image mapped onto the parallelogram spanned by `corners`.
+    ///
+    /// `corners` are the destination positions of the source grid's top-left, top-right,
+    /// bottom-right and bottom-left corners, in perimeter order. `source_width` and
+    /// `source_height` describe the grid the data was laid out in before the transform, which is
+    /// the rectangle the batch path drew under a 2D transform.
+    ///
+    /// # Why the inverse mapping is two divisions
+    ///
+    /// An affine transform maps a rectangle to a parallelogram, so the destination point
+    /// `p = p00 + u * (p10 - p00) + v * (p01 - p00)` inverts with the determinant of the two edge
+    /// vectors. Each destination pixel is then sampled from the source grid at `(u, v)`. The
+    /// fourth corner is not read: for a parallelogram it is implied, and a projective quad is
+    /// not something an affine transform can produce.
+    ///
+    /// Sampling is **bilinear**, which is what the plan for the affine layer specifies: a
+    /// rotated or scaled image is resampled, not block-copied. At an identity transform the
+    /// destination pixel centres land exactly on source texel centres, so the weights are `0`/`1`
+    /// and the result is bit-for-bit the axis-aligned copy — the interpolation can only soften a
+    /// picture the transform actually moved.
+    pub fn draw_image_quad(
+        &mut self,
+        corners: [Point; 4],
+        source_width: u32,
+        source_height: u32,
+        data: &[u8],
+    ) {
+        if source_width == 0 || source_height == 0 {
+            return;
+        }
+        let expected_len = (source_width as usize) * (source_height as usize) * 4;
+        if data.len() < expected_len {
+            return;
+        }
+        let [p00, p10, _, p01] = corners;
+        let ux = (p10.x - p00.x) as f32;
+        let uy = (p10.y - p00.y) as f32;
+        let vx = (p01.x - p00.x) as f32;
+        let vy = (p01.y - p00.y) as f32;
+        let det = ux * vy - uy * vx;
+        // A zero-area parallelogram has no interior to fill, and the inverse below would divide
+        // by zero and write NaNs into the sampling index.
+        if det.abs() < f32::EPSILON {
+            return;
+        }
+        let min_x = corners.iter().map(|p| p.x).min().unwrap_or(0);
+        let min_y = corners.iter().map(|p| p.y).min().unwrap_or(0);
+        let max_x = corners.iter().map(|p| p.x).max().unwrap_or(0);
+        let max_y = corners.iter().map(|p| p.y).max().unwrap_or(0);
+
+        let size = self.buffer.size();
+        let clip = self.current_clip();
+        let screen_width = size.width;
+        let screen_height = size.height;
+        let frame = self.buffer.back_mut();
+        // Pixel centres, so a corner pixel samples its own centre rather than its top-left edge.
+        for y in min_y..=max_y {
+            if y < 0 || y as u32 >= screen_height {
+                continue;
+            }
+            for x in min_x..=max_x {
+                if x < 0 || x as u32 >= screen_width {
+                    continue;
+                }
+                if !pixel_visible(clip, x, y) {
+                    continue;
+                }
+                let dx = (x - p00.x) as f32 + 0.5;
+                let dy = (y - p00.y) as f32 + 0.5;
+                let u = (dx * vy - dy * vx) / det;
+                let v = (dy * ux - dx * uy) / det;
+                if !(0.0..1.0).contains(&u) || !(0.0..1.0).contains(&v) {
+                    continue;
+                }
+                let [r, g, b, a] = sample_bilinear(data, source_width, source_height, u, v);
+                blend_source_pixel(frame, screen_width, x as u32, y as u32, r, g, b, a);
+            }
+        }
+    }
+}
+
+/// Samples an RGBA grid bilinearly at `(u, v)`, both in `0.0..=1.0`.
+///
+/// The sample point is offset by half a texel so `u == 0` reads the centre of the first texel
+/// rather than its top-left corner; that offset is what makes an identity transform reproduce the
+/// source exactly. Edge texels are clamped, so a sample at the boundary reads the edge colour
+/// instead of wrapping to the opposite side.
+///
+/// Channels are interpolated in **straight** alpha. For an opaque source this is identical to
+/// premultiplied interpolation; for a translucent one it can show a slight seam where alpha goes
+/// to zero, which is the honest trade for not carrying a premultiplied copy of every image.
+fn sample_bilinear(data: &[u8], width: u32, height: u32, u: f32, v: f32) -> [u8; 4] {
+    let fx = u * width as f32 - 0.5;
+    let fy = v * height as f32 - 0.5;
+    let x0 = fx.floor();
+    let y0 = fy.floor();
+    let tx = fx - x0;
+    let ty = fy - y0;
+    let max_x = width.saturating_sub(1) as i32;
+    let max_y = height.saturating_sub(1) as i32;
+    let clamp_x = |value: f32| (value as i32).clamp(0, max_x) as usize;
+    let clamp_y = |value: f32| (value as i32).clamp(0, max_y) as usize;
+    let x0i = clamp_x(x0);
+    let x1i = clamp_x(x0 + 1.0);
+    let y0i = clamp_y(y0);
+    let y1i = clamp_y(y0 + 1.0);
+    let stride = width as usize;
+    let fetch = |x: usize, y: usize| -> [u8; 4] {
+        let index = (y * stride + x) * 4;
+        [data[index], data[index + 1], data[index + 2], data[index + 3]]
+    };
+    let top_left = fetch(x0i, y0i);
+    let top_right = fetch(x1i, y0i);
+    let bottom_left = fetch(x0i, y1i);
+    let bottom_right = fetch(x1i, y1i);
+    let mut out = [0u8; 4];
+    for channel in 0..4 {
+        let top =
+            top_left[channel] as f32 + (top_right[channel] as f32 - top_left[channel] as f32) * tx;
+        let bottom = bottom_left[channel] as f32
+            + (bottom_right[channel] as f32 - bottom_left[channel] as f32) * tx;
+        let value = top + (bottom - top) * ty;
+        out[channel] = value.round().clamp(0.0, 255.0) as u8;
+    }
+    out
+}
+
+/// Alpha-composites one straight-RGBA source pixel over a row-major RGBA frame buffer.
+///
+/// Bounds and the clip are the caller's job: every image path checks them on the way in, and
+/// checking them twice per pixel is the difference between a blit and a loop.
+#[allow(clippy::too_many_arguments)]
+fn blend_source_pixel(
+    frame: &mut [u8],
+    screen_width: u32,
+    x: u32,
+    y: u32,
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8,
+) {
+    if a == 0 {
+        return;
+    }
+    let dst_idx = ((y * screen_width + x) as usize) * 4;
+    if a == 255 {
+        frame[dst_idx] = r;
+        frame[dst_idx + 1] = g;
+        frame[dst_idx + 2] = b;
+        frame[dst_idx + 3] = 255;
+        return;
+    }
+    let src_alpha = a as f32 / 255.0;
+    let dst_alpha = frame[dst_idx + 3] as f32 / 255.0;
+    let out_alpha = src_alpha + dst_alpha * (1.0 - src_alpha);
+    if out_alpha <= 0.0 {
+        return;
+    }
+    let src_weight = src_alpha / out_alpha;
+    let dst_weight = dst_alpha * (1.0 - src_alpha) / out_alpha;
+    frame[dst_idx] = (r as f32 * src_weight + frame[dst_idx] as f32 * dst_weight) as u8;
+    frame[dst_idx + 1] = (g as f32 * src_weight + frame[dst_idx + 1] as f32 * dst_weight) as u8;
+    frame[dst_idx + 2] = (b as f32 * src_weight + frame[dst_idx + 2] as f32 * dst_weight) as u8;
+    frame[dst_idx + 3] = (out_alpha * 255.0) as u8;
 }

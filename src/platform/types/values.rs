@@ -9,13 +9,14 @@
 use crate::compat::{OnceLock, String, Vec};
 use crate::core::{ObjectId, Orientation, PlatformFamily, Rect};
 
-/// The cadence every platform backend drives frames at, in milliseconds.
+/// The frame period every platform backend schedules against, in milliseconds.
 ///
-/// One definition for all hosts: the number handed to [`crate::drive_frame`] and the interval a
-/// backend sleeps must be the same, or every transition runs at the ratio between them. The
-/// backends used to declare `16` in nine separate files (with two different integer types), which
-/// is exactly the drift shape principle #54 forbids. A backend that later runs at the display's
-/// own rate changes this one value.
+/// One definition for all hosts: the number handed to [`crate::drive_frame`] and the interval
+/// between frame deadlines must be the same, or every transition runs at the ratio between them.
+/// The backends used to declare `16` in nine separate files (with two different integer types),
+/// which is exactly the drift shape principle #54 forbids. `frame_wait` derives each deadline from
+/// the previous target plus this value, so frame work that fits the interval does not stretch the
+/// cadence. A backend that later runs at the display's own rate changes this one value.
 pub(crate) const FRAME_INTERVAL_MS: u64 = 16;
 
 /// How long an idle backend loop waits before looking again, in milliseconds.

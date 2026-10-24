@@ -21,9 +21,10 @@
 //!   (`1..=12` and `1..=31`); they do not consult the month length, so they can
 //!   leave the value invalid. Use [`DateEdit::set_date`] to keep it valid.
 //! * Dates are compared and ordered by year, then month, then day.
-use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::shortcut::Key;
 use crate::signal::Signal1;
 use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::access::date_to_string;
@@ -34,6 +35,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::input_widgets::shortcut_editor::primary_shortcut_pressed;
 use crate::widget::metrics::{dimensions, effective_font};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -432,12 +434,23 @@ pub struct DateEdit {
     minimum: Date,
     maximum: Date,
     display_format: String,
-    /// Whether the field draws its month grid under itself.
+    /// Whether the field shows the calendar affordance.
     ///
-    /// A date field with a calendar affordance and no calendar is a field that lies about what it
-    /// offers. The flag was stored, published and round-tripped from the day it was added, and the
-    /// draw never read it -- so `calendar_popup: true` changed nothing on screen.
+    /// This is the *affordance* flag, not the open state: with it set, the field paints a
+    /// 16 px arrow zone at its trailing edge and a press there toggles [`DateEdit::calendar_open`].
+    /// The month grid itself is painted only while the calendar is open. The flag was stored,
+    /// published and round-tripped from the day it was added, and the draw never read it -- so
+    /// `calendar_popup: true` changed nothing on screen.
     calendar_popup: bool,
+    /// Whether the month grid is currently showing.
+    ///
+    /// A popup has two states (closed and open) and one affordance (whether it can be opened at
+    /// all); collapsing both into `calendar_popup` is what made the flag a paint switch with no
+    /// open state to toggle. See [`DateEdit::set_calendar_open`].
+    calendar_open: bool,
+    /// Emitted with the new open state when the calendar grid is shown or hidden, so a host can
+    /// dismiss its other popups without polling.
+    pub popup_visibility_changed: Signal1<bool>,
     /// How the field's value is aligned within its own box.
     ///
     /// Horizontal only: the value is centred vertically in the field, so a `top`/`bottom` value
@@ -467,8 +480,10 @@ impl DateEdit {
             maximum: Date::new(9999, 12, 31),
             display_format: "yyyy-MM-dd".to_string(),
             calendar_popup: false,
+            calendar_open: false,
             alignment: crate::core::Alignment::Left,
             date_changed: Signal1::new(),
+            popup_visibility_changed: Signal1::new(),
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(Date::today())),
             restoring_history: false,
@@ -516,12 +531,17 @@ impl DateEdit {
     pub fn display_format(&self) -> &str {
         &self.display_format
     }
-    /// Returns whether the calendar popup is enabled.
+    /// Returns whether the calendar affordance is enabled.
     ///
-    /// Defaults to `false`. With it set, the draw paints the month grid for the current date's
-    /// month below the field; see [`DateEdit::set_calendar_popup`].
+    /// Defaults to `false`. With it set, the field paints a 16 px arrow zone at its trailing
+    /// edge; the month grid is painted only after the user opens it. See
+    /// [`DateEdit::set_calendar_popup`] and [`DateEdit::calendar_open`].
     pub fn calendar_popup(&self) -> bool {
         self.calendar_popup
+    }
+    /// Returns whether the month grid is currently showing.
+    pub fn calendar_open(&self) -> bool {
+        self.calendar_open
     }
     /// Sets the current date, subject to validation and the accepted range.
     ///
@@ -616,23 +636,52 @@ impl DateEdit {
         self.display_format = fmt;
         self.base.request_redraw();
     }
-    /// Enables or disables the calendar popup.
+    /// Enables or disables the calendar affordance.
     ///
-    /// # What it actually does
+    /// With it set, [`Draw`] paints a 16 px arrow zone at the field's trailing edge. Pressing
+    /// that zone opens the month grid — the **month grid for the current date's month** directly
+    /// below the field: a row of day-of-week initials and six weeks of day cells, with the
+    /// selected day marked. Cells outside the accepted range are drawn muted rather than hidden,
+    /// so the reader can see *why* a day is not selectable.
     ///
-    /// With the flag set, [`Draw`] paints the **month grid for the current date's month** directly
-    /// below the field: a row of day-of-week initials and six weeks of day cells, with the selected
-    /// day marked. Cells outside the accepted range are drawn muted rather than hidden, so the
-    /// reader can see *why* a day is not selectable.
-    ///
-    /// This used to be "purely stored state; changing it only triggers a redraw", which is exactly
-    /// what it did -- a redraw of the same field.
+    /// This used to be "purely stored state; changing it only triggers a redraw", which is
+    /// exactly what it did -- a redraw of the same field. It is now the *affordance* flag rather
+    /// than the open state: disabling it closes an open grid through
+    /// [`DateEdit::set_calendar_open`].
     pub fn set_calendar_popup(&mut self, popup: bool) {
         if self.calendar_popup == popup {
             return;
         }
         self.calendar_popup = popup;
+        if !popup {
+            self.set_calendar_open(false);
+        }
         self.base.request_redraw();
+    }
+
+    /// Shows or hides the month grid.
+    ///
+    /// Opening requires the affordance ([`DateEdit::calendar_popup`]) to be enabled: a grid that
+    /// cannot be dismissed by the arrow it was opened with would be a popup with no control.
+    /// The new state is announced through `popup_visibility_changed` so a host can close its
+    /// other popups, and a redraw is requested.
+    pub fn set_calendar_open(&mut self, open: bool) {
+        let open = open && self.calendar_popup;
+        if self.calendar_open == open {
+            return;
+        }
+        self.calendar_open = open;
+        self.popup_visibility_changed.emit(open);
+        self.base.request_redraw();
+    }
+
+    /// Opens the calendar if it is closed, closes it if it is open.
+    ///
+    /// Does nothing while the affordance is disabled.
+    pub fn toggle_calendar_popup(&mut self) {
+        if self.calendar_popup {
+            self.set_calendar_open(!self.calendar_open);
+        }
     }
     /// Advances the date by one day, rolling over month and year ends.
     ///
@@ -763,6 +812,11 @@ impl Widget for DateEdit {
                     CapabilityValue::String(format!("{v:?}"))
                 }))
             }
+            "popup_visibility_changed" => Some(EventSignalRef::mapped(
+                "popup_visibility_changed",
+                &self.popup_visibility_changed,
+                |v| CapabilityValue::Bool(*v),
+            )),
             _ => None,
         }
     }
@@ -838,18 +892,40 @@ impl EventHandler for DateEdit {
         if !self.base.is_enabled() {
             return;
         }
-        if let Event::KeyPress { key, modifiers } = event {
-            match *key {
-                90 if *modifiers == 2 => {
+        match event {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
+                let field = self.geometry();
+                // The arrow comes first: it is drawn inside the field's own box, so a press
+                // there would otherwise be indistinguishable from a press on the value.
+                if self.calendar_popup && calendar_arrow_rect(field).contains_point(*pos) {
+                    self.toggle_calendar_popup();
+                } else if self.calendar_open {
+                    // A press on a day cell sets the value and finishes the selection. The
+                    // cell geometry is the one `draw_month_grid` paints with, so the day a
+                    // user clicks is the day that lands in `set_date`.
+                    if let Some(day) = calendar_day_at(field, &self.date, *pos) {
+                        self.set_date(day);
+                        self.set_calendar_open(false);
+                    }
+                }
+            }
+            Event::KeyPress { key, modifiers } => match *key {
+                // Escape closes an open grid first, before any value navigation runs.
+                27 if self.calendar_open => self.set_calendar_open(false),
+                // Undo and redo are the platform primary chord: Control+Z/Y on
+                // Windows and Linux, Command+Z/Y on macOS. A shifted chord is a
+                // different binding and stays unbound here.
+                _ if primary_shortcut_pressed(*key, *modifiers, Key::Z) => {
                     let _ = self.undo();
                 }
-                89 if *modifiers == 2 => {
+                _ if primary_shortcut_pressed(*key, *modifiers, Key::Y) => {
                     let _ = self.redo();
                 }
                 38 => self.step_up(),   // Up arrow
                 40 => self.step_down(), // Down arrow
                 _ => { /* Other keys are not relevant */ }
-            }
+            },
+            _ => { /* Other events are not relevant */ }
         }
     }
 }
@@ -938,13 +1014,15 @@ impl Draw for DateEdit {
         // body font and the user's text scale (D09-STYLE-01).
         let font = effective_font(style);
         let line = context.text_line(rect, font);
+        // The arrow zone is part of the field's chrome, so the value must not run under it:
+        // the text box's trailing edge stops where the affordance begins.
+        let text_width = if self.calendar_popup {
+            rect.width.saturating_sub(12).saturating_sub(CALENDAR_ARROW_W)
+        } else {
+            rect.width.saturating_sub(12)
+        };
         context.draw_text_fitted_cow(
-            Rect {
-                x: rect.x + 6,
-                y: line.y,
-                width: rect.width.saturating_sub(12),
-                height: line.height,
-            },
+            Rect { x: rect.x + 6, y: line.y, width: text_width, height: line.height },
             text.as_str(),
             font,
             ink,
@@ -952,6 +1030,9 @@ impl Draw for DateEdit {
         );
 
         if self.calendar_popup {
+            draw_calendar_arrow(context, rect, ink);
+        }
+        if self.calendar_open {
             self.draw_calendar_popup(context, rect, surface, border, ink);
         }
     }
@@ -966,17 +1047,93 @@ const POPUP_GAP: i32 = 4;
 /// The initials of the days of the week, Sunday first, matching [`Date::weekday`].
 const WEEKDAY_INITIALS: [&str; 7] = ["S", "M", "T", "W", "T", "F", "S"];
 
-/// Paints a month grid under `field`: the popup plate, the day-of-week header, and six weeks of
-/// cells with the marked day tinted by the accent.
+/// Width of the arrow affordance zone at the field's trailing edge.
+pub(crate) const CALENDAR_ARROW_W: u32 = 16;
+
+/// The arrow zone at the field's trailing edge.
 ///
-/// This is the **one** implementation of the calendar popup. [`DateEdit`] and `DateTimeEdit` show
-/// the same grid -- their own docs say so -- and previously each carried a near-verbatim ~100-line
-/// copy, so a change to one (cell size, the accent source, the six-week rule) would silently leave
-/// the other behind. Both now delegate here.
+/// One derivation, read by both the draw pass and the press path, so the chevron a user sees
+/// is the chevron a user can click.
+pub(crate) fn calendar_arrow_rect(field: Rect) -> Rect {
+    Rect::new(field.right() - CALENDAR_ARROW_W as i32, field.y, CALENDAR_ARROW_W, field.height)
+}
+
+/// Paints the chevron that tells the user the field opens a calendar.
+pub(crate) fn draw_calendar_arrow(context: &mut RenderContext, field: Rect, color: Color) {
+    let zone = calendar_arrow_rect(field);
+    // Below this size a chevron is two strokes in a smear; the zone stays clickable, but
+    // painting it would add noise rather than an affordance.
+    if zone.width < 8 || zone.height < 8 {
+        return;
+    }
+    let cx = zone.x + zone.width as i32 / 2;
+    let cy = zone.y + zone.height as i32 / 2;
+    let half_w = 4;
+    let rise = 2;
+    context.draw_line(Point::new(cx - half_w, cy - rise), Point::new(cx, cy + rise), color);
+    context.draw_line(Point::new(cx, cy + rise), Point::new(cx + half_w, cy - rise), color);
+}
+
+/// The plate the month grid occupies, below `field`.
 ///
-/// `date` is the month to lay out and the day to mark; `minimum`/`maximum` decide which cells are
-/// muted. The grid geometry is derived from the field's own rect so a field placed anywhere opens
-/// its popup in the same relative position.
+/// [`draw_month_grid`] and [`calendar_day_at`] both call this, so the popup a user clicks is
+/// the popup that was painted.
+pub(crate) fn calendar_popup_rect(field: Rect) -> Rect {
+    let grid_w = POPUP_CELL_W * 7;
+    let grid_h = POPUP_CELL_H * 7;
+    Rect::new(field.x, field.y + field.height as i32 + POPUP_GAP, grid_w.max(field.width), grid_h)
+}
+
+/// The cell for `day` in `date`'s month, or `None` when that day does not fit the six-week grid.
+///
+/// This is the one place the cell arithmetic lives: [`draw_month_grid`] paints through it and
+/// [`calendar_day_at`] hit-tests through it, so the day a user clicks is the day that was drawn.
+pub(crate) fn calendar_cell_rect(field: Rect, date: &Date, day: u8) -> Option<Rect> {
+    if day == 0 {
+        return None;
+    }
+    let first = Date::new(date.year(), date.month(), 1);
+    if day as u32 > first.days_in_month() as u32 {
+        return None;
+    }
+    let slot = first.weekday() as u32 + day as u32 - 1;
+    let row = slot / 7;
+    // Six weeks is the most a month can need (a 31-day month starting on Saturday ends in row
+    // 5), so anything past that cannot be produced.
+    if row > 5 {
+        return None;
+    }
+    let col = slot % 7;
+    let popup = calendar_popup_rect(field);
+    Some(Rect::new(
+        popup.x + (col * POPUP_CELL_W) as i32,
+        popup.y + POPUP_CELL_H as i32 + (row * POPUP_CELL_H) as i32,
+        POPUP_CELL_W,
+        POPUP_CELL_H,
+    ))
+}
+
+/// The day of `date`'s month whose grid cell contains `pos`, or `None`.
+///
+/// The walk goes through [`calendar_cell_rect`], so the hit region and the painted cell are the
+/// same rectangle rather than two copies of the same arithmetic.
+pub(crate) fn calendar_day_at(field: Rect, date: &Date, pos: Point) -> Option<Date> {
+    if !calendar_popup_rect(field).contains_point(pos) {
+        return None;
+    }
+    let first = Date::new(date.year(), date.month(), 1);
+    let days = first.days_in_month();
+    for day in 1..=days {
+        if calendar_cell_rect(field, date, day)
+            .map(|cell| cell.contains_point(pos))
+            .unwrap_or(false)
+        {
+            return Some(Date::new(date.year(), date.month(), day));
+        }
+    }
+    None
+}
+
 /// The three resolved chrome colours the calendar grid paints with.
 ///
 /// Bundled so [`draw_month_grid`] keeps a readable arity: the three tones travel
@@ -1014,14 +1171,7 @@ pub(crate) fn draw_month_grid(
     font: &Font,
 ) {
     let GridChrome { surface, border, ink } = chrome;
-    let grid_w = POPUP_CELL_W * 7;
-    let grid_h = POPUP_CELL_H * 7;
-    let popup = Rect::new(
-        field.x,
-        field.y + field.height as i32 + POPUP_GAP,
-        grid_w.max(field.width),
-        grid_h,
-    );
+    let popup = calendar_popup_rect(field);
     // The popup gets its own plate and edge, because at this size a bare grid over the page is
     // indistinguishable from a table that happens to be there. It is the *field's* surface one
     // step further from the field, so the two read as one control opening rather than two.
@@ -1043,7 +1193,6 @@ pub(crate) fn draw_month_grid(
     }
 
     let first = Date::new(date.year(), date.month(), 1);
-    let leading = first.weekday() as u32;
     let days = first.days_in_month() as u32;
     // The selected day's plate is the same accent every time, so it is resolved once for the
     // grid instead of once per day, and the day label is written into one reused buffer
@@ -1053,21 +1202,13 @@ pub(crate) fn draw_month_grid(
         .unwrap_or_else(|| plate.blend(&ink, 0.55));
     let mut day_text = String::new();
     for day in 1..=days {
-        let slot = leading + day - 1;
-        let col = slot % 7;
-        let row = slot / 7;
-        // Six weeks is the most a month can need (a 31-day month starting on Saturday ends in
-        // row 5), so anything past that cannot be produced and is skipped rather than clamped
-        // onto a cell that belongs to another day.
-        if row > 5 {
-            break;
-        }
-        let cell = Rect::new(
-            popup.x + (col * POPUP_CELL_W) as i32,
-            popup.y + POPUP_CELL_H as i32 + (row * POPUP_CELL_H) as i32,
-            POPUP_CELL_W,
-            POPUP_CELL_H,
-        );
+        // The cell comes from the shared derivation, which is also what the press path hit-tests
+        // against; a day that cannot fit the six-week grid is skipped rather than clamped onto a
+        // cell that belongs to another day.
+        let cell = match calendar_cell_rect(field, date, day as u8) {
+            Some(cell) => cell,
+            None => continue,
+        };
         let this = Date::new(date.year(), date.month(), day as u8);
         let in_range = this >= *minimum && this <= *maximum;
         day_text.clear();
@@ -1129,6 +1270,9 @@ impl DateEdit {
 mod tests {
     use super::*;
     use crate::core::Point;
+    use crate::widget::input_widgets::shortcut_editor::{
+        non_primary_modifier_event_bits, primary_modifier_event_bits,
+    };
     use std::sync::{Arc, Mutex};
 
     // ─── Date helper tests ───────────────────────────────────────
@@ -1464,6 +1608,9 @@ mod tests {
             let mut editor = DateEdit::new(Rect::new(0, 0, 200, 30));
             editor.set_date(Date::new(2026, 6, 8));
             editor.set_calendar_popup(popup);
+            if popup {
+                editor.set_calendar_open(true);
+            }
             editor
         };
 
@@ -1488,6 +1635,95 @@ mod tests {
             open_svg.matches("<rect").count() > closed_svg.matches("<rect").count(),
             "the popup paints its own plate: {open_svg}"
         );
+    }
+
+    /// The affordance flag alone must not paint the grid.
+    ///
+    /// `calendar_popup` is what makes the picker reachable, not what makes it visible: the grid is
+    /// the *open* state. This pins the distinction by counting the document's glyph runs, which is
+    /// the property-only-a-grid-adds signal — the arrow is drawn with line commands, not text.
+    #[test]
+    fn calendar_popup_alone_does_not_paint_the_grid() {
+        use crate::widget::svg::{render_to_svg, text_subpath_count};
+        let _theme_guard = crate::style::theme_test_guard();
+
+        let mut plain = DateEdit::new(Rect::new(0, 0, 200, 30));
+        plain.set_date(Date::new(2026, 6, 8));
+        let mut affordance = DateEdit::new(Rect::new(0, 0, 200, 30));
+        affordance.set_date(Date::new(2026, 6, 8));
+        affordance.set_calendar_popup(true);
+
+        assert!(!affordance.calendar_open(), "the flag alone must not open the grid");
+        let plain_svg = render_to_svg(&mut plain);
+        let affordance_svg = render_to_svg(&mut affordance);
+        assert_ne!(plain_svg, affordance_svg, "the arrow affordance itself must be painted");
+        assert_eq!(
+            text_subpath_count(&affordance_svg),
+            text_subpath_count(&plain_svg),
+            "no weekday/day runs may appear until the grid is open"
+        );
+    }
+
+    /// Clicking the arrow opens the grid and announces the new state.
+    #[test]
+    fn arrow_click_emits_popup_visibility_changed_and_paints_the_grid() {
+        use crate::widget::svg::{render_to_svg, text_subpath_count};
+        let _theme_guard = crate::style::theme_test_guard();
+
+        let mut editor = DateEdit::new(Rect::new(0, 0, 200, 30));
+        editor.set_date(Date::new(2026, 6, 8));
+        editor.set_calendar_popup(true);
+
+        let seen = Arc::new(Mutex::new(Vec::<bool>::new()));
+        let sink = Arc::clone(&seen);
+        editor.popup_visibility_changed.connect(move |open| {
+            if let Ok(mut v) = sink.lock() {
+                v.push(*open);
+            }
+        });
+
+        let closed_svg = render_to_svg(&mut editor);
+        let arrow = calendar_arrow_rect(editor.geometry()).center();
+        editor.handle_event(&Event::mouse_press(arrow.x, arrow.y, 1));
+
+        assert!(editor.calendar_open(), "the arrow press must open the grid");
+        assert_eq!(*seen.lock().expect("visibility lock"), vec![true]);
+        let open_svg = render_to_svg(&mut editor);
+        assert!(
+            text_subpath_count(&open_svg) > text_subpath_count(&closed_svg) * 4,
+            "the open grid must add the month's day runs"
+        );
+    }
+
+    /// Choosing a day writes it through `set_date` and dismisses the grid.
+    #[test]
+    fn selecting_a_day_updates_the_date_and_closes_the_popup() {
+        let mut editor = DateEdit::new(Rect::new(0, 0, 200, 30));
+        editor.set_date(Date::new(2026, 6, 8));
+        editor.set_calendar_popup(true);
+        editor.set_calendar_open(true);
+
+        let cell = calendar_cell_rect(editor.geometry(), &editor.date(), 15)
+            .expect("June 15 has a grid cell")
+            .center();
+        editor.handle_event(&Event::mouse_press(cell.x, cell.y, 1));
+
+        assert_eq!(editor.date(), Date::new(2026, 6, 15));
+        assert!(!editor.calendar_open(), "picking a day finishes the interaction");
+    }
+
+    /// Escape closes an open grid before any value navigation runs.
+    #[test]
+    fn escape_closes_the_calendar_first() {
+        let mut editor = DateEdit::new(Rect::new(0, 0, 200, 30));
+        editor.set_date(Date::new(2026, 6, 8));
+        editor.set_calendar_popup(true);
+        editor.set_calendar_open(true);
+
+        editor.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
+
+        assert!(!editor.calendar_open());
+        assert_eq!(editor.date(), Date::new(2026, 6, 8), "closing must not change the value");
     }
 
     #[test]
@@ -1558,9 +1794,31 @@ mod tests {
         editor.set_date(Date::new(2026, 6, 8));
         editor.set_date(Date::new(2026, 6, 9));
 
-        editor.handle_event(&Event::KeyPress { key: 90, modifiers: 2 });
+        editor.handle_event(&Event::KeyPress { key: 90, modifiers: primary_modifier_event_bits() });
         assert_eq!(editor.date(), Date::new(2026, 6, 8));
-        editor.handle_event(&Event::KeyPress { key: 89, modifiers: 2 });
+        editor.handle_event(&Event::KeyPress { key: 89, modifiers: primary_modifier_event_bits() });
+        assert_eq!(editor.date(), Date::new(2026, 6, 9));
+    }
+
+    #[test]
+    fn date_edit_primary_shortcut_and_shifted_chord() {
+        let mut editor = DateEdit::new(Rect::new(0, 0, 200, 30));
+        editor.set_date(Date::new(2026, 6, 8));
+        editor.set_date(Date::new(2026, 6, 9));
+
+        let primary = primary_modifier_event_bits();
+        // Shift+Primary+Z is a different chord, so it is not plain undo.
+        editor.handle_event(&Event::key_press(90, primary | 0b0001));
+        assert_eq!(editor.date(), Date::new(2026, 6, 9));
+
+        // Primary+Z / Primary+Y are undo / redo on this host.
+        editor.handle_event(&Event::key_press(90, primary));
+        assert_eq!(editor.date(), Date::new(2026, 6, 8));
+        editor.handle_event(&Event::key_press(89, primary));
+        assert_eq!(editor.date(), Date::new(2026, 6, 9));
+
+        // The accelerator that is not primary on this host does not undo.
+        editor.handle_event(&Event::key_press(90, non_primary_modifier_event_bits()));
         assert_eq!(editor.date(), Date::new(2026, 6, 9));
     }
 

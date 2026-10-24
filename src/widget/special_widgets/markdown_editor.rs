@@ -4,18 +4,28 @@
 //! MarkdownEditor widget.
 
 use crate::core::{Color, HorizontalAlignment, Rect};
+use crate::event::wheel::WheelScroll;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::shortcut::Key;
 use crate::signal::Signal1;
 use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::effective_font;
+use crate::widget::input_widgets::shortcut_editor::primary_shortcut_pressed;
+use crate::widget::metrics::{effective_font, estimate_text_width};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
+
+/// The top of the first text row below the header band.
+const TEXT_TOP: i32 = 36;
+/// The pitch between text rows.
+const TEXT_ROW_HEIGHT: i32 = 16;
+/// The bottom inset a row has to clear to be painted.
+const TEXT_BOTTOM_INSET: i32 = 8;
 
 /// Lightweight markdown editor with preview toggle and metrics.
 pub struct MarkdownEditor {
@@ -23,6 +33,14 @@ pub struct MarkdownEditor {
     text: String,
     preview_mode: bool,
     cursor_line: usize,
+    /// Character offset of the caret within [`Self::cursor_line`].
+    cursor_col: usize,
+    /// The first text line the viewport paints.
+    ///
+    /// The editor used to paint a fixed ten lines, so a longer document simply ended at row ten.
+    /// This is the scroll state the wheel drives; the paint path starts here and takes only the
+    /// rows that fit.
+    first_visible_line: usize,
     /// Emitted when text changes.
     pub text_changed: Signal1<String>,
     /// Emitted when preview mode changes.
@@ -40,6 +58,8 @@ impl MarkdownEditor {
             text: String::new(),
             preview_mode: false,
             cursor_line: 0,
+            cursor_col: 0,
+            first_visible_line: 0,
             text_changed: Signal1::new(),
             preview_mode_changed: Signal1::new(),
             undo_stack: UndoStack::new(),
@@ -56,25 +76,30 @@ impl MarkdownEditor {
     /// Sets markdown text.
     pub fn set_text(&mut self, text: impl Into<String>) {
         let next = text.into();
-        if self.text == next {
+        self.commit_text(next);
+    }
+
+    /// Inserts `text` at the caret and leaves the caret after the inserted run.
+    ///
+    /// This is the entry point for platform text input (`Event::TextInput` and
+    /// `Event::ImeCommit`). The write goes through `commit_text`, so it is one undo step
+    /// and emits `text_changed` exactly like every other text mutation.
+    pub fn insert_text_at_cursor(&mut self, text: &str) {
+        // Control characters are protocol, not keystrokes: a `\n` delivered through
+        // `TextInput` must not split a line, and an escape must not enter the document.
+        // This is the same filter `Mention` applies to the same event.
+        let filtered: String = text.chars().filter(|ch| !ch.is_control()).collect();
+        if filtered.is_empty() {
             return;
         }
-        let before = self.text.clone();
-        self.text = next.clone();
-        if !self.restoring_history {
-            *self.history_target.borrow_mut() = self.text.clone();
-            self.undo_stack.push(Box::new(ValueCommand::new(
-                self.history_target.clone(),
-                before,
-                self.text.clone(),
-                "Edit text",
-                "markdown_editor_text",
-            )));
-        }
-        self.cursor_line = self.cursor_line.min(self.line_count().saturating_sub(1));
-        self.text_changed.emit(next);
-        self.base.request_layout();
-        self.base.request_redraw();
+        self.clamp_cursor();
+        let at = self.cursor_byte_offset();
+        let mut next = String::with_capacity(self.text.len() + filtered.len());
+        next.push_str(&self.text[..at]);
+        next.push_str(&filtered);
+        next.push_str(&self.text[at..]);
+        self.cursor_col += filtered.chars().count();
+        self.commit_text(next);
     }
 
     /// Appends one line to markdown.
@@ -85,7 +110,8 @@ impl MarkdownEditor {
         }
         next.push_str(line.as_ref());
         self.set_text(next);
-        self.cursor_line = self.line_count().saturating_sub(1);
+        self.cursor_line = self.edit_line_count().saturating_sub(1);
+        self.cursor_col = self.current_line_char_len();
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -136,6 +162,11 @@ impl MarkdownEditor {
         self.cursor_line
     }
 
+    /// Returns the caret's character offset within the current line.
+    pub fn cursor_col(&self) -> usize {
+        self.cursor_col
+    }
+
     /// Reverts the most recent markdown text mutation.
     ///
     /// Returns `false` and changes nothing when there is nothing to undo;
@@ -174,22 +205,200 @@ impl MarkdownEditor {
         self.restoring_history = true;
         self.text = self.history_target.borrow().clone();
         self.restoring_history = false;
-        self.cursor_line = self.cursor_line.min(self.line_count().saturating_sub(1));
+        self.clamp_cursor();
         self.text_changed.emit(self.text.clone());
         self.base.request_layout();
         self.base.request_redraw();
     }
 
-    fn move_cursor(&mut self, delta: isize) {
-        let lines = self.line_count();
+    /// Number of editable lines.
+    ///
+    /// This differs from [`Self::line_count`] only for a trailing newline: `str::lines`
+    /// drops the final empty line, but an editor must be able to keep the caret on it,
+    /// which is exactly where Enter at the end of the document leaves it.
+    fn edit_line_count(&self) -> usize {
+        self.text.split('\n').count()
+    }
+
+    /// How many text rows fit below the header band.
+    ///
+    /// At least one, so a short editor still paints the line it is on instead of dividing to
+    /// zero or scrolling everything away.
+    fn visible_line_count(&self) -> usize {
+        let usable = self.geometry().height as i32 - TEXT_TOP - TEXT_BOTTOM_INSET;
+        if usable < 0 {
+            return 1;
+        }
+        (usable / TEXT_ROW_HEIGHT + 1) as usize
+    }
+
+    /// The first line the viewport actually starts at, clamped to the last full window.
+    fn visible_start(&self) -> usize {
+        let max_first = self.line_count().saturating_sub(self.visible_line_count());
+        self.first_visible_line.min(max_first)
+    }
+
+    /// Scrolls the viewport by `lines` rows toward the end of the document.
+    ///
+    /// Positive values reveal later lines, negative values reveal earlier ones. Returns whether
+    /// the viewport moved, so the caller repaints only on a change.
+    fn scroll_lines(&mut self, lines: i32) -> bool {
         if lines == 0 {
-            self.cursor_line = 0;
+            return false;
+        }
+        let max_first = self.line_count().saturating_sub(self.visible_line_count());
+        let next =
+            (self.first_visible_line as i64 + lines as i64).clamp(0, max_first as i64) as usize;
+        if next == self.first_visible_line {
+            return false;
+        }
+        self.first_visible_line = next;
+        true
+    }
+
+    /// Byte span of the caret's line in `text`.
+    ///
+    /// Returns an empty span at the end of the document when the caret is out of range, so
+    /// callers cannot index past the string even before [`Self::clamp_cursor`] runs.
+    fn cursor_line_span(&self) -> (usize, usize) {
+        let mut start = 0usize;
+        for (idx, line) in self.text.split('\n').enumerate() {
+            if idx == self.cursor_line {
+                return (start, start + line.len());
+            }
+            start += line.len() + 1;
+        }
+        (self.text.len(), self.text.len())
+    }
+
+    /// Byte offset of the caret in `text`.
+    fn cursor_byte_offset(&self) -> usize {
+        let (start, end) = self.cursor_line_span();
+        let line = &self.text[start..end];
+        start
+            + line
+                .char_indices()
+                .nth(self.cursor_col)
+                .map(|(offset, _)| offset)
+                .unwrap_or(line.len())
+    }
+
+    /// Character length of the caret's line.
+    fn current_line_char_len(&self) -> usize {
+        let (start, end) = self.cursor_line_span();
+        self.text[start..end].chars().count()
+    }
+
+    /// Keeps `cursor_line` / `cursor_col` inside the document.
+    fn clamp_cursor(&mut self) {
+        self.cursor_line = self.cursor_line.min(self.edit_line_count().saturating_sub(1));
+        self.clamp_cursor_col();
+    }
+
+    /// Keeps `cursor_col` inside the caret's line.
+    fn clamp_cursor_col(&mut self) {
+        self.cursor_col = self.cursor_col.min(self.current_line_char_len());
+    }
+
+    /// Applies a new document state through the undo snapshot route.
+    ///
+    /// Every text mutation funnels through here so a single place owns the history
+    /// snapshot, the `restoring_history` guard, the caret clamp and the signal.
+    fn commit_text(&mut self, next: String) {
+        if self.text == next {
             return;
         }
+        let before = self.text.clone();
+        self.text = next.clone();
+        if !self.restoring_history {
+            *self.history_target.borrow_mut() = self.text.clone();
+            self.undo_stack.push(Box::new(ValueCommand::new(
+                self.history_target.clone(),
+                before,
+                self.text.clone(),
+                "Edit text",
+                "markdown_editor_text",
+            )));
+        }
+        self.clamp_cursor();
+        self.text_changed.emit(next);
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Deletes the character before the caret, merging lines at a line start.
+    fn backspace_at_cursor(&mut self) {
+        self.clamp_cursor();
+        let at = self.cursor_byte_offset();
+        if self.cursor_col > 0 {
+            let (start, _) = self.cursor_line_span();
+            let removed = self.text[start..at].chars().next_back().map(char::len_utf8).unwrap_or(0);
+            let mut next = String::with_capacity(self.text.len());
+            next.push_str(&self.text[..at - removed]);
+            next.push_str(&self.text[at..]);
+            self.cursor_col -= 1;
+            self.commit_text(next);
+        } else if self.cursor_line > 0 {
+            let (start, _) = self.cursor_line_span();
+            let merged_col =
+                self.text[..start - 1].chars().rev().take_while(|&ch| ch != '\n').count();
+            let mut next = String::with_capacity(self.text.len());
+            next.push_str(&self.text[..start - 1]);
+            next.push_str(&self.text[start..]);
+            self.cursor_line -= 1;
+            self.cursor_col = merged_col;
+            self.commit_text(next);
+        }
+    }
+
+    /// Splits the caret's line at the caret.
+    fn insert_newline_at_cursor(&mut self) {
+        self.clamp_cursor();
+        let at = self.cursor_byte_offset();
+        let mut next = String::with_capacity(self.text.len() + 1);
+        next.push_str(&self.text[..at]);
+        next.push('\n');
+        next.push_str(&self.text[at..]);
+        self.cursor_line += 1;
+        self.cursor_col = 0;
+        self.commit_text(next);
+    }
+
+    /// Moves the caret one character left, wrapping to the previous line's end.
+    fn move_cursor_left(&mut self) {
+        self.clamp_cursor();
+        if self.cursor_col > 0 {
+            self.cursor_col -= 1;
+            self.base.request_redraw();
+        } else if self.cursor_line > 0 {
+            self.cursor_line -= 1;
+            self.cursor_col = self.current_line_char_len();
+            self.base.request_redraw();
+        }
+    }
+
+    /// Moves the caret one character right, wrapping to the next line's start.
+    fn move_cursor_right(&mut self) {
+        self.clamp_cursor();
+        if self.cursor_col < self.current_line_char_len() {
+            self.cursor_col += 1;
+            self.base.request_redraw();
+        } else if self.cursor_line + 1 < self.edit_line_count() {
+            self.cursor_line += 1;
+            self.cursor_col = 0;
+            self.base.request_redraw();
+        }
+    }
+
+    fn move_cursor(&mut self, delta: isize) {
+        let lines = self.edit_line_count();
         let current = self.cursor_line as isize;
         let next = (current + delta).clamp(0, lines.saturating_sub(1) as isize) as usize;
         if next != self.cursor_line {
             self.cursor_line = next;
+            // A column past the new line's end would put the caret outside the text, so
+            // vertical movement keeps the column but clamps it to the line it landed on.
+            self.clamp_cursor_col();
             self.base.request_redraw();
         }
     }
@@ -336,19 +545,48 @@ impl EventHandler for MarkdownEditor {
             return;
         }
 
-        if let Event::KeyPress { key, modifiers } = event {
-            match *key {
-                90 if *modifiers == 2 => {
+        match event {
+            // Printable text and IME commits are what the platform delivers for typing; a
+            // handler with only a `KeyPress` arm never sees them. Both insert at the caret
+            // through the same undo-guarded path as `set_text` (the filter mirrors
+            // `Mention`, which refuses control characters and empty runs).
+            Event::TextInput { text }
+                if text.chars().all(|ch| !ch.is_control()) && !text.is_empty() =>
+            {
+                self.insert_text_at_cursor(text);
+            }
+            Event::ImeCommit { text } => {
+                self.insert_text_at_cursor(text);
+            }
+            Event::KeyPress { key, modifiers } => match *key {
+                // Undo and redo are the platform primary chord: Control+Z/Y on
+                // Windows and Linux, Command+Z/Y on macOS. A shifted chord is a
+                // different binding and stays unbound here.
+                _ if primary_shortcut_pressed(*key, *modifiers, Key::Z) => {
                     let _ = self.undo();
                 }
-                89 if *modifiers == 2 => {
+                _ if primary_shortcut_pressed(*key, *modifiers, Key::Y) => {
                     let _ = self.redo();
                 }
+                8 => self.backspace_at_cursor(),
+                13 => self.insert_newline_at_cursor(),
+                37 => self.move_cursor_left(),
+                39 => self.move_cursor_right(),
                 38 => self.move_cursor(-1),
                 40 => self.move_cursor(1),
                 80 | 112 if *modifiers != 0 => self.toggle_preview_mode(),
                 _ => { /* Other keys are not relevant */ }
+            },
+            // Wheel: positive `delta.y` moves the content down, so the viewport moves toward the
+            // start. Three lines per notch is the desktop default shared with the other text
+            // controls.
+            Event::Wheel { delta, modifiers, .. } => {
+                let scroll = WheelScroll::from_event(*delta, *modifiers, 3);
+                if self.scroll_lines(-scroll.lines_y) {
+                    self.base.request_redraw();
+                }
             }
+            _ => { /* Other events are not relevant */ }
         }
     }
 }
@@ -434,9 +672,14 @@ impl Draw for MarkdownEditor {
             HorizontalAlignment::Left,
         );
 
-        for (idx, line) in self.text.lines().take(10).enumerate() {
-            let y = rect.y + 36 + (idx as i32) * 16;
-            if y > rect.y + rect.height as i32 - 8 {
+        for (row, line) in
+            self.text.lines().skip(self.visible_start()).take(self.visible_line_count()).enumerate()
+        {
+            let idx = self.visible_start() + row;
+            let y = rect.y + TEXT_TOP + (row as i32) * TEXT_ROW_HEIGHT;
+            // Rows below the control are not painted, which keeps a short editor from drawing
+            // past its own bottom edge.
+            if y > rect.y + rect.height as i32 - TEXT_BOTTOM_INSET {
                 break;
             }
             let color = if idx == self.cursor_line { cursor_ink } else { ink };
@@ -444,7 +687,8 @@ impl Draw for MarkdownEditor {
                 if self.preview_mode { line.trim_start_matches('#').trim_start() } else { line };
             // Fitted to the pane, so a long line ends in an ellipsis inside the control instead of
             // painting over the widget beside it.
-            let band = Rect::new(rect.x + 12, y, rect.width.saturating_sub(24), 16);
+            let band =
+                Rect::new(rect.x + 12, y, rect.width.saturating_sub(24), TEXT_ROW_HEIGHT as u32);
             context.draw_text_fitted_cow(
                 band,
                 rendered,
@@ -453,12 +697,39 @@ impl Draw for MarkdownEditor {
                 HorizontalAlignment::Left,
             );
         }
+
+        // Visible caret: a 1 px bar at the caret's line and column.
+        //
+        // `cursor_col` is a character offset, so the x position comes from measuring the
+        // line prefix with the same estimator the layout uses — a byte-per-8px formula
+        // would put the bar in the middle of a CJK glyph. Preview mode paints no caret
+        // because there is nothing to edit there. The row's y matches the text rows
+        // above, so the caret also lands on the blank trailing line that Enter creates.
+        if !self.preview_mode {
+            let start = self.visible_start();
+            if let Some(row) =
+                self.cursor_line.checked_sub(start).filter(|row| *row < self.visible_line_count())
+            {
+                let (line_start, line_end) = self.cursor_line_span();
+                let prefix: String =
+                    self.text[line_start..line_end].chars().take(self.cursor_col).collect();
+                let x =
+                    rect.x + 12 + estimate_text_width(&prefix, effective_font(style), 1.0) as i32;
+                let y = rect.y + TEXT_TOP + (row as i32) * TEXT_ROW_HEIGHT;
+                if y + 14 <= rect.y + rect.height as i32 && x <= rect.x + rect.width as i32 - 12 {
+                    context.fill_rect(Rect::new(x, y - 2, 1, 16), cursor_ink);
+                }
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::input_widgets::shortcut_editor::{
+        non_primary_modifier_event_bits, primary_modifier_event_bits,
+    };
     use std::sync::{Arc, Mutex};
 
     #[test]
@@ -522,9 +793,145 @@ mod tests {
         editor.set_text("draft");
         editor.set_text("final");
 
-        editor.handle_event(&Event::KeyPress { key: 90, modifiers: 2 });
+        editor.handle_event(&Event::KeyPress { key: 90, modifiers: primary_modifier_event_bits() });
         assert_eq!(editor.text(), "draft");
-        editor.handle_event(&Event::KeyPress { key: 89, modifiers: 2 });
+        editor.handle_event(&Event::KeyPress { key: 89, modifiers: primary_modifier_event_bits() });
         assert_eq!(editor.text(), "final");
+    }
+
+    #[test]
+    fn keyboard_shortcuts_reject_shifted_and_non_primary_chords() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+        editor.set_text("draft");
+        editor.set_text("final");
+
+        let primary = primary_modifier_event_bits();
+        // Shift+Primary+Z is a different chord, so it is not plain undo.
+        editor.handle_event(&Event::key_press(90, primary | 0b0001));
+        assert_eq!(editor.text(), "final");
+
+        // The accelerator that is not primary on this host does not undo.
+        editor.handle_event(&Event::key_press(90, non_primary_modifier_event_bits()));
+        assert_eq!(editor.text(), "final");
+
+        editor.handle_event(&Event::key_press(90, primary));
+        assert_eq!(editor.text(), "draft");
+        editor.handle_event(&Event::key_press(89, primary));
+        assert_eq!(editor.text(), "final");
+    }
+
+    #[test]
+    fn text_input_inserts_text_and_emits_signal() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = seen.clone();
+        editor.text_changed.connect(move |value| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push((*value).clone());
+            }
+        });
+
+        editor.handle_event(&Event::text_input("# Hello"));
+
+        assert_eq!(editor.text(), "# Hello");
+        let got = seen.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(got, vec!["# Hello".to_string()]);
+    }
+
+    #[test]
+    fn ime_commit_inserts_cjk_text() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+        editor.handle_event(&Event::ime_commit("你好"));
+
+        assert_eq!(editor.text(), "你好");
+        assert_eq!(editor.cursor_col(), 2);
+    }
+
+    #[test]
+    fn typed_text_can_be_undone_and_redone() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+        editor.handle_event(&Event::text_input("first"));
+        editor.handle_event(&Event::ime_commit(" second"));
+        assert_eq!(editor.text(), "first second");
+
+        assert!(editor.undo());
+        assert_eq!(editor.text(), "first");
+        assert!(editor.undo());
+        assert_eq!(editor.text(), "");
+
+        assert!(editor.redo());
+        assert!(editor.redo());
+        assert_eq!(editor.text(), "first second");
+    }
+
+    #[test]
+    fn enter_splits_and_backspace_merges_lines() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+        editor.set_text("ab");
+
+        editor.handle_event(&Event::key_press(39, 0));
+        editor.handle_event(&Event::key_press(39, 0));
+        editor.handle_event(&Event::key_press(13, 0));
+        assert_eq!(editor.text(), "ab\n");
+        assert_eq!(editor.cursor_line(), 1);
+        assert_eq!(editor.cursor_col(), 0);
+
+        editor.handle_event(&Event::key_press(8, 0));
+        assert_eq!(editor.text(), "ab");
+        assert_eq!(editor.cursor_line(), 0);
+        assert_eq!(editor.cursor_col(), 2);
+
+        editor.handle_event(&Event::key_press(37, 0));
+        editor.handle_event(&Event::key_press(8, 0));
+        assert_eq!(editor.text(), "b");
+        assert_eq!(editor.cursor_col(), 0);
+    }
+
+    #[test]
+    fn arrow_keys_clamp_cursor_column_to_line_length() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+        editor.set_text("long line\nx");
+
+        editor.handle_event(&Event::key_press(39, 0));
+        editor.handle_event(&Event::key_press(39, 0));
+        assert_eq!(editor.cursor_col(), 2);
+
+        editor.handle_event(&Event::key_press(40, 0));
+        assert_eq!(editor.cursor_line(), 1);
+        assert_eq!(editor.cursor_col(), 1);
+    }
+
+    /// The wheel scrolls the visible line window and clamps at both ends.
+    ///
+    /// # The defect this pins
+    ///
+    /// The paint path stopped at a fixed `take(10)`, so a longer document could not be reached at
+    /// all. This drives the same window the paint path now starts from.
+    #[test]
+    fn markdown_editor_wheel_scrolls_and_clamps() {
+        let text: Vec<String> = (0..20).map(|n| format!("line{n}")).collect();
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 100));
+        editor.set_text(text.join("\n"));
+        assert_eq!(editor.first_visible_line, 0);
+
+        // One notch toward the end reveals three lines.
+        editor.handle_event(&Event::Wheel { delta: crate::core::Point::new(0, -1), modifiers: 0 });
+        assert_eq!(editor.first_visible_line, 3, "a downward notch moves the viewport down");
+
+        // The other direction returns to the top and clamps there.
+        editor.handle_event(&Event::Wheel { delta: crate::core::Point::new(0, 1), modifiers: 0 });
+        assert_eq!(editor.first_visible_line, 0);
+        editor.handle_event(&Event::Wheel { delta: crate::core::Point::new(0, 1), modifiers: 0 });
+        assert_eq!(editor.first_visible_line, 0, "the viewport clamps at the first line");
+
+        // Scrolling on stops at the last full window.
+        let max_first = editor.line_count() - editor.visible_line_count();
+        for _ in 0..20 {
+            editor.handle_event(&Event::Wheel {
+                delta: crate::core::Point::new(0, -1),
+                modifiers: 0,
+            });
+        }
+        assert_eq!(editor.first_visible_line, max_first, "the viewport clamps at the last window");
     }
 }

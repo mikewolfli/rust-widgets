@@ -14,7 +14,7 @@
 
 use crate::compat::{Rc, RefCell, ToString, Vec};
 use crate::core::{Alignment, Color, ObjectId, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
+use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 
@@ -25,6 +25,10 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::dimensions;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// Pixels scrolled per wheel line. A notch is one line here, so this is also the
+/// distance one notch has always moved the content.
+const WHEEL_PIXELS_PER_LINE: i32 = 20;
 
 fn translate_content_event(event: &Event, dx: i32, dy: i32) -> Event {
     let translate = |point: Point| Point::new(point.x + dx, point.y + dy);
@@ -986,11 +990,13 @@ impl EventHandler for ScrollArea {
         }
         // Handle scroll events (mouse wheel + touch swipe)
         match event {
-            Event::Wheel { delta, modifiers: _ } => {
-                // Scroll the content using clamped content coordinates.
+            Event::Wheel { delta, modifiers } => {
+                // `WheelScroll` owns the notch normalization; this control owns the
+                // line-to-pixel step. The scroll position is clamped by the setter.
+                let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
                 self.set_scroll_position(
-                    self.scroll_position.0 + delta.x * 20,
-                    self.scroll_position.1 + delta.y * 20,
+                    self.scroll_position.0 + scroll.columns_x * WHEEL_PIXELS_PER_LINE,
+                    self.scroll_position.1 + scroll.lines_y * WHEEL_PIXELS_PER_LINE,
                 );
             }
             #[cfg(feature = "touch")]

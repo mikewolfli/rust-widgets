@@ -54,10 +54,10 @@ cupertino_segmented_control: value_changed
 cupertino_slider: value_changed
 cupertino_switch: toggled
 data_grid: visible_window_changed
-data_view: selection_changed, visible_window_changed
-date_edit: date_changed
+data_view: selection_changed, visible_window_changed, drag_finished
+date_edit: date_changed, popup_visibility_changed
 date_range_picker: range_changed
-date_time_edit: datetime_changed
+date_time_edit: datetime_changed, popup_visibility_changed
 depth_chart: level_hovered
 dial: value_changed, slider_pressed, slider_released
 dialog: accepted, rejected, opened, closed
@@ -66,7 +66,7 @@ divider:
 dock_widget: dock_location_changed, features_changed, top_level_changed
 drop_zone: payload_dropped
 dropdown: changed
-dropdown_menu: item_selected
+dropdown_menu: item_selected, submenu_requested
 editable_combo_box: text_changed, item_selected
 emoji_picker: glyph_chosen
 empty_state: action_pressed
@@ -104,8 +104,8 @@ label:
 lcd_number: value_changed, overflow
 line:
 line_chart:
-line_edit: text_changed, editing_finished, return_pressed
-list_box: item_selected, item_activated, selection_changed
+line_edit: text_changed, editing_finished, return_pressed, context_menu_requested
+list_box: item_selected, item_activated, selection_changed, drag_finished
 list_view: selection_changed, focused_row_changed
 lottie_widget: animation_finished
 map_view: center_changed, zoom_changed, marker_selected
@@ -119,7 +119,7 @@ media_player: playback_changed, position_changed, volume_changed, source_changed
 mention: mention_inserted, popup_toggled, text_changed
 menu: triggered, triggered_index, about_to_show, submenu_requested, about_to_hide
 menu_bar: triggered, hovered_entry, triggered_entry
-menu_button: item_triggered
+menu_button: item_triggered, submenu_requested
 message_box: button_clicked, accepted, rejected
 meter: changed
 mini_canvas: clicked, mouse_pressed, mouse_released
@@ -185,13 +185,13 @@ swipe_to_dismiss: dismissed
 switch: toggled
 tab_bar: current_changed, tab_close_requested, tab_moved
 tab_view: tab_changed
-tab_widget: current_changed, tab_close_requested, tab_moved
+tab_widget: current_changed, tab_close_requested, tab_moved, context_menu_requested, drag_finished
 table: selection_changed, focused_row_changed
 table_widget: selection_changed, focused_row_changed
 tag: closed
 tag_input: tags_changed
 terminal_view: command_submitted
-text_area: changed
+text_area: changed, context_menu_requested
 text_edit: text_changed
 time_edit: popup_visibility_changed, time_changed
 time_picker: popup_visibility_changed, time_changed
@@ -199,14 +199,14 @@ timeline_widget: item_selected
 toast: dismissed
 toast_stack: toast_activated, toast_dismissed
 toggle_button: toggled, checked_changed, pressed, released, state_changed
-tool_bar: action_triggered, orientation_changed, top_level_changed, visibility_changed
+tool_bar: action_triggered, orientation_changed, top_level_changed, visibility_changed, float_changed
 tool_box: current_changed
 tool_button: clicked, toggled, triggered
 tooltip:
 tree_table: projection_changed, selection_changed
 tree_view: selection_changed, focused_node_changed
 video_player: playback_started, playback_paused, playback_ended, time_updated
-virtual_list: selection_changed, visible_window_changed
+virtual_list: selection_changed, visible_window_changed, drag_finished
 virtual_table: visible_window_changed
 volume_chart: bar_clicked, bar_hovered
 web_engine_view: loading_started, loading_finished, title_changed, url_changed, error_occurred, navigation_state_changed, page_created, page_destroyed, console_message, download_requested, certificate_error

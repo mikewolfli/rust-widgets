@@ -1,16 +1,18 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! The order book ladder — the bid and ask levels, best first, with sizes.
+//! The order book ladder — asks above, bids below, best prices at the middle.
 //!
 //! # What a reader does with it
 //!
-//! Reads down from the top of each side. The top row of the bids and the top row of the
-//! asks are the spread; the size sitting at each level says how much would have to trade
-//! to move the price past it. A ladder is therefore read row by row, which is why the
-//! levels are drawn in a fixed row order rather than scaled to their prices: the
-//! interesting comparison is between adjacent rows, and a price-proportional layout
-//! compresses exactly where the rows are interesting.
+//! Reads toward the centre rule. The asks stack above the rule with the lowest (best)
+//! ask in the bottom ask row, and the bids stack below it with the highest (best) bid
+//! in the top bid row. The two rows adjacent to the rule are the spread; the size
+//! sitting at each level says how much would have to trade to move the price past it.
+//! A ladder is therefore read row by row, which is why the levels are drawn in a fixed
+//! row order rather than scaled to their prices: the interesting comparison is between
+//! adjacent rows, and a price-proportional layout compresses exactly where the rows are
+//! interesting.
 //!
 //! # Why the size bars are anchored to the outer edge
 //!
@@ -226,6 +228,10 @@ impl OrderBookWidget {
     /// beyond the book's combined row count, so the data bound already rejected it. It is
     /// stated explicitly so the rejection does not depend on that coincidence surviving a
     /// future change to the row-height formula.
+    ///
+    /// The mapping follows the drawn layout: ask rows come first (top to bottom, with the
+    /// best ask last because the ask block is drawn reversed), then bid rows in their
+    /// best-first order. The returned index always points into `level_slice(side)`.
     fn row_at(&self, y: i32) -> Option<(BookSide, usize)> {
         let geometry = self.base.geometry();
         if y < geometry.y || y >= geometry.y + geometry.height as i32 {
@@ -237,13 +243,15 @@ impl OrderBookWidget {
             return None;
         }
         let row = (offset / row_height) as usize;
-        let bid_rows = self.level_slice(BookSide::Bid).len();
-        if row < bid_rows {
-            return Some((BookSide::Bid, row));
+        let ask_rows = self.level_slice(BookSide::Ask).len();
+        if row < ask_rows {
+            // The ask block is drawn from the deepest level down to the best one, so screen
+            // row 0 is the last slice entry and the row adjacent to the middle is index 0.
+            return Some((BookSide::Ask, ask_rows - 1 - row));
         }
-        let ask_row = row - bid_rows;
-        if ask_row < self.level_slice(BookSide::Ask).len() {
-            return Some((BookSide::Ask, ask_row));
+        let bid_row = row - ask_rows;
+        if bid_row < self.level_slice(BookSide::Bid).len() {
+            return Some((BookSide::Bid, bid_row));
         }
         None
     }
@@ -453,15 +461,25 @@ impl Draw for OrderBookWidget {
         let spine = geometry.x + geometry.width as i32 / 2;
         let bar_span = (geometry.width as i32 / 2 - 40).max(8);
 
-        // Bids first, from the top down; asks follow below them.
+        // Asks first, stacked above the middle; bids follow below it. The ask block is
+        // drawn from the deepest level up to the best one, so the lowest ask lands in the
+        // row touching the spread rule; the bid block keeps its best-first order, so the
+        // highest bid lands in the row just below the rule.
         // One font for the ladder: `role_font` allocates its family `String`, and it was rebuilt
         // twice per level per frame.
         let level_font = role_font(self.style(), 11.0);
         let mut row = 0;
-        for side in [BookSide::Bid, BookSide::Ask] {
+        for side in [BookSide::Ask, BookSide::Bid] {
             let levels = self.level_slice(side);
             let color = if side == BookSide::Bid { self.bid_color } else { self.ask_color };
-            for (index, level) in levels.iter().enumerate() {
+            let level_count = levels.len();
+            // The ask block runs deepest-to-best while the bid block runs best-first. One
+            // reverse-aware index keeps a single row body for both sides; splitting into
+            // `.iter()` and `.iter().rev()` would duplicate the row painter.
+            #[allow(clippy::needless_range_loop)]
+            for step in 0..level_count {
+                let index = if side == BookSide::Ask { level_count - 1 - step } else { step };
+                let level = &levels[index];
                 let y = geometry.y + row * row_height;
                 let is_hovered = self.hovered == Some((side, index));
                 if is_hovered {
@@ -550,9 +568,10 @@ impl Draw for OrderBookWidget {
             }
         }
 
-        // The spread, drawn across the middle where the two sides meet.
+        // The spread, drawn across the middle where the ask and bid blocks meet.
         if let Some(spread) = self.book.spread() {
-            let y = geometry.y + self.level_slice(BookSide::Bid).len() as i32 * row_height;
+            let ask_rows = self.level_slice(BookSide::Ask).len();
+            let y = geometry.y + ask_rows as i32 * row_height;
             context.draw_line_stroke(
                 Point { x: geometry.x, y },
                 Point { x: geometry.x + geometry.width as i32, y },
@@ -894,5 +913,77 @@ mod tests {
         assert_eq!(hover_at(150), None, "the bottom edge is outside");
         assert_eq!(hover_at(200), None, "below the widget");
         assert_eq!(hover_at(2000), None, "far below the widget");
+    }
+
+    /// The ask row touching the middle is the best (lowest) ask.
+    ///
+    /// Five levels per side in a 240 px ladder give 24 px rows: ask rows 0..=4,
+    /// so row 4 (y 96..120) is the bottom ask row and must hold `asks()[0]`.
+    #[test]
+    fn the_ask_row_touching_the_middle_is_the_best_ask() {
+        let mut ladder = OrderBookWidget::new(Rect::new(0, 0, 320, 240));
+        ladder.set_book(fixtures::sample_book(5));
+
+        ladder.handle_event(&Event::MouseMove { pos: Point::new(100, 108) });
+        let (side, index) = ladder.hovered().expect("the best ask row is inside the widget");
+        assert_eq!(side, BookSide::Ask);
+        assert_eq!(
+            ladder.levels(BookSide::Ask)[index].price,
+            ladder.book().asks()[0].price,
+            "the ask row adjacent to the middle must be the lowest ask"
+        );
+    }
+
+    /// Clicking the first row below the middle reports the best bid.
+    #[test]
+    fn clicking_the_first_row_below_the_middle_selects_the_best_bid() {
+        let mut ladder = OrderBookWidget::new(Rect::new(0, 0, 320, 240));
+        ladder.set_book(fixtures::sample_book(5));
+
+        let side = Arc::new(AtomicUsize::new(usize::MAX));
+        let index = Arc::new(AtomicUsize::new(usize::MAX));
+        let side_sink = Arc::clone(&side);
+        let index_sink = Arc::clone(&index);
+        ladder.level_clicked.connect(move |value| {
+            side_sink.store(
+                match value.0 {
+                    BookSide::Ask => 0,
+                    BookSide::Bid => 1,
+                },
+                Ordering::SeqCst,
+            );
+            index_sink.store(value.1, Ordering::SeqCst);
+        });
+
+        // Ask rows occupy 0..=4; y 120..144 is the first bid row.
+        ladder.handle_event(&Event::MousePress {
+            pos: Point::new(100, 132),
+            button: 0,
+            modifiers: 0,
+        });
+        assert_eq!(side.load(Ordering::SeqCst), 1, "the row below the middle is a bid");
+        assert_eq!(index.load(Ordering::SeqCst), 0, "it is the best bid");
+    }
+
+    /// Hover payload indices stay aligned with `levels(side)`'s best-first order.
+    #[test]
+    fn hover_indices_follow_the_level_order() {
+        let mut ladder = OrderBookWidget::new(Rect::new(0, 0, 320, 240));
+        ladder.set_book(fixtures::sample_book(5));
+
+        let mut ask_indices = alloc::vec::Vec::new();
+        let mut bid_indices = alloc::vec::Vec::new();
+        for row in 0..10 {
+            let y = row * 24 + 12;
+            ladder.handle_event(&Event::MouseMove { pos: Point::new(100, y) });
+            let (side, index) = ladder.hovered().expect("every ladder row maps to a level");
+            match side {
+                BookSide::Ask => ask_indices.push(index),
+                BookSide::Bid => bid_indices.push(index),
+            }
+        }
+
+        assert_eq!(ask_indices, alloc::vec![4, 3, 2, 1, 0], "asks run deepest to best");
+        assert_eq!(bid_indices, alloc::vec![0, 1, 2, 3, 4], "bids run best first");
     }
 }

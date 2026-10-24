@@ -58,7 +58,7 @@ pub struct GridLayout {
     row_stretches: Vec<u32>,
     /// Per-column minimum widths, applied as a floor to the computed column width.
     ///
-    /// Qt's `QGridLayout::setColumnMinimumWidth` and wx's per-column minimum are the
+    /// the reference toolkit's `grid layout::setColumnMinimumWidth` and wx's per-column minimum are the
     /// equivalent: a column holding a control with a natural width must not be squeezed
     /// below it just because the other columns have larger stretch factors.
     column_minimums: Vec<u32>,
@@ -66,7 +66,7 @@ pub struct GridLayout {
     row_minimums: Vec<u32>,
     /// Per-widget alignment inside its cell.
     ///
-    /// Qt's `QLayout::setAlignment(widget, Qt::Alignment)` is the counterpart, and it is what
+    /// the reference toolkit's `layout::setAlignment(widget, 参考工具包::Alignment)` is the counterpart, and it is what
     /// makes a per-cell alignment possible at all: a grid cell is the slot a child is given,
     /// and without this the child always fills it. Only the hint-aware path
     /// ([`Layout::arrange`]) can act on it, because placing a child at its preferred size
@@ -256,7 +256,7 @@ impl GridLayout {
     /// Sets four-way margins, overriding the uniform [`Self::margin`].
     ///
     /// `margin` stays the fallback so a document that only knows the uniform key keeps working;
-    /// this is the Qt `setContentsMargins(l, t, r, b)` shape, which a layout needs as soon as a
+    /// this is the 参考工具包 `setContentsMargins(l, t, r, b)` shape, which a layout needs as soon as a
     /// panel is flush with three edges and inset from one.
     pub fn set_margins(&mut self, margins: EdgeOffsets) {
         self.margins = Some(margins);
@@ -785,7 +785,7 @@ impl GridLayout {
                         + spacing_y * (last_row - row);
                 let x = rect.x + left as i32 + col_x_offsets[col as usize];
                 let y = rect.y + top as i32 + row_y_offsets[row as usize];
-                // Per-cell alignment (Qt's `setAlignment`): a cell is the slot, the hint's
+                // Per-cell alignment (the reference toolkit's `setAlignment`): a cell is the slot, the hint's
                 // preferred extent is what the child wants inside it. An axis the alignment
                 // does not name keeps the full cell, and an unconstrained axis has no size to
                 // shrink to.

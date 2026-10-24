@@ -395,6 +395,12 @@ audio = ["dep:minimp3_fixed"]
 holographic = []
 projection = []
 
+## `3d` compiles the matrix maths (`render::math3d`), the batch replay transform stack and the
+## matrix vertex path in the wgpu backend. It is deliberately not part of `default`: with the
+## feature off the 2D path is unchanged and adds no payload. It is orthogonal to the device
+## profiles, so it composes with any of them.
+3d = []
+
 ## Bidirectional text (UAX #9), resolved through `unicode-bidi`.
 ##
 ## This is *logic*, not font data: it reorders the clusters a line already produced so an

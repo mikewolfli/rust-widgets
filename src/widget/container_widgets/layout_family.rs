@@ -251,7 +251,7 @@ fn paint_wrapper(
 /// channels. [`Widget::hints`] reports `min = 0`, `pref = base_size`, `max = unbounded`, and
 /// [`Widget::default_layout_params`] reports `LayoutParams::stretched(flex)`, which is what
 /// tells a `BoxLayout` / `Flex` parent to hand it the leftover room in proportion to
-/// `flex`. That is exactly what a QSpacerItem is to a QBoxLayout.
+/// `flex`. That is exactly what a spacer is to a box layout.
 ///
 /// `paint_hint` defaults to `true` and draws a faint dashed frame: a form under construction
 /// needs to see its spacers, and a spacer that was invisible in the designer was the one

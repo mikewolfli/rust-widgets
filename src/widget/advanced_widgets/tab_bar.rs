@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Standalone TabBar widget — decoupled from TabWidget, draws a row/column of tabs.
+use crate::compat::Cow;
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -14,7 +15,10 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::container_widgets::tabwidget::{TabPosition, TabShape};
-use crate::widget::metrics::role_font;
+use crate::widget::metrics::{
+    expand_to_hit_area, focus_ring_color, role_font, FocusRing, FOCUS_RING_WIDTH,
+};
+use crate::widget::text_utils::elide_to_width;
 use crate::widget::{BaseWidget, Draw, IconItemError, IconSource, Image, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -680,6 +684,36 @@ impl TabBar {
         natural.min(available / count).max(1)
     }
 
+    /// The room a tab's title has inside the tab it is painted in.
+    ///
+    /// Mirrors the reservation [`Self::compute_tab_width`] makes: one text inset at each
+    /// end, plus the leading icon slot and the trailing close button when they are drawn.
+    /// The strip's fitted width can be narrower than that reservation, which is why the
+    /// title has to be measured against the *actual* tab rect rather than the natural one.
+    fn title_band_width(tab_rect: Rect, has_icon: bool, closable: bool) -> u32 {
+        let leading = TAB_TEXT_INSET + if has_icon { TAB_ICON_SIZE + TAB_ICON_GAP } else { 0 };
+        let trailing =
+            TAB_TEXT_INSET + if closable { CLOSE_SIZE as u32 + CLOSE_PADDING as u32 } else { 0 };
+        tab_rect.width.saturating_sub(leading + trailing)
+    }
+
+    /// The title as it is painted: elided to the tab's own label band when the strip has
+    /// shrunk the tab below what the label needs.
+    ///
+    /// `measure` is the renderer's own advance measurement, so the budget this decides on
+    /// is the width the paint path will actually produce. A title that fits is returned
+    /// borrowed — the common case — so painting it stays allocation-free.
+    fn fitted_title<'a>(
+        &'a self,
+        index: usize,
+        tab_rect: Rect,
+        measure: &mut dyn FnMut(&str) -> u32,
+    ) -> Cow<'a, str> {
+        let has_icon = self.tabs[index].has_icon();
+        let budget = Self::title_band_width(tab_rect, has_icon, self.closable);
+        elide_to_width(&self.tabs[index].title, budget, measure)
+    }
+
     /// Computes the width of a tab, taking into account whether a close button
     /// is rendered and clamping to the configured min/max.
     ///
@@ -741,6 +775,42 @@ impl TabBar {
             let cy = r.y + (r.height as i32 - CLOSE_SIZE) / 2;
             Rect::new(cx, cy, CLOSE_SIZE as u32, CLOSE_SIZE as u32)
         })
+    }
+
+    /// The region a press must land in to close the tab at `index`.
+    ///
+    /// The painted glyph is only [`CLOSE_SIZE`] square, well below the platform's minimum
+    /// hit size, so [`expand_to_hit_area`] widens it instead of demanding pixel-accurate
+    /// aiming at a 12 px mark. The widened region is then clipped to the tab that owns the
+    /// glyph: without that, reaching for the next tab's leading edge would close this one.
+    fn close_hit_area(&self, index: usize) -> Option<Rect> {
+        let close = self.close_rect(index)?;
+        let tab = self.tab_rect(index)?;
+        let expanded = expand_to_hit_area(close);
+        Some(expanded.intersection(&tab).unwrap_or(close))
+    }
+
+    /// The rectangle the keyboard focus ring follows.
+    ///
+    /// The ring belongs to the tab the keyboard is on — the current one — because a strip
+    /// has no single interior an outline could meaningfully follow. A strip with no
+    /// selection has no tab to ring, so its own rectangle is the fallback; keyboard focus
+    /// must never be invisible.
+    fn focus_ring_rect(&self) -> Rect {
+        self.current_index
+            .and_then(|index| self.tab_rect(index))
+            .unwrap_or_else(|| self.base.geometry())
+    }
+
+    /// The corner radius the focus ring follows for the active tab shape.
+    ///
+    /// `FocusRing::for_control` tightens this by the ring width again, so the ring traces
+    /// the tab's own silhouette rather than a fixed shape that disagrees with it.
+    fn focus_ring_corner(&self) -> u32 {
+        match self.tab_shape {
+            TabShape::Rounded => 4,
+            TabShape::Triangular | TabShape::Rectangular => 0,
+        }
     }
 
     /// The chrome shared by every tab in the strip.
@@ -920,9 +990,26 @@ impl TabBar {
                 }
             }
         }
+        // A horizontal title wider than the tab it sits in is elided with the shared
+        // primitive rather than painted across the neighbouring tab. The budget is the tab's
+        // own label band and it is measured with the renderer's callback, so the reserved
+        // width and the painted advance come from one metric; a fitting title is borrowed and
+        // drawn with the same call the control always made.
+        //
+        // A *vertical* strip is exempt: its tabs are one text line wide (24 px), so a width
+        // budget there would elide every title to nothing. That run keeps its existing
+        // horizontal label rather than being blanked by this change.
+        let title = match self.tab_position {
+            TabPosition::North | TabPosition::South => {
+                self.fitted_title(index, tab_rect, &mut |text: &str| {
+                    context.measure_text(text, font).width
+                })
+            }
+            TabPosition::West | TabPosition::East => Cow::Borrowed(tab.title.as_str()),
+        };
         context.draw_text(
             Point::new(text_x, text_y),
-            &tab.title,
+            &title,
             font,
             text_color,
             HorizontalAlignment::Left,
@@ -1125,8 +1212,8 @@ impl EventHandler for TabBar {
                 // Check close button first.
                 if self.closable {
                     for i in 0..self.tabs.len() {
-                        if let Some(close_rect) = self.close_rect(i) {
-                            if close_rect.contains(*pos) && self.tabs[i].enabled {
+                        if let Some(close_hit_area) = self.close_hit_area(i) {
+                            if close_hit_area.contains(*pos) && self.tabs[i].enabled {
                                 self.tab_close_requested.emit(i);
                                 return;
                             }
@@ -1161,8 +1248,8 @@ impl EventHandler for TabBar {
                 // Check close button first.
                 if self.closable {
                     for i in 0..self.tabs.len() {
-                        if let Some(close_rect) = self.close_rect(i) {
-                            if close_rect.contains(*pos) && self.tabs[i].enabled {
+                        if let Some(close_hit_area) = self.close_hit_area(i) {
+                            if close_hit_area.contains(*pos) && self.tabs[i].enabled {
                                 self.tab_close_requested.emit(i);
                                 return;
                             }
@@ -1201,6 +1288,26 @@ impl Draw for TabBar {
         for i in 0..self.tabs.len() {
             if let Some(tr) = self.tab_rect(i) {
                 self.draw_tab(context, i, tr, &chrome, &font);
+            }
+        }
+
+        // ── Keyboard focus ring ──
+        //
+        // Drawn after the tabs so no tab fill can paint over it, and gated on the reason
+        // focus arrived: a pointer press focuses the strip without painting a ring under
+        // the cursor, while Tab and Shortcut draw one. The ring follows the current tab
+        // rather than the whole strip, so it frames the part the keyboard is actually on.
+        if self.base.draws_focus_ring() {
+            let ring = FocusRing::for_control(self.focus_ring_rect(), self.focus_ring_corner());
+            if ring.is_drawable() {
+                // The fallback is the current tab's own contrasting tone; an active theme
+                // overrides it with its declared `outline` token.
+                context.draw_rounded_rect_stroke(
+                    ring.rect,
+                    ring.radius,
+                    focus_ring_color(chrome.current_tab.contrast_color()),
+                    FOCUS_RING_WIDTH,
+                );
             }
         }
     }
@@ -1750,5 +1857,110 @@ mod tests {
             !fired.load(std::sync::atomic::Ordering::SeqCst),
             "an index that addresses nothing must do nothing"
         );
+    }
+
+    /// A multi-byte title is elided on character boundaries, never inside a CJK glyph.
+    ///
+    /// The strip shrinks every tab to `available / count`, so a title can be wider than
+    /// the tab it is painted in; the shared primitive keeps the retained prefix on whole
+    /// characters and marks the cut with the crate's single ellipsis.
+    #[test]
+    fn a_wide_cjk_tab_title_is_elided_to_its_label_band() {
+        let mut tb = TabBar::new(Rect::new(0, 0, 400, 24));
+        tb.add_tab("\u{4e16}\u{754c}\u{4f60}\u{597d}\u{4e16}\u{754c}\u{4f60}\u{597d}".to_string());
+        // 7 px per character, so the 40 px tab (28 px label band) keeps three characters
+        // plus the ellipsis; a byte budget would have cut this string mid-glyph.
+        let mut measure = |text: &str| text.chars().count() as u32 * 7;
+        assert_eq!(
+            tb.fitted_title(0, Rect::new(0, 0, 40, 24), &mut measure),
+            "\u{4e16}\u{754c}\u{4f60}\u{2026}"
+        );
+        tb.set_tab_text(0, "\u{1f389}\u{1f389}\u{1f389}\u{1f389}\u{1f389}".to_string());
+        assert_eq!(
+            tb.fitted_title(0, Rect::new(0, 0, 40, 24), &mut measure),
+            "\u{1f389}\u{1f389}\u{1f389}\u{2026}",
+            "an emoji is a single character to the budget, not four bytes"
+        );
+    }
+
+    /// A title that fits its tab is borrowed, so the paint path keeps the exact call and
+    /// allocates nothing for it.
+    #[test]
+    fn a_fitting_tab_title_is_borrowed() {
+        let mut tb = TabBar::new(Rect::new(0, 0, 400, 24));
+        tb.add_tab("One".to_string());
+        let mut measure = |text: &str| text.chars().count() as u32 * 7;
+        assert!(matches!(
+            tb.fitted_title(0, Rect::new(0, 0, 40, 24), &mut measure),
+            crate::compat::Cow::Borrowed("One")
+        ));
+    }
+
+    /// Keyboard focus paints the ring on the current tab; a pointer press does not.
+    ///
+    /// The strip reported `WidgetState::Focused` for keyboard focus but had no draw site
+    /// for the ring, so the state had no visible consumer. The ring is the only 2 px
+    /// stroke the strip emits, which makes its presence observable in the render.
+    #[test]
+    fn a_keyboard_focused_strip_paints_the_ring_and_pointer_focus_does_not() {
+        // The ring's colour reads the process-wide theme; hold the guard so a concurrent
+        // appearance switch cannot change this render mid-assertion.
+        let _guard = crate::style::theme_test_guard();
+        let make = || {
+            let mut bar = TabBar::new(Rect::new(0, 0, 200, 32));
+            bar.add_tab("One".to_string());
+            bar.set_current_index(0);
+            bar
+        };
+
+        let mut keyboard = make();
+        keyboard.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        assert!(keyboard.base.draws_focus_ring(), "Tab focus must ask for a ring");
+        let focused = crate::widget::svg::render_to_svg(&mut keyboard);
+        assert!(
+            focused.lines().any(|line| line.contains("stroke-width=\"2\"")),
+            "keyboard focus must paint the ring around the current tab: {focused}"
+        );
+
+        let mut pointer = make();
+        pointer.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Pointer });
+        let unfocused = crate::widget::svg::render_to_svg(&mut pointer);
+        assert!(
+            !unfocused.lines().any(|line| line.contains("stroke-width=\"2\"")),
+            "pointer focus must not paint a ring: {unfocused}"
+        );
+    }
+
+    /// The close glyph is smaller than the platform hit floor, so the region that closes a
+    /// tab reaches past the painted mark — but never into a neighbouring tab.
+    #[test]
+    fn a_press_beside_the_close_glyph_still_closes_through_the_hit_floor() {
+        let mut bar = TabBar::new(Rect::new(0, 0, 200, 24));
+        bar.add_tab("One".to_string());
+        bar.add_tab("Two".to_string());
+        bar.set_closable(true);
+
+        let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        bar.tab_close_requested.connect({
+            let flag = std::sync::Arc::clone(&closed);
+            move |_| flag.store(true, std::sync::atomic::Ordering::SeqCst)
+        });
+
+        let close = bar.close_rect(0).expect("a closable tab draws a close glyph");
+        let tab = bar.tab_rect(0).expect("the tab has a rectangle");
+        // Start on the second tab so a close that also selects would be observable.
+        bar.set_current_index(1);
+        // Five pixels left of the glyph: outside the painted 12 px mark, inside the expanded
+        // hit region, and still inside the tab that owns it.
+        let pos = Point::new(close.x - 5, close.y + close.height as i32 / 2);
+        assert!(!close.contains(pos), "the fixture press must miss the painted glyph");
+        assert!(tab.contains(pos), "the fixture press must stay on the owning tab");
+
+        bar.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
+        assert!(
+            closed.load(std::sync::atomic::Ordering::SeqCst),
+            "the hit floor must make the close button reachable beside its glyph"
+        );
+        assert_eq!(bar.current_index(), Some(1), "a close must not also select the tab");
     }
 }

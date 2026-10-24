@@ -6,7 +6,7 @@ use crate::core::{Color, Font};
 #[cfg(not(alloc_frugal))]
 use serde::{Deserialize, Serialize};
 
-use crate::style::{EasingFunction, Shadow};
+use crate::style::{EasingFunction, MotionCurve, Shadow};
 
 /// High-level theme definition used by runtime style resolution.
 #[cfg_attr(not(alloc_frugal), derive(Serialize, Deserialize))]
@@ -14,7 +14,7 @@ use crate::style::{EasingFunction, Shadow};
 pub struct Theme {
     /// Theme unique name.
     pub name: String,
-    /// Which appearance this theme provides.
+    /// Which appearance a theme provides.
     ///
     /// Recorded on the theme itself rather than inferred from the background
     /// colour: a caller switching between a light and a dark theme needs to know
@@ -55,6 +55,31 @@ pub struct Theme {
     /// table's character, which is what every theme written before this field expects.
     #[cfg_attr(not(alloc_frugal), serde(default))]
     pub flat_surfaces: bool,
+    /// The host accent this theme was derived from.
+    ///
+    /// macOS lets the user choose one of eight system accent colours, and the system colours a
+    /// control draws with follow that choice. A theme that hardcodes a single accent therefore
+    /// disagrees with every window around it as soon as the user picks a different one.
+    ///
+    /// The value is recorded on the theme rather than read at paint time for the same reason
+    /// [`Theme::appearance`] is: a theme file is a description of a palette, and a palette whose
+    /// accent came from the host needs to say which accent that was so a caller can re-derive it
+    /// (or explain it) without asking the device again. `SystemAccent::Blue` is the default,
+    /// which is also the accent macOS reports when the user has not changed it, so an older theme
+    /// file that omits the field keeps meaning what it meant before.
+    #[cfg_attr(not(alloc_frugal), serde(default))]
+    pub system_accent: SystemAccent,
+    /// The control-metrics profile this theme's controls are sized for.
+    ///
+    /// Control sizes, corner radii, switch tracks and text-field heights are platform conventions,
+    /// not universal constants: a desktop control is shorter and more square than a touch target.
+    /// Keeping the profile on the theme is what lets one preset select the sizes its own controls
+    /// assume, rather than making every theme inherit one hardcoded table.
+    ///
+    /// Defaults to [`crate::widget::metrics::ControlMetricsProfile::Material`], the table the
+    /// library shipped with, so a theme file written before this field existed loads unchanged.
+    #[cfg_attr(not(alloc_frugal), serde(default))]
+    pub metrics_profile: crate::widget::metrics::ControlMetricsProfile,
     /// Class-level style overrides applied after base resolution.
     pub overrides: ThemeOverrides,
     /// Animation timing tokens.
@@ -97,11 +122,97 @@ pub struct Motion {
     /// `EaseOut` by default: an interaction should start immediately and settle, because a slow
     /// start reads as a missed input. This is the shape Material's standard curve has.
     pub easing: EasingFunction,
+    /// Which family of motion shapes a transition uses.
+    ///
+    /// [`MotionCurve::Easing`] is the default and reads [`Motion::easing`], so every theme
+    /// written before this field existed keeps its exact timing and shape. A theme that wants
+    /// the settle of a physical spring states [`MotionCurve::Spring`] with one of the presets;
+    /// a driver that asks for a curve explicitly (see `PropertyDriver::with_curve`) can also
+    /// override the token per property without changing the theme.
+    #[cfg_attr(not(alloc_frugal), serde(default))]
+    pub curve: MotionCurve,
 }
 
 impl Default for Motion {
     fn default() -> Self {
-        Self { fast: 100, normal: 200, slow: 300, easing: EasingFunction::EaseOut }
+        Self {
+            fast: 100,
+            normal: 200,
+            slow: 300,
+            easing: EasingFunction::EaseOut,
+            curve: MotionCurve::Easing,
+        }
+    }
+}
+
+/// A request for the host's translucent surface treatment.
+///
+/// # Why this is a request and not a colour
+///
+/// A material is not a fill: it asks the compositor to sample what is behind the surface,
+/// blur it, and lay a tint over it. macOS exposes that as the window-chrome, sidebar and
+/// content-under materials, and each keeps text legible over arbitrary content precisely
+/// because the backdrop is part of the colour. Naming the material keeps that intent
+/// expressible; a caller cannot reproduce it by lowering an alpha.
+///
+/// # Degradation
+///
+/// A host that reports reduced transparency must not draw a translucent surface. The
+/// material then degrades to [`Material::opaque_surface`], an ordinary palette colour — the
+/// same decision a window manager makes when it disables vibrancy. `Material::None` is the
+/// identity request: no layer, no tint, and the control's own fill stays authoritative.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(not(alloc_frugal), derive(Serialize, Deserialize))]
+pub enum Material {
+    /// No material: an opaque control-drawn surface.
+    #[default]
+    None,
+    /// The window's titlebar/chrome material.
+    WindowChrome,
+    /// A source-list/sidebar material.
+    Sidebar,
+    /// Content that sits under a translucent bar or panel.
+    ContentUnder,
+}
+
+impl Material {
+    /// The backdrop blur radius this material asks for, or `None` for [`Material::None`].
+    ///
+    /// The values follow the platform's visual weight: the chrome is the most diffuse, a
+    /// sidebar less so, and content-under the least, so a window keeps a readable hierarchy
+    /// instead of every surface blurring by the same amount.
+    pub const fn backdrop_blur_radius(self) -> Option<u32> {
+        match self {
+            Self::None => None,
+            Self::WindowChrome => Some(30),
+            Self::Sidebar => Some(20),
+            Self::ContentUnder => Some(12),
+        }
+    }
+
+    /// The tint this material lays over its blurred backdrop, or `None`.
+    ///
+    /// The tint comes from the active palette rather than a fixed colour, so a light and a
+    /// dark theme keep their own surface hierarchy over the same backdrop.
+    pub fn tint(self, colors: &Colors) -> Option<(Color, f32)> {
+        match self {
+            Self::None => None,
+            Self::WindowChrome => Some((colors.surface_container_high, 0.65)),
+            Self::Sidebar => Some((colors.surface_container, 0.55)),
+            Self::ContentUnder => Some((colors.background, 0.40)),
+        }
+    }
+
+    /// The opaque surface colour this material degrades to when transparency is reduced.
+    ///
+    /// Each material maps to the palette role that stands in for it, rather than to a single
+    /// "fallback" grey: a sidebar that becomes opaque should still read as a sidebar.
+    pub fn opaque_surface(self, colors: &Colors) -> Color {
+        match self {
+            Self::None | Self::ContentUnder => colors.background,
+            Self::WindowChrome => colors.surface_container_high,
+            Self::Sidebar => colors.surface_container,
+        }
     }
 }
 
@@ -121,6 +232,109 @@ pub enum AppearanceMode {
     Light,
     /// Dark background, light foreground.
     Dark,
+}
+
+/// The host's system accent choice.
+///
+/// # Why a closed set of eight
+///
+/// macOS offers exactly these accent choices, and each has a distinct pair of light/dark values
+/// that the system keeps legible on its own surfaces. A free-form colour would let a theme claim
+/// an accent the host never offered, and would lose the light/dark polarity the system maintains
+/// (the dark value is deliberately lighter so it stays readable on a near-black window).
+///
+/// The variants are the *choice*, not a colour: [`SystemAccent::color`] is the only place the
+/// two values live, so a caller never has to decide which appearance's value to use.
+#[cfg_attr(not(alloc_frugal), derive(Serialize, Deserialize))]
+#[cfg_attr(not(alloc_frugal), serde(rename_all = "lowercase"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SystemAccent {
+    /// The default blue accent.
+    #[default]
+    Blue,
+    /// Purple.
+    Purple,
+    /// Pink.
+    Pink,
+    /// Red.
+    Red,
+    /// Orange.
+    Orange,
+    /// Yellow.
+    Yellow,
+    /// Green.
+    Green,
+    /// Graphite (the neutral grey choice).
+    Graphite,
+}
+
+impl SystemAccent {
+    /// Every variant, in the order the system presents them.
+    pub const ALL: [SystemAccent; 8] = [
+        SystemAccent::Blue,
+        SystemAccent::Purple,
+        SystemAccent::Pink,
+        SystemAccent::Red,
+        SystemAccent::Orange,
+        SystemAccent::Yellow,
+        SystemAccent::Green,
+        SystemAccent::Graphite,
+    ];
+
+    /// The accent's colour for an appearance.
+    ///
+    /// `dark` selects the light-on-dark value the system uses in dark mode. Both values are the
+    /// host's own, not a derived tint: deriving one from the other would lose the intentional
+    /// lightness increase the system applies to keep the accent legible on a dark surface.
+    pub const fn color(self, dark: bool) -> Color {
+        match (self, dark) {
+            (SystemAccent::Blue, false) => Color::rgb(0x00, 0x7A, 0xFF),
+            (SystemAccent::Blue, true) => Color::rgb(0x0A, 0x84, 0xFF),
+            (SystemAccent::Purple, false) => Color::rgb(0xAF, 0x52, 0xDE),
+            (SystemAccent::Purple, true) => Color::rgb(0xBF, 0x5A, 0xF2),
+            (SystemAccent::Pink, false) => Color::rgb(0xFF, 0x2D, 0x55),
+            (SystemAccent::Pink, true) => Color::rgb(0xFF, 0x37, 0x5F),
+            (SystemAccent::Red, false) => Color::rgb(0xFF, 0x3B, 0x30),
+            (SystemAccent::Red, true) => Color::rgb(0xFF, 0x45, 0x3A),
+            (SystemAccent::Orange, false) => Color::rgb(0xFF, 0x95, 0x00),
+            (SystemAccent::Orange, true) => Color::rgb(0xFF, 0x9F, 0x0A),
+            (SystemAccent::Yellow, false) => Color::rgb(0xFF, 0xCC, 0x00),
+            (SystemAccent::Yellow, true) => Color::rgb(0xFF, 0xD6, 0x0A),
+            (SystemAccent::Green, false) => Color::rgb(0x34, 0xC7, 0x59),
+            (SystemAccent::Green, true) => Color::rgb(0x30, 0xD1, 0x58),
+            (SystemAccent::Graphite, false) => Color::rgb(0x8E, 0x8E, 0x93),
+            (SystemAccent::Graphite, true) => Color::rgb(0x98, 0x98, 0x9D),
+        }
+    }
+
+    /// The named accent closest to a colour read back from the host.
+    ///
+    /// The host reports a colour, not a name: the query returns whatever the system resolved for
+    /// the current appearance, including a custom value a future OS may add. Rather than invent a
+    /// ninth variant or fail, this picks the nearest of the eight in RGB space, comparing against
+    /// **both** appearance values because the read colour's appearance is not part of the report.
+    ///
+    /// A read value that is not near any of them still lands on the nearest one; callers that
+    /// need to know whether the match was exact should compare the result's
+    /// [`SystemAccent::color`] with the colour they read.
+    pub fn nearest(color: Color) -> Self {
+        let mut best = SystemAccent::Blue;
+        let mut best_distance = u32::MAX;
+        for accent in Self::ALL {
+            for dark in [false, true] {
+                let candidate = accent.color(dark);
+                let dr = i32::from(candidate.r) - i32::from(color.r);
+                let dg = i32::from(candidate.g) - i32::from(color.g);
+                let db = i32::from(candidate.b) - i32::from(color.b);
+                let distance = (dr * dr + dg * dg + db * db) as u32;
+                if distance < best_distance {
+                    best_distance = distance;
+                    best = accent;
+                }
+            }
+        }
+        best
+    }
 }
 
 /// The role a widget plays in the theme's colour scheme.
@@ -353,6 +567,42 @@ const fn default_inverse_surface_color() -> Color {
 #[cfg(not(alloc_frugal))]
 const fn default_on_inverse_surface_color() -> Color {
     Color::rgb(244, 239, 244)
+}
+
+impl Colors {
+    /// Interpolates every token toward `other` by `weight` (`0.0` keeps `self`, `1.0` takes
+    /// `other`).
+    ///
+    /// # Why a palette-wide blend and not a per-call-site helper
+    ///
+    /// A theme transition has to move **every** token together: blending only the background
+    /// leaves text and borders jumping to the target mid-fade, which reads as a flicker rather
+    /// than as a transition. Each field goes through [`Color::blend`], the crate's one colour
+    /// interpolation primitive, so a future colour space change lands in one place rather than in
+    /// a second copy of the arithmetic here.
+    pub fn blend(&self, other: &Self, weight: f32) -> Self {
+        Self {
+            background: self.background.blend(&other.background, weight),
+            foreground: self.foreground.blend(&other.foreground, weight),
+            primary: self.primary.blend(&other.primary, weight),
+            secondary: self.secondary.blend(&other.secondary, weight),
+            accent: self.accent.blend(&other.accent, weight),
+            error: self.error.blend(&other.error, weight),
+            warning: self.warning.blend(&other.warning, weight),
+            success: self.success.blend(&other.success, weight),
+            disabled: self.disabled.blend(&other.disabled, weight),
+            info: self.info.blend(&other.info, weight),
+            outline: self.outline.blend(&other.outline, weight),
+            outline_variant: self.outline_variant.blend(&other.outline_variant, weight),
+            scrim: self.scrim.blend(&other.scrim, weight),
+            surface_container: self.surface_container.blend(&other.surface_container, weight),
+            surface_container_high: self
+                .surface_container_high
+                .blend(&other.surface_container_high, weight),
+            inverse_surface: self.inverse_surface.blend(&other.inverse_surface, weight),
+            on_inverse_surface: self.on_inverse_surface.blend(&other.on_inverse_surface, weight),
+        }
+    }
 }
 
 impl Default for Colors {
@@ -910,5 +1160,77 @@ pub struct ShadowToken {
 impl From<ShadowToken> for Shadow {
     fn from(token: ShadowToken) -> Self {
         Self { x: token.x, y: token.y, blur: token.blur, color: token.color }
+    }
+}
+
+#[cfg(test)]
+mod system_accent_tests {
+    use super::*;
+
+    /// Every one of the eight system accents has the host's light and dark value.
+    ///
+    /// The pair matters more than either value: a theme that used the light value in dark mode
+    /// would draw a saturated blue on a near-black window, and the host's dark values are
+    /// deliberately lighter for that reason. Pinning the whole table is what keeps a later
+    /// "tidy-up" from replacing it with one value and a computed tint.
+    #[test]
+    fn the_eight_system_accents_use_the_hosts_light_and_dark_values() {
+        let table = [
+            (SystemAccent::Blue, Color::rgb(0x00, 0x7A, 0xFF), Color::rgb(0x0A, 0x84, 0xFF)),
+            (SystemAccent::Purple, Color::rgb(0xAF, 0x52, 0xDE), Color::rgb(0xBF, 0x5A, 0xF2)),
+            (SystemAccent::Pink, Color::rgb(0xFF, 0x2D, 0x55), Color::rgb(0xFF, 0x37, 0x5F)),
+            (SystemAccent::Red, Color::rgb(0xFF, 0x3B, 0x30), Color::rgb(0xFF, 0x45, 0x3A)),
+            (SystemAccent::Orange, Color::rgb(0xFF, 0x95, 0x00), Color::rgb(0xFF, 0x9F, 0x0A)),
+            (SystemAccent::Yellow, Color::rgb(0xFF, 0xCC, 0x00), Color::rgb(0xFF, 0xD6, 0x0A)),
+            (SystemAccent::Green, Color::rgb(0x34, 0xC7, 0x59), Color::rgb(0x30, 0xD1, 0x58)),
+            (SystemAccent::Graphite, Color::rgb(0x8E, 0x8E, 0x93), Color::rgb(0x98, 0x98, 0x9D)),
+        ];
+        assert_eq!(table.len(), SystemAccent::ALL.len(), "the table covers every variant");
+        for (accent, light, dark) in table {
+            assert_eq!(accent.color(false), light, "{accent:?} light value");
+            assert_eq!(accent.color(true), dark, "{accent:?} dark value");
+            assert_ne!(light, dark, "{accent:?} must not reuse one value for both appearances");
+        }
+    }
+
+    /// A colour read back from the host maps to the accent it came from, in either appearance.
+    ///
+    /// The read is a colour, not a name, so this is the join between the platform fact and the
+    /// theme field. Matching against both appearance values is what makes a dark-mode read of a
+    /// light-mode value still resolve to the same variant.
+    #[test]
+    fn a_read_colour_maps_back_to_the_accent_it_came_from() {
+        for accent in SystemAccent::ALL {
+            for dark in [false, true] {
+                assert_eq!(
+                    SystemAccent::nearest(accent.color(dark)),
+                    accent,
+                    "{accent:?} in dark={dark} must round-trip"
+                );
+            }
+        }
+        // A value between two neighbours still resolves to one of the named accents rather than
+        // inventing a variant or failing.
+        assert_eq!(SystemAccent::nearest(Color::rgb(0x00, 0x7A, 0xFE)), SystemAccent::Blue);
+    }
+
+    /// A palette blend moves every token, and the endpoints are the two palettes themselves.
+    #[test]
+    fn a_palette_blend_is_per_token() {
+        let light = Colors::default();
+        let dark = crate::theme::Theme::dark().colors;
+        let at_start = light.blend(&dark, 0.0);
+        assert_eq!(at_start.background, light.background, "weight 0 is the source palette");
+        assert_eq!(at_start.accent, light.accent);
+        // `Colors` deliberately has no `PartialEq`; compare the tokens a transition would show.
+        let at_end = light.blend(&dark, 1.0);
+        assert_eq!(at_end.background, dark.background);
+        assert_eq!(at_end.foreground, dark.foreground);
+        assert_eq!(at_end.accent, dark.accent);
+        let middle = light.blend(&dark, 0.5);
+        assert_ne!(middle.background, light.background);
+        assert_ne!(middle.background, dark.background);
+        assert_ne!(middle.foreground, light.foreground);
+        assert_ne!(middle.foreground, dark.foreground);
     }
 }

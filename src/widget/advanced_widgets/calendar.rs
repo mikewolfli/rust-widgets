@@ -89,7 +89,7 @@ pub struct Calendar {
     /// Emitted when the user **commits** the selected date: a double click on a day
     /// cell, or Enter/Space with the grid focused.
     ///
-    /// Qt draws the same line between selection and activation: navigating a calendar
+    /// 参考工具包 draws the same line between selection and activation: navigating a calendar
     /// changes `selectedDate` continuously, while `activated` is the "use this date and
     /// close me" event a date picker's host listens to. A host that closed its popup on
     /// `selection_changed` would shut it after a single arrow-key move.
@@ -98,7 +98,7 @@ pub struct Calendar {
     ///
     /// Covers every way the page can move — the navigation bar, Page Up/Down, arrow keys
     /// crossing a month boundary, and the programmatic setters — because they all go through
-    /// [`Calendar::show_page`]. Qt's `currentPageChanged` answers the same question.
+    /// [`Calendar::show_page`]. the reference toolkit's `currentPageChanged` answers the same question.
     pub current_page_changed: Signal1<(i32, u32)>,
     date_format: String,
 }
@@ -792,7 +792,7 @@ impl EventHandler for Calendar {
                 }
             }
             Event::MouseDoubleClick { pos, .. } => {
-                // Double click commits the date: Qt's `activated`. A double click also delivers
+                // Double click commits the date: the reference toolkit's `activated`. A double click also delivers
                 // a press first, so the cell is already selected; emitting here is what lets a
                 // date-picker host close its popup on the gesture the user made.
                 if let Some(date) = self.date_at_position(*pos) {
@@ -845,7 +845,7 @@ impl EventHandler for Calendar {
                         self.show_today();
                     }
                     13 | 32 => {
-                        // Enter / Space commits the current selection: Qt's `activated`.
+                        // Enter / Space commits the current selection: the reference toolkit's `activated`.
                         self.activated.emit(self.selected_date);
                     }
                     _ => { /* Other keys are not relevant */ }

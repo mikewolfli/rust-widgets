@@ -1,0 +1,630 @@
+{
+  "name": "macos-light",
+  "appearance": "Light",
+  "colors": {
+    "background": {
+      "r": 236,
+      "g": 236,
+      "b": 236,
+      "a": 255
+    },
+    "foreground": {
+      "r": 29,
+      "g": 29,
+      "b": 31,
+      "a": 255
+    },
+    "primary": {
+      "r": 0,
+      "g": 122,
+      "b": 255,
+      "a": 255
+    },
+    "secondary": {
+      "r": 110,
+      "g": 110,
+      "b": 115,
+      "a": 255
+    },
+    "accent": {
+      "r": 0,
+      "g": 122,
+      "b": 255,
+      "a": 255
+    },
+    "error": {
+      "r": 255,
+      "g": 59,
+      "b": 48,
+      "a": 255
+    },
+    "warning": {
+      "r": 255,
+      "g": 204,
+      "b": 0,
+      "a": 255
+    },
+    "success": {
+      "r": 52,
+      "g": 199,
+      "b": 89,
+      "a": 255
+    },
+    "disabled": {
+      "r": 199,
+      "g": 199,
+      "b": 204,
+      "a": 255
+    },
+    "info": {
+      "r": 50,
+      "g": 173,
+      "b": 230,
+      "a": 255
+    },
+    "outline": {
+      "r": 142,
+      "g": 142,
+      "b": 147,
+      "a": 255
+    },
+    "outline_variant": {
+      "r": 209,
+      "g": 209,
+      "b": 214,
+      "a": 255
+    },
+    "scrim": {
+      "r": 0,
+      "g": 0,
+      "b": 0,
+      "a": 92
+    },
+    "surface_container": {
+      "r": 245,
+      "g": 245,
+      "b": 247,
+      "a": 255
+    },
+    "surface_container_high": {
+      "r": 255,
+      "g": 255,
+      "b": 255,
+      "a": 255
+    },
+    "inverse_surface": {
+      "r": 29,
+      "g": 29,
+      "b": 31,
+      "a": 255
+    },
+    "on_inverse_surface": {
+      "r": 245,
+      "g": 245,
+      "b": 247,
+      "a": 255
+    }
+  },
+  "fonts": {
+    "regular": {
+      "family": "SF Pro",
+      "size": 14.0,
+      "weight": 400,
+      "bold": false,
+      "italic": false,
+      "letter_spacing": 0.0,
+      "word_spacing": 0.0,
+      "line_height": 0.0
+    },
+    "bold": {
+      "family": "SF Pro",
+      "size": 14.0,
+      "weight": 700,
+      "bold": true,
+      "italic": false,
+      "letter_spacing": 0.0,
+      "word_spacing": 0.0,
+      "line_height": 0.0
+    },
+    "italic": {
+      "family": "SF Pro",
+      "size": 14.0,
+      "weight": 400,
+      "bold": false,
+      "italic": true,
+      "letter_spacing": 0.0,
+      "word_spacing": 0.0,
+      "line_height": 0.0
+    },
+    "monospace": {
+      "family": "Courier New",
+      "size": 12.0,
+      "weight": 400,
+      "bold": false,
+      "italic": false,
+      "letter_spacing": 0.0,
+      "word_spacing": 0.0,
+      "line_height": 0.0
+    },
+    "caption": {
+      "family": "SF Pro",
+      "size": 11.0,
+      "weight": 400,
+      "bold": false,
+      "italic": false,
+      "letter_spacing": 0.0,
+      "word_spacing": 0.0,
+      "line_height": 0.0
+    },
+    "body": {
+      "family": "SF Pro",
+      "size": 14.0,
+      "weight": 400,
+      "bold": false,
+      "italic": false,
+      "letter_spacing": 0.0,
+      "word_spacing": 0.0,
+      "line_height": 0.0
+    },
+    "title": {
+      "family": "SF Pro",
+      "size": 16.0,
+      "weight": 700,
+      "bold": true,
+      "italic": false,
+      "letter_spacing": 0.0,
+      "word_spacing": 0.0,
+      "line_height": 0.0
+    },
+    "headline": {
+      "family": "SF Pro",
+      "size": 20.0,
+      "weight": 700,
+      "bold": true,
+      "italic": false,
+      "letter_spacing": 0.0,
+      "word_spacing": 0.0,
+      "line_height": 0.0
+    },
+    "display": {
+      "family": "SF Pro",
+      "size": 28.0,
+      "weight": 700,
+      "bold": true,
+      "italic": false,
+      "letter_spacing": 0.0,
+      "word_spacing": 0.0,
+      "line_height": 0.0
+    }
+  },
+  "spacing": {
+    "small": 4,
+    "medium": 8,
+    "large": 16,
+    "extra_large": 24
+  },
+  "borders": {
+    "width": 1,
+    "radius": 6,
+    "shadow": true
+  },
+  "flat_surfaces": true,
+  "system_accent": "blue",
+  "metrics_profile": "macos",
+  "overrides": {
+    "styles": {
+      "button:disabled": {
+        "background": {
+          "r": 199,
+          "g": 199,
+          "b": 204,
+          "a": 255
+        },
+        "foreground": {
+          "r": 122,
+          "g": 122,
+          "b": 123,
+          "a": 255
+        },
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "button:hover": {
+        "background": {
+          "r": 219,
+          "g": 219,
+          "b": 220,
+          "a": 255
+        },
+        "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "button:pressed": {
+        "background": {
+          "r": 211,
+          "g": 211,
+          "b": 211,
+          "a": 255
+        },
+        "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "check_box:checked": {
+        "background": {
+          "r": 0,
+          "g": 122,
+          "b": 255,
+          "a": 255
+        },
+        "foreground": {
+          "r": 0,
+          "g": 0,
+          "b": 0,
+          "a": 255
+        },
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "chip:selected": {
+        "background": {
+          "r": 0,
+          "g": 122,
+          "b": 255,
+          "a": 255
+        },
+        "foreground": {
+          "r": 0,
+          "g": 0,
+          "b": 0,
+          "a": 255
+        },
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "line_edit:error": {
+        "background": null,
+        "foreground": null,
+        "border": {
+          "r": 255,
+          "g": 59,
+          "b": 48,
+          "a": 255
+        },
+        "border_width": 2,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "radio_button:checked": {
+        "background": {
+          "r": 0,
+          "g": 122,
+          "b": 255,
+          "a": 255
+        },
+        "foreground": {
+          "r": 0,
+          "g": 0,
+          "b": 0,
+          "a": 255
+        },
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "split_button:disabled": {
+        "background": {
+          "r": 199,
+          "g": 199,
+          "b": 204,
+          "a": 255
+        },
+        "foreground": {
+          "r": 122,
+          "g": 122,
+          "b": 123,
+          "a": 255
+        },
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "split_button:hover": {
+        "background": {
+          "r": 219,
+          "g": 219,
+          "b": 220,
+          "a": 255
+        },
+        "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "split_button:pressed": {
+        "background": {
+          "r": 211,
+          "g": 211,
+          "b": 211,
+          "a": 255
+        },
+        "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "switch:checked": {
+        "background": {
+          "r": 0,
+          "g": 122,
+          "b": 255,
+          "a": 255
+        },
+        "foreground": {
+          "r": 0,
+          "g": 0,
+          "b": 0,
+          "a": 255
+        },
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "toggle_button:checked": {
+        "background": {
+          "r": 7,
+          "g": 99,
+          "b": 199,
+          "a": 255
+        },
+        "foreground": {
+          "r": 0,
+          "g": 0,
+          "b": 0,
+          "a": 255
+        },
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "toggle_button:disabled": {
+        "background": {
+          "r": 199,
+          "g": 199,
+          "b": 204,
+          "a": 255
+        },
+        "foreground": {
+          "r": 122,
+          "g": 122,
+          "b": 123,
+          "a": 255
+        },
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "toggle_button:hover": {
+        "background": {
+          "r": 219,
+          "g": 219,
+          "b": 220,
+          "a": 255
+        },
+        "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "toggle_button:pressed": {
+        "background": {
+          "r": 211,
+          "g": 211,
+          "b": 211,
+          "a": 255
+        },
+        "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "tool_button:disabled": {
+        "background": {
+          "r": 199,
+          "g": 199,
+          "b": 204,
+          "a": 255
+        },
+        "foreground": {
+          "r": 122,
+          "g": 122,
+          "b": 123,
+          "a": 255
+        },
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "tool_button:hover": {
+        "background": {
+          "r": 219,
+          "g": 219,
+          "b": 220,
+          "a": 255
+        },
+        "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "tool_button:pressed": {
+        "background": {
+          "r": 211,
+          "g": 211,
+          "b": 211,
+          "a": 255
+        },
+        "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      }
+    }
+  },
+  "motion": {
+    "fast": 120,
+    "normal": 220,
+    "slow": 300,
+    "easing": "EaseOut",
+    "curve": "Easing"
+  }
+}

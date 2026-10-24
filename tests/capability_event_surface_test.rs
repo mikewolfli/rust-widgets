@@ -308,3 +308,34 @@ fn a_published_event_with_a_payload_is_reachable_by_name() {
         "the payload-carrying event could be probed but not subscribed to"
     );
 }
+
+/// Probing an accepted spelling must leave no slot behind on the canonical signal.
+///
+/// `event_is_subscribable` is documented as the form a consumer uses while building a
+/// menu of available events, so it may run once per entry and again on every refresh.
+/// It connects a real slot to exercise the real validation; if the matching disconnect
+/// names a different key, every probe leaks one slot into the canonical signal forever.
+#[test]
+fn probing_a_tolerated_spelling_leaves_no_slot_behind() {
+    let factory = WidgetFactory::new_with_defaults();
+    let hub = CustomSignalHub::new();
+
+    assert!(
+        factory.event_is_subscribable("slider", "value-changed", &hub).is_ok(),
+        "a hyphenated spelling is tolerated by the validation"
+    );
+    assert_eq!(
+        hub.slot_count("value_changed"),
+        0,
+        "the probe connected under the canonical name but did not disconnect it"
+    );
+
+    for _ in 0..16 {
+        assert!(factory.event_is_subscribable("slider", "value-changed", &hub).is_ok());
+    }
+    assert_eq!(hub.slot_count("value_changed"), 0, "repeated probes must not accumulate");
+
+    // The canonical spelling takes the same path and must not leak either.
+    assert!(factory.event_is_subscribable("slider", "value_changed", &hub).is_ok());
+    assert_eq!(hub.slot_count("value_changed"), 0);
+}

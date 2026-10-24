@@ -14,11 +14,11 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::dimensions;
 use crate::widget::metrics::{
-    effective_font, estimate_line_height, estimate_text_width, ControlMetrics,
+    dimensions, effective_font, estimate_line_height, estimate_text_width, expand_to_hit_area,
+    focus_ring_color, ControlMetrics, FocusRing, FOCUS_RING_WIDTH,
 };
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, InteractionFade, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Side of the indicator box, in logical pixels.
@@ -44,6 +44,13 @@ pub(crate) const INDICATOR_INSET: i32 = 2;
 const CHECKBOX_PADDING: crate::style::EdgeOffsets =
     crate::style::EdgeOffsets { left: 2, top: 0, right: 2, bottom: 0 };
 
+/// How far the indicator's fill moves toward its contrasting tone at full interaction strength.
+///
+/// Applied only when the fade's intensity is above zero, so a resting checkbox paints its
+/// resolved fill byte-for-byte. Named rather than inlined because the draw path and its tests
+/// read the same value; at rest the tint is skipped entirely.
+const CHECKBOX_INTERACTION_TINT: f32 = 0.10;
+
 /// Checkbox state.
 ///
 /// A three-valued state even though the checkbox is two-valued by default:
@@ -67,6 +74,13 @@ pub struct CheckBox {
     state: CheckState,
     text: String,
     tristate_enabled: bool,
+    /// The hover/press fade that tints the indicator while the pointer interacts.
+    ///
+    /// Both drivers rest at exactly `0.0`, so a checkbox that has never been pointed at paints
+    /// its resolved fill byte-for-byte. The fade is what makes the hover a transition rather
+    /// than a snap, and the box's only pointer feedback — the control previously looked
+    /// identical with the pointer over it and away from it.
+    fade: InteractionFade,
     /// Emitted with a boolean view of the state on every change: `true` for
     /// [`CheckState::Checked`], `false` for the other two.
     ///
@@ -167,8 +181,10 @@ impl CheckBox {
             )
         };
         match self.style().touch_target {
-            Some(min_size) => contents.expand_to_touch_target(min_size),
-            None => contents,
+            // The style's explicit target can only widen the platform floor; both steps are
+            // grow-only, so asking the platform first and the style second cannot shrink either.
+            Some(min_size) => expand_to_hit_area(contents).expand_to_touch_target(min_size),
+            None => expand_to_hit_area(contents),
         }
     }
 
@@ -207,6 +223,7 @@ impl CheckBox {
             state: CheckState::Unchecked,
             text: String::new(),
             tristate_enabled: false,
+            fade: InteractionFade::new(),
             toggled: Signal1::new(),
             state_changed: Signal1::new(),
         }
@@ -282,6 +299,18 @@ impl CheckBox {
         }
         self.base.request_redraw();
     }
+    /// Retargets the interaction fade from the pointer facts the base recorded.
+    ///
+    /// A disabled checkbox is inert, so both targets collapse to rest instead of letting a
+    /// hover linger on a control the user cannot interact with. `sync` re-aims rather than
+    /// restarts, so a repeated event cannot make the tint stutter.
+    fn sync_fade(&mut self) {
+        let enabled = self.base.is_enabled();
+        if self.fade.sync(enabled && self.base.is_hovered(), enabled && self.base.is_pressed()) {
+            self.request_frame_repaint(None);
+        }
+    }
+
     /// Toggles between checked states.
     pub fn toggle(&mut self) {
         let next_state = match self.state {
@@ -296,6 +325,60 @@ impl CheckBox {
             CheckState::PartiallyChecked => CheckState::Unchecked,
         };
         self.set_state(next_state);
+    }
+
+    /// Submits one animated or interactive frame as damage bounded by the painted box
+    /// plus the focus-ring and halo margin.
+    ///
+    /// `bounds` is `Some` only when the caller already has the rectangle; interaction
+    /// paths pass `None` and let the runtime derive the box.
+    ///
+    /// A control that is unmounted falls back to [`BaseWidget::request_redraw`], which
+    /// keeps the redraw signal contract for host-owned controls. An interaction frame in
+    /// [`crate::widget::runtime::RepaintMode::Full`] still routes through
+    /// [`crate::widget::runtime::request_repaint_rect`], whose documented fallback repaints
+    /// the whole control.
+    fn request_frame_repaint(&self, bounds: Option<Rect>) {
+        let _ = bounds;
+        #[cfg(not(alloc_frugal))]
+        {
+            if let Some(id) = crate::widget::runtime::registry_id_of(self.id()) {
+                let narrow = crate::widget::runtime::repaint_mode(id)
+                    != crate::widget::runtime::RepaintMode::Full;
+                // Interaction paths may take the whole-control fallback in `Full`;
+                // `bounds` lets a caller that already has the rectangle skip the lookup.
+                if narrow || bounds.is_none() {
+                    let damage = bounds
+                        .or_else(|| crate::widget::runtime::painted_box_with_damage_margin(id))
+                        .unwrap_or_else(|| self.damage_bounds());
+                    crate::widget::runtime::request_repaint_rect(id, damage);
+                    // The replaced `request_redraw` emitted this signal; keep it.
+                    self.base.redraw_requested.emit();
+                    return;
+                }
+            }
+        }
+        self.base.request_redraw();
+    }
+
+    /// This control's own rectangle grown by
+    /// [`crate::widget::metrics::DAMAGE_MARGIN`].
+    ///
+    /// Used when the runtime cannot read the mounted geometry back, which is the case
+    /// while an interaction event holds the control out of the registry. Deriving the
+    /// rectangle from `Widget::geometry` yields the same answer the runtime returns for
+    /// the mounted control.
+    #[cfg(not(alloc_frugal))]
+    fn damage_bounds(&self) -> Rect {
+        let rect = self.geometry();
+        let margin = crate::widget::metrics::DAMAGE_MARGIN;
+        let offset = margin as i32;
+        Rect::new(
+            rect.x.saturating_sub(offset),
+            rect.y.saturating_sub(offset),
+            rect.width.saturating_add(margin).saturating_add(margin),
+            rect.height.saturating_add(margin).saturating_add(margin),
+        )
     }
 }
 impl Widget for CheckBox {
@@ -361,6 +444,17 @@ impl Widget for CheckBox {
             "a size hint must be measured through ControlMetrics"
         );
         self.implicit_size()
+    }
+
+    // The indicator's fill is what the pointer feedback paints, so a hovered or pressed
+    // checkbox owes frames while the tint is in flight. A resting box's drivers report no
+    // movement, so it costs nothing on the animation bus.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.fade.tick(delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.fade.is_animating()
     }
 
     /// Reports `Checked` when the box is latched, so the preset's `check_box:checked` override
@@ -479,6 +573,17 @@ impl WidgetProperties for CheckBox {
 impl EventHandler for CheckBox {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        // The four pointer events are the only ones that can change the interaction fade. They
+        // run before the toggle arms so the painted wash follows the pointer state the base
+        // just recorded, and so a disabled box still retargets both drivers to rest rather
+        // than leaving a hovered tint frozen in place.
+        match event {
+            Event::MouseEnter { .. }
+            | Event::MouseLeave { .. }
+            | Event::MousePress { .. }
+            | Event::MouseRelease { .. } => self.sync_fade(),
+            _ => { /* Other events carry no fade-relevant pointer state */ }
+        }
         match event {
             // **Hit test, not "anywhere in the rectangle".**
             //
@@ -537,7 +642,17 @@ impl Draw for CheckBox {
         // the fallback is derived from the resolved value rather than from an assumption about
         // the appearance.
         let surface = style.background_color.unwrap_or(Color::WHITE);
-        let field = if enabled { surface } else { surface.with_alpha(180) };
+        // The interaction wash: painted only when a driver actually holds a value, so the
+        // resting fill is untouched byte-for-byte. `intensity` is the stronger of the two
+        // drivers, so a press without a preceding hover still tints, and a press on a hover
+        // is one wash rather than two.
+        let intensity = if enabled { self.fade.intensity() } else { 0.0 };
+        let tinted = if intensity > 0.0 {
+            surface.blend(&surface.contrast_color(), CHECKBOX_INTERACTION_TINT * intensity)
+        } else {
+            surface
+        };
+        let field = if enabled { tinted } else { tinted.with_alpha(180) };
         context.fill_rect(checkbox_rect, field);
 
         let border_color = style.border_color.unwrap_or_else(|| field.contrast_color());
@@ -639,6 +754,27 @@ impl Draw for CheckBox {
                 HorizontalAlignment::Left,
             );
         }
+
+        // ── Focus ring ──
+        //
+        // Inset inside the indicator, the same placement every other control uses (see
+        // `ControlMetrics::focus_ring_rect`), and gated on the **reason** focus arrived: a
+        // pointer press focuses without painting a ring, while Tab and Shortcut draw one.
+        // `BaseWidget` records that reason for every control, so this site cannot disagree
+        // with the rest of the crate about what "visual focus" means.
+        if self.base.draws_focus_ring() {
+            let ring = FocusRing::for_control(checkbox_rect, dimensions::CHECKBOX_RADIUS);
+            if ring.is_drawable() {
+                // The fallback ring is the contrast of the box's own fill; an active theme
+                // overrides it with its declared `outline` token.
+                context.draw_rounded_rect_stroke(
+                    ring.rect,
+                    ring.radius,
+                    focus_ring_color(field.contrast_color()),
+                    FOCUS_RING_WIDTH,
+                );
+            }
+        }
     }
 }
 
@@ -654,6 +790,7 @@ mod tests {
     use crate::core::ObjectId;
     use crate::core::Size;
     use crate::event::Event;
+    use crate::event::FocusReason;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
     use std::sync::Mutex;
@@ -1440,5 +1577,217 @@ mod tests {
     fn label_ink_width(cb: &mut CheckBox, _text: &str) -> i32 {
         let svg = crate::widget::svg::render_to_svg(cb);
         crate::widget::svg::text_ink_box(&svg).map(|(x, _, right, _)| right - x).unwrap_or(0)
+    }
+
+    /// Keyboard focus must actually paint the ring the state channel already reported.
+    ///
+    /// # The defect this pins
+    ///
+    /// `widget_state()` reported `Focused` while `draw` painted no ring at all — the state was
+    /// recorded and announced but had no visible consumer. The ring is the only 2 px stroke an
+    /// unlabelled, unchecked checkbox emits, so its presence is observable in the render.
+    #[test]
+    fn a_keyboard_focused_checkbox_paints_a_focus_ring() {
+        // The ring's colour reads the process-wide theme, so this render must not race a
+        // test that switches the active appearance.
+        let _guard = crate::style::theme_test_guard();
+        let mut checkbox = CheckBox::new(Rect::new(0, 0, 60, 40));
+        checkbox.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
+        assert!(checkbox.base.draws_focus_ring(), "Tab focus must ask for a ring");
+
+        let svg = crate::widget::svg::render_to_svg(&mut checkbox);
+        assert_eq!(
+            svg.matches("stroke-width=\"2\"").count(),
+            1,
+            "the focus ring is the only 2 px stroke on an unlabelled, unchecked box: {svg}"
+        );
+        let ring = svg
+            .lines()
+            .find(|line| line.contains("stroke-width=\"2\""))
+            .expect("the ring element must exist");
+        assert!(
+            ring.contains(" rx=\""),
+            "the ring must be drawn as a rounded-rectangle stroke: {ring}"
+        );
+        assert!(
+            ring.contains("stroke=\"rgba(") && !ring.contains(",0.00)"),
+            "the ring stroke must carry visible ink rather than a transparent colour: {ring}"
+        );
+    }
+
+    /// A pointer press focuses the control without drawing a ring under the cursor.
+    #[test]
+    fn a_pointer_focused_checkbox_does_not_paint_a_focus_ring() {
+        let _guard = crate::style::theme_test_guard();
+        let mut checkbox = CheckBox::new(Rect::new(0, 0, 60, 40));
+        checkbox.handle_event(&Event::FocusGained { reason: FocusReason::Pointer });
+        assert!(
+            checkbox.base.focus_reason().is_some(),
+            "the pointer still moves the keyboard target"
+        );
+
+        let svg = crate::widget::svg::render_to_svg(&mut checkbox);
+        assert!(
+            !svg.contains("stroke-width=\"2\""),
+            "a pointer-focused checkbox must not paint a ring: {svg}"
+        );
+    }
+
+    // ── Interaction fade (P1-9) ─────────────────────────────────────────────
+
+    /// Rasterises the checkbox's paint into the SVG document the comparisons read.
+    fn render(cb: &mut CheckBox) -> String {
+        crate::widget::svg::render_to_svg(cb)
+    }
+
+    /// A pointer entering the box retargets the hover driver at once.
+    ///
+    /// The answer has to be true before any `tick` has run: the animation bus asks
+    /// `is_animating` first, and a control that only admitted movement on its next tick
+    /// would never be scheduled for one.
+    #[test]
+    fn mouse_enter_makes_the_checkbox_animating() {
+        let mut checkbox = CheckBox::new(Rect::new(0, 0, 60, 40));
+        assert!(!Widget::is_animating(&checkbox), "a new checkbox rests and owes no frames");
+
+        checkbox.handle_event(&Event::MouseEnter { pos: Point::new(1, 1) });
+
+        assert!(
+            Widget::is_animating(&checkbox),
+            "MouseEnter must make the checkbox's fade moving before any tick"
+        );
+        assert!(Widget::tick(&mut checkbox, 16), "the first fade frame must report work");
+    }
+
+    /// A resting box paints its resolved fill byte-for-byte, and returns to exactly that
+    /// picture after a hover has come and gone.
+    #[test]
+    fn a_resting_checkbox_paints_the_untinted_indicator() {
+        let _guard = crate::style::theme_test_guard();
+        let mut checkbox = CheckBox::new(Rect::new(0, 0, 120, 32));
+        checkbox.set_text("Enable".to_string());
+        let fresh = render(&mut checkbox);
+
+        checkbox.handle_event(&Event::MouseEnter { pos: Point::new(1, 1) });
+        while Widget::tick(&mut checkbox, 16) {}
+        assert_ne!(
+            render(&mut checkbox),
+            fresh,
+            "a settled hover must actually tint the indicator"
+        );
+
+        checkbox.handle_event(&Event::MouseLeave { pos: Point::new(1, 1) });
+        while Widget::tick(&mut checkbox, 16) {}
+        assert_eq!(checkbox.fade.hover.value(), 0.0, "the fade returns to rest exactly");
+        assert_eq!(
+            render(&mut checkbox),
+            fresh,
+            "a box back at rest must repaint the same bytes it did before the hover"
+        );
+    }
+
+    /// Animating to the hover terminal state produces the same picture as setting the
+    /// terminal value directly, so the fade is purely a path between two identical ends.
+    #[test]
+    fn a_settled_hover_matches_the_manually_set_terminal_state() {
+        let _guard = crate::style::theme_test_guard();
+        let make = || {
+            let mut checkbox = CheckBox::new(Rect::new(0, 0, 120, 32));
+            checkbox.set_text("Enable".to_string());
+            checkbox
+        };
+
+        let mut animated = make();
+        animated.handle_event(&Event::MouseEnter { pos: Point::new(1, 1) });
+        let mut frames = 0;
+        while Widget::tick(&mut animated, 16) {
+            frames += 1;
+            assert!(frames < 500, "the fade must terminate");
+        }
+        assert_eq!(animated.fade.hover.value(), 1.0, "the hover settles at its target");
+
+        let mut manual = make();
+        manual.fade.hover.jump_to(1.0);
+        manual.fade.press.jump_to(0.0);
+
+        assert_eq!(
+            render(&mut animated),
+            render(&mut manual),
+            "the animated end state must be the manually set terminal state"
+        );
+    }
+
+    /// Reduced motion collapses the fast tempo to zero, so one tick reaches the target.
+    #[test]
+    fn reduced_motion_reaches_the_checkbox_target_in_one_frame() {
+        use crate::compat::Box;
+        use crate::style::environment::{
+            install_environment, uninstall_environment, EnvironmentProvider,
+        };
+        use crate::style::MotionPreference;
+
+        struct Reduced;
+        impl EnvironmentProvider for Reduced {
+            fn motion_preference(&self) -> MotionPreference {
+                MotionPreference::ReduceMotion
+            }
+        }
+
+        let _guard = crate::style::theme_test_guard();
+        let previous = install_environment(Box::new(Reduced));
+
+        let mut checkbox = CheckBox::new(Rect::new(0, 0, 60, 40));
+        checkbox.handle_event(&Event::MouseEnter { pos: Point::new(1, 1) });
+        let moving = Widget::tick(&mut checkbox, 16);
+
+        assert!(!moving, "a zero-duration fade settles on the first tick");
+        assert_eq!(checkbox.fade.hover.value(), 1.0, "and reaches the target, not half way");
+        assert!(!Widget::is_animating(&checkbox));
+
+        let _ = uninstall_environment();
+        if let Some(previous) = previous {
+            install_environment(previous);
+        }
+    }
+
+    /// A hover frame submits damage bounded by the painted box and the margin.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_hover_frame_submits_the_painted_box_with_the_damage_margin() {
+        use crate::widget::runtime;
+
+        let id =
+            runtime::register(crate::compat::Box::new(CheckBox::new(Rect::new(4, 8, 120, 32))))
+                .expect("registry");
+        assert!(runtime::set_repaint_mode(id, runtime::RepaintMode::Dirty));
+
+        assert!(runtime::dispatch_event(id, &Event::mouse_enter(1, 1)));
+
+        let expected = runtime::painted_box_with_damage_margin(id).expect("painted box");
+        assert_eq!(
+            runtime::dirty_rects(id),
+            vec![expected],
+            "a hover must damage the painted box plus the margin"
+        );
+        runtime::unregister(id);
+    }
+
+    /// `Full` keeps the whole-control path and records no damage rectangle.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_hover_frame_in_full_mode_keeps_the_whole_control_repaint() {
+        use crate::widget::runtime;
+
+        let id =
+            runtime::register(crate::compat::Box::new(CheckBox::new(Rect::new(4, 8, 120, 32))))
+                .expect("registry");
+        assert_eq!(runtime::repaint_mode(id), runtime::RepaintMode::Full);
+
+        assert!(runtime::dispatch_event(id, &Event::mouse_enter(1, 1)));
+        assert!(
+            runtime::dirty_rects(id).is_empty(),
+            "Full mode records no damage, so the control repaints whole"
+        );
+        runtime::unregister(id);
     }
 }

@@ -7,6 +7,7 @@
 //! segment has a sliding highlight. Clicking a segment selects it and emits
 //! a `value_changed` signal with the segment index.
 
+use crate::compat::Cow;
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -17,6 +18,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, role_font, ControlMetrics};
+use crate::widget::text_utils::elide_to_width;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -367,8 +369,16 @@ impl Draw for CupertinoSegmentedControl {
         // a fixed grey that a dark theme would render illegible.
         let unselected = ink.blend(&track_color, 0.45);
         for (i, seg) in self.segments.iter().enumerate() {
-            let metrics = context.measure_text(seg, &font);
             let seg_x = track_rect.x + (i as i32) * seg_w;
+            // A label wider than its segment is elided rather than painted over its
+            // neighbours. The shared primitive owns the budget and is measured with the
+            // renderer's own callback, so the fitting decision and the painted advance come
+            // from one metric; a label that fits is borrowed and keeps its old origin, which
+            // the fitted draw's own inset would have shifted.
+            let label = fitted_segment_label(seg, seg_w, &mut |text: &str| {
+                context.measure_text(text, &font).width
+            });
+            let metrics = context.measure_text(&label, &font);
             let text_x = seg_x + (seg_w - metrics.width as i32) / 2;
             // Centre the label in its segment. The origin is the glyph box's top edge, so the
             // offset is half the *line box*; the old ascent/descent pair began the glyph box
@@ -384,33 +394,30 @@ impl Draw for CupertinoSegmentedControl {
             } else {
                 unselected
             };
-            let seg_right = seg_x + seg_w - 2;
-            if text_x >= seg_x + 2 && text_x + metrics.width as i32 <= seg_right {
-                context.draw_text(
-                    Point::new(text_x, text_y),
-                    seg,
-                    &font,
-                    color,
-                    HorizontalAlignment::Left,
-                );
-            } else {
-                // A label wider than its segment is centred-and-ellipsised rather than
-                // painted over its neighbours.
-                context.draw_text_fitted_cow(
-                    Rect::new(
-                        seg_x + 2,
-                        text_y,
-                        ((seg_w - 4).max(0)) as u32,
-                        metrics.height.max(1),
-                    ),
-                    seg,
-                    &font,
-                    color,
-                    HorizontalAlignment::Center,
-                );
-            }
+            context.draw_text(
+                Point::new(text_x, text_y),
+                &label,
+                &font,
+                color,
+                HorizontalAlignment::Left,
+            );
         }
     }
+}
+
+/// Elides `label` to the label band of a segment `segment_width` wide.
+///
+/// The band is the segment inset two points at each end, the same reservation the paint
+/// path used to compute inline. `measure` is the renderer's advance measurement, so the
+/// budget is the width the paint path will actually produce; a label that fits is returned
+/// borrowed.
+fn fitted_segment_label<'a>(
+    label: &'a str,
+    segment_width: i32,
+    measure: &mut dyn FnMut(&str) -> u32,
+) -> Cow<'a, str> {
+    let budget = (segment_width - 4).max(0) as u32;
+    elide_to_width(label, budget, measure)
 }
 
 impl EventHandler for CupertinoSegmentedControl {
@@ -667,5 +674,38 @@ mod tests {
         while sc.tick(60) {}
         let arrived = render_to_svg(&mut sc);
         assert_ne!(midway, arrived, "nor must the arrival paint like the midpoint");
+    }
+
+    /// A multi-byte segment label is elided on character boundaries, never inside a glyph.
+    ///
+    /// The budget is the segment less its two-point inset, measured by the renderer; the
+    /// shared primitive keeps only whole characters and marks the cut with `…`.
+    #[test]
+    fn a_wide_segment_label_is_elided_on_character_boundaries() {
+        let mut measure = |text: &str| text.chars().count() as u32 * 14;
+        // A 64 px segment leaves a 60 px band: three glyphs plus the ellipsis.
+        assert_eq!(
+            fitted_segment_label(
+                "\u{4e16}\u{754c}\u{4f60}\u{597d}\u{4e16}\u{754c}",
+                64,
+                &mut measure
+            ),
+            "\u{4e16}\u{754c}\u{4f60}\u{2026}"
+        );
+        assert_eq!(
+            fitted_segment_label("\u{1f389}\u{1f389}\u{1f389}\u{1f389}\u{1f389}", 64, &mut measure),
+            "\u{1f389}\u{1f389}\u{1f389}\u{2026}",
+            "an emoji is a single character to the budget, not four bytes"
+        );
+    }
+
+    /// A label that fits its segment is borrowed, so the paint path allocates nothing for it.
+    #[test]
+    fn a_fitting_segment_label_is_borrowed() {
+        let mut measure = |text: &str| text.chars().count() as u32 * 14;
+        assert!(matches!(
+            fitted_segment_label("Day", 64, &mut measure),
+            crate::compat::Cow::Borrowed("Day")
+        ));
     }
 }

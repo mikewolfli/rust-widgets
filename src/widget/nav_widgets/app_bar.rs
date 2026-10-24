@@ -57,11 +57,21 @@ const APP_BAR_TITLE_BARE_RESERVE: i32 = 16;
 /// Space kept between the action's glyph and the bar's trailing edge.
 const APP_BAR_ACTION_INSET: i32 = 16;
 
+/// Which affordance a point on the bar commits when the press is released.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TapTarget {
+    /// The leading back arrow, or the bar's fallback back region.
+    Back,
+    /// The trailing action text.
+    Action,
+}
+
 /// AppBar / Top Bar widget — mobile-style top navigation bar.
 ///
 /// Displays a title centered in the bar, an optional back arrow in the bar's
 /// *leading* zone, and optional action text in its *trailing* zone. Emits signals
-/// when the back or action areas are pressed.
+/// when the back or action areas are clicked; the click is committed by the
+/// release, so one press/release pair reports one event.
 pub struct AppBar {
     base: BaseWidget,
     /// The title text centered in the bar.
@@ -86,6 +96,12 @@ pub struct AppBar {
     pub back_pressed: GenericSignal,
     /// Emitted when the action text area is pressed.
     pub action_pressed: GenericSignal,
+    /// Which affordance a primary-button press armed, if any.
+    ///
+    /// The press only arms the bar; the signal is emitted on the release, so one click
+    /// reports one event. Without this gate a press followed by a release fired the same
+    /// signal twice.
+    pressed: Option<TapTarget>,
 }
 
 impl AppBar {
@@ -101,6 +117,7 @@ impl AppBar {
             direction: TextDirection::default(),
             back_pressed: GenericSignal::new(),
             action_pressed: GenericSignal::new(),
+            pressed: None,
         }
     }
 
@@ -191,6 +208,25 @@ impl AppBar {
             rect.right() - APP_BAR_TRAILING_ZONE
         };
         Rect::new(x, rect.y, APP_BAR_TRAILING_ZONE as u32, rect.height)
+    }
+
+    /// Resolves a point on the bar to the affordance a tap there commits.
+    ///
+    /// The press and the release both use this, so the bar can tell whether the pointer
+    /// left the affordance it armed between the two events.
+    fn tap_target_at(&self, pos: Point) -> Option<TapTarget> {
+        if self.show_back && self.leading_zone().contains_point(pos) {
+            return Some(TapTarget::Back);
+        }
+        if !self.action_text.is_empty() && self.trailing_zone().contains_point(pos) {
+            return Some(TapTarget::Action);
+        }
+        // If neither back nor action matched, the rest of the bar is a back gesture
+        // when a back arrow is shown; otherwise it is inert.
+        if self.show_back {
+            return Some(TapTarget::Back);
+        }
+        None
     }
 }
 
@@ -484,10 +520,27 @@ impl EventHandler for AppBar {
         }
 
         match event {
-            Event::MousePress { pos, button, .. } | Event::MouseRelease { pos, button } => {
+            // A press arms the bar and records which affordance it touched; it commits
+            // nothing. The action belongs to the release, which is the crate's click
+            // convention and the only way one physical click can report one event.
+            Event::MousePress { pos, button, .. } => {
                 if *button != 1 {
                     return;
                 }
+                let target = self.tap_target_at(*pos);
+                if self.pressed != target {
+                    self.pressed = target;
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseRelease { pos, button } => {
+                if *button != 1 {
+                    return;
+                }
+                let Some(armed) = self.pressed.take() else {
+                    return;
+                };
+                self.base.request_redraw();
 
                 // The zones come from the same accessors the drawing uses, so a mirrored bar's arrow
                 // is tappable where it is *drawn*. Deriving them twice is how "looks right, is
@@ -498,23 +551,15 @@ impl EventHandler for AppBar {
                 // made the boundary column belong to both zones. The leading zone is
                 // tested first, so testing it as a rect is what keeps the middle zone's
                 // first column out of it.
-                if self.show_back && self.leading_zone().contains_point(*pos) {
-                    self.back_pressed.emit();
-                    self.base.request_redraw();
+                //
+                // A release over a different affordance (or off the bar) cancels the click,
+                // the same way a drag off a button cancels it.
+                if self.tap_target_at(*pos) != Some(armed) {
                     return;
                 }
-
-                if !self.action_text.is_empty() && self.trailing_zone().contains_point(*pos) {
-                    self.action_pressed.emit();
-                    self.base.request_redraw();
-                    return;
-                }
-
-                // If neither back nor action matched, treat as back when show_back,
-                // otherwise as general click on the bar.
-                if self.show_back {
-                    self.back_pressed.emit();
-                    self.base.request_redraw();
+                match armed {
+                    TapTarget::Back => self.back_pressed.emit(),
+                    TapTarget::Action => self.action_pressed.emit(),
                 }
             }
             _ => {
@@ -529,7 +574,7 @@ mod tests {
     use super::*;
     use crate::widget::svg::render_to_svg;
     use std::sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     };
 
@@ -590,15 +635,17 @@ mod tests {
         let mut bar = make_app_bar();
         bar.set_show_back(true);
 
-        let fired = Arc::new(AtomicBool::new(false));
+        let fired = Arc::new(AtomicUsize::new(0));
         let f = fired.clone();
         bar.back_pressed.connect(move || {
-            f.store(true, Ordering::SeqCst);
+            f.fetch_add(1, Ordering::SeqCst);
         });
 
-        // Tap in left zone (first 48px)
+        // Tap in left zone (first 48px). The press arms the bar, the release commits.
         bar.handle_event(&Event::MousePress { pos: Point::new(10, 28), button: 1, modifiers: 0 });
-        assert!(fired.load(Ordering::SeqCst));
+        assert_eq!(fired.load(Ordering::SeqCst), 0, "a press alone must not emit");
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(10, 28), button: 1 });
+        assert_eq!(fired.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -606,15 +653,17 @@ mod tests {
         let mut bar = make_app_bar();
         bar.set_show_back(true);
 
-        let fired = Arc::new(AtomicBool::new(false));
+        let fired = Arc::new(AtomicUsize::new(0));
         let f = fired.clone();
         bar.back_pressed.connect(move || {
-            f.store(true, Ordering::SeqCst);
+            f.fetch_add(1, Ordering::SeqCst);
         });
 
         // Tap in center — falls through to back when show_back is true
         bar.handle_event(&Event::MousePress { pos: Point::new(188, 28), button: 1, modifiers: 0 });
-        assert!(fired.load(Ordering::SeqCst));
+        assert_eq!(fired.load(Ordering::SeqCst), 0, "a press alone must not emit");
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(188, 28), button: 1 });
+        assert_eq!(fired.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -622,15 +671,17 @@ mod tests {
         let mut bar = make_app_bar();
         bar.set_action_text("Save");
 
-        let fired = Arc::new(AtomicBool::new(false));
+        let fired = Arc::new(AtomicUsize::new(0));
         let f = fired.clone();
         bar.action_pressed.connect(move || {
-            f.store(true, Ordering::SeqCst);
+            f.fetch_add(1, Ordering::SeqCst);
         });
 
         // Tap in right action zone (last 80px)
         bar.handle_event(&Event::MousePress { pos: Point::new(340, 28), button: 1, modifiers: 0 });
-        assert!(fired.load(Ordering::SeqCst));
+        assert_eq!(fired.load(Ordering::SeqCst), 0, "a press alone must not emit");
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(340, 28), button: 1 });
+        assert_eq!(fired.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -639,15 +690,16 @@ mod tests {
         bar.set_action_text("Save");
         bar.set_show_back(true);
 
-        let action_fired = Arc::new(AtomicBool::new(false));
+        let action_fired = Arc::new(AtomicUsize::new(0));
         let a = action_fired.clone();
         bar.action_pressed.connect(move || {
-            a.store(true, Ordering::SeqCst);
+            a.fetch_add(1, Ordering::SeqCst);
         });
 
         // Tap in center — action should NOT fire
         bar.handle_event(&Event::MousePress { pos: Point::new(188, 28), button: 1, modifiers: 0 });
-        assert!(!action_fired.load(Ordering::SeqCst));
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(188, 28), button: 1 });
+        assert_eq!(action_fired.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -657,21 +709,22 @@ mod tests {
         bar.set_enabled(false);
         bar.set_action_text("Save");
 
-        let back_fired = Arc::new(AtomicBool::new(false));
+        let back_fired = Arc::new(AtomicUsize::new(0));
         let b = back_fired.clone();
         bar.back_pressed.connect(move || {
-            b.store(true, Ordering::SeqCst);
+            b.fetch_add(1, Ordering::SeqCst);
         });
 
-        let action_fired = Arc::new(AtomicBool::new(false));
+        let action_fired = Arc::new(AtomicUsize::new(0));
         let a = action_fired.clone();
         bar.action_pressed.connect(move || {
-            a.store(true, Ordering::SeqCst);
+            a.fetch_add(1, Ordering::SeqCst);
         });
 
         bar.handle_event(&Event::MousePress { pos: Point::new(10, 28), button: 1, modifiers: 0 });
-        assert!(!back_fired.load(Ordering::SeqCst));
-        assert!(!action_fired.load(Ordering::SeqCst));
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(10, 28), button: 1 });
+        assert_eq!(back_fired.load(Ordering::SeqCst), 0);
+        assert_eq!(action_fired.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -726,30 +779,36 @@ mod tests {
         let mut bar = make_app_bar();
         bar.set_show_back(true);
 
-        let fired = Arc::new(AtomicBool::new(false));
+        let fired = Arc::new(AtomicUsize::new(0));
         let f = fired.clone();
         bar.back_pressed.connect(move || {
-            f.store(true, Ordering::SeqCst);
+            f.fetch_add(1, Ordering::SeqCst);
         });
 
         // Right-button click should be ignored
         bar.handle_event(&Event::MousePress { pos: Point::new(10, 28), button: 2, modifiers: 0 });
-        assert!(!fired.load(Ordering::SeqCst));
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(10, 28), button: 2 });
+        assert_eq!(fired.load(Ordering::SeqCst), 0);
     }
 
     #[test]
-    fn app_bar_release_also_emits() {
+    fn app_bar_release_commits_a_prior_press_exactly_once() {
         let mut bar = make_app_bar();
         bar.set_show_back(true);
 
-        let fired = Arc::new(AtomicBool::new(false));
+        let fired = Arc::new(AtomicUsize::new(0));
         let f = fired.clone();
         bar.back_pressed.connect(move || {
-            f.store(true, Ordering::SeqCst);
+            f.fetch_add(1, Ordering::SeqCst);
         });
 
+        // A release with no press behind it is not a click.
         bar.handle_event(&Event::MouseRelease { pos: Point::new(10, 28), button: 1 });
-        assert!(fired.load(Ordering::SeqCst));
+        assert_eq!(fired.load(Ordering::SeqCst), 0, "a bare release must not emit");
+
+        bar.handle_event(&Event::MousePress { pos: Point::new(10, 28), button: 1, modifiers: 0 });
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(10, 28), button: 1 });
+        assert_eq!(fired.load(Ordering::SeqCst), 1, "one press+release emits once");
     }
 
     /// The back arrow is the bar's **leading** affordance, so a right-to-left bar draws it at the
@@ -874,27 +933,33 @@ mod tests {
         bar.set_action_text("Save");
         bar.set_direction(TextDirection::RightToLeft);
 
-        let back = Arc::new(AtomicBool::new(false));
+        let back = Arc::new(AtomicUsize::new(0));
         let b = back.clone();
         bar.back_pressed.connect(move || {
-            b.store(true, Ordering::SeqCst);
+            b.fetch_add(1, Ordering::SeqCst);
         });
-        let action = Arc::new(AtomicBool::new(false));
+        let action = Arc::new(AtomicUsize::new(0));
         let a = action.clone();
         bar.action_pressed.connect(move || {
-            a.store(true, Ordering::SeqCst);
+            a.fetch_add(1, Ordering::SeqCst);
         });
 
         // Right edge: the arrow. Its zone is 48 px wide, so 380 is inside it.
         bar.handle_event(&Event::MousePress { pos: Point::new(380, 28), button: 1, modifiers: 0 });
-        assert!(back.load(Ordering::SeqCst), "tapping the drawn arrow must press back");
-        assert!(!action.load(Ordering::SeqCst), "and must not press the action");
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(380, 28), button: 1 });
+        assert_eq!(back.load(Ordering::SeqCst), 1, "tapping the drawn arrow must press back");
+        assert_eq!(action.load(Ordering::SeqCst), 0, "and must not press the action");
 
         // Left edge: the action, in an 80 px zone.
-        back.store(false, Ordering::SeqCst);
+        back.store(0, Ordering::SeqCst);
         bar.handle_event(&Event::MousePress { pos: Point::new(20, 28), button: 1, modifiers: 0 });
-        assert!(action.load(Ordering::SeqCst), "tapping the drawn action must fire the action");
-        assert!(!back.load(Ordering::SeqCst), "and must not press back");
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(20, 28), button: 1 });
+        assert_eq!(
+            action.load(Ordering::SeqCst),
+            1,
+            "tapping the drawn action must fire the action"
+        );
+        assert_eq!(back.load(Ordering::SeqCst), 0, "and must not press back");
     }
 
     /// The default must remain byte-identical so a bar that never asks behaves exactly as it did.

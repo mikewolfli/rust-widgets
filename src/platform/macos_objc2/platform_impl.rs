@@ -18,8 +18,6 @@ use crate::core::ObjectId;
 use crate::core::PlatformFamily;
 use crate::platform::types::{Display, DisplayId, SafeAreaInsets};
 use crate::platform::{Platform, PlatformCapabilities};
-#[cfg(all(target_os = "macos", feature = "macos"))]
-use core::time::Duration;
 
 /// Resolves the widget id a host holds to the platform window id this backend registers.
 ///
@@ -246,6 +244,60 @@ impl Platform for MacOSObjc2Platform {
         }
     }
 
+    /// Whether the user asked for translucent materials to be reduced, from `NSWorkspace`.
+    fn reduce_transparency(&self) -> Option<bool> {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            Some(super::native::reduce_transparency())
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        {
+            None
+        }
+    }
+
+    /// The host's current accent colour, from `NSColor.controlAccentColor`.
+    ///
+    /// `None` without the AppKit-bound build, which is distinct from a host that reports the
+    /// default blue: only the latter is a colour the user can be said to have chosen.
+    fn accent_color(&self) -> Option<crate::core::Color> {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            super::native::accent_color()
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        {
+            None
+        }
+    }
+
+    /// Whether this backend paces frames against CoreVideo's presentation clock.
+    ///
+    /// Answered from the display link `init` starts. A host where CoreVideo could not start, and
+    /// every non-AppKit build, answers `false` and keeps the fixed frame grid.
+    fn supports_vsync_frame(&self) -> bool {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            crate::platform::display_link::is_running()
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        {
+            false
+        }
+    }
+
+    /// The next presented-time instant published by the display-link callback.
+    fn next_vsync_deadline(&self) -> Option<std::time::Instant> {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            crate::platform::display_link::next_deadline()
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        {
+            None
+        }
+    }
+
     /// The user's locale, from `NSLocale.currentLocale`.
     fn system_locale(&self) -> Option<&'static str> {
         #[cfg(all(target_os = "macos", feature = "macos"))]
@@ -370,7 +422,7 @@ impl Platform for MacOSObjc2Platform {
         #[cfg(all(target_os = "macos", feature = "macos"))]
         {
             let host = resolve_host(widget);
-            return super::native::native_handle(host);
+            super::native::native_handle(host)
         }
         #[cfg(not(all(target_os = "macos", feature = "macos")))]
         {
@@ -785,9 +837,26 @@ impl Platform for MacOSObjc2Platform {
         if bootstrapped {
             log::debug!("[macos-objc2] NSApplication bootstrapped on the main thread");
         } else {
-            log::debug!(
-                "[macos-objc2] NSApplication not bootstrapped (off-main or non-macOS host)"
-            );
+            log::debug!("[macos-objc2] NSApplication not bootstrapped (off-main or non-macOS host)")
+        }
+        // The display link and the system-colour observer are process-wide, so starting them
+        // here (once, at init) is what makes `supports_vsync_frame` and the accent observer
+        // answer for the whole session. CoreVideo may be unavailable (a headless host); the
+        // fixed frame grid then keeps running and the check reports `false`.
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            if crate::platform::display_link::start() {
+                log::debug!("[macos-objc2] CoreVideo display link started");
+            } else {
+                log::debug!(
+                    "[macos-objc2] CoreVideo display link unavailable; the fixed frame grid paces frames"
+                );
+            }
+            if !super::environment::install_system_color_observer() {
+                log::debug!(
+                    "[macos-objc2] system colour observer not installed; the accent refreshes only on explicit request"
+                );
+            }
         }
         self.runtime.initialized.store(true, Ordering::SeqCst);
     }
@@ -803,24 +872,23 @@ impl Platform for MacOSObjc2Platform {
         // `crate::drive_frame` drains and then advances the animation bus; the drain alone
         // re-ran layout but left every animation inert, because nothing on this backend ran
         // the per-frame step (BLUE24 §0A.1 measurement 1).
-        // The loop is paced by the wait below: it blocks in AppKit's run loop when a native
+        // The loop is paced by the wait below: it blocks in the native run loop when a native
         // window is available, so an idle window no longer wakes every frame.
-        #[cfg(all(target_os = "macos", feature = "macos"))]
-        let mut wait_ms = FRAME_INTERVAL_MS;
         while self.runtime.running.load(Ordering::SeqCst) {
-            // Pump the real AppKit queue so the native window draws, receives mouse/key
-            // input, resizes and closes — without this the loop ran only library frames and
-            // the window was inert. Waiting *inside* the run loop is what makes input
-            // immediate while an idle window is not polled.
+            // The run-loop wait is this backend's blocking primitive: pumping here is what
+            // makes the native window draw and receive input, and waiting *inside* the run loop
+            // keeps that input immediate while an idle window is not polled. The shared deadline
+            // grid decides how long it may block, and `pump_native_event_until` reports whether
+            // it dispatched an event before the timeout -- the early wake the grid keeps the
+            // deadline across. The pump still runs with a zero timeout when a frame is already
+            // due, so a long frame cannot starve input.
             #[cfg(all(target_os = "macos", feature = "macos"))]
             {
-                super::native::pump_native_event_until(Duration::from_millis(wait_ms));
                 let outcome = crate::drive_frame(FRAME_INTERVAL_MS as u32);
-                wait_ms = if outcome.needs_another_frame {
-                    FRAME_INTERVAL_MS
-                } else {
-                    crate::platform::types::IDLE_FRAME_INTERVAL_MS
-                };
+                crate::platform::frame_wait::pause_between_frames_with(
+                    outcome.needs_another_frame,
+                    super::native::pump_native_event_until,
+                );
             }
             #[cfg(not(all(target_os = "macos", feature = "macos")))]
             {
@@ -833,9 +901,30 @@ impl Platform for MacOSObjc2Platform {
         // The loop this backend runs reads `self.runtime.running` every tick, so a stop
         // request from any thread lands and is honoured; `true` reports that fact rather
         // than merely that the call was made.
+        //
+        // # Why "is my own loop running" decides the answer
+        //
+        // The frame tick under test can belong to a *different* platform object: the seam admits
+        // a double, and a host that binds one has a ticking loop this backend never started. In
+        // that case setting this backend's own flag changes nothing anyone reads, so the request
+        // is recorded on the process-wide seam instead — that is the flag every loop honours. An
+        // unconditional `true` told such a host its session would end while nothing was reading
+        // the answer.
+        if !self.runtime.running.load(Ordering::SeqCst) {
+            return crate::platform::stop::request();
+        }
         self.runtime.running.store(false, Ordering::SeqCst);
         // The loop may be parked in `pause_between_frames`; wake it so the stop is immediate.
         crate::platform::frame_wait::wake();
+        // The display link is process-wide and its callback thread outlives the loop otherwise.
+        // Stopping it is therefore part of the teardown — but only on the thread that owns the
+        // AppKit session: `CVDisplayLinkStop` waits for the callback thread and expects the main
+        // thread, so a stop requested from a worker would block the very caller that asked the
+        // session to end. Off the main thread the link is left running and dies with the process.
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        if objc2::MainThreadMarker::new().is_some() {
+            crate::platform::display_link::stop();
+        }
         true
     }
     /// Pops the next typed widget-trigger event from this backend's queue.

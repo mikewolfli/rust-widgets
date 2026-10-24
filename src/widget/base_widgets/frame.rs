@@ -13,8 +13,15 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::dimensions;
-use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, InteractionFade, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// How far the border moves toward its contrasting tone at full interaction strength.
+///
+/// Named rather than inlined because the draw path and its tests read the same value; at
+/// rest the tint is skipped entirely, so this only describes the hovered/pressed picture.
+const FRAME_INTERACTION_TINT: f32 = 0.22;
+
 /// Frame widget.
 pub struct Frame {
     base: BaseWidget,
@@ -25,6 +32,11 @@ pub struct Frame {
     widget: Option<ObjectId>,
     /// Optional shared registry for child widget forwarding.
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
+    /// The hover/press fade that tints the outline while the pointer interacts.
+    ///
+    /// Both drivers rest at exactly `0.0`, so a frame that has never been pointed at paints
+    /// its declared border byte-for-byte (see `Frame::interactive_border`).
+    fade: InteractionFade,
 }
 /// Frame shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -117,6 +129,7 @@ impl Frame {
             mid_line_width: 0.0,
             widget: None,
             registry: None,
+            fade: InteractionFade::new(),
         }
     }
     /// Sets the shared widget registry for child forwarding.
@@ -215,6 +228,28 @@ impl Frame {
     pub fn widget(&self) -> Option<ObjectId> {
         self.widget
     }
+    /// Retargets the interaction fade from the pointer facts the base recorded.
+    ///
+    /// A disabled frame is inert, so both targets collapse to rest instead of letting a
+    /// hover linger on a control the user cannot interact with. `sync` itself re-aims rather
+    /// than restarts, so a repeated event cannot make the tint stutter.
+    fn sync_fade(&mut self) {
+        let enabled = self.base.is_enabled();
+        self.fade.sync(enabled && self.base.is_hovered(), enabled && self.base.is_pressed());
+    }
+    /// The outline colour with the interaction tint applied.
+    ///
+    /// At rest the intensity is exactly `0.0` and `color` is returned unchanged, which is
+    /// what keeps a static frame's output byte-identical to the pre-fade rendering. A
+    /// hovered or pressed frame steps toward the border's contrasting tone, so the feedback
+    /// is visible on either appearance rather than assuming a light one.
+    fn interactive_border(&self, color: Color) -> Color {
+        let intensity = self.fade.intensity();
+        if intensity <= 0.0 {
+            return color;
+        }
+        color.blend(&color.contrast_color(), FRAME_INTERACTION_TINT * intensity)
+    }
     /// Draws frame border.
     fn draw_frame(&self, context: &mut RenderContext) {
         let rect = self.geometry();
@@ -243,10 +278,13 @@ impl Frame {
         //    for a plain black rule would be inventing chrome the caller did not ask
         //    for. An unset or grey border keeps the historical light/dark bevel.
         let style = self.style();
-        let border = style.border_color.unwrap_or(Color::rgb(0, 0, 0));
+        let raw_border = style.border_color.unwrap_or(Color::rgb(0, 0, 0));
         let themed = style.border_color.is_some();
-        let plain =
-            themed && (border == Color::rgb(0, 0, 0) || border == Color::rgb(255, 255, 255));
+        let plain = themed
+            && (raw_border == Color::rgb(0, 0, 0) || raw_border == Color::rgb(255, 255, 255));
+        // The bevel/plain decisions read the declared border; only the painted tone follows
+        // the interaction. At rest the two are the same value.
+        let border = self.interactive_border(raw_border);
         match self.frame_shadow {
             FrameShadow::Plain => {
                 // Draw single border
@@ -413,7 +451,8 @@ impl Frame {
             style.border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, style.border_color.unwrap_or(Color::rgb(64, 64, 64)));
+        let border = self.interactive_border(style.border_color.unwrap_or(Color::rgb(64, 64, 64)));
+        context.draw_rect(rect, border);
     }
     /// Draws styled panel frame.
     fn draw_styled_panel_frame(&self, context: &mut RenderContext, rect: Rect) {
@@ -433,20 +472,24 @@ impl Frame {
     /// Draws horizontal line frame.
     fn draw_hline_frame(&self, context: &mut RenderContext, rect: Rect) {
         let y = rect.y + (rect.height as i32) / 2;
+        let color =
+            self.interactive_border(self.style().border_color.unwrap_or(Color::rgb(0, 0, 0)));
         context.draw_line_stroke(
             Point::new(rect.x, y),
             Point::new(rect.x + rect.width as i32, y),
-            self.style().border_color.unwrap_or(Color::rgb(0, 0, 0)),
+            color,
             self.line_width as u32,
         );
     }
     /// Draws vertical line frame.
     fn draw_vline_frame(&self, context: &mut RenderContext, rect: Rect) {
         let x = rect.x + (rect.width as i32) / 2;
+        let color =
+            self.interactive_border(self.style().border_color.unwrap_or(Color::rgb(0, 0, 0)));
         context.draw_line_stroke(
             Point::new(x, rect.y),
             Point::new(x, rect.y + rect.height as i32),
-            self.style().border_color.unwrap_or(Color::rgb(0, 0, 0)),
+            color,
             self.line_width as u32,
         );
     }
@@ -508,6 +551,18 @@ impl Widget for Frame {
     fn size_hint(&self) -> Size {
         Size::new(dimensions::FRAME_DEFAULT_WIDTH, dimensions::FRAME_DEFAULT_HEIGHT)
     }
+
+    // The outline is what a frame paints, so a hovered or pressed frame owes frames while
+    // the tint is in flight. A resting frame's drivers report no movement, so it costs
+    // nothing on the animation bus.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.fade.tick(delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.fade.is_animating()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -585,6 +640,16 @@ impl WidgetProperties for Frame {
 impl EventHandler for Frame {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        // The four pointer events are the only ones that can change the interaction fade.
+        // They are handled before the enabled early return so a disabled frame still
+        // retargets both drivers to rest instead of leaving a hovered tint frozen in place.
+        match event {
+            Event::MouseEnter { .. }
+            | Event::MouseLeave { .. }
+            | Event::MousePress { .. }
+            | Event::MouseRelease { .. } => self.sync_fade(),
+            _ => { /* Other events carry no fade-relevant pointer state */ }
+        }
         // Skip event forwarding when disabled
         if !self.base.is_enabled() {
             return;
@@ -634,8 +699,8 @@ impl Draw for Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compat::{MiniToString, String};
-    use crate::core::{Color, ObjectId, Rect};
+    use crate::compat::{MiniToString, String, Vec};
+    use crate::core::{Color, ObjectId, Point, Rect, Size};
     use crate::style::WidgetStyle;
 
     #[test]
@@ -1008,5 +1073,150 @@ mod tests {
             "a declared gradient must emit a paint server in the panel's document"
         );
         assert_ne!(solid, ramp, "the gradient frame must differ from the solid one");
+    }
+
+    // ------------------------------------------------------------------
+    // Interaction fade (P1-9)
+    // ------------------------------------------------------------------
+
+    /// Rasterises `frame` into a frame buffer a test can compare byte-for-byte.
+    fn render_rgba(frame: &mut Frame, size: Size) -> Vec<u8> {
+        use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
+        let mut backend = SoftwarePaintBackend::new(size, 1.0);
+        backend.begin_frame(Color::rgba(0, 0, 0, 0));
+        {
+            let mut context = RenderContext::new(&mut backend);
+            frame.draw(&mut context);
+        }
+        backend.end_frame();
+        backend.frame_rgba().to_vec()
+    }
+
+    /// Reads one RGBA pixel out of a frame buffer produced by [`render_rgba`].
+    fn pixel(rgba: &[u8], width: u32, x: u32, y: u32) -> Color {
+        let at = ((y * width + x) * 4) as usize;
+        Color::rgba(rgba[at], rgba[at + 1], rgba[at + 2], rgba[at + 3])
+    }
+
+    /// A pointer entering the frame retargets the hover driver at once.
+    ///
+    /// The answer has to be true before any `tick` has run: the animation bus asks
+    /// `is_animating` first, and a control that only admitted movement on its next tick
+    /// would never be scheduled for one.
+    #[test]
+    fn mouse_enter_makes_the_frame_animating() {
+        let mut frame = Frame::new(Rect::new(4, 4, 12, 8));
+        assert!(!Widget::is_animating(&frame), "a new frame rests and owes no frames");
+
+        frame.handle_event(&Event::MouseEnter { pos: Point::new(5, 5) });
+
+        assert!(
+            Widget::is_animating(&frame),
+            "MouseEnter must make the frame's fade moving before any tick"
+        );
+        assert!(Widget::tick(&mut frame, 16), "the first fade frame must report work");
+    }
+
+    /// A resting frame paints its declared border byte-for-byte, and returns to exactly
+    /// that picture after a hover has come and gone.
+    #[test]
+    fn a_resting_frame_paints_the_untinted_border() {
+        let rect = Rect::new(4, 4, 12, 8);
+        let border = Color::rgb(120, 140, 160);
+        let size = Size::new(24, 20);
+        let mid_x = rect.x as u32 + rect.width / 2;
+
+        let mut frame = Frame::new(rect);
+        frame.set_style(WidgetStyle::default().with_border(border, 1, 0));
+        let fresh = render_rgba(&mut frame, size);
+        assert_eq!(
+            pixel(&fresh, size.width, mid_x, rect.y as u32),
+            border,
+            "at rest the outline must be the caller's border colour, not a tinted one"
+        );
+
+        frame.handle_event(&Event::MouseEnter { pos: Point::new(5, 5) });
+        while Widget::tick(&mut frame, 16) {}
+        let hovered = render_rgba(&mut frame, size);
+        assert_ne!(
+            pixel(&hovered, size.width, mid_x, rect.y as u32),
+            border,
+            "a settled hover must actually tint the outline"
+        );
+
+        frame.handle_event(&Event::MouseLeave { pos: Point::new(5, 5) });
+        while Widget::tick(&mut frame, 16) {}
+        assert_eq!(frame.fade.hover.value(), 0.0, "the fade returns to rest exactly");
+        assert_eq!(
+            render_rgba(&mut frame, size),
+            fresh,
+            "a frame back at rest must repaint the same bytes it did before the hover"
+        );
+    }
+
+    /// Animating to the hover terminal state produces the same picture as setting the
+    /// terminal value directly, so the fade is purely a path between two identical ends.
+    #[test]
+    fn a_settled_hover_matches_the_manually_set_terminal_state() {
+        let rect = Rect::new(4, 4, 12, 8);
+        let border = Color::rgb(120, 140, 160);
+        let size = Size::new(24, 20);
+        let make = || {
+            let mut frame = Frame::new(rect);
+            frame.set_style(WidgetStyle::default().with_border(border, 1, 0));
+            frame
+        };
+
+        let mut animated = make();
+        animated.handle_event(&Event::MouseEnter { pos: Point::new(5, 5) });
+        let mut frames = 0;
+        while Widget::tick(&mut animated, 16) {
+            frames += 1;
+            assert!(frames < 500, "the fade must terminate");
+        }
+        assert_eq!(animated.fade.hover.value(), 1.0, "the hover settles at its target");
+
+        let mut manual = make();
+        manual.fade.hover.jump_to(1.0);
+        manual.fade.press.jump_to(0.0);
+
+        assert_eq!(
+            render_rgba(&mut animated, size),
+            render_rgba(&mut manual, size),
+            "the animated end state must be the manually set terminal state"
+        );
+    }
+
+    /// Reduced motion collapses the fast tempo to zero, so one tick reaches the target.
+    #[test]
+    fn reduced_motion_reaches_the_frame_target_in_one_frame() {
+        use crate::compat::Box;
+        use crate::style::environment::{
+            install_environment, uninstall_environment, EnvironmentProvider,
+        };
+        use crate::style::MotionPreference;
+
+        struct Reduced;
+        impl EnvironmentProvider for Reduced {
+            fn motion_preference(&self) -> MotionPreference {
+                MotionPreference::ReduceMotion
+            }
+        }
+
+        let _guard = crate::style::theme_test_guard();
+        let previous = install_environment(Box::new(Reduced));
+
+        let mut frame = Frame::new(Rect::new(4, 4, 12, 8));
+        frame.handle_event(&Event::MouseEnter { pos: Point::new(5, 5) });
+        let moving = Widget::tick(&mut frame, 16);
+
+        assert!(!moving, "a zero-duration fade settles on the first tick");
+        assert_eq!(frame.fade.hover.value(), 1.0, "and reaches the target, not half way");
+        assert!(!Widget::is_animating(&frame));
+
+        let _ = uninstall_environment();
+        if let Some(previous) = previous {
+            install_environment(previous);
+        }
     }
 }

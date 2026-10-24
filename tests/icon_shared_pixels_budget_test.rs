@@ -242,14 +242,15 @@ fn drawing_shared_images_does_not_scale_with_the_pixel_payload() {
     // image's pixel count". That is a claim about the *payload*, so the measurement compares a large
     // image against a small one at the same consumer count:
     //
-    //   measured (empty-label buttons, image icon): 8 consumers -> 8 allocations,
-    //                                               32 consumers -> 32 allocations,
-    //                                               i.e. exactly one per consumer per frame
+    //   measured (empty-label buttons, image icon): 16 consumers -> 32 allocations,
+    //   i.e. exactly two per consumer per frame: the button's own surface record and the
+    //   shared-image draw record. The surface record is chrome the icon did not add; the
+    //   second one is the image. Both are constant-size records, so neither grows with the
+    //   source's pixel count.
     //
-    // One allocation per consumer is the command/geometry record for that draw — a cost that does
-    // not depend on how many bytes the source holds. A copy-the-bytes-per-frame implementation
-    // would instead allocate on the order of the payload (262 144 bytes for the fixture below), so
-    // the two are distinguishable by this comparison rather than by a fixed number.
+    // A copy-the-bytes-per-frame implementation would instead allocate on the order of the
+    // payload (262 144 bytes for the fixture below), so the two are distinguishable by this
+    // comparison rather than by a fixed number.
     let large = SharedIconPixels::from_rgba8(vec![7u8; 256 * 256 * 4], 256, 256)
         .expect("a 256x256 RGBA8 buffer is valid");
     let small = SharedIconPixels::from_rgba8(vec![7u8; 8 * 8 * 4], 8, 8)
@@ -293,8 +294,11 @@ fn drawing_shared_images_does_not_scale_with_the_pixel_payload() {
          per-frame cost grew with the payload, so the pixels are being copied per frame"
     );
     assert_eq!(
-        with_large, consumers,
-        "expected one record per consumer per frame ({consumers}); measured {with_large}"
+        with_large,
+        consumers * 2,
+        "expected the surface record plus the shared-image record per consumer ({} total); \
+         measured {with_large}",
+        consumers * 2
     );
 }
 

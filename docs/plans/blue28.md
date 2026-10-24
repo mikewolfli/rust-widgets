@@ -75,7 +75,7 @@
 ### 1.1 取证说明（为什么是这些格子）
 
 - **Wayland 显示器/DPI/剪贴板**：`src/platform/wayland/platform_impl.rs` 只有
-  `safe_area_insets`（返回 0）与 `dpi_scale_factor`（读 `GDK_SCALE`/`QT_SCALE_FACTOR`/
+  `safe_area_insets`（返回 0）与 `dpi_scale_factor`（读 `GDK_SCALE`/`scale factor`/
   `RUST_WIDGETS_DPI_SCALE` 环境变量），没有 `displays`/`display_of_window`/
   `display_generation`；`clipboard` 能力显式为 `false`，剪贴板方法只写 `BackendState`。
 - **macOS DPI**：`src/platform/macos/platform_impl.rs::capabilities` 与

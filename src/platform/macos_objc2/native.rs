@@ -36,8 +36,8 @@ use objc2_app_kit::{
     NSAccessibilityStaticTextRole, NSAccessibilityTabGroupRole, NSAccessibilityTableRole,
     NSAccessibilityTextFieldRole, NSAccessibilityUnknownRole, NSAccessibilityWindowRole,
     NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType,
-    NSCursor, NSEventMask, NSScreen, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow,
-    NSWindowStyleMask, NSWorkspace,
+    NSColor, NSColorSpace, NSCursor, NSEventMask, NSScreen, NSTrackingArea, NSTrackingAreaOptions,
+    NSView, NSWindow, NSWindowStyleMask, NSWorkspace,
 };
 // Named only by the input handlers and the blit, both of which are `widgets_unstripped` code.
 #[cfg(widgets_unstripped)]
@@ -183,6 +183,79 @@ pub(crate) fn high_contrast() -> bool {
 /// `NSWorkspace.accessibilityDisplayShouldReduceMotion`, the macOS "Reduce motion" setting.
 pub(crate) fn reduce_motion() -> bool {
     NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
+}
+
+/// Whether the user asked for translucent materials to be reduced.
+///
+/// `NSWorkspace.accessibilityDisplayShouldReduceTransparency`, the macOS "Reduce transparency"
+/// setting. The workspace is thread-safe, so unlike the appearance read above this answers from
+/// any thread.
+pub(crate) fn reduce_transparency() -> bool {
+    NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceTransparency()
+}
+
+/// The host's current accent colour.
+///
+/// `NSColor.controlAccentColor` is dynamic: the system updates it when the user changes the accent
+/// in System Settings. The colour is converted to sRGB before its components are read because the
+/// system does not promise which colour space the dynamic colour uses.
+pub(crate) fn accent_color() -> Option<crate::core::Color> {
+    let color = NSColor::controlAccentColor();
+    let space = NSColorSpace::sRGBColorSpace();
+    let converted = color.colorUsingColorSpace(&space)?;
+    Some(crate::core::Color::from_f32(
+        converted.redComponent() as f32,
+        converted.greenComponent() as f32,
+        converted.blueComponent() as f32,
+        converted.alphaComponent() as f32,
+    ))
+}
+
+/// The family name the system UI face is registered under.
+///
+/// This is a **label the caller names**, not a claim that a static family of that name is
+/// installed. On a stock macOS the system UI face is the variable font at
+/// `/System/Library/Fonts/SFNS.ttf`; the OS does not install static text/display weight files, so
+/// one registered face serves every text token and the shaper uses its default instance.
+#[cfg(feature = "runtime-fonts")]
+pub(crate) const SYSTEM_UI_FAMILY: &str = "SF Pro";
+
+/// Registers the system UI face in the runtime face registry.
+///
+/// Returns the family name on success. The bytes are the host's own system UI font, read once per
+/// process and leaked because [`crate::render::text::register_face`] takes `&'static [u8]`; a
+/// registered face lives for the rest of the process by contract, so the leak is paid once.
+///
+/// `None` when the font file is absent or unreadable, or when the registry refuses the bytes. The
+/// caller must fall back in that case rather than claim the face is in use.
+#[cfg(feature = "runtime-fonts")]
+pub(crate) fn register_system_ui_face() -> Option<&'static str> {
+    static BYTES: std::sync::OnceLock<Option<&'static [u8]>> = std::sync::OnceLock::new();
+    let bytes = *BYTES.get_or_init(read_system_ui_face_bytes);
+    let bytes = bytes?;
+    crate::render::text::register_face(SYSTEM_UI_FAMILY, bytes).then_some(SYSTEM_UI_FAMILY)
+}
+
+/// Reads the host's system UI font file, once.
+///
+/// The display variant is checked as a second candidate so a system that splits text and display
+/// faces still registers one of them; both are variable faces when present.
+#[cfg(feature = "runtime-fonts")]
+fn read_system_ui_face_bytes() -> Option<&'static [u8]> {
+    const CANDIDATES: [&str; 2] =
+        ["/System/Library/Fonts/SFNS.ttf", "/System/Library/Fonts/SFNSDisplay.ttf"];
+    for path in CANDIDATES {
+        match std::fs::read(path) {
+            Ok(bytes) if !bytes.is_empty() => {
+                return Some(&*crate::compat::Box::leak(bytes.into_boxed_slice()))
+            }
+            Ok(_) => log::debug!("[fonts] {path} is empty; not registering a system UI face"),
+            Err(error) => {
+                log::debug!("[fonts] could not read {path}: {error}")
+            }
+        }
+    }
+    None
 }
 
 /// The user's locale, from `NSLocale.currentLocale.localeIdentifier`.

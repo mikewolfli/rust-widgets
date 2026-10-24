@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Input dialog widget.
-use crate::core::{Color, HorizontalAlignment, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
@@ -533,12 +533,24 @@ impl EventHandler for InputDialog {
         if !self.base.is_enabled() {
             return;
         }
-        if let Event::KeyPress { key, .. } = event {
-            if *key == key_codes::ENTER {
-                self.accept();
-            } else if *key == key_codes::ESCAPE {
-                self.reject();
+        match event {
+            Event::MousePress { pos, button: 1, .. } => {
+                if let Some(index) = self.button_at(*pos) {
+                    if index == 0 {
+                        self.accept();
+                    } else {
+                        self.reject();
+                    }
+                }
             }
+            Event::KeyPress { key, .. } => {
+                if *key == key_codes::ENTER {
+                    self.accept();
+                } else if *key == key_codes::ESCAPE {
+                    self.reject();
+                }
+            }
+            _ => { /* Other events are not relevant */ }
         }
     }
 }
@@ -559,6 +571,47 @@ impl InputDialog {
             self.base.geometry(),
             Size::new(dimensions::DIALOG_MIN_WIDTH, dimensions::DIALOG_MIN_HEIGHT),
         )
+    }
+
+    /// The action labels this dialog paints, in row order.
+    ///
+    /// `draw` and [`InputDialog::button_at`] both call this, so a press can never resolve
+    /// against a different label set than the one that was measured and painted.
+    fn action_labels() -> Vec<String> {
+        vec![
+            super::localized_label("common.button.ok", "OK"),
+            super::localized_label("common.button.cancel", "Cancel"),
+        ]
+    }
+
+    /// The action button rects, rebuilt from the same frame and bottom band `draw` uses.
+    ///
+    /// The press path has no render context of its own, so it builds a measuring one — the
+    /// pattern `MessageBox::action_button_at` established. Rebuilding rather than caching is
+    /// deliberate: a cached rect is a second copy of the geometry that a resize can leave stale.
+    fn action_buttons(&self) -> Vec<Rect> {
+        let size = Size::new(self.base.geometry().width.max(1), self.base.geometry().height.max(1));
+        let mut backend = crate::render::SoftwarePaintBackend::new(size, 1.0);
+        let context = RenderContext::new(&mut backend);
+        let rect = self.frame_rect();
+        let button_band = super::message_box::inset_action_band(
+            ControlMetrics::bottom_band(rect, dimensions::DIALOG_BUTTON_HEIGHT),
+            rect.y,
+        );
+        let labels = Self::action_labels();
+        super::message_box::action_row_geometry(
+            &context,
+            effective_font(self.base.style()),
+            &labels,
+            button_band,
+            true,
+        )
+        .buttons
+    }
+
+    /// The index of the action button under `pos`, or `None`.
+    fn button_at(&self, pos: Point) -> Option<usize> {
+        self.action_buttons().iter().position(|button| button.contains_point(pos))
     }
 }
 
@@ -740,10 +793,7 @@ impl Draw for InputDialog {
             ControlMetrics::bottom_band(rect, dimensions::DIALOG_BUTTON_HEIGHT),
             rect.y,
         );
-        let labels = vec![
-            super::localized_label("common.button.ok", "OK"),
-            super::localized_label("common.button.cancel", "Cancel"),
-        ];
+        let labels = Self::action_labels();
         let row =
             super::message_box::action_row_geometry(context, font, &labels, button_band, true);
         let ok_rect = row.buttons[0];
@@ -814,6 +864,38 @@ mod tests {
         assert_eq!(dialog.double_value(), 2.5);
         dialog.set_double_value(f64::NAN);
         assert_eq!(dialog.double_value(), 2.5, "NaN must leave the stored value untouched");
+    }
+
+    #[test]
+    fn clicking_ok_accepts_and_clicking_cancel_rejects() {
+        let mut dialog = InputDialog::new(Rect::new(0, 0, 320, 180));
+        let accepted = Arc::new(Mutex::new(0usize));
+        let rejected = Arc::new(Mutex::new(0usize));
+
+        let a = Arc::clone(&accepted);
+        dialog.accepted.connect(move || {
+            if let Ok(mut n) = a.lock() {
+                *n += 1;
+            }
+        });
+        let r = Arc::clone(&rejected);
+        dialog.rejected.connect(move || {
+            if let Ok(mut n) = r.lock() {
+                *n += 1;
+            }
+        });
+
+        dialog.show();
+        let ok = dialog.action_buttons()[0].center();
+        dialog.handle_event(&Event::mouse_press(ok.x, ok.y, 1));
+        assert_eq!(*accepted.lock().expect("accepted lock"), 1);
+        assert!(!dialog.is_visible());
+
+        dialog.show();
+        let cancel = dialog.action_buttons()[1].center();
+        dialog.handle_event(&Event::mouse_press(cancel.x, cancel.y, 1));
+        assert_eq!(*rejected.lock().expect("rejected lock"), 1);
+        assert!(!dialog.is_visible());
     }
 
     #[test]

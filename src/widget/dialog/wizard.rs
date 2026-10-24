@@ -62,6 +62,13 @@ pub struct WizardDialog {
     pub cancelled: GenericSignal,
     /// Emitted when the current step index changes.
     pub step_changed: Signal1<usize>,
+    /// Which navigation button a press began on (`0` Cancel, `1` Back, `2` Next), or
+    /// `None` when no nav press is in flight.
+    ///
+    /// A press only arms the button; the action commits on the matching release. The
+    /// combined press/release arm this replaced ran `previous`/`next`/`finish` twice for
+    /// one click, once per event.
+    pressed_button: Option<usize>,
 }
 
 impl WizardDialog {
@@ -80,6 +87,7 @@ impl WizardDialog {
             finished: GenericSignal::new(),
             cancelled: GenericSignal::new(),
             step_changed: Signal1::new(),
+            pressed_button: None,
         }
     }
 
@@ -258,6 +266,14 @@ impl WizardDialog {
             Rect::new(back_x, btn_y, btn_w, Self::NAV_BUTTON_HEIGHT),
             Rect::new(next_x, btn_y, btn_w, Self::NAV_BUTTON_HEIGHT),
         ]
+    }
+
+    /// Returns the index of the navigation button at `pos`, if any.
+    ///
+    /// The same rectangles are painted and hit-tested, so the press, the release and the
+    /// picture all agree about which button is under the pointer.
+    fn nav_button_at(&self, pos: Point) -> Option<usize> {
+        self.nav_button_rects(self.geometry()).iter().position(|rect| rect.contains_point(pos))
     }
 }
 
@@ -854,24 +870,43 @@ impl EventHandler for WizardDialog {
             return;
         }
         match event {
-            Event::MousePress { pos, .. } | Event::MouseRelease { pos, button: _ } => {
-                let rect = self.geometry();
-                let nav = self.nav_button_rects(rect);
-                if nav[0].contains_point(*pos) {
+            // A press arms the button under the pointer and nothing else. The action is
+            // committed by the release, so one click reports one step change.
+            Event::MousePress { pos, .. } => {
+                let target = self.nav_button_at(*pos);
+                if self.pressed_button != target {
+                    self.pressed_button = target;
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseRelease { pos, .. } => {
+                let Some(index) = self.pressed_button.take() else {
+                    return;
+                };
+                self.base.request_redraw();
+                // Releasing over a different button (or off the row) cancels the click.
+                if self.nav_button_at(*pos) != Some(index) {
+                    return;
+                }
+                if index == 0 {
                     self.do_cancel();
-                    return;
-                }
-                if nav[1].contains_point(*pos) && !self.is_first() && !self.steps.is_empty() {
-                    self.previous();
-                    return;
-                }
-                if nav[2].contains_point(*pos) && !self.steps.is_empty() {
+                } else if index == 1 {
+                    if !self.is_first() && !self.steps.is_empty() {
+                        self.previous();
+                    }
+                } else if index == 2 && !self.steps.is_empty() {
                     if self.is_last() {
                         self.do_finish();
                     } else {
                         self.next();
                     }
                 }
+            }
+            // Escape closes the flow the same way Cancel does. A wizard is modal: a
+            // stray key that reaches it must not leave the user with no way out. Other
+            // keys still fall through to the base handler below.
+            Event::KeyPress { key, .. } if *key == 27 => {
+                self.do_cancel();
             }
             _ => {
                 self.base.handle_event(event);
@@ -884,7 +919,7 @@ impl EventHandler for WizardDialog {
 mod tests {
     use super::*;
     use crate::core::Point;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
     #[test]
@@ -1006,22 +1041,21 @@ mod tests {
         let mut wiz = WizardDialog::new(Rect::new(0, 0, 400, 300));
         wiz.add_step("A", false);
 
-        let fired = Arc::new(AtomicBool::new(false));
+        let fired = Arc::new(AtomicUsize::new(0));
         let f = fired.clone();
         wiz.finished.connect(move || {
-            f.store(true, Ordering::SeqCst);
+            f.fetch_add(1, Ordering::SeqCst);
         });
 
         // Click Finish button
         let rect = wiz.geometry();
         let btn_x = rect.x + rect.width as i32 - 80 - 8;
         let btn_y = rect.y + rect.height as i32 - 36 - 6 - 6;
-        wiz.handle_event(&Event::MousePress {
-            pos: Point::new(btn_x + 20, btn_y + 10),
-            button: 1,
-            modifiers: 0,
-        });
-        assert!(fired.load(Ordering::SeqCst));
+        let pos = Point::new(btn_x + 20, btn_y + 10);
+        wiz.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
+        assert_eq!(fired.load(Ordering::SeqCst), 0, "a press alone must not finish");
+        wiz.handle_event(&Event::MouseRelease { pos, button: 1 });
+        assert_eq!(fired.load(Ordering::SeqCst), 1, "one click finishes exactly once");
     }
 
     #[test]
@@ -1029,22 +1063,59 @@ mod tests {
         let mut wiz = WizardDialog::new(Rect::new(0, 0, 400, 300));
         wiz.add_step("A", false);
 
-        let fired = Arc::new(AtomicBool::new(false));
+        let fired = Arc::new(AtomicUsize::new(0));
         let f = fired.clone();
         wiz.cancelled.connect(move || {
-            f.store(true, Ordering::SeqCst);
+            f.fetch_add(1, Ordering::SeqCst);
         });
 
         // Click Cancel button
         let rect = wiz.geometry();
         let btn_x = rect.x + 8;
         let btn_y = rect.y + rect.height as i32 - 36 - 6 - 6;
-        wiz.handle_event(&Event::MousePress {
-            pos: Point::new(btn_x + 20, btn_y + 10),
-            button: 1,
-            modifiers: 0,
+        let pos = Point::new(btn_x + 20, btn_y + 10);
+        wiz.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
+        assert_eq!(fired.load(Ordering::SeqCst), 0, "a press alone must not cancel");
+        wiz.handle_event(&Event::MouseRelease { pos, button: 1 });
+        assert_eq!(fired.load(Ordering::SeqCst), 1, "one click cancels exactly once");
+    }
+
+    #[test]
+    fn wizard_dialog_press_only_does_not_advance() {
+        let mut wiz = WizardDialog::new(Rect::new(0, 0, 400, 300));
+        wiz.add_step("A", false);
+        wiz.add_step("B", false);
+
+        let changes = Arc::new(AtomicUsize::new(0));
+        let c = changes.clone();
+        wiz.step_changed.connect(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
         });
-        assert!(fired.load(Ordering::SeqCst));
+
+        let next_rect = wiz.nav_button_rects(wiz.geometry())[2];
+        let pos = Point::new(next_rect.x + 10, next_rect.y + 10);
+        wiz.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
+        assert_eq!(wiz.current_step(), 0, "a press must not advance the step");
+        assert_eq!(changes.load(Ordering::SeqCst), 0, "a press must not emit step_changed");
+
+        wiz.handle_event(&Event::MouseRelease { pos, button: 1 });
+        assert_eq!(wiz.current_step(), 1, "the release commits the advance");
+        assert_eq!(changes.load(Ordering::SeqCst), 1, "one click emits step_changed once");
+    }
+
+    #[test]
+    fn wizard_dialog_escape_cancels() {
+        let mut wiz = WizardDialog::new(Rect::new(0, 0, 400, 300));
+        wiz.add_step("A", false);
+
+        let fired = Arc::new(AtomicUsize::new(0));
+        let f = fired.clone();
+        wiz.cancelled.connect(move || {
+            f.fetch_add(1, Ordering::SeqCst);
+        });
+
+        wiz.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
+        assert_eq!(fired.load(Ordering::SeqCst), 1, "Escape must cancel the wizard");
     }
 
     #[test]

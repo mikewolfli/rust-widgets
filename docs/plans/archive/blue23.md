@@ -247,7 +247,7 @@ src/render/text_shaper.rs:66 let total = char_count as f32 * font_size * 0.6; //
  （`widget_state()` 放在 `Widget` trait 上），**缺的只是每个控件把它报出来**。
 2. **动画由帧时钟驱动，不由「状态变化时启动一个定时器」驱动**。
  主流 material 实现 的 `AnimationController` 绑 `Ticker`；参考工具包 的 `Behavior` 由渲染线程的
- `QQuickWindow::update()` 循环推进。本仓已有 11 个 `tick(delta_ms)` 却**无驱动者**，
+ `quick window::update()` 循环推进。本仓已有 11 个 `tick(delta_ms)` 却**无驱动者**，
  这正是「引擎建了、没人开开关」。
 3. **层级必须由 token 表达，不能各控件现拼**。Material 有 6 级 `surfaceContainer*` +
  `scrim`；本仓**已有这 7 个 token 且已写入 `themes/*.json`**，但没有消费者（§5）。
@@ -426,18 +426,15 @@ $ grep -rn "impl Widget for" src/widget/ --include=*.rs | wc -l → 195
 
 ```rust
 /// 指针是否停留在本控件上。
-///
 /// # 为什么放在 `BaseWidget` 而不是每个控件
-///
 /// `runtime.rs:798-813` 的 `dispatch_hover_transition` **已经在**产生
 /// `Event::MouseEnter`/`MouseLeave` 这一对事件（先 MouseLeave 后 MouseEnter，
 /// 一个 `last_hovered` Option 保证配对），也就是说**「谁被 hover 了」这个事实
 /// 在运行时层已经完全确定**。控件只要在 `BaseWidget::handle_event` 里把它记下来，
 /// 就**不需要**各自索引指针位置——那是 `Button` 现在做的事（`button.rs:204`），
 /// 而 `CheckBox`/`ToggleButton`/`Switch` 都没做，于是它们永远拿不到 hover 态。
-///
-/// 参考工具包 的位置在这里：`QQuickControl` 的 `hoverEnter/Move/Leave`（`reference-toolkit control.cpp:2043-2056`）
-/// 由**基类**维护 `hovered`，`QQuickAbstractButton` 只额外维护 `pressed`。
+/// 参考工具包 的位置在这里：`quick control` 的 `hoverEnter/Move/Leave`（`reference-toolkit control.cpp:2043-2056`）
+/// 由**基类**维护 `hovered`，`quick abstract button` 只额外维护 `pressed`。
 /// 本仓的 `Button` 已经把两件事都做了，只是做在**子类**——把它上提，188 个控件
 /// 一起获得，而不是 188 次抄写。
 ```
@@ -500,17 +497,13 @@ fn widget_state(&self) -> WidgetState {
 
 ```rust
 /// 一个控件当前应当**叠加**在填充之上的状态层。
-///
 /// # 为什么要与 `widget_state()` 分开
-///
 /// `widget_state()` 回答「用哪一套颜色」（单值，可过渡，是主题的查找键）。
 /// 本结构回答「还要叠什么」（可多项同时成立，**不过渡**，是绘制指令）。
-///
-/// 这条分界来自 参考工具包：`QQuickControl::hovered` 与 `AbstractButton::pressed` 是
+/// 这条分界来自 参考工具包：`quick control::hovered` 与 `AbstractButton::pressed` 是
 /// **两个独立的 bool**，可同时为真，且 `reference: the base control's background/padding contract` 的 `background` 对二者的
 /// 处理是**两个独立的 blend**（`reference: the button's implicit-size formula and padding cascade` 用 `down ? 0.5 : 0.0`
 /// 而 `visualFocus` 走**描边**，互不覆盖）。
-///
 /// 而 Material 的 `WidgetStateProperty` 是**首次匹配的集合**，它用
 /// 优先级列表回避了「同时成立」的颜色冲突——代价是样式作者**必须**为
 /// `{hovered, focused}` 单独写一条，否则 hover 会盖掉 focus 的描边。
@@ -592,19 +585,14 @@ inherent（有 `pub fn tick` 但不可达）：             0 个
 
 ```rust
 /// 推进本控件的自驱动动画，报告「是否还需要下一帧」。
-///
 /// # 为什么放在 trait 而不是每个控件自便
-///
 /// 本仓现在**有 11 个同名同形的 `pub fn tick(&mut self, delta_ms) -> bool`**
 /// （`button.rs:228`、`switch.rs:178`、`spinner.rs:115`、`lineedit.rs:127`、
 /// `code_editor/editor.rs:302`、`floating_label.rs:251` …）——**形状已经统一，
 /// 只是各自是固有方法，宿主持有 `&mut dyn Widget` 时无法调用**。
-///
 /// 所以这一步是**纯加法**：把已有的形状上提为 trait 方法，
 /// 11 个固有方法原样成为实现，不写一行新逻辑。
-///
 /// # 为什么返回值是 bool 而不是 `Option<Duration>`
-///
 /// `floating_label.rs:133-139` 的文档已经定义了正确的经济学：
 /// **只在还在动时调度下一帧**。`false` 的语义是「我不欠任何帧」，
 /// 宿主据此停止为它排帧——一个静止的按钮**每帧成本为零**。
@@ -627,16 +615,12 @@ $ grep -rn "\.tick(" src/app/ src/render/ src/platform/ --include=*.rs → 0 命
 
 ```rust
 /// 推进所有**正在动画**的控件，并返回「是否还需要下一帧」。
-///
 /// # 为什么必须是这一个函数
-///
 /// `src/style/animation.rs`（1582 行）与 11 个控件的自驱动动画**都已经正确实现**，
 /// 缺的只是**一个调用者**。而「谁来调」有两个错误答案：
-///
 /// - **每个控件自建定时器** ⇒ 100 个控件 100 个定时器，且与帧率不同步
-/// （参考工具包 专门提供 `QQuickWindow::update()` 作为唯一推进点，正是为了避免这个）。
+/// （参考工具包 专门提供 `quick window::update()` 作为唯一推进点，正是为了避免这个）。
 /// - **宿主/后端各调一次** ⇒ 同一个按钮在一帧里被推进两次，动画速度随调用点数翻倍。
-///
 /// 所以推进点是**运行时唯一的一个**，由宿主的帧循环在**绘制之前**调用一次。
 /// 「谁在被推进」的答案来自**每个控件自己**（`is_animating()`），
 /// 而不是由运行时维护一张动画名册——名册会有「注册了没注销」的漏，
@@ -779,7 +763,7 @@ BLUE22 已建 `ActionRow`（`composite.rs`），但 8 个对话框**刻意未合
 
 `chart.rs:475-489` 的 `PlotArea` 无左槽；`candlestick/volume/depth` 在
 `bars.is_empty()` 时直接 `return`。**主流 material 实现 `fl_chart` 默认开 `leftTitles`；
-参考工具包 `QChart` 必有 `QValueAxis`；主流声明式实现 `Chart` 默认 `AxisMarks`**——三家一致。
+参考工具包 `chart` 必有 `value axis`；主流声明式实现 `Chart` 默认 `AxisMarks`**——三家一致。
 
 > 这里的对外一致性判据（BLUE21 A.6 已列）：`chart.svg` 的最高柱**贴顶零余量**
 > 正是「没有值轴」的直接后果（有轴就要给轴和标签留位）。
@@ -948,7 +932,7 @@ $ grep -n "pub struct Node" -A 12 src/view/node.rs
 | 声明式 Web 框架 | `createPortal(children, container)` —— 在**树里**留在原位，在 **DOM 里**挂到别处 | `react-dom` |
 | 主流 material 实现 | `Overlay` + `OverlayEntry`（`Overlay.of(context).insert(entry)`） | `overlay.dart` |
 | 主流声明式实现 | `.overlay` / `.sheet` / `.popover` —— 修饰符携带，渲染由系统另开层 | `View.overlay(...)` |
-| 参考工具包 | `Popup` 自带 `parent` 与 `Overlay.overlay`；`QQuickPopup` 用 `parentItem` 定位而 `z` 另算 | `qquickpopup.cpp` |
+| 参考工具包 | `Popup` 自带 `parent` 与 `Overlay.overlay`；`quick popup` 用 `parentItem` 定位而 `z` 另算 | `qquickpopup.cpp` |
 
 **四家一致**：**身份在树里、渲染在另一处**。这正是本仓缺的那一维。
 

@@ -126,6 +126,33 @@ impl Platform for MacOSPlatform {
         "cocoa"
     }
 
+    /// Answers from the CoreVideo display link that `run()` starts.
+    ///
+    /// A profile without the canvas surface has no frame loop to pace, and a host where CoreVideo
+    /// could not start answers `false`; both cases keep the fixed frame grid.
+    fn supports_vsync_frame(&self) -> bool {
+        #[cfg(widgets_unstripped)]
+        {
+            super::display_link::is_running()
+        }
+        #[cfg(not(widgets_unstripped))]
+        {
+            false
+        }
+    }
+
+    /// The next presented-time instant published by the display-link callback.
+    fn next_vsync_deadline(&self) -> Option<std::time::Instant> {
+        #[cfg(widgets_unstripped)]
+        {
+            super::display_link::next_deadline()
+        }
+        #[cfg(not(widgets_unstripped))]
+        {
+            None
+        }
+    }
+
     /// A library-painted widget gets an `NSView` subclass whose `drawRect:` blits a
     /// frame out of `widget::runtime`. See `macos/canvas.rs`.
     ///
@@ -351,6 +378,21 @@ impl Platform for MacOSPlatform {
     /// `NSWorkspace.accessibilityDisplayShouldReduceMotion`; see [`super::environment`].
     fn reduce_motion(&self) -> Option<bool> {
         super::environment::reduce_motion()
+    }
+
+    /// Whether the user asked for translucent materials to be reduced.
+    ///
+    /// `NSWorkspace.accessibilityDisplayShouldReduceTransparency`; see [`super::environment`].
+    fn reduce_transparency(&self) -> Option<bool> {
+        super::environment::reduce_transparency()
+    }
+
+    /// The host's current accent colour, from `NSColor.controlAccentColor`.
+    ///
+    /// See [`super::environment::accent_color`] for the colour-space conversion and why the answer
+    /// is `None` rather than a default blue when AppKit cannot be asked.
+    fn accent_color(&self) -> Option<crate::core::Color> {
+        super::environment::accent_color()
     }
 
     /// The user's locale, from `NSLocale.currentLocale`.

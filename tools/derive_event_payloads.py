@@ -143,6 +143,9 @@ DOMAIN_AS_STRING: frozenset[str] = frozenset(
         "ToggleButtonState",
         "NavigationEvent",
         "DragPayload",
+        # The effect a completed drag reports. A four-variant enum whose name is the whole value,
+        # published as its lower-case token (`none`/`copy`/`move`/`link`) by `DropEffect::as_str`.
+        "DropEffect",
         "BarcodeResult",
         "FilterExpr",
         "SignatureStroke",

@@ -3,6 +3,7 @@
 
 //! Multi-line text edit widget.
 use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
+use crate::event::wheel::WheelScroll;
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
@@ -655,6 +656,24 @@ impl TextEdit {
         );
     }
 
+    /// Scrolls the viewport by `rows` laid-out rows toward the end of the value.
+    ///
+    /// The clamp stops at the last window that still fills the interior, so a wheel notch at the
+    /// end cannot scroll the document off screen. Returns whether the viewport moved.
+    fn scroll_rows(&mut self, rows: i32) -> bool {
+        if rows == 0 {
+            return false;
+        }
+        let max_first = self.layout_rows().len().saturating_sub(self.visible_row_count());
+        let next =
+            (self.first_visible_row as i64 + rows as i64).clamp(0, max_first as i64) as usize;
+        if next == self.first_visible_row {
+            return false;
+        }
+        self.first_visible_row = next;
+        true
+    }
+
     /// The byte offset the point `pos` falls on.
     ///
     /// # How a pixel becomes an offset
@@ -1105,6 +1124,15 @@ impl EventHandler for TextEdit {
                     return;
                 }
                 self.insert_str(text);
+            }
+            // Wheel: positive `delta.y` moves the content down, so the viewport moves toward the
+            // start. The shared helper turns wheel notches into lines at the desktop default of
+            // three lines per notch.
+            Event::Wheel { delta, modifiers, .. } => {
+                let scroll = WheelScroll::from_event(*delta, *modifiers, 3);
+                if self.scroll_rows(-scroll.lines_y) {
+                    self.base.request_redraw();
+                }
             }
             Event::KeyPress { key, modifiers } => {
                 // An unfocused editor owns no keys — see the `focused` field for what that prevents.
@@ -2447,5 +2475,31 @@ mod tests {
         te.handle_event(&Event::mouse_press(rect.x + 6, rect.y + 6, 1));
         te.handle_event(&Event::key_press(97, 0)); // 'a'
         assert_eq!(te.text(), "a", "the press made the editor own the keyboard");
+    }
+
+    /// The wheel scrolls the wrapped row window and clamps at both ends.
+    #[test]
+    fn textedit_wheel_scrolls_and_clamps() {
+        let text: Vec<String> = (0..20).map(|n| format!("line{n}")).collect();
+        let mut te = TextEdit::new(Rect::new(0, 0, 300, 80));
+        te.set_text(text.join("\n"));
+        assert_eq!(te.first_visible_row(), 0);
+
+        // One notch toward the end of the value reveals three rows.
+        te.handle_event(&Event::Wheel { delta: crate::core::Point::new(0, -1), modifiers: 0 });
+        assert_eq!(te.first_visible_row(), 3, "a downward notch moves the viewport down");
+
+        // The opposite notch returns toward the top and clamps there.
+        te.handle_event(&Event::Wheel { delta: crate::core::Point::new(0, 1), modifiers: 0 });
+        assert_eq!(te.first_visible_row(), 0);
+        te.handle_event(&Event::Wheel { delta: crate::core::Point::new(0, 1), modifiers: 0 });
+        assert_eq!(te.first_visible_row(), 0, "the viewport clamps at the first row");
+
+        // Scrolling on stops at the last full window rather than past the document.
+        let max_first = te.layout_rows().len() - te.visible_row_count();
+        for _ in 0..20 {
+            te.handle_event(&Event::Wheel { delta: crate::core::Point::new(0, -1), modifiers: 0 });
+        }
+        assert_eq!(te.first_visible_row(), max_first, "the viewport clamps at the last window");
     }
 }

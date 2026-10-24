@@ -42,6 +42,7 @@
 //! `create_emoji_picker` on `ControlBackend`.
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::event::wheel::WheelScroll;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -488,6 +489,37 @@ impl EmojiPicker {
         self.cursor = Some(next as usize);
         self.base.request_redraw();
     }
+
+    /// Moves the cursor by `rows` whole grid rows without wrapping.
+    ///
+    /// # Why the wheel clamps while the arrow keys wrap
+    ///
+    /// Arrows are a deliberate walk through a grid of equals, so wrapping at an edge keeps
+    /// them useful. A wheel notch is a scroll gesture: continuing to spin it at the top of the
+    /// list must not jump the cursor to the bottom, which is what a wrapping move would do. The
+    /// cursor starts at the first cell for a downward gesture and at the last for an upward one,
+    /// matching [`Self::move_cursor`]'s first-press behaviour.
+    ///
+    /// Returns whether the cursor moved, so the caller repaints only on a change.
+    fn scroll_cursor_rows(&mut self, rows: i32) -> bool {
+        let count = self.visible_glyphs().len();
+        if count == 0 {
+            let changed = self.cursor.is_some();
+            self.cursor = None;
+            return changed;
+        }
+        let step = rows.saturating_mul(self.columns() as i32);
+        let next = match self.cursor {
+            Some(current) => (current as i32 + step).clamp(0, count as i32 - 1),
+            None if step < 0 => count as i32 - 1,
+            None => 0,
+        } as usize;
+        if self.cursor == Some(next) {
+            return false;
+        }
+        self.cursor = Some(next);
+        true
+    }
 }
 
 impl Widget for EmojiPicker {
@@ -892,6 +924,17 @@ impl EventHandler for EmojiPicker {
                 search.push_str(text);
                 self.set_search(&search);
             }
+            // One grid row per wheel notch. `delta.y` is measured in notches and
+            // `WheelScroll` scales it to lines at the desktop default of three per notch, so the
+            // line count is divided back out here to keep the grid step per notch.
+            Event::Wheel { delta, modifiers, .. } => {
+                let scroll = WheelScroll::from_event(*delta, *modifiers, 3);
+                let rows = scroll.lines_y / 3;
+                // A positive notch moves the content down, so the cursor walks toward the top.
+                if rows != 0 && self.scroll_cursor_rows(-rows) {
+                    self.base.request_redraw();
+                }
+            }
             Event::KeyDown((key, _)) | Event::KeyPress { key, .. } => match *key {
                 // Backspace edits the search, which is the only text this control has.
                 8 => {
@@ -1246,6 +1289,36 @@ mod tests {
         p.handle_event(&Event::KeyDown((39, 0))); // cursor to 0
         p.handle_event(&Event::KeyDown((13, 0)));
         assert_eq!(p.recent().first().map(String::as_str), Some("smile"));
+    }
+
+    /// The wheel moves the cursor one grid row per notch and clamps at both ends.
+    #[test]
+    fn emoji_picker_wheel_moves_a_row_and_clamps() {
+        let mut p = EmojiPicker::new(Rect::new(0, 0, CELL_SIZE * 3, 240));
+        let table: Vec<EmojiGlyph> =
+            (0..10).map(|n| EmojiGlyph::new(format!("g{n}"), "*", "faces")).collect();
+        p.set_glyphs(table);
+        p.set_categories(vec!["faces".to_string()]);
+        assert_eq!(p.columns(), 3, "the fixture is exactly three cells wide");
+        p.cursor = Some(0);
+
+        // One notch down moves one whole rows: three cells at this width.
+        p.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+        assert_eq!(p.cursor(), Some(3), "a downward notch moves one grid row");
+        p.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+        assert_eq!(p.cursor(), Some(6));
+
+        // Spinning on clamps at the last cell rather than wrapping to the top.
+        for _ in 0..5 {
+            p.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+        }
+        assert_eq!(p.cursor(), Some(9), "the cursor clamps at the last cell");
+
+        // And the opposite gesture clamps at the first cell.
+        for _ in 0..10 {
+            p.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+        }
+        assert_eq!(p.cursor(), Some(0), "the cursor clamps at the first cell");
     }
 
     #[test]

@@ -102,6 +102,11 @@ fn menu_item_record(
 /// Each item has a unique ID, display text, optional icon, and flags for
 /// enabled/disabled and checked state. Items can also have an optional
 /// submenu (nested `MenuItem` list) for cascading menus.
+///
+/// `Clone` is what lets an open child panel hold its own rows while the item tree it came from
+/// stays owned by the control: a submenu that borrowed the tree could not outlive a mutation of
+/// the parent list.
+#[derive(Clone, Debug)]
 pub struct MenuItem {
     /// Unique identifier for this item.
     pub id: u64,
@@ -155,11 +160,181 @@ impl MenuItem {
     }
 }
 
+/// The panel rectangle a menu anchored at `anchor` occupies.
+///
+/// Shared by this control, its child panels and `ToolButton`, so every surface that hangs a
+/// menu below a button derives the same extent instead of repeating the literals.
+pub(crate) fn menu_panel_rect(anchor: Rect, item_count: usize) -> Rect {
+    let menu_width = anchor.width.max(DEFAULT_MENU_WIDTH);
+    let menu_height = (item_count as u32 * ITEM_HEIGHT as u32).max(1);
+    Rect::new(anchor.x, anchor.y + anchor.height as i32, menu_width, menu_height)
+}
+
+/// Row `index` inside `panel`.
+pub(crate) fn menu_item_rect(panel: Rect, index: usize) -> Rect {
+    Rect::new(panel.x, panel.y + index as i32 * ITEM_HEIGHT, panel.width, ITEM_HEIGHT as u32)
+}
+
+/// The right-hand child panel of a branch row.
+pub(crate) fn menu_submenu_panel_rect(parent: Rect, anchor_row: Rect, item_count: usize) -> Rect {
+    let width = parent.width.max(DEFAULT_MENU_WIDTH);
+    let height = (item_count as u32 * ITEM_HEIGHT as u32).max(1);
+    Rect::new(parent.x + parent.width as i32, anchor_row.y, width, height)
+}
+
+/// Paints one menu list and the panel it sits in.
+///
+/// This is the single painter for `MenuButton`'s menu, its child panels and `ToolButton`'s
+/// popup: the geometry comes from [`menu_panel_rect`]/[`menu_item_rect`], so a row can never be
+/// hit-tested somewhere the paint did not put it.
+pub(crate) fn draw_menu_panel(
+    context: &mut RenderContext,
+    panel: Rect,
+    items: &[MenuItem],
+    icon_sources: &[(u64, IconSource)],
+    style: &crate::style::WidgetStyle,
+    accent: Color,
+) {
+    // The popup panel is chrome: a popup that stayed white in a dark theme would be the
+    // brightest object on screen. It reads the resolved surface, and the literal it used to be
+    // stays as the fallback.
+    let themed = crate::style::resolved_theme_style_shared("menu_button");
+    let panel_fill =
+        themed.as_ref().and_then(|resolved| resolved.background_color).unwrap_or(Color::WHITE);
+    let panel_border = style
+        .border_color
+        .or_else(|| themed.as_ref().and_then(|resolved| resolved.border_color))
+        .unwrap_or(Color::rgba(190, 190, 200, 200));
+    let item_ink = style
+        .text_color
+        .or_else(|| themed.as_ref().and_then(|resolved| resolved.text_color))
+        .unwrap_or(Color::rgb(33, 33, 33));
+    // A selected row's highlight is chrome, not data, so it is resolved from the theme's
+    // accent rather than from a literal tint of blue.
+    let item_highlight = panel_fill.blend(&accent, 0.3);
+    let item_rule = panel_fill.blend(&item_ink, 0.08);
+
+    context.fill_rounded_rect(panel, 4, panel_fill);
+    context.draw_rounded_rect_stroke(panel, 4, panel_border, 1);
+
+    // One resolved font for every row: it used to be rebuilt per item.
+    let item_font = effective_font(style);
+    for (i, item) in items.iter().enumerate() {
+        let item_rect = menu_item_rect(panel, i);
+
+        // Highlight on checked rows
+        if item.checked {
+            context.fill_rounded_rect(item_rect, 2, item_highlight);
+        }
+
+        let item_text_color =
+            if !item.enabled { item_ink.blend(&panel_fill, 0.5) } else { item_ink };
+        let mut item_x = item_rect.x + PADDING;
+
+        // Item icon
+        let item_source =
+            icon_sources.iter().find(|(id, _)| *id == item.id).map(|(_, source)| *source);
+        if let Some(source) = item_source {
+            let icon_line = context.text_line(item_rect, item_font);
+            let side = icon_line.height.clamp(1, 16);
+            let icon_box = Rect::new(item_x, icon_line.y, side, side.min(item_rect.height));
+            if let Err(error) =
+                crate::widget::paint_icon(context, source.into(), icon_box, item_text_color)
+            {
+                log::warn!("menu item {id} icon could not be painted: {error:?}", id = item.id);
+            }
+            item_x += 20;
+        } else if let Some(ref item_icon) = item.icon {
+            let icon_font = Font::simple("sans-serif", 13.0);
+            // The icon and the label occupy the same row, so both take their origin from the
+            // line box centred in it: the row midpoint is the glyph top edge, and using it drew
+            // them half a line low.
+            let icon_line = context.text_line(item_rect, &icon_font);
+            context.draw_text(
+                Point::new(item_x, icon_line.y),
+                item_icon,
+                &icon_font,
+                item_text_color,
+                HorizontalAlignment::Left,
+            );
+            item_x += 20;
+        }
+
+        let item_line = context.text_line(item_rect, item_font);
+        // Fitted between the label start and the checkmark zone: an unbounded label ran under
+        // the check glyph on checked rows (and past the popup edge on long ones).
+        let item_text_right = if item.checked {
+            item_rect.x + item_rect.width as i32 - PADDING - 14
+        } else {
+            item_rect.x + item_rect.width as i32 - PADDING
+        };
+        let item_text_width = (item_text_right - item_x).max(0) as u32;
+        context.draw_text_fitted_cow(
+            Rect::new(item_x, item_line.y, item_text_width, item_line.height.max(1)),
+            &item.text,
+            item_font,
+            item_text_color,
+            HorizontalAlignment::Left,
+        );
+
+        // Checkmark for checked items. Drawn as an `IconName` outline rather than the `✓`
+        // (U+2713) character: no bundled face covers the dingbats block, so the character fell
+        // back to an 8x8 bitmap and read as a blob.
+        if item.checked {
+            let check_x = item_rect.x + item_rect.width as i32 - PADDING - 12;
+            let check_line = context.text_line(item_rect, item_font);
+            let side = check_line.height.max(1);
+            let check_rect = Rect::new(
+                check_x,
+                check_line.y + (check_line.height as i32 - side as i32) / 2,
+                side,
+                side,
+            );
+            crate::widget::draw_icon_at(
+                context,
+                check_rect,
+                accent.contrast_color(),
+                IconName::Check,
+            );
+        }
+
+        // Submenu indicator
+        if item.submenu.is_some() && item.enabled {
+            let sub_x = item_rect.x + item_rect.width as i32 - PADDING - 8;
+            let sub_y = item_rect.y + item_rect.height as i32 / 2 - 4;
+            context.execute_command(RenderCommand::DrawPath {
+                points: vec![
+                    Point::new(sub_x, sub_y),
+                    Point::new(sub_x, sub_y + 8),
+                    Point::new(sub_x + 5, sub_y + 4),
+                ],
+                closed: true,
+                color: item_ink.blend(&panel_fill, 0.45),
+                filled: true,
+                width: 1,
+            });
+        }
+
+        // Separator between rows (except the last)
+        if i + 1 < items.len() {
+            context.draw_line(
+                Point::new(item_rect.x + 4, item_rect.y + item_rect.height as i32),
+                Point::new(
+                    item_rect.x + item_rect.width as i32 - 4,
+                    item_rect.y + item_rect.height as i32,
+                ),
+                item_rule,
+            );
+        }
+    }
+}
+
 /// MenuButton widget — a button that opens a dropdown menu on click.
 ///
 /// Displays a button with text and an optional icon. When clicked, it toggles
 /// a dropdown menu positioned below the button. Selecting a menu item emits
-/// the `item_triggered` signal with the item's ID.
+/// the `item_triggered` signal with the item's ID; activating a branch item
+/// opens its child panel instead and emits `submenu_requested`.
 pub struct MenuButton {
     base: BaseWidget,
     text: String,
@@ -171,8 +346,17 @@ pub struct MenuButton {
     menu_open: bool,
     /// The menu's open/close reveal; see `menu::Menu` for why it is separate from `menu_open`.
     reveal: PopupReveal,
+    /// The open child panel's rows. One level is opened at a time: opening another branch
+    /// replaces whatever child panel was showing.
+    submenu_open: Option<Vec<MenuItem>>,
+    /// The rectangle the open child panel occupies, computed when the branch opens.
+    submenu_panel: Option<Rect>,
+    /// The top-level row the pointer last addressed, so Right can open its submenu.
+    active_index: Option<usize>,
     /// Emitted when a menu item is clicked, providing the item ID.
     pub item_triggered: Signal1<u64>,
+    /// Emitted when a branch row opens its child panel, carrying the branch's text.
+    pub submenu_requested: Signal1<String>,
 }
 
 impl MenuButton {
@@ -187,7 +371,11 @@ impl MenuButton {
             icon_source: None,
             menu_open: false,
             reveal: PopupReveal::new(false),
+            submenu_open: None,
+            submenu_panel: None,
+            active_index: None,
             item_triggered: Signal1::new(),
+            submenu_requested: Signal1::new(),
         }
     }
 
@@ -286,6 +474,9 @@ impl MenuButton {
         let removed = self.menu_items.len() < len_before;
         if removed {
             self.item_icon_sources.retain(|(item_id, _)| *item_id != id);
+            // The child panel holds a snapshot of the removed row's subtree, so it can no
+            // longer be trusted to describe the menu that is still there.
+            self.close_submenu();
             self.base.request_redraw();
         }
         removed
@@ -295,6 +486,7 @@ impl MenuButton {
     pub fn clear_items(&mut self) {
         self.menu_items.clear();
         self.item_icon_sources.clear();
+        self.close_submenu();
         self.base.request_redraw();
     }
 
@@ -311,6 +503,7 @@ impl MenuButton {
     /// Returns a mutable reference to the menu items.
     pub fn items_mut(&mut self) -> &mut Vec<MenuItem> {
         self.item_icon_sources.clear();
+        self.close_submenu();
         &mut self.menu_items
     }
 
@@ -321,9 +514,11 @@ impl MenuButton {
 
     /// Toggles the dropdown menu visibility.
     pub fn toggle_menu(&mut self) {
-        self.menu_open = !self.menu_open;
-        self.reveal.set_open(self.menu_open);
-        self.base.request_redraw();
+        if self.menu_open {
+            self.close_menu();
+        } else {
+            self.open_menu();
+        }
     }
 
     /// Opens the dropdown menu.
@@ -335,32 +530,149 @@ impl MenuButton {
         self.base.request_redraw();
     }
 
-    /// Closes the dropdown menu.
+    /// Closes the dropdown menu and any open child panel.
     pub fn close_menu(&mut self) {
         self.menu_open = false;
         self.reveal.set_open(false);
+        self.submenu_open = None;
+        self.submenu_panel = None;
+        self.active_index = None;
         #[cfg(not(alloc_frugal))]
         crate::widget::runtime::clear_popup_grab_for(self.id());
         self.base.request_redraw();
     }
 
+    /// Collapses the open child panel, leaving the parent menu open.
+    fn close_submenu(&mut self) {
+        if self.submenu_open.is_none() && self.submenu_panel.is_none() {
+            return;
+        }
+        self.submenu_open = None;
+        self.submenu_panel = None;
+        // The outside press that collapsed the child also cleared the runtime grab. The
+        // parent menu is still open, so re-arm it; otherwise the next outside press would
+        // be delivered to whatever is behind this control.
+        #[cfg(not(alloc_frugal))]
+        if self.menu_open {
+            crate::widget::runtime::set_popup_grab(self.id());
+        }
+        self.base.request_redraw();
+    }
+
+    /// Opens the submenu of the top-level row at `index` to the right of the parent panel.
+    ///
+    /// Activating a branch is not an activation of the branch's own action: no
+    /// [`Self::item_triggered`] fires and the parent menu stays open, which is the difference
+    /// between a row that leads somewhere and a row that does something.
+    fn open_submenu(&mut self, index: usize) {
+        let Some(item) = self.menu_items.get(index) else {
+            return;
+        };
+        if !item.enabled {
+            return;
+        }
+        let Some(children) = item.submenu.clone() else {
+            return;
+        };
+        if children.is_empty() {
+            return;
+        }
+        let text = item.text.clone();
+        self.submenu_requested.emit(text);
+        let parent = self.menu_rect();
+        let anchor_row = menu_item_rect(parent, index);
+        self.submenu_panel = Some(menu_submenu_panel_rect(parent, anchor_row, children.len()));
+        self.submenu_open = Some(children);
+        self.active_index = Some(index);
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::set_popup_grab(self.id());
+        self.base.request_redraw();
+    }
+
+    /// Activates a top-level row: a branch opens its child panel, a leaf emits and closes.
+    fn activate_top_level(&mut self, index: usize) {
+        let Some(item) = self.menu_items.get(index) else {
+            return;
+        };
+        if !item.enabled {
+            return;
+        }
+        let id = item.id;
+        let is_branch = item.submenu.as_ref().is_some_and(|children| !children.is_empty());
+        if is_branch {
+            self.open_submenu(index);
+        } else {
+            self.item_triggered.emit(id);
+            self.close_menu();
+        }
+    }
+
+    /// Activates a row inside the open child panel.
+    fn activate_submenu_row(&mut self, index: usize) {
+        let Some(panel) = self.submenu_panel else {
+            return;
+        };
+        let Some(item) = self.submenu_open.as_ref().and_then(|items| items.get(index)) else {
+            return;
+        };
+        if !item.enabled {
+            return;
+        }
+        let id = item.id;
+        let text = item.text.clone();
+        let nested = item.submenu.clone();
+        match nested {
+            Some(children) if !children.is_empty() => {
+                self.submenu_requested.emit(text);
+                let anchor_row = menu_item_rect(panel, index);
+                self.submenu_panel =
+                    Some(menu_submenu_panel_rect(panel, anchor_row, children.len()));
+                self.submenu_open = Some(children);
+                self.base.request_redraw();
+            }
+            _ => {
+                self.item_triggered.emit(id);
+                self.close_menu();
+            }
+        }
+    }
+
+    /// The index of the enabled top-level row a Right key should open.
+    fn keyboard_branch_index(&self) -> Option<usize> {
+        self.active_index
+            .filter(|index| {
+                self.menu_items.get(*index).is_some_and(|item| {
+                    item.enabled && item.submenu.as_ref().is_some_and(|c| !c.is_empty())
+                })
+            })
+            .or_else(|| {
+                self.menu_items.iter().position(|item| {
+                    item.enabled && item.submenu.as_ref().is_some_and(|c| !c.is_empty())
+                })
+            })
+    }
+
+    /// The child-panel row at `pos`, when one is enabled.
+    fn hit_test_submenu_item(&self, pos: Point) -> Option<usize> {
+        let panel = self.submenu_panel?;
+        let items = self.submenu_open.as_ref()?;
+        if !panel.contains_point(pos) {
+            return None;
+        }
+        items.iter().enumerate().find_map(|(index, item)| {
+            let row = menu_item_rect(panel, index);
+            (item.enabled && row.contains_point(pos)).then_some(index)
+        })
+    }
+
     /// Computes the menu rectangle positioned below the button.
     fn menu_rect(&self) -> Rect {
-        let geom = self.geometry();
-        let menu_width = geom.width.max(DEFAULT_MENU_WIDTH);
-        let menu_height = (self.menu_items.len() as u32 * ITEM_HEIGHT as u32).max(1);
-        Rect::new(geom.x, geom.y + geom.height as i32, menu_width, menu_height)
+        menu_panel_rect(self.geometry(), self.menu_items.len())
     }
 
     /// Computes the rectangle for a specific menu item at the given index.
     fn item_rect(&self, index: usize) -> Rect {
-        let menu_rect = self.menu_rect();
-        Rect::new(
-            menu_rect.x,
-            menu_rect.y + index as i32 * ITEM_HEIGHT,
-            menu_rect.width,
-            ITEM_HEIGHT as u32,
-        )
+        menu_item_rect(self.menu_rect(), index)
     }
 
     /// Finds the index of the menu item at the given position, if any.
@@ -394,13 +706,15 @@ impl Widget for MenuButton {
         &mut self.base
     }
 
-    /// The button **and** its open menu accept the pointer.
+    /// The button, its open menu, and a child panel all accept the pointer.
     ///
-    /// The menu is painted below the button's rectangle; without this override every click on a
-    /// menu item was rejected before `hit_test_item` could see it.
+    /// The menu is painted below the button's rectangle and a child panel to its right;
+    /// without this override every click on either was rejected before `hit_test_item` could
+    /// see it.
     fn contains_point(&self, point: crate::core::Point) -> bool {
         self.base().contains_point_with_touch_expansion(point)
             || (self.menu_open && self.menu_rect().contains_point(point))
+            || self.submenu_panel.is_some_and(|panel| panel.contains_point(point))
     }
 
     fn has_open_popup(&self) -> bool {
@@ -437,6 +751,11 @@ impl Widget for MenuButton {
             "item_triggered" => {
                 Some(EventSignalRef::mapped("item_triggered", &self.item_triggered, |v| {
                     CapabilityValue::UInt(*v)
+                }))
+            }
+            "submenu_requested" => {
+                Some(EventSignalRef::mapped("submenu_requested", &self.submenu_requested, |v| {
+                    CapabilityValue::String(v.clone())
                 }))
             }
             _ => None,
@@ -664,142 +983,24 @@ impl Draw for MenuButton {
             if clipped {
                 context.push_clip(revealed.x, revealed.y, revealed.width, revealed.height);
             }
-            // The popup panel is chrome: a popup that stayed white in a dark theme would be
-            // the brightest object on screen. It reads the resolved surface, and the literal
-            // it used to be stays as the fallback.
-            let panel = crate::style::resolved_theme_style_shared("menu_button")
-                .and_then(|r| r.background_color)
-                .or(themed_bg)
-                .unwrap_or(Color::WHITE);
-            let panel_border =
-                style.border_color.or(themed_border).unwrap_or(Color::rgba(190, 190, 200, 200));
-            let item_ink = style.text_color.or(themed_text).unwrap_or(Color::rgb(33, 33, 33));
-            // A selected row's highlight is chrome, not data, so it is resolved from the
-            // theme's accent rather than from a literal tint of blue.
-            let item_highlight = panel.blend(&accent, 0.3);
-            let item_rule = panel.blend(&item_ink, 0.08);
-            // Menu background
-            context.fill_rounded_rect(menu, 4, panel);
-            context.draw_rounded_rect_stroke(menu, 4, panel_border, 1);
-
-            // One resolved font for every row: it used to be rebuilt per item.
-            let item_font = effective_font(style);
-            for (i, item) in self.menu_items.iter().enumerate() {
-                let item_rect = self.item_rect(i);
-
-                // Highlight on hover/checked
-                if item.checked {
-                    context.fill_rounded_rect(item_rect, 2, item_highlight);
-                }
-
-                // Item text
-                let item_text_color =
-                    if !item.enabled { item_ink.blend(&panel, 0.5) } else { item_ink };
-                let mut item_x = item_rect.x + PADDING;
-
-                // Item icon
-                let item_source =
-                    self.item_icon_sources.iter().find(|(id, _)| *id == item.id).map(|(_, s)| *s);
-                if let Some(source) = item_source {
-                    let icon_line = context.text_line(item_rect, item_font);
-                    let side = icon_line.height.clamp(1, 16);
-                    let icon_box = Rect::new(item_x, icon_line.y, side, side.min(item_rect.height));
-                    if let Err(error) =
-                        crate::widget::paint_icon(context, source.into(), icon_box, item_text_color)
-                    {
-                        log::warn!(
-                            "menu item {id} icon could not be painted: {error:?}",
-                            id = item.id
-                        );
-                    }
-                    item_x += 20;
-                } else if let Some(ref item_icon) = item.icon {
-                    let icon_font = Font::simple("sans-serif", 13.0);
-                    // The icon and the label occupy the same row, so both take their origin
-                    // from the line box centred in it: the row midpoint is the glyph top
-                    // edge, and using it drew them half a line low.
-                    let icon_line = context.text_line(item_rect, &icon_font);
-                    context.draw_text(
-                        Point::new(item_x, icon_line.y),
-                        item_icon,
-                        &icon_font,
-                        item_text_color,
-                        HorizontalAlignment::Left,
-                    );
-                    item_x += 20;
-                }
-
-                let item_line = context.text_line(item_rect, item_font);
-                // Fitted between the label start and the checkmark zone: an unbounded
-                // label ran under the check glyph on checked rows (and past the popup
-                // edge on long ones).
-                let item_text_right = if item.checked {
-                    item_rect.x + item_rect.width as i32 - PADDING - 14
-                } else {
-                    item_rect.x + item_rect.width as i32 - PADDING
-                };
-                let item_text_width = (item_text_right - item_x).max(0) as u32;
-                context.draw_text_fitted_cow(
-                    Rect::new(item_x, item_line.y, item_text_width, item_line.height.max(1)),
-                    &item.text,
-                    item_font,
-                    item_text_color,
-                    HorizontalAlignment::Left,
-                );
-
-                // Checkmark for checked items. Drawn as an `IconName` outline rather than the
-                // `✓` (U+2713) character: no bundled face covers the dingbats block, so the
-                // character fell back to an 8x8 bitmap and read as a blob.
-                if item.checked {
-                    let check_x = item_rect.x + item_rect.width as i32 - PADDING - 12;
-                    let check_line = context.text_line(item_rect, item_font);
-                    let side = check_line.height.max(1);
-                    let check_rect = Rect::new(
-                        check_x,
-                        check_line.y + (check_line.height as i32 - side as i32) / 2,
-                        side,
-                        side,
-                    );
-                    crate::widget::draw_icon_at(
-                        context,
-                        check_rect,
-                        accent.contrast_color(),
-                        IconName::Check,
-                    );
-                }
-
-                // Submenu indicator
-                if item.submenu.is_some() && item.enabled {
-                    let sub_x = item_rect.x + item_rect.width as i32 - PADDING - 8;
-                    let sub_y = item_rect.y + item_rect.height as i32 / 2 - 4;
-                    context.execute_command(RenderCommand::DrawPath {
-                        points: vec![
-                            Point::new(sub_x, sub_y),
-                            Point::new(sub_x, sub_y + 8),
-                            Point::new(sub_x + 5, sub_y + 4),
-                        ],
-                        closed: true,
-                        color: item_ink.blend(&panel, 0.45),
-                        filled: true,
-                        width: 1,
-                    });
-                }
-
-                // Separator between items (except last)
-                if i + 1 < self.menu_items.len() {
-                    context.draw_line(
-                        Point::new(item_rect.x + 4, item_rect.y + item_rect.height as i32),
-                        Point::new(
-                            item_rect.x + item_rect.width as i32 - 4,
-                            item_rect.y + item_rect.height as i32,
-                        ),
-                        item_rule,
-                    );
-                }
-            }
+            draw_menu_panel(
+                context,
+                menu,
+                &self.menu_items,
+                &self.item_icon_sources,
+                style,
+                accent,
+            );
             if clipped {
                 context.pop_clip();
             }
+        }
+
+        // The child panel hangs to the right of the parent menu, outside the parent's reveal
+        // clip, so it is painted after the clip is popped. It is a single level: opening another
+        // branch replaces what is shown rather than stacking a third column.
+        if let (Some(children), Some(panel)) = (self.submenu_open.as_ref(), self.submenu_panel) {
+            draw_menu_panel(context, panel, children, &self.item_icon_sources, style, accent);
         }
     }
 }
@@ -812,29 +1013,38 @@ impl EventHandler for MenuButton {
 
         match event {
             Event::MousePress { pos, button, .. } => {
-                if *button == 1 {
-                    if self.geometry().contains_point(*pos) {
-                        // Click on the button itself — toggle menu
-                        self.toggle_menu();
-                    } else if self.menu_open {
-                        // Check if click is on a menu item
-                        if let Some(idx) = self.hit_test_item(*pos) {
-                            let item_id = self.menu_items[idx].id;
-                            self.item_triggered.emit(item_id);
-                            self.close_menu();
-                        } else {
-                            // Click outside menu — close it
-                            self.close_menu();
-                        }
+                if *button != 1 {
+                    return;
+                }
+                if self.geometry().contains_point(*pos) {
+                    // Click on the button itself — toggle the menu.
+                    self.toggle_menu();
+                } else if self.menu_open {
+                    if let Some(index) = self.hit_test_submenu_item(*pos) {
+                        self.activate_submenu_row(index);
+                    } else if let Some(index) = self.hit_test_item(*pos) {
+                        self.active_index = Some(index);
+                        self.activate_top_level(index);
+                    } else if self.submenu_open.is_some() {
+                        // An outside click collapses one level: the child panel first, the
+                        // menu itself on the next click.
+                        self.close_submenu();
+                    } else {
+                        self.close_menu();
                     }
                 }
             }
-            Event::KeyPress { key, modifiers: _ } => {
-                if *key == key_codes::ESCAPE && self.menu_open {
-                    // Escape — close menu
-                    self.close_menu();
+            Event::KeyPress { key, modifiers: _ } => match *key {
+                key_codes::ESCAPE if self.submenu_open.is_some() => self.close_submenu(),
+                key_codes::ESCAPE if self.menu_open => self.close_menu(),
+                key_codes::RIGHT if self.menu_open && self.submenu_open.is_none() => {
+                    if let Some(index) = self.keyboard_branch_index() {
+                        self.open_submenu(index);
+                    }
                 }
-            }
+                key_codes::LEFT if self.submenu_open.is_some() => self.close_submenu(),
+                _ => { /* Other keys are not relevant */ }
+            },
             _ => {
                 self.base.handle_event(event);
             }
@@ -846,6 +1056,7 @@ impl EventHandler for MenuButton {
 mod tests {
     use super::*;
     use crate::widget::svg::render_to_svg;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     /// `menu_button`'s own `icon_source` contract: a built-in descriptor round-trips, a resource
@@ -977,6 +1188,106 @@ mod tests {
 
         mb.handle_event(&Event::key_press(27, 0));
         assert!(!mb.is_menu_open());
+    }
+
+    /// A menu with one branch row ("Recent") and one leaf row ("Exit").
+    fn button_with_branch() -> MenuButton {
+        let mut mb = MenuButton::new("File", Rect::new(0, 0, 100, 30));
+        mb.add_item(
+            MenuItem::new(1, "Recent")
+                .with_submenu(vec![MenuItem::new(2, "Doc"), MenuItem::new(3, "Sheet")]),
+        );
+        mb.add_item(MenuItem::new(4, "Exit"));
+        mb
+    }
+
+    /// Activating a branch opens its child panel, leaves the parent open, and emits no trigger.
+    #[test]
+    fn menu_button_branch_opens_its_child_panel_without_triggering() {
+        let mut mb = button_with_branch();
+        let triggered = Arc::new(AtomicUsize::new(0));
+        let count = triggered.clone();
+        mb.item_triggered.connect(move |_| {
+            count.fetch_add(1, Ordering::SeqCst);
+        });
+
+        mb.open_menu();
+        let row = mb.item_rect(0);
+        mb.handle_event(&Event::mouse_press(row.x + 5, row.y + 5, 1));
+
+        assert!(mb.is_menu_open(), "a branch activation must not close the parent menu");
+        assert_eq!(triggered.load(Ordering::SeqCst), 0, "a branch is not a leaf activation");
+        assert_eq!(mb.submenu_open.as_ref().map(|items| items.len()), Some(2));
+        let panel = mb.submenu_panel.expect("the child panel has a rectangle");
+        assert!(panel.x >= mb.menu_rect().x + mb.menu_rect().width as i32);
+        assert!(mb.contains_point(Point::new(panel.x + 5, panel.y + 5)));
+    }
+
+    /// The branch's own label is what `submenu_requested` carries.
+    #[test]
+    fn menu_button_submenu_requested_carries_the_branch_text() {
+        let mut mb = button_with_branch();
+        let label = Arc::new(Mutex::new(String::new()));
+        let captured = label.clone();
+        mb.submenu_requested.connect(move |text| {
+            *captured.lock().unwrap() = text.to_string();
+        });
+
+        mb.open_menu();
+        let row = mb.item_rect(0);
+        mb.handle_event(&Event::mouse_press(row.x + 5, row.y + 5, 1));
+        assert_eq!(*label.lock().unwrap(), "Recent");
+    }
+
+    /// Escape collapses one level: the child panel first, then the menu.
+    #[test]
+    fn menu_button_escape_collapses_the_child_panel_first() {
+        let mut mb = button_with_branch();
+        mb.open_menu();
+        let row = mb.item_rect(0);
+        mb.handle_event(&Event::mouse_press(row.x + 5, row.y + 5, 1));
+        assert!(mb.submenu_open.is_some());
+
+        mb.handle_event(&Event::key_press(27, 0));
+        assert!(mb.is_menu_open(), "the first Escape returns to the parent menu");
+        assert!(mb.submenu_open.is_none());
+
+        mb.handle_event(&Event::key_press(27, 0));
+        assert!(!mb.is_menu_open());
+    }
+
+    /// Choosing a leaf inside the child panel triggers that leaf and closes the whole popup.
+    #[test]
+    fn menu_button_child_leaf_selection_emits_item_triggered() {
+        let mut mb = button_with_branch();
+        let chosen = Arc::new(Mutex::new(0u64));
+        let captured = chosen.clone();
+        mb.item_triggered.connect(move |id| {
+            *captured.lock().unwrap() = *id;
+        });
+
+        mb.open_menu();
+        let branch = mb.item_rect(0);
+        mb.handle_event(&Event::mouse_press(branch.x + 5, branch.y + 5, 1));
+        let panel = mb.submenu_panel.expect("the child panel has a rectangle");
+        mb.handle_event(&Event::mouse_press(panel.x + 5, panel.y + 5, 1));
+
+        assert_eq!(*chosen.lock().unwrap(), 2);
+        assert!(!mb.is_menu_open(), "a leaf selection closes the whole popup");
+        assert!(mb.submenu_open.is_none());
+    }
+
+    /// Right opens the branch, Left returns to the parent menu.
+    #[test]
+    fn menu_button_right_opens_a_branch_and_left_returns_to_the_menu() {
+        let mut mb = button_with_branch();
+        mb.open_menu();
+
+        mb.handle_event(&Event::key_press(39, 0));
+        assert!(mb.submenu_open.is_some());
+        mb.handle_event(&Event::key_press(37, 0));
+        assert!(mb.submenu_open.is_none());
+        assert!(mb.is_menu_open());
     }
 
     #[test]

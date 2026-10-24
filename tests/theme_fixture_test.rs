@@ -101,8 +101,35 @@ mod tests {
                 "{path}: monospace font family drifted"
             );
         }
-    }
 
+        // The two macOS fixtures are generated from host facts (accent, system UI family), so
+        // equality with a preset built on *this* host is not portable. Their portable contract is
+        // the brand colour and the macOS metrics profile; the round-trip parse above still proves
+        // the file is a valid theme.
+        use rust_widgets::core::Color;
+        use rust_widgets::widget::metrics::ControlMetricsProfile;
+        for (name, primary, dark) in [
+            ("macos-light", Color::rgb(0x00, 0x7A, 0xFF), false),
+            ("macos-dark", Color::rgb(0x0A, 0x84, 0xFF), true),
+        ] {
+            let path = fixture_path(name);
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("missing {path}: {error}"));
+            let parsed: Theme = serde_json::from_str(&text)
+                .unwrap_or_else(|error| panic!("{path} does not deserialize: {error}"));
+            assert_eq!(parsed.name, name);
+            assert_eq!(parsed.colors.primary, primary, "{path}: primary drifted");
+            assert_eq!(parsed.metrics_profile, ControlMetricsProfile::Macos);
+            assert_eq!(
+                parsed.appearance,
+                if dark {
+                    rust_widgets::theme::AppearanceMode::Dark
+                } else {
+                    rust_widgets::theme::AppearanceMode::Light
+                }
+            );
+        }
+    }
     /// A fixture loads through the manager and resolves a real style, so a shipped
     /// theme is usable end to end rather than merely parseable.
     #[test]

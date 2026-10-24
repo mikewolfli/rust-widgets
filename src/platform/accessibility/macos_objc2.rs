@@ -33,7 +33,12 @@ pub(crate) fn bridge() -> &'static MacOSObjc2AccessibilityBridge {
 }
 
 /// Which AppKit accessibility notification to post.
+///
+/// The variants keep the `Changed` suffix on purpose: each one names an AppKit notification
+/// (`NSAccessibilityNameChangedNotification`, and so on) one for one, so the suffix is part of the
+/// meaning rather than a redundant spelling.
 #[derive(Clone, Copy)]
+#[allow(clippy::enum_variant_names)]
 enum NotificationName {
     NameChanged,
     ValueChanged,

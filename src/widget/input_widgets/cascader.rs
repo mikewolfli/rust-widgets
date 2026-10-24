@@ -974,7 +974,7 @@ impl Cascader {
                 // not jump when the children arrive.
                 context.draw_text(
                     Point::new(row_rect.x + row_rect.width as i32 - 18, row_line.y),
-                    "...",
+                    "…",
                     &row_font,
                     branch_ink,
                     HorizontalAlignment::Left,
@@ -1050,8 +1050,9 @@ impl EventHandler for Cascader {
             },
             // Typed characters filter the browsed level when filtering is on. Control
             // characters are excluded in the pattern so the guard and the body agree
-            // about what is acceptable.
-            Event::TextInput { text }
+            // about what is acceptable. An IME commit is the same text arriving after the
+            // input method resolved it, so it takes the same branch and the same guard.
+            Event::TextInput { text } | Event::ImeCommit { text }
                 if self.filterable && self.expanded && text.chars().all(|ch| !ch.is_control()) =>
             {
                 self.filter.push_str(text);
@@ -1505,6 +1506,31 @@ mod tests {
         // Not filterable, so text input must not accumulate.
         c.handle_event(&Event::TextInput { text: "x".to_string() });
         assert_eq!(c.filter(), "");
+    }
+
+    /// An IME commit reaches the filter through the same editable branch as typed text.
+    ///
+    /// # The defect this pins
+    ///
+    /// The filter matched only `TextInput`, so an input method's committed string was dropped
+    /// and a filterable cascader could not be filtered from a CJK keyboard. The guard is the
+    /// same one the typed path uses: only a filterable, open overlay has an editable filter to
+    /// receive the text.
+    #[test]
+    fn cascader_ime_commit_filters_the_browsed_level() {
+        let mut c = cascader();
+        c.set_filterable(true);
+        c.expand();
+
+        c.handle_event(&Event::ime_commit("2"));
+        assert_eq!(c.filter(), "2", "the commit must reach the filter");
+        assert_eq!(c.filtered_indices(0), vec![1], "only Province 2 matches");
+
+        // The guard is shared with `TextInput`: a closed picker has no filter to type into.
+        let mut closed = cascader();
+        closed.set_filterable(true);
+        closed.handle_event(&Event::ime_commit("2"));
+        assert_eq!(closed.filter(), "", "a closed cascader must not accumulate a filter");
     }
 
     #[test]

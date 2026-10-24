@@ -3,6 +3,8 @@
 
 //! SVG paint backend — converts `RenderCommand`s into SVG elements.
 
+#[cfg(feature = "3d")]
+use super::convert::quad_points;
 use super::convert::{color_to_rgba, point_attrs, rect_attrs};
 use crate::compat::Rc;
 use crate::compat::{format, MiniToString, String, Vec};
@@ -24,6 +26,9 @@ pub struct SvgPaintBackend {
     pub(crate) elements: Vec<String>,
     clip_depth: u32,
     clip_path_counter: u32,
+    /// Counter for the ids a `PushLayer` emits, so two layers in one document cannot share a
+    /// clip or filter id.
+    layer_counter: u32,
     svg_output: Option<String>,
     gradient_counter: u32,
     /// Whether a `<g style="mix-blend-mode:…">` is currently open.
@@ -45,6 +50,7 @@ impl SvgPaintBackend {
             elements: Vec::new(),
             clip_depth: 0,
             clip_path_counter: 0,
+            layer_counter: 0,
             svg_output: None,
             gradient_counter: 0,
             blend_group_open: false,
@@ -853,6 +859,7 @@ impl PaintBackend for SvgPaintBackend {
     fn begin_frame(&mut self, clear: Color) {
         self.elements.clear();
         self.clip_depth = 0;
+        self.layer_counter = 0;
         // Background fill rect matching clear color
         if clear.a > 0 {
             let fill = color_to_rgba(&clear);
@@ -877,6 +884,25 @@ impl PaintBackend for SvgPaintBackend {
                 self.push_element(format!(
                     r#"<rect {} fill="{}" />"#,
                     rect_attrs(rect),
+                    color_to_rgba(color)
+                ));
+            }
+
+            #[cfg(feature = "3d")]
+            RenderCommand::FillQuad { corners, color } => {
+                // A quad is an arbitrary convex quadrilateral, so a `<rect>` cannot express
+                // it. Emit the four corners as a closed path, matching the software
+                // backend's filled polygon rather than its bounding box.
+                self.push_element(format!(
+                    r##"<path d="M {} {} L {} {} L {} {} L {} {} Z" fill="{}" stroke="none" />"##,
+                    corners[0].x,
+                    corners[0].y,
+                    corners[1].x,
+                    corners[1].y,
+                    corners[2].x,
+                    corners[2].y,
+                    corners[3].x,
+                    corners[3].y,
                     color_to_rgba(color)
                 ));
             }
@@ -1023,6 +1049,46 @@ impl PaintBackend for SvgPaintBackend {
                 self.emit_text(*origin, text, font, color, *alignment);
             }
 
+            #[cfg(feature = "3d")]
+            RenderCommand::StrokeQuad { corners, color, width } => {
+                // A closed polygon with a stroke is exactly four connected edges, which is what the
+                // software backend draws. `stroke-linejoin="miter"` keeps the corners the caller
+                // positioned instead of rounding them off.
+                let points = quad_points(corners);
+                self.push_element(format!(
+                    r##"<polygon points="{points}" fill="none" stroke="{}" stroke-width="{width}" stroke-linejoin="miter" />"##,
+                    color_to_rgba(color)
+                ));
+            }
+
+            #[cfg(feature = "3d")]
+            RenderCommand::DrawImageQuad { corners, width, height, data } => {
+                if !data.is_empty() && *width > 0 && *height > 0 {
+                    // The affine that maps the source grid onto the quad is recoverable from the
+                    // corners themselves: `u` runs along the top edge and `v` down the left one, so
+                    // the matrix is those two edge vectors divided by the source extent, with the
+                    // top-left corner as the translation. An SVG `matrix(a,b,c,d,e,f)` applies the
+                    // same mapping, which keeps the snapshot identical to the software raster.
+                    let [p00, p10, _, p01] = corners;
+                    let a = (p10.x - p00.x) as f64 / f64::from(*width);
+                    let b = (p10.y - p00.y) as f64 / f64::from(*width);
+                    let c = (p01.x - p00.x) as f64 / f64::from(*height);
+                    let d = (p01.y - p00.y) as f64 / f64::from(*height);
+                    let bmp = rgba_to_bmp(*width, *height, data);
+                    let b64 = base64_encode(&bmp);
+                    self.push_element(format!(
+                        r##"<image x="0" y="0" width="{width}" height="{height}" preserveAspectRatio="none" transform="matrix({a} {b} {c} {d} {} {})" href="data:image/bmp;base64,{b64}" />"##,
+                        p00.x, p00.y
+                    ));
+                } else {
+                    let points = quad_points(corners);
+                    let element = format!(
+                        r##"<polygon points="{points}" fill="none" stroke="#c00" stroke-width="2" />"##
+                    );
+                    self.push_element(element);
+                }
+            }
+
             // ── Image ──────────────────────────────────────────────────
             RenderCommand::DrawImage { x, y, width, height, data } => {
                 if !data.is_empty() && *width > 0 && *height > 0 {
@@ -1062,6 +1128,66 @@ impl PaintBackend for SvgPaintBackend {
             }
 
             RenderCommand::PopClip => {
+                if self.clip_depth > 0 {
+                    self.push_element("</g>".to_string());
+                    self.clip_depth -= 1;
+                }
+            }
+
+            RenderCommand::PushLayer { bounds, effect } => {
+                // SVG has no primitive that reads the already-drawn document as a texture, so a
+                // backdrop blur is expressed with the filter input that means exactly that:
+                // `in="BackgroundImage"` blurs what is behind the filter region. The
+                // `backdrop-filter` style is emitted alongside it because that is what viewers
+                // which dropped the SVG 1.1 background input implement; both describe the same
+                // blur and tint, so the picture agrees wherever either is supported. A viewer
+                // with neither draws the tint (if any) but no blur, which is an honest
+                // degradation rather than a sharp backdrop pretending to be blurred.
+                let layer = self.layer_counter;
+                self.layer_counter = self.layer_counter.wrapping_add(1);
+                let clip_id = format!("layer_clip_{layer}");
+                self.push_element(format!(
+                    r##"<clipPath id="{clip_id}"><rect {} /></clipPath>"##,
+                    rect_attrs(bounds)
+                ));
+                let mut style = String::new();
+                let mut blurred_rect = String::new();
+                if let Some(effect) = *effect {
+                    let radius = effect.radius();
+                    if radius > 0 {
+                        // `stdDeviation` is half the radius: the command's radius is the
+                        // Gaussian's 2-sigma point, the same convention the box shadow uses.
+                        let sigma = radius as f32 / 2.0;
+                        let filter_id = format!("layer_blur_{layer}");
+                        self.push_element(format!(
+                            r##"<filter id="{filter_id}" {} filterUnits="userSpaceOnUse"><feGaussianBlur in="BackgroundImage" stdDeviation="{sigma}" /></filter>"##,
+                            rect_attrs(bounds)
+                        ));
+                        style = format!(r##" style="backdrop-filter: blur({sigma}px)""##);
+                        blurred_rect = format!(
+                            r##"<rect {} fill="none" filter="url(#{filter_id})" />"##,
+                            rect_attrs(bounds)
+                        );
+                    }
+                }
+                self.push_element(format!(r##"<g clip-path="url(#{clip_id})"{style}>"##));
+                if !blurred_rect.is_empty() {
+                    self.push_element(blurred_rect);
+                }
+                if let Some((tint, weight)) = (*effect).and_then(|effect| effect.tint()) {
+                    if weight.is_finite() {
+                        let alpha = (tint.a as f32 / 255.0) * weight.clamp(0.0, 1.0);
+                        self.push_element(format!(
+                            r##"<rect {} fill="{}" fill-opacity="{alpha}" />"##,
+                            rect_attrs(bounds),
+                            color_to_rgba(&tint)
+                        ));
+                    }
+                }
+                self.clip_depth += 1;
+            }
+
+            RenderCommand::PopLayer => {
                 if self.clip_depth > 0 {
                     self.push_element("</g>".to_string());
                     self.clip_depth -= 1;
@@ -1418,6 +1544,22 @@ mod tests {
         assert!(result.contains("<svg"));
         assert!(result.contains("</svg>"));
         assert!(result.contains("fill=\"rgba(255,0,0,1.00)\""));
+    }
+
+    /// A quad is emitted as a closed four-corner path, not as its bounding rectangle.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn svg_backend_fill_quad_emits_the_four_corners() {
+        let mut svg = SvgPaintBackend::new(Size::new(64, 64));
+        svg.begin_frame(Color::TRANSPARENT);
+        svg.execute_command(&RenderCommand::FillQuad {
+            corners: [Point::new(32, 4), Point::new(60, 32), Point::new(32, 60), Point::new(4, 32)],
+            color: Color::rgb(0, 128, 255),
+        });
+        svg.end_frame();
+        let result = svg.finish();
+        assert!(result.contains("M 32 4 L 60 32 L 32 60 L 4 32 Z"), "{result}");
+        assert!(result.contains("fill=\"rgba(0,128,255,1.00)\""));
     }
 
     #[test]
@@ -1972,6 +2114,8 @@ mod tests {
                 RenderCommand::DrawImage { .. } => "DrawImage",
                 RenderCommand::PushClip { .. } => "PushClip",
                 RenderCommand::PopClip => "PopClip",
+                RenderCommand::PushLayer { .. } => "PushLayer",
+                RenderCommand::PopLayer => "PopLayer",
                 RenderCommand::DrawGradient { .. } => "DrawGradient",
                 RenderCommand::DrawArc { .. } => "DrawArc",
                 RenderCommand::DrawPath { .. } => "DrawPath",
@@ -1981,6 +2125,12 @@ mod tests {
                 RenderCommand::ClipPath { .. } => "ClipPath",
                 RenderCommand::SetBlendMode { .. } => "SetBlendMode",
                 RenderCommand::DrawConicGradient { .. } => "DrawConicGradient",
+                #[cfg(feature = "3d")]
+                RenderCommand::FillQuad { .. } => "FillQuad",
+                #[cfg(feature = "3d")]
+                RenderCommand::StrokeQuad { .. } => "StrokeQuad",
+                #[cfg(feature = "3d")]
+                RenderCommand::DrawImageQuad { .. } => "DrawImageQuad",
             }
         }
 
@@ -2033,6 +2183,20 @@ mod tests {
             },
             RenderCommand::PushClip { x: 10, y: 10, width: 50, height: 50 },
             RenderCommand::PopClip,
+            RenderCommand::PushLayer {
+                bounds: rect,
+                effect: Some(crate::render::core::command::LayerEffect::BackdropBlur { radius: 4 }),
+            },
+            RenderCommand::PopLayer,
+            RenderCommand::PushLayer {
+                bounds: rect,
+                effect: Some(crate::render::core::command::LayerEffect::BackdropBlurTint {
+                    radius: 4,
+                    tint: Color::rgba(240, 240, 245, 200),
+                    tint_weight: 0.5,
+                }),
+            },
+            RenderCommand::PopLayer,
             RenderCommand::DrawGradient {
                 rect,
                 gradient: crate::style::Gradient::linear(point, Point::new(80, 40))
@@ -2117,6 +2281,20 @@ mod tests {
                 stops: vec![(0.0, Color::RED), (1.0, Color::BLUE)],
             },
         ];
+        #[cfg(feature = "3d")]
+        let commands = {
+            let mut commands = commands;
+            commands.push(RenderCommand::FillQuad {
+                corners: [
+                    Point::new(30, 20),
+                    Point::new(90, 20),
+                    Point::new(90, 100),
+                    Point::new(30, 100),
+                ],
+                color: Color::RED,
+            });
+            commands
+        };
 
         // Each command is driven on its own against a fresh frame, so the assertion is about
         // *that* command's markup rather than about the frame as a whole.
@@ -2129,6 +2307,9 @@ mod tests {
             // `PopClip` closes the group its matching `PushClip` opened. Driven with nothing on the
             // clip stack it is correctly a no-op — the markup it removes was never emitted.
             "PopClip",
+            // `PopLayer` is the same state transition for a layer: with no layer open there is no
+            // group to close, and the layer's markup was never emitted.
+            "PopLayer",
         ];
         let mut exempted: Vec<&'static str> = Vec::new();
         for command in &commands {
@@ -2181,7 +2362,7 @@ mod tests {
         // as at compile time.
         let covered: std::collections::BTreeSet<&'static str> =
             commands.iter().map(name_of).collect();
-        let expected: std::collections::BTreeSet<&'static str> = [
+        let expected_names: Vec<&'static str> = vec![
             "FillRect",
             "DrawRect",
             "DrawRectStroke",
@@ -2201,6 +2382,8 @@ mod tests {
             "DrawImage",
             "PushClip",
             "PopClip",
+            "PushLayer",
+            "PopLayer",
             "DrawGradient",
             "DrawArc",
             "DrawPath",
@@ -2210,12 +2393,60 @@ mod tests {
             "ClipPath",
             "SetBlendMode",
             "DrawConicGradient",
-        ]
-        .into_iter()
-        .collect();
+        ];
+        #[cfg(feature = "3d")]
+        let expected_names = {
+            let mut names = expected_names;
+            names.push("FillQuad");
+            names
+        };
+        let expected: std::collections::BTreeSet<&'static str> =
+            expected_names.into_iter().collect();
         assert_eq!(
             covered, expected,
             "the fixture list must drive every `RenderCommand` variant exactly once or more"
+        );
+    }
+
+    #[test]
+    fn svg_backend_layer_emits_a_real_backdrop_blur_group() {
+        use crate::render::core::command::LayerEffect;
+
+        let mut svg = SvgPaintBackend::new(Size::new(100, 100));
+        svg.begin_frame(Color::TRANSPARENT);
+        svg.execute_command(&RenderCommand::PushLayer {
+            bounds: Rect::new(10, 10, 60, 40),
+            effect: Some(LayerEffect::BackdropBlurTint {
+                radius: 8,
+                tint: Color::rgb(20, 30, 40),
+                tint_weight: 0.5,
+            }),
+        });
+        svg.execute_command(&RenderCommand::FillRect {
+            rect: Rect::new(20, 20, 20, 20),
+            color: Color::RED,
+        });
+        svg.execute_command(&RenderCommand::PopLayer);
+        svg.end_frame();
+        let document = svg.finish();
+
+        // The radius is a 2-sigma point, so the filter's standard deviation is half of it.
+        assert!(
+            document.contains("<feGaussianBlur in=\"BackgroundImage\" stdDeviation=\"4\" />"),
+            "a layer must emit a backdrop Gaussian blur: {document}"
+        );
+        assert!(
+            document.contains("style=\"backdrop-filter: blur(4px)\""),
+            "the wide-support form must describe the same blur: {document}"
+        );
+        assert!(
+            document.contains("fill-opacity=\"0.5\""),
+            "the tint weight must reach the markup: {document}"
+        );
+        assert_eq!(
+            document.matches("<g").count(),
+            document.matches("</g>").count(),
+            "a layer must leave the document balanced: {document}"
         );
     }
 

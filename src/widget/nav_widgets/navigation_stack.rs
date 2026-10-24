@@ -46,8 +46,8 @@ pub struct NavigationStack {
     /// How far the content region is slid, `-1.0` arriving from the left (a pop) through `0.0`
     /// settled to `1.0` arriving from the right (a push).
     ///
-    /// See `draw` for why this is the content *frame* and not the page: the page's own widgets are
-    /// laid out by the host, so this control animates the region they sit in.
+    /// See `draw`: the pages are laid out in the content rect and painted under this
+    /// transition offset, with the lower page trailing at 30% for parallax.
     slide: PropertyDriver,
     /// Emitted when the navigation state changes.
     pub navigation_changed: Signal1<NavigationEvent>,
@@ -410,7 +410,7 @@ impl Draw for NavigationStack {
             HorizontalAlignment::Left,
         );
 
-        // ── Draw content area background ──
+        // ── Draw content area background and pages ──
         //
         // # Why the content slides rather than swapping
         //
@@ -418,18 +418,44 @@ impl Draw for NavigationStack {
         // nothing in between. On a control whose entire purpose is *spatial* — the stack is a
         // history, and the back affordance means "the page to the left" — a hard swap gives the user
         // no way to see which direction they moved. The content region is therefore drawn slid
-        // toward the edge the transition came from, which is the one thing `draw` can honestly
-        // animate: the page's own contents are composed by the host's layout, so this control moves
-        // the *frame* they sit in and the host moves the contents with it.
+        // toward the edge the transition came from, and the pages themselves move with it.
         let content = self.content_rect();
         if content.width > 0 && content.height > 0 {
             // `slide` runs from `-1` (a pop, arriving from the left) through `0` (settled) to `1`
             // (a push, arriving from the right). Multiplying by the content width gives the offset,
             // so the movement is proportional to the region rather than a fixed number of pixels.
-            let offset = (self.slide.value() * content.width as f32) as i32;
+            let slide = self.slide.value();
+            let offset = (slide * content.width as f32) as i32;
             context.push_offset(offset, 0);
             context.fill_rect(content, content_surface);
             context.pop_offset();
+
+            let page_count = self.pages.len();
+            if page_count > 0 {
+                // During a transition the outgoing page travels at 30% of the incoming page's
+                // distance, in the opposite direction. That parallax is what reads as two screens
+                // rather than one screen sliding over a blank region.
+                if slide != 0.0 && page_count > 1 {
+                    let previous_offset = -(((slide * content.width as f32) * 0.3) as i32);
+                    let previous = &mut self.pages[page_count - 2];
+                    // The page is painted into its own frame, so its geometry is the content
+                    // rect; the transition is expressed entirely by the context offset.
+                    previous.set_geometry(content);
+                    context.push_offset(previous_offset, 0);
+                    if let Some(drawable) = previous.as_draw_mut() {
+                        drawable.draw(context);
+                    }
+                    context.pop_offset();
+                }
+
+                let current = &mut self.pages[page_count - 1];
+                current.set_geometry(content);
+                context.push_offset(offset, 0);
+                if let Some(drawable) = current.as_draw_mut() {
+                    drawable.draw(context);
+                }
+                context.pop_offset();
+            }
         }
     }
 }
@@ -456,6 +482,9 @@ impl EventHandler for NavigationStack {
                     let content = self.content_rect();
                     if content.contains_point(*pos) {
                         if let Some(page) = self.pages.last_mut() {
+                            // The page is painted inside the content rect, so it must be
+                            // hit-tested there too; otherwise it answers at a stale origin.
+                            page.set_geometry(content);
                             page.handle_event(event);
                         }
                     }
@@ -465,12 +494,15 @@ impl EventHandler for NavigationStack {
                 let content = self.content_rect();
                 if content.contains_point(*pos) {
                     if let Some(page) = self.pages.last_mut() {
+                        page.set_geometry(content);
                         page.handle_event(event);
                     }
                 }
             }
             _ => {
+                let content = self.content_rect();
                 if let Some(page) = self.pages.last_mut() {
+                    page.set_geometry(content);
                     page.handle_event(event);
                 }
                 self.base.handle_event(event);
@@ -482,8 +514,127 @@ impl EventHandler for NavigationStack {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::{Color, Font, Size};
+    use crate::render::{
+        PaintBackend, RenderCommand, ShapedText, SoftwarePaintBackend, SoftwareRenderConfig,
+        TextMetrics,
+    };
     use crate::widget::display_widgets::badge::Badge;
     use std::sync::{Arc, Mutex};
+
+    /// A page whose paint is a single flat rectangle, so a recorded command identifies it
+    /// without depending on any other widget's rendering.
+    struct TestPage {
+        base: BaseWidget,
+        color: Color,
+        event_geometries: Arc<Mutex<Vec<Rect>>>,
+    }
+
+    impl TestPage {
+        fn new(color: Color) -> Self {
+            Self {
+                base: BaseWidget::new(WidgetKind::Label, Rect::new(0, 0, 1, 1), "TestPage"),
+                color,
+                event_geometries: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn geometries_sink(&self) -> Arc<Mutex<Vec<Rect>>> {
+            Arc::clone(&self.event_geometries)
+        }
+    }
+
+    impl Widget for TestPage {
+        fn base(&self) -> &BaseWidget {
+            &self.base
+        }
+        fn base_mut(&mut self) -> &mut BaseWidget {
+            &mut self.base
+        }
+        impl_draw_bridge!();
+    }
+
+    impl Draw for TestPage {
+        fn draw(&mut self, context: &mut RenderContext) {
+            context.fill_rect(self.geometry(), self.color);
+        }
+    }
+
+    impl EventHandler for TestPage {
+        /// Records the geometry the event arrived with, which is what "hit-testing matches
+        /// paint" means for a page: the rectangle it was told it occupies.
+        fn handle_event(&mut self, _event: &Event) {
+            if let Ok(mut seen) = self.event_geometries.lock() {
+                seen.push(self.geometry());
+            }
+        }
+    }
+
+    /// A backend that records every command in draw order.
+    struct Recorder {
+        commands: Vec<RenderCommand>,
+        inner: SoftwarePaintBackend,
+    }
+
+    impl Recorder {
+        fn new(size: Size) -> Self {
+            Self { commands: Vec::new(), inner: SoftwarePaintBackend::new(size, 1.0) }
+        }
+    }
+
+    impl PaintBackend for Recorder {
+        fn begin_frame(&mut self, clear: Color) {
+            self.inner.begin_frame(clear);
+        }
+        fn end_frame(&mut self) {
+            self.inner.end_frame();
+        }
+        fn execute_command(&mut self, command: &RenderCommand) {
+            self.commands.push(command.clone());
+            self.inner.execute_command(command);
+        }
+        fn size(&self) -> Size {
+            self.inner.size()
+        }
+        fn set_size(&mut self, size: Size) {
+            self.inner.set_size(size);
+        }
+        fn dpi_scale(&self) -> f32 {
+            self.inner.dpi_scale()
+        }
+        fn set_dpi_scale(&mut self, scale: f32) {
+            self.inner.set_dpi_scale(scale);
+        }
+        fn measure_text(&self, text: &str, font: &Font) -> TextMetrics {
+            self.inner.measure_text(text, font)
+        }
+        fn shape_text(&self, text: &str, font: &Font) -> crate::compat::Rc<ShapedText> {
+            self.inner.shape_text(text, font)
+        }
+        fn frame_rgba(&self) -> &[u8] {
+            self.inner.frame_rgba()
+        }
+        fn apply_render_config(&mut self, config: SoftwareRenderConfig) {
+            self.inner.apply_render_config(config);
+        }
+    }
+
+    /// Draws `stack` once and returns every flat fill it emitted, in paint order.
+    fn recorded_fills(stack: &mut NavigationStack) -> Vec<(Rect, Color)> {
+        let mut backend = Recorder::new(Size::new(400, 600));
+        {
+            let mut context = RenderContext::new(&mut backend);
+            stack.draw(&mut context);
+        }
+        backend
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                RenderCommand::FillRect { rect, color } => Some((*rect, *color)),
+                _ => None,
+            })
+            .collect()
+    }
 
     #[test]
     fn navigation_stack_default_creation() {
@@ -577,5 +728,129 @@ mod tests {
 
         stack.set_navigation_bar_title("Settings");
         assert_eq!(stack.navigation_bar_title(), "Settings");
+    }
+
+    /// The stack used to translate a background rectangle and never call `draw` on a page,
+    /// so a mounted page was invisible no matter what it painted.
+    #[test]
+    fn navigation_stack_draws_the_current_page() {
+        let _guard = crate::style::theme_test_guard();
+        let page_color = Color::rgba(10, 20, 30, 255);
+        let mut stack = NavigationStack::new(Rect::new(0, 0, 400, 600));
+        stack.push(Box::new(TestPage::new(page_color)));
+
+        let content = Rect::new(0, 44, 400, 556);
+        let fills = recorded_fills(&mut stack);
+        assert!(
+            fills.iter().any(|(_, color)| *color == page_color),
+            "the pushed page's own paint commands must reach the frame"
+        );
+        assert_eq!(
+            stack.current_page().expect("one pushed page").geometry(),
+            content,
+            "the current page is laid out in the content rect before it paints"
+        );
+    }
+
+    /// A push leaves the slide at `1.0`, so the first frame of the transition carries the
+    /// incoming page at 100% and the page beneath it at 30% in the opposite direction.
+    #[test]
+    fn navigation_stack_transition_draws_both_pages_with_parallax() {
+        let _guard = crate::style::theme_test_guard();
+        let root_color = Color::rgba(40, 50, 60, 255);
+        let top_color = Color::rgba(70, 80, 90, 255);
+        let mut stack = NavigationStack::new(Rect::new(0, 0, 400, 600));
+        stack.push(Box::new(TestPage::new(root_color)));
+        stack.push(Box::new(TestPage::new(top_color)));
+
+        let content = Rect::new(0, 44, 400, 556);
+        let fills = recorded_fills(&mut stack);
+        let root = fills
+            .iter()
+            .find(|(_, color)| *color == root_color)
+            .expect("the outgoing page stays on screen during a push");
+        let top = fills
+            .iter()
+            .find(|(_, color)| *color == top_color)
+            .expect("the incoming page is painted during a push");
+
+        let parallax = (content.width as f32 * 0.3) as i32;
+        assert_eq!(root.0.x, content.x - parallax, "the lower page trails at 30%");
+        assert_eq!(top.0.x, content.x + content.width as i32, "the top page starts 100% out");
+    }
+
+    /// A pop mirrors the push: the remaining top page arrives from the left at 100% while
+    /// the page beneath it trails to the right at 30%.
+    #[test]
+    fn navigation_stack_pop_transition_draws_both_remaining_pages() {
+        let _guard = crate::style::theme_test_guard();
+        let lower_color = Color::rgba(21, 42, 63, 255);
+        let top_color = Color::rgba(84, 95, 106, 255);
+        let popped_color = Color::rgba(117, 128, 139, 255);
+        let mut stack = NavigationStack::new(Rect::new(0, 0, 400, 600));
+        stack.push(Box::new(TestPage::new(lower_color)));
+        stack.push(Box::new(TestPage::new(top_color)));
+        stack.push(Box::new(TestPage::new(popped_color)));
+
+        stack.pop();
+        let content = Rect::new(0, 44, 400, 556);
+        let fills = recorded_fills(&mut stack);
+        let lower = fills
+            .iter()
+            .find(|(_, color)| *color == lower_color)
+            .expect("the page beneath the top one is painted during a pop");
+        let top = fills
+            .iter()
+            .find(|(_, color)| *color == top_color)
+            .expect("the remaining top page is painted during a pop");
+
+        let parallax = (content.width as f32 * 0.3) as i32;
+        assert_eq!(lower.0.x, content.x + parallax, "the lower page trails at 30%");
+        assert_eq!(top.0.x, content.x - content.width as i32, "the top page starts 100% out");
+        assert!(
+            !fills.iter().any(|(_, color)| *color == popped_color),
+            "the popped page is gone from the stack and from the frame"
+        );
+    }
+
+    #[test]
+    fn navigation_stack_pop_to_root_draws_only_the_root() {
+        let _guard = crate::style::theme_test_guard();
+        let root_color = Color::rgba(11, 22, 33, 255);
+        let leaf_color = Color::rgba(44, 55, 66, 255);
+        let mut stack = NavigationStack::new(Rect::new(0, 0, 400, 600));
+        stack.push(Box::new(TestPage::new(root_color)));
+        stack.push(Box::new(TestPage::new(leaf_color)));
+
+        stack.pop_to_root();
+        assert_eq!(stack.page_count(), 1);
+
+        let fills = recorded_fills(&mut stack);
+        assert!(
+            fills.iter().any(|(_, color)| *color == root_color),
+            "the root page is still painted"
+        );
+        assert!(
+            !fills.iter().any(|(_, color)| *color == leaf_color),
+            "popped pages must not paint"
+        );
+    }
+
+    /// Forwarded events carry the content-rect geometry, so a page hit-tests where it painted.
+    #[test]
+    fn navigation_stack_forwards_events_with_the_content_geometry() {
+        let mut stack = NavigationStack::new(Rect::new(0, 0, 400, 600));
+        let page = TestPage::new(Color::rgba(90, 90, 90, 255));
+        let seen = page.geometries_sink();
+        stack.push(Box::new(page));
+
+        stack.handle_event(&Event::MousePress { pos: Point::new(20, 60), button: 1, modifiers: 0 });
+
+        let content = Rect::new(0, 44, 400, 556);
+        assert_eq!(
+            *seen.lock().expect("geometry sink"),
+            vec![content],
+            "the page must be told the same rect it is painted in"
+        );
     }
 }

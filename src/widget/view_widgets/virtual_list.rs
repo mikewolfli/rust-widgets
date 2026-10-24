@@ -8,7 +8,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
-use crate::event::Event;
+use crate::event::dnd::{DragPayload, DragSource, DropEffect, DropTarget};
+use crate::event::{Event, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, Signal1};
 use crate::widget::capability::coercion::{expect_u32, expect_usize};
@@ -32,12 +33,34 @@ struct WindowCache {
     rows: Rc<Vec<(usize, String)>>,
 }
 
+/// The index a row takes after the row at `from` is moved to `to`.
+///
+/// The display projection and the selected row are both addressed by display index, so they
+/// use this one rule and cannot disagree about where a row ended up.
+fn index_after_move(index: usize, from: usize, to: usize) -> usize {
+    if index == from {
+        to
+    } else if from < index && index <= to {
+        index - 1
+    } else if to <= index && index < from {
+        index + 1
+    } else {
+        index
+    }
+}
+
 /// Virtualized list view that renders only a visible row window.
 pub struct VirtualList {
     base: BaseWidget,
     data_source: Option<Arc<dyn IncrementalTableDataSource>>,
     data_source_connection_scope: ConnectionScope,
     scroll_row: usize,
+    /// Display order as indices into the bound source.
+    ///
+    /// Empty means identity: display row `n` is source row `n`. A reorder fills the vector
+    /// with a permutation, so the source is never mutated — the control owns the arrangement.
+    /// [`Self::set_data_source`] and a row-count change reset it to identity.
+    row_order: Vec<usize>,
     row_height: u32,
     overscan: usize,
     selected_row: Option<usize>,
@@ -61,6 +84,11 @@ pub struct VirtualList {
     pub selection_changed: Signal1<Option<usize>>,
     /// Emitted when visible row window changes `(start, len)`.
     pub visible_window_changed: Signal1<(usize, usize)>,
+    /// Emitted with the effect of a drag that began in this list.
+    ///
+    /// The coordinator reports the same effect through `DragSource::on_drag_finished`; this
+    /// signal is the observable form for a host that holds the control by id.
+    pub drag_finished: Signal1<DropEffect>,
 }
 
 impl VirtualList {
@@ -71,6 +99,7 @@ impl VirtualList {
             data_source: None,
             data_source_connection_scope: ConnectionScope::new(),
             scroll_row: 0,
+            row_order: Vec::new(),
             row_height: 20,
             overscan: 2,
             selected_row: None,
@@ -80,6 +109,7 @@ impl VirtualList {
             data_is_observable: false,
             selection_changed: Signal1::new(),
             visible_window_changed: Signal1::new(),
+            drag_finished: Signal1::new(),
         }
     }
 
@@ -107,6 +137,7 @@ impl VirtualList {
         self.data_source = Some(data_source);
         self.scroll_row = 0;
         self.selected_row = None;
+        self.row_order.clear();
         self.clear_window_cache();
         self.normalize_projection_state();
         self.emit_visible_window_changed();
@@ -137,6 +168,7 @@ impl VirtualList {
         self.data_generation.fetch_add(1, Ordering::Relaxed);
         self.scroll_row = 0;
         self.selected_row = None;
+        self.row_order.clear();
         self.clear_window_cache();
         self.emit_visible_window_changed();
         self.base.request_layout();
@@ -259,6 +291,36 @@ impl VirtualList {
         true
     }
 
+    /// Moves the displayed row at `from` to `to`, keeping the selection on the item it names.
+    ///
+    /// The bound data source is read-only, so this rearranges the display projection rather
+    /// than the source itself. A move onto the same row is accepted without changing
+    /// anything, which lets a drop aimed at the dragged row still report that it was taken.
+    /// Returns `false` only for an out-of-range index.
+    pub fn move_row(&mut self, from: usize, to: usize) -> bool {
+        let count = self.row_count();
+        if from >= count || to >= count {
+            return false;
+        }
+        self.normalize_row_order();
+        if from == to {
+            return true;
+        }
+        let row = self.row_order.remove(from);
+        self.row_order.insert(to, row);
+        let before = self.selected_row;
+        self.selected_row = self.selected_row.map(|index| index_after_move(index, from, to));
+        // The cache key counts the source revision, not this local arrangement, so the cached
+        // window has to be dropped explicitly or a repaint would serve the old order.
+        self.clear_window_cache();
+        self.data_generation.fetch_add(1, Ordering::Relaxed);
+        if before != self.selected_row {
+            self.selection_changed.emit(self.selected_row);
+        }
+        self.base.request_redraw();
+        true
+    }
+
     /// Returns `(start, len)` for visible + overscan row window.
     pub fn visible_window(&self) -> (usize, usize) {
         let row_count = self.row_count();
@@ -322,15 +384,65 @@ impl VirtualList {
             return Vec::new();
         };
 
-        source
-            .fetch_window(start, len, 0, 1)
-            .into_iter()
-            .enumerate()
-            .map(|(offset, row)| {
-                let text = row.into_iter().next().flatten().unwrap_or_default();
-                (start + offset, text)
+        // The identity case keeps the batched window fetch. A reordered projection has to ask
+        // for one source row per display row, because the window is no longer contiguous in
+        // the source.
+        if self.row_order_is_identity() {
+            return source
+                .fetch_window(start, len, 0, 1)
+                .into_iter()
+                .enumerate()
+                .map(|(offset, row)| {
+                    let text = row.into_iter().next().flatten().unwrap_or_default();
+                    (start + offset, text)
+                })
+                .collect();
+        }
+
+        (start..start.saturating_add(len))
+            .map(|display| {
+                let source_row = self.source_row(display);
+                (display, source.data(source_row, 0).unwrap_or_default())
             })
             .collect()
+    }
+
+    /// Turns the identity-encoded order into a real permutation so it can be rearranged.
+    fn normalize_row_order(&mut self) {
+        let count = self.row_count();
+        if self.row_order.len() != count {
+            self.row_order = (0..count).collect();
+        }
+    }
+
+    /// Whether display row `n` is still source row `n`.
+    fn row_order_is_identity(&self) -> bool {
+        self.row_order.len() != self.row_count()
+            || self.row_order.iter().enumerate().all(|(display, &source)| display == source)
+    }
+
+    /// The source row a display row reads its text from.
+    fn source_row(&self, display: usize) -> usize {
+        if self.row_order.len() == self.row_count() {
+            self.row_order.get(display).copied().unwrap_or(display)
+        } else {
+            display
+        }
+    }
+
+    /// The display row a drop at `pos` would land on.
+    ///
+    /// Dropping past the last row means "move to the end", the same clamp the tab strip and
+    /// the list box apply. A point outside the control is not a drop at all.
+    fn drop_row_at(&self, pos: Point) -> Option<usize> {
+        if let Some(row) = self.row_at(pos) {
+            return Some(row);
+        }
+        let count = self.row_count();
+        if count > 0 && self.base.geometry().contains(pos) {
+            return Some(count - 1);
+        }
+        None
     }
 
     fn clear_window_cache(&mut self) {
@@ -339,6 +451,9 @@ impl VirtualList {
 
     fn normalize_projection_state(&mut self) {
         let row_count = self.row_count();
+        if self.row_order.len() != row_count {
+            self.row_order.clear();
+        }
         if row_count == 0 {
             self.scroll_row = 0;
             self.selected_row = None;
@@ -384,6 +499,17 @@ impl Widget for VirtualList {
             crate::widget::metrics::dimensions::VIRTUAL_LIST_DEFAULT_HEIGHT,
         )
     }
+
+    /// Opts the list into the runtime's drag coordinator as a source.
+    fn drag_source_mut(&mut self) -> Option<&mut dyn DragSource> {
+        Some(self)
+    }
+
+    /// Opts the list into the runtime's drag coordinator as a drop target.
+    fn drop_target_mut(&mut self) -> Option<&mut dyn DropTarget> {
+        Some(self)
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
     /// Resolves a published event name to the control's own signal.
@@ -417,8 +543,82 @@ impl Widget for VirtualList {
                     ])
                 },
             )),
+            "drag_finished" => {
+                Some(EventSignalRef::mapped("drag_finished", &self.drag_finished, |v| {
+                    CapabilityValue::String(v.as_str().to_string())
+                }))
+            }
             _ => None,
         }
+    }
+}
+
+/// A row drag carries its display index in the item id and its text in the label.
+///
+/// The index addresses the control's own display order, which is what a target reorders; the
+/// bound data source is never written through this payload.
+impl DragSource for VirtualList {
+    fn drag_payload(&self, pos: Point) -> Option<DragPayload> {
+        if !self.base.is_enabled() {
+            return None;
+        }
+        let row = self.row_at(pos)?;
+        let text = self.data_source.as_ref()?.data(self.source_row(row), 0)?;
+        Some(DragPayload::new("text/plain", row.to_string()).with_label(text).with_origin(pos))
+    }
+
+    /// Reports the outcome to the host. The display order is already committed by the drop
+    /// target, so the source has nothing left to remove.
+    fn on_drag_finished(&mut self, effect: DropEffect) {
+        self.drag_finished.emit(effect);
+    }
+}
+
+/// A row dropped on the list moves to the row under the pointer.
+impl DropTarget for VirtualList {
+    fn can_accept(&self, payload: &DragPayload) -> bool {
+        if !self.base.is_enabled() || !payload.is_type("text/plain") {
+            return false;
+        }
+        // # Why a row from another view is refused
+        //
+        // The payload's item id is a row index, and an index only addresses the view that
+        // produced it. This view also cannot *insert*: its rows are a projection of the read-only
+        // `DataSource` bound to it, so accepting a foreign row would have to write into a binding
+        // it does not own. A same-view payload is the only one this control can honour.
+        if !payload.came_from(self.base.id()) {
+            return false;
+        }
+        payload.item_id.parse::<usize>().is_ok_and(|row| row < self.row_count())
+    }
+
+    fn on_drop(&mut self, payload: &DragPayload, pos: Point) -> DropEffect {
+        if !self.can_accept(payload) {
+            return DropEffect::None;
+        }
+        let Ok(from) = payload.item_id.parse::<usize>() else {
+            return DropEffect::None;
+        };
+        let Some(to) = self.drop_row_at(pos) else {
+            return DropEffect::None;
+        };
+        if self.move_row(from, to) {
+            DropEffect::Move
+        } else {
+            DropEffect::None
+        }
+    }
+
+    /// Highlights the band the row would land on.
+    fn preview_rect(&self, payload: &DragPayload, pos: Point) -> Option<Rect> {
+        if !self.can_accept(payload) {
+            return None;
+        }
+        let row = self.drop_row_at(pos)?;
+        let rect = self.base.geometry();
+        let height = self.row_height.max(1) as i32;
+        let y = rect.y + (row as i32 - self.scroll_row as i32) * height;
+        Some(Rect::new(rect.x, y, rect.width, height as u32))
     }
 }
 
@@ -629,12 +829,12 @@ impl crate::event::EventHandler for VirtualList {
                     self.base.request_redraw();
                 }
             }
-            Event::Wheel { delta, .. } => {
-                let lines = ((delta.y.abs() / 120).max(1)) as isize;
-                if delta.y < 0 {
-                    self.scroll_by_rows(lines);
-                } else if delta.y > 0 {
-                    self.scroll_by_rows(-lines);
+            Event::Wheel { delta, modifiers } => {
+                // One notch is one row. `scroll_by_rows` takes a positive delta as
+                // moving toward later rows, which is the negative event direction.
+                let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
+                if scroll.lines_y != 0 {
+                    self.scroll_by_rows(-(scroll.lines_y as isize));
                 }
             }
             _ => { /* Other events are not relevant */ }
@@ -1043,5 +1243,61 @@ mod tests {
         list.handle_event(&Event::MouseLeave { pos: below });
         assert_eq!(list.hovered_row, None, "leaving clears the row rather than latching it");
         assert_eq!(list.widget_state(), WidgetState::Normal);
+    }
+
+    // ── Drag and drop ─────────────────────────────────────────────────────
+
+    /// Unmounts a widget registered by a test, even on panic.
+    #[cfg(not(alloc_frugal))]
+    struct MountGuard(crate::core::ObjectId);
+
+    #[cfg(not(alloc_frugal))]
+    impl Drop for MountGuard {
+        fn drop(&mut self) {
+            crate::widget::runtime::unregister(self.0);
+        }
+    }
+
+    /// A press, a move past the threshold and a release inside the list reorder the displayed
+    /// rows, keep the selection on the moved item and report `Move` to the source.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_drag_within_the_list_reorders_rows_and_reports_move() {
+        use crate::event::mouse_button::PRIMARY;
+        use crate::widget::runtime::{register, with_widget_mut, DragCoordinator};
+        use std::sync::{Arc, Mutex};
+
+        let mut list = VirtualList::new(Rect::new(0, 0, 200, 100));
+        list.set_rows(vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+        assert!(list.select_row(0));
+        let finished = Arc::new(Mutex::new(None));
+        let sink = Arc::clone(&finished);
+        list.drag_finished.connect_ref(move |effect: &DropEffect| {
+            *sink.lock().unwrap() = Some(*effect);
+        });
+        let id = register(crate::compat::Box::new(list)).expect("mount the list");
+        let _guard = MountGuard(id);
+
+        let viewport = Rect::new(0, 0, 400, 200);
+        let mut coordinator = DragCoordinator::new();
+        assert_eq!(coordinator.on_event(&Event::mouse_press(10, 5, PRIMARY), viewport), None);
+        assert_eq!(coordinator.on_event(&Event::mouse_move(10, 50), viewport), None);
+        assert_eq!(
+            coordinator.on_event(&Event::mouse_release(10, 50, PRIMARY), viewport),
+            Some(DropEffect::Move)
+        );
+
+        let observed = with_widget_mut(id, |widget| {
+            let list = (widget as &mut dyn core::any::Any)
+                .downcast_mut::<VirtualList>()
+                .expect("the mounted control is a virtual list");
+            let rows =
+                list.fetch_visible_rows().into_iter().map(|(_, text)| text).collect::<Vec<_>>();
+            (rows, list.selected_row())
+        })
+        .expect("the list is still mounted");
+        assert_eq!(observed.0, vec!["B", "C", "A"]);
+        assert_eq!(observed.1, Some(2), "the selection follows the row that moved");
+        assert_eq!(*finished.lock().unwrap(), Some(DropEffect::Move));
     }
 }

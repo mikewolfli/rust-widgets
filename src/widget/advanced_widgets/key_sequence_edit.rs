@@ -6,8 +6,10 @@ use crate::core::{Color, HorizontalAlignment, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::shortcut::Key;
 use crate::signal::{GenericSignal, Signal1};
 use crate::undo::{UndoStack, ValueCommand};
+use crate::widget::input_widgets::shortcut_editor::primary_shortcut_pressed;
 use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use std::cell::RefCell;
@@ -326,10 +328,17 @@ impl EventHandler for KeySequenceEdit {
                 self.set_key_sequence(seq);
                 self.stop_recording();
             }
-            Event::KeyPress { key, modifiers } if *key == 90 && *modifiers == 2 => {
+            // Undo and redo are the platform primary chord: Control+Z/Y on
+            // Windows and Linux, Command+Z/Y on macOS. A shifted chord is a
+            // different binding and stays unbound here.
+            Event::KeyPress { key, modifiers }
+                if primary_shortcut_pressed(*key, *modifiers, Key::Z) =>
+            {
                 let _ = self.undo();
             }
-            Event::KeyPress { key, modifiers } if *key == 89 && *modifiers == 2 => {
+            Event::KeyPress { key, modifiers }
+                if primary_shortcut_pressed(*key, *modifiers, Key::Y) =>
+            {
                 let _ = self.redo();
             }
             _ => { /* Other events are not relevant */ }
@@ -457,6 +466,7 @@ mod tests {
     use crate::core::Point;
     use crate::core::Rect;
     use crate::event::Event;
+    use crate::widget::input_widgets::shortcut_editor::primary_modifier_event_bits;
     use crate::widget::svg::render_to_svg;
     use std::sync::{Arc, Mutex};
 
@@ -588,9 +598,9 @@ mod tests {
         kse.set_key_sequence(KeySequence::new(0x01, 65, "A"));
         kse.set_key_sequence(KeySequence::new(0x01, 66, "B"));
 
-        kse.handle_event(&Event::KeyPress { key: 90, modifiers: 2 });
+        kse.handle_event(&Event::KeyPress { key: 90, modifiers: primary_modifier_event_bits() });
         assert_eq!(kse.key_sequence().key_name(), "A");
-        kse.handle_event(&Event::KeyPress { key: 89, modifiers: 2 });
+        kse.handle_event(&Event::KeyPress { key: 89, modifiers: primary_modifier_event_bits() });
         assert_eq!(kse.key_sequence().key_name(), "B");
     }
 

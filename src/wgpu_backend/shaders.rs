@@ -62,6 +62,93 @@ fn vs_main(input: RectInput) -> @builtin(position) vec4f {
     return vec4f(input.pos, 0.0, 1.0);
 }"#;
 
+/// Instanced, matrix-transformed quad vertex shader (`3d` feature only).
+///
+/// One **instance** carries everything a quad needs, and the six vertices of its two triangles
+/// are generated from `@builtin(vertex_index)`; there is no per-vertex buffer. Corners are in
+/// **logical pixel space** rather than clip space, and the shader multiplies the selected corner
+/// by a model-view-projection matrix:
+///
+/// ```text
+/// position = uMVP * vec4f(corner, 0.0, 1.0)
+/// ```
+///
+/// Per-instance vertex buffer (`step_mode: Instance`, `array_stride == 48`):
+///
+/// | location | format | offset | meaning |
+/// |---|---|---|---|
+/// | 0 | `Float32x4` | 0 | corners 0 and 1, `(x0, y0, x1, y1)` |
+/// | 1 | `Float32x4` | 16 | corners 2 and 3, `(x2, y2, x3, y3)` |
+/// | 2 | `Float32x4` | 32 | straight RGBA colour, fed to [`FILL_RECT_INSTANCED_FS`] |
+///
+/// Corners are in perimeter order, so the generated triangles are `(0, 1, 2)` and `(0, 2, 3)`.
+/// The pipeline must draw exactly `0..6` vertices per instance; `vertex_index % 6` keeps a
+/// larger draw inside the six-entry corner table rather than reading out of bounds.
+///
+/// Bind group layout:
+///
+/// | group | binding | type | name | stage | meaning |
+/// |---|---|---|---|---|---|
+/// | 0 | 0 | `uniform mat4x4f` | `uMVP` | vertex | pixel space to clip space |
+///
+/// `uMVP` is one matrix per call, not a per-instance dynamic offset, so every quad in a drawn
+/// run is transformed by the same matrix and differs only in its corners and colour. The
+/// instance buffer carries no UV or clip data because this pipeline consumes neither; the
+/// 48-byte stride is therefore exactly two corner vectors plus one colour vector.
+///
+/// This shader does **not** introduce a depth buffer: the transform is 2D-affine composed with
+/// an orthographic pixel-to-clip matrix, and control-level occlusion stays with the scene
+/// layers' stable z ordering. Because instances are drawn in buffer order within one draw, the
+/// painter order of the recorded run is preserved.
+#[cfg(feature = "3d")]
+pub(crate) const FILL_RECT_VS_TRANSFORMED: &str = r#"
+struct InstanceInput {
+    @location(0) corners_lo: vec4f,
+    @location(1) corners_hi: vec4f,
+    @location(2) color: vec4f,
+};
+
+struct VertexOutput {
+    @builtin(position) position: vec4f,
+    @location(0) color: vec4f,
+};
+
+@group(0) @binding(0) var<uniform> uMVP: mat4x4f;
+
+@vertex
+fn vs_main(instance: InstanceInput, @builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    let corner_order = array<u32, 6>(0u, 1u, 2u, 0u, 2u, 3u);
+    let corner = corner_order[vertex_index % 6u];
+    let p0 = instance.corners_lo.xy;
+    let p1 = instance.corners_lo.zw;
+    let p2 = instance.corners_hi.xy;
+    let p3 = instance.corners_hi.zw;
+    var local = p0;
+    if corner == 1u {
+        local = p1;
+    } else if corner == 2u {
+        local = p2;
+    } else if corner == 3u {
+        local = p3;
+    }
+    var output: VertexOutput;
+    output.position = uMVP * vec4f(local, 0.0, 1.0);
+    output.color = instance.color;
+    return output;
+}"#;
+
+/// Fragment shader for the instanced `3d` pipeline.
+///
+/// The colour is a per-instance vertex output ([`FILL_RECT_VS_TRANSFORMED`], location 0). Every
+/// vertex of a quad repeats the same value, so interpolation returns that colour unchanged and
+/// the fragment needs no uniform and no bind group.
+#[cfg(feature = "3d")]
+pub(crate) const FILL_RECT_INSTANCED_FS: &str = r#"
+@fragment
+fn fs_main(@location(0) color: vec4f) -> @location(0) vec4f {
+    return color;
+}"#;
+
 /// Rectangle fill fragment shader.
 /// Takes per-instance color from a uniform buffer.
 ///
@@ -268,10 +355,14 @@ fn fs_main(@location(0) pos: vec2f) -> @location(0) vec4f {
 /// Shader module identifiers for the WgpuRenderer pipeline (BLUE11 R5.2).
 ///
 /// Each variant names a fragment shader and is the key callers use to fetch its
-/// WGSL source with [`ShaderModule::source`]. The variants are exhaustive with
-/// respect to the fragment shaders in this module; the two vertex shaders are
-/// not addressable through this enum, because the pipelines bind them directly
-/// from `FULLSCREEN_QUAD_VS` and `FILL_RECT_VS`.
+/// WGSL source with [`ShaderModule::source`]. The variants cover every fragment
+/// shader exposed through this API; the vertex shaders are not addressable
+/// through this enum, because the pipelines bind them directly from
+/// `FULLSCREEN_QUAD_VS`, `FILL_RECT_VS` and (with the `3d` feature)
+/// `FILL_RECT_VS_TRANSFORMED`. The instanced `3d` fragment shader
+/// `FILL_RECT_INSTANCED_FS` is likewise internal: its input is the per-instance
+/// colour, so it is paired with a specific vertex layout rather than offered as a
+/// standalone module.
 ///
 /// These identifiers are also the drift point between the two halves of the
 /// backend: `WgpuRenderer::shader_modules` enumerates these variants, while the

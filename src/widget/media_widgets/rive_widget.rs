@@ -1,12 +1,25 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! RiveWidget — Rive animation runtime widget.
+//! RiveWidget — a Rive-inspired animation runtime widget.
 //!
-//! The RiveWidget manages a Rive animation with state machine inputs,
-//! play/pause/stop controls, and loop count configuration. It emits a
-//! signal when the animation finishes. Animated shapes are rendered
-//! based on the animation progress value.
+//! The widget consumes a **Rive-inspired JSON** document (not the binary `.riv`
+//! format) through [`RiveWidget::load_animation_from_json`]. It provides
+//! play/pause/stop controls, loop counts, and state machine inputs, and emits a
+//! signal when the animation finishes. Animated shapes are rendered from the
+//! parsed JSON at the current playhead position.
+//!
+//! # State machine input contract
+//!
+//! The inputs are a small documented convention layered on the parsed JSON, not
+//! a real Rive state machine:
+//!
+//! - a numeric input named `"progress"` pins the playhead to that value, clamped
+//!   to `0.0..=1.0`, so a host can scrub the animation;
+//! - a boolean input named `"playing"` set to `false` pauses advancement for as
+//!   long as it stays `false`.
+//!
+//! Other names are stored and reported but do not affect playback.
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
@@ -229,49 +242,6 @@ impl RiveAnimationData {
 
         Self { _name: name.to_string(), _duration_frames, _frame_rate, shapes }
     }
-
-    /// Create default animation data for a named animation with no JSON.
-    fn default_for(name: &str) -> Self {
-        RiveAnimationData {
-            _name: name.to_string(),
-            _duration_frames: 60,
-            _frame_rate: 60.0,
-            shapes: vec![
-                RiveAnimatedShape {
-                    shape_type: RiveShapeType::Rectangle,
-                    x: 50.0,
-                    y: 50.0,
-                    width: 60.0,
-                    height: 60.0,
-                    r: 60,
-                    g: 100,
-                    b: 200,
-                    a: 220,
-                    motion_x: 20.0,
-                    motion_y: 15.0,
-                    scale_amplitude: 0.2,
-                    rotation_amplitude: 15.0,
-                    color_shift: false,
-                },
-                RiveAnimatedShape {
-                    shape_type: RiveShapeType::Circle,
-                    x: 50.0,
-                    y: 50.0,
-                    width: 30.0,
-                    height: 30.0,
-                    r: 200,
-                    g: 80,
-                    b: 60,
-                    a: 200,
-                    motion_x: -15.0,
-                    motion_y: 10.0,
-                    scale_amplitude: 0.3,
-                    rotation_amplitude: 0.0,
-                    color_shift: true,
-                },
-            ],
-        }
-    }
 }
 
 /// RiveWidget — a Rive animation runtime widget.
@@ -316,15 +286,25 @@ impl RiveWidget {
         }
     }
 
-    /// Loads a named animation. Replaces any previously loaded animation.
-    /// If `json_data` is provided, it will be parsed for custom shapes.
-    pub fn load_animation(&mut self, name: &str) {
+    /// Loads a named animation.
+    ///
+    /// This widget has no embedded animation library and no `.riv` decoder, so a
+    /// call that supplies only a name cannot produce animation data. It records
+    /// the name for the placeholder, leaves the widget in the honest "not
+    /// loaded" state (`animation_data` stays `None`) and returns an `Err`
+    /// pointing at [`Self::load_animation_from_json`], which accepts the
+    /// Rive-inspired JSON format this widget actually renders.
+    pub fn load_animation(&mut self, name: &str) -> Result<(), String> {
         self.animation_name = name.to_string();
         self.animation_progress = 0.0;
         self.frame_timer = 0;
         self.is_playing = false;
-        self.animation_data = Some(RiveAnimationData::default_for(name));
+        self.animation_data = None;
         self.base.request_redraw();
+        Err(format!(
+            "Rive animation \"{name}\" has no animation data; this widget loads the \
+             Rive-inspired JSON format through load_animation_from_json, not a .riv file"
+        ))
     }
 
     /// Loads a named animation from JSON data.
@@ -355,8 +335,12 @@ impl RiveWidget {
     }
 
     /// Starts playback of the animation.
+    ///
+    /// Does nothing until animation data has actually been loaded through
+    /// [`Self::load_animation_from_json`]: a name alone is not a loaded
+    /// animation.
     pub fn play(&mut self) {
-        if self.animation_name.is_empty() {
+        if self.animation_name.is_empty() || self.animation_data.is_none() {
             return;
         }
         self.is_playing = true;
@@ -384,11 +368,26 @@ impl RiveWidget {
 
     /// Sets the value of a named state machine input.
     /// If the input does not exist, it is created.
+    ///
+    /// The names `"progress"` (numeric) and `"playing"` (boolean) carry the
+    /// documented conventions described on [`Self::tick`].
     pub fn set_input(&mut self, name: &str, value: RiveInputValue) {
         if let Some(input) = self.state_machine_inputs.iter_mut().find(|i| i.name == name) {
             input.value = value;
         } else {
             self.state_machine_inputs.push(RiveInput { name: name.to_string(), value });
+        }
+        // Keep the documented `"progress"` convention observable immediately: setting the
+        // input scrubs the playhead even before the next tick.
+        let pinned_progress =
+            self.state_machine_inputs.iter().find(|input| input.name == "progress").and_then(
+                |input| match &input.value {
+                    RiveInputValue::Number(value) => Some(*value),
+                    _ => None,
+                },
+            );
+        if let Some(value) = pinned_progress {
+            self.animation_progress = value.clamp(0.0, 1.0);
         }
         self.base.request_redraw();
     }
@@ -432,8 +431,36 @@ impl RiveWidget {
     /// Advances the animation state by the given number of milliseconds.
     /// This simulates frame advancement based on a fixed 60fps rate.
     /// Returns true if the animation completed a loop.
+    ///
+    /// # State machine inputs
+    ///
+    /// Two input names are consumed, following the "Rive-inspired JSON" contract
+    /// documented on the module:
+    ///
+    /// - a numeric `"progress"` input pins the playhead to that value (clamped to
+    ///   `0.0..=1.0`) and suppresses advancement for the call;
+    /// - a boolean `"playing"` input set to `false` gates advancement until it is
+    ///   set back to `true` or removed.
     pub fn tick(&mut self, delta_ms: u64) -> bool {
-        if !self.is_playing || self.animation_name.is_empty() {
+        let pinned_progress =
+            self.state_machine_inputs.iter().find(|input| input.name == "progress").and_then(
+                |input| match &input.value {
+                    RiveInputValue::Number(value) => Some(*value),
+                    _ => None,
+                },
+            );
+        if let Some(value) = pinned_progress {
+            self.animation_progress = value.clamp(0.0, 1.0);
+            self.base.request_redraw();
+            return false;
+        }
+
+        let gated_playback = self
+            .state_machine_inputs
+            .iter()
+            .find(|input| input.name == "playing")
+            .is_some_and(|input| input.value == RiveInputValue::Bool(false));
+        if gated_playback || !self.is_playing || self.animation_name.is_empty() {
             return false;
         }
 
@@ -673,13 +700,19 @@ impl Draw for RiveWidget {
         // of staying one grey in every appearance.
         let trough_color = border_color.blend(&base_bg, 0.55);
 
-        if self.animation_name.is_empty() {
-            // Empty state: a neutral placeholder panel. The panel and the label are this
-            // widget's chrome — there is no animation data here at all — so both now follow
-            // the theme instead of pinning the control to one appearance.
+        if self.animation_name.is_empty() || self.animation_data.is_none() {
+            // Honest empty state: a neutral placeholder panel. A name without data (the
+            // result of `load_animation`, which has no JSON to parse) and a fresh widget both
+            // land here, so nothing may be drawn that looks like animation content. The panel
+            // and the label are this widget's chrome, so both follow the theme instead of
+            // pinning the control to one appearance.
             context.fill_rounded_rect(rect, 4, base_bg);
             let font = effective_font(style);
-            let text = "No Rive animation loaded";
+            let text = if self.animation_name.is_empty() {
+                "No Rive animation loaded"
+            } else {
+                "Rive animation not loaded"
+            };
             // Centred on the vertical midline and fitted to the control's width: the label
             // is 24 characters at 14 px, wider than most controls it is drawn into, and
             // without the fit it ran past the panel and out of the SVG snapshot.
@@ -926,7 +959,7 @@ mod tests {
     #[test]
     fn rive_widget_load_animation_and_play_pause_stop() {
         let mut rive = RiveWidget::new(Rect::new(0, 0, 200, 200));
-        rive.load_animation("idle");
+        rive.load_animation_from_json("idle", &make_rive_json()).unwrap();
         assert_eq!(rive.animation_name(), "idle");
 
         assert!(!rive.is_playing());
@@ -977,7 +1010,7 @@ mod tests {
     #[test]
     fn rive_widget_tick_advances_progress() {
         let mut rive = RiveWidget::new(Rect::new(0, 0, 200, 200));
-        rive.load_animation("run");
+        rive.load_animation_from_json("run", &make_rive_json()).unwrap();
         rive.play();
 
         assert_eq!(rive.animation_progress(), 0.0);
@@ -991,7 +1024,7 @@ mod tests {
     #[test]
     fn rive_widget_tick_not_playing_does_nothing() {
         let mut rive = RiveWidget::new(Rect::new(0, 0, 200, 200));
-        rive.load_animation("run");
+        rive.load_animation_from_json("run", &make_rive_json()).unwrap();
         // Not playing.
         rive.tick(100);
         assert_eq!(rive.animation_progress(), 0.0);
@@ -1000,7 +1033,7 @@ mod tests {
     #[test]
     fn rive_widget_animation_finished_signal() {
         let mut rive = RiveWidget::new(Rect::new(0, 0, 200, 200));
-        rive.load_animation("walk");
+        rive.load_animation_from_json("walk", &make_rive_json()).unwrap();
         rive.set_loop_count(1);
         rive.play();
 
@@ -1021,7 +1054,7 @@ mod tests {
     #[test]
     fn rive_widget_infinite_loop() {
         let mut rive = RiveWidget::new(Rect::new(0, 0, 200, 200));
-        rive.load_animation("spin");
+        rive.load_animation_from_json("spin", &make_rive_json()).unwrap();
         rive.set_loop_count(0); // infinite
         rive.play();
 
@@ -1107,7 +1140,7 @@ mod tests {
         let mut ctx = crate::render::RenderContext::new(&mut backend);
 
         let mut rive = RiveWidget::new(Rect::new(0, 0, 100, 100));
-        rive.load_animation("test");
+        rive.load_animation_from_json("test", &make_rive_json()).unwrap();
         rive.play();
 
         // Should not panic when drawing with shapes.
@@ -1175,7 +1208,7 @@ mod tests {
     #[test]
     fn a_huge_tick_does_not_loop_unbounded() {
         let mut rive = RiveWidget::new(Rect::new(0, 0, 100, 100));
-        rive.load_animation("wave");
+        rive.load_animation_from_json("wave", &make_rive_json()).unwrap();
         rive.play();
         // If the old `while` loop still ran per-frame, this call would take a very long time; the
         // capped implementation returns immediately. Debug builds also panicked on the wrapping `+=`.
@@ -1185,5 +1218,59 @@ mod tests {
         assert!(svg.starts_with("<svg"));
         // `completed` may be true or false depending on loop_count; touching it proves the call ran.
         let _ = completed;
+    }
+
+    /// A name alone is not animation data: the load must fail and draw no shapes.
+    #[test]
+    fn rive_widget_load_animation_without_data_returns_error_and_draws_no_shapes() {
+        let mut rive = RiveWidget::new(Rect::new(0, 0, 200, 200));
+        let error = rive.load_animation("idle").expect_err("a name alone has no animation data");
+        assert!(
+            error.contains("load_animation_from_json"),
+            "the refusal must point at the data-loading entry point, got: {error:?}"
+        );
+        assert!(rive.animation_data.is_none(), "a failed load must not fabricate animation data");
+        assert!(!rive.is_playing(), "a failed load must not start playback");
+
+        let svg = crate::widget::svg::render_to_svg(&mut rive);
+        assert!(
+            !crate::widget::svg::text_ink_boxes(&svg).is_empty(),
+            "the placeholder must paint a label:\n{svg}"
+        );
+        assert!(!svg.contains("<circle"), "no fake circle shape may be drawn:\n{svg}");
+    }
+
+    /// The documented `playing` input gates the tick.
+    #[test]
+    fn rive_widget_playing_false_input_pauses_tick() {
+        let mut rive = RiveWidget::new(Rect::new(0, 0, 200, 200));
+        rive.load_animation_from_json("run", &make_rive_json()).unwrap();
+        rive.play();
+        rive.set_input("playing", RiveInputValue::Bool(false));
+
+        let before = rive.animation_progress();
+        assert!(!rive.tick(1000), "a gated tick cannot complete a loop");
+        assert_eq!(rive.animation_progress(), before, "playing=false must pause advancement");
+    }
+
+    /// The documented `progress` input pins the playhead and clamps it.
+    #[test]
+    fn rive_widget_progress_input_pins_the_playhead() {
+        let mut rive = RiveWidget::new(Rect::new(0, 0, 200, 200));
+        rive.load_animation_from_json("run", &make_rive_json()).unwrap();
+        rive.play();
+        rive.set_input("progress", RiveInputValue::Number(0.5));
+
+        rive.tick(1000);
+        assert!((rive.animation_progress() - 0.5).abs() < 1e-6, "the playhead must sit at half");
+        rive.tick(1000);
+        assert!(
+            (rive.animation_progress() - 0.5).abs() < 1e-6,
+            "a pinned playhead must not drift across ticks"
+        );
+
+        rive.set_input("progress", RiveInputValue::Number(2.0));
+        rive.tick(16);
+        assert_eq!(rive.animation_progress(), 1.0, "an out-of-range progress is clamped");
     }
 }

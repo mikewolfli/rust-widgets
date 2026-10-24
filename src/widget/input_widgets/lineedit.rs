@@ -21,7 +21,10 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::decorations::{
     DecorationLayout, DecorationMetrics, DecorationSlots, DECORATION_GAP,
 };
-use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
+use crate::widget::metrics::{
+    active_profile, dimensions, effective_font, estimate_text_width, profile_metrics,
+    ControlMetrics,
+};
 
 /// Trailing room a text field leaves for the caret, added to the measured value.
 const LINE_EDIT_CARET_ROOM: u32 = 10;
@@ -30,6 +33,7 @@ const LINE_EDIT_MIN_WIDTH: u32 = 80;
 /// Height of a text field.
 const LINE_EDIT_HEIGHT: u32 = 24;
 use crate::widget::text_utils::{byte_index_of_char, floor_char_boundary};
+use crate::widget::widget_trait::InputMethodQuery;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -117,6 +121,14 @@ pub struct LineEdit {
     pub editing_finished: GenericSignal,
     /// Emitted when Enter is pressed in the field, after the edit is committed.
     pub return_pressed: GenericSignal,
+    /// Emitted when a context menu is requested at this point in the field.
+    ///
+    /// The field deliberately does not build a menu: cut/copy/paste items belong to the
+    /// host's menu implementation, and the same signal serves a right-click and the
+    /// Menu/Application key. The payload is the request position in window coordinates;
+    /// the host decides which items apply (a read-only field, for example, offers copy
+    /// only) and supplies the menu itself.
+    pub context_menu_requested: Signal1<Point>,
 }
 /// Text echo mode for a line edit.
 ///
@@ -177,6 +189,7 @@ impl LineEdit {
             text_changed: Signal1::new(),
             editing_finished: GenericSignal::new(),
             return_pressed: GenericSignal::new(),
+            context_menu_requested: Signal1::new(),
         }
     }
     /// Returns current text.
@@ -1005,18 +1018,21 @@ impl LineEdit {
     ///
     /// # Why the field is not the control's rectangle
     ///
-    /// A text field is a *fixed-height band*: [`dimensions::TEXT_FIELD_MIN_HEIGHT`] is the
-    /// touch-sized content floor every field in this crate shares. Painting `rect` made a
-    /// 240x120 census cell a 240x120 white slab — a rectangle pretending to be a field —
-    /// and it also made `size_hint`'s 24 disagree with the ink by a factor of five.
-    /// [`ControlMetrics::full_width_band`] keeps the full width, takes the field's own
-    /// height and centres it, which is exactly what stops a 48 px field from drawing as a
-    /// 120 px panel.
+    /// A text field is a *fixed-height band*: the active profile's text-field height is the
+    /// content floor every field in this crate shares — Material and Cupertino's 48 px, or
+    /// macOS's compact 22 px. Painting `rect` made a 240x120 census cell a 240x120 white
+    /// slab — a rectangle pretending to be a field — and it also made `size_hint`'s 24 disagree
+    /// with the ink by a factor of five. [`ControlMetrics::full_width_band`] keeps the full
+    /// width, takes the profile's height and centres it, which is exactly what stops a field
+    /// from drawing as a 120 px panel.
     ///
     /// Everything the control paints **and everything it hit-tests** is placed from this
     /// one box, so the clickable area cannot drift away from the ink.
     fn field_rect(&self) -> Rect {
-        ControlMetrics::full_width_band(self.geometry(), dimensions::TEXT_FIELD_MIN_HEIGHT)
+        ControlMetrics::full_width_band(
+            self.geometry(),
+            profile_metrics(active_profile()).text_field_min_height,
+        )
     }
 
     // ---------------------------------------------------------------------------
@@ -1144,6 +1160,82 @@ impl LineEdit {
             &self.decorations,
         )
     }
+
+    /// The caret's window rectangle and byte offset, as a native IME asks for them.
+    ///
+    /// # Why this is measured without a `RenderContext`
+    ///
+    /// The IME query is answered on a `&self` borrow between frames, when no paint context is
+    /// available. [`estimate_text_width`] is the crate's context-free model of the renderer's
+    /// ruler, and [`crate::render::fitted_origin`] is the same origin function `draw` lays the
+    /// value out with, so the reported caret rides with the glyphs instead of drifting from them.
+    /// The box arithmetic mirrors [`DecorationLayout::compute`]: the prefix and suffix slots keep
+    /// their own edges, and the value — and therefore the caret — is placed between them.
+    fn caret_query(&self) -> InputMethodQuery {
+        let field = self.field_rect();
+        let font = effective_font(self.base.style());
+        let padding = dimensions::TEXT_FIELD_PADDING_H as i32;
+        let gap = DECORATION_GAP as i32;
+        let inner_left = field.x + padding;
+        let inner_right = field.x + field.width as i32 - padding;
+        let prefix_width = if self.decorations.prefix.is_empty() {
+            0
+        } else {
+            estimate_text_width(&self.decorations.prefix, font, 1.0) as i32
+        };
+        let suffix_width = if self.decorations.suffix.is_empty() {
+            0
+        } else {
+            estimate_text_width(&self.decorations.suffix, font, 1.0) as i32
+        };
+        let value_left =
+            if prefix_width > 0 { inner_left + prefix_width + gap } else { inner_left };
+        let value_right =
+            if suffix_width > 0 { inner_right - suffix_width - gap } else { inner_right };
+        let value_width = (value_right - value_left).max(0) as u32;
+
+        // The same value box and alignment `draw` uses, so a centred or right-aligned value keeps
+        // its caret on its own glyphs rather than at the field's leading edge.
+        let fit = crate::render::TEXT_FIT_MARGIN as i32;
+        let value_box = Rect::new(
+            value_left - fit,
+            field.y,
+            value_width.saturating_add((fit * 2) as u32),
+            field.height,
+        );
+        let value_align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
+        // The text the field paints, which is what the value's advance is measured from. The
+        // caret's prefix is measured from `text` itself, exactly as `draw` does, so a masked
+        // field still reports the position of the caret in its own value.
+        let masked: String;
+        let display_text: &str = if self.text.is_empty() && !self.placeholder_text.is_empty() {
+            &self.placeholder_text
+        } else {
+            match self.echo_mode {
+                EchoMode::Normal => &self.text,
+                EchoMode::NoEcho => "",
+                EchoMode::Password => {
+                    masked = Self::mask_text(&self.text);
+                    &masked
+                }
+            }
+        };
+        let value_advance = estimate_text_width(display_text, font, 1.0) as i32;
+        let value_origin = crate::render::fitted_origin(value_box, value_advance, value_align);
+        let caret_byte = floor_char_boundary(self.text.as_str(), self.cursor_position);
+        let prefix_advance = estimate_text_width(&self.text[..caret_byte], font, 1.0) as i32;
+        let caret_x =
+            (value_origin.x + prefix_advance).min(value_left + value_width as i32).max(value_left);
+
+        // The caret spans the field's content band, inset so it does not touch the border — the
+        // same two-pixel inset `draw` uses.
+        let caret_top = field.y + 2;
+        let caret_height = field.height.saturating_sub(4).max(1);
+        InputMethodQuery {
+            caret_rect: Rect::new(caret_x, caret_top, 1, caret_height),
+            caret_byte: Some(caret_byte),
+        }
+    }
 }
 // Implement Widget trait
 impl Widget for LineEdit {
@@ -1155,6 +1247,24 @@ impl Widget for LineEdit {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    /// Reports the caret an IME candidate window should anchor to while this field is focused.
+    ///
+    /// A text field always has an insertion point, so the answer is always `Some`; the rectangle
+    /// is derived from the same field band and font the paint path uses.
+    fn input_method_query(&self) -> Option<InputMethodQuery> {
+        Some(self.caret_query())
+    }
+
+    /// Turns a context-menu request into this field's signal.
+    ///
+    /// The field knows the point and the selection; the host knows the menu. Emitting the
+    /// request (rather than opening a popup here) keeps the cut/copy/paste policy in one
+    /// place and lets the same signal serve a right-click and a keyboard request.
+    fn context_menu_event(&mut self, pos: Point) -> bool {
+        self.context_menu_requested.emit(pos);
+        true
     }
 
     fn size_hint(&self) -> Size {
@@ -1242,6 +1352,11 @@ impl Widget for LineEdit {
                 Some(EventSignalRef::unit("editing_finished", &self.editing_finished))
             }
             "return_pressed" => Some(EventSignalRef::unit("return_pressed", &self.return_pressed)),
+            "context_menu_requested" => Some(EventSignalRef::mapped(
+                "context_menu_requested",
+                &self.context_menu_requested,
+                |v| CapabilityValue::String(format!("{v:?}")),
+            )),
             _ => None,
         }
     }
@@ -1967,6 +2082,22 @@ mod tests {
     use crate::compat::{MiniToString, Vec};
     use crate::core::Rect;
 
+    /// A context-menu request is emitted with the point it asked about, and the field
+    /// reports that it handled it. The host supplies the menu; the field supplies the
+    /// request.
+    #[test]
+    fn a_context_menu_request_emits_the_requested_point() {
+        let mut field = LineEdit::new(Rect::new(0, 0, 160, 32));
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = std::sync::Arc::clone(&seen);
+        field.context_menu_requested.connect_ref(move |pos: &Point| {
+            *sink.lock().unwrap() = Some(*pos);
+        });
+
+        assert!(field.context_menu_event(Point::new(18, 6)));
+        assert_eq!(*seen.lock().unwrap(), Some(Point::new(18, 6)));
+    }
+
     /// The bitmap face fills its glyph box, so its ink left *is* the box left. An outline face draws
     /// a real glyph whose ink is inset, so the ink's left edge sits one or two pixels right of the
     /// box edge at these sizes. Pinning the two equal encoded a property of the bitmap face, not of
@@ -2650,6 +2781,11 @@ mod tests {
     /// cell, and a control smaller than the field clamps rather than painting outside.
     #[test]
     fn the_field_is_a_text_field_height_in_any_rectangle() {
+        // The assertion is the Material height, so a concurrent test that activates the Macos
+        // profile must not change what this control measures.
+        let _theme_guard = crate::style::theme_test_guard();
+        assert!(crate::theme::global_theme_manager().set_theme("default"));
+
         for height in [48u32, 120, 300] {
             let le = LineEdit::new(Rect::new(0, 0, 240, height));
             let field = le.field_rect();
@@ -2664,6 +2800,52 @@ mod tests {
 
         let short = LineEdit::new(Rect::new(0, 0, 240, 20));
         assert_eq!(short.field_rect().height, 20, "a short control clamps the field");
+    }
+
+    /// A Macos-profile theme paints and hit-tests macOS's 22 px field band.
+    ///
+    /// The field is the single derivation both the paint path and the pointer use, so asserting
+    /// its height pins the whole control rather than one call site.
+    #[cfg(device_profile)]
+    #[test]
+    fn a_macos_profile_theme_uses_the_compact_field_height() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut theme = crate::theme::Theme::default();
+        theme.name = "p2-6-lineedit-macos".to_string();
+        theme.metrics_profile = crate::widget::metrics::ControlMetricsProfile::Macos;
+        {
+            let mut manager = crate::theme::global_theme_manager();
+            manager.register_theme(theme);
+            assert!(manager.set_theme("p2-6-lineedit-macos"));
+        }
+
+        let le = LineEdit::new(Rect::new(0, 0, 240, 120));
+        let field = le.field_rect();
+        assert!(crate::theme::global_theme_manager().set_theme("default"));
+
+        assert_eq!(field.height, 22, "macOS's text field is 22 px tall: {field:?}");
+        assert_eq!(field.y, (120 - 22) / 2, "the compact band is still centred: {field:?}");
+        assert_eq!(field.width, 240, "and still spans the control");
+    }
+
+    /// The Cupertino profile keeps the Material text-field band unchanged.
+    #[cfg(device_profile)]
+    #[test]
+    fn the_cupertino_profile_keeps_the_material_field_height() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut theme = crate::theme::Theme::default();
+        theme.name = "p2-6-lineedit-cupertino".to_string();
+        theme.metrics_profile = crate::widget::metrics::ControlMetricsProfile::Cupertino;
+        {
+            let mut manager = crate::theme::global_theme_manager();
+            manager.register_theme(theme);
+            assert!(manager.set_theme("p2-6-lineedit-cupertino"));
+        }
+
+        let field = LineEdit::new(Rect::new(0, 0, 240, 120)).field_rect();
+        assert!(crate::theme::global_theme_manager().set_theme("default"));
+
+        assert_eq!(field.height, dimensions::TEXT_FIELD_MIN_HEIGHT);
     }
 
     /// Hit-testing follows the ink: a press below the field does not focus it.
@@ -3146,6 +3328,36 @@ mod tests {
         field.handle_event(&Event::ime_commit("你好"));
         assert_eq!(field.text(), "你好", "the commit enters the model");
         assert!(!field.has_composition(), "and ends the composition");
+    }
+
+    /// The IME query reports a real caret rectangle, and it moves with the caret.
+    ///
+    /// A non-zero rectangle is the whole point: a native candidate window anchored to a zero-sized
+    /// or off-field box has no insertion point to sit beside. The x advance also has to follow the
+    /// measured prefix, so the anchor lands on the character the user is inserting at.
+    #[test]
+    fn input_method_query_reports_the_caret_rectangle() {
+        let mut field = LineEdit::new(Rect::new(10, 20, 200, 24));
+        field.set_text("abc");
+
+        field.set_cursor_position(0);
+        let at_start = field
+            .input_method_query()
+            .expect("an editable text field always has an insertion point");
+        assert!(at_start.caret_rect.width > 0, "the caret must have a width: {at_start:?}");
+        assert!(at_start.caret_rect.height > 0, "the caret must have a height: {at_start:?}");
+        assert_eq!(at_start.caret_byte, Some(0));
+
+        field.set_cursor_position(3);
+        let at_end = field.input_method_query().expect("query after moving the caret");
+        assert_eq!(at_end.caret_byte, Some(3));
+        assert!(
+            at_end.caret_rect.x > at_start.caret_rect.x,
+            "the caret must advance with the measured prefix ({} -> {})",
+            at_start.caret_rect.x,
+            at_end.caret_rect.x
+        );
+        assert_eq!(at_end.caret_rect.height, at_start.caret_rect.height);
     }
 
     /// The caret and the edit keys step by **character**, not by byte.

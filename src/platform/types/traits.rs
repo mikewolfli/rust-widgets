@@ -8,6 +8,7 @@
 use super::values::*;
 use crate::compat::{String, Vec};
 use crate::core::{ObjectId, Orientation, PlatformFamily};
+use std::time::Instant;
 
 /// Platform backend contract used by widget/runtime layers.
 ///
@@ -152,6 +153,27 @@ pub trait Platform: Send + Sync {
         None
     }
 
+    /// Whether this backend can pace the frame loop against the display's presentation clock.
+    ///
+    /// `false` is the default, and it means the caller keeps the fixed frame-interval grid. A
+    /// backend that answers `true` also implements [`Self::next_vsync_deadline`], which is the
+    /// only value the loop consumes; no native display-link object crosses this boundary.
+    fn supports_vsync_frame(&self) -> bool {
+        false
+    }
+
+    /// The next instant at which the display is expected to present a frame, when known.
+    ///
+    /// `None` is the honest default and the answer while a supporting backend has not received
+    /// its first presentation callback yet. The value is a plain [`Instant`] so the frame loop
+    /// can wait for it without knowing which native signal produced it.
+    ///
+    /// A backend that reports a deadline must keep it current: a stale deadline is worse than
+    /// `None` because the loop would schedule against a moment that has already passed.
+    fn next_vsync_deadline(&self) -> Option<Instant> {
+        None
+    }
+
     /// Called immediately before the host presents a frame, so a compositor-backed backend can
     /// align its frame callback with the presentation (BLUE28 B28.42).
     ///
@@ -254,6 +276,33 @@ pub trait Platform: Send + Sync {
     /// `UIAccessibility.isReduceMotionEnabled`, Android `animator_duration_scale`, GTK's
     /// `gtk-enable-animations`.
     fn reduce_motion(&self) -> Option<bool> {
+        None
+    }
+
+    /// Whether the host asks for translucent materials to be reduced.
+    ///
+    /// `None` is the honest answer for a backend with no such system setting, and is distinct from
+    /// `Some(false)`: the latter says the setting was observed and is off. A caller that draws a
+    /// material should treat `Some(true)` as "use an opaque surface" and keep its existing
+    /// appearance for `None` rather than assuming the user turned transparency off.
+    ///
+    /// Source: macOS `NSWorkspace.accessibilityDisplayShouldReduceTransparency`. Other backends
+    /// answer `None` until they have a source.
+    fn reduce_transparency(&self) -> Option<bool> {
+        None
+    }
+
+    /// The host's current accent colour, when it offers a user-selectable one.
+    ///
+    /// # Why a colour rather than a name
+    ///
+    /// A backend's job is to report what the host resolved; naming an accent is a theme-layer
+    /// decision, and the set of names is not universal. The theme layer maps a reported colour to
+    /// its own named accents and records which one it used.
+    ///
+    /// `None` means the backend cannot report one — not the default blue. Source: macOS
+    /// `NSColor.controlAccentColor`.
+    fn accent_color(&self) -> Option<crate::core::Color> {
         None
     }
 

@@ -173,7 +173,7 @@ impl Platform for WaylandPlatform {
     /// # Why `dpi_scaling` stays `true`
     ///
     /// It is the one of the three with an override behind it: [`Platform::dpi_scale_factor`]
-    /// reads `GDK_SCALE` / `QT_SCALE_FACTOR` / `RUST_WIDGETS_DPI_SCALE` and returns a real
+    /// reads `GDK_SCALE` / `scale factor` / `RUST_WIDGETS_DPI_SCALE` and returns a real
     /// number. Its values come from the *environment* rather than from the compositor, which is
     /// weaker than the GTK backend's — but it is a measurement of the host, not a fabricated
     /// constant, so the flag is honest (principle #37 draws the line at a value that was never

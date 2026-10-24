@@ -10,6 +10,8 @@
 /// Native AppKit FFI wrappers — macOS/`objc2-macos` only (the file itself is
 /// `#![cfg]`-gated, but the declaration must not resolve elsewhere).
 #[cfg(all(target_os = "macos", feature = "macos"))]
+pub mod environment;
+#[cfg(all(target_os = "macos", feature = "macos"))]
 pub mod native;
 pub mod platform_impl;
 #[cfg(test)]

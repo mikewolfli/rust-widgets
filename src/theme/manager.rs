@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use super::{AppearanceMode, Borders, Colors, Fonts, Spacing, Theme, ThemeOverrides, WidgetRole};
+use super::types::{Material, SystemAccent};
+use super::{
+    AppearanceMode, Borders, Colors, Fonts, Motion, Spacing, Theme, ThemeOverrides, WidgetRole,
+};
 use crate::compat::atomic::{AtomicU64, Ordering};
 use crate::compat::{HashMap, Rc, Vec};
 use crate::core::{Color, Font};
@@ -31,6 +34,14 @@ fn note_theme_mutation() {
     crate::widget::runtime::arm_global_repaint();
 }
 
+/// The default duration of a faded theme switch, in milliseconds.
+///
+/// The host itself takes roughly two hundred milliseconds to fade between its light and dark
+/// appearances, and a transition much shorter than that reads as a cut while a longer one delays
+/// input that arrives during it. Hosts that want another tempo pass it to
+/// [`ThemeManager::set_theme_faded`].
+pub const THEME_CROSSFADE_DEFAULT_MS: u32 = 220;
+
 /// Theme registry and active-theme resolver.
 pub struct ThemeManager {
     /// Registered themes keyed by theme name.
@@ -58,6 +69,30 @@ pub struct ThemeManager {
     /// that applies across every theme, so switching from light to dark must not
     /// silently drop it.
     high_contrast: HighContrastMode,
+    /// An in-progress theme colour transition, if any.
+    ///
+    /// `None` outside [`ThemeManager::set_theme_faded`]'s window, which is why the ordinary
+    /// [`ThemeManager::set_theme`] path and every existing caller keep their instant behaviour.
+    crossfade: Option<ThemeCrossfade>,
+}
+
+/// One in-progress colour transition between two theme palettes.
+///
+/// # Why the source palette is copied rather than named
+///
+/// The transition can be re-targeted while it runs (a user toggling light/dark twice quickly).
+/// Naming a source *theme* would restart from that theme's palette and jump; capturing the
+/// palette actually on screen keeps the colours continuous, which is the whole point of the
+/// transition. The struct is deliberately small and private: the public surface is the
+/// [`ThemeManager`] methods below.
+#[derive(Debug, Clone)]
+struct ThemeCrossfade {
+    /// The palette the transition started from.
+    from: Colors,
+    /// How much of `duration_ms` has elapsed.
+    elapsed_ms: u32,
+    /// How long the transition runs. Never zero: a zero-duration request takes the instant path.
+    duration_ms: u32,
 }
 
 impl ThemeManager {
@@ -74,6 +109,7 @@ impl ThemeManager {
             current_theme,
             theme_changed: Signal::new(),
             high_contrast: HighContrastMode::None,
+            crossfade: None,
         }
     }
 
@@ -96,6 +132,57 @@ impl ThemeManager {
     /// The active high-contrast override.
     pub fn high_contrast(&self) -> HighContrastMode {
         self.high_contrast
+    }
+
+    /// Whether the host asked for translucent materials to be replaced with opaque surfaces.
+    ///
+    /// The fact comes from the environment snapshot, which is refreshed once per frame, so a
+    /// user who toggles the system setting sees the material degrade on the next paint rather
+    /// than after a restart. `false` covers both "the setting was observed and is off" and
+    /// "this backend has no such setting"; that collapse is a rendering decision and not a
+    /// claim about the user (see [`EnvironmentProvider::reduce_transparency`]).
+    ///
+    /// [`EnvironmentProvider::reduce_transparency`]: crate::style::environment::EnvironmentProvider::reduce_transparency
+    pub fn reduce_transparency(&self) -> bool {
+        crate::style::environment::environment().reduce_transparency
+    }
+
+    /// The layer a control must push to draw `material`, or `None` when there is nothing to
+    /// composite.
+    ///
+    /// The answer is `None` for [`Material::None`] and whenever the host asked to reduce
+    /// transparency; in the latter case the caller draws [`Self::material_surface`] instead. A
+    /// `Some` answer is `(blur_radius, tint)`, where `tint` is the palette colour and the weight
+    /// to lay over the blurred backdrop. The radius is a Gaussian's 2-sigma point, the same
+    /// convention `LayerEffect` uses, so a material can be handed to a `PushLayer` without
+    /// converting units.
+    ///
+    /// This is the widget/window-level request API: a control names the material it wants and
+    /// receives either a layer description or an opaque fill, and never has to read the
+    /// environment itself.
+    pub fn material_layer(&self, material: Material) -> Option<(u32, Option<(Color, f32)>)> {
+        if self.material_is_opaque(material) {
+            return None;
+        }
+        let radius = material.backdrop_blur_radius()?;
+        Some((radius, material.tint(&self.effective_colors())))
+    }
+
+    /// Whether `material` must be drawn as an opaque surface rather than a composed layer.
+    ///
+    /// True for [`Material::None`] (there is no material to draw) and whenever the host asked
+    /// to reduce transparency. A caller branches on this once and then draws either the layer
+    /// from [`Self::material_layer`] or the fill from [`Self::material_surface`].
+    pub fn material_is_opaque(&self, material: Material) -> bool {
+        material == Material::None || self.reduce_transparency()
+    }
+
+    /// The opaque fill that stands in for `material`.
+    ///
+    /// A material always resolves to a concrete palette colour, whether or not transparency is
+    /// reduced; a caller that degrades a material draws this and keeps the surface legible.
+    pub fn material_surface(&self, material: Material) -> Color {
+        material.opaque_surface(&self.effective_colors())
     }
 
     /// Names of every registered theme.
@@ -192,6 +279,81 @@ impl ThemeManager {
         }
     }
 
+    /// Re-reads the host accent and re-derives the active palette when it changed.
+    ///
+    /// # What this is for
+    ///
+    /// The macOS presets derive `primary` and `accent` (and the state table those two feed) from
+    /// the host accent *when the preset is built*. A user who changes the accent in System
+    /// Settings after that would otherwise keep the old action colours until the application
+    /// relaunches, even though every native window around it has already changed.
+    ///
+    /// # Why this is an explicit entry point, not a per-frame re-derivation
+    ///
+    /// The frame's environment snapshot already carries the accent as a *value*. Turning a
+    /// changed value into a new palette is the expensive half: it rewrites `primary` and `accent`
+    /// and rebuilds the theme's state table, and it invalidates the resolved-style cache. Doing
+    /// that on every paint would be work proportional to the state table for a fact that changes
+    /// a few times in a session, so the re-derivation is event-driven instead: the snapshot
+    /// supplies the fact at frame start, and this method is what acts on a change.
+    ///
+    /// On macOS the cocoa backend installs an `NSSystemColorsDidChangeNotification` observer
+    /// once (see `platform::macos::environment::install_system_color_observer`), and that
+    /// observer calls this method. Backends without a notification source call it from wherever
+    /// they learn the fact — for example after reading their own settings screen. No polling of
+    /// the accent for the purpose of re-deriving the palette was added to the frame loop.
+    ///
+    /// # Which themes are re-derived
+    ///
+    /// Only a theme that was **derived** from its recorded accent is touched: `primary` and
+    /// `accent` must both equal `theme.system_accent.color(...)` for the theme's appearance. The
+    /// neutral presets declare `SystemAccent::Blue` as a fact about their palette without using
+    /// it for their action colours, so they are left exactly as authored. Changing them to the
+    /// host accent would be the library overruling a palette the application chose.
+    ///
+    /// Returns whether the active palette changed. An unchanged accent, a host that reports no
+    /// accent, and a theme that did not derive from it all return `false` without arming a
+    /// paint, which is what makes repeated refreshes idempotent.
+    pub fn refresh_system_accent(&mut self) -> bool {
+        // Re-read the provider rather than the frame's cached snapshot: a notification can
+        // arrive between frames, and the snapshot would still describe the previous frame.
+        crate::style::environment::refresh_environment();
+        let Some(reported) = crate::style::environment::environment().system_accent else {
+            // No observation is not the same fact as the default blue; leave the palette alone.
+            return false;
+        };
+        let reported = SystemAccent::nearest(reported);
+
+        let Some(theme) = self.themes.get(&self.current_theme) else {
+            return false;
+        };
+        let dark = theme.appearance == AppearanceMode::Dark;
+        let recorded = theme.system_accent.color(dark);
+        let derived_from_recorded =
+            theme.colors.primary == recorded && theme.colors.accent == recorded;
+        if theme.system_accent == reported || !derived_from_recorded {
+            return false;
+        }
+
+        let accent = reported.color(dark);
+        let Some(theme) = self.themes.get_mut(&self.current_theme) else {
+            // The active name was resolved above; a missing entry here would mean the map
+            // changed without the name, which no mutator does. Answer honestly rather than
+            // fabricate a palette.
+            return false;
+        };
+        theme.system_accent = reported;
+        theme.colors.primary = accent;
+        theme.colors.accent = accent;
+        // The state table is derived from the palette, so replacing the action colours without
+        // re-deriving it would leave hover/pressed fills describing the old accent.
+        theme.overrides.styles = super::preset_states::preset_state_overrides(&theme.colors);
+
+        note_theme_mutation();
+        self.theme_changed.emit(());
+        true
+    }
+
     /// Loads and registers a theme from a JSON file path.
     #[cfg(not(alloc_frugal))]
     pub fn load_theme(&mut self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -269,6 +431,110 @@ impl ThemeManager {
             return true;
         }
         false
+    }
+
+    /// Selects active theme by name, crossfading the colour tokens over `duration_ms`.
+    ///
+    /// # What this is for
+    ///
+    /// [`Self::set_theme`] replaces the palette between two frames, which reads as a flash when
+    /// the two palettes are a light and a dark one. This variant records the palette that was on
+    /// screen and lets [`Self::tick_theme_crossfade`] move every token toward the target over the
+    /// requested duration; [`Self::effective_colors`] is the palette to paint with meanwhile.
+    ///
+    /// # Collapse rules
+    ///
+    /// * `duration_ms == 0`, an unknown name, or a switch to the theme already active — the
+    ///   ordinary instant path, exactly as [`Self::set_theme`].
+    /// * The user asked for reduced motion — the duration collapses to zero, so the end state is
+    ///   **reached** rather than skipped. This is the same fold
+    ///   [`crate::style::environment::effective_duration`] applies to every other transition.
+    ///
+    /// The source palette is captured from [`Self::effective_colors`], so re-targeting a running
+    /// transition continues from the colours currently on screen instead of jumping.
+    ///
+    /// # What moves, and what does not
+    ///
+    /// The blend covers the palette tokens ([`Colors`]). The state table in
+    /// `theme.overrides.styles` is derived from the *target* palette when a preset is built, so a
+    /// hover or pressed fill takes the target value while the base colours interpolate. That is the
+    /// boundary this state machine declares (`from: Colors`): interpolating the override table as
+    /// well would need a second copy of every token for the duration of the transition.
+    pub fn set_theme_faded(&mut self, name: &str, duration_ms: u32) -> bool {
+        if !self.themes.contains_key(name) {
+            // Leave any running transition alone: a rejected request must not cancel work the
+            // caller asked for earlier.
+            return false;
+        }
+        if name == self.current_theme {
+            self.crossfade = None;
+            return self.set_theme(name);
+        }
+        let from = self.effective_colors();
+        let reduced = crate::style::environment::environment().prefers_reduced_motion();
+        let duration_ms = if reduced { 0 } else { duration_ms };
+        // `set_theme` emits `theme_changed` and arms the repaint for both paths, so there is one
+        // place that says "the active theme changed" rather than two that could drift.
+        let changed = self.set_theme(name);
+        debug_assert!(changed, "the name was checked against the registry above");
+        self.crossfade = if duration_ms == 0 {
+            None
+        } else {
+            Some(ThemeCrossfade { from, elapsed_ms: 0, duration_ms })
+        };
+        changed
+    }
+
+    /// Selects a theme with the default 220 ms crossfade (`THEME_CROSSFADE_DEFAULT_MS`).
+    pub fn set_theme_faded_default(&mut self, name: &str) -> bool {
+        self.set_theme_faded(name, THEME_CROSSFADE_DEFAULT_MS)
+    }
+
+    /// The palette to paint with **this frame**.
+    ///
+    /// Outside a transition this is the active theme's palette. During one it is every token
+    /// blended from the palette that was on screen toward the target, eased with the theme's
+    /// motion curve, so a control that reads it moves continuously instead of in two steps.
+    ///
+    /// Returns [`Colors::default`] when no theme is active, which a caller-owned manager can
+    /// produce by selecting a name before registering anything; callers that can distinguish the
+    /// two ask [`Self::current_theme`] first.
+    pub fn effective_colors(&self) -> Colors {
+        let Some(theme) = self.current_theme() else {
+            return Colors::default();
+        };
+        let Some(crossfade) = &self.crossfade else {
+            return theme.colors.clone();
+        };
+        if crossfade.duration_ms == 0 {
+            return theme.colors.clone();
+        }
+        let progress = (crossfade.elapsed_ms as f32 / crossfade.duration_ms as f32).clamp(0.0, 1.0);
+        let eased = crate::style::EasingFunction::EaseOut.apply(progress);
+        crossfade.from.blend(&theme.colors, eased)
+    }
+
+    /// Advances a running theme crossfade by `delta_ms`.
+    ///
+    /// Returns `true` while another frame is still owed, `false` when no transition is running
+    /// (including the frame it finishes on). That is the same contract
+    /// [`crate::style::PropertyDriver::is_moving`] has, so a frame driver can treat both the same
+    /// way: keep scheduling while either says yes.
+    ///
+    /// Each step advances the theme revision, because the *effective* palette changed even though
+    /// the theme registry did not; without that, a cached resolved style would keep the frame's
+    /// first blend for the whole transition.
+    pub fn tick_theme_crossfade(&mut self, delta_ms: u32) -> bool {
+        let Some(crossfade) = self.crossfade.as_mut() else {
+            return false;
+        };
+        crossfade.elapsed_ms = crossfade.elapsed_ms.saturating_add(delta_ms);
+        let finished = crossfade.elapsed_ms >= crossfade.duration_ms;
+        if finished {
+            self.crossfade = None;
+        }
+        note_theme_mutation();
+        !finished
     }
 
     /// Returns currently active theme.
@@ -478,7 +744,11 @@ impl ThemeManager {
         // A shadow's hue, stated once; each level applies its own alpha (`Theme::elevation`), so the
         // ladder owns the opacity rather than this call site.
         let shadow = theme.elevation(surface.elevation, Color::BLACK);
-        let (background_color, text_color, border_color) = role_colors(theme, kind_name);
+        // Resolved from the **effective** palette, not the theme's stored one: during a faded
+        // theme switch the stored palette is already the target while the frame should show the
+        // blend. Off the transition path this is the same value the theme carries.
+        let colors = self.effective_colors();
+        let (background_color, text_color, border_color) = role_colors(&colors, kind_name);
 
         // The minimum touch target for this build's device class.
         //
@@ -564,36 +834,26 @@ impl ThemeManager {
     }
 }
 
-/// The theme colours for a widget name, by role.
+/// The palette colours for a widget name, by role.
 ///
 /// Split out so the classification and the colour choice are separate: the role
 /// table answers "what kind of visual treatment is this?" and this function
-/// answers "what does that treatment look like in this theme?".
-fn role_colors(theme: &Theme, class_name: &str) -> (Option<Color>, Option<Color>, Option<Color>) {
+/// answers "what does that treatment look like in this palette?".
+fn role_colors(colors: &Colors, class_name: &str) -> (Option<Color>, Option<Color>, Option<Color>) {
     // `contrast_color` is the crate's single contrast decision; see `Color`.
     match WidgetRole::for_kind_name(class_name) {
-        WidgetRole::Primary => (
-            Some(theme.colors.primary),
-            Some(theme.colors.primary.contrast_color()),
-            Some(theme.colors.primary),
-        ),
-        WidgetRole::Text => (None, Some(theme.colors.foreground), None),
-        WidgetRole::Input => (
-            Some(theme.colors.input_background()),
-            Some(theme.colors.foreground),
-            Some(theme.colors.secondary),
-        ),
-        WidgetRole::Accent => {
-            (Some(theme.colors.accent), Some(theme.colors.accent.contrast_color()), None)
+        WidgetRole::Primary => {
+            (Some(colors.primary), Some(colors.primary.contrast_color()), Some(colors.primary))
         }
-        WidgetRole::Choice => (
-            Some(theme.colors.input_background()),
-            Some(theme.colors.foreground),
-            Some(theme.colors.secondary),
-        ),
-        WidgetRole::Danger => {
-            (Some(theme.colors.error), Some(theme.colors.error.contrast_color()), None)
+        WidgetRole::Text => (None, Some(colors.foreground), None),
+        WidgetRole::Input => {
+            (Some(colors.input_background()), Some(colors.foreground), Some(colors.secondary))
         }
+        WidgetRole::Accent => (Some(colors.accent), Some(colors.accent.contrast_color()), None),
+        WidgetRole::Choice => {
+            (Some(colors.input_background()), Some(colors.foreground), Some(colors.secondary))
+        }
+        WidgetRole::Danger => (Some(colors.error), Some(colors.error.contrast_color()), None),
         WidgetRole::Surface => (
             // # Why a surface is not the window's own background
             //
@@ -609,9 +869,9 @@ fn role_colors(theme: &Theme, class_name: &str) -> (Option<Color>, Option<Color>
             // the window colour still gets it, because the default derivation of the role is a step
             // away from `background` — see its `default_surface_container_color` — and a theme may
             // override it to anything, including `background` itself.
-            Some(theme.colors.surface_container),
-            Some(theme.colors.foreground),
-            Some(theme.colors.secondary),
+            Some(colors.surface_container),
+            Some(colors.foreground),
+            Some(colors.secondary),
         ),
     }
 }
@@ -813,6 +1073,18 @@ pub fn global_theme_manager() -> MutexGuard<'static, ThemeManager> {
         // `register_theme` keys by the theme's own name, so re-seeding is
         // impossible and the dark preset cannot overwrite the light default.
         manager.register_theme(dark);
+        // Arm the platform's accent observer once, on the thread that creates the registry.
+        //
+        // # Why here
+        //
+        // The observer has to be installed exactly once per process and needs AppKit's main
+        // thread; the first access to the global registry is the earliest point at which both
+        // are known, and it is called from the UI thread of every desktop host. An installation
+        // that fails (off-main, or an AppKit without the notification) is not fatal: the
+        // observer function leaves the explicit `refresh_system_accent` entry point as the
+        // hook, which is the documented boundary for backends with no notification source.
+        #[cfg(all(target_os = "macos", feature = "cocoa-legacy"))]
+        crate::platform::macos::environment::install_system_color_observer();
         Mutex::new(manager)
     }))
 }
@@ -953,7 +1225,11 @@ thread_local! {
         const { crate::compat::RefCell::new(None) };
 }
 
-/// The active theme's colour palette, shared and cached for the current theme revision.
+/// The active palette in force for this frame, shared and cached for the current theme revision.
+///
+/// During a faded theme switch this is the blended palette
+/// ([`ThemeManager::effective_colors`]), not the target theme's stored palette, so widgets that
+/// read semantic or layer colours move with the resolved styles instead of jumping ahead of them.
 ///
 /// Returns `None` only when no theme is active, which the global manager never produces but a
 /// caller-owned [`ThemeManager`] can. The returned value is the cache entry itself, so a hit does
@@ -970,7 +1246,11 @@ pub fn active_palette_shared() -> Option<Rc<Colors>> {
         return Some(colors);
     }
 
-    let colors = Rc::new(global_theme_manager().current_theme()?.colors.clone());
+    let manager = global_theme_manager();
+    // An inactive theme is still `None`, not an empty palette: `effective_colors` has a default
+    // for callers that cannot express absence, but this accessor's contract is to report it.
+    manager.current_theme()?;
+    let colors = Rc::new(manager.effective_colors());
     ACTIVE_PALETTE_CACHE.with(|cache| {
         *cache.borrow_mut() = Some((revision, Rc::clone(&colors)));
     });
@@ -1200,6 +1480,12 @@ impl Default for Theme {
             // kinds: every role's bevel and elevation is flattened, in `role_base_style`, for every
             // kind. See that function for why the list had to go.
             flat_surfaces: true,
+            // The neutral presets are not derived from a host accent: their palettes state their
+            // own action colours. `Blue` is both the field's serde default and the accent macOS
+            // reports when the user has not chosen one, so an older theme file gains a value that
+            // describes it rather than a new one that changes it.
+            system_accent: SystemAccent::Blue,
+            metrics_profile: crate::widget::metrics::ControlMetricsProfile::Material,
             overrides: ThemeOverrides {
                 // The state table alone. The *surface* half of this preset is `flat_surfaces`, and
                 // moving it there is what stopped the preset having two half-answers to one
@@ -1296,6 +1582,8 @@ impl Theme {
             // rope (BLUE24 §10A.6 criterion 9). The **dimensional** style is a separate, opt-in
             // preset — see `Theme::dimensional`.
             flat_surfaces: true,
+            system_accent: SystemAccent::Blue,
+            metrics_profile: crate::widget::metrics::ControlMetricsProfile::Material,
             overrides: ThemeOverrides {
                 // The state table alone, for the reason [`Theme::default`] gives.
                 styles: crate::theme::preset_states::preset_state_overrides(&colors),
@@ -1371,21 +1659,42 @@ impl Theme {
     /// The tokens map Apple's semantic colours onto this crate's roles: `systemBlue` is
     /// `primary`, `label` / `secondaryLabel` are `foreground` / `secondary`, `separator` is
     /// `outline`, and the window/card/raised greys are the three surface roles. The corner
-    /// radius is AppKit's 6 px for push buttons and text fields; surfaces stay flat because
-    /// macOS controls are flat.
+    /// radius is 6 px for push buttons and text fields; surfaces stay flat because macOS
+    /// controls are flat.
+    ///
+    /// # Host facts this preset reads
+    ///
+    /// * **The accent.** The host's current accent colour is read when the preset is built and
+    ///   mapped to the nearest [`SystemAccent`]; `primary` and `accent` both take that colour,
+    ///   and the state table is re-derived from it. A host that cannot report an accent keeps
+    ///   `SystemAccent::Blue`, which is the value the preset states explicitly rather than a
+    ///   guess.
+    /// * **The metrics profile.** The preset declares `Macos`, so controls sized from the theme
+    ///   use the shorter, squarer desktop table rather than the shipped default.
+    /// * **The system UI face.** When the runtime face registry is available and the system UI
+    ///   font file exists, the preset names that family; otherwise it keeps the theme it was
+    ///   built from instead of claiming a face that is not installed.
     pub fn macos_light() -> Self {
-        let mut theme =
-            Theme { name: "macos-light".to_string(), flat_surfaces: true, ..Theme::default() };
+        let system_accent = host_system_accent();
+        let accent = system_accent.color(false);
+        let mut theme = Theme {
+            name: "macos-light".to_string(),
+            flat_surfaces: true,
+            system_accent,
+            metrics_profile: crate::widget::metrics::ControlMetricsProfile::Macos,
+            ..Theme::default()
+        };
         theme.appearance = AppearanceMode::Light;
         theme.borders = Borders { width: 1, radius: 6, shadow: true };
         theme.colors = Colors {
             background: Color::rgb(236, 236, 236),
             foreground: Color::rgb(29, 29, 31),
-            primary: Color::rgb(0, 122, 255),
+            primary: accent,
             secondary: Color::rgb(110, 110, 115),
-            // macOS uses the same system blue for controls and the accent; the default
-            // preset's orange accent made sliders and progress bars look like warnings.
-            accent: Color::rgb(0, 122, 255),
+            // The host accent drives controls and value indicators alike, so both roles take it;
+            // the default preset's orange accent made sliders and progress bars look like
+            // warnings.
+            accent,
             error: Color::rgb(255, 59, 48),
             warning: Color::rgb(255, 204, 0),
             success: Color::rgb(52, 199, 89),
@@ -1403,26 +1712,42 @@ impl Theme {
         // the palette without re-deriving it would leave those fills describing the replaced
         // colours — the same drift `Theme::dark` guards against.
         theme.overrides.styles = crate::theme::preset_states::preset_state_overrides(&theme.colors);
+        if let Some(family) = register_macos_system_ui_face() {
+            apply_system_ui_family(&mut theme.fonts, family);
+        }
+        // Native macOS motion is slightly slower than the Material tempo: 120 ms for a direct
+        // pointer reaction, 220 ms for a control's own state change, 300 ms for a larger
+        // transition. The values are the platform baseline; they do **not** replace
+        // `Motion::default()`, which stays the Material preset's 100/200/300.
+        theme.motion = Motion { fast: 120, normal: 220, slow: 300, ..Motion::default() };
         theme
     }
 
     /// A dark palette built from macOS system colours.
     ///
-    /// The dark counterpart of [`Theme::macos_light`], built from [`Theme::dark`] so fonts,
-    /// spacing and the state table are the dark preset's. `systemBlue` in dark mode is
-    /// `#0A84FF` (Apple lightens it so it stays legible on `#1E1E1E`), and the three greys are
-    /// the vibrancy layers a dark window, card and raised surface use.
+    /// The dark counterpart of [`Theme::macos_light`], built from [`Theme::dark`] so spacing and
+    /// the state-table shape are the dark preset's. `systemBlue` in dark mode is `#0A84FF` (Apple
+    /// lightens it so it stays legible on `#1E1E1E`), and the three greys are the vibrancy layers
+    /// a dark window, card and raised surface use. The accent and metrics profile are read the
+    /// same way as in [`Theme::macos_light`].
     pub fn macos_dark() -> Self {
-        let mut theme =
-            Theme { name: "macos-dark".to_string(), flat_surfaces: true, ..Theme::dark() };
+        let system_accent = host_system_accent();
+        let accent = system_accent.color(true);
+        let mut theme = Theme {
+            name: "macos-dark".to_string(),
+            flat_surfaces: true,
+            system_accent,
+            metrics_profile: crate::widget::metrics::ControlMetricsProfile::Macos,
+            ..Theme::dark()
+        };
         theme.appearance = AppearanceMode::Dark;
         theme.borders = Borders { width: 1, radius: 6, shadow: true };
         theme.colors = Colors {
             background: Color::rgb(30, 30, 30),
             foreground: Color::rgb(245, 245, 247),
-            primary: Color::rgb(10, 132, 255),
+            primary: accent,
             secondary: Color::rgb(152, 152, 157),
-            accent: Color::rgb(10, 132, 255),
+            accent,
             error: Color::rgb(255, 69, 58),
             warning: Color::rgb(255, 214, 10),
             success: Color::rgb(48, 209, 88),
@@ -1437,8 +1762,75 @@ impl Theme {
             on_inverse_surface: Color::rgb(29, 29, 31),
         };
         theme.overrides.styles = crate::theme::preset_states::preset_state_overrides(&theme.colors);
+        if let Some(family) = register_macos_system_ui_face() {
+            apply_system_ui_family(&mut theme.fonts, family);
+        }
+        theme.motion = Motion { fast: 120, normal: 220, slow: 300, ..Motion::default() };
         theme
     }
+}
+
+/// The accent the host reports, or the system default when it cannot be read.
+///
+/// The read goes through the environment snapshot rather than calling the platform directly, so a
+/// host that installs its own [`EnvironmentProvider`](crate::style::environment::EnvironmentProvider)
+/// (a settings screen, a test) can state the accent once and have every preset agree. The honest
+/// part is the `unwrap_or`: a backend with no accent concept (or a call from a thread that cannot
+/// ask) leaves the preset on `SystemAccent::Blue` rather than inventing a colour.
+fn host_system_accent() -> SystemAccent {
+    crate::style::environment::environment()
+        .system_accent
+        .map(SystemAccent::nearest)
+        .unwrap_or(SystemAccent::Blue)
+}
+
+/// Points every text token at the registered system UI family.
+///
+/// Only the text roles move: the monospace role keeps its own family, because the system UI face
+/// is a proportional face and code and aligned columns need a fixed advance. The font **descriptor**
+/// keeps the weight and italic flags [`Font::with_family`] carries over, but the face itself is the
+/// host's system UI font, which on a stock macOS is the variable `SFNS.ttf`; variable-axis
+/// instancing is not implemented here, so the shaper draws the face's default instance. Naming the
+/// family therefore does not claim that separate static weight faces exist.
+fn apply_system_ui_family(fonts: &mut Fonts, family: &str) {
+    fonts.regular = fonts.regular.with_family(family);
+    fonts.bold = fonts.bold.with_family(family);
+    fonts.italic = fonts.italic.with_family(family);
+    fonts.caption = fonts.caption.with_family(family);
+    fonts.body = fonts.body.with_family(family);
+    fonts.title = fonts.title.with_family(family);
+    fonts.headline = fonts.headline.with_family(family);
+    fonts.display = fonts.display.with_family(family);
+}
+
+/// Registers the host's system UI face and returns the family name it was registered under.
+///
+/// `None` is the honest answer on every path where the face is not available: the runtime face
+/// registry is compiled out, this is not macOS, the system file is absent, or the registry refused
+/// the bytes. The macOS presets check this **before** naming a family, so a preset never claims a
+/// face the renderer cannot draw.
+#[cfg(all(target_os = "macos", feature = "cocoa-legacy", feature = "runtime-fonts"))]
+fn register_macos_system_ui_face() -> Option<&'static str> {
+    crate::platform::macos::environment::register_system_ui_face()
+}
+
+#[cfg(all(
+    target_os = "macos",
+    not(feature = "cocoa-legacy"),
+    feature = "macos",
+    feature = "runtime-fonts"
+))]
+fn register_macos_system_ui_face() -> Option<&'static str> {
+    crate::platform::macos_objc2::native::register_system_ui_face()
+}
+
+#[cfg(not(all(
+    target_os = "macos",
+    any(feature = "cocoa-legacy", feature = "macos"),
+    feature = "runtime-fonts"
+)))]
+fn register_macos_system_ui_face() -> Option<&'static str> {
+    None
 }
 
 #[cfg(all(test, feature = "desktop", widgets_unstripped))]
@@ -1476,6 +1868,12 @@ mod environment_appearance_tests {
         }
         fn high_contrast(&self) -> bool {
             false
+        }
+        fn reduce_transparency(&self) -> bool {
+            false
+        }
+        fn system_accent(&self) -> Option<crate::core::Color> {
+            None
         }
         fn text_direction(&self) -> TextDirection {
             TextDirection::LeftToRight
@@ -1601,23 +1999,34 @@ mod macos_preset_tests {
     /// The presets state their appearance and the semantic roles the demos rely on.
     ///
     /// What this pins: the presets are the **light/dark pair** (`set_appearance` picks by the
-    /// declared appearance, not by luminance), the action colour is Apple's system blue in each
-    /// appearance, and surfaces are flat with the AppKit corner radius. A change to any of those
+    /// declared appearance, not by luminance), the action colour follows the host accent the preset
+    /// recorded, and surfaces are flat with the 6 px corner radius. A change to any of those
     /// silently re-skins three demos, so it is worth a failing test.
+    ///
+    /// The eight exact accent values are pinned in `theme::types`' own test; here the palette must
+    /// agree with whichever accent this host reported, so the assertion stays true on a machine
+    /// whose user picked a non-default accent.
     #[test]
     fn the_macos_presets_state_their_appearance_and_roles() {
+        let expected_accent = host_system_accent();
+
         let light = Theme::macos_light();
         assert_eq!(light.name, "macos-light");
         assert_eq!(light.appearance, AppearanceMode::Light);
-        assert_eq!(light.colors.primary, Color::rgb(0, 122, 255));
-        assert_eq!(light.colors.accent, light.colors.primary, "accent is system blue, not orange");
+        assert_eq!(light.system_accent, expected_accent);
+        assert_eq!(light.colors.primary, expected_accent.color(false));
+        assert_eq!(
+            light.colors.accent, light.colors.primary,
+            "accent is the host accent, not orange"
+        );
         assert!(light.flat_surfaces, "macOS controls are flat");
         assert_eq!(light.borders.radius, 6);
 
         let dark = Theme::macos_dark();
         assert_eq!(dark.name, "macos-dark");
         assert_eq!(dark.appearance, AppearanceMode::Dark);
-        assert_eq!(dark.colors.primary, Color::rgb(10, 132, 255));
+        assert_eq!(dark.system_accent, expected_accent);
+        assert_eq!(dark.colors.primary, expected_accent.color(true));
         assert_eq!(dark.colors.accent, dark.colors.primary);
         assert!(dark.flat_surfaces);
 
@@ -1633,6 +2042,203 @@ mod macos_preset_tests {
             dark.colors.primary,
             "the built-in dark preset must stay as it was"
         );
+    }
+
+    /// The presets select the desktop metrics table rather than inheriting the shipped default.
+    ///
+    /// The field is what a control consults for its size, so a preset that claimed macOS colours
+    /// while leaving the profile at `Material` would draw macOS colours in Material-sized controls.
+    #[test]
+    fn the_macos_presets_declare_the_macos_metrics_profile() {
+        use crate::widget::metrics::ControlMetricsProfile;
+        assert_eq!(Theme::macos_light().metrics_profile, ControlMetricsProfile::Macos);
+        assert_eq!(Theme::macos_dark().metrics_profile, ControlMetricsProfile::Macos);
+    }
+
+    /// A preset only names the system UI family when that face was actually registered.
+    ///
+    /// # The two halves
+    ///
+    /// On a host where the face is available, every text token must name the registered family,
+    /// and the monospace token must not (a proportional face breaks column alignment). On a host
+    /// where it is not — a non-macOS build, a build without the runtime face registry, or a system
+    /// image without the font file — the tokens must keep the compiled family rather than claim a
+    /// face that would render as a fallback.
+    #[test]
+    fn the_macos_preset_only_names_the_system_ui_face_when_it_was_registered() {
+        let registered = register_macos_system_ui_face();
+        let light = Theme::macos_light();
+        match registered {
+            Some(family) => {
+                assert_eq!(light.fonts.regular.family(), family);
+                assert_eq!(light.fonts.body.family(), family);
+                assert_eq!(light.fonts.title.family(), family);
+                assert_eq!(
+                    light.fonts.monospace.family(),
+                    "Courier New",
+                    "the monospace role keeps a fixed-advance face"
+                );
+            }
+            None => {
+                assert_eq!(
+                    light.fonts.regular.family(),
+                    "Arial",
+                    "without a registered face the preset keeps the compiled family"
+                );
+            }
+        }
+    }
+
+    /// The macOS presets state the native motion tempo, and the neutral presets keep theirs.
+    ///
+    /// The two values are deliberately different: 120/220/300 is the desktop rhythm, while
+    /// 100/200/300 is the preset every existing control was tuned against. Changing the
+    /// default triple would move every snapshot that contains an in-flight animation.
+    #[test]
+    fn the_macos_presets_state_the_native_motion_tokens() {
+        for theme in [Theme::macos_light(), Theme::macos_dark()] {
+            assert_eq!(theme.motion.fast, 120, "{} fast", theme.name);
+            assert_eq!(theme.motion.normal, 220, "{} normal", theme.name);
+            assert_eq!(theme.motion.slow, 300, "{} slow", theme.name);
+            assert_eq!(
+                theme.motion.curve,
+                crate::style::MotionCurve::Easing,
+                "the macOS presets keep the easing curve"
+            );
+        }
+        assert_eq!(Theme::default().motion.fast, 100, "the existing default is unchanged");
+        assert_eq!(Theme::dark().motion.normal, 200, "and so is the built-in dark preset");
+    }
+}
+
+#[cfg(all(test, feature = "desktop", widgets_unstripped))]
+mod theme_crossfade_tests {
+    use super::*;
+    use crate::style::environment::{
+        install_environment, uninstall_environment, EnvironmentProvider,
+    };
+    use crate::style::MotionPreference;
+    use alloc::boxed::Box;
+
+    /// A manager with the light default and a registered dark theme to switch to.
+    fn manager_with_dark() -> ThemeManager {
+        let mut manager = ThemeManager::new();
+        manager.register_theme(Theme::dark());
+        manager
+    }
+
+    /// A faded switch shows the source palette first, an in-between palette halfway, and the
+    /// target palette when it ends.
+    ///
+    /// The middle assertion is the one that matters: a transition that snapped from the source to
+    /// the target would pass a start/end test, so the test has to observe a frame whose colour is
+    /// neither endpoint. `EaseOut` moves more than half the distance by the halfway point, which is
+    /// why the tick sizes below are halves of the duration rather than a fixed frame length.
+    #[test]
+    fn a_faded_switch_passes_through_an_intermediate_colour() {
+        let _guard = crate::theme::theme_test_guard();
+        let mut manager = manager_with_dark();
+        let from = manager.effective_colors();
+        let to = Theme::dark().colors;
+
+        assert!(manager.set_theme_faded("dark", THEME_CROSSFADE_DEFAULT_MS));
+        assert_eq!(
+            manager.effective_colors().background,
+            from.background,
+            "the frame the switch was requested on still shows the source palette"
+        );
+
+        let half = THEME_CROSSFADE_DEFAULT_MS / 2;
+        assert!(manager.tick_theme_crossfade(half), "halfway through, another frame is owed");
+        let middle = manager.effective_colors();
+        assert_ne!(middle.background, from.background);
+        assert_ne!(middle.background, to.background);
+        assert_ne!(middle.foreground, from.foreground);
+        assert_ne!(middle.foreground, to.foreground);
+
+        assert!(
+            !manager.tick_theme_crossfade(THEME_CROSSFADE_DEFAULT_MS - half),
+            "the transition reports that it is finished"
+        );
+        assert_eq!(manager.effective_colors().background, to.background);
+        assert_eq!(manager.effective_colors().foreground, to.foreground);
+    }
+
+    /// Reduced motion collapses the faded switch to the instant path.
+    ///
+    /// The end state must be **reached** on the first frame, not skipped: the theme is already the
+    /// target, and no frame is owed afterwards.
+    #[test]
+    fn reduced_motion_makes_a_faded_switch_instant() {
+        struct Reduced;
+        impl EnvironmentProvider for Reduced {
+            fn motion_preference(&self) -> MotionPreference {
+                MotionPreference::ReduceMotion
+            }
+        }
+
+        let _guard = crate::theme::theme_test_guard();
+        let mut manager = manager_with_dark();
+        let previous = install_environment(Box::new(Reduced));
+
+        assert!(manager.set_theme_faded_default("dark"));
+        assert_eq!(
+            manager.effective_colors().background,
+            Theme::dark().colors.background,
+            "the target palette is in force immediately"
+        );
+        assert!(!manager.tick_theme_crossfade(16), "no transition is running");
+
+        drop(previous);
+        uninstall_environment();
+    }
+
+    /// The ordinary switch keeps its instant, single-frame behaviour.
+    ///
+    /// This is the compatibility half of the fade: every existing caller uses `set_theme`, and the
+    /// new state machine must not change what that call does.
+    #[test]
+    fn the_plain_switch_is_still_instant() {
+        let _guard = crate::theme::theme_test_guard();
+        let mut manager = manager_with_dark();
+        assert!(manager.set_theme("dark"));
+        assert_eq!(manager.effective_colors().background, Theme::dark().colors.background);
+        assert!(!manager.tick_theme_crossfade(16), "`set_theme` started no transition");
+    }
+
+    /// A theme file written before the new fields existed still loads.
+    ///
+    /// The file is produced by serialising a current theme and deleting the two keys, which is
+    /// exactly the shape an older build wrote. Both fields must take their documented defaults
+    /// rather than failing to deserialize.
+    #[test]
+    fn an_older_theme_file_loads_with_the_new_fields_at_their_defaults() {
+        use crate::widget::metrics::ControlMetricsProfile;
+
+        let mut value = serde_json::to_value(Theme::default()).expect("a theme serialises");
+        let object = value.as_object_mut().expect("a theme is a JSON object");
+        assert!(
+            object.remove("system_accent").is_some(),
+            "the fixture must exercise the old shape"
+        );
+        assert!(
+            object.remove("metrics_profile").is_some(),
+            "the fixture must exercise the old shape"
+        );
+
+        let legacy: Theme = serde_json::from_value(value).expect("an older file must still load");
+        assert_eq!(legacy.system_accent, SystemAccent::Blue);
+        assert_eq!(legacy.metrics_profile, ControlMetricsProfile::Material);
+    }
+
+    /// A freshly built theme states both new fields explicitly.
+    #[test]
+    fn a_new_theme_defaults_to_the_blue_accent_and_the_material_profile() {
+        use crate::widget::metrics::ControlMetricsProfile;
+
+        let theme = Theme::default();
+        assert_eq!(theme.system_accent, SystemAccent::Blue);
+        assert_eq!(theme.metrics_profile, ControlMetricsProfile::Material);
     }
 }
 
@@ -1655,5 +2261,158 @@ mod tests {
             before + 1,
             "a theme change must arm exactly one full repaint"
         );
+    }
+}
+
+#[cfg(test)]
+mod material_tests {
+    use super::*;
+    use crate::style::environment::{
+        install_environment, uninstall_environment, DefaultEnvironment, EnvironmentProvider,
+    };
+    use alloc::boxed::Box;
+
+    struct ReducedTransparency;
+    impl EnvironmentProvider for ReducedTransparency {
+        fn reduce_transparency(&self) -> bool {
+            true
+        }
+    }
+
+    /// A material asks for a blur radius and a palette-derived tint.
+    #[test]
+    fn a_material_requests_a_blur_and_a_tint() {
+        let previous = install_environment(Box::new(DefaultEnvironment));
+        let manager = ThemeManager::new();
+
+        let (radius, tint) =
+            manager.material_layer(Material::Sidebar).expect("a sidebar asks for a layer");
+        assert_eq!(radius, Material::Sidebar.backdrop_blur_radius().unwrap());
+        let (colour, weight) = tint.expect("the sidebar is tinted");
+        assert_eq!(colour, manager.effective_colors().surface_container);
+        assert!(weight > 0.0 && weight <= 1.0, "the tint weight is a fraction: {weight}");
+        assert!(manager.material_layer(Material::None).is_none(), "None is the identity");
+
+        drop(previous);
+        uninstall_environment();
+    }
+
+    /// Reduced transparency removes the layer and gives the caller an opaque palette colour.
+    #[test]
+    fn reduced_transparency_degrades_a_material_to_an_opaque_surface() {
+        let previous = install_environment(Box::new(ReducedTransparency));
+        let manager = ThemeManager::new();
+
+        assert!(manager.reduce_transparency());
+        assert!(
+            manager.material_is_opaque(Material::WindowChrome),
+            "a host that reduced transparency gets an opaque surface"
+        );
+        assert!(
+            manager.material_layer(Material::WindowChrome).is_none(),
+            "a host that reduced transparency must not get a backdrop layer"
+        );
+        let surface = manager.material_surface(Material::Sidebar);
+        assert_eq!(surface, manager.effective_colors().surface_container);
+        assert_eq!(surface.a, 255, "the degraded surface is opaque");
+
+        drop(previous);
+        uninstall_environment();
+    }
+
+    /// A theme file written before `Motion::curve` existed still loads, and the missing field
+    /// means `Easing` rather than a spring.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_legacy_motion_block_defaults_to_the_easing_curve() {
+        let motion: Motion =
+            serde_json::from_str(r#"{"fast":1,"normal":2,"slow":3,"easing":"EaseOut"}"#)
+                .expect("the legacy block must load");
+        assert_eq!(motion.curve, crate::style::MotionCurve::Easing);
+        assert_eq!(Motion::default().curve, crate::style::MotionCurve::Easing);
+    }
+}
+
+#[cfg(test)]
+mod system_accent_refresh_tests {
+    use super::*;
+    use crate::style::environment::{
+        install_environment, uninstall_environment, DefaultEnvironment, EnvironmentProvider,
+    };
+    use alloc::boxed::Box;
+
+    /// A provider whose only fact is the accent.
+    struct Accent(Option<Color>);
+
+    impl EnvironmentProvider for Accent {
+        fn system_accent(&self) -> Option<Color> {
+            self.0
+        }
+    }
+
+    /// A changed host accent re-derives the active preset once, and a second refresh is a no-op.
+    #[test]
+    fn a_changed_system_accent_rederives_the_active_palette_once() {
+        // Build the preset while the host reports no accent, so it records `Blue` — the value
+        // `Theme::macos_light` uses when the device cannot be asked.
+        let neutral = install_environment(Box::new(DefaultEnvironment));
+        let theme = Theme::macos_light();
+        assert_eq!(theme.system_accent, SystemAccent::Blue);
+        assert_eq!(theme.colors.primary, SystemAccent::Blue.color(false));
+
+        // The user then picks Purple. `install_environment` refreshes the snapshot, so the
+        // preset's recorded accent and the host's fact now disagree.
+        let previous =
+            install_environment(Box::new(Accent(Some(SystemAccent::Purple.color(false)))));
+
+        let mut manager = ThemeManager::new();
+        manager.register_theme(theme);
+        assert!(manager.set_theme("macos-light"));
+        assert_eq!(manager.effective_colors().primary, SystemAccent::Blue.color(false));
+
+        assert!(
+            manager.refresh_system_accent(),
+            "a changed accent must re-derive the palette of a theme derived from it"
+        );
+        assert_eq!(
+            manager.current_theme().expect("the active theme is registered").system_accent,
+            SystemAccent::Purple,
+            "the theme records the accent it was re-derived from"
+        );
+        assert_eq!(manager.effective_colors().primary, SystemAccent::Purple.color(false));
+        assert_eq!(manager.effective_colors().accent, SystemAccent::Purple.color(false));
+
+        let settled = manager.effective_colors();
+        assert!(
+            !manager.refresh_system_accent(),
+            "a refresh with no accent change must not re-derive again"
+        );
+        assert_eq!(manager.effective_colors().primary, settled.primary);
+        assert_eq!(manager.effective_colors().accent, settled.accent);
+
+        drop(previous);
+        drop(neutral);
+        uninstall_environment();
+    }
+
+    /// A palette that states its own action colours is not overruled by the host accent.
+    #[test]
+    fn an_accent_refresh_leaves_a_neutral_palette_alone() {
+        let neutral = install_environment(Box::new(DefaultEnvironment));
+        let previous =
+            install_environment(Box::new(Accent(Some(SystemAccent::Purple.color(false)))));
+
+        let mut manager = ThemeManager::new();
+        let before = manager.effective_colors();
+        assert!(
+            !manager.refresh_system_accent(),
+            "the neutral preset did not derive its action colours from the host accent"
+        );
+        assert_eq!(manager.effective_colors().primary, before.primary);
+        assert_eq!(manager.effective_colors().accent, before.accent);
+
+        drop(previous);
+        drop(neutral);
+        uninstall_environment();
     }
 }

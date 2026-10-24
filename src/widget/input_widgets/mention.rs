@@ -891,7 +891,11 @@ impl EventHandler for Mention {
             // Typing goes to the field, and a trigger character opens the popup as a
             // side effect of `refresh` — which is what makes the trigger model work
             // without a separate "detect @" step.
-            Event::TextInput { text }
+            //
+            // `ImeCommit` is the CJK path: an IME commits the composed string as one
+            // event, not as `TextInput`, so without this arm every composed character
+            // was dropped. Both spellings share one insertion path and one guard.
+            Event::TextInput { text } | Event::ImeCommit { text }
                 if text.chars().all(|ch| !ch.is_control()) && !text.is_empty() =>
             {
                 for ch in text.chars() {
@@ -1293,6 +1297,20 @@ mod tests {
         m.set_enabled(false);
         m.handle_event(&Event::TextInput { text: "@".to_string() });
         assert_eq!(m.text(), "");
+    }
+
+    #[test]
+    fn mention_ime_commit_inserts_text_and_opens_the_popup() {
+        let mut m = mention();
+        m.handle_event(&Event::ime_commit("\u{4f60}\u{597d}"));
+        assert_eq!(m.text(), "\u{4f60}\u{597d}", "IME commits are not dropped");
+
+        // The trigger opens a token only at the start of the field or after whitespace
+        // (an embedded `foo@bar` is an email address, not a mention). The IME path must
+        // therefore reach the same `refresh` rule as typed input.
+        m.handle_event(&Event::ime_commit(" @"));
+        assert_eq!(m.text(), "\u{4f60}\u{597d} @");
+        assert!(m.is_popup_open(), "the trigger character still opens the popup");
     }
 
     #[test]

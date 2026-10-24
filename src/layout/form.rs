@@ -9,7 +9,7 @@ use crate::style::EdgeOffsets;
 
 /// How a form decides the width of its field column.
 ///
-/// The equivalent of Qt's `QFormLayout::FieldGrowthPolicy`. The default keeps this layout's
+/// The equivalent of the reference toolkit's `form layout::FieldGrowthPolicy`. The default keeps this layout's
 /// historical behaviour (the field takes whatever the label column left), so introducing the
 /// enum changes no existing document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -28,7 +28,7 @@ pub enum FieldGrowthPolicy {
 
 /// When a form puts its field on a row of its own.
 ///
-/// The equivalent of Qt's `QFormLayout::RowWrapPolicy`. The default is `DontWrapRows`, which
+/// The equivalent of the reference toolkit's `form layout::RowWrapPolicy`. The default is `DontWrapRows`, which
 /// is what this layout has always done.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RowWrapPolicy {

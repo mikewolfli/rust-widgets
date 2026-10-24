@@ -100,8 +100,12 @@ fn legend_truncates_long_labels() {
     let truncated_entry = context
         .commands
         .iter()
-        .find(|cmd| cmd.starts_with("text:this-is-a-very-") && cmd.contains("...@"));
-    assert!(truncated_entry.is_some());
+        .find(|cmd| cmd.starts_with("text:this-is-a-very-") && cmd.contains('\u{2026}'));
+    assert!(
+        truncated_entry.is_some(),
+        "the long legend label must be elided: {:?}",
+        context.commands
+    );
     assert!(!context
         .commands
         .iter()

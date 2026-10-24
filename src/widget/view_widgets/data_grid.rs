@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::compat::Rc;
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
-use crate::event::Event;
+use crate::event::{Event, WheelScroll};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
@@ -363,6 +363,12 @@ impl DataGrid {
     }
 
     /// Returns `(row_start, row_len, col_start, col_len)` for visible+overscan window.
+    ///
+    /// When the grid has frozen leading columns, the fetch starts at column `0` and the
+    /// returned `col_len` reaches from there through the scrolling window. Frozen columns are
+    /// painted outside the scroll offset (`cell_rect`), so they cannot be omitted from the
+    /// fetched matrix: the draw pass would then have no values to repaint over the scrolling
+    /// cells. With no frozen columns the window is exactly the scrolling window it always was.
     pub fn visible_window(&self) -> (usize, usize, usize, usize) {
         let row_count = self.row_count();
         let column_count = self.column_count();
@@ -381,8 +387,14 @@ impl DataGrid {
 
         let row_end = row_start.saturating_add(row_fetch).min(row_count);
         let col_end = col_start.saturating_add(col_fetch).min(column_count);
+        // A frozen prefix is part of what the draw pass needs even when it lies left of the
+        // scrolling window. Reaching all the way back to column 0 also keeps the fetched
+        // matrix contiguous, which is what `fetch_window` returns and what the cached window
+        // is keyed on.
+        let col_start = if self.frozen_columns > 0 { 0 } else { col_start };
+        let col_len = col_end.saturating_sub(col_start);
 
-        (row_start, row_end.saturating_sub(row_start), col_start, col_end.saturating_sub(col_start))
+        (row_start, row_end.saturating_sub(row_start), col_start, col_len)
     }
 
     /// The projected row/column the fetch window starts at, i.e. the scroll position pulled back by
@@ -552,13 +564,55 @@ impl DataGrid {
         // `scroll_column`. Before this the row was used raw, so the first window row always painted
         // at the top of the grid regardless of scroll (D09-VIEW-01).
         let row = row.saturating_sub(self.scroll_row);
-        let column = column.saturating_sub(self.scroll_column);
+        // A frozen column is pinned to the leading edge by its **own** index. Applying
+        // `scroll_column` to it as well made the frozen prefix scroll away with the rest of the
+        // grid, which is why the only remaining evidence of it was the divider line.
+        let column = if column < self.frozen_columns {
+            column
+        } else {
+            column.saturating_sub(self.scroll_column)
+        };
         Rect::new(
             cells.x + column as i32 * self.column_width as i32,
             cells.y + row as i32 * self.row_height as i32,
             self.column_width,
             self.row_height,
         )
+    }
+
+    /// Paints one cell's border and value.
+    ///
+    /// Extracted so the scrolling pass and the frozen repaint use the **same** ink, font and
+    /// alignment; two copies would let the pinned band drift away from the cells it sits over.
+    fn paint_cell(
+        &self,
+        context: &mut RenderContext,
+        cell_rect: Rect,
+        value: Option<&String>,
+        cell_border: Color,
+        ink: Color,
+    ) {
+        context.draw_rect(cell_rect, cell_border);
+        let Some(text) = value else {
+            return;
+        };
+        // Guarded on the text being non-empty: an unguarded draw of an empty cell emits
+        // `<text …></text>`, an element the rasteriser never produces.
+        if text.is_empty() {
+            return;
+        }
+        // The cell is the band. Centring by handing `y + row_h / 2` to `draw_text` put the glyph
+        // box's *top* edge on the cell's middle line, so every value sat half a line low;
+        // `text_line` derives the real centred box. Fitting as well keeps a long value inside its
+        // own column instead of bleeding right.
+        let font = effective_font(self.style());
+        context.draw_text_fitted_cow(
+            context.text_line(cell_rect, font),
+            text,
+            font,
+            ink,
+            HorizontalAlignment::Left,
+        );
     }
 
     /// The projected `(row, column)` a point falls in, or `None` when it misses every cell
@@ -580,9 +634,15 @@ impl DataGrid {
         if dx < 0 || dy < 0 {
             return None;
         }
-        // Both axes carry the scroll offset, matching `cell_rect` (D09-VIEW-01), so the projected
-        // cell a point names is the cell painted there.
-        let column = self.scroll_column + dx as usize / self.column_width.max(1) as usize;
+        // The frozen band is mapped first: it is painted at fixed x positions, so a point over
+        // it names one of the leading columns regardless of the scroll offset. Only a point to
+        // its right is a scrolling column, where the scroll offset is added back.
+        let frozen_width = self.frozen_columns as i32 * self.column_width as i32;
+        let column = if dx < frozen_width {
+            dx as usize / self.column_width.max(1) as usize
+        } else {
+            self.scroll_column + dx as usize / self.column_width.max(1) as usize
+        };
         let row = self.scroll_row + dy as usize / self.row_height.max(1) as usize;
         if column >= self.column_count() || row >= self.row_count() {
             return None;
@@ -889,28 +949,45 @@ impl Draw for DataGrid {
             }
 
             for (col_idx, cell) in row.iter().enumerate() {
-                let cell_rect = self.cell_rect(row_origin + row_idx, col_origin + col_idx);
+                let global_column = col_origin + col_idx;
+                // Frozen columns are painted by the overdraw pass below, after every scrolling
+                // cell. Skipping them here is what makes that pass the single authority for the
+                // pinned band: painting them twice would also lay their text down twice.
+                if global_column < self.frozen_columns {
+                    continue;
+                }
+                let cell_rect = self.cell_rect(row_origin + row_idx, global_column);
                 if cell_rect.x >= cells_right {
                     break;
                 }
-                context.draw_rect(cell_rect, cell_border);
-                if let Some(text) = cell {
-                    // Guarded on the text being non-empty: an unguarded draw of an empty cell
-                    // emits `<text …></text>`, an element the rasteriser never produces.
-                    if !text.is_empty() {
-                        // The cell is the band. Centring by handing `y + row_h / 2` to
-                        // `draw_text` put the glyph box's *top* edge on the cell's middle
-                        // line, so every value sat half a line low; `text_line` derives the
-                        // real centred box. Fitting as well keeps a long value inside its own
-                        // column instead of bleeding right.
-                        context.draw_text_fitted_cow(
-                            context.text_line(cell_rect, effective_font(self.style())),
-                            text,
-                            effective_font(self.style()),
-                            ink,
-                            HorizontalAlignment::Left,
-                        );
+                self.paint_cell(context, cell_rect, cell.as_ref(), cell_border, ink);
+            }
+        }
+
+        // ── Frozen columns, repainted over the scrolling cells ──
+        //
+        // The render layer has no clip primitive (there is no `clip_rect` in `src/render`), so
+        // the compatible way to pin a leading band is the same one the rest of the family uses:
+        // paint the scrolling grid first and overdraw the frozen cells on top of it. Their boxes
+        // come from `cell_rect`, which ignores `scroll_column` for a frozen column, so this pass
+        // is also the proof that the pinned band and the hit test agree.
+        if self.frozen_columns > 0 {
+            for (row_idx, row) in rows.iter().enumerate() {
+                let global_row = row_origin + row_idx;
+                if self.cell_rect(global_row, 0).y >= cells_bottom {
+                    break;
+                }
+                for column in 0..self.frozen_columns {
+                    let local = column.saturating_sub(col_origin);
+                    let cell_rect = self.cell_rect(global_row, column);
+                    if cell_rect.x >= cells_right {
+                        break;
                     }
+                    // `draw_rect` is a stroke, so the scrolling cell's ink underneath must be
+                    // covered with the surface before this cell's own border and value go down.
+                    context.fill_rect(cell_rect, surface);
+                    let value = row.get(local).and_then(|cell| cell.as_ref());
+                    self.paint_cell(context, cell_rect, value, cell_border, ink);
                 }
             }
         }
@@ -938,6 +1015,9 @@ impl Draw for DataGrid {
             context.draw_rect_stroke(box_rect, accent, 2);
         }
 
+        // The divider is the frozen band's **right edge**. That is the same arithmetic
+        // `cell_rect` gives a frozen column's last trailing pixel, so the rule and the pinned
+        // cells cannot disagree about where the band ends.
         if self.frozen_columns > 0 {
             let split_x = cells.x + (self.frozen_columns as i32) * self.column_width as i32;
             if split_x > cells.x {
@@ -960,13 +1040,16 @@ impl crate::event::EventHandler for DataGrid {
             return;
         }
 
-        if let Event::Wheel { delta, .. } = event {
-            let lines = ((delta.y.abs() / 120).max(1)) as isize;
-            if delta.y < 0 {
-                let next = self.scroll_row.saturating_add(lines as usize);
+        if let Event::Wheel { delta, modifiers } = event {
+            // One notch is one row. `WheelScroll` owns the notch normalization, so a
+            // legacy 120-unit delta and a modern notch delta both mean a single row.
+            let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
+            let lines = scroll.lines_y.unsigned_abs() as usize;
+            if scroll.lines_y < 0 {
+                let next = self.scroll_row.saturating_add(lines);
                 self.set_scroll_row(next);
-            } else if delta.y > 0 {
-                let up = self.scroll_row.saturating_sub(lines as usize);
+            } else if scroll.lines_y > 0 {
+                let up = self.scroll_row.saturating_sub(lines);
                 self.set_scroll_row(up);
             }
         }
@@ -1182,6 +1265,111 @@ mod tests {
             grid.cell_at(Point::new(first.x - 1, probe.y)),
             None,
             "the frame margin is not a cell"
+        );
+    }
+
+    /// A frozen column keeps its leading position when the grid scrolls horizontally.
+    ///
+    /// `cell_rect` used to apply `scroll_column` to every column, so the "frozen" prefix slid
+    /// away with the rest of the grid and the only trace of the feature was the divider line.
+    /// The pinned band is now a fixed function of the column index; the scrolling columns on
+    /// its right still travel the scroll.
+    #[test]
+    fn frozen_columns_ignore_horizontal_scroll() {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 400, 300));
+        grid.set_data_source(Arc::new(StaticSource {
+            rows: 4,
+            cols: 8,
+            data: (0..4).map(|r| (0..8).map(|c| format!("{r}:{c}")).collect()).collect(),
+        }));
+        grid.set_frozen_columns(2);
+
+        let cells = grid.cells_box();
+        let first = grid.cell_rect(0, 0);
+        let second = grid.cell_rect(0, 1);
+        assert_eq!(first.x, cells.x);
+        assert_eq!(second.x, cells.x + grid.column_width as i32);
+
+        grid.set_scroll_column(5);
+
+        assert_eq!(grid.cell_rect(0, 0), first, "the frozen column must not travel the scroll");
+        assert_eq!(grid.cell_rect(0, 1), second, "nor the next frozen column");
+        // Rows still scroll: only the column offset is pinned.
+        assert_eq!(grid.cell_rect(2, 0).y, cells.y + 2 * grid.row_height as i32);
+
+        // A point over the frozen band names a frozen column, not the scrolling column the old
+        // inverse arithmetic would have named.
+        let frozen_centre =
+            Point::new(second.x + second.width as i32 / 2, second.y + second.height as i32 / 2);
+        assert_eq!(grid.cell_at(frozen_centre), Some((0, 1)));
+
+        // To the right of the band the original scroll mapping is unchanged.
+        let scrolling = grid.cell_rect(2, 7);
+        assert_eq!(scrolling.x, cells.x + 2 * grid.column_width as i32);
+        let scrolling_centre = Point::new(
+            scrolling.x + scrolling.width as i32 / 2,
+            scrolling.y + scrolling.height as i32 / 2,
+        );
+        assert_eq!(grid.cell_at(scrolling_centre), Some((2, 7)));
+
+        // The fetched window must include the frozen prefix, or the draw pass would have no
+        // values to repaint over the scrolling cells.
+        assert_eq!(grid.visible_window().2, 0);
+    }
+
+    /// A press inside the frozen band selects the frozen cell it is over.
+    #[test]
+    fn a_click_in_the_frozen_band_selects_the_frozen_column() {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 400, 300));
+        grid.set_data_source(Arc::new(StaticSource {
+            rows: 4,
+            cols: 8,
+            data: (0..4).map(|r| (0..8).map(|c| format!("{r}:{c}")).collect()).collect(),
+        }));
+        grid.set_frozen_columns(2);
+        grid.set_scroll_column(5);
+
+        let target = grid.cell_rect(3, 1);
+        let centre =
+            Point::new(target.x + target.width as i32 / 2, target.y + target.height as i32 / 2);
+        grid.handle_event(&Event::MousePress { pos: centre, button: 1, modifiers: 0 });
+
+        assert_eq!(grid.selection(), Some((3, 1)));
+    }
+
+    /// The frozen band is **painted** at the leading edge after a horizontal scroll.
+    ///
+    /// The model fix alone is not enough: with the fetch window starting at `scroll - overscan`,
+    /// a frozen column that lies before it never reaches the draw pass at all. Only the frozen
+    /// cell is made non-empty, so exactly one text run must appear — and it must land in the
+    /// leading column.
+    #[test]
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn a_frozen_column_is_painted_at_the_leading_edge_after_scrolling() {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 400, 300));
+        let mut data: Vec<Vec<String>> = vec![vec![String::new(); 8]; 4];
+        data[1][0] = "P".to_string();
+        grid.set_data_source(Arc::new(StaticSource { rows: 4, cols: 8, data }));
+        grid.set_frozen_columns(2);
+        grid.set_scroll_column(5);
+
+        let rect = grid.geometry();
+        let svg = crate::widget::svg::render_widget_to_svg(&mut grid, rect);
+        let boxes = crate::widget::svg::text_ink_boxes(&svg);
+        assert_eq!(
+            boxes.len(),
+            1,
+            "only the frozen cell is non-empty; a missing frozen window paints nothing"
+        );
+        let frozen = grid.cell_rect(1, 0);
+        let (bx, by, _, _) = boxes[0];
+        assert!(
+            bx >= frozen.x && bx < frozen.x + frozen.width as i32,
+            "the frozen value must land in the leading column ({frozen:?}), got x={bx}"
+        );
+        assert!(
+            by >= frozen.y && by < frozen.y + frozen.height as i32,
+            "and in its own row ({frozen:?}), got y={by}"
         );
     }
 
@@ -1660,5 +1848,22 @@ mod tests {
         // Reaching the assertions means neither capacity calculation panicked.
         assert_eq!(grid.visible_row_capacity(), 1);
         assert_eq!(grid.visible_column_capacity(), 1);
+    }
+
+    /// One wheel notch scrolls one row, whether the host sends the documented
+    /// notch delta or the legacy 120-unit tick.
+    #[test]
+    fn wheel_scrolls_one_row_per_notch() {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 400, 300));
+        grid.set_data_source(Arc::new(StaticSource { rows: 10, cols: 2, data: vec![] }));
+
+        grid.handle_event(&Event::wheel(0, -120, 0));
+        assert_eq!(grid.scroll_row(), 1, "one legacy notch is one row");
+
+        grid.handle_event(&Event::wheel(0, -1, 0));
+        assert_eq!(grid.scroll_row(), 2, "one documented notch is one row");
+
+        grid.handle_event(&Event::wheel(0, 120, 0));
+        assert_eq!(grid.scroll_row(), 1, "the opposite notch scrolls back one row");
     }
 }

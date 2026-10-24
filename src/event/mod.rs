@@ -35,6 +35,9 @@ pub mod timer;
 #[cfg(feature = "touch")]
 pub mod translator;
 pub mod types;
+/// Wheel-event normalization: converts an [`Event::Wheel`](types::Event::Wheel)
+/// delta into signed line counts under one shared unit rule.
+pub mod wheel;
 // Re-export public types
 pub use capture::PointerCaptureManager;
 pub use dnd::{DragPayload, DragSession, DropEffect, DropTarget};
@@ -53,6 +56,7 @@ pub use timer::TimerManager;
 /// mean "secondary button".
 pub use types::mouse_button;
 pub use types::{Event, EventHandler, EventPriority, FocusReason, GestureClass, TouchId};
+pub use wheel::WheelScroll;
 // Re-export queue utilities. `BlockingQueue` needs the mutex/condvar the alloc-frugal profile
 // does not compile, so it is exported only where it exists.
 #[cfg(not(alloc_frugal))]

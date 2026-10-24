@@ -972,7 +972,7 @@ impl JsonLoader {
             "listview" => Ok(Box::new(ListView::new(geometry))),
             "scrollarea" => {
                 let mut sa = ScrollArea::new(geometry);
-                // `h_policy` / `v_policy` are loader-owned: the document uses Qt's policy words
+                // `h_policy` / `v_policy` are loader-owned: the document uses the reference toolkit's policy words
                 // and the control publishes the setter names instead.
                 if let Some(policy) = obj.get("h_policy").and_then(|v| v.as_str()) {
                     sa.set_horizontal_scroll_bar_policy(match policy {

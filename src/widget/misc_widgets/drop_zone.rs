@@ -164,11 +164,10 @@ impl DropZone {
     /// payload can tell them apart. A caller that only knows a pointer is inside should pass the
     /// payload it is carrying and let this decide, instead of presetting the answer.
     pub fn report_hover(&mut self, payload: &DragPayload) {
-        self.set_state(if self.accepts(payload) {
-            DropZoneState::Accepted
-        } else {
-            DropZoneState::Rejected
-        });
+        // One implementation, reachable both as an inherent method and through `dyn DropTarget`.
+        // The explicit qualification selects the trait's method, not this inherent one, so the
+        // call cannot recurse.
+        <Self as DropTarget>::report_hover(self, payload);
     }
 
     /// Reports that the payload carried by the drag changed while still over the zone.
@@ -212,6 +211,24 @@ impl DropTarget for DropZone {
     fn preview_rect(&self, _payload: &DragPayload, _pos: Point) -> Option<Rect> {
         Some(self.geometry())
     }
+
+    /// Turns the runtime's hover report into the zone's own feedback state.
+    ///
+    /// The inherent [`DropZone::report_hover`] is the same operation; this impl is what
+    /// lets the coordinator call it through `dyn DropTarget` without downcasting to the
+    /// concrete control.
+    fn report_hover(&mut self, payload: &DragPayload) {
+        self.set_state(if self.accepts(payload) {
+            DropZoneState::Accepted
+        } else {
+            DropZoneState::Rejected
+        });
+    }
+
+    /// Clears the highlight when the drag leaves without dropping.
+    fn report_leave(&mut self) {
+        self.clear_hover();
+    }
 }
 
 impl Widget for DropZone {
@@ -228,6 +245,10 @@ impl Widget for DropZone {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(200, 120)
+    }
+    /// Opts the zone into the runtime's drag coordinator as a drop target.
+    fn drop_target_mut(&mut self) -> Option<&mut dyn DropTarget> {
+        Some(self)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

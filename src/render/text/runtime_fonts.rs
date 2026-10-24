@@ -78,7 +78,7 @@ static REGISTRY: Mutex<Registry> = Mutex::new(Registry::new());
 /// two lookups. One lock for both sides keeps those assertions independent of scheduling; it is
 /// test-only and changes no production behaviour.
 #[cfg(test)]
-pub(crate) fn test_lock() -> crate::compat::MutexGuard<'static, ()> {
+pub(crate) fn runtime_fonts_test_guard() -> crate::compat::MutexGuard<'static, ()> {
     static LOCK: crate::compat::OnceLock<Mutex<()>> = crate::compat::OnceLock::new();
     crate::compat::lock(LOCK.get_or_init(|| Mutex::new(())))
 }

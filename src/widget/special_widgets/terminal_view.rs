@@ -3,7 +3,10 @@
 
 //! TerminalView widget.
 
+#[cfg(test)]
+use crate::core::Point;
 use crate::core::{Color, HorizontalAlignment, Rect};
+use crate::event::wheel::WheelScroll;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -16,6 +19,11 @@ use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+/// The blink period and the output row estimate both need a line height; the draw path measures
+/// the real face, while the input path needs a constant that is available without a render
+/// context. They agree at the default body font size.
+const OUTPUT_LINE_HEIGHT: i32 = 14;
+
 /// Terminal-like text view with input line and command history.
 pub struct TerminalView {
     base: BaseWidget,
@@ -23,6 +31,18 @@ pub struct TerminalView {
     input_line: String,
     history: Vec<String>,
     history_index: Option<usize>,
+    /// How many output rows are scrolled above the newest one.
+    ///
+    /// Zero follows the tail, which is the state a terminal spends most of its time in. A wheel
+    /// notch moves this away from the tail so older output can be read without the next line of
+    /// output yanking the view back down; new output resets it to zero.
+    scroll_offset: usize,
+    /// How many output rows the paint path could fit on the last frame.
+    ///
+    /// Kept so the wheel clamp uses the viewport the user actually sees rather than a second,
+    /// independently derived row count. The draw path refreshes it; the constructor seeds it from
+    /// the geometry so scrolling works before the first frame.
+    visible_output_rows: usize,
     /// The caret at the end of the input line, which blinks while the terminal is enabled.
     ///
     /// # Why a terminal needs one more than most fields
@@ -46,15 +66,49 @@ impl TerminalView {
         // by definition, so a freshly mounted one is already waiting for a command. Waiting for a
         // focus event that a host may never send would put the caret back where this control was.
         cursor.start();
+        let visible_output_rows = Self::estimated_output_rows(geometry);
         Self {
             base: BaseWidget::new(WidgetKind::TextEdit, geometry, "TerminalView"),
             lines: Vec::new(),
             input_line: String::new(),
             history: Vec::new(),
             history_index: None,
+            scroll_offset: 0,
+            visible_output_rows,
             cursor,
             command_submitted: Signal1::new(),
         }
+    }
+
+    /// How many output rows a body of this geometry shows, before the first frame has measured the
+    /// font. Mirrors the paint path's reservation: one prompt row plus a 16 px top inset.
+    fn estimated_output_rows(geometry: Rect) -> usize {
+        let prompt_row_height = OUTPUT_LINE_HEIGHT + 6;
+        let body_height = (geometry.height as i32 - prompt_row_height).max(0);
+        let usable = (body_height - 16).max(0);
+        ((usable / OUTPUT_LINE_HEIGHT).max(1)) as usize
+    }
+
+    /// The largest scroll offset that still leaves a full window of output on screen.
+    fn max_scroll_offset(&self) -> usize {
+        self.lines.len().saturating_sub(self.visible_output_rows.max(1))
+    }
+
+    /// Moves the viewport by `lines` output rows relative to the tail.
+    ///
+    /// Positive values reveal older output and negative values move back toward the newest line.
+    /// Returns whether the offset changed, so the caller repaints only on a real move.
+    fn scroll_output(&mut self, lines: i32) -> bool {
+        if lines == 0 {
+            return false;
+        }
+        let next = (self.scroll_offset as i64 + lines as i64)
+            .clamp(0, self.max_scroll_offset() as i64) as usize;
+        if next == self.scroll_offset {
+            return false;
+        }
+        self.scroll_offset = next;
+        true
     }
 
     /// Whether the caret is drawn on the current frame.
@@ -103,6 +157,9 @@ impl TerminalView {
             let drop_count = self.lines.len() - 200;
             self.lines.drain(0..drop_count);
         }
+        // New output returns the view to the tail. A reader who scrolled back would otherwise
+        // have their offset silently point at different lines as the buffer shifts.
+        self.scroll_offset = 0;
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -118,6 +175,7 @@ impl TerminalView {
         self.lines.push(format!("> {cmd}"));
         self.command_submitted.emit(cmd);
         self.input_line.clear();
+        self.scroll_offset = 0;
         self.base.request_layout();
         self.base.request_redraw();
         true
@@ -268,7 +326,12 @@ impl EventHandler for TerminalView {
         }
 
         match event {
-            Event::TextInput { text } => {
+            // Platform text — a printable string or an IME commit — appends to the same line.
+            //
+            // Both variants describe one user action: text the platform has already resolved.
+            // Matching only `TextInput` dropped every IME commit, so a user typing through an
+            // input method saw nothing arrive at the prompt.
+            Event::TextInput { text } | Event::ImeCommit { text } => {
                 self.input_line.push_str(text);
                 // Typing starts a fresh line, so a later Up/Down recalls from the
                 // newest history entry rather than resuming the recalled one.
@@ -290,6 +353,15 @@ impl EventHandler for TerminalView {
                 40 => self.recall_history(false),
                 _ => { /* Other keys are not relevant */ }
             },
+            // Wheel: positive `delta.y` moves the content down, which in a terminal means
+            // revealing older output above the tail. Three lines per notch is the desktop
+            // default; the tail itself clamps so neither direction can leave the buffer.
+            Event::Wheel { delta, modifiers, .. } => {
+                let scroll = WheelScroll::from_event(*delta, *modifiers, 3);
+                if self.scroll_output(scroll.lines_y) {
+                    self.base.request_redraw();
+                }
+            }
             _ => { /* Other events are not relevant */ }
         }
     }
@@ -385,7 +457,11 @@ impl Draw for TerminalView {
         let body_height = rect.height.saturating_sub(prompt_row_height);
 
         let max_lines = (body_height.saturating_sub(16) / prompt_line_height) as usize;
-        let start = self.lines.len().saturating_sub(max_lines);
+        // Record the measured window so the wheel input path clamps against the rows the user
+        // actually sees rather than the constructor's estimate.
+        self.visible_output_rows = max_lines.max(1);
+        let scroll = self.scroll_offset.min(self.max_scroll_offset());
+        let start = self.lines.len().saturating_sub(max_lines).saturating_sub(scroll);
         for (idx, line) in self.lines.iter().skip(start).enumerate() {
             let y = rect.y + 16 + idx as i32 * prompt_line_height as i32;
             let line_bounds =
@@ -584,6 +660,19 @@ mod tests {
         assert_eq!(terminal.input_line(), "你好 ls");
     }
 
+    /// An IME commit is committed text and reaches the prompt through the same path.
+    ///
+    /// The handler used to match only `TextInput`, so a desktop input method's final string was
+    /// dropped even though the platform had already resolved it.
+    #[test]
+    fn ime_commit_appends_to_the_input_line() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal.handle_event(&Event::ime_commit("你好"));
+        assert_eq!(terminal.input_line(), "你好", "an IME commit must reach the prompt");
+        terminal.handle_event(&Event::ime_commit(" ls"));
+        assert_eq!(terminal.input_line(), "你好 ls");
+    }
+
     #[test]
     fn backspace_deletes_one_character_not_one_byte() {
         let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
@@ -660,5 +749,31 @@ mod tests {
         assert!(!terminal.is_animating(), "a disabled terminal's caret is steady");
         assert!(terminal.is_caret_visible(), "a steady caret is visible, not hidden");
         assert!(!terminal.tick(100), "and it owes no frames");
+    }
+
+    /// The wheel walks the output scrollback and clamps at both ends.
+    #[test]
+    fn terminal_wheel_scrolls_scrollback_and_clamps() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 400, 140));
+        for n in 0..40 {
+            terminal.append_output(format!("line{n}"));
+        }
+        assert_eq!(terminal.scroll_offset, 0, "the tail is the resting state");
+
+        // At the tail, scrolling toward newer output cannot go any further.
+        terminal.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+        assert_eq!(terminal.scroll_offset, 0, "the offset clamps at the tail");
+
+        // One notch the other way reveals three older rows.
+        terminal.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+        assert_eq!(terminal.scroll_offset, 3, "a notch reveals three output rows");
+
+        // Scrolling on stops at the oldest full window.
+        let max_offset = terminal.max_scroll_offset();
+        assert!(max_offset > 3, "the fixture keeps older output to reach");
+        for _ in 0..40 {
+            terminal.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+        }
+        assert_eq!(terminal.scroll_offset, max_offset, "the offset clamps at the oldest window");
     }
 }

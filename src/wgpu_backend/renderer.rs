@@ -6,7 +6,9 @@ use super::commands::WgpuDrawCommand;
 use super::raster::{align_to, rasterize_draw_commands_rgba8};
 use super::shaders::ShaderModule;
 use super::types::Rgba8;
+use crate::core::Size;
 use crate::render::gpu::{GpuCapability, GpuRenderer};
+use crate::render::{PaintBackend, RenderCommand, SoftwarePaintBackend};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -24,6 +26,10 @@ struct UniformArena {
     capacity: u64,
     /// Dynamic-offset stride: the device's `min_uniform_buffer_offset_alignment`,
     /// raised to hold the 16-byte colour, so every offset stays legal on any backend.
+    ///
+    /// Only the per-rectangle 2D path reads this; the instanced `3d` path carries colour in
+    /// its instance records instead.
+    #[cfg_attr(feature = "3d", allow(dead_code))]
     stride: u64,
 }
 
@@ -36,6 +42,10 @@ struct TargetCache {
 }
 
 /// A grow-only vertex buffer reused across calls.
+///
+/// With the `3d` feature this same cache also holds the instanced quad records: both uses are
+/// `VERTEX`-usage buffers written once per call, and sharing one grow-only allocation is what
+/// keeps an instanced run from allocating once per quad.
 struct VertexCache {
     buffer: wgpu::Buffer,
     capacity: u64,
@@ -45,6 +55,16 @@ struct VertexCache {
 struct ReadbackCache {
     buffer: wgpu::Buffer,
     size: u64,
+}
+
+/// The model-view-projection uniform used by the `3d` transform pipeline.
+///
+/// One matrix serves a whole call, so this is not a dynamic-offset arena. The 64-byte size is
+/// `mat4x4f`'s uniform footprint.
+#[cfg(feature = "3d")]
+struct TransformedUniform {
+    buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
 }
 
 /// Device resources a renderer keeps across calls.
@@ -70,6 +90,9 @@ struct RenderCache {
     upload_target: Option<TargetCache>,
     vertices: Option<VertexCache>,
     readback: Option<ReadbackCache>,
+    /// Mvp uniform and bind group for the `3d` transform pipeline.
+    #[cfg(feature = "3d")]
+    transformed_uniform: Option<TransformedUniform>,
 }
 
 impl RenderCache {
@@ -197,6 +220,40 @@ impl RenderCache {
             self.readback = Some(ReadbackCache { buffer, size: size.max(4) });
         }
     }
+
+    /// Ensures the `3d` mvp uniform and its bind group exist.
+    ///
+    /// The buffer never grows: every call writes one 64-byte matrix. It is created once per
+    /// renderer, matching the rest of this cache (REND-02).
+    #[cfg(feature = "3d")]
+    fn ensure_transformed_uniform(
+        &mut self,
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+    ) {
+        if self.transformed_uniform.is_some() {
+            return;
+        }
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("transformed_mvp_ubo"),
+            size: 64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("transformed_mvp_bind_group"),
+            layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &buffer,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(64),
+                }),
+            }],
+        });
+        self.transformed_uniform = Some(TransformedUniform { buffer, bind_group });
+    }
 }
 
 /// Byte length of an RGBA8 image of `width × height` pixels.
@@ -240,13 +297,114 @@ fn readback_frame_bytes(width: u32, height: u32) -> Result<u64, String> {
         .checked_mul(height as u64)
         .ok_or_else(|| format!("readback buffer for {width}x{height} overflows u64"))
 }
+
+/// Composites `tint` over every pixel of a straight-RGBA frame.
+///
+/// `weight` scales the tint's alpha, so a tint colour with `a = 200` at weight `0.5`
+/// contributes half of its own opacity. A non-finite weight is ignored rather than clamped:
+/// `f32::clamp` propagates `NaN`, and a `NaN` here would poison every channel of the frame.
+fn tint_blurred_frame(frame: &mut [u8], tint: Rgba8, weight: f32) {
+    if !weight.is_finite() {
+        return;
+    }
+    let weight = weight.clamp(0.0, 1.0);
+    let tint_alpha = (tint.a as f32 / 255.0) * weight;
+    if tint_alpha <= 0.0 {
+        return;
+    }
+    let tint_rgb = [tint.r as f32 / 255.0, tint.g as f32 / 255.0, tint.b as f32 / 255.0];
+    for pixel in frame.chunks_exact_mut(4) {
+        let dst_alpha = pixel[3] as f32 / 255.0;
+        let out_alpha = tint_alpha + dst_alpha * (1.0 - tint_alpha);
+        if out_alpha <= f32::EPSILON {
+            pixel.fill(0);
+            continue;
+        }
+        for channel in 0..3 {
+            let dst = pixel[channel] as f32 / 255.0;
+            let blended =
+                (tint_rgb[channel] * tint_alpha + dst * dst_alpha * (1.0 - tint_alpha)) / out_alpha;
+            pixel[channel] = (blended * 255.0).round().clamp(0.0, 255.0) as u8;
+        }
+        pixel[3] = (out_alpha * 255.0).round().clamp(0.0, 255.0) as u8;
+    }
+}
+
+/// Packs a row-major [`crate::render::math3d::Mat4`] as the column-major bytes WGSL expects.
+///
+/// WGSL's `mat4x4f` uniform layout is column-major, while the maths module stores rows to
+/// match the affine matrix's natural reading order. Transposing here is what keeps the two
+/// conventions from being silently swapped — the failure mode would be a transposed transform
+/// that still compiles and still draws *something*.
+#[cfg(feature = "3d")]
+#[allow(clippy::needless_range_loop)] // row and column index the source row-major matrix.
+fn mvp_column_major_bytes(m: &crate::render::math3d::Mat4) -> [u8; 64] {
+    let mut bytes = [0u8; 64];
+    for column in 0..4 {
+        for row in 0..4 {
+            let value = m.m[row * 4 + column];
+            let start = (column * 4 + row) * 4;
+            bytes[start..start + 4].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+    bytes
+}
+
+/// Bytes of one instanced quad record: two `vec4f` corner pairs and one `vec4f` colour.
+///
+/// Kept as a named constant because the vertex-buffer stride, the writer and the chunk offsets
+/// must agree exactly; a mismatch is a pipeline validation error rather than a silent misread.
+#[cfg(feature = "3d")]
+const INSTANCE_BYTES: usize = 48;
+
+/// Upper bound on the instances submitted by one instanced draw.
+///
+/// A longer run is streamed in cap-sized chunks from the same grow-only buffer. The chunks are
+/// drawn in order, so splitting never reorders the run and never allocates per quad.
+#[cfg(feature = "3d")]
+const MAX_INSTANCES_PER_DRAW: usize = 4096;
+
+/// Packs a run of quads into the 48-byte-per-instance layout described on
+/// [`super::shaders::FILL_RECT_VS_TRANSFORMED`].
+///
+/// Each record is the four corners in perimeter order, then straight RGBA with every channel
+/// clamped to `0.0..=1.0`. Returns an explicit error rather than wrapping if the run is too
+/// large to address, so a hostile count cannot produce a short buffer.
+#[cfg(feature = "3d")]
+fn instanced_quad_bytes(quads: &[([crate::core::Point; 4], [f64; 4])]) -> Result<Vec<u8>, String> {
+    let capacity = quads
+        .len()
+        .checked_mul(INSTANCE_BYTES)
+        .ok_or_else(|| format!("{} quads overflow the instance buffer size", quads.len()))?;
+    let mut bytes = Vec::with_capacity(capacity);
+    for (corners, colour) in quads {
+        for point in corners {
+            bytes.extend_from_slice(&(point.x as f32).to_le_bytes());
+            bytes.extend_from_slice(&(point.y as f32).to_le_bytes());
+        }
+        for channel in colour {
+            bytes.extend_from_slice(&((*channel).clamp(0.0, 1.0) as f32).to_le_bytes());
+        }
+    }
+    Ok(bytes)
+}
 /// Lightweight GPU renderer context backed by `wgpu`.
 pub struct WgpuRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     clear_pipeline: wgpu::RenderPipeline,
+    /// The 2D per-rectangle pipeline. A `3d` build routes rectangles through the instanced
+    /// matrix pipeline instead, so the field is only read by the default 2D path.
+    #[cfg_attr(feature = "3d", allow(dead_code))]
     rect_pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
+    /// Instanced matrix pipeline for the `3d` feature. It is compiled only when that feature is
+    /// on, so the default 2D renderer creates and carries nothing extra.
+    #[cfg(feature = "3d")]
+    transformed_pipeline: wgpu::RenderPipeline,
+    /// The vertex-stage layout that carries the mvp matrix (group 0 of the instanced pipeline).
+    #[cfg(feature = "3d")]
+    transformed_bind_group_layout: wgpu::BindGroupLayout,
     /// Cached shader module pipeline references (BLUE11 R5.2).
     shader_cache: HashMap<String, wgpu::ShaderModule>,
     /// Device resources reused across calls (REND-02).
@@ -339,6 +497,16 @@ impl WgpuRenderer {
             label: Some("rect_fs"),
             source: wgpu::ShaderSource::Wgsl(super::shaders::FILL_RECT_FS.into()),
         });
+        #[cfg(feature = "3d")]
+        let transformed_vs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rect_vs_transformed"),
+            source: wgpu::ShaderSource::Wgsl(super::shaders::FILL_RECT_VS_TRANSFORMED.into()),
+        });
+        #[cfg(feature = "3d")]
+        let instanced_fs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rect_fs_instanced"),
+            source: wgpu::ShaderSource::Wgsl(super::shaders::FILL_RECT_INSTANCED_FS.into()),
+        });
 
         // Create bind group layout for uniform color (shared between clear and rect pipelines)
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -354,6 +522,25 @@ impl WgpuRenderer {
                 count: None,
             }],
         });
+
+        // The matrix lives in its own group because the instanced fragment stage takes its
+        // colour per instance rather than from a group-0 uniform. With group 0 free, the
+        // instanced pipeline binds the matrix at group 0 directly.
+        #[cfg(feature = "3d")]
+        let transformed_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("transformed_mvp_bind_group_layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(wgpu::BufferSize::new(64).unwrap()),
+                    },
+                    count: None,
+                }],
+            });
 
         // ── Create clear pipeline (full-screen triangle, no vertex buffer) ──
         let clear_pipeline_layout =
@@ -456,11 +643,91 @@ impl WgpuRenderer {
             cache: None,
         });
 
+        // ── Create the instanced `3d` matrix pipeline ──
+        //
+        // One instance carries the four corners and the colour, so a whole run of quads is a
+        // single draw (`0..6` vertices, `0..N` instances). Culling is disabled because a
+        // negative scale reverses the winding order, which is a valid mirror rather than a
+        // reason to drop the quad. No depth attachment is added: this is a 2D affine composed
+        // with an orthographic matrix, not a depth-tested 3D scene.
+        #[cfg(feature = "3d")]
+        let transformed_pipeline = {
+            let transformed_pipeline_layout =
+                device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("rect_transformed_pipeline_layout"),
+                    bind_group_layouts: &[Some(&transformed_bind_group_layout)],
+                    immediate_size: 0,
+                });
+            // Locations 0/1 are the four corners as two vectors; location 2 is the colour.
+            let instance_buffer_layout = wgpu::VertexBufferLayout {
+                array_stride: INSTANCE_BYTES as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &[
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x4,
+                        offset: 0,
+                        shader_location: 0,
+                    },
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x4,
+                        offset: 16,
+                        shader_location: 1,
+                    },
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x4,
+                        offset: 32,
+                        shader_location: 2,
+                    },
+                ],
+            };
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("rect_instanced_pipeline"),
+                layout: Some(&transformed_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &transformed_vs_module,
+                    entry_point: Some("vs_main"),
+                    buffers: &[Some(instance_buffer_layout)],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &instanced_fs_module,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Cw,
+                    cull_mode: None,
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState {
+                    count: 1,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+
         let mut shader_cache = HashMap::new();
         shader_cache.insert("clear_vs".to_string(), clear_vs_module);
         shader_cache.insert("clear_fs".to_string(), clear_fs_module);
         shader_cache.insert("rect_vs".to_string(), rect_vs_module);
         shader_cache.insert("rect_fs".to_string(), rect_fs_module);
+        #[cfg(feature = "3d")]
+        shader_cache.insert("rect_vs_transformed".to_string(), transformed_vs_module);
+        #[cfg(feature = "3d")]
+        shader_cache.insert("rect_fs_instanced".to_string(), instanced_fs_module);
 
         Ok(Self {
             device,
@@ -468,6 +735,10 @@ impl WgpuRenderer {
             clear_pipeline,
             rect_pipeline,
             bind_group_layout,
+            #[cfg(feature = "3d")]
+            transformed_pipeline,
+            #[cfg(feature = "3d")]
+            transformed_bind_group_layout,
             shader_cache,
             cache: RefCell::new(RenderCache::default()),
         })
@@ -576,13 +847,37 @@ impl WgpuRenderer {
     /// - `color` is an RGBA float array with values in `[0.0, 1.0]`
     ///
     /// Uses the WGSL vertex shader (`FILL_RECT_VS`) with a vertex buffer and the
-    /// fragment shader (`FILL_RECT_FS`) with a per-rect uniform color.
+    /// fragment shader (`FILL_RECT_FS`) with a per-rect uniform colour. With the `3d`
+    /// feature the run is instead expanded to quads and drawn through the instanced matrix
+    /// pipeline, which produces the same picture with one draw per run.
     /// Encodes the fill-rect pass into the cached target and submits it.
     ///
     /// Split out from [`Self::render_fill_rect_gpu`] so a compositor can use the rendered
     /// texture directly (REND-02) instead of paying for a full `copy_texture_to_buffer` and a
     /// blocking map. The readback buffer is deliberately **not** ensured here.
     fn encode_fill_rects(
+        &self,
+        width: u32,
+        height: u32,
+        rects: &[(i32, i32, u32, u32, [f64; 4])],
+    ) -> Result<(), String> {
+        #[cfg(feature = "3d")]
+        {
+            self.encode_fill_rects_instanced(width, height, rects)
+        }
+        #[cfg(not(feature = "3d"))]
+        {
+            self.encode_fill_rects_per_rect(width, height, rects)
+        }
+    }
+
+    /// The default 2D path: two triangles per rectangle and one draw per rectangle, with the
+    /// colour selected by a dynamic uniform offset.
+    ///
+    /// Kept verbatim for the build without the `3d` feature; the instanced path below is the
+    /// only thing that changes when the feature is on.
+    #[cfg(not(feature = "3d"))]
+    fn encode_fill_rects_per_rect(
         &self,
         width: u32,
         height: u32,
@@ -678,6 +973,113 @@ impl WgpuRenderer {
         Ok(())
     }
 
+    /// The `3d` path: turns every rectangle into a quad and renders the whole run as an
+    /// instanced draw through the matrix pipeline.
+    ///
+    /// An identity affine composed with the orthographic pixel-to-clip matrix reproduces the
+    /// 2D geometry exactly, so enabling the feature does not change the picture; it only
+    /// changes how many draws the run costs.
+    #[cfg(feature = "3d")]
+    fn encode_fill_rects_instanced(
+        &self,
+        width: u32,
+        height: u32,
+        rects: &[(i32, i32, u32, u32, [f64; 4])],
+    ) -> Result<(), String> {
+        let mut quads: Vec<([crate::core::Point; 4], [f64; 4])> = Vec::with_capacity(rects.len());
+        for &(x, y, rw, rh, colour) in rects {
+            // Saturating addition mirrors the 2D path's treatment of an extreme width/height.
+            let x1 = x.saturating_add(rw as i32);
+            let y1 = y.saturating_add(rh as i32);
+            quads.push((
+                [
+                    crate::core::Point::new(x, y),
+                    crate::core::Point::new(x1, y),
+                    crate::core::Point::new(x1, y1),
+                    crate::core::Point::new(x, y1),
+                ],
+                colour,
+            ));
+        }
+        self.encode_quads_instanced(width, height, &crate::render::math3d::Mat3::IDENTITY, &quads)
+    }
+
+    /// Renders a run of quads into the cached target with instanced draws.
+    ///
+    /// All instance records are written once into the grow-only buffer and the run is drawn in
+    /// `MAX_INSTANCES_PER_DRAW`-sized chunks. Each chunk reads its own slice of that one upload,
+    /// so no chunk overwrites another and no quad allocates a buffer. Chunks are submitted in
+    /// order, which is what keeps overlapping quads in painter order.
+    ///
+    /// The target is cleared to transparent first, so an empty run is a transparent frame rather
+    /// than stale pixels from a previous call.
+    #[cfg(feature = "3d")]
+    fn encode_quads_instanced(
+        &self,
+        width: u32,
+        height: u32,
+        affine: &crate::render::math3d::Mat3,
+        quads: &[([crate::core::Point; 4], [f64; 4])],
+    ) -> Result<(), String> {
+        let w = width as f32;
+        let h = height as f32;
+        // Pixel -> NDC: x from [0, w] to [-1, 1], y from [0, h] to [1, -1]. The y flip is the
+        // renderer's top-left origin expressed in clip space.
+        let ortho = crate::render::math3d::Mat3::scaling(2.0 / w, -2.0 / h)
+            .then(&crate::render::math3d::Mat3::translation(-1.0, 1.0));
+        let mvp = affine.then(&ortho);
+        let mvp_bytes = mvp_column_major_bytes(&crate::render::math3d::Mat4::from_affine(mvp));
+        let instance_bytes = instanced_quad_bytes(quads)?;
+
+        // Cached resources for the whole call: one grow-only instance buffer, one target and
+        // one mvp uniform (REND-02).
+        let mut cache = self.cache.borrow_mut();
+        cache.ensure_target(&self.device, width, height);
+        cache.ensure_vertices(&self.device, instance_bytes.len() as u64);
+        cache.ensure_transformed_uniform(&self.device, &self.transformed_bind_group_layout);
+        let target = cache.target.as_ref().expect("the target was just ensured");
+        let instances = cache.vertices.as_ref().expect("the instance buffer was just ensured");
+        let transformed = cache.transformed_uniform.as_ref().expect("the mvp was just ensured");
+
+        self.queue.write_buffer(&transformed.buffer, 0, &mvp_bytes);
+        if !instance_bytes.is_empty() {
+            self.queue.write_buffer(&instances.buffer, 0, &instance_bytes);
+        }
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("gpu_quads_encoder"),
+        });
+        {
+            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("gpu_quads_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            rp.set_pipeline(&self.transformed_pipeline);
+            rp.set_bind_group(0, &transformed.bind_group, &[]);
+            for (chunk_index, chunk) in quads.chunks(MAX_INSTANCES_PER_DRAW).enumerate() {
+                let start = chunk_index * MAX_INSTANCES_PER_DRAW * INSTANCE_BYTES;
+                let end = start + chunk.len() * INSTANCE_BYTES;
+                rp.set_vertex_buffer(0, instances.buffer.slice(start as u64..end as u64));
+                rp.draw(0..6, 0..chunk.len() as u32);
+            }
+        }
+
+        self.queue.submit(Some(encoder.finish()));
+        Ok(())
+    }
+
     /// Renders filled rectangles into the cached target and hands the **view** to `f`.
     ///
     /// This is the texture/view frame path REND-02 asked for: a caller that composites the
@@ -709,7 +1111,9 @@ impl WgpuRenderer {
     /// - `color` is an RGBA float array with values in `[0.0, 1.0]`
     ///
     /// Uses the WGSL vertex shader (`FILL_RECT_VS`) with a vertex buffer and the
-    /// fragment shader (`FILL_RECT_FS`) with a per-rect uniform color.
+    /// fragment shader (`FILL_RECT_FS`) with a per-rect uniform colour. With the `3d`
+    /// feature the rectangles are drawn as an instanced quad run through the matrix
+    /// pipeline.
     pub fn render_fill_rect_gpu(
         &self,
         width: u32,
@@ -734,6 +1138,65 @@ impl WgpuRenderer {
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("gpu_rect_readback"),
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback.buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+        self.queue.submit(Some(encoder.finish()));
+        self.read_back(&readback.buffer, width, height, expected_len)
+    }
+
+    /// Renders arbitrary quadrilaterals through the instanced `3d` matrix pipeline.
+    ///
+    /// Each quad is a `([Point; 4], [r, g, b, a])` pair. The four corners are **local logical
+    /// pixels** in perimeter order; `affine` is applied to them in the vertex stage, and the
+    /// renderer composes that with an orthographic pixel-to-clip matrix. The result is the same
+    /// geometry the software backend draws for
+    /// [`crate::render::RenderCommand::FillQuad`], which is what lets a 45-degree rotated
+    /// rectangle agree across the two paths.
+    ///
+    /// The whole run is one upload and, below the per-draw cap, one instanced draw; a longer run
+    /// streams in order from the same buffer. Culling is disabled so a mirrored (negative-scale)
+    /// transform still draws. There is no depth attachment: this path is a 2D affine, and scene
+    /// layers keep their existing painter's-order responsibility for control-level occlusion.
+    #[cfg(feature = "3d")]
+    pub fn render_fill_quads_gpu(
+        &self,
+        width: u32,
+        height: u32,
+        affine: &crate::render::math3d::Mat3,
+        quads: &[([crate::core::Point; 4], [f64; 4])],
+    ) -> Result<Vec<u8>, String> {
+        let expected_len = rgba_buffer_len(width, height)?;
+        if quads.is_empty() {
+            return Ok(vec![0u8; expected_len]);
+        }
+
+        self.encode_quads_instanced(width, height, affine, quads)?;
+
+        let frame_bytes = readback_frame_bytes(width, height)?;
+        let padded_bytes_per_row = padded_row_bytes(width)?;
+        let mut cache = self.cache.borrow_mut();
+        cache.ensure_readback(&self.device, frame_bytes);
+        let target = cache.target.as_ref().expect("the target was just ensured");
+        let readback = cache.readback.as_ref().expect("the readback was just ensured");
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("gpu_quads_readback"),
         });
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
@@ -934,6 +1397,50 @@ impl WgpuRenderer {
         let pixels = rasterize_draw_commands_rgba8(width, height, commands)?;
         self.upload_and_readback_rgba8(width, height, &pixels)
     }
+    /// Applies one backdrop-blur pass to a frame that has already been composed.
+    ///
+    /// # Where the pass runs
+    ///
+    /// The existing offscreen target is the pass's storage: the frame is uploaded into it
+    /// and read back before the blur, so the caller hands over the pixels the GPU actually
+    /// produced rather than a CPU-side copy of what it meant to draw. This renderer's
+    /// pipeline set has no blur shader (only the fill, image, text, rounded-rect and circle
+    /// programs ship), so the convolution itself runs through the existing software blur —
+    /// the same three-box Gaussian approximation every other blur in the crate uses. Adding a
+    /// WGSL program for one effect would be a new pipeline to keep in step with this one for
+    /// no picture difference, so the offscreen round trip is the GPU half and the kernel is
+    /// shared.
+    ///
+    /// `radius` is the Gaussian's 2-sigma point, matching [`RenderCommand::Blur`]. A zero
+    /// radius returns the round-tripped frame unchanged; `tint` is applied afterwards so the
+    /// tint sits on the blurred backdrop, as it does in the software layer composition.
+    pub fn render_backdrop_blur_rgba8(
+        &self,
+        width: u32,
+        height: u32,
+        backdrop: &[u8],
+        radius: u32,
+        tint: Option<(Rgba8, f32)>,
+    ) -> Result<Vec<u8>, String> {
+        let mut frame = self.upload_rgba8_and_readback(width, height, backdrop)?;
+        if radius > 0 {
+            let mut backend = SoftwarePaintBackend::new(Size::new(width, height), 1.0);
+            if !backend.seed_from(&frame) {
+                return Err(format!(
+                    "backdrop frame is {} bytes but a {width}x{height} layer needs {}",
+                    frame.len(),
+                    rgba_buffer_len(width, height)?
+                ));
+            }
+            backend.execute_command(&RenderCommand::Blur { radius });
+            frame = backend.into_frame_rgba();
+        }
+        if let Some((tint, weight)) = tint {
+            tint_blurred_frame(&mut frame, tint, weight);
+        }
+        Ok(frame)
+    }
+
     /// Upload a full RGBA8 frame to GPU texture and read it back deterministically.
     pub fn upload_rgba8_and_readback(
         &self,
@@ -1166,5 +1673,260 @@ mod tests {
         assert_eq!(output, input);
         // A second call reuses the cached upload texture and readback buffer.
         assert_eq!(renderer.upload_rgba8_and_readback(4, 4, &input).expect("second upload"), input);
+    }
+
+    #[cfg(feature = "3d")]
+    #[test]
+    fn fill_quads_empty_is_transparent() {
+        let Some(renderer) = renderer() else { return };
+        let pixels = renderer
+            .render_fill_quads_gpu(8, 8, &crate::render::math3d::Mat3::IDENTITY, &[])
+            .expect("an empty quad batch must produce a frame");
+        assert_eq!(pixels.len(), 8 * 8 * 4);
+        assert!(pixels.iter().all(|&byte| byte == 0));
+    }
+
+    /// A rectangle rotated by 45 degrees must land on the same pixels through the matrix
+    /// pipeline as it does through the software polygon fill.
+    ///
+    /// The comparison deliberately samples the interior and the hidden corners rather than the
+    /// edge pixels: both rasterisers are hard-edged but use different fill rules, so exact
+    /// agreement on a sloped boundary is not something either path promises.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn a_45_degree_rotated_rect_agrees_with_the_software_path() {
+        use crate::core::{Color, Point, Size};
+        use crate::render::math3d::Mat3;
+        use crate::render::SoftwareSurface;
+
+        let Some(renderer) = renderer() else { return };
+        let affine = Mat3::translation(-16.0, -16.0)
+            .then(&Mat3::rotation(core::f32::consts::FRAC_PI_4))
+            .then(&Mat3::translation(16.0, 16.0));
+        let local = [Point::new(8, 8), Point::new(24, 8), Point::new(24, 24), Point::new(8, 24)];
+
+        let gpu = renderer
+            .render_fill_quads_gpu(32, 32, &affine, &[(local, [1.0, 0.0, 0.0, 1.0])])
+            .expect("the matrix pipeline must render");
+
+        let mapped = local.map(|point| affine.map_point(point));
+        let mut surface = SoftwareSurface::new(Size::new(32, 32), 1.0);
+        surface.begin_frame(Color::TRANSPARENT);
+        surface.draw_path(&mapped[..], true, Color::RED, true, 0);
+        surface.end_frame();
+        let software = surface.frame_rgba();
+
+        for (x, y, what) in [
+            (16, 16, "centre"),
+            (10, 16, "left interior"),
+            (22, 16, "right interior"),
+            (16, 10, "top interior"),
+            (16, 22, "bottom interior"),
+        ] {
+            assert_eq!(
+                pixel(software, 32, x, y),
+                pixel(&gpu, 32, x, y),
+                "{what} must agree between the software and matrix paths"
+            );
+        }
+        for (x, y) in [(0, 0), (31, 0), (0, 31), (31, 31)] {
+            assert_eq!(
+                pixel(software, 32, x, y),
+                pixel(&gpu, 32, x, y),
+                "a corner outside the rotated square must remain transparent in both paths"
+            );
+        }
+    }
+
+    /// Builds an axis-aligned quad in perimeter order, matching the corner order the instanced
+    /// shader expands into two triangles.
+    #[cfg(feature = "3d")]
+    fn quad_rect(x: i32, y: i32, x1: i32, y1: i32) -> [crate::core::Point; 4] {
+        [
+            crate::core::Point::new(x, y),
+            crate::core::Point::new(x1, y),
+            crate::core::Point::new(x1, y1),
+            crate::core::Point::new(x, y1),
+        ]
+    }
+
+    /// Converts a `Color` to the `0.0..=1.0` tuple the GPU entry points take.
+    #[cfg(feature = "3d")]
+    fn gpu_colour(color: crate::core::Color) -> [f64; 4] {
+        [
+            color.r as f64 / 255.0,
+            color.g as f64 / 255.0,
+            color.b as f64 / 255.0,
+            color.a as f64 / 255.0,
+        ]
+    }
+
+    /// An instanced run of axis-aligned quads must produce exactly the software picture at the
+    /// sampled pixels, including overlapping quads, whose later instances paint over earlier
+    /// ones.
+    ///
+    /// The samples are interiors rather than edges: the software scanline fill and the GPU both
+    /// cover a shape's interior identically, but their boundary conventions differ, so an edge
+    /// pixel is not a fair pixel-for-pixel comparison for either path.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn instanced_run_matches_the_software_reference() {
+        use crate::core::{Color, Point, Size};
+        use crate::render::math3d::Mat3;
+        use crate::render::SoftwareSurface;
+
+        let Some(renderer) = renderer() else { return };
+        let run = [
+            (quad_rect(2, 2, 10, 10), Color::RED),
+            (quad_rect(8, 2, 16, 10), Color::GREEN),
+            (quad_rect(2, 8, 10, 16), Color::BLUE),
+            (quad_rect(8, 8, 16, 16), Color::YELLOW),
+        ];
+        let quads: Vec<([Point; 4], [f64; 4])> =
+            run.iter().map(|(corners, colour)| (*corners, gpu_colour(*colour))).collect();
+
+        let gpu = renderer
+            .render_fill_quads_gpu(18, 18, &Mat3::IDENTITY, &quads)
+            .expect("the instanced run must render");
+
+        let mut surface = SoftwareSurface::new(Size::new(18, 18), 1.0);
+        surface.begin_frame(Color::TRANSPARENT);
+        for (corners, colour) in run {
+            surface.draw_path(&corners, true, colour, true, 0);
+        }
+        surface.end_frame();
+        let software = surface.frame_rgba();
+
+        // One sample per quad, one per pair overlap, and one where all four overlap. The
+        // expected colour is the last quad in `run` that covers the point, so this also proves
+        // the instanced draw preserved painter order.
+        for (x, y, expected) in [
+            (4, 4, Color::RED),
+            (12, 4, Color::GREEN),
+            (4, 12, Color::BLUE),
+            (12, 12, Color::YELLOW),
+            (9, 4, Color::GREEN),
+            (4, 9, Color::BLUE),
+            (12, 9, Color::YELLOW),
+            (9, 12, Color::YELLOW),
+            (9, 9, Color::YELLOW),
+        ] {
+            assert_eq!(
+                pixel(&gpu, 18, x, y),
+                pixel(&software, 18, x, y),
+                "pixel ({x}, {y}) must match the software reference"
+            );
+            assert_eq!(
+                pixel(&gpu, 18, x, y),
+                [expected.r, expected.g, expected.b, expected.a],
+                "pixel ({x}, {y}) must show the last quad in the run that covers it"
+            );
+        }
+    }
+
+    /// An empty instanced run must produce a transparent frame, not stale pixels.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn instanced_empty_run_is_transparent() {
+        let Some(renderer) = renderer() else { return };
+        let pixels = renderer
+            .render_fill_quads_gpu(8, 8, &crate::render::math3d::Mat3::IDENTITY, &[])
+            .expect("an empty instanced run must produce a frame");
+        assert_eq!(pixels.len(), 8 * 8 * 4);
+        assert!(pixels.iter().all(|&byte| byte == 0));
+    }
+
+    /// A run longer than the per-draw cap must stream across chunks without reordering: the
+    /// lone instance in the second chunk must read its own record, not the first chunk's.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn an_over_cap_instanced_run_streams_every_chunk_in_order() {
+        let Some(renderer) = renderer() else { return };
+        // Quads are 2x1 so no pixel centre lies on the shared triangle edge; 1024 of them fit
+        // in one row, and the extra instance lands on the next row.
+        let per_row = 1024u32;
+        let total = MAX_INSTANCES_PER_DRAW + 1;
+        let width = per_row * 2;
+        let height = (total as u32).div_ceil(per_row);
+        let mut quads = Vec::with_capacity(total);
+        for index in 0..total {
+            let x = ((index as u32 % per_row) * 2) as i32;
+            let y = (index as u32 / per_row) as i32;
+            let colour =
+                if index + 1 == total { [0.0, 0.0, 1.0, 1.0] } else { [1.0, 0.0, 0.0, 1.0] };
+            quads.push((quad_rect(x, y, x + 2, y + 1), colour));
+        }
+        let pixels = renderer
+            .render_fill_quads_gpu(width, height, &crate::render::math3d::Mat3::IDENTITY, &quads)
+            .expect("an over-cap run must render");
+
+        let sample = |index: usize| -> [u8; 4] {
+            let x = (index as u32 % per_row) * 2;
+            let y = index as u32 / per_row;
+            pixel(&pixels, width, x, y)
+        };
+        let last = total - 1;
+        assert_eq!(sample(last), [0, 0, 255, 255], "the second chunk must draw its own quad");
+        assert_eq!(sample(last - 1), [255, 0, 0, 255], "the first chunk's last quad must draw");
+        assert_eq!(sample(0), [255, 0, 0, 255], "the first chunk's first quad must draw");
+    }
+
+    /// A run of 45-degree rotated quads must land on the same interior pixels through the
+    /// instanced matrix pipeline as it does through the software polygon fill.
+    ///
+    /// The comparison samples each square's mapped centre and the frame corners rather than a
+    /// sloped boundary: the two rasterisers are hard-edged but use different fill rules, so
+    /// exact agreement on an edge is not something either path promises.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn a_45_degree_instanced_run_agrees_with_the_software_path() {
+        use crate::core::{Color, Point, Size};
+        use crate::render::math3d::Mat3;
+        use crate::render::SoftwareSurface;
+
+        let Some(renderer) = renderer() else { return };
+        let affine = Mat3::translation(-16.0, -16.0)
+            .then(&Mat3::rotation(core::f32::consts::FRAC_PI_4))
+            .then(&Mat3::translation(16.0, 16.0));
+        let run = [
+            (quad_rect(6, 6, 14, 14), Color::RED),
+            (quad_rect(18, 6, 26, 14), Color::GREEN),
+            (quad_rect(6, 18, 14, 26), Color::BLUE),
+        ];
+        let quads: Vec<([Point; 4], [f64; 4])> =
+            run.iter().map(|(corners, colour)| (*corners, gpu_colour(*colour))).collect();
+
+        let gpu = renderer
+            .render_fill_quads_gpu(32, 32, &affine, &quads)
+            .expect("the instanced matrix pipeline must render");
+
+        let mut surface = SoftwareSurface::new(Size::new(32, 32), 1.0);
+        surface.begin_frame(Color::TRANSPARENT);
+        for (corners, colour) in run {
+            let mapped = corners.map(|point| affine.map_point(point));
+            surface.draw_path(&mapped, true, colour, true, 0);
+        }
+        surface.end_frame();
+        let software = surface.frame_rgba();
+
+        for ((corners, _colour), what) in run.iter().zip(["top-left", "top-right", "bottom-left"]) {
+            let centre = affine.map_point(Point::new(
+                (corners[0].x + corners[2].x) / 2,
+                (corners[0].y + corners[2].y) / 2,
+            ));
+            let (x, y) = (centre.x as u32, centre.y as u32);
+            assert_eq!(
+                pixel(software, 32, x, y),
+                pixel(&gpu, 32, x, y),
+                "the {what} square centre must agree between the software and instanced paths"
+            );
+        }
+        for (x, y) in [(0, 0), (31, 0), (0, 31), (31, 31)] {
+            assert_eq!(
+                pixel(software, 32, x, y),
+                pixel(&gpu, 32, x, y),
+                "a corner outside the rotated run must remain transparent in both paths"
+            );
+        }
     }
 }

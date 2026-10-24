@@ -349,7 +349,7 @@ mod tests {
     fn a_reported_cjk_registration_is_actually_in_the_registry() {
         // The registry is process-wide and `cargo test` runs tests in parallel; the same lock the
         // registry's own tests take keeps this sequence from interleaving with a `clear_faces`.
-        let _guard = crate::render::text::runtime_fonts::test_lock();
+        let _guard = crate::render::text::runtime_fonts::runtime_fonts_test_guard();
         let registered = register_system_cjk_font();
         let Some(family) = registered else {
             // No installed CJK face on this host: the refusal path is the whole contract here.

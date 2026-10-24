@@ -88,6 +88,8 @@ pub mod a11y_submit;
 /// an over-restriction — it needs only `String` and `format` from [`crate::compat`], both of which exist
 /// under `alloc_frugal`.
 pub mod decorations;
+/// The shared hover/press fade used by pointer-driven controls.
+pub mod interaction_fade;
 /// Content-driven control metrics — the "implicit size" system.
 ///
 /// Answers "how big should this control draw?", which is a different question
@@ -207,6 +209,7 @@ pub use capability::{
 #[cfg(widgets_unstripped)]
 pub use capability::{read_widget_property_by_id, write_widget_property_by_id};
 pub use draw::Draw;
+pub use interaction_fade::InteractionFade;
 // The canonical types live in `crate::image`; re-exported here so a caller that
 // already has `crate::widget` in scope does not need the second path.
 #[cfg(feature = "image")]

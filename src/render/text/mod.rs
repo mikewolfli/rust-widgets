@@ -59,6 +59,15 @@ mod line;
 #[cfg(feature = "text-shaping")]
 mod raster;
 
+// The glyph atlas caches what the rasteriser produced. It is gated with the rasteriser because
+// a cache with no rasteriser has nothing to remember: the bitmap-only builds draw through
+// `GlyphSource::glyph` and never enter this module.
+#[cfg(feature = "text-shaping")]
+pub mod atlas;
+
+#[cfg(feature = "text-shaping")]
+pub use atlas::{AtlasSlot, GlyphAtlas, GlyphKey};
+
 // `VectorSource` and `OutlinePoint` are the rasteriser's types, so `text-shaping` (which is what
 // compiles `raster`) is the right gate for them.
 #[cfg(feature = "text-shaping")]

@@ -11,6 +11,7 @@
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::shortcut::{Key, Modifiers, PlatformShortcutStyle, Shortcut};
 use crate::signal::Signal1;
 use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::coercion::expect_string;
@@ -18,12 +19,86 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::role_font;
-use crate::widget::text_utils::floor_char_boundary;
+use crate::widget::text_utils::elide_end;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
+
+/// Returns true when a key press is `expected` with exactly the host's primary
+/// accelerator.
+///
+/// This is the match `Shortcut::primary(expected)` describes: Control on
+/// Windows and Linux, Command on macOS. `Shift`, `Alt` and every other modifier
+/// bit must be absent, so `Shift+Primary+Z` is a different chord and is not
+/// plain undo.
+///
+/// The shortcut layer's matcher lives behind `ShortcutManager`'s private
+/// lookup, so the text-editing controls share this one entry point instead of
+/// re-deriving the platform rule at each call site. If the shortcut layer ever
+/// exposes its matcher, this function becomes a forwarder to it.
+pub(crate) fn primary_shortcut_pressed(key_code: u32, event_modifiers: u32, expected: Key) -> bool {
+    primary_shortcut_matches(
+        key_code,
+        event_modifiers,
+        expected,
+        crate::platform::platform_facts().shortcut_style(),
+    )
+}
+
+/// Style-parameterised body of [`primary_shortcut_pressed`].
+///
+/// Tests call this with both conventions so the Windows/Linux and macOS
+/// encodings are asserted on every host.
+fn primary_shortcut_matches(
+    key_code: u32,
+    event_modifiers: u32,
+    expected: Key,
+    style: PlatformShortcutStyle,
+) -> bool {
+    if Key::from_key_code(key_code) != Some(expected) {
+        return false;
+    }
+    let pressed = Modifiers::from_event_bits_primary_is_ctrl(event_modifiers);
+    // Resolve the event into the same vocabulary the shortcut is declared in,
+    // then compare exactly. The platforms arrive from opposite directions:
+    // macOS already reports Command as PRIMARY (plus the Control bit Command
+    // implies), while on Windows and Linux the primary accelerator is the
+    // physical Control key and has to be lifted to PRIMARY.
+    let resolved = match style {
+        PlatformShortcutStyle::Mac => pressed.without(Modifiers::CTRL),
+        PlatformShortcutStyle::Desktop => {
+            if pressed.contains(Modifiers::CTRL) && !pressed.contains(Modifiers::PRIMARY) {
+                pressed.without(Modifiers::CTRL) | Modifiers::PRIMARY
+            } else {
+                pressed
+            }
+        }
+    };
+    resolved == Shortcut::primary(expected).modifiers
+}
+
+/// Event modifier bits for the host's primary accelerator.
+///
+/// Tests synthesise the host's own chord through this rather than hard-coding
+/// Control, which is not the primary accelerator on macOS.
+#[cfg(test)]
+pub(crate) fn primary_modifier_event_bits() -> u32 {
+    match crate::platform::platform_facts().shortcut_style() {
+        PlatformShortcutStyle::Mac => 0b1000,
+        PlatformShortcutStyle::Desktop => 0b0010,
+    }
+}
+
+/// Event modifier bits for the accelerator that is not primary on this host.
+#[cfg(test)]
+pub(crate) fn non_primary_modifier_event_bits() -> u32 {
+    match crate::platform::platform_facts().shortcut_style() {
+        PlatformShortcutStyle::Mac => 0b0010,
+        PlatformShortcutStyle::Desktop => 0b1000,
+    }
+}
 
 /// A single shortcut entry in the editor.
 ///
@@ -681,14 +756,10 @@ impl Draw for ShortcutEditor {
                     break;
                 }
 
-                // Command name
-                let name_text: Cow<'_, str> = if entry.name.len() > 30 {
-                    // Use floor_char_boundary to avoid mid-char panic
-                    let boundary = floor_char_boundary(&entry.name, 27);
-                    Cow::Owned(format!("{}...", &entry.name[..boundary]))
-                } else {
-                    Cow::Borrowed(entry.name.as_str())
-                };
+                // Command name, elided by the shared character-budget primitive. The
+                // previous byte-boundary cut could split a multi-byte name and reserved
+                // three ASCII dot glyphs for the ellipsis.
+                let name_text: Cow<'_, str> = elide_end(&entry.name, 30);
 
                 // Key binding (right-aligned)
                 key_text.clear();
@@ -753,11 +824,14 @@ impl EventHandler for ShortcutEditor {
         }
         match event {
             Event::KeyPress { key, modifiers } => {
-                if *key == 90 && *modifiers == 2 {
+                // Undo and redo are the platform primary chord: Control+Z/Y on
+                // Windows and Linux, Command+Z/Y on macOS. A shifted chord is a
+                // different binding and stays unbound here.
+                if primary_shortcut_pressed(*key, *modifiers, Key::Z) {
                     let _ = self.undo();
                     return;
                 }
-                if *key == 89 && *modifiers == 2 {
+                if primary_shortcut_pressed(*key, *modifiers, Key::Y) {
                     let _ = self.redo();
                     return;
                 }
@@ -1127,5 +1201,57 @@ mod tests {
         se.undo();
         assert_eq!(se.get("can_undo").unwrap().as_bool(), Some(false));
         assert_eq!(se.get("can_redo").unwrap().as_bool(), Some(true));
+    }
+
+    /// The shared matcher follows `Shortcut::primary`: Control on Windows/Linux,
+    /// Command on macOS, for both undo and redo.
+    #[test]
+    fn primary_shortcut_matches_ctrl_on_desktop_and_command_on_mac() {
+        use crate::shortcut::PlatformShortcutStyle::{Desktop, Mac};
+
+        // Windows/Linux encoding: Control is event bit 1.
+        assert!(primary_shortcut_matches(90, 0b0010, Key::Z, Desktop));
+        assert!(primary_shortcut_matches(89, 0b0010, Key::Y, Desktop));
+
+        // macOS encoding: Command is event bit 3.
+        assert!(primary_shortcut_matches(90, 0b1000, Key::Z, Mac));
+        assert!(primary_shortcut_matches(89, 0b1000, Key::Y, Mac));
+    }
+
+    /// Only the plain primary chord is undo: a shifted chord and the other
+    /// platform's accelerator are different bindings.
+    #[test]
+    fn primary_shortcut_rejects_shift_and_the_other_platform_chord() {
+        use crate::shortcut::PlatformShortcutStyle::{Desktop, Mac};
+
+        // Shift+Control+Z and Shift+Command+Z are not plain undo.
+        assert!(!primary_shortcut_matches(90, 0b0011, Key::Z, Desktop));
+        assert!(!primary_shortcut_matches(90, 0b1001, Key::Z, Mac));
+
+        // Command is not the primary accelerator on Windows/Linux, and Control
+        // is not the primary accelerator on macOS.
+        assert!(!primary_shortcut_matches(90, 0b1000, Key::Z, Desktop));
+        assert!(!primary_shortcut_matches(90, 0b0010, Key::Z, Mac));
+
+        // Alt turns the chord into a different binding on either platform.
+        assert!(!primary_shortcut_matches(90, 0b0110, Key::Z, Desktop));
+
+        // Only Z undoes and only Y redoes.
+        assert!(!primary_shortcut_matches(89, 0b0010, Key::Z, Desktop));
+        assert!(!primary_shortcut_matches(90, 0b0010, Key::Y, Desktop));
+    }
+
+    /// The control routes its own key handling through the shared matcher.
+    #[test]
+    fn the_shortcut_editor_undoes_with_the_primary_chord() {
+        let mut se = ShortcutEditor::new(Rect::new(0, 0, 400, 300));
+        se.add_shortcut(ShortcutEntry::new("save", "Save", "File").with_keys(vec!["Ctrl+S"]));
+        se.update_shortcut_keys("save", vec!["Ctrl+Shift+S".to_string()]);
+
+        se.handle_event(&Event::KeyPress { key: 90, modifiers: primary_modifier_event_bits() });
+        assert_eq!(se.shortcuts()[0].keys, vec!["Ctrl+S"]);
+
+        se.handle_event(&Event::KeyPress { key: 89, modifiers: primary_modifier_event_bits() });
+        assert_eq!(se.shortcuts()[0].keys, vec!["Ctrl+Shift+S"]);
     }
 }

@@ -12,8 +12,8 @@
 //! nothing in `src/platform` feeds it, and no global instance exists. The host
 //! application creates it, registers shortcuts on it, and calls
 //! [`ShortcutManager::handle_event`] from its own event loop for every key
-//! press it wants shortcuts to see — the same division Qt draws with
-//! `QShortcut` living inside the application, not inside a widget. The
+//! press it wants shortcuts to see — the same division 参考工具包 draws with
+//! `shortcut` living inside the application, not inside a widget. The
 //! framework deliberately does not intercept keys behind the host's back:
 //! whether (and in which window, and in which focus order) a key press is
 //! offered to the shortcut map is an application policy, and the platform

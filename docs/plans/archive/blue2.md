@@ -588,7 +588,6 @@ where
 
 /// Wraps a C-exported function body so that any internal panic
 /// is caught and converted to an error return value.
-///
 /// # Usage
 /// ```ignore
 /// #[no_mangle]

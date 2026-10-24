@@ -2,6 +2,8 @@
 <!-- control: popover | appearance: light -->
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(240,240,240,1.00)" />
+  <filter id="shadow_blur_12"><feGaussianBlur stdDeviation="6" /></filter>
+  <rect x="0" y="64" width="240" height="120" fill="rgba(0,0,0,0.16)" filter="url(#shadow_blur_12)" />
   <rect x="0" y="60" width="240" height="120" rx="8" ry="8" fill="rgba(243,237,247,1.00)" />
   <rect x="0" y="60" width="240" height="120" rx="8" ry="8" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
   <path d="M 60 50 L 55 60 L 65 60 Z" fill="rgba(243,237,247,1.00)" stroke="none" stroke-width="1" />

@@ -864,14 +864,10 @@ impl Draw for ImageGallery {
             if let Some(image) = self.images.get(img_idx) {
                 if let Some(ref label) = image.label {
                     let font = effective_font(style);
-                    // Borrow the label unless it actually needs truncating. `label.clone()`
-                    // copied every visible caption per frame for the common fitting case.
-                    let label_text: Cow<'_, str> = if label.len() > 10 {
-                        let boundary = crate::widget::text_utils::floor_char_boundary(label, 8);
-                        Cow::Owned(format!("{}..", &label[..boundary]))
-                    } else {
-                        Cow::Borrowed(label.as_str())
-                    };
+                    // Borrow the label unless it actually needs truncating, and let the
+                    // shared primitive own the character budget. `label.clone()` copied
+                    // every visible caption per frame for the common fitting case.
+                    let label_text: Cow<'_, str> = crate::widget::text_utils::elide_end(label, 10);
                     let label_metrics = context.measure_text(&label_text, font);
                     let label_x = thumb_rect.x
                         + (self.thumbnail_size as i32 - label_metrics.width as i32) / 2;

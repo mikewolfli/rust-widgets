@@ -47,7 +47,11 @@ pub(crate) mod displays;
 
 /// AppKit environment facts (contrast, reduced motion, locale) for the style layer.
 ///
-/// Gated with the rest of the cocoa code: it messages `NSWorkspace`/`NSLocale`.
+/// Also owns the one notification subscription in this backend: the system-colour observer
+/// that asks the theme manager to re-derive an accent-based palette. The rest of the facts are
+/// on-demand reads taken into the frame's environment snapshot.
+///
+/// Gated with the rest of the cocoa code: it messages `NSWorkspace`/`NSLocale`/`NSNotificationCenter`.
 #[cfg(feature = "cocoa-legacy")]
 pub(crate) mod environment;
 
@@ -67,6 +71,13 @@ pub(crate) mod cg;
 /// (see `src/widget/mod.rs`), and this module is built on it.
 #[cfg(all(feature = "cocoa-legacy", widgets_unstripped))]
 pub(crate) mod canvas;
+
+/// CoreVideo display-link callback that paces the canvas frame heartbeat.
+///
+/// Gated with `canvas.rs`, its only consumer: the callback exists to wake the same frame loop,
+/// and a profile without a widget runtime has no loop to wake.
+#[cfg(all(feature = "cocoa-legacy", widgets_unstripped))]
+pub(crate) mod display_link;
 
 /// Cocoa 0.24 types and helpers (legacy, behind `cocoa-legacy` feature).
 #[cfg(feature = "cocoa-legacy")]

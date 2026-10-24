@@ -32,15 +32,24 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// Status bar widget — shows status messages and permanent widgets.
 ///
 /// Holds two independent strings: a transient `message` on the left and a
-/// `permanent_message` on the right. "Permanent" describes the intended role,
-/// not the implementation — both fields are plain stored strings and nothing
-/// clears either on a timer. See [`StatusBar::show_message`].
+/// `permanent_message` on the right. The transient message is cleared when its
+/// caller-supplied timeout elapses; the permanent message stays until replaced.
+/// See [`StatusBar::show_message`].
 ///
 pub struct StatusBar {
     base: BaseWidget,
     message: String,
     permanent_message: String,
     size_grip_enabled: bool,
+    /// Remaining lifetime of the transient message, or `None` for "until replaced".
+    ///
+    /// Stored as the timeout itself plus [`StatusBar::elapsed_ms`] rather than an
+    /// absolute deadline: the widget is driven by `Widget::tick(delta_ms)`, which has
+    /// no clock, so a deadline in milliseconds-since-start would need one it does not
+    /// have.
+    message_deadline_ms: Option<u64>,
+    /// Milliseconds accumulated against [`StatusBar::message_deadline_ms`].
+    elapsed_ms: u64,
     /// Emitted with the new message text whenever a **visible** message change occurs —
     /// including the empty string emitted by [`StatusBar::clear_message`]. A disabled status
     /// bar shows no message, so [`StatusBar::show_message`] stores the value without emitting;
@@ -58,6 +67,8 @@ impl StatusBar {
             message: String::new(),
             permanent_message: String::new(),
             size_grip_enabled: true,
+            message_deadline_ms: None,
+            elapsed_ms: 0,
             message_changed: Signal1::new(),
         }
     }
@@ -77,11 +88,15 @@ impl StatusBar {
     pub fn size_grip_enabled(&self) -> bool {
         self.size_grip_enabled
     }
-    /// Shows a transient message for `_timeout_ms` milliseconds.
+    /// Shows a transient message for `timeout_ms` milliseconds.
     ///
-    /// The widget does not schedule clearing, so a message stays until
-    /// [`StatusBar::clear_message`] or another `show_message` call. The caller
-    /// owns the timeout. Emits `message_changed` and requests a redraw.
+    /// A non-zero timeout schedules clearing through [`Widget::tick`]: the widget
+    /// accumulates the frame deltas the runtime already delivers and calls
+    /// [`StatusBar::clear_message`] when the timeout elapses. `0` keeps the message
+    /// until it is replaced or cleared explicitly, which is what the property writer
+    /// and the existing callers expect.
+    ///
+    /// Emits `message_changed` and requests a redraw.
     ///
     /// # Disabled contract
     ///
@@ -89,8 +104,10 @@ impl StatusBar {
     /// announcing the change would report a transition the user never saw. The message is
     /// still stored (the host owns the data) and the suppression is queryable through
     /// [`StatusBar::message_changed_suppression_reason`].
-    pub fn show_message(&mut self, message: impl Into<String>, _timeout_ms: u64) {
+    pub fn show_message(&mut self, message: impl Into<String>, timeout_ms: u64) {
         self.message = message.into();
+        self.elapsed_ms = 0;
+        self.message_deadline_ms = (timeout_ms > 0).then_some(timeout_ms);
         // The strip paints the message, so a change to it is visible whether or not a host is
         // listening on `message_changed`. Request the repaint **before** the enabled check, so a
         // message stored while disabled still paints when the control is re-enabled.
@@ -107,6 +124,8 @@ impl StatusBar {
     /// Gated by `enabled` for the same reason as [`StatusBar::show_message`].
     pub fn clear_message(&mut self) {
         self.message.clear();
+        self.message_deadline_ms = None;
+        self.elapsed_ms = 0;
         self.base.request_redraw();
         if !self.base.is_enabled() {
             // See `message_changed_suppression_reason`.
@@ -250,6 +269,29 @@ impl Widget for StatusBar {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(400, 24)
+    }
+
+    /// Advances the transient message's timeout.
+    ///
+    /// Returns `true` while the message still has time left, which is the same
+    /// "a frame is owed" contract every animating control uses. The timeout is the
+    /// widget's own promise (`show_message(_, timeout_ms)`), so it must be honoured
+    /// here rather than by a caller that already passed the value in.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        let Some(timeout_ms) = self.message_deadline_ms else {
+            return false;
+        };
+        self.elapsed_ms = self.elapsed_ms.saturating_add(u64::from(delta_ms));
+        if self.elapsed_ms >= timeout_ms {
+            self.clear_message();
+            false
+        } else {
+            true
+        }
+    }
+
+    fn is_animating(&self) -> bool {
+        self.message_deadline_ms.is_some()
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -472,6 +514,27 @@ mod tests {
         assert!(sb.message().is_empty());
         sb.show_message("Ready", 3000);
         assert_eq!(sb.message(), "Ready");
+    }
+
+    #[test]
+    fn statusbar_message_timeout_clears_on_tick() {
+        let mut sb = StatusBar::new(Rect::new(0, 0, 800, 24));
+        sb.show_message("Busy", 50);
+        assert!(sb.is_animating(), "a timed message owes frames");
+        assert!(sb.tick(20), "still inside the timeout");
+        assert_eq!(sb.message(), "Busy");
+        assert!(!sb.tick(40), "the frame that crosses the deadline is the last");
+        assert!(sb.message().is_empty(), "the timeout must clear the message");
+        assert!(!sb.is_animating());
+    }
+
+    #[test]
+    fn statusbar_message_without_timeout_persists() {
+        let mut sb = StatusBar::new(Rect::new(0, 0, 800, 24));
+        sb.show_message("Ready", 0);
+        assert!(!sb.is_animating());
+        assert!(!sb.tick(10_000));
+        assert_eq!(sb.message(), "Ready", "timeout 0 means until replaced");
     }
 
     #[test]

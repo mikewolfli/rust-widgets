@@ -525,6 +525,21 @@ impl EventHandler for OtpInput {
                     }
                 }
             },
+            // An IME commit is a run of characters the input method resolved. It fills the
+            // boxes character by character through `insert_char`, so it obeys the control's own
+            // rules — one alphanumeric per box, focus advances, a full code refuses the rest —
+            // rather than replacing the code as a paste does. Formatting characters are skipped
+            // for the same reason `paste` drops them.
+            Event::ImeCommit { text } => {
+                for ch in text.chars() {
+                    if !ch.is_alphanumeric() {
+                        continue;
+                    }
+                    if !self.insert_char(ch) {
+                        break;
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -730,9 +745,13 @@ impl Draw for OtpInput {
                     Some(ch) => *ch,
                     None => continue,
                 };
+                // Encode into a stack buffer: `glyph.to_string()` allocated once per
+                // visible (or masked) cell on every paint.
+                let mut glyph_buf = [0u8; 4];
+                let glyph_text = glyph.encode_utf8(&mut glyph_buf);
                 context.draw_text(
                     Point::new(slot.x + (slot.width as i32) / 2, line.y),
-                    &glyph.to_string(),
+                    glyph_text,
                     &font,
                     color,
                     HorizontalAlignment::Center,
@@ -744,9 +763,11 @@ impl Draw for OtpInput {
                 if index + 1 < self.length {
                     let (box_width, gap) = self.box_metrics();
                     let sep_x = slot.x + box_width as i32 + (gap as i32) / 2;
+                    let mut sep_buf = [0u8; 4];
+                    let sep_text = sep.encode_utf8(&mut sep_buf);
                     context.draw_text(
                         Point::new(sep_x, line.y),
-                        &sep.to_string(),
+                        sep_text,
                         &font,
                         background.blend(&text_color, 0.5),
                         HorizontalAlignment::Center,
@@ -815,6 +836,29 @@ mod tests {
         assert!(otp.is_complete());
 
         assert!(!otp.insert_char('7'), "a full code accepts no more characters");
+        assert_eq!(otp.value(), "123456");
+    }
+
+    /// An IME commit fills the next boxes one character at a time.
+    ///
+    /// The commit is not a paste: it starts at the focused box, advances the focus per accepted
+    /// character, drops formatting, and stops at the end of the row — the control's existing
+    /// `insert_char` semantics rather than a whole-value replacement.
+    #[test]
+    fn ime_commit_fills_the_next_boxes() {
+        let mut otp = otp();
+        otp.handle_event(&Event::ime_commit("12"));
+        assert_eq!(otp.value(), "12");
+        assert_eq!(otp.focused_index(), 2, "the focus advances past the committed characters");
+
+        // Formatting inside the commit is skipped; the alphanumerics still fill forward.
+        otp.handle_event(&Event::ime_commit("3-4"));
+        assert_eq!(otp.value(), "1234");
+        assert_eq!(otp.focused_index(), 4);
+
+        // A commit on a full code is refused, exactly as a keystroke is.
+        otp.set_value("123456");
+        otp.handle_event(&Event::ime_commit("7"));
         assert_eq!(otp.value(), "123456");
     }
 

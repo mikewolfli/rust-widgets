@@ -25,6 +25,14 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// The width of the drag grip at the strip's trailing end: 12 px.
+///
+/// The grip is a hit target, not just ink: a press inside it starts a drag rather than
+/// activating the item underneath, so it has to be wide enough to acquire on a touch screen
+/// while still leaving nearly the whole strip for actions.
+const TOOLBAR_DRAG_GRIP_WIDTH: u32 = 12;
+
 /// Orientation of a toolbar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolBarOrientation {
@@ -162,6 +170,16 @@ pub struct ToolBar {
     icon_size: f32,
     movable: bool,
     floatable: bool,
+    /// The pointer offset from the control's origin while a drag is in flight, or `None`
+    /// when no drag is active. Storing the offset rather than the press point means every
+    /// move can recompute the geometry from the live pointer without accumulating rounding
+    /// error.
+    drag_state: Option<Point>,
+    /// The strip's band at the moment the drag started.
+    ///
+    /// A release outside this rectangle is what "dragged out of the dock band" means; the
+    /// current band travels with the control and so cannot answer that question on its own.
+    drag_dock_band: Option<Rect>,
     /// Whether the toolbar currently lives in its own top-level window. See
     /// [`ToolBar::is_top_level`] for why this is not a `BaseWidget` flag.
     top_level: bool,
@@ -182,6 +200,12 @@ pub struct ToolBar {
     pub top_level_changed: Signal1<bool>,
     /// Emitted when the toolbar's visibility changes, by [`ToolBar::set_visible`].
     pub visibility_changed: Signal1<bool>,
+    /// Emitted when the toolbar is docked or floated, in parallel with
+    /// [`Self::top_level_changed`].
+    ///
+    /// A host that re-lays out its window around a floating toolbar subscribes here; the signal
+    /// carries the new floating state so the re-layout does not have to read the control back.
+    pub float_changed: Signal1<bool>,
 }
 impl ToolBar {
     /// Creates a horizontal toolbar with a default icon size of 24 pixels, and
@@ -196,6 +220,8 @@ impl ToolBar {
             icon_size: 24.0,
             movable: true,
             floatable: true,
+            drag_state: None,
+            drag_dock_band: None,
             top_level: false,
             items: Vec::new(),
             hovered_index: None,
@@ -203,6 +229,7 @@ impl ToolBar {
             orientation_changed: Signal1::new(),
             top_level_changed: Signal1::new(),
             visibility_changed: Signal1::new(),
+            float_changed: Signal1::new(),
         }
     }
     /// The direction items are laid out in.
@@ -260,6 +287,13 @@ impl ToolBar {
             return;
         }
         self.movable = v;
+        if !v {
+            // A drag that loses its permission must end rather than continue with the old
+            // anchor: the next move would otherwise keep moving a toolbar the host has just
+            // pinned in place.
+            self.drag_state = None;
+            self.drag_dock_band = None;
+        }
         self.base.request_redraw();
     }
     /// Allows or forbids tearing the toolbar off; repaints either way.
@@ -335,6 +369,11 @@ impl ToolBar {
         self.top_level = top_level;
         self.base.request_redraw();
         self.top_level_changed.emit(top_level);
+        // The float state is the fact a host needs to re-flow its window around this strip;
+        // `top_level_changed` already reports it, and `float_changed` is the host-facing name
+        // for the same change. Emitting both keeps a listener from having to know which one
+        // this control happens to expose.
+        self.float_changed.emit(top_level);
         true
     }
     /// Appends an action item and returns its index in [`ToolBar::items`].
@@ -424,6 +463,43 @@ impl ToolBar {
     /// the hit test — and `draw` both read.
     fn band_rect(&self) -> Rect {
         ControlMetrics::full_width_band(self.geometry(), dimensions::TOOLBAR_HEIGHT)
+    }
+
+    /// The drag grip: a [`TOOLBAR_DRAG_GRIP_WIDTH`]-wide strip at the band's trailing end.
+    ///
+    /// # Why the grip is derived from the band, not from the control's rectangle
+    ///
+    /// The band is what is painted and what every item box is measured against (see
+    /// [`Self::band_rect`]). Deriving the grip from anything else would put the affordance in
+    /// a place the strip does not cover on a short control, or leave it floating below a tall
+    /// one. The trailing end follows the orientation: the right edge of a horizontal strip,
+    /// the bottom edge of a vertical one.
+    fn drag_band(&self) -> Rect {
+        let band = self.band_rect();
+        match self.orientation {
+            ToolBarOrientation::Horizontal => {
+                let width = TOOLBAR_DRAG_GRIP_WIDTH.min(band.width);
+                Rect::new(band.x + band.width as i32 - width as i32, band.y, width, band.height)
+            }
+            ToolBarOrientation::Vertical => {
+                let height = TOOLBAR_DRAG_GRIP_WIDTH.min(band.height);
+                Rect::new(band.x, band.y + band.height as i32 - height as i32, band.width, height)
+            }
+        }
+    }
+
+    /// Ends an in-flight drag, floating the toolbar when it was released away from its dock.
+    fn finish_drag(&mut self, pos: Point) {
+        self.drag_state = None;
+        let Some(dock_band) = self.drag_dock_band.take() else {
+            return;
+        };
+        // "Out of the dock band" is the release point, not the moved rectangle: the control
+        // follows the pointer, so its own band always sits under the release. The band captured
+        // at press is the fixed reference that makes the phrase meaningful.
+        if self.floatable && !dock_band.contains_point(pos) {
+            let _ = self.set_top_level(true);
+        }
     }
 
     /// Every item's box, placed by the one advance every item shares.
@@ -539,6 +615,11 @@ impl Widget for ToolBar {
                     CapabilityValue::Bool(*v)
                 }))
             }
+            "float_changed" => {
+                Some(EventSignalRef::mapped("float_changed", &self.float_changed, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
             _ => None,
         }
     }
@@ -631,9 +712,38 @@ impl EventHandler for ToolBar {
         }
         match event {
             Event::MouseMove { pos } => {
-                self.hovered_index = self.hit_item(*pos);
+                // The grip is not an item: hovering it must not light up the action underneath
+                // the affordance the pointer is actually over.
+                let over_grip = self.movable && self.drag_band().contains_point(*pos);
+                self.hovered_index = if over_grip { None } else { self.hit_item(*pos) };
+                if !self.movable {
+                    return;
+                }
+                if let Some(offset) = self.drag_state {
+                    let current = self.geometry();
+                    let next = Rect::new(
+                        pos.x - offset.x,
+                        pos.y - offset.y,
+                        current.width,
+                        current.height,
+                    );
+                    if next != current {
+                        // `set_geometry` stores the rectangle but does not repaint — the drag is
+                        // only visible because the next frame is requested here.
+                        self.base.set_geometry(next);
+                        self.base.request_redraw();
+                    }
+                }
             }
             Event::MousePress { pos, button: 1, .. } => {
+                // The grip wins over the item it overlaps, and only when dragging is permitted.
+                // A non-movable toolbar draws no grip, so a press there stays an ordinary press.
+                if self.movable && self.drag_band().contains_point(*pos) {
+                    let origin = self.geometry();
+                    self.drag_state = Some(Point::new(pos.x - origin.x, pos.y - origin.y));
+                    self.drag_dock_band = Some(self.band_rect());
+                    return;
+                }
                 if let Some(idx) = self.hit_item(*pos) {
                     if let Some(item) = self.items.get_mut(idx) {
                         if item.is_enabled() && !item.is_separator() {
@@ -645,6 +755,9 @@ impl EventHandler for ToolBar {
                         }
                     }
                 }
+            }
+            Event::MouseRelease { pos, button: 1 } => {
+                self.finish_drag(*pos);
             }
             _ => { /* Other events are not relevant */ }
         }
@@ -746,6 +859,34 @@ impl Draw for ToolBar {
             let font = effective_font(style);
             let line = context.text_line(item_band, font);
             context.draw_text_fitted_cow(line, item.text(), font, fg, HorizontalAlignment::Center);
+        }
+
+        // ── The drag affordance ──
+        //
+        // Only a movable toolbar can be dragged, so only a movable toolbar advertises it. The
+        // six dots are a 2x3 grid on a horizontal strip and a 3x2 grid on a vertical one, placed
+        // inside the same trailing band the press reads — the ink and the hit target are one
+        // derivation.
+        if self.movable {
+            let grip = self.drag_band();
+            let grip_ink = surface.contrast_color().with_alpha(110);
+            let dot: u32 = 2;
+            let gap: i32 = 3;
+            let (columns, rows) = match self.orientation {
+                ToolBarOrientation::Horizontal => (2i32, 3i32),
+                ToolBarOrientation::Vertical => (3i32, 2i32),
+            };
+            let total_width = columns * dot as i32 + (columns - 1) * gap;
+            let total_height = rows * dot as i32 + (rows - 1) * gap;
+            let start_x = grip.x + (grip.width as i32 - total_width) / 2;
+            let start_y = grip.y + (grip.height as i32 - total_height) / 2;
+            for row in 0..rows {
+                for column in 0..columns {
+                    let x = start_x + column * (dot as i32 + gap);
+                    let y = start_y + row * (dot as i32 + gap);
+                    context.fill_rect(Rect::new(x, y, dot, dot), grip_ink);
+                }
+            }
         }
     }
 }
@@ -855,5 +996,81 @@ mod tests {
             bands[0].y + bands[0].height as i32,
             "the second item follows the first one's own box down the strip: {bands:?}"
         );
+    }
+
+    /// A press on the grip followed by a move translates the control in real time.
+    ///
+    /// `movable` used to be a stored permission with no gesture behind it: the flag could be
+    /// read, set and even published through the property contract, and the toolbar still could
+    /// not be dragged. The grip band at the strip's trailing end is the missing entry point;
+    /// this pins that a move while it is held writes the new rectangle to the base.
+    #[test]
+    fn dragging_the_grip_moves_the_toolbar() {
+        let mut tool_bar = ToolBar::new(Rect::new(0, 0, 240, 36));
+        // Docking is a separate behaviour; keep this test about the translation itself.
+        tool_bar.set_floatable(false);
+        let grip = tool_bar.drag_band();
+        let press = Point::new(grip.x + 2, grip.y + 2);
+
+        tool_bar.handle_event(&Event::MousePress { pos: press, button: 1, modifiers: 0 });
+        tool_bar.handle_event(&Event::MouseMove { pos: Point::new(press.x + 40, press.y + 10) });
+
+        assert_eq!(tool_bar.geometry().x, 40, "the strip follows the pointer horizontally");
+        assert_eq!(tool_bar.geometry().y, 10, "and vertically");
+        assert_eq!(
+            tool_bar.geometry().width,
+            240,
+            "a drag moves the control, it does not resize it"
+        );
+        assert_eq!(tool_bar.geometry().height, 36);
+    }
+
+    /// `movable = false` is a real refusal, not a drawn decoration.
+    #[test]
+    fn a_non_movable_toolbar_ignores_the_drag_gesture() {
+        let mut tool_bar = ToolBar::new(Rect::new(0, 0, 240, 36));
+        tool_bar.set_movable(false);
+        let grip = tool_bar.drag_band();
+        let press = Point::new(grip.x + 2, grip.y + 2);
+        let before = tool_bar.geometry();
+
+        tool_bar.handle_event(&Event::MousePress { pos: press, button: 1, modifiers: 0 });
+        tool_bar.handle_event(&Event::MouseMove { pos: Point::new(press.x + 40, press.y + 10) });
+
+        assert_eq!(tool_bar.geometry(), before, "a toolbar that is not movable must stay put");
+    }
+
+    /// Releasing away from the strip's dock band floats a floatable toolbar and says so.
+    ///
+    /// The host can only re-lay out around a torn-off toolbar if the control tells it that the
+    /// docking state changed; `float_changed` is that notification, emitted alongside the
+    /// pre-existing `top_level_changed`.
+    #[test]
+    fn releasing_outside_the_dock_band_floats_and_emits_float_changed() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut tool_bar = ToolBar::new(Rect::new(0, 0, 240, 36));
+        let floated = Arc::new(AtomicBool::new(false));
+        let count = Arc::new(AtomicUsize::new(0));
+        {
+            let floated = Arc::clone(&floated);
+            let count = Arc::clone(&count);
+            tool_bar.float_changed.connect(move |value| {
+                floated.store(*value, Ordering::SeqCst);
+                count.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        let grip = tool_bar.drag_band();
+        let press = Point::new(grip.x + 2, grip.y + 2);
+        tool_bar.handle_event(&Event::MousePress { pos: press, button: 1, modifiers: 0 });
+        let away = Point::new(press.x + 400, press.y + 200);
+        tool_bar.handle_event(&Event::MouseMove { pos: away });
+        tool_bar.handle_event(&Event::MouseRelease { pos: away, button: 1 });
+
+        assert!(tool_bar.is_top_level(), "a release away from the dock must float the strip");
+        assert_eq!(count.load(Ordering::SeqCst), 1, "the host is told exactly once");
+        assert!(floated.load(Ordering::SeqCst), "and told the new floating state");
     }
 }

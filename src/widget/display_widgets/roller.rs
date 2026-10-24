@@ -8,7 +8,7 @@
 
 use crate::compat::{String, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
+use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
 use crate::widget::capability::coercion::{expect_string_list, expect_u32, expect_usize};
@@ -325,13 +325,16 @@ impl EventHandler for Roller {
             return;
         }
         match event {
-            // Wheel / scroll: positive delta.y scrolls forward (next item),
-            // negative delta.y scrolls backward (previous item).
-            Event::Wheel { delta, modifiers: _ } => {
-                if delta.y > 0 && self.selected_index + 1 < self.options.len() {
-                    self.set_selected_index(self.selected_index + 1);
-                } else if delta.y < 0 && self.selected_index > 0 {
-                    self.set_selected_index(self.selected_index - 1);
+            // Wheel / scroll: one notch is one option. A positive delta moves the
+            // content down and advances to the next option; a negative delta moves
+            // back. `set_selected_index` clamps at both ends.
+            Event::Wheel { delta, modifiers } => {
+                let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
+                if scroll.lines_y != 0 {
+                    let last = self.options.len().saturating_sub(1);
+                    let next = (self.selected_index as i64 + scroll.lines_y as i64)
+                        .clamp(0, last as i64) as usize;
+                    self.set_selected_index(next);
                 }
             }
             // Mouse press: determine which item was clicked relative to the

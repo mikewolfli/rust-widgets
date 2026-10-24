@@ -11,6 +11,7 @@
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::shortcut::Key;
 use crate::signal::Signal1;
 use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::coercion::{
@@ -19,6 +20,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::input_widgets::shortcut_editor::primary_shortcut_pressed;
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -567,11 +569,14 @@ impl EventHandler for SearchBox {
                 if !self.focused {
                     return;
                 }
-                if *modifiers == 2 && *key == 90 {
+                // Undo and redo are the platform primary chord: Control+Z/Y on
+                // Windows and Linux, Command+Z/Y on macOS. A shifted chord is a
+                // different binding and stays unbound here.
+                if primary_shortcut_pressed(*key, *modifiers, Key::Z) {
                     let _ = self.undo();
                     return;
                 }
-                if *modifiers == 2 && *key == 89 {
+                if primary_shortcut_pressed(*key, *modifiers, Key::Y) {
                     let _ = self.redo();
                     return;
                 }

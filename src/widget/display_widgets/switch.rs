@@ -23,7 +23,8 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{
-    focus_ring_color, ControlMetrics, FocusRing, SwitchGeometry, FOCUS_RING_WIDTH,
+    active_profile, focus_ring_color, profile_metrics, ControlMetrics, ControlMetricsProfile,
+    FocusRing, SwitchGeometry, FOCUS_HALO_BLUR_RADIUS, FOCUS_RING_WIDTH,
 };
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -190,9 +191,10 @@ impl Switch {
     ///
     /// Setting it also requests a redraw, because the flag changes what is painted.
     pub fn set_hovered(&mut self, hovered: bool) {
-        // Delegate to the trait default, which writes the flag **and** re-resolves the theme for
-        // `switch:hover`. See `Button::set_hovered` for why an inherent method must delegate
-        // through the trait object rather than writing the field itself.
+        // Delegate to the trait implementation, which writes the flag **and** re-resolves the
+        // theme for `switch:hover`; this control's implementation submits a narrow repaint.
+        // See `Button::set_hovered` for why an inherent method must delegate through the trait
+        // object rather than writing the field itself.
         <dyn Widget>::set_hovered(self, hovered);
     }
 
@@ -212,6 +214,24 @@ impl Switch {
     /// would silently shadow it at every call site.
     pub fn drawn_shape(&self) -> SwitchGeometry {
         self.geometry
+    }
+
+    /// The shape the layout and paint paths actually use.
+    ///
+    /// # Why the stored preset is not overwritten
+    ///
+    /// `geometry` records the shape the **caller** chose, and `drawn_shape` reports that choice.
+    /// A switch still on the default preset, [`SwitchGeometry::MATERIAL`], is the one the metrics
+    /// profile may resize: a Macos-profile theme draws macOS's `38x22` track, while Material's
+    /// profile answers the same `52x32` the control always drew. An explicitly chosen preset — the
+    /// iOS switch's `51x31` — is a platform shape in its own right and is left alone. Comparing
+    /// the whole preset rather than the track alone also preserves a caller's custom thumb or
+    /// stretch even when its track happens to match the default width and height.
+    fn effective_geometry(&self) -> SwitchGeometry {
+        if self.geometry != SwitchGeometry::MATERIAL {
+            return self.geometry;
+        }
+        SwitchGeometry { track: profile_metrics(active_profile()).switch_track, ..self.geometry }
     }
 
     /// Replaces the drawn shape.
@@ -267,9 +287,10 @@ impl Switch {
     /// smaller than its own track has no thumb to point at, and the caller must be able to
     /// tell that from a thumb at the origin.
     pub fn thumb_rect(&self, rect: Rect) -> Option<Rect> {
-        let track_rect = ControlMetrics::center_in(rect, self.geometry.track);
-        let thumb_size = self.geometry.thumb_size();
-        let thumb_inset = self.geometry.thumb_inset;
+        let shape = self.effective_geometry();
+        let track_rect = ControlMetrics::center_in(rect, shape.track);
+        let thumb_size = shape.thumb_size();
+        let thumb_inset = shape.thumb_inset;
         let thumb_size = thumb_size.min(track_rect.height.saturating_sub(thumb_inset * 2));
         if thumb_size == 0 {
             return None;
@@ -287,8 +308,8 @@ impl Switch {
         // the shape asks for it. The stretch is applied to the *span* the thumb travels
         // over as well as to the thumb itself, so a stretched thumb still stops at the
         // track's inner edge instead of overhanging it.
-        let held = self.base.is_pressed() && self.geometry.press_stretch > 0;
-        let stretch = if held { self.geometry.press_stretch } else { 0 };
+        let held = self.base.is_pressed() && shape.press_stretch > 0;
+        let stretch = if held { shape.press_stretch } else { 0 };
         let drawn_width = thumb_size + stretch * 2;
         let travel_span = track_rect
             .width
@@ -340,6 +361,60 @@ impl Switch {
             0.0
         }
     }
+
+    /// Submits one animated frame as damage bounded by the painted box plus the
+    /// focus-ring and halo margin.
+    ///
+    /// `bounds` is `Some` only when the caller already has the rectangle; interaction
+    /// paths pass `None` and let the runtime derive the box.
+    ///
+    /// A control that is unmounted falls back to [`BaseWidget::request_redraw`], which
+    /// keeps the redraw signal contract for host-owned controls. An interaction frame in
+    /// [`crate::widget::runtime::RepaintMode::Full`] still routes through
+    /// [`crate::widget::runtime::request_repaint_rect`], whose documented fallback repaints
+    /// the whole control.
+    fn request_frame_repaint(&self, bounds: Option<Rect>) {
+        let _ = bounds;
+        #[cfg(not(alloc_frugal))]
+        {
+            if let Some(id) = crate::widget::runtime::registry_id_of(self.id()) {
+                let narrow = crate::widget::runtime::repaint_mode(id)
+                    != crate::widget::runtime::RepaintMode::Full;
+                // Interaction paths may take the whole-control fallback in `Full`;
+                // `bounds` lets a caller that already has the rectangle skip the lookup.
+                if narrow || bounds.is_none() {
+                    let damage = bounds
+                        .or_else(|| crate::widget::runtime::painted_box_with_damage_margin(id))
+                        .unwrap_or_else(|| self.damage_bounds());
+                    crate::widget::runtime::request_repaint_rect(id, damage);
+                    // The replaced `request_redraw` emitted this signal; keep it.
+                    self.base.redraw_requested.emit();
+                    return;
+                }
+            }
+        }
+        self.base.request_redraw();
+    }
+
+    /// This control's own rectangle grown by
+    /// [`crate::widget::metrics::DAMAGE_MARGIN`].
+    ///
+    /// Used when the runtime cannot read the mounted geometry back, which is the case
+    /// while an interaction event holds the control out of the registry. Deriving the
+    /// rectangle from `Widget::geometry` yields the same answer the runtime returns for
+    /// the mounted control.
+    #[cfg(not(alloc_frugal))]
+    fn damage_bounds(&self) -> Rect {
+        let rect = self.geometry();
+        let margin = crate::widget::metrics::DAMAGE_MARGIN;
+        let offset = margin as i32;
+        Rect::new(
+            rect.x.saturating_sub(offset),
+            rect.y.saturating_sub(offset),
+            rect.width.saturating_add(margin).saturating_add(margin),
+            rect.height.saturating_add(margin).saturating_add(margin),
+        )
+    }
 }
 
 impl Widget for Switch {
@@ -349,19 +424,36 @@ impl Widget for Switch {
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
     }
+
+    /// Sets hover and repaints only the area this control can change.
+    ///
+    /// The flag write and theme re-resolution match the trait default; the repaint is
+    /// the narrow one, so a hover does not invalidate the whole control.
+    fn set_hovered(&mut self, hovered: bool) {
+        if self.base.is_hovered() == hovered {
+            return;
+        }
+        self.base.set_hovered(hovered);
+        self.set_state_theme_hook();
+        self.request_frame_repaint(None);
+    }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        // The hint describes the control's own floor rather than the drawn track: the track
-        // is `self.geometry.track`, but a switch that can show a focus ring needs room for the
-        // ring's inset on both sides. `SWITCH_TRACK.width` alone made the hint *narrower*
-        // than the width at which the ring is drawable, so `size_hint` described a control
-        // whose focus state could not be rendered. The height stays the track's own.
-        // The height is the track's own; the width is the track plus one focus ring either side.
-        // Both come from the shared table, so this hint and the control's geometry are one fact.
-        let hint = crate::widget::metrics::switch_hint_size(self.geometry.track, FOCUS_RING_WIDTH);
+        // The hint describes the control's own floor rather than the drawn track: the track is
+        // `self.effective_geometry().track` — the caller's preset, or the active profile's track
+        // for a switch on the default — but a switch that can show a focus ring needs room for the
+        // ring's inset on both sides. The track's width alone made the hint *narrower* than the
+        // width at which the ring is drawable, so `size_hint` described a control whose focus
+        // state could not be rendered. The height stays the track's own; the width is the track
+        // plus one focus ring either side. Both come from the shared table, so this hint and the
+        // control's geometry are one fact.
+        let hint = crate::widget::metrics::switch_hint_size(
+            self.effective_geometry().track,
+            FOCUS_RING_WIDTH,
+        );
         debug_assert!(
             hint.height >= crate::widget::metrics::dimensions::SLIDER_TRACK_HEIGHT,
             "a switch's hint must read the shared metric system"
@@ -488,14 +580,16 @@ impl Draw for Switch {
         // answer.
         //
         // The values come from the shared `dimensions` table rather than being three
-        // independent literals. As literals they were `52`/`32`/`2` here and `50`/`28` in
-        // `size_hint` — four numbers describing one control, with nothing tying them
-        // together, so the hint and the ink could (and did) describe different switches.
+        // independent literals, and the track itself follows the active metrics profile when
+        // the caller left the shape on its default. As literals they were `52`/`32`/`2` here
+        // and `50`/`28` in `size_hint` — four numbers describing one control, with nothing tying
+        // them together, so the hint and the ink could (and did) describe different switches.
         // `ControlMetrics::center_in` is the shared derivation for "fixed-size chrome
         // centred in the area I was given", and it clamps *down* rather than up: a control
         // laid out smaller than the nominal track must not paint outside the rectangle it
         // was given, since nothing clips a widget at this layer.
-        let track_rect = ControlMetrics::center_in(rect, self.geometry.track);
+        let shape = self.effective_geometry();
+        let track_rect = ControlMetrics::center_in(rect, shape.track);
         // The track's corner radius is half its height: a stadium. The thumb's own size and
         // position come from `Switch::thumb_rect`, so the two derivations cannot disagree.
         let track_height = track_rect.height;
@@ -647,17 +741,34 @@ impl Draw for Switch {
         // and only when the *reason* focus arrived warrants it: a pointer press focuses without
         // drawing a ring, Tab and Shortcut draw one. The reason is recorded by [`BaseWidget`] for
         // every control, which is why the answer cannot differ between controls.
+        //
+        // The macOS metrics profile draws AppKit's outer halo instead; all other profiles keep
+        // the inset stroke and its track-contrast colour.
         if self.visual_focus() {
-            let ring = FocusRing::for_control(rect, self.geometry.thumb_radius);
-            if ring.is_drawable() {
-                // The ring's colour is the contrast of the track it sits beside, so it reads
-                // on both the on and the off state rather than on one of them.
-                context.draw_rounded_rect_stroke(
-                    ring.rect,
-                    ring.radius,
-                    focus_ring_color(track_color.contrast_color()),
-                    FOCUS_RING_WIDTH,
-                );
+            if active_profile() == ControlMetricsProfile::Macos {
+                let halo = FocusRing::halo_for_control(rect, shape.thumb_radius);
+                if halo.is_drawable() {
+                    context.draw_box_shadow(
+                        halo.rect,
+                        focus_ring_color(track_color.contrast_color()),
+                        0,
+                        0,
+                        FOCUS_HALO_BLUR_RADIUS,
+                        1,
+                    );
+                }
+            } else {
+                let ring = FocusRing::for_control(rect, shape.thumb_radius);
+                if ring.is_drawable() {
+                    // The ring's colour is the contrast of the track it sits beside, so it reads
+                    // on both the on and the off state rather than on one of them.
+                    context.draw_rounded_rect_stroke(
+                        ring.rect,
+                        ring.radius,
+                        focus_ring_color(track_color.contrast_color()),
+                        FOCUS_RING_WIDTH,
+                    );
+                }
             }
         }
     }
@@ -687,7 +798,11 @@ impl EventHandler for Switch {
             Event::MousePress { pos, button: 1, .. } if enabled => {
                 // Arm only for a press that actually lands on the control; a press
                 // outside must not leave the latch armed for a later release.
-                self.pressed = self.base.contains_point_with_touch_expansion(*pos);
+                let pressed = self.base.contains_point_with_touch_expansion(*pos);
+                if pressed != self.pressed {
+                    self.pressed = pressed;
+                    self.request_frame_repaint(None);
+                }
             }
             Event::MouseRelease { pos, button: 1 } if self.pressed => {
                 self.pressed = false;
@@ -696,13 +811,18 @@ impl EventHandler for Switch {
                 if self.base.contains_point_with_touch_expansion(*pos) {
                     self.toggle();
                 }
+                self.request_frame_repaint(None);
             }
             Event::MouseRelease { button: 1, .. } => {
                 self.pressed = false;
             }
             #[cfg(feature = "touch")]
             Event::TouchBegin { pos, .. } if enabled => {
-                self.pressed = self.base.contains_point_with_touch_expansion(*pos);
+                let pressed = self.base.contains_point_with_touch_expansion(*pos);
+                if pressed != self.pressed {
+                    self.pressed = pressed;
+                    self.request_frame_repaint(None);
+                }
             }
             #[cfg(feature = "touch")]
             Event::TouchEnd { pos, .. } if self.pressed => {
@@ -710,6 +830,7 @@ impl EventHandler for Switch {
                 if self.base.contains_point_with_touch_expansion(*pos) {
                     self.toggle();
                 }
+                self.request_frame_repaint(None);
             }
             // D09-EVT-02: a withdrawn contact clears the latch without toggling. The
             // platform may normalise a `TouchCancel` to a `TouchEnd`; the internal cancel
@@ -717,7 +838,7 @@ impl EventHandler for Switch {
             #[cfg(feature = "touch")]
             event if crate::event::translator::is_touch_cancel(event) => {
                 self.pressed = false;
-                self.base.request_redraw();
+                self.request_frame_repaint(None);
             }
             #[cfg(feature = "touch")]
             Event::Tap { .. } if enabled => {
@@ -742,9 +863,13 @@ impl EventHandler for Switch {
             }
             Event::MouseEnter { .. } => {
                 self.set_hovered(true);
+                // The base records hover before this arm runs, so the setter above is a
+                // no-op for a pointer move. Submit the hover frame here explicitly.
+                self.request_frame_repaint(None);
             }
             Event::MouseLeave { .. } => {
                 self.set_hovered(false);
+                self.request_frame_repaint(None);
             }
             _ => {}
         }
@@ -755,6 +880,7 @@ impl EventHandler for Switch {
 mod tests {
     use super::*;
     use crate::core::Point;
+    use crate::widget::metrics::dimensions;
     use std::sync::{Arc, Mutex};
 
     #[test]
@@ -1173,5 +1299,128 @@ mod tests {
 
         sw.set_enabled(false);
         assert_eq!(sw.widget_state(), WidgetState::Disabled, "disabled outranks the latch");
+    }
+
+    /// The Material profile keeps the switch's `52x32` track and the hint derived from it.
+    ///
+    /// An explicitly chosen shape — the iOS preset — is a caller decision and must survive the
+    /// Material profile unchanged, so that is asserted in the same test.
+    #[test]
+    fn the_material_profile_keeps_the_switch_track() {
+        let _theme_guard = crate::style::theme_test_guard();
+        assert!(crate::theme::global_theme_manager().set_theme("default"));
+
+        let rect = crate::widget::census::CENSUS_RECT;
+        let sw = Switch::new(rect);
+        let hint = sw.size_hint();
+        let expected =
+            crate::widget::metrics::switch_hint_size(dimensions::SWITCH_TRACK, FOCUS_RING_WIDTH);
+        assert_eq!(hint, expected, "the old track and its per-side ring room");
+        assert_eq!(hint.height, dimensions::SWITCH_TRACK.height);
+
+        let thumb = sw.thumb_rect(rect).expect("a roomy switch has a thumb");
+        assert!(thumb.height <= dimensions::SWITCH_TRACK.height, "the thumb fits the track");
+
+        let mut ios = Switch::new(rect);
+        ios.set_geometry(SwitchGeometry::CUPERTINO);
+        assert_eq!(
+            ios.size_hint().height,
+            dimensions::CUPERTINO_SWITCH_TRACK.height,
+            "an explicitly chosen preset is not resized by the Material profile"
+        );
+    }
+
+    /// A Macos-profile theme draws macOS's `38x22` track instead of Material's `52x32`.
+    ///
+    /// The hint and the thumb are read through the same effective geometry, so the reported
+    /// floor and the drawn chrome cannot disagree about which track is in use.
+    #[cfg(device_profile)]
+    #[test]
+    fn a_macos_profile_theme_uses_the_compact_switch_track() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut theme = crate::theme::Theme::default();
+        theme.name = "p2-6-switch-macos".to_string();
+        theme.metrics_profile = ControlMetricsProfile::Macos;
+        {
+            let mut manager = crate::theme::global_theme_manager();
+            manager.register_theme(theme);
+            assert!(manager.set_theme("p2-6-switch-macos"));
+        }
+
+        let rect = crate::widget::census::CENSUS_RECT;
+        let sw = Switch::new(rect);
+        let hint = sw.size_hint();
+        let thumb = sw.thumb_rect(rect).expect("the compact track still holds a thumb");
+        assert!(crate::theme::global_theme_manager().set_theme("default"));
+
+        assert_eq!(hint.height, 22, "NSSwitch is 22 px tall: {hint:?}");
+        assert_eq!(hint.width, 38 + 2 * FOCUS_RING_WIDTH, "38 px plus the ring room: {hint:?}");
+        assert!(thumb.height <= 22, "the thumb is clamped to the compact track: {thumb:?}");
+        assert_eq!(
+            sw.drawn_shape(),
+            SwitchGeometry::MATERIAL,
+            "the profile changes the drawn track, not the preset the caller stored"
+        );
+    }
+
+    /// The Cupertino profile carries the iOS track, matching `SwitchGeometry::CUPERTINO`.
+    #[cfg(device_profile)]
+    #[test]
+    fn the_cupertino_profile_uses_the_ios_switch_track() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut theme = crate::theme::Theme::default();
+        theme.name = "p2-6-switch-cupertino".to_string();
+        theme.metrics_profile = ControlMetricsProfile::Cupertino;
+        {
+            let mut manager = crate::theme::global_theme_manager();
+            manager.register_theme(theme);
+            assert!(manager.set_theme("p2-6-switch-cupertino"));
+        }
+
+        let rect = crate::widget::census::CENSUS_RECT;
+        let hint = Switch::new(rect).size_hint();
+        assert!(crate::theme::global_theme_manager().set_theme("default"));
+
+        assert_eq!(hint.height, dimensions::CUPERTINO_SWITCH_TRACK.height);
+        assert_eq!(hint.width, dimensions::CUPERTINO_SWITCH_TRACK.width + 2 * FOCUS_RING_WIDTH);
+    }
+
+    /// A hover frame submits damage bounded by the painted box and the margin.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_hover_frame_submits_the_painted_box_with_the_damage_margin() {
+        use crate::widget::runtime;
+
+        let id = runtime::register(crate::compat::Box::new(Switch::new(Rect::new(4, 8, 52, 32))))
+            .expect("registry");
+        assert!(runtime::set_repaint_mode(id, runtime::RepaintMode::Dirty));
+
+        assert!(runtime::dispatch_event(id, &Event::mouse_enter(1, 1)));
+
+        let expected = runtime::painted_box_with_damage_margin(id).expect("painted box");
+        assert_eq!(
+            runtime::dirty_rects(id),
+            vec![expected],
+            "a hover must damage the painted box plus the margin"
+        );
+        runtime::unregister(id);
+    }
+
+    /// `Full` keeps the whole-control path and records no damage rectangle.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_hover_frame_in_full_mode_keeps_the_whole_control_repaint() {
+        use crate::widget::runtime;
+
+        let id = runtime::register(crate::compat::Box::new(Switch::new(Rect::new(4, 8, 52, 32))))
+            .expect("registry");
+        assert_eq!(runtime::repaint_mode(id), runtime::RepaintMode::Full);
+
+        assert!(runtime::dispatch_event(id, &Event::mouse_enter(1, 1)));
+        assert!(
+            runtime::dirty_rects(id).is_empty(),
+            "Full mode records no damage, so the control repaints whole"
+        );
+        runtime::unregister(id);
     }
 }

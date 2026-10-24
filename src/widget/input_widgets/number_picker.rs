@@ -25,7 +25,7 @@
 use core::fmt::Write as _;
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
+use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::capability::coercion::{expect_bool, expect_i64, expect_string};
@@ -494,11 +494,12 @@ impl EventHandler for NumberPicker {
                 35 => self.set_value(self.maximum),
                 _ => {}
             },
-            Event::Wheel { delta, .. } => {
-                // A wheel notch is one row. The event's sign already means "the
-                // content moves down", and moving the content down reveals lower
-                // numbers, so the delta is negated to match the visual direction.
-                let _ = self.scroll_rows(-(delta.y as i64));
+            Event::Wheel { delta, modifiers } => {
+                // One notch is one step. A positive event delta means the content
+                // moves down, revealing lower numbers, so the sign is inverted:
+                // scrolling up increments and scrolling down decrements.
+                let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
+                let _ = self.scroll_rows(-(scroll.lines_y as i64));
             }
             _ => {}
         }

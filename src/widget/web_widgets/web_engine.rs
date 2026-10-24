@@ -22,6 +22,7 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use alloc::vec::Vec;
 
 /// First page id [`WebEngineView::create_page`] issues.
 ///
@@ -29,6 +30,23 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// use, so issuing it as a page id would make an absent page indistinguishable from
 /// a real one.
 pub const FIRST_PAGE_ID: ObjectId = 1;
+
+/// Lifecycle state of the most recent download the host has reported.
+///
+/// The view performs no network I/O; the host supplies progress through
+/// [`WebEngineView::report_download_progress`], and this enum records what that
+/// reporting implies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebEngineDownloadState {
+    /// No download has been requested or reported.
+    Idle,
+    /// A download was requested, but no progress has been reported yet.
+    Requested,
+    /// Progress has been reported and the transfer has not reached its total.
+    InProgress,
+    /// The host reported a received byte count that reached the known total.
+    Completed,
+}
 
 /// Web engine view widget for web content rendering.
 pub struct WebEngineView {
@@ -42,6 +60,14 @@ pub struct WebEngineView {
     javascript_enabled: bool,
     plugins_enabled: bool,
     private_browsing: bool,
+    /// In-memory cookie store. Each entry is `(name, value, domain)`.
+    cookies: Vec<(String, String, String)>,
+    /// Bytes received for the most recent host-reported download.
+    download_received: u64,
+    /// Total bytes for that download when the host knows it.
+    download_total: Option<u64>,
+    /// Lifecycle state of that download.
+    download_state: WebEngineDownloadState,
     /// Emitted when the page starts loading.
     pub loading_started: Signal1<String>,
     /// Emitted when the page finishes loading.
@@ -77,8 +103,11 @@ pub struct WebEngineView {
     js_engine: Option<crate::web::BoaJsEngine>,
 }
 // Newtype structs for render pipeline symbol imports, wrapping WebEngineView.
-/// Newtype wrapper exposing [`WebEngineView`] under the render pipeline's
-/// "page" symbol name. Behaves identically to the wrapped view.
+/// placeholder facade: forwards WebEngineView only, no independent semantics.
+///
+/// The render pipeline resolves the "page" symbol name to a type; this wrapper
+/// exists for that registration and carries no page model of its own.
+#[doc(hidden)]
 pub struct WebEnginePage(pub WebEngineView);
 impl WebEnginePage {
     /// Wraps a fresh view occupying `geometry` (in logical pixels).
@@ -94,8 +123,9 @@ impl WebEnginePage {
         &mut self.0
     }
 }
-/// Newtype wrapper exposing [`WebEngineView`] under the render pipeline's
-/// "engine" symbol name. Behaves identically to the wrapped view.
+/// Symbol-name facade for the render pipeline's "engine" name.
+///
+/// Forwards [`WebEngineView`] only; it has no independent semantics.
 pub struct WebEngine(pub WebEngineView);
 impl WebEngine {
     /// Wraps a fresh view occupying `geometry` (in logical pixels).
@@ -111,8 +141,11 @@ impl WebEngine {
         &mut self.0
     }
 }
-/// Newtype wrapper exposing [`WebEngineView`] under the render pipeline's
-/// "settings" symbol name. Behaves identically to the wrapped view.
+/// Settings facade that exposes the wrapped view's real feature flags.
+///
+/// The wrapped [`WebEngineView`] owns `javascript_enabled`, `plugins_enabled`
+/// and `private_browsing`; this type forwards their getters and setters so the
+/// settings symbol name addresses those flags rather than a second copy.
 pub struct WebEngineSettings(pub WebEngineView);
 impl WebEngineSettings {
     /// Wraps a fresh view occupying `geometry` (in logical pixels).
@@ -127,9 +160,36 @@ impl WebEngineSettings {
     pub fn inner_mut(&mut self) -> &mut WebEngineView {
         &mut self.0
     }
+    /// Enables or disables JavaScript evaluation for the wrapped view.
+    pub fn set_javascript_enabled(&mut self, enabled: bool) {
+        self.0.set_javascript_enabled(enabled);
+    }
+    /// Returns whether JavaScript evaluation is enabled for the wrapped view.
+    pub fn is_javascript_enabled(&self) -> bool {
+        self.0.is_javascript_enabled()
+    }
+    /// Records whether plugin content is permitted for the wrapped view.
+    pub fn set_plugins_enabled(&mut self, enabled: bool) {
+        self.0.set_plugins_enabled(enabled);
+    }
+    /// Returns whether plugin content is enabled for the wrapped view.
+    pub fn is_plugins_enabled(&self) -> bool {
+        self.0.is_plugins_enabled()
+    }
+    /// Records whether private browsing is in effect for the wrapped view.
+    pub fn set_private_browsing(&mut self, enabled: bool) {
+        self.0.set_private_browsing(enabled);
+    }
+    /// Returns whether the wrapped view is in private browsing mode.
+    pub fn is_private_browsing(&self) -> bool {
+        self.0.is_private_browsing()
+    }
 }
-/// Newtype wrapper exposing [`WebEngineView`] under the render pipeline's
-/// "download item" symbol name. Behaves identically to the wrapped view.
+/// Download-item facade over the wrapped view's host-reported download state.
+///
+/// This widget performs no network I/O. The host reports byte progress with
+/// [`WebEngineDownloadItem::report_progress`], and the item tracks whether that
+/// progress has completed.
 pub struct WebEngineDownloadItem(pub WebEngineView);
 impl WebEngineDownloadItem {
     /// Wraps a fresh view occupying `geometry` (in logical pixels).
@@ -144,9 +204,28 @@ impl WebEngineDownloadItem {
     pub fn inner_mut(&mut self) -> &mut WebEngineView {
         &mut self.0
     }
+    /// Reports download progress supplied by the host.
+    ///
+    /// `total` is `None` while the host does not know the final size. Reporting a
+    /// `received` count that reaches a known positive `total` moves the state to
+    /// [`WebEngineDownloadState::Completed`].
+    pub fn report_progress(&mut self, received: u64, total: Option<u64>) {
+        self.0.report_download_progress(received, total);
+    }
+    /// The last reported progress as `(received, total)`.
+    pub fn progress(&self) -> (u64, Option<u64>) {
+        self.0.download_progress()
+    }
+    /// The lifecycle state of the most recent download.
+    pub fn state(&self) -> WebEngineDownloadState {
+        self.0.download_state()
+    }
 }
-/// Newtype wrapper exposing [`WebEngineView`] under the render pipeline's
-/// "cookie store" symbol name. Behaves identically to the wrapped view.
+/// Cookie-store facade over the wrapped view's in-memory cookie list.
+///
+/// Cookies are `(name, value, domain)` triples held only in memory and discarded
+/// with the view. While the wrapped view is in private browsing,
+/// [`WebEngineCookieStore::set_cookie`] refuses to store anything.
 pub struct WebEngineCookieStore(pub WebEngineView);
 impl WebEngineCookieStore {
     /// Wraps a fresh view occupying `geometry` (in logical pixels).
@@ -161,9 +240,41 @@ impl WebEngineCookieStore {
     pub fn inner_mut(&mut self) -> &mut WebEngineView {
         &mut self.0
     }
+    /// Stores a cookie, returning `false` when private browsing refused it.
+    pub fn set_cookie(
+        &mut self,
+        name: impl Into<String>,
+        value: impl Into<String>,
+        domain: impl Into<String>,
+    ) -> bool {
+        self.0.set_cookie(name, value, domain)
+    }
+    /// Returns the cookie stored under `name`, if any.
+    pub fn get_cookie(&self, name: &str) -> Option<&(String, String, String)> {
+        self.0.get_cookie(name)
+    }
+    /// Alias for [`Self::get_cookie`].
+    pub fn get(&self, name: &str) -> Option<&(String, String, String)> {
+        self.get_cookie(name)
+    }
+    /// Returns every stored cookie.
+    pub fn cookies(&self) -> &[(String, String, String)] {
+        self.0.cookies()
+    }
+    /// Removes every stored cookie.
+    pub fn clear_cookies(&mut self) {
+        self.0.clear_cookies();
+    }
+    /// Alias for [`Self::clear_cookies`].
+    pub fn clear(&mut self) {
+        self.clear_cookies();
+    }
 }
-/// Newtype wrapper exposing [`WebEngineView`] under the render pipeline's
-/// "web channel" symbol name. Behaves identically to the wrapped view.
+/// placeholder facade: forwards WebEngineView only, no independent semantics.
+///
+/// The render pipeline resolves the "web channel" symbol name to a type; this
+/// wrapper exists for that registration and carries no channel model.
+#[doc(hidden)]
 pub struct WebEngineWebChannel(pub WebEngineView);
 impl WebEngineWebChannel {
     /// Wraps a fresh view occupying `geometry` (in logical pixels).
@@ -179,8 +290,10 @@ impl WebEngineWebChannel {
         &mut self.0
     }
 }
-/// Newtype wrapper exposing [`WebEngineView`] under the render pipeline's
-/// "find text result" symbol name. Behaves identically to the wrapped view.
+/// Find-text facade that searches the wrapped view's retained HTML source.
+///
+/// [`WebEngineFindTextResult::find_text`] counts matches in
+/// [`WebEngineView::html_source`]; there is no DOM or rendered text to search.
 pub struct WebEngineFindTextResult(pub WebEngineView);
 impl WebEngineFindTextResult {
     /// Wraps a fresh view occupying `geometry` (in logical pixels).
@@ -195,9 +308,25 @@ impl WebEngineFindTextResult {
     pub fn inner_mut(&mut self) -> &mut WebEngineView {
         &mut self.0
     }
+    /// Counts `needle` in the retained HTML source.
+    ///
+    /// Returns `(match_count, selected_offset)`, where `backwards` selects the
+    /// last match's offset instead of the first. See
+    /// [`WebEngineView::find_text`] for the exact matching rules.
+    pub fn find_text(
+        &mut self,
+        needle: &str,
+        case_sensitive: bool,
+        backwards: bool,
+    ) -> (usize, usize) {
+        self.0.find_text(needle, case_sensitive, backwards)
+    }
 }
-/// Newtype wrapper exposing [`WebEngineView`] under the render pipeline's
-/// "notification" symbol name. Behaves identically to the wrapped view.
+/// placeholder facade: forwards WebEngineView only, no independent semantics.
+///
+/// The render pipeline resolves the "notification" symbol name to a type; this
+/// wrapper exists for that registration and carries no notification model.
+#[doc(hidden)]
 pub struct WebEngineNotification(pub WebEngineView);
 impl WebEngineNotification {
     /// Wraps a fresh view occupying `geometry` (in logical pixels).
@@ -213,8 +342,11 @@ impl WebEngineNotification {
         &mut self.0
     }
 }
-/// Newtype wrapper exposing [`WebEngineView`] under the render pipeline's
-/// "script dialog" symbol name. Behaves identically to the wrapped view.
+/// placeholder facade: forwards WebEngineView only, no independent semantics.
+///
+/// The render pipeline resolves the "script dialog" symbol name to a type; this
+/// wrapper exists for that registration and carries no dialog model.
+#[doc(hidden)]
 pub struct WebEngineScriptDialog(pub WebEngineView);
 impl WebEngineScriptDialog {
     /// Wraps a fresh view occupying `geometry` (in logical pixels).
@@ -230,8 +362,11 @@ impl WebEngineScriptDialog {
         &mut self.0
     }
 }
-/// Newtype wrapper exposing [`WebEngineView`] under the render pipeline's
-/// "context menu request" symbol name. Behaves identically to the wrapped view.
+/// placeholder facade: forwards WebEngineView only, no independent semantics.
+///
+/// The render pipeline resolves the "context menu request" symbol name to a type;
+/// this wrapper exists for that registration and carries no menu model.
+#[doc(hidden)]
 pub struct WebEngineContextMenuRequest(pub WebEngineView);
 impl WebEngineContextMenuRequest {
     /// Wraps a fresh view occupying `geometry` (in logical pixels).
@@ -270,7 +405,7 @@ macro_rules! impl_web_engine_wrapper_traits {
                 /// `web_engine_view` and its eleven published names. Without this forward each
                 /// name was accepted by `connect_event` and wired to nothing: the wrapper
                 /// delegates its behaviour, so it must delegate its signal resolution too, or the
-                /// "behaves identically to the wrapped view" claim stops at the event side.
+ /// forwarding promise stops at the event side.
                 fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
                     self.0.event_signal_dyn(name)
                 }
@@ -326,6 +461,10 @@ impl WebEngineView {
             javascript_enabled: true,
             plugins_enabled: false,
             private_browsing: false,
+            cookies: Vec::new(),
+            download_received: 0,
+            download_total: None,
+            download_state: WebEngineDownloadState::Idle,
             loading_started: Signal1::new(),
             loading_finished: Signal1::new(),
             title_changed: Signal1::new(),
@@ -554,10 +693,135 @@ impl WebEngineView {
     pub fn set_plugins_enabled(&mut self, enabled: bool) {
         self.plugins_enabled = enabled;
     }
-    /// Records whether private browsing is in effect. This is a state flag only;
-    /// no history or cookie state is cleared when it is set.
+    /// Records whether private browsing is in effect. While enabled,
+    /// [`Self::set_cookie`] refuses to store cookies, so a private session leaves
+    /// no cookie state behind. Existing cookies are not cleared by the flag; use
+    /// [`Self::clear_cookies`] for that.
     pub fn set_private_browsing(&mut self, enabled: bool) {
         self.private_browsing = enabled;
+    }
+
+    /// Returns the cookies currently held in this view's in-memory store.
+    ///
+    /// Each entry is `(name, value, domain)`. Nothing is persisted to disk: the
+    /// list lives with the view, so dropping the view discards the cookies.
+    pub fn cookies(&self) -> &[(String, String, String)] {
+        &self.cookies
+    }
+
+    /// Stores a cookie, replacing the value of an existing `(name, domain)` pair.
+    ///
+    /// Returns `false` and stores nothing while [`Self::is_private_browsing`] is
+    /// true: a private session must not leave cookie state behind.
+    pub fn set_cookie(
+        &mut self,
+        name: impl Into<String>,
+        value: impl Into<String>,
+        domain: impl Into<String>,
+    ) -> bool {
+        if self.private_browsing {
+            return false;
+        }
+        let name = name.into();
+        let value = value.into();
+        let domain = domain.into();
+        if let Some(existing) =
+            self.cookies.iter_mut().find(|cookie| cookie.0 == name && cookie.2 == domain)
+        {
+            existing.1 = value;
+        } else {
+            self.cookies.push((name, value, domain));
+        }
+        true
+    }
+
+    /// Returns the cookie stored under `name`, if any.
+    pub fn get_cookie(&self, name: &str) -> Option<&(String, String, String)> {
+        self.cookies.iter().find(|cookie| cookie.0 == name)
+    }
+
+    /// Alias for [`Self::get_cookie`].
+    pub fn get(&self, name: &str) -> Option<&(String, String, String)> {
+        self.get_cookie(name)
+    }
+
+    /// Removes every cookie from the in-memory store.
+    pub fn clear_cookies(&mut self) {
+        self.cookies.clear();
+    }
+
+    /// Alias for [`Self::clear_cookies`].
+    pub fn clear(&mut self) {
+        self.clear_cookies();
+    }
+
+    /// Counts occurrences of `needle` in the retained HTML source and returns
+    /// `(match_count, selected_offset)`.
+    ///
+    /// The search covers [`Self::html_source`] only — this widget has no DOM, so
+    /// there is no rendered text to search. Matches are non-overlapping. When
+    /// `case_sensitive` is false the comparison folds ASCII case in place, so the
+    /// returned offset is always a byte offset into the original source.
+    /// `backwards` selects the last match's offset instead of the first. An empty
+    /// needle, or no match, returns `(0, 0)`.
+    pub fn find_text(
+        &mut self,
+        needle: &str,
+        case_sensitive: bool,
+        backwards: bool,
+    ) -> (usize, usize) {
+        if needle.is_empty() {
+            return (0, 0);
+        }
+        let haystack = self.html_content.as_bytes();
+        let needle = needle.as_bytes();
+        let mut count = 0usize;
+        let mut selected = 0usize;
+        let mut offset = 0usize;
+        while offset + needle.len() <= haystack.len() {
+            let candidate = &haystack[offset..offset + needle.len()];
+            let matches = if case_sensitive {
+                candidate == needle
+            } else {
+                candidate.eq_ignore_ascii_case(needle)
+            };
+            if matches {
+                count += 1;
+                if backwards || count == 1 {
+                    selected = offset;
+                }
+                offset += needle.len();
+            } else {
+                offset += 1;
+            }
+        }
+        (count, selected)
+    }
+
+    /// Reports host-supplied progress for the most recent download.
+    ///
+    /// The host owns the network I/O, so the byte counts are reported rather than
+    /// observed here. A known positive total that `received` has reached moves
+    /// the state to [`WebEngineDownloadState::Completed`]; otherwise it is
+    /// [`WebEngineDownloadState::InProgress`].
+    pub fn report_download_progress(&mut self, received: u64, total: Option<u64>) {
+        self.download_received = received;
+        self.download_total = total;
+        self.download_state = match total {
+            Some(total) if total > 0 && received >= total => WebEngineDownloadState::Completed,
+            _ => WebEngineDownloadState::InProgress,
+        };
+        self.base.request_redraw();
+    }
+
+    /// The last host-reported download progress as `(received, total)`.
+    pub fn download_progress(&self) -> (u64, Option<u64>) {
+        (self.download_received, self.download_total)
+    }
+
+    /// The lifecycle state of the most recent download.
+    pub fn download_state(&self) -> WebEngineDownloadState {
+        self.download_state
     }
     fn update_navigation_state(&self) {
         self.navigation_state_changed.emit((self.can_go_back, self.can_go_forward));
@@ -611,6 +875,9 @@ impl WebEngineView {
     /// requested so it can decide what to do, which is the only part this widget can
     /// honestly do without an I/O stack.
     pub fn request_download(&mut self, url: impl Into<String>) {
+        self.download_received = 0;
+        self.download_total = None;
+        self.download_state = WebEngineDownloadState::Requested;
         self.download_requested.emit(url.into());
     }
 
@@ -1148,6 +1415,112 @@ mod tests {
 
         wrapper.handle_event(&Event::timer(WebEngineView::load_timer_id()));
         assert!(!wrapper.inner().is_loading());
+    }
+
+    /// `find_text` counts matches in the HTML source the host loaded.
+    #[test]
+    fn find_text_counts_matches_in_the_loaded_html() {
+        let mut result = WebEngineFindTextResult::new(Rect::new(0, 0, 300, 200));
+        result.inner_mut().load_html("<p>Rust rust</p>");
+
+        let (insensitive_count, first) = result.find_text("rust", false, false);
+        assert_eq!(insensitive_count, 2, "case-insensitive matching finds both spellings");
+
+        let (sensitive_count, _) = result.find_text("rust", true, false);
+        assert_eq!(sensitive_count, 1, "case-sensitive matching finds only the lowercase one");
+
+        let (_, last) = result.find_text("rust", false, true);
+        assert!(last > first, "backwards selects the last match's offset");
+
+        assert_eq!(result.find_text("missing", false, false), (0, 0));
+        assert_eq!(result.find_text("", false, false), (0, 0), "an empty needle matches nothing");
+    }
+
+    /// Private browsing refuses every cookie, so the store stays empty.
+    #[test]
+    fn private_browsing_refuses_to_store_cookies() {
+        let mut store = WebEngineCookieStore::new(Rect::new(0, 0, 300, 200));
+        store.inner_mut().set_private_browsing(true);
+
+        assert!(!store.set_cookie("session", "abc", "example.com"));
+        assert!(store.cookies().is_empty(), "private browsing must not persist a cookie");
+        assert!(store.get_cookie("session").is_none());
+    }
+
+    /// The cookie store really stores, replaces and clears entries.
+    #[test]
+    fn cookies_round_trip_and_clear() {
+        let mut store = WebEngineCookieStore::new(Rect::new(0, 0, 300, 200));
+        assert!(store.set_cookie("session", "abc", "example.com"));
+
+        let cookie = store.get_cookie("session").expect("the cookie was stored");
+        assert_eq!(cookie.0, "session");
+        assert_eq!(cookie.1, "abc");
+        assert_eq!(cookie.2, "example.com");
+
+        assert!(store.set_cookie("session", "def", "example.com"));
+        assert_eq!(store.cookies().len(), 1, "the same name and domain replaces the value");
+        assert_eq!(store.get_cookie("session").expect("still stored").1, "def");
+
+        store.clear_cookies();
+        assert!(store.cookies().is_empty());
+    }
+
+    /// The settings facade forwards the view's real feature flags.
+    #[test]
+    fn settings_forward_the_views_feature_flags() {
+        let mut settings = WebEngineSettings::new(Rect::new(0, 0, 300, 200));
+        assert!(settings.is_javascript_enabled(), "scripting is on by default");
+
+        settings.set_javascript_enabled(false);
+        assert!(!settings.is_javascript_enabled());
+        assert!(!settings.inner().is_javascript_enabled(), "the flag lives on the wrapped view");
+
+        settings.set_plugins_enabled(true);
+        assert!(settings.is_plugins_enabled());
+        settings.set_private_browsing(true);
+        assert!(settings.is_private_browsing());
+    }
+
+    /// Download progress is host-reported and drives a real state machine.
+    #[test]
+    fn download_item_tracks_host_reported_progress() {
+        let mut item = WebEngineDownloadItem::new(Rect::new(0, 0, 300, 200));
+        assert_eq!(item.state(), WebEngineDownloadState::Idle);
+
+        item.inner_mut().request_download("https://example.com/file.zip");
+        assert_eq!(item.state(), WebEngineDownloadState::Requested);
+
+        item.report_progress(40, Some(100));
+        assert_eq!(item.progress(), (40, Some(100)));
+        assert_eq!(item.state(), WebEngineDownloadState::InProgress);
+
+        item.report_progress(100, Some(100));
+        assert_eq!(item.state(), WebEngineDownloadState::Completed);
+    }
+
+    /// Every semantic-free wrapper must declare that it is only a facade.
+    #[test]
+    fn placeholder_facades_declare_no_independent_semantics() {
+        let source = include_str!("web_engine.rs").to_ascii_lowercase();
+        let declaration =
+            "placeholder facade: forwards webengineview only, no independent semantics";
+        for name in [
+            "WebEnginePage",
+            "WebEngineWebChannel",
+            "WebEngineNotification",
+            "WebEngineScriptDialog",
+            "WebEngineContextMenuRequest",
+        ] {
+            let marker = alloc::format!("pub struct {name}(").to_ascii_lowercase();
+            let start =
+                source.find(&marker).unwrap_or_else(|| panic!("{name} must still be defined"));
+            let doc = &source[start.saturating_sub(400)..start];
+            assert!(
+                doc.contains(declaration),
+                "{name} must document that it is a placeholder facade, got:\n{doc}"
+            );
+        }
     }
 }
 

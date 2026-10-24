@@ -468,7 +468,7 @@ mod tests {
         // cache, which would turn the expected hit below into a miss. The registry lock is the
         // one serialisation point for that: hold it for the whole sequence.
         #[cfg(all(feature = "runtime-fonts", feature = "text-shaping"))]
-        let _guard = crate::render::text::runtime_fonts::test_lock();
+        let _guard = crate::render::text::runtime_fonts::runtime_fonts_test_guard();
         let surface = SoftwareSurface::new(Size::new(20, 20), 1.0);
         let font = Font::default();
 
@@ -496,7 +496,7 @@ mod tests {
     #[test]
     fn a_shaped_run_hit_is_the_same_allocation_not_a_copy() {
         #[cfg(all(feature = "runtime-fonts", feature = "text-shaping"))]
-        let _guard = crate::render::text::runtime_fonts::test_lock();
+        let _guard = crate::render::text::runtime_fonts::runtime_fonts_test_guard();
         let surface = SoftwareSurface::new(Size::new(20, 20), 1.0);
         let font = Font::default();
 
@@ -518,7 +518,7 @@ mod tests {
         // Same reason as `repeated_text_measurements_are_cached`: the build counters are process-
         // wide and a parallel registration also bumps the epoch this test is about.
         #[cfg(all(feature = "runtime-fonts", feature = "text-shaping"))]
-        let _guard = crate::render::text::runtime_fonts::test_lock();
+        let _guard = crate::render::text::runtime_fonts::runtime_fonts_test_guard();
         let surface = SoftwareSurface::new(Size::new(20, 20), 1.0);
         let font = Font::default();
         let _ = surface.measure_text("hello", &font);

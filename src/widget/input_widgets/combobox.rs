@@ -21,7 +21,7 @@
 
 use crate::compat::{String, ToString, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
+use crate::event::{wheel::WheelScroll, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::style::EdgeOffsets;
@@ -32,7 +32,10 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
+use crate::widget::metrics::{
+    active_profile, dimensions, effective_font, estimate_text_width, focus_ring_color,
+    profile_metrics, ControlMetrics, FocusRing, FOCUS_RING_WIDTH,
+};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -295,14 +298,17 @@ impl ComboBox {
     ///
     /// # Why the control is not its own rectangle
     ///
-    /// A combo box is a text field with an indicator in it, and
-    /// [`dimensions::TEXT_FIELD_MIN_HEIGHT`] is what every field in this crate occupies. The
-    /// 240x120 census cell drew a 240x120 slab, so a combo box and the `line_edit` beside it
-    /// in the same form were different objects even though a user reads them as one. The band
-    /// is the single derivation the fill, the border, the indicator and the value's box all
-    /// read.
+    /// A combo box is a text field with an indicator in it, and the active profile's
+    /// text-field height is what every field in this crate occupies — Material and Cupertino's
+    /// 48 px, or macOS's compact 22 px. The 240x120 census cell drew a 240x120 slab, so a combo
+    /// box and the `line_edit` beside it in the same form were different objects even though a
+    /// user reads them as one. The band is the single derivation the fill, the border, the
+    /// indicator and the value's box all read.
     fn field_band(&self) -> Rect {
-        ControlMetrics::full_width_band(self.geometry(), dimensions::TEXT_FIELD_MIN_HEIGHT)
+        ControlMetrics::full_width_band(
+            self.geometry(),
+            profile_metrics(active_profile()).text_field_min_height,
+        )
     }
 
     /// The indicator's box and the value's box, derived from the band and one line height.
@@ -794,7 +800,11 @@ impl Widget for ComboBox {
         let font = effective_font(self.style());
         let widest =
             self.items().iter().map(|s| estimate_text_width(s, font, 1.0)).max().unwrap_or(8);
-        let side_air = (dimensions::TEXT_FIELD_MIN_HEIGHT / 2).saturating_sub(8);
+        // The profile decides the field's height, so its half-height is also the vertical air
+        // a value gets inside it; reading the constant here would size the hint for the wrong
+        // platform.
+        let field_height = profile_metrics(active_profile()).text_field_min_height;
+        let side_air = (field_height / 2).saturating_sub(8);
         let trailing =
             dimensions::TEXT_FIELD_PADDING_H + dimensions::BUTTON_ICON_SIZE + INDICATOR_LEADING_GAP;
         let padding = EdgeOffsets {
@@ -804,10 +814,11 @@ impl Widget for ComboBox {
             left: dimensions::TEXT_FIELD_PADDING_H,
         };
         // The floor: a field wide enough to hold its own leading inset, the indicator and the
-        // indicator's gap, at the height every entry control in the crate shares.
+        // indicator's gap, at the height every entry control in the crate shares. That height
+        // is the active profile's, so the hint follows a Macos-profile theme down to 22 px.
         let floor = Size::new(
             dimensions::TEXT_FIELD_PADDING_H + dimensions::BUTTON_ICON_SIZE + trailing,
-            dimensions::TEXT_FIELD_MIN_HEIGHT,
+            field_height,
         );
         let hint = ControlMetrics::implicit_size(Size::new(widest, 0), padding, floor);
         // The height is the band's, not a second numeral: this is what makes "the reported
@@ -1105,6 +1116,30 @@ impl EventHandler for ComboBox {
                 // Unknown key; ignore
                 _ => {}
             },
+            Event::Wheel { delta, modifiers, .. } => {
+                let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
+                if scroll.lines_y == 0 || self.items.is_empty() {
+                    return;
+                }
+                if self.open {
+                    if self.move_hover(scroll.lines_y as isize) {
+                        self.base.request_redraw();
+                    }
+                } else {
+                    // A closed field has no highlight, so a notch steps the value exactly as the
+                    // Up/Down keys do. The wheel is one line per notch (`lines_per_notch = 1`).
+                    let last = self.items.len() - 1;
+                    let next = if scroll.lines_y > 0 {
+                        self.current_index.map(|index| (index + 1).min(last)).unwrap_or(0)
+                    } else {
+                        self.current_index.map(|index| index.saturating_sub(1)).unwrap_or(last)
+                    };
+                    if self.current_index != Some(next) {
+                        self.set_current_index(Some(next));
+                        self.activated.emit(next);
+                    }
+                }
+            }
             // Other events are not relevant for this widget
             _ => {}
         }
@@ -1197,6 +1232,26 @@ impl Draw for ComboBox {
             context.draw_text_fitted_cow(text_box, &current_text, font, text_color, value_align);
         } else if self.items.is_empty() {
             context.draw_text_fitted_cow(text_box, "(Empty)", font, text_color, value_align);
+        }
+
+        // ── Keyboard focus ring ──
+        //
+        // Around the field band — the part the keyboard operates on — rather than around the
+        // control's laid-out rectangle, which can be taller than the field. Gated on the
+        // *reason* focus arrived: a pointer press focuses the box without painting a ring
+        // under the cursor, while Tab and Shortcut draw one.
+        if self.base.draws_focus_ring() {
+            let ring = FocusRing::for_control(band, style.border_radius.unwrap_or(0));
+            if ring.is_drawable() {
+                // The fallback is the field's contrasting tone; an active theme overrides it
+                // with its declared `outline` token.
+                context.draw_rounded_rect_stroke(
+                    ring.rect,
+                    ring.radius,
+                    focus_ring_color(bg.contrast_color()),
+                    FOCUS_RING_WIDTH,
+                );
+            }
         }
 
         // ── The drop-down list ──
@@ -1578,12 +1633,69 @@ mod tests {
     /// The reported height is the band that is painted.
     #[test]
     fn the_reported_height_is_the_band_that_is_painted() {
+        // The assertion is the Material height, so a concurrent test that activates the Macos
+        // profile must not change what this control measures.
+        let _theme_guard = crate::style::theme_test_guard();
+        assert!(crate::theme::global_theme_manager().set_theme("default"));
+
         let cb = ComboBox::new(Rect::new(0, 0, 240, 120));
         let band = cb.field_band();
         assert_eq!(band.height, dimensions::TEXT_FIELD_MIN_HEIGHT);
         assert_eq!(cb.size_hint().height, band.height);
         assert_eq!(band.width, 240, "a field spans its width");
         assert_eq!(band.y, (120 - dimensions::TEXT_FIELD_MIN_HEIGHT as i32) / 2);
+    }
+
+    /// A Macos-profile theme paints the compact 22 px field and reports that height.
+    ///
+    /// The band is the one derivation the fill, the indicator and the value's box read, and
+    /// `size_hint` reports the band's own height, so this pins the control rather than a
+    /// single call site.
+    #[cfg(device_profile)]
+    #[test]
+    fn a_macos_profile_theme_uses_the_compact_field_height() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut theme = crate::theme::Theme::default();
+        theme.name = "p2-6-combobox-macos".to_string();
+        theme.metrics_profile = crate::widget::metrics::ControlMetricsProfile::Macos;
+        {
+            let mut manager = crate::theme::global_theme_manager();
+            manager.register_theme(theme);
+            assert!(manager.set_theme("p2-6-combobox-macos"));
+        }
+
+        let cb = ComboBox::new(Rect::new(0, 0, 240, 120));
+        let band = cb.field_band();
+        let hint = cb.size_hint();
+        assert!(crate::theme::global_theme_manager().set_theme("default"));
+
+        assert_eq!(band.height, 22, "macOS's text field is 22 px tall: {band:?}");
+        assert_eq!(hint.height, 22, "the hint reports the painted band: {hint:?}");
+        assert_eq!(band.y, (120 - 22) / 2, "the compact band is still centred: {band:?}");
+        assert_eq!(band.width, 240, "and still spans the control");
+    }
+
+    /// The Cupertino profile keeps the Material field height for a combo box.
+    #[cfg(device_profile)]
+    #[test]
+    fn the_cupertino_profile_keeps_the_material_field_height() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut theme = crate::theme::Theme::default();
+        theme.name = "p2-6-combobox-cupertino".to_string();
+        theme.metrics_profile = crate::widget::metrics::ControlMetricsProfile::Cupertino;
+        {
+            let mut manager = crate::theme::global_theme_manager();
+            manager.register_theme(theme);
+            assert!(manager.set_theme("p2-6-combobox-cupertino"));
+        }
+
+        let cb = ComboBox::new(Rect::new(0, 0, 240, 120));
+        let band = cb.field_band();
+        let hint = cb.size_hint();
+        assert!(crate::theme::global_theme_manager().set_theme("default"));
+
+        assert_eq!(band.height, dimensions::TEXT_FIELD_MIN_HEIGHT);
+        assert_eq!(hint.height, dimensions::TEXT_FIELD_MIN_HEIGHT);
     }
 
     /// The indicator is laid out on the value's own line box, not on the band's midpoint.
@@ -1807,6 +1919,32 @@ mod tests {
         }
     }
 
+    /// A wheel notch steps the value while closed and the highlight while open.
+    #[test]
+    fn the_wheel_steps_the_closed_value_and_the_open_highlight() {
+        use crate::event::{Event, EventHandler};
+
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.set_items((0..6).map(|n| format!("item {n}")).collect());
+
+        cb.handle_event(&Event::wheel(0, 1, 0));
+        assert_eq!(cb.current_index(), Some(0), "a closed field steps from no selection");
+        cb.handle_event(&Event::wheel(0, 1, 0));
+        assert_eq!(cb.current_index(), Some(1), "a notch moves one item");
+
+        let value_before = cb.current_index();
+        let band_centre = crate::core::Point::new(50, cb.field_band().y + 8);
+        cb.handle_event(&Event::MousePress { pos: band_centre, button: 1, modifiers: 0 });
+        assert!(cb.is_open());
+        let highlight_before = cb.hovered_item;
+        cb.handle_event(&Event::wheel(0, 1, 0));
+        assert_ne!(
+            cb.hovered_item, highlight_before,
+            "the open list's highlight follows the wheel"
+        );
+        assert_eq!(cb.current_index(), value_before, "moving the highlight is not a commitment");
+    }
+
     /// The list is reachable and committable: opening, choosing, and dismissing all work.
     #[test]
     fn pressing_the_field_opens_the_list_and_a_row_commits() {
@@ -1948,5 +2086,53 @@ mod tests {
             big_hint.width,
             base_hint.width
         );
+    }
+
+    /// Keyboard focus paints the ring on the field; a pointer press does not.
+    ///
+    /// The box reported `WidgetState::Focused` (and even fed the fact into its hover overlay)
+    /// but painted no ring, so the state had no visible consumer. The ring is the only 2 px
+    /// stroke the control emits, which makes its presence observable in the render.
+    #[test]
+    fn a_keyboard_focused_box_paints_the_ring_and_pointer_focus_does_not() {
+        // The ring's colour reads the process-wide theme; hold the guard so a concurrent
+        // appearance switch cannot change this render mid-assertion.
+        let _guard = crate::style::theme_test_guard();
+        let make = || {
+            let mut combo = ComboBox::new(Rect::new(0, 0, 200, 60));
+            combo.set_items(vec!["one".to_string(), "two".to_string()]);
+            combo
+        };
+
+        let mut keyboard = make();
+        keyboard.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        assert!(keyboard.base.draws_focus_ring(), "Tab focus must ask for a ring");
+        let focused = crate::widget::svg::render_to_svg(&mut keyboard);
+        assert!(
+            focused.lines().any(|line| line.contains("stroke-width=\"2\"")),
+            "keyboard focus must paint the ring around the field: {focused}"
+        );
+
+        let mut pointer = make();
+        pointer.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Pointer });
+        let unfocused = crate::widget::svg::render_to_svg(&mut pointer);
+        assert!(
+            !unfocused.lines().any(|line| line.contains("stroke-width=\"2\"")),
+            "pointer focus must not paint a ring: {unfocused}"
+        );
+    }
+
+    /// The ring follows the field band, not the caller's taller rectangle.
+    #[test]
+    fn the_focus_ring_frames_the_field_band() {
+        let mut combo = ComboBox::new(Rect::new(0, 0, 200, 120));
+        combo.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        let band = combo.field_band();
+        let ring = FocusRing::for_control(band, 0);
+        assert!(
+            ring.rect.y >= band.y,
+            "the ring must sit inside the field band, not the 120 px cell"
+        );
+        assert!(ring.rect.height < 120, "a 120 px cell must not produce a 120 px focus ring");
     }
 }

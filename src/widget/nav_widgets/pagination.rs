@@ -532,6 +532,11 @@ impl Draw for Pagination {
         );
 
         let cell_w = self.cell_width();
+        // One reused label buffer for the whole bar. The previous per-cell
+        // `to_string()`/`String::new()` allocated for every page number on every paint;
+        // a pagination bar repaints whenever the table scrolls.
+        use core::fmt::Write as _;
+        let mut label = String::new();
         for (index, cell) in self.cell_plan().iter().enumerate() {
             let x = rect.x + (index as u32 * cell_w) as i32;
             let cell_rect = Rect::new(x, rect.y, cell_w, rect.height);
@@ -580,21 +585,29 @@ impl Draw for Pagination {
                 continue;
             }
             let label = match cell {
-                Cell::Page(page) => (page + 1).to_string(),
-                Cell::Gap { .. } => ELLIPSIS.to_string(),
+                Cell::Page(page) => {
+                    label.clear();
+                    let _ = write!(label, "{}", page + 1);
+                    label.as_str()
+                }
+                Cell::Gap { .. } => {
+                    label.clear();
+                    label.push(ELLIPSIS);
+                    label.as_str()
+                }
                 // Handled above; unreachable, but the match must stay total.
-                Cell::Previous | Cell::Next => String::new(),
+                Cell::Previous | Cell::Next => "",
             };
             // The origin is the glyph's top-left, so the vertical centre is reached by
             // subtracting half the *measured line box* rather than by halving the cell — the
             // old `cell_rect.y + (cell_rect.height - font_size) / 2` used the font size as a
             // stand-in for the line box and put the label half a line low whenever the two
             // differed.
-            let text_width = context.measure_text(&label, font).width as i32;
+            let text_width = context.measure_text(label, font).width as i32;
             let line = context.text_line(cell_rect, font);
             let origin =
                 Point::new(cell_rect.x + (cell_rect.width as i32 - text_width) / 2, line.y);
-            context.draw_text(origin, &label, font, color, HorizontalAlignment::Left);
+            context.draw_text(origin, label, font, color, HorizontalAlignment::Left);
         }
 
         context.draw_rect(rect, style.border_color.unwrap_or(Color::rgb(210, 210, 210)));

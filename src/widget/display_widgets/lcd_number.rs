@@ -673,7 +673,7 @@ impl LCDNumber {
     ///
     /// A seven-segment panel's cells are wide because the digits are; a decimal point is a *mark*
     /// rather than a glyph, so at full cell width it reads as a stray bar between two digits rather
-    /// than as punctuation. `small_decimal_point` (Qt's own name for the choice, and the field this
+    /// than as punctuation. `small_decimal_point` (the reference toolkit's own name for the choice, and the field this
     /// widget publishes) selects the reduced dot; the normal one is a quarter of the segment
     /// thickness wide, which is the smallest mark that still reads on a panel this coarse.
     ///

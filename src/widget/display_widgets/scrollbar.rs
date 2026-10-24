@@ -4,7 +4,7 @@
 //! Scroll bar widget.
 use crate::compat::ToString;
 use crate::core::{Color, Orientation, Point, Rect};
-use crate::event::{Event, EventHandler};
+use crate::event::{wheel::WheelScroll, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::style::{MotionSlot, PropertyDriver};
@@ -15,7 +15,9 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{
+    dimensions, focus_ring_color, ControlMetrics, FocusRing, FOCUS_RING_WIDTH,
+};
 use crate::widget::numeric::ordered_clamp_i32;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -33,7 +35,28 @@ const SCROLLBAR_IDLE_DELAY_MS: u32 = 600;
 /// Not zero: a scrollbar that vanishes entirely gives no hint that the region scrolls, and a
 /// pointer returning to the bar has nothing to aim at. A faint trough that stays is what every
 /// toolkit settles on — the bar dims, it does not disappear.
+///
+/// This is the **arrows** style's floor. An overlay bar is chrome *above* the content and
+/// deliberately disappears when idle; see [`ScrollBar::idle_opacity`].
 const SCROLLBAR_IDLE_OPACITY: f32 = 0.35;
+
+/// How a scroll bar is drawn.
+///
+/// # Why two shapes on one control
+///
+/// Both are the same scrollbar behaviour — one range, one thumb, one drag — drawn as two
+/// different pieces of chrome. [`Arrows`](Self::Arrows) is the desktop form with fixed arrow
+/// cells at each end; [`Overlay`](Self::Overlay) floats over the content with no arrow cells,
+/// a thinner band, and it fades to fully transparent while idle. Keeping the behaviour in one
+/// implementation means the two shapes cannot drift on the parts that are not about ink.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScrollBarStyle {
+    /// A trough with arrow cells at both ends; the default desktop shape.
+    #[default]
+    Arrows,
+    /// A thin, arrow-less thumb that fades away when idle.
+    Overlay,
+}
 
 /// Scroll bar widget.
 pub struct ScrollBar {
@@ -44,6 +67,8 @@ pub struct ScrollBar {
     single_step: i32,
     page_step: i32,
     orientation: Orientation,
+    /// The drawn shape: arrow-ended trough or floating overlay thumb.
+    style: ScrollBarStyle,
     /// The writing direction the trough runs in.
     ///
     /// # Why a scroll bar needs this
@@ -79,7 +104,7 @@ pub struct ScrollBar {
     ///
     /// A scrollbar is chrome the reader only needs *while scrolling*: left fully opaque it is a
     /// permanent stripe competing with the content it frames. Every toolkit that has solved this
-    /// fades it — Material after 600 ms idle, Qt through the scroll bar's own hide-delay — and
+    /// fades it — Material after 600 ms idle, 参考工具包 through the scroll bar's own hide-delay — and
     /// the mechanism has two halves that must both exist: a clock that notices the quiet, and an
     /// opacity the draw path reads. Without them the bar is either always loud or (if simply
     /// hidden) undiscoverable.
@@ -102,6 +127,7 @@ impl ScrollBar {
             single_step: 1,
             page_step: 10,
             orientation: Orientation::Horizontal,
+            style: ScrollBarStyle::default(),
             direction: crate::core::TextDirection::default(),
             value_changed: Signal1::new(),
             slider_moved: Signal1::new(),
@@ -248,19 +274,62 @@ impl ScrollBar {
         }
         ((self.value - self.minimum) as f32) / ((self.maximum - self.minimum) as f32)
     }
-    /// The control's **own rectangle**, which is the area it was given: a hit area and a
-    /// layout slot, *not* a drawing instruction.
+    /// Returns the drawn shape of the bar.
     ///
-    /// `size_hint` reports a 16 px thick bar and `draw` paints
-    /// [`dimensions::SCROLLBAR_THICKNESS`] of it, so the two agree about thickness; this
-    /// accessor is the one place that asks "how long may the thumb travel", and it is
-    /// deliberately the full length of the rectangle.
-    fn track_band(&self) -> Rect {
+    /// Named `bar_style` rather than `style` so it cannot shadow the inherited
+    /// [`Widget::style`] accessor that reports the resolved [`crate::style::WidgetStyle`].
+    pub fn bar_style(&self) -> ScrollBarStyle {
+        self.style
+    }
+
+    /// Selects the drawn shape and repaints.
+    ///
+    /// Switching to [`ScrollBarStyle::Overlay`] collapses the arrow cells to zero and makes
+    /// the idle fade reach full transparency; switching back restores the desktop form. The
+    /// value and travel mappings read the same shape, so a bar cannot be dragged by one
+    /// geometry while being drawn by another.
+    pub fn set_style(&mut self, style: ScrollBarStyle) {
+        if self.style == style {
+            return;
+        }
+        self.style = style;
+        self.base.request_redraw();
+    }
+
+    /// The thickness of the band the bar measures with.
+    ///
+    /// This is the *hit* geometry. The overlay's painted band can widen on hover, but that
+    /// extra width is never part of what the pointer targets (see
+    /// [`Self::paint_band`]).
+    fn band_thickness(&self) -> u32 {
+        match self.style {
+            ScrollBarStyle::Arrows => dimensions::SCROLLBAR_THICKNESS,
+            ScrollBarStyle::Overlay => dimensions::SCROLLBAR_OVERLAY_THICKNESS,
+        }
+    }
+
+    /// The band the bar paints, which in overlay style widens under the pointer.
+    ///
+    /// The widening is deliberately paint-only: growing the measured band with it made the
+    /// bar oscillate as the pointer crossed its edge, because every frame's hit test used the
+    /// previous frame's width.
+    fn paint_band(&self) -> Rect {
+        let thickness = match self.style {
+            ScrollBarStyle::Arrows => dimensions::SCROLLBAR_THICKNESS,
+            ScrollBarStyle::Overlay if self.base.is_hovered() || self.mouse_pressed => {
+                dimensions::SCROLLBAR_OVERLAY_HOVER_THICKNESS
+            }
+            ScrollBarStyle::Overlay => dimensions::SCROLLBAR_OVERLAY_THICKNESS,
+        };
+        self.band_with_thickness(thickness)
+    }
+
+    /// The opaque band `thickness` px thick, centred in the control's rectangle and running
+    /// along the bar's long axis.
+    fn band_with_thickness(&self, thickness: u32) -> Rect {
         let rect = self.geometry();
         match self.orientation {
-            Orientation::Horizontal => {
-                ControlMetrics::centered_band(rect, dimensions::SCROLLBAR_THICKNESS)
-            }
+            Orientation::Horizontal => ControlMetrics::centered_band(rect, thickness),
             Orientation::Vertical => {
                 // A vertical scrollbar's band is *wide and full-height*, i.e. the same
                 // derivation with the axes exchanged. `centered_band` keeps the caller's
@@ -268,11 +337,23 @@ impl ScrollBar {
                 // horizontal reading; transposing the inputs gives the vertical one.
                 let band = ControlMetrics::centered_band(
                     Rect::new(rect.y, rect.x, rect.height, rect.width),
-                    dimensions::SCROLLBAR_THICKNESS,
+                    thickness,
                 );
                 Rect::new(band.y, band.x, band.height, band.width)
             }
         }
+    }
+
+    /// The band the bar **measures** against: the control's rectangle reduced to the bar's
+    /// thickness and centred, running the full long axis.
+    ///
+    /// `size_hint` reports the same thickness and `draw` paints [`Self::paint_band`], so the
+    /// two agree about how thick the bar is; this accessor is the one place that asks "how
+    /// long may the thumb travel", and it is deliberately the full length of the rectangle.
+    /// In overlay style the band is thinner and has no arrow cells, which is why the
+    /// thickness is asked of [`Self::band_thickness`] rather than named here.
+    fn track_band(&self) -> Rect {
+        self.band_with_thickness(self.band_thickness())
     }
 
     /// Size of the arrow cell at each end of the trough, in pixels.
@@ -288,6 +369,12 @@ impl ScrollBar {
     /// `value_to_pixel_pos` reads this too, which is what keeps the thumb inside the trough: one
     /// derivation, two consumers, so they cannot drift apart.
     fn arrow_cell(&self) -> f32 {
+        // An overlay bar has no arrow cells: every consumer (travel, thumb length, arrow
+        // paint) reads this one function, so returning zero makes the whole band available
+        // without branching in three places.
+        if self.style == ScrollBarStyle::Overlay {
+            return 0.0;
+        }
         let rect = self.geometry();
         match self.orientation {
             Orientation::Horizontal => {
@@ -323,6 +410,35 @@ impl ScrollBar {
         let floor = dimensions::SCROLLBAR_MIN_LENGTH.min(track as u32) as f32;
         let floored = proportional.max(floor);
         floored.min(between_arrows.max(1.0))
+    }
+
+    /// The thumb's own rectangle, in control coordinates.
+    ///
+    /// The single derivation the paint pass and the keyboard focus ring read, so the grip
+    /// the ring frames is exactly the grip that was painted. The length repeats the draw
+    /// pass's two rules — floor at [`dimensions::SCROLLBAR_MIN_LENGTH`], then stop at the
+    /// trough's far edge — because the ring must not outline a thumb that is not there.
+    fn thumb_rect(&self) -> Rect {
+        let band = self.track_band();
+        let rect = self.paint_band();
+        let slider_pos = self.value_to_pixel_pos(self.value);
+        let fraction = self.slider_size();
+        match self.orientation {
+            Orientation::Horizontal => {
+                let length = ((rect.width as f32) * fraction) as u32;
+                let length = length.max(dimensions::SCROLLBAR_MIN_LENGTH.min(rect.width));
+                let length =
+                    length.min((band.x + band.width as i32 - slider_pos as i32).max(0) as u32);
+                Rect::from_f32(slider_pos, rect.y as f32, length as f32, rect.height as f32)
+            }
+            Orientation::Vertical => {
+                let length = ((rect.height as f32) * fraction) as u32;
+                let length = length.max(dimensions::SCROLLBAR_MIN_LENGTH.min(rect.height));
+                let length =
+                    length.min((band.y + band.height as i32 - slider_pos as i32).max(0) as u32);
+                Rect::from_f32(rect.x as f32, slider_pos, rect.width as f32, length as f32)
+            }
+        }
     }
 
     /// The **one** origin and length the two value/pixel conversions are defined against.
@@ -451,6 +567,18 @@ impl ScrollBar {
         self.opacity.value()
     }
 
+    /// What the idle fade aims at for the current shape.
+    ///
+    /// An overlay bar is transient chrome above the content, so it fades to fully
+    /// transparent; an arrow-ended bar keeps the faint floor that tells the reader the region
+    /// scrolls.
+    fn idle_opacity(&self) -> f32 {
+        match self.style {
+            ScrollBarStyle::Arrows => SCROLLBAR_IDLE_OPACITY,
+            ScrollBarStyle::Overlay => 0.0,
+        }
+    }
+
     /// Marks the bar as newly interacted with, waking it back to full opacity.
     ///
     /// Called from every path that changes what the reader is looking at: the value moving, the
@@ -494,7 +622,7 @@ impl ScrollBar {
             let until_idle = SCROLLBAR_IDLE_DELAY_MS - self.idle_ms;
             self.idle_ms = self.idle_ms.saturating_add(delta_ms);
             if self.idle_ms >= SCROLLBAR_IDLE_DELAY_MS {
-                self.opacity.set_target(SCROLLBAR_IDLE_OPACITY);
+                self.opacity.set_target(self.idle_opacity());
                 delta_ms.saturating_sub(until_idle)
             } else {
                 // Inside the hold. The clock is what the delay consumes, but the fade-in after a
@@ -504,7 +632,7 @@ impl ScrollBar {
                 delta_ms
             }
         } else {
-            self.opacity.set_target(SCROLLBAR_IDLE_OPACITY);
+            self.opacity.set_target(self.idle_opacity());
             delta_ms
         };
         if fade_delta == 0 {
@@ -516,6 +644,59 @@ impl ScrollBar {
     /// Whether the bar is between two opacities -- answers only, never advances.
     pub fn is_animating(&self) -> bool {
         self.opacity.is_moving()
+    }
+
+    /// Submits one interaction frame as damage bounded by the painted box plus the
+    /// focus-ring and halo margin.
+    ///
+    /// Interaction paths pass `None` and let the runtime derive the box. A control that
+    /// is unmounted falls back to [`BaseWidget::request_redraw`], which keeps the redraw
+    /// signal contract for host-owned controls. An interaction frame in
+    /// [`crate::widget::runtime::RepaintMode::Full`] still routes through
+    /// [`crate::widget::runtime::request_repaint_rect`], whose documented fallback repaints
+    /// the whole control.
+    fn request_frame_repaint(&self, bounds: Option<Rect>) {
+        let _ = bounds;
+        #[cfg(not(alloc_frugal))]
+        {
+            if let Some(id) = crate::widget::runtime::registry_id_of(self.id()) {
+                let narrow = crate::widget::runtime::repaint_mode(id)
+                    != crate::widget::runtime::RepaintMode::Full;
+                // Interaction paths may take the documented whole-control fallback in
+                // `Full`; `bounds` lets a caller that already has the rectangle skip the
+                // runtime lookup.
+                if narrow || bounds.is_none() {
+                    let damage = bounds
+                        .or_else(|| crate::widget::runtime::painted_box_with_damage_margin(id))
+                        .unwrap_or_else(|| self.damage_bounds());
+                    crate::widget::runtime::request_repaint_rect(id, damage);
+                    // The replaced `request_redraw` emitted this signal; keep it.
+                    self.base.redraw_requested.emit();
+                    return;
+                }
+            }
+        }
+        self.base.request_redraw();
+    }
+
+    /// This bar's own rectangle grown by
+    /// [`crate::widget::metrics::DAMAGE_MARGIN`].
+    ///
+    /// Used when the runtime cannot read the mounted geometry back, which is the case
+    /// while an interaction event holds the control out of the registry. Deriving the
+    /// rectangle from `Widget::geometry` yields the same answer the runtime returns for
+    /// the mounted control.
+    #[cfg(not(alloc_frugal))]
+    fn damage_bounds(&self) -> Rect {
+        let rect = self.geometry();
+        let margin = crate::widget::metrics::DAMAGE_MARGIN;
+        let offset = margin as i32;
+        Rect::new(
+            rect.x.saturating_sub(offset),
+            rect.y.saturating_sub(offset),
+            rect.width.saturating_add(margin).saturating_add(margin),
+            rect.height.saturating_add(margin).saturating_add(margin),
+        )
     }
 }
 /// Scroll bar actions.
@@ -554,7 +735,7 @@ impl Widget for ScrollBar {
 
     fn size_hint(&self) -> crate::core::Size {
         let long = crate::widget::metrics::dimensions::SCROLLBAR_DEFAULT_LENGTH;
-        let thick = crate::widget::metrics::dimensions::SCROLLBAR_THICKNESS;
+        let thick = self.band_thickness();
         match self.orientation {
             crate::layout::Orientation::Horizontal => crate::core::Size::new(long, thick),
             crate::layout::Orientation::Vertical => crate::core::Size::new(thick, long),
@@ -712,6 +893,11 @@ impl EventHandler for ScrollBar {
             self.touch_activity();
         }
         match event {
+            Event::MouseEnter { .. } | Event::MouseLeave { .. } => {
+                // Hover widens an overlay bar, so the arrival and the departure both
+                // change pixels even when the idle fade has nothing to advance.
+                self.request_frame_repaint(None);
+            }
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 self.mouse_pressed = true;
                 self.slider_pressed.emit();
@@ -721,10 +907,12 @@ impl EventHandler for ScrollBar {
                 };
                 let value = self.pixel_pos_to_value(pixel);
                 self.set_value(value);
+                self.request_frame_repaint(None);
             }
             Event::MouseRelease { pos: _, button } if *button == 1 => {
                 self.mouse_pressed = false;
                 self.slider_released.emit();
+                self.request_frame_repaint(None);
             }
             Event::MouseMove { pos } if self.mouse_pressed => {
                 let pixel = match self.orientation {
@@ -734,6 +922,14 @@ impl EventHandler for ScrollBar {
                 let value = self.pixel_pos_to_value(pixel);
                 self.set_value(value);
                 self.slider_moved.emit(value);
+                self.request_frame_repaint(None);
+            }
+            Event::Wheel { delta, modifiers, .. } => {
+                let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
+                if scroll.lines_y != 0 {
+                    self.set_value(self.value + scroll.lines_y * self.single_step);
+                    self.request_frame_repaint(None);
+                }
             }
             Event::KeyPress { key, modifiers: _ } => {
                 match *key {
@@ -806,10 +1002,13 @@ impl Draw for ScrollBar {
         // 240x120 *thumb* (`scroll_bar.svg` carried `<rect x="16" y="0" width="24"
         // height="120"/>` — a full-height slab, not a grip), which is a picture of a
         // scrollbar-shaped rectangle rather than a scrollbar.
-        let band = self.track_band();
-        let rect = band;
-        let slider_pos = self.value_to_pixel_pos(self.value);
-        let slider_size = self.slider_size();
+        // The painted band is the measured band except in overlay style, where hovering widens
+        // the ink only. Its long axis (and therefore every thumb position and length) is the
+        // same, so the value/pixel mapping stays the one the hit test uses.
+        let rect = self.paint_band();
+        // The thumb is derived once, through `thumb_rect`, so the keyboard focus ring frames
+        // the same rectangle the paint below fills.
+        let thumb = self.thumb_rect();
         let style = self.style();
         // The slider is the control's *surface*; the arrows are its *foreground*.
         //
@@ -874,39 +1073,15 @@ impl Draw for ScrollBar {
         );
         // Draw slider
         //
-        // The thumb is `slider_size` of the *travel*, but never shorter than
-        // [`dimensions::SCROLLBAR_MIN_LENGTH`]: a proportional thumb with no floor vanishes on
-        // a very long document, leaving nothing to grab. The floor is applied here rather than
-        // inside `slider_size()` because that function reports the fraction a *caller* asked
-        // for, while the floor is a drawing decision about the grip.
-        let thumb_length = |travel: u32| -> u32 { (travel as f32 * slider_size) as u32 };
+        // The grip is [`Self::thumb_rect`]'s answer: `slider_size` of the *travel*, but never
+        // shorter than [`dimensions::SCROLLBAR_MIN_LENGTH`], so a proportional thumb with no
+        // floor cannot vanish on a very long document. That derivation is shared with the
+        // keyboard focus ring below, so the ring frames the grip that was painted.
         match self.orientation {
             Orientation::Horizontal => {
-                let slider_width =
-                    thumb_length(rect.width).max(dimensions::SCROLLBAR_MIN_LENGTH.min(rect.width));
-                // The thumb stops at the trough's far edge even when the floor would push it
-                // past it, because nothing clips a widget at this layer.
-                let slider_width = slider_width
-                    .min((band.x + band.width as i32 - slider_pos as i32).max(0) as u32);
-                context.fill_rect(
-                    Rect::from_f32(
-                        slider_pos,
-                        rect.y as f32,
-                        slider_width as f32,
-                        rect.height as f32,
-                    ),
-                    slider_color,
-                );
+                context.fill_rect(thumb, slider_color);
                 // Draw slider border
-                context.draw_rect(
-                    Rect::from_f32(
-                        slider_pos,
-                        rect.y as f32,
-                        slider_width as f32,
-                        rect.height as f32,
-                    ),
-                    slider_border_color,
-                );
+                context.draw_rect(thumb, slider_border_color);
                 // Draw arrows using draw_line (triangles approximated)
                 //
                 // The arrow cell is sized from the control's **thickness**, not its length:
@@ -916,117 +1091,123 @@ impl Draw for ScrollBar {
                 // x = 24). The derivation lives in `arrow_cell()`, which the thumb's travel
                 // reads too, so the two cannot disagree.
                 let arrow_size = self.arrow_cell() as u32;
-                // The arrows sit on the band's own middle line, so a centred band draws them
-                // on the trough rather than on the control's edges.
-                let mid_y = rect.y as f32 + rect.height as f32 / 2.0;
-                // Left arrow head
-                context.draw_line(
-                    Point::from_f32(rect.x as f32 + arrow_size as f32 / 2.0, mid_y),
-                    Point::from_f32(
-                        rect.x as f32 + arrow_size as f32,
-                        rect.y as f32 + rect.height as f32 / 4.0,
-                    ),
-                    arrow_color,
-                );
-                context.draw_line(
-                    Point::from_f32(rect.x as f32 + arrow_size as f32 / 2.0, mid_y),
-                    Point::from_f32(
-                        rect.x as f32 + arrow_size as f32,
-                        rect.y as f32 + rect.height as f32 * 3.0 / 4.0,
-                    ),
-                    arrow_color,
-                );
-                // Right arrow head
-                context.draw_line(
-                    Point::from_f32(
-                        rect.x as f32 + rect.width as f32 - arrow_size as f32 / 2.0,
-                        mid_y,
-                    ),
-                    Point::from_f32(
-                        rect.x as f32 + rect.width as f32 - arrow_size as f32,
-                        rect.y as f32 + rect.height as f32 / 4.0,
-                    ),
-                    arrow_color,
-                );
-                context.draw_line(
-                    Point::from_f32(
-                        rect.x as f32 + rect.width as f32 - arrow_size as f32 / 2.0,
-                        mid_y,
-                    ),
-                    Point::from_f32(
-                        rect.x as f32 + rect.width as f32 - arrow_size as f32,
-                        rect.y as f32 + rect.height as f32 * 3.0 / 4.0,
-                    ),
-                    arrow_color,
-                );
+                // An overlay bar has no arrow cells; skipping the glyphs rather than drawing
+                // zero-length lines is what keeps a stray mark off the trough's ends.
+                if arrow_size > 0 {
+                    // The arrows sit on the band's own middle line, so a centred band draws them
+                    // on the trough rather than on the control's edges.
+                    let mid_y = rect.y as f32 + rect.height as f32 / 2.0;
+                    // Left arrow head
+                    context.draw_line(
+                        Point::from_f32(rect.x as f32 + arrow_size as f32 / 2.0, mid_y),
+                        Point::from_f32(
+                            rect.x as f32 + arrow_size as f32,
+                            rect.y as f32 + rect.height as f32 / 4.0,
+                        ),
+                        arrow_color,
+                    );
+                    context.draw_line(
+                        Point::from_f32(rect.x as f32 + arrow_size as f32 / 2.0, mid_y),
+                        Point::from_f32(
+                            rect.x as f32 + arrow_size as f32,
+                            rect.y as f32 + rect.height as f32 * 3.0 / 4.0,
+                        ),
+                        arrow_color,
+                    );
+                    // Right arrow head
+                    context.draw_line(
+                        Point::from_f32(
+                            rect.x as f32 + rect.width as f32 - arrow_size as f32 / 2.0,
+                            mid_y,
+                        ),
+                        Point::from_f32(
+                            rect.x as f32 + rect.width as f32 - arrow_size as f32,
+                            rect.y as f32 + rect.height as f32 / 4.0,
+                        ),
+                        arrow_color,
+                    );
+                    context.draw_line(
+                        Point::from_f32(
+                            rect.x as f32 + rect.width as f32 - arrow_size as f32 / 2.0,
+                            mid_y,
+                        ),
+                        Point::from_f32(
+                            rect.x as f32 + rect.width as f32 - arrow_size as f32,
+                            rect.y as f32 + rect.height as f32 * 3.0 / 4.0,
+                        ),
+                        arrow_color,
+                    );
+                }
             }
             Orientation::Vertical => {
-                let slider_height = thumb_length(rect.height)
-                    .max(dimensions::SCROLLBAR_MIN_LENGTH.min(rect.height));
-                let slider_height = slider_height
-                    .min((band.y + band.height as i32 - slider_pos as i32).max(0) as u32);
-                context.fill_rect(
-                    Rect::from_f32(
-                        rect.x as f32,
-                        slider_pos,
-                        rect.width as f32,
-                        slider_height as f32,
-                    ),
-                    slider_color,
-                );
+                context.fill_rect(thumb, slider_color);
                 // Draw slider border
-                context.draw_rect(
-                    Rect::from_f32(
-                        rect.x as f32,
-                        slider_pos,
-                        rect.width as f32,
-                        slider_height as f32,
-                    ),
-                    slider_border_color,
-                );
+                context.draw_rect(thumb, slider_border_color);
                 // Draw arrows using draw_line (triangles approximated)
                 let arrow_size = self.arrow_cell() as u32;
-                // On the band's own middle line, as above.
-                let mid_x = rect.x as f32 + rect.width as f32 / 2.0;
-                // Up arrow head
-                context.draw_line(
-                    Point::from_f32(mid_x, rect.y as f32 + arrow_size as f32 / 2.0),
-                    Point::from_f32(
-                        rect.x as f32 + rect.width as f32 / 4.0,
-                        rect.y as f32 + arrow_size as f32,
-                    ),
-                    arrow_color,
-                );
-                context.draw_line(
-                    Point::from_f32(mid_x, rect.y as f32 + arrow_size as f32 / 2.0),
-                    Point::from_f32(
-                        rect.x as f32 + rect.width as f32 * 3.0 / 4.0,
-                        rect.y as f32 + arrow_size as f32,
-                    ),
-                    arrow_color,
-                );
-                // Down arrow head
-                context.draw_line(
-                    Point::from_f32(
-                        mid_x,
-                        rect.y as f32 + rect.height as f32 - arrow_size as f32 / 2.0,
-                    ),
-                    Point::from_f32(
-                        rect.x as f32 + rect.width as f32 / 4.0,
-                        rect.y as f32 + rect.height as f32 - arrow_size as f32,
-                    ),
-                    arrow_color,
-                );
-                context.draw_line(
-                    Point::from_f32(
-                        mid_x,
-                        rect.y as f32 + rect.height as f32 - arrow_size as f32 / 2.0,
-                    ),
-                    Point::from_f32(
-                        rect.x as f32 + rect.width as f32 * 3.0 / 4.0,
-                        rect.y as f32 + rect.height as f32 - arrow_size as f32,
-                    ),
-                    arrow_color,
+                // No arrow cells on the overlay shape; see the horizontal arm.
+                if arrow_size > 0 {
+                    // On the band's own middle line, as above.
+                    let mid_x = rect.x as f32 + rect.width as f32 / 2.0;
+                    // Up arrow head
+                    context.draw_line(
+                        Point::from_f32(mid_x, rect.y as f32 + arrow_size as f32 / 2.0),
+                        Point::from_f32(
+                            rect.x as f32 + rect.width as f32 / 4.0,
+                            rect.y as f32 + arrow_size as f32,
+                        ),
+                        arrow_color,
+                    );
+                    context.draw_line(
+                        Point::from_f32(mid_x, rect.y as f32 + arrow_size as f32 / 2.0),
+                        Point::from_f32(
+                            rect.x as f32 + rect.width as f32 * 3.0 / 4.0,
+                            rect.y as f32 + arrow_size as f32,
+                        ),
+                        arrow_color,
+                    );
+                    // Down arrow head
+                    context.draw_line(
+                        Point::from_f32(
+                            mid_x,
+                            rect.y as f32 + rect.height as f32 - arrow_size as f32 / 2.0,
+                        ),
+                        Point::from_f32(
+                            rect.x as f32 + rect.width as f32 / 4.0,
+                            rect.y as f32 + rect.height as f32 - arrow_size as f32,
+                        ),
+                        arrow_color,
+                    );
+                    context.draw_line(
+                        Point::from_f32(
+                            mid_x,
+                            rect.y as f32 + rect.height as f32 - arrow_size as f32 / 2.0,
+                        ),
+                        Point::from_f32(
+                            rect.x as f32 + rect.width as f32 * 3.0 / 4.0,
+                            rect.y as f32 + rect.height as f32 - arrow_size as f32,
+                        ),
+                        arrow_color,
+                    );
+                }
+            }
+        }
+
+        // ── Keyboard focus ring ──
+        //
+        // The thumb is what the arrow keys and Home/End move, so the ring frames it rather
+        // than the whole trough. Gated on the *reason* focus arrived: a pointer press focuses
+        // the bar without painting a ring under the cursor, while Tab and Shortcut draw one.
+        if self.base.draws_focus_ring() {
+            let ring = FocusRing::for_control(thumb, 0);
+            if ring.is_drawable() {
+                // The fallback is the thumb's contrasting tone; an active theme overrides it
+                // with its declared `outline` token.
+                context.draw_rounded_rect_stroke(
+                    ring.rect,
+                    ring.radius,
+                    focus_ring_color(slider_color.contrast_color()),
+                    FOCUS_RING_WIDTH,
                 );
             }
         }
@@ -1185,7 +1366,9 @@ mod tests {
         let mut sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
         assert_eq!(*sb.style(), WidgetStyle::default());
         let custom = WidgetStyle::default().with_background(Color::rgb(200, 200, 200));
-        sb.set_style(custom.clone());
+        // The bar's own `set_style` selects the shape; the resolved widget style goes through
+        // the `Widget` contract with a fully qualified call.
+        crate::widget::Widget::set_style(&mut sb, custom.clone());
         assert_eq!(*sb.style(), custom);
     }
 
@@ -1585,5 +1768,204 @@ mod tests {
             !fired.load(std::sync::atomic::Ordering::SeqCst),
             "setting the same value must not repaint"
         );
+    }
+
+    /// The desktop shape stays the default and keeps its arrow cells.
+    #[test]
+    fn the_default_scrollbar_style_is_arrows() {
+        let sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        assert_eq!(sb.bar_style(), ScrollBarStyle::Arrows);
+        assert!(sb.arrow_cell() > 0.0, "the desktop shape reserves cells for its arrows");
+        assert_eq!(sb.size_hint().height, dimensions::SCROLLBAR_THICKNESS);
+    }
+
+    /// The overlay shape has no arrow cells, so the thumb can use the whole band.
+    #[test]
+    fn an_overlay_bar_travels_the_whole_band_and_the_conversions_are_inverse() {
+        let mut sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        sb.set_style(ScrollBarStyle::Overlay);
+        sb.set_range(0, 1000);
+
+        assert_eq!(sb.arrow_cell(), 0.0, "an overlay bar paints no arrows");
+        let band = sb.track_band();
+        assert_eq!(band.width, 200, "both ends of the trough are travel, not arrow cells");
+        let (origin, travel) = sb.travel_band();
+        assert_eq!(origin, band.x as f32, "travel starts at the trough's own edge");
+        assert_eq!(
+            origin + travel + sb.thumb_length(),
+            band.x as f32 + band.width as f32,
+            "the thumb reaches the far edge with no arrow cell to stop at"
+        );
+
+        for value in [0, 250, 500, 750, 1000] {
+            let drawn_at = sb.value_to_pixel_pos(value);
+            assert_eq!(sb.pixel_pos_to_value(drawn_at), value, "value {value} must round-trip");
+        }
+    }
+
+    /// An idle overlay bar fades to fully transparent, and an interaction brings it back.
+    #[test]
+    fn an_overlay_bar_fades_all_the_way_out_when_idle() {
+        let mut sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        sb.set_style(ScrollBarStyle::Overlay);
+        sb.set_value(50);
+
+        assert!(!sb.tick(SCROLLBAR_IDLE_DELAY_MS), "the hold is not an animation");
+        assert_eq!(sb.opacity(), 1.0, "the bar holds through the idle delay");
+        assert!(sb.tick(60), "past the delay the bar owes frames");
+        while sb.tick(60) {}
+        assert_eq!(sb.opacity(), 0.0, "an overlay bar disappears entirely at rest");
+
+        sb.set_value(60);
+        assert!(sb.is_animating(), "a scroll fades the bar back in");
+        while sb.tick(60) {}
+        assert_eq!(sb.opacity(), 1.0, "and it returns to full strength");
+    }
+
+    /// Hover widens the painted overlay band only; the measured band is unchanged.
+    #[test]
+    fn hovering_widens_the_overlay_paint_but_not_the_measured_band() {
+        let mut sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        sb.set_style(ScrollBarStyle::Overlay);
+        let resting_paint = sb.paint_band();
+        let resting_band = sb.track_band();
+        assert_eq!(resting_paint.height, dimensions::SCROLLBAR_OVERLAY_THICKNESS);
+        assert_eq!(resting_band.height, dimensions::SCROLLBAR_OVERLAY_THICKNESS);
+
+        sb.handle_event(&Event::MouseEnter { pos: Point::new(100, 8) });
+        assert_eq!(
+            sb.paint_band().height,
+            dimensions::SCROLLBAR_OVERLAY_HOVER_THICKNESS,
+            "hovering thickens the drawn band"
+        );
+        assert_eq!(
+            sb.track_band().height,
+            dimensions::SCROLLBAR_OVERLAY_THICKNESS,
+            "but the hit/travel band must not move with it"
+        );
+
+        sb.handle_event(&Event::MouseLeave { pos: Point::new(100, 8) });
+        assert_eq!(sb.paint_band().height, dimensions::SCROLLBAR_OVERLAY_THICKNESS);
+    }
+
+    /// Keyboard focus paints the ring on the thumb; a pointer press does not.
+    ///
+    /// The bar reported `WidgetState::Focused` for keyboard focus but painted no ring, so the
+    /// state had no visible consumer. The ring is the only 2 px stroke the control emits,
+    /// which makes its presence observable in the render.
+    #[test]
+    fn a_keyboard_focused_bar_paints_the_ring_and_pointer_focus_does_not() {
+        // The ring's colour reads the process-wide theme; hold the guard so a concurrent
+        // appearance switch cannot change this render mid-assertion.
+        let _guard = crate::style::theme_test_guard();
+        let make = || {
+            let mut bar = ScrollBar::new(Rect::new(0, 0, 200, 16));
+            bar.set_range(0, 1000);
+            bar.set_value(500);
+            bar
+        };
+
+        let mut keyboard = make();
+        keyboard.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        assert!(keyboard.base.draws_focus_ring(), "Tab focus must ask for a ring");
+        let focused = crate::widget::svg::render_to_svg(&mut keyboard);
+        assert!(
+            focused.lines().any(|line| line.contains("stroke-width=\"2\"")),
+            "keyboard focus must paint the ring around the thumb: {focused}"
+        );
+
+        let mut pointer = make();
+        pointer.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Pointer });
+        let unfocused = crate::widget::svg::render_to_svg(&mut pointer);
+        assert!(
+            !unfocused.lines().any(|line| line.contains("stroke-width=\"2\"")),
+            "pointer focus must not paint a ring: {unfocused}"
+        );
+    }
+
+    /// The ring frames exactly the thumb the paint pass fills.
+    #[test]
+    fn the_focus_ring_follows_the_painted_thumb() {
+        let mut bar = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        bar.set_range(0, 1000);
+        bar.set_value(0);
+        let at_start = bar.thumb_rect();
+        bar.set_value(1000);
+        let at_end = bar.thumb_rect();
+        assert!(
+            at_end.x > at_start.x,
+            "the thumb must travel with the value: {:?} vs {:?}",
+            at_end,
+            at_start
+        );
+        assert_eq!(at_end.y, at_start.y, "a horizontal bar's thumb keeps one row");
+        assert_eq!(
+            at_start.height,
+            bar.paint_band().height,
+            "the ring must frame the painted grip, not a second estimate"
+        );
+    }
+
+    /// A wheel notch moves the value by one single step and clamps at both ends.
+    #[test]
+    fn the_wheel_steps_the_value_by_one_line_and_clamps() {
+        use crate::event::{Event, EventHandler};
+
+        let mut bar = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        bar.set_range(0, 10);
+        bar.set_value(5);
+
+        bar.handle_event(&Event::wheel(0, 1, 0));
+        assert_eq!(bar.value(), 6);
+        bar.handle_event(&Event::wheel(0, -1, 0));
+        assert_eq!(bar.value(), 5);
+
+        bar.set_value(10);
+        bar.handle_event(&Event::wheel(0, 1, 0));
+        assert_eq!(bar.value(), 10, "the maximum clamps the wheel");
+        bar.set_value(0);
+        bar.handle_event(&Event::wheel(0, -1, 0));
+        assert_eq!(bar.value(), 0, "the minimum clamps the wheel");
+    }
+
+    /// A wheel interaction submits damage bounded by the painted box and the margin.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_wheel_frame_submits_the_painted_box_with_the_damage_margin() {
+        use crate::widget::runtime;
+
+        let id =
+            runtime::register(crate::compat::Box::new(ScrollBar::new(Rect::new(0, 0, 200, 16))))
+                .expect("registry");
+        assert!(runtime::set_repaint_mode(id, runtime::RepaintMode::Dirty));
+
+        assert!(runtime::dispatch_event(id, &Event::wheel(0, 1, 0)));
+
+        let expected = runtime::painted_box_with_damage_margin(id).expect("painted box");
+        assert_eq!(
+            runtime::dirty_rects(id),
+            vec![expected],
+            "a value frame must damage the painted box plus the margin"
+        );
+        runtime::unregister(id);
+    }
+
+    /// `Full` keeps the whole-control path and records no damage rectangle.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_wheel_frame_in_full_mode_keeps_the_whole_control_repaint() {
+        use crate::widget::runtime;
+
+        let id =
+            runtime::register(crate::compat::Box::new(ScrollBar::new(Rect::new(0, 0, 200, 16))))
+                .expect("registry");
+        assert_eq!(runtime::repaint_mode(id), runtime::RepaintMode::Full);
+
+        assert!(runtime::dispatch_event(id, &Event::wheel(0, 1, 0)));
+        assert!(
+            runtime::dirty_rects(id).is_empty(),
+            "Full mode records no damage, so the control repaints whole"
+        );
+        runtime::unregister(id);
     }
 }

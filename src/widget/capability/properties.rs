@@ -615,7 +615,10 @@ pub(crate) fn menu_capability() -> WidgetCapability {
         canonical_name: "menu",
         // `context_menu` is no longer an alias here: it is its own canonical row over the same
         // control (see `context_menu_capability`), and a name may not be both.
-        aliases: &["drop_down_menu"],
+        // `drop_down_menu` is gone for the same reason: it normalises to `dropdownmenu`,
+        // which is the canonical name of the separate `dropdown_menu` control. Keeping it
+        // made the name resolve by registration order rather than by meaning.
+        aliases: &[],
         properties: MENU_PROPERTIES,
         events: events_of!("menu"),
         commands: &["clear", "add_action", "add_separator"],
@@ -1466,7 +1469,9 @@ pub(crate) fn meter_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::Meter,
         canonical_name: "meter",
-        aliases: &["meter_widget", "gauge"],
+        // `gauge` is a separate canonical control (`gauge_capability`), so it cannot also
+        // be a `meter` alias: normalized names must have exactly one owner.
+        aliases: &["meter_widget"],
         properties: METER_PROPERTIES,
         events: events_of!("meter"),
         commands: &["set_value", "set_range"],

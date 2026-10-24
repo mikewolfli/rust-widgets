@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
+use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::capability::coercion::expect_usize;
@@ -1166,13 +1166,15 @@ impl EventHandler for GridTableWidget {
                 self.resizing_column = None;
             }
 
-            Event::Wheel { delta, modifiers: _ } => {
-                let lines = ((delta.y.abs() / 120).max(1)) as isize;
-                if delta.y < 0 {
-                    let next = self.scroll_row.saturating_add(lines as usize);
+            Event::Wheel { delta, modifiers } => {
+                // One notch is one row, whichever unit the host delivered it in.
+                let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
+                let lines = scroll.lines_y.unsigned_abs() as usize;
+                if scroll.lines_y < 0 {
+                    let next = self.scroll_row.saturating_add(lines);
                     self.set_scroll_row(next);
-                } else if delta.y > 0 {
-                    let up = self.scroll_row.saturating_sub(lines as usize);
+                } else if scroll.lines_y > 0 {
+                    let up = self.scroll_row.saturating_sub(lines);
                     self.set_scroll_row(up);
                 }
             }
@@ -1776,5 +1778,22 @@ mod tests {
         assert!(tbl.sort_specs().is_empty());
         tbl.clear_selection();
         assert!(tbl.selected_cell.is_none());
+    }
+
+    /// One wheel notch scrolls one row, whether the host sends the documented
+    /// notch delta or the legacy 120-unit tick.
+    #[test]
+    fn wheel_scrolls_one_row_per_notch() {
+        let mut tbl = GridTableWidget::new(Rect::new(0, 0, 600, 400));
+        tbl.set_data_source(Arc::new(TestSource { rows: 10, cols: 3 }));
+
+        tbl.handle_event(&Event::wheel(0, -120, 0));
+        assert_eq!(tbl.scroll_row(), 1, "one legacy notch is one row");
+
+        tbl.handle_event(&Event::wheel(0, -1, 0));
+        assert_eq!(tbl.scroll_row(), 2, "one documented notch is one row");
+
+        tbl.handle_event(&Event::wheel(0, 120, 0));
+        assert_eq!(tbl.scroll_row(), 1, "the opposite notch scrolls back one row");
     }
 }

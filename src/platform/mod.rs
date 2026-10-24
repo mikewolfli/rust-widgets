@@ -18,6 +18,15 @@ pub mod android;
 /// Android JNI bridge (native view creation via JNI, feature-gated).
 #[cfg(feature = "android-jni")]
 pub mod android_jni;
+/// The CoreVideo display link both macOS backends pace frames against.
+///
+/// Shared because the CoreVideo and mach-time half is pure C ABI: the cocoa backend adds its
+/// AppKit observers on top, the objc2 backend uses it as-is.
+#[cfg(all(
+    target_os = "macos",
+    any(all(feature = "cocoa-legacy", widgets_unstripped), feature = "macos")
+))]
+pub(crate) mod display_link;
 /// HarmonyOS / OpenHarmony backend.
 ///
 /// Selected either because the artifact targets OpenHarmony (`target_env = "ohos"`)

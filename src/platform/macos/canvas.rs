@@ -39,6 +39,7 @@ use objc::{class, msg_send, sel, sel_impl};
 use std::collections::HashMap;
 use std::os::raw::c_void;
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 /// `OBJC_ASSOCIATION_ASSIGN` (0): borrow the value rather than retaining it.
 ///
@@ -1369,6 +1370,10 @@ fn frame_tick_class() -> *const Class {
 /// Must be called on the AppKit main thread with an active run loop (i.e. from `run()`), because
 /// `scheduledTimerWithTimeInterval:…` adds the timer to the current thread's run loop.
 pub(crate) unsafe fn install_frame_heartbeat() {
+    // Start the display link before the timer so the first tick already has a presented-time
+    // deadline. A host where CoreVideo is unavailable answers `false`; the timer below then keeps
+    // its fixed interval and `supports_vsync_frame` stays `false`.
+    let _ = super::display_link::start();
     let target: id = msg_send![frame_tick_class(), new];
     let _timer: id = msg_send![
         class!(NSTimer),
@@ -1442,8 +1447,45 @@ unsafe fn window_did_resize(this: &Object, _cmd: Sel, notification: id) {
 /// too -- so a still window would stop hearing the resizes that could start it moving.
 /// A still frame is only a lookup plus an `is_animating()` sweep, which is what makes
 /// the unconditional heartbeat affordable; see [`crate::drive_frame`].
-extern "C" fn drain_triggers_impl(_this: &Object, _cmd: Sel, _timer: id) {
-    crate::drive_frame(FRAME_INTERVAL_MS as u32);
+extern "C" fn drain_triggers_impl(_this: &Object, _cmd: Sel, timer: id) {
+    // The display link publishes the instant the next frame is presented. When it has one, the
+    // animation clock advances by the measured presented-time delta instead of the fixed
+    // assumption; without one the helper answers the nominal interval and resets its phase.
+    let deadline = super::display_link::next_deadline();
+    let delta = crate::platform::frame_wait::presented_delta_ms(deadline);
+    crate::drive_frame(delta);
+    if let Some(deadline) = deadline {
+        retarget_heartbeat(timer, deadline);
+    }
+}
+
+/// Moves the repeating heartbeat's next fire to `deadline` so the loop follows the display.
+///
+/// The timer stays repeating and is never invalidated: invalidating it would also stop the
+/// resize drain that shares this tick. `setFireDate:` only moves the next fire; the follow-up
+/// iterations are retargeted the same way, so the cadence tracks the display rather than drifting
+/// against it. A deadline that is already at hand is left alone so a missed presentation cannot
+/// turn the timer into a busy loop.
+fn retarget_heartbeat(timer: id, deadline: Instant) {
+    if timer == nil {
+        return;
+    }
+    let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+        return;
+    };
+    if remaining < Duration::from_millis(1) {
+        return;
+    }
+    // SAFETY: `timer` is the live `NSTimer` AppKit passed to the tick selector, and `NSDate` is
+    // the class `setFireDate:` takes. Both messages run on the AppKit main thread, which is where
+    // the timer fires.
+    unsafe {
+        let date: id =
+            msg_send![class!(NSDate), dateWithTimeIntervalSinceNow: remaining.as_secs_f64()];
+        if date != nil {
+            let _: () = msg_send![timer, setFireDate: date];
+        }
+    }
 }
 
 /// The frame interval this backend's timer runs at, in milliseconds.

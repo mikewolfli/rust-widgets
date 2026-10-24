@@ -1024,8 +1024,8 @@ $ cargo check --all
 | 1 | **SegmentedButton** | 分段按钮（单选按钮组现代替代） | 外部对标 | P1 |
 | 2 | **NavigationStack** | 导航栈（页面 push/pop） | 主流声明式实现 NavigationStack | P1 |
 | 3 | **MenuButton** | 下拉菜单按钮（点击弹出菜单） | 主流声明式实现 Menu | P1 |
-| 4 | **PopupButton** | 弹出选择按钮 | 参考工具包 QPushButton+menu | P1 |
-| 5 | **ComboBox (Editable)** | 可编辑的下拉框 | 参考工具包 QComboBox editable | P1 |
+| 4 | **PopupButton** | 弹出选择按钮 | 参考工具包 push button+menu | P1 |
+| 5 | **ComboBox (Editable)** | 可编辑的下拉框 | 参考工具包 combo box editable | P1 |
 | 6 | **ColorPicker (HLS wheel)** | HSL 色环取色器 | macOS ColorPicker | P2 |
 | 7 | **DateRangePicker** | 日期范围选择器 | Material DateRangePicker | P2 |
 | 8 | **TimeLine (交互式)** | 可拖拽时间轴 | 视频编辑/DAW | P2 |
@@ -1033,7 +1033,7 @@ $ cargo check --all
 | 10 | **OtpInput** | 验证码输入框（每位独立） | 主流 material 实现 OTP | P2 |
 | 11 | **Icon** | 图标组件（SVG/字体图标） | 主流 material 实现 Icon | P1 |
 | 12 | **ProgressCircle** | 圆形进度指示器 | Material CircularProgress | P1 |
-| 13 | **InlineSpinner** | 内联加载旋转器 | 参考工具包 QMovie/animation | P1 |
+| 13 | **InlineSpinner** | 内联加载旋转器 | 参考工具包 movie/animation | P1 |
 | 14 | **Tooltip** | 工具提示/悬浮提示 | 所有 UI 框架 | P0 |
 | 15 | **Popover** | 弹出气泡卡片 | 主流声明式实现 Popover | P1 |
 | 16 | **DropdownMenu** | 下拉菜单（联动式） | 主流 material 实现 DropdownMenu | P1 |

@@ -5,8 +5,25 @@
 use crate::compat::Rc;
 use crate::compat::{lock, vec, Cow, MiniToString, Mutex, OnceLock, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::render::core::command::LayerEffect;
 use crate::render::pixel_bytes_len;
 use crate::render::{BlendMode, PaintBackend, RenderCommand, ShapedText, TextMetrics};
+
+/// One captured backdrop layer, pushed by [`RenderCommand::PushLayer`].
+///
+/// The capture lives beside the pixel buffers because it is frame state of the surface, in
+/// the same sense as the clip stack: it describes what the pixels currently mean, not what
+/// they contain. `rect` is already clipped to the surface, so every consumer can index the
+/// buffers without repeating the bounds checks.
+#[derive(Debug, Clone)]
+pub(crate) struct LayerCapture {
+    /// Device-space `(x, y, width, height)` of the captured region.
+    pub(crate) rect: (i32, i32, u32, u32),
+    /// How the backdrop is processed at pop, or `None` when the layer has no effect.
+    pub(crate) effect: Option<LayerEffect>,
+    /// Backdrop pixels captured at push, row-major RGBA, `width * height * 4` bytes.
+    pub(crate) backdrop: Vec<u8>,
+}
 
 /// Double-buffered 8-bit RGBA pixel storage used by software rendering.
 ///
@@ -28,6 +45,13 @@ pub struct BackBuffer {
     dpi_scale: f32,
     front: Vec<u8>,
     pub(crate) back: Vec<u8>,
+    /// Open layer captures, innermost last.
+    ///
+    /// Kept on the buffer rather than on the surface because the buffers are the only
+    /// per-frame storage the surface owns that is constructed in one place. A capture is
+    /// invalidated by a resize (the region it indexes may no longer exist) and by a present
+    /// (unbalanced pushes must not leak into the next frame), so both clear the stack.
+    pub(crate) layers: Vec<LayerCapture>,
 }
 impl BackBuffer {
     /// Creates a new back buffer of `size` physical pixels at `dpi_scale`.
@@ -36,7 +60,13 @@ impl BackBuffer {
     /// clamped to a minimum of `0.1`; values above `1.0` denote HiDPI scaling.
     pub fn new(size: Size, dpi_scale: f32) -> Self {
         let bytes = pixel_bytes_len(size);
-        Self { size, dpi_scale: dpi_scale.max(0.1), front: vec![0; bytes], back: vec![0; bytes] }
+        Self {
+            size,
+            dpi_scale: dpi_scale.max(0.1),
+            front: vec![0; bytes],
+            back: vec![0; bytes],
+            layers: Vec::new(),
+        }
     }
     /// Resizes front and back buffers to `size` pixels.
     ///
@@ -49,6 +79,7 @@ impl BackBuffer {
         let bytes = pixel_bytes_len(size);
         self.front.resize(bytes, 0);
         self.back.resize(bytes, 0);
+        self.layers.clear();
     }
     /// Returns the buffer size in physical pixels, not in logical units.
     pub fn size(&self) -> Size {
@@ -101,6 +132,10 @@ impl BackBuffer {
     /// start of the next frame.
     pub fn present(&mut self) {
         core::mem::swap(&mut self.front, &mut self.back);
+        // A balanced frame pops every layer it pushes. Clearing here turns an unbalanced
+        // push into a lost effect rather than a stale capture that would be applied to the
+        // *next* frame's pixels.
+        self.layers.clear();
     }
 }
 /// Software raster surface with quality controls and RGBA frame output.
@@ -1118,6 +1153,48 @@ impl<'a> RenderContext<'a> {
         self.backend.execute_command(&RenderCommand::PopClip);
     }
 
+    /// Begins a composed layer inside `bounds`, translated by the current offset.
+    ///
+    /// Everything drawn until [`RenderContext::pop_layer`] becomes the layer's foreground. The
+    /// backdrop captured at the push is processed by `effect` and the foreground is composited
+    /// over it.
+    ///
+    /// This is the crate-facing form of [`RenderCommand::PushLayer`]; widget code that resolved
+    /// a material through the theme should use [`RenderContext::push_material_layer`], which
+    /// takes the plain `(radius, tint)` pair that resolution returns.
+    pub(crate) fn push_layer(&mut self, bounds: Rect, effect: Option<LayerEffect>) {
+        let bounds = self.offset_rect(bounds);
+        self.backend.execute_command(&RenderCommand::PushLayer { bounds, effect });
+    }
+
+    /// Begins a material layer inside `bounds` from a plain blur radius and optional tint.
+    ///
+    /// This is the widget/window-facing entry point: a control asks the theme for a material
+    /// and receives `(blur_radius, tint)` (or an opaque colour when transparency is reduced),
+    /// then hands that answer straight to this method. The blur radius is the material's
+    /// 2-sigma point, so no unit conversion is needed.
+    pub fn push_material_layer(
+        &mut self,
+        bounds: Rect,
+        blur_radius: u32,
+        tint: Option<(Color, f32)>,
+    ) {
+        let effect = match tint {
+            Some((tint, tint_weight)) => {
+                Some(LayerEffect::BackdropBlurTint { radius: blur_radius, tint, tint_weight })
+            }
+            None if blur_radius == 0 => None,
+            None => Some(LayerEffect::BackdropBlur { radius: blur_radius }),
+        };
+        self.push_layer(bounds, effect);
+    }
+
+    /// Ends the innermost [`RenderContext::push_layer`] / [`RenderContext::push_material_layer`]
+    /// and composites it.
+    pub fn pop_layer(&mut self) {
+        self.backend.execute_command(&RenderCommand::PopLayer);
+    }
+
     /// Draws `data` as an image at `(x, y)` scaled to `width` x `height` pixels.
     ///
     /// `data` is interpreted as 8-bit RGBA, four bytes per pixel, tightly
@@ -1331,6 +1408,145 @@ mod tests {
         assert_eq!(rgba[idx], 0); // R
         assert_eq!(rgba[idx + 1], 0); // G
         assert_eq!(rgba[idx + 2], 255); // B
+    }
+
+    /// A rotated image keeps its pixels inside the mapped quad and paints none outside it.
+    ///
+    /// The axis-aligned path stretches a source grid over a rectangle; under an affine the grid
+    /// lands on a parallelogram, and the only correct reading of "draw this image here" is to
+    /// sample the source through the inverse mapping. A bounding-box fill would paint the four
+    /// corners the rotation just removed.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn a_quad_image_fills_the_parallelogram_and_nothing_around_it() {
+        let mut surface = SoftwareSurface::new(Size::new(40, 40), 1.0);
+        surface.begin_frame(Color::WHITE);
+
+        // A diamond: the 0..2 source grid mapped onto a square rotated 45 degrees about (20, 20).
+        let corners =
+            [Point::new(20, 0), Point::new(40, 20), Point::new(20, 40), Point::new(0, 20)];
+        let pixels = [255u8, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255];
+        surface.draw_image_quad(corners, 2, 2, &pixels);
+        surface.end_frame();
+
+        let rgba = surface.frame_rgba();
+        let at = |x: u32, y: u32| {
+            let index = ((y * 40 + x) * 4) as usize;
+            [rgba[index], rgba[index + 1], rgba[index + 2]]
+        };
+        assert_eq!(at(20, 20), [255, 0, 0], "the centre of the quad is inside the image");
+        assert_eq!(at(2, 2), [255, 255, 255], "a corner outside the diamond is untouched");
+        assert_eq!(at(37, 37), [255, 255, 255], "and so is the opposite corner");
+    }
+
+    /// A scaled quad resamples bilinearly, not as blocks.
+    ///
+    /// The plan for the affine layer specifies bilinear resampling for transformed images. A
+    /// nearest-neighbour copy would paint only the source's own values, so the evidence is a
+    /// channel value strictly between the black and white it started from — something no copy can
+    /// produce.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn a_scaled_quad_image_resamples_bilinearly() {
+        let mut surface = SoftwareSurface::new(Size::new(8, 8), 1.0);
+        surface.begin_frame(Color::BLACK);
+
+        // 2x2 source, one black column and one white column, stretched over 4x4 pixels.
+        let pixels = [
+            0u8, 0, 0, 255, 255, 255, 255, 255, // top row: black, white
+            0, 0, 0, 255, 255, 255, 255, 255, // bottom row: black, white
+        ];
+        surface.draw_image_quad(
+            [Point::new(0, 0), Point::new(4, 0), Point::new(4, 4), Point::new(0, 4)],
+            2,
+            2,
+            &pixels,
+        );
+        surface.end_frame();
+
+        let rgba = surface.frame_rgba();
+        let red = |x: u32, y: u32| rgba[((y * 8 + x) * 4) as usize];
+        assert_eq!(red(0, 0), 0, "the first column is the source's black texel");
+        assert_eq!(red(3, 0), 255, "the last column is the source's white texel");
+        let blended = red(1, 0);
+        assert!(blended > 0 && blended < 255, "a stretched quad must interpolate, got {blended}");
+    }
+
+    /// An image that hangs off the surface and the clip is cropped exactly, not wrapped.
+    ///
+    /// The draw path intersects the destination with the surface and the clip once and then
+    /// walks only that rectangle, so the row offsets into the source have to stay in step with
+    /// the crop. A mistake there shifts or wraps the picture — the class of defect the old
+    /// per-pixel bounds test could not have.
+    #[test]
+    fn a_partly_offscreen_image_is_cropped_to_the_visible_rectangle() {
+        let mut surface = SoftwareSurface::new(Size::new(6, 6), 1.0);
+        surface.begin_frame(Color::WHITE);
+        // 2x2 opaque red image drawn at (-1, -1): only its bottom-right pixel is inside.
+        let red = [255u8, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255];
+        surface.draw_image(-1, -1, 2, 2, &red);
+        surface.end_frame();
+
+        let rgba = surface.frame_rgba();
+        let at = |x: u32, y: u32| {
+            let index = ((y * 6 + x) * 4) as usize;
+            [rgba[index], rgba[index + 1], rgba[index + 2]]
+        };
+        assert_eq!(at(0, 0), [255, 0, 0], "the one visible pixel is the source's last one");
+        assert_eq!(at(1, 0), [255, 255, 255], "nothing is shifted to the right");
+        assert_eq!(at(0, 1), [255, 255, 255], "nothing is shifted down");
+        assert_eq!(at(5, 5), [255, 255, 255], "the rest of the surface is untouched");
+    }
+
+    /// A clip narrower than the image crops it, and the cropped rows still read the right source
+    /// bytes.
+    #[test]
+    fn an_image_inside_a_clip_reads_the_source_columns_it_covers() {
+        let mut surface = SoftwareSurface::new(Size::new(4, 1), 1.0);
+        surface.begin_frame(Color::WHITE);
+        // 4x1 image: red, green, blue, black — one pixel per column.
+        let pixels = [255u8, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 0, 0, 0, 255];
+        surface.push_clip(1, 0, 2, 1);
+        surface.draw_image(0, 0, 4, 1, &pixels);
+        surface.pop_clip();
+        surface.end_frame();
+
+        let rgba = surface.frame_rgba();
+        let at = |x: u32| {
+            let index = (x * 4) as usize;
+            [rgba[index], rgba[index + 1], rgba[index + 2]]
+        };
+        assert_eq!(at(0), [255, 255, 255], "outside the clip");
+        assert_eq!(at(1), [0, 255, 0], "the clip starts at the source's second column");
+        assert_eq!(at(2), [0, 0, 255], "and ends after the third");
+        assert_eq!(at(3), [255, 255, 255], "outside the clip");
+    }
+
+    /// An axis-aligned quad is the same picture as a plain image draw.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn an_axis_aligned_quad_matches_a_plain_image_draw() {
+        let pixels = [0u8, 128, 0, 255, 0, 128, 0, 255, 0, 128, 0, 255, 0, 128, 0, 255];
+        let mut plain = SoftwareSurface::new(Size::new(8, 8), 1.0);
+        plain.begin_frame(Color::WHITE);
+        plain.draw_image(2, 2, 2, 2, &pixels);
+        plain.end_frame();
+
+        let mut quad = SoftwareSurface::new(Size::new(8, 8), 1.0);
+        quad.begin_frame(Color::WHITE);
+        quad.draw_image_quad(
+            [Point::new(2, 2), Point::new(4, 2), Point::new(4, 4), Point::new(2, 4)],
+            2,
+            2,
+            &pixels,
+        );
+        quad.end_frame();
+
+        assert_eq!(
+            plain.frame_rgba(),
+            quad.frame_rgba(),
+            "an identity transform must not change the pixels"
+        );
     }
 
     /// `SetBlendMode` must actually composite on the software backend.

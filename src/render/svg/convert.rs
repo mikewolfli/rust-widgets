@@ -29,6 +29,25 @@ pub fn point_attrs(p: &Point) -> String {
     format!(r#"x1="{}" y1="{}""#, p.x, p.y)
 }
 
+/// Format four perimeter-ordered corners as a `points="x y x y …"` list.
+///
+/// Used by the quad commands an affine transform produces, which an SVG `<rect>` cannot
+/// express. The corners are already integers, so no rounding happens here.
+#[cfg(feature = "3d")]
+pub fn quad_points(corners: &[Point; 4]) -> String {
+    format!(
+        "{} {} {} {} {} {} {} {}",
+        corners[0].x,
+        corners[0].y,
+        corners[1].x,
+        corners[1].y,
+        corners[2].x,
+        corners[2].y,
+        corners[3].x,
+        corners[3].y
+    )
+}
+
 /// Escape special XML characters (`<`, `>`, `&`, `"`, `'`) for safe SVG output.
 pub fn escape_xml(s: &str) -> String {
     s.chars()

@@ -120,17 +120,17 @@
 
 | 布局 | 本项目 | 主流 material 实现 | 参考工具包 | 缺口 |
 |------|--------|---------|-----|------|
-| AbsoluteLayout | ✅ | ✅ (Stack+Positioned) | ✅ (QGridLayout 0-spacing) | — |
-| BoxLayout (H/V) | ✅ | ✅ (Row/Column) | ✅ (QHBoxLayout/QVBoxLayout) | — |
-| FlowLayout | ✅ | ✅ (Wrap) | ✅ (QFlowLayout) | — |
-| FormLayout | ✅ | ❌ (需手写) | ✅ (QFormLayout) | — |
-| GridLayout | ✅ | ✅ (GridView) | ✅ (QGridLayout) | — |
-| Splitter | ✅ | ❌ (第三方) | ✅ (QSplitter) | — |
-| StackLayout | ✅ | ✅ (Stack) | ✅ (QStackedLayout) | — |
+| AbsoluteLayout | ✅ | ✅ (Stack+Positioned) | ✅ (grid layout 0-spacing) | — |
+| BoxLayout (H/V) | ✅ | ✅ (Row/Column) | ✅ (horizontal box layout/vertical box layout) | — |
+| FlowLayout | ✅ | ✅ (Wrap) | ✅ (flow layout) | — |
+| FormLayout | ✅ | ❌ (需手写) | ✅ (form layout) | — |
+| GridLayout | ✅ | ✅ (GridView) | ✅ (grid layout) | — |
+| Splitter | ✅ | ❌ (第三方) | ✅ (splitter) | — |
+| StackLayout | ✅ | ✅ (Stack) | ✅ (stacked layout) | — |
 | UniformGrid | ✅ | ❌ | ❌ | — |
-| **FlexLayout** | **❌** | ✅ (Flex) | ✅ (Flex 等效于 QHBox+stretch) | **🔴 缺失** |
-| **ConstraintLayout** | **❌** | ✅ (CustomMultiChildLayout+constraints) | ❌ (QGraphicsAnchorLayout) | **🔴 缺失** |
-| **WrapLayout** | **❌** | ✅ (Wrap) | ✅ (QFlowLayout) | **🔴 缺失** |
+| **FlexLayout** | **❌** | ✅ (Flex) | ✅ (Flex 等效于 h box+stretch) | **🔴 缺失** |
+| **ConstraintLayout** | **❌** | ✅ (CustomMultiChildLayout+constraints) | ❌ (anchor layout) | **🔴 缺失** |
+| **WrapLayout** | **❌** | ✅ (Wrap) | ✅ (flow layout) | **🔴 缺失** |
 | **Center** | **❌** | ✅ (Center) | ❌ (需 alignment) | **🟡 缺失** |
 | **AspectRatio** | **❌** | ✅ (AspectRatio) | ❌ (需手动维护) | **🟡 缺失** |
 | **Padding/Expanded** | **❌** | ✅ (Padding/Expanded) | ❌ (需 spacer) | **🟡 缺失** |
@@ -204,10 +204,10 @@ Cargo.toml 有 `wasm` feature（含 `wasm-bindgen` + `web-sys` 依赖），但 `
 | 2 | **样式表引擎** | CSS/QSS-like 样式表解析器，支持选择器 + 属性声明 | 参考工具包 QSS / GTK CSS | **P0** |
 | 3 | **数据绑定 (MVVM)** | 响应式数据绑定，Model→View 自动同步 | 主流声明式实现 @State / 主流 material 实现 ChangeNotifier | **P1** |
 | 4 | **App Lifecycle** | 应用前后台状态管理、状态保存/恢复 | Android Activity lifecycle / iOS UIApplicationDelegate | **P1** |
-| 5 | **Undo/Redo 框架** | 通用 undo stack，跨控件 undo/redo 命令 | 参考工具包 QUndoStack / NSDocument | **P1** |
+| 5 | **Undo/Redo 框架** | 通用 undo stack，跨控件 undo/redo 命令 | 参考工具包 undo stack / NSDocument | **P1** |
 | 6 | **多窗口管理** | 多 Window 生命周期管理、窗口间通信 | macOS NSApplication / Windows MDI | **P2** |
-| 7 | **打印框架** | `print` feature 存在但无实际实现。打印预览 + 平台打印对话框 | 参考工具包 QPrinter / Windows PrintDlg | **P2** |
-| 8 | **PDF 导出** | `pdf` feature 存在但无实际实现。Widget 树 → PDF 渲染 | 参考工具包 QPdfWriter | **P2** |
+| 7 | **打印框架** | `print` feature 存在但无实际实现。打印预览 + 平台打印对话框 | 参考工具包 printer / Windows PrintDlg | **P2** |
+| 8 | **PDF 导出** | `pdf` feature 存在但无实际实现。Widget 树 → PDF 渲染 | 参考工具包 pdf writer | **P2** |
 | 9 | **虚拟键盘集成** | 移动端软键盘弹出/关闭协同。`virtual_keyboard.rs` 存在但深度未知 | Android InputMethodManager / iOS UIKeyInput | **P1** |
 
 ### B. 样式/主题系统深度缺失
@@ -327,16 +327,16 @@ Cargo.toml 有 `wasm` feature（含 `wasm-bindgen` + `web-sys` 依赖），但 `
 | 1 | **SegmentedButton** | 分段按钮（单选按钮组现代替代） | 主流 material 实现 SegmentedButton / Material 规范 | P1 |
 | 2 | **NavigationStack** | 导航栈（页面 push/pop） | 主流声明式实现 NavigationStack | P1 |
 | 3 | **MenuButton** | 下拉菜单按钮（点击弹出菜单） | 主流声明式实现 Menu | P1 |
-| 4 | **PopupButton** | 弹出选择按钮 | 参考工具包 QPushButton+menu | P1 |
-| 5 | **EditableComboBox** | 可编辑的下拉框 | 参考工具包 QComboBox editable | P1 |
+| 4 | **PopupButton** | 弹出选择按钮 | 参考工具包 push button+menu | P1 |
+| 5 | **EditableComboBox** | 可编辑的下拉框 | 参考工具包 combo box editable | P1 |
 | 6 | **ColorPickerHLS** | HSL 色环取色器 | macOS NSColorPicker | P2 |
 | 7 | **DateRangePicker** | 日期范围选择器 | Material DateRangePicker | P2 |
 | 8 | **InteractiveTimeLine** | 可拖拽时间轴 | 视频编辑/DAW | P2 |
 | 9 | **NumberPicker** | 滚轮数字选择器 | iOS UIPickerView | P2 |
 | 10 | **OTPInput** | 验证码输入框（每位独立） | 主流 material 实现 PinCodeTextField | P2 |
-| 11 | **Icon** | 图标组件（SVG/字体图标渲染） | 主流 material 实现 Icon / 参考工具包 QIcon | P1 |
+| 11 | **Icon** | 图标组件（SVG/字体图标渲染） | 主流 material 实现 Icon / 参考工具包 icon | P1 |
 | 12 | **ProgressCircle** | 圆形进度指示器 | Material CircularProgressIndicator | P1 |
-| 13 | **InlineSpinner** | 内联加载旋转器 | 参考工具包 QMovie/animation | P1 |
+| 13 | **InlineSpinner** | 内联加载旋转器 | 参考工具包 movie/animation | P1 |
 | 14 | **Tooltip** | 工具提示/悬浮提示 | 所有 UI 框架 | P0 |
 | 15 | **Popover** | 弹出气泡卡片 | 主流声明式实现 Popover | P1 |
 | 16 | **DropdownMenu** | 下拉菜单（联动式） | 主流 material 实现 DropdownMenu | P1 |
@@ -372,9 +372,9 @@ Cargo.toml 有 `wasm` feature（含 `wasm-bindgen` + `web-sys` 依赖），但 `
 
 | # | 控件名称 | 说明 | 对标 | 优先级 |
 |---|---------|------|------|-------|
-| 1 | **DockPanel (Avalon)** | VS 风格可停靠面板系统 | AvalonDock / 参考工具包 QDockWidget area | P2 |
+| 1 | **DockPanel (Avalon)** | VS 风格可停靠面板系统 | AvalonDock / 参考工具包 dock widget area | P2 |
 | 2 | **OutputWindow** | 输出窗口（日志/构建输出） | VS Output | P2 |
-| 3 | **PropertiesPanel** | 属性面板（可编辑属性网格） | VS Properties / 参考工具包 QTreeView+delegate | P1 |
+| 3 | **PropertiesPanel** | 属性面板（可编辑属性网格） | VS Properties / 参考工具包 tree view+delegate | P1 |
 | 4 | **FindReplaceDialog** | 查找替换对话框 | VS/Code 查找替换 | P1 |
 | 5 | **ZoomControl** | 缩放滑块控件 | Photoshop/Zoom 控件 | P2 |
 | 6 | **Magnifier** | 屏幕放大镜控件 | Windows Magnifier | P3 |
@@ -385,8 +385,8 @@ Cargo.toml 有 `wasm` feature（含 `wasm-bindgen` + `web-sys` 依赖），但 `
 | 11 | **ShortcutEditor** | 快捷键编辑控件 | VS Code Keyboard Shortcuts | P2 |
 | 12 | **MacroRecorder** | 宏录制控件 | Excel/AutoCAD 宏 | P3 |
 | 13 | **BreadcrumbBar (Explorer)** | 文件系统面包屑导航 | Windows Explorer | P2 |
-| 14 | **TaskPanel** | 任务面板（XP 风格） | 参考工具包 QWizard 侧面 | P3 |
-| 15 | **InplaceEditor** | 就地编辑控件（Table/Cell 内编辑） | 参考工具包 QStyledItemDelegate | P1 |
+| 14 | **TaskPanel** | 任务面板（XP 风格） | 参考工具包 wizard 侧面 | P3 |
+| 15 | **InplaceEditor** | 就地编辑控件（Table/Cell 内编辑） | 参考工具包 styled item delegate | P1 |
 
 ### D. 数据可视化控件
 

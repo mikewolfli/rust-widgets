@@ -4,18 +4,23 @@
 //! TextArea widget — multi-line text input (BLUE13 R2.5).
 use crate::compat::{Box, Rc, RefCell, String, ToString, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::event::dnd::{DragPayload, DragSource, DropEffect, DropTarget};
+use crate::event::wheel::WheelScroll;
 #[cfg(test)]
 use crate::event::FocusReason;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::GenericSignal;
+use crate::signal::{GenericSignal, Signal1};
 use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, effective_font};
+use crate::widget::metrics::{
+    active_profile, dimensions, effective_font, estimate_text_width, profile_metrics,
+};
 use crate::widget::text_utils::floor_char_boundary;
+use crate::widget::widget_trait::InputMethodQuery;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -77,6 +82,13 @@ pub struct TextArea {
     focused: bool,
     /// Signal emitted when text changes.
     pub changed: GenericSignal,
+    /// Emitted when a context menu is requested at this point in the document.
+    ///
+    /// The host supplies the menu. The signal carries the request position in window
+    /// coordinates so the host can place the menu beside the click; the control does not
+    /// decide which items are meaningful, because that policy belongs to the application
+    /// that owns the cut/copy/paste implementation.
+    pub context_menu_requested: Signal1<Point>,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
     restoring_history: bool,
@@ -107,6 +119,7 @@ impl TextArea {
             placeholder: String::new(),
             focused: false,
             changed: GenericSignal::new(),
+            context_menu_requested: Signal1::new(),
             undo_stack: UndoStack::new(),
             history_target,
             restoring_history: false,
@@ -530,6 +543,26 @@ impl TextArea {
         );
     }
 
+    /// Scrolls the viewport by `lines` rows toward the end of the document.
+    ///
+    /// Positive values reveal later lines, negative values reveal earlier ones. The result is
+    /// clamped so the first visible line can never scroll past the last window of the document,
+    /// which keeps a wheel notch at either end from leaving the field showing blank rows.
+    /// Returns whether the viewport actually moved, so the caller repaints only on a change.
+    fn scroll_lines(&mut self, lines: i32) -> bool {
+        if lines == 0 {
+            return false;
+        }
+        let max_first = self.line_count().saturating_sub(self.visible_line_count());
+        let next =
+            (self.first_visible_line as i64 + lines as i64).clamp(0, max_first as i64) as usize;
+        if next == self.first_visible_line {
+            return false;
+        }
+        self.first_visible_line = next;
+        true
+    }
+
     /// The logical line that a viewport row paints, or `None` for this control's own layout.
     ///
     /// Returned as an owned index rather than a slice so the paint path can iterate rows without
@@ -931,6 +964,31 @@ impl Widget for TextArea {
         &mut self.base
     }
 
+    /// Reports the caret an IME candidate window should anchor to while this area is focused.
+    ///
+    /// The caret's row is the one the paint path draws it on — the document line, shifted by the
+    /// viewport's first visible line — and its x is the measured advance of the text before the
+    /// caret on that line. The default `None` is still what every non-editable widget answers.
+    fn input_method_query(&self) -> Option<InputMethodQuery> {
+        Some(self.caret_query())
+    }
+
+    /// Turns a context-menu request into this area's signal; the host supplies the menu.
+    fn context_menu_event(&mut self, pos: Point) -> bool {
+        self.context_menu_requested.emit(pos);
+        true
+    }
+
+    /// Opts the area into the runtime's drag coordinator as a source.
+    fn drag_source_mut(&mut self) -> Option<&mut dyn DragSource> {
+        Some(self)
+    }
+
+    /// Opts the area into the runtime's drag coordinator as a drop target.
+    fn drop_target_mut(&mut self) -> Option<&mut dyn DropTarget> {
+        Some(self)
+    }
+
     fn size_hint(&self) -> Size {
         let line_count = if self.text.is_empty() {
             1
@@ -939,7 +997,18 @@ impl Widget for TextArea {
         };
         let max_line_width = self.text.lines().map(|l| l.len() as u32).max().unwrap_or(0);
         let w = (max_line_width * 8 + 10).max(120);
-        let h = (line_count as u32 * 16 + 10).max(60);
+        // A text area is a stack of line rows, so its content height grows with the text. The
+        // *floor* under that stack is the active profile's text-field height: Material's own
+        // historical minimum is 60 px (the control's three-row budget), while a compact profile
+        // such as macOS lets an empty area start at its shorter field height. The profile never
+        // makes the area taller than the text already asks for, so multi-line content is
+        // unchanged on every profile.
+        let field_height = profile_metrics(active_profile()).text_field_min_height;
+        let material_field_height =
+            profile_metrics(crate::widget::metrics::ControlMetricsProfile::Material)
+                .text_field_min_height;
+        let floor = if field_height < material_field_height { field_height } else { 60 };
+        let h = (line_count as u32 * LINE_H as u32 + 10).max(floor);
         Size::new(w, h)
     }
     impl_draw_bridge!();
@@ -957,8 +1026,68 @@ impl Widget for TextArea {
         use crate::signal::EventSignalRef;
         match name {
             "changed" => Some(EventSignalRef::unit("changed", &self.changed)),
+            "context_menu_requested" => Some(EventSignalRef::mapped(
+                "context_menu_requested",
+                &self.context_menu_requested,
+                |v| CapabilityValue::String(format!("{v:?}")),
+            )),
             _ => None,
         }
+    }
+}
+
+/// A selected run of text is the area's drag payload.
+///
+/// The item id and label both hold the text because [`DragPayload`] carries an opaque
+/// identifier rather than a typed body; for `text/plain` the identifier *is* the content, and
+/// using the same value for both fields means a target can read either without a rule about
+/// which one is authoritative.
+impl DragSource for TextArea {
+    fn drag_payload(&self, pos: Point) -> Option<DragPayload> {
+        if !self.hit_test(pos) {
+            return None;
+        }
+        let selected = self.selected_text();
+        if selected.is_empty() {
+            return None;
+        }
+        Some(DragPayload::new("text/plain", selected.clone()).with_label(selected).with_origin(pos))
+    }
+
+    /// A `Move` drop removes the source selection; every other effect keeps it.
+    fn on_drag_finished(&mut self, effect: DropEffect) {
+        if !effect.consumes_source() || self.read_only {
+            return;
+        }
+        let before = self.text.clone();
+        if self.replace_selection() {
+            self.line_spans_cache.borrow_mut().take();
+            self.record_edit(before);
+            self.base.request_redraw();
+        }
+    }
+}
+
+/// The area accepts plain text and inserts it at the drop point.
+impl DropTarget for TextArea {
+    fn can_accept(&self, payload: &DragPayload) -> bool {
+        !self.read_only && payload.is_type("text/plain")
+    }
+
+    fn on_drop(&mut self, payload: &DragPayload, pos: Point) -> DropEffect {
+        if !self.can_accept(payload) || !self.hit_test(pos) {
+            return DropEffect::None;
+        }
+        let text =
+            if payload.label.is_empty() { payload.item_id.clone() } else { payload.label.clone() };
+        if text.is_empty() {
+            return DropEffect::None;
+        }
+        self.cursor_pos = self.byte_index_at(pos);
+        self.selection_anchor = None;
+        self.insert_str(&text);
+        self.base.request_redraw();
+        DropEffect::Copy
     }
 }
 
@@ -1051,6 +1180,15 @@ impl EventHandler for TextArea {
                     return;
                 }
                 self.insert_committed_text(text);
+            }
+            // Wheel: a positive `delta.y` moves the content down, so the viewport moves toward
+            // the start of the document. `WheelScroll` converts the notch count to lines with the
+            // desktop default of three lines per notch.
+            Event::Wheel { delta, modifiers, .. } => {
+                let scroll = WheelScroll::from_event(*delta, *modifiers, 3);
+                if self.scroll_lines(-scroll.lines_y) {
+                    self.base.request_redraw();
+                }
             }
             Event::KeyPress { key, modifiers } => {
                 // The event carries the framework's wire bitmask; translate it once, here, so the
@@ -1499,12 +1637,62 @@ impl TextArea {
         let row = line.saturating_sub(self.first_visible_line);
         origin_y + row as i32 * LINE_H
     }
+
+    /// The caret's window rectangle and byte offset, as a native IME asks for them.
+    ///
+    /// # Why the horizontal position is measured without a paint pass
+    ///
+    /// The IME query is answered on a `&self` borrow between frames, when no `RenderContext` is
+    /// available to the caller. [`estimate_text_width`] is the crate's context-free model of the
+    /// renderer's ruler, so the reported x is the advance of the text before the caret on its own
+    /// line — the same fact [`Self::cursor_screen_x`] derives during a paint. The vertical position
+    /// is the caret's visible row, so a scrolled area reports the row it actually draws the marker
+    /// on rather than the caret's document position.
+    fn caret_query(&self) -> InputMethodQuery {
+        let rect = self.geometry();
+        let font = self.text_font();
+        let origin_x = rect.x + dimensions::TEXT_FIELD_PADDING_H as i32;
+        let caret = floor_char_boundary(&self.text, self.cursor_pos.min(self.text.len()));
+        let line_start = self.text[..caret].rfind('\n').map(|index| index + 1).unwrap_or(0);
+        let caret_x =
+            origin_x + estimate_text_width(&self.text[line_start..caret], font, 1.0) as i32;
+
+        // The first line's band is the same one `draw` lays the glyphs out in: one line tall, one
+        // inset below the top edge. Measuring it through the renderer keeps the anchor on the
+        // glyph box even for a font whose line height differs from its point size.
+        let band = Rect::new(origin_x, rect.y + FIRST_LINE_INSET, rect.width, LINE_H as u32);
+        let text_top = {
+            let mut measurement =
+                crate::render::SoftwarePaintBackend::new(crate::core::Size::new(0, 0), 1.0);
+            let context = RenderContext::new(&mut measurement);
+            context.text_line(band, font).y
+        };
+        let row = self.line_index_of(self.cursor_pos).saturating_sub(self.first_visible_line);
+        InputMethodQuery {
+            caret_rect: Rect::new(caret_x, text_top + row as i32 * LINE_H, 1, LINE_H as u32),
+            caret_byte: Some(caret),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::Rect;
+
+    /// The area turns a context-menu request into its own signal at the requested point.
+    #[test]
+    fn a_context_menu_request_emits_the_requested_point() {
+        let mut area = TextArea::new(String::new(), Rect::new(0, 0, 240, 120));
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = std::sync::Arc::clone(&seen);
+        area.context_menu_requested.connect_ref(move |pos: &Point| {
+            *sink.lock().unwrap() = Some(*pos);
+        });
+
+        assert!(area.context_menu_event(Point::new(12, 20)));
+        assert_eq!(*seen.lock().unwrap(), Some(Point::new(12, 20)));
+    }
 
     /// The bitmap face fills its glyph box, so its ink top *is* the box top. An outline face draws a
     /// real glyph whose ink is inset, so the ink top sits one or two pixels below the box top at these
@@ -1832,9 +2020,40 @@ mod tests {
     /// An IME commit enters the value the same way.
     #[test]
     fn ime_commit_enters_the_value() {
-        let mut ta = area("");
-        ta.handle_event(&Event::ime_commit("你好"));
-        assert_eq!(ta.text(), "你好");
+        let mut area = TextArea::new(String::new(), Rect::new(0, 0, 300, 200));
+        area.handle_event(&Event::ime_commit("你好"));
+        assert_eq!(area.text(), "你好");
+    }
+
+    /// The IME query reports a real caret rectangle on the caret's row, and it follows a newline.
+    ///
+    /// A multi-line field's insertion point is a *row and a column*, not one line: an anchor that
+    /// stayed on the first row would place the candidate window beside the wrong line as soon as
+    /// the user typed past the first newline.
+    #[test]
+    fn input_method_query_reports_the_caret_row_and_column() {
+        let mut area = TextArea::new("abc\ndef".to_string(), Rect::new(10, 20, 300, 200));
+        area.set_cursor_pos(0);
+        let on_first =
+            area.input_method_query().expect("an editable text area always has an insertion point");
+        assert!(on_first.caret_rect.width > 0, "the caret must have a width: {on_first:?}");
+        assert!(on_first.caret_rect.height > 0, "the caret must have a height: {on_first:?}");
+        assert_eq!(on_first.caret_byte, Some(0));
+
+        // The second line starts after the newline at byte 4; byte 6 is two characters in.
+        area.set_cursor_pos(6);
+        let on_second = area.input_method_query().expect("query after moving to the next line");
+        assert_eq!(on_second.caret_byte, Some(6));
+        assert!(
+            on_second.caret_rect.y > on_first.caret_rect.y,
+            "the caret must move down a row on the next line ({} -> {})",
+            on_first.caret_rect.y,
+            on_second.caret_rect.y
+        );
+        assert!(
+            on_second.caret_rect.x > on_first.caret_rect.x,
+            "two columns into the second line is two measured advances right"
+        );
     }
 
     /// A `TextInput` replaces a selection rather than appending to it.
@@ -2585,5 +2804,98 @@ mod tests {
             selected.matches("<rect").count() > unselected.matches("<rect").count(),
             "selecting a line while scrolled must paint its band"
         );
+    }
+
+    /// The wheel scrolls the viewport by lines and clamps at both ends of the document.
+    ///
+    /// # The defect this pins
+    ///
+    /// The field had no wheel arm at all, so a value taller than its box could only be scrolled
+    /// with the arrow keys. This drives the same `first_visible_line` the caret path uses, so the
+    /// painted rows and the scroll position cannot disagree.
+    #[test]
+    fn textarea_wheel_scrolls_and_clamps() {
+        let text: Vec<String> = (0..20).map(|n| format!("line{n}")).collect();
+        let mut ta = TextArea::new(text.join("\n"), Rect::new(0, 0, 200, 60));
+        assert_eq!(ta.first_visible_line(), 0);
+
+        // One notch toward the content's end reveals three lines.
+        ta.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+        assert_eq!(ta.first_visible_line(), 3, "a downward notch moves the viewport down");
+
+        // A notch the other way returns toward the start and cannot go below zero.
+        ta.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+        assert_eq!(ta.first_visible_line(), 0);
+        ta.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+        assert_eq!(ta.first_visible_line(), 0, "the viewport clamps at the first line");
+
+        // Scrolling past the end stops at the final whole window.
+        let max_first = ta.line_count() - ta.visible_line_count();
+        for _ in 0..20 {
+            ta.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+        }
+        assert_eq!(ta.first_visible_line(), max_first, "the viewport clamps at the last window");
+    }
+
+    /// The Material profile keeps the text area's historical 60 px minimum.
+    #[test]
+    fn the_material_profile_keeps_the_text_area_height_floor() {
+        let _theme_guard = crate::style::theme_test_guard();
+        assert!(crate::theme::global_theme_manager().set_theme("default"));
+
+        let ta = TextArea::new(String::new(), Rect::new(0, 0, 240, 120));
+        assert_eq!(ta.size_hint().height, 60, "the three-row Material budget is unchanged");
+    }
+
+    /// A Macos-profile theme lets an empty area start at the compact field height.
+    ///
+    /// The area still grows with its text: the profile only replaces the floor, so a value with
+    /// more rows asks for the same height it always did.
+    #[cfg(device_profile)]
+    #[test]
+    fn a_macos_profile_theme_lowers_the_text_area_height_floor() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut theme = crate::theme::Theme::default();
+        theme.name = "p2-6-textarea-macos".to_string();
+        theme.metrics_profile = crate::widget::metrics::ControlMetricsProfile::Macos;
+        {
+            let mut manager = crate::theme::global_theme_manager();
+            manager.register_theme(theme);
+            assert!(manager.set_theme("p2-6-textarea-macos"));
+        }
+
+        let empty = TextArea::new(String::new(), Rect::new(0, 0, 240, 120));
+        let one_line = TextArea::new("a\nb\nc\nd".to_string(), Rect::new(0, 0, 240, 120));
+        let empty_hint = empty.size_hint();
+        let tall_hint = one_line.size_hint();
+        assert!(crate::theme::global_theme_manager().set_theme("default"));
+
+        assert_eq!(empty_hint.height, LINE_H as u32 + 10, "one compact row: {empty_hint:?}");
+        assert!(empty_hint.height < 60, "the compact profile shrinks the floor: {empty_hint:?}");
+        assert_eq!(
+            tall_hint.height,
+            4 * LINE_H as u32 + 10,
+            "content-driven rows are unchanged: {tall_hint:?}"
+        );
+    }
+
+    /// The Cupertino profile keeps the Material height floor for a text area.
+    #[cfg(device_profile)]
+    #[test]
+    fn the_cupertino_profile_keeps_the_text_area_height_floor() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut theme = crate::theme::Theme::default();
+        theme.name = "p2-6-textarea-cupertino".to_string();
+        theme.metrics_profile = crate::widget::metrics::ControlMetricsProfile::Cupertino;
+        {
+            let mut manager = crate::theme::global_theme_manager();
+            manager.register_theme(theme);
+            assert!(manager.set_theme("p2-6-textarea-cupertino"));
+        }
+
+        let hint = TextArea::new(String::new(), Rect::new(0, 0, 240, 120)).size_hint();
+        assert!(crate::theme::global_theme_manager().set_theme("default"));
+
+        assert_eq!(hint.height, 60);
     }
 }

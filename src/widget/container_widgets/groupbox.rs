@@ -79,6 +79,14 @@ pub struct GroupBox {
     pub toggled: Signal1<bool>,
     /// Cached title width computed in draw() via RenderContext::measure_text().
     cached_title_width: Option<u32>,
+    /// The semantic material this container's face asks for.
+    ///
+    /// `Panel` is a type alias for this control, so a card reaches the same method through
+    /// either name. Only a device build has the theme module that defines the vocabulary; a
+    /// stripped build has no material to name, so the field and its accessors are absent rather
+    /// than carrying a duplicate local enum — the same gate `Window` uses.
+    #[cfg(device_profile)]
+    material: crate::theme::Material,
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
 }
 impl GroupBox {
@@ -92,6 +100,8 @@ impl GroupBox {
             checked: true,
             toggled: Signal1::new(),
             cached_title_width: None,
+            #[cfg(device_profile)]
+            material: crate::theme::Material::None,
             registry: None,
         }
     }
@@ -167,6 +177,36 @@ impl GroupBox {
     /// Sets the shared widget registry for child forwarding.
     pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
         self.registry = Some(registry);
+    }
+
+    /// The material this container asks the theme for.
+    ///
+    /// [`crate::theme::Material::None`] is the default and means "paint the ordinary container
+    /// face".
+    #[cfg(device_profile)]
+    pub fn material(&self) -> crate::theme::Material {
+        self.material
+    }
+
+    /// Requests `material` for this container's face.
+    ///
+    /// # Why a control resolves the material to an opaque surface
+    ///
+    /// A window can sample the desktop behind it because it owns the frame; a control inside a
+    /// window is painted into the window's own composition, so there is no backdrop for it to
+    /// sample. The theme answers with the palette role that material stands in for
+    /// ([`crate::theme::ThemeManager::material_surface`]), which is the same resolution a host
+    /// that reduced transparency gets — so the intent is expressible and its fallback is the
+    /// truthful picture rather than a silently ignored request.
+    ///
+    /// Requests a redraw only on a real change, so a repeated write schedules no frame.
+    #[cfg(device_profile)]
+    pub fn set_material(&mut self, material: crate::theme::Material) {
+        if self.material == material {
+            return;
+        }
+        self.material = material;
+        self.base.request_redraw();
     }
     /// The leading inset of the title's own box from the frame's edge: 10.
     ///
@@ -580,10 +620,27 @@ impl Draw for GroupBox {
         // face at all**, only a border, so a panel on the window was indistinguishable from
         // the window itself and the whole set of layering roles had no consumer. A caller's
         // explicit colour still wins, so a hand-coloured panel is unaffected.
-        let face = style
-            .background_color
-            .filter(|_| !style.theme_derived)
-            .or_else(|| crate::style::layer_color(crate::style::LayerColor::SurfaceContainer));
+        let face = {
+            // A requested material replaces the container role with the palette surface that
+            // material resolves to. `Material::None` (the default) skips this entirely, so a
+            // container that never asked for one paints exactly the pixels it painted before.
+            #[cfg(device_profile)]
+            {
+                if self.material != crate::theme::Material::None {
+                    Some(crate::style::theme_manager().material_surface(self.material))
+                } else {
+                    style.background_color.filter(|_| !style.theme_derived).or_else(|| {
+                        crate::style::layer_color(crate::style::LayerColor::SurfaceContainer)
+                    })
+                }
+            }
+            #[cfg(not(device_profile))]
+            {
+                style.background_color.filter(|_| !style.theme_derived).or_else(|| {
+                    crate::style::layer_color(crate::style::LayerColor::SurfaceContainer)
+                })
+            }
+        };
         if let Some(face) = face {
             context.face_with_gradient(
                 rect,
@@ -724,6 +781,30 @@ mod tests {
         assert!(gb.title().is_empty());
         assert!(gb.is_checked());
         assert!(!gb.is_checkable());
+    }
+
+    /// A requested material replaces the container face, and the default changes nothing.
+    ///
+    /// `Panel` is an alias for this control, so this is also the card's material contract.
+    /// `WindowChrome` resolves to the high container role, which differs from the plain
+    /// container face — that difference is what proves the request reached the paint.
+    #[cfg(device_profile)]
+    #[test]
+    fn a_panel_material_replaces_the_container_face() {
+        let _guard = crate::style::theme_test_guard();
+        let mut plain = GroupBox::new(Rect::new(0, 0, 80, 60));
+        let plain_face = crate::widget::svg::render_to_svg(&mut plain);
+        assert_eq!(plain.material(), crate::theme::Material::None, "the default asks for none");
+
+        let mut material = GroupBox::new(Rect::new(0, 0, 80, 60));
+        material.set_material(crate::theme::Material::WindowChrome);
+        assert_eq!(material.material(), crate::theme::Material::WindowChrome);
+        let material_face = crate::widget::svg::render_to_svg(&mut material);
+        assert_ne!(plain_face, material_face, "a requested material must change the painted face");
+
+        // Re-applying the same material is a no-op, not a second state change.
+        material.set_material(crate::theme::Material::WindowChrome);
+        assert_eq!(material.material(), crate::theme::Material::WindowChrome);
     }
 
     #[test]

@@ -27,8 +27,10 @@ use core::fmt::Write as _;
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::shortcut::Key;
 use crate::signal::Signal1;
 use crate::undo::{UndoStack, ValueCommand};
+use crate::widget::input_widgets::shortcut_editor::primary_shortcut_pressed;
 
 use crate::widget::capability::access::time_to_string;
 use crate::widget::capability::coercion::{
@@ -886,10 +888,13 @@ impl EventHandler for TimeEdit {
                 }
             }
             Event::KeyPress { key, modifiers } => match *key {
-                90 if *modifiers == 2 => {
+                // Undo and redo are the platform primary chord: Control+Z/Y on
+                // Windows and Linux, Command+Z/Y on macOS. A shifted chord is a
+                // different binding and stays unbound here.
+                _ if primary_shortcut_pressed(*key, *modifiers, Key::Z) => {
                     let _ = self.undo();
                 }
-                89 if *modifiers == 2 => {
+                _ if primary_shortcut_pressed(*key, *modifiers, Key::Y) => {
                     let _ = self.redo();
                 }
                 // Enter and Space open the face from the keyboard, so the picker is reachable without a
@@ -1144,6 +1149,7 @@ impl TimeEdit {
 mod tests {
     use super::*;
     use crate::core::Point;
+    use crate::widget::input_widgets::shortcut_editor::primary_modifier_event_bits;
     use crate::widget::svg::render_to_svg;
     use std::sync::{Arc, Mutex};
 
@@ -1413,9 +1419,9 @@ mod tests {
         editor.set_time(Time::new(10, 0, 0, 0));
         editor.set_time(Time::new(10, 0, 1, 0));
 
-        editor.handle_event(&Event::KeyPress { key: 90, modifiers: 2 });
+        editor.handle_event(&Event::KeyPress { key: 90, modifiers: primary_modifier_event_bits() });
         assert_eq!(editor.time(), Time::new(10, 0, 0, 0));
-        editor.handle_event(&Event::KeyPress { key: 89, modifiers: 2 });
+        editor.handle_event(&Event::KeyPress { key: 89, modifiers: primary_modifier_event_bits() });
         assert_eq!(editor.time(), Time::new(10, 0, 1, 0));
     }
 

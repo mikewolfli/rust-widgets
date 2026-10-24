@@ -17,7 +17,7 @@
 //! constant for why the number is a constant and not the `v` glyph's advance.
 
 use crate::compat::Vec;
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -26,6 +26,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::menu_toolbar::popup_reveal::{PopupReveal, RevealDirection};
 use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -47,6 +48,19 @@ impl SplitAction {
 }
 
 /// SplitButton provides a default primary action plus selectable alternatives.
+///
+/// # Known limitation: the popup shares this control's canvas
+///
+/// The drop-down is painted from this control's own `draw`, below its face. A **later sibling**
+/// that happens to cover the same pixels still paints over it, because the widget layer has no
+/// z-ordered overlay surface; moving the list to one is a render-layer feature, not something
+/// this control can assert on its own.
+///
+/// What the control *can* do, and does, is adopt the framework's popup contract: it reports
+/// [`Widget::has_open_popup`], takes the popup grab in [`SplitButton::open_menu`], and accepts
+/// pointer positions inside the hanging list through [`Widget::contains_point`]. Outside presses
+/// therefore dismiss it without reaching whatever they landed on, and a row outside this
+/// control's rectangle is still hit-testable.
 pub struct SplitButton {
     base: BaseWidget,
     text: String,
@@ -54,6 +68,9 @@ pub struct SplitButton {
     primary_action_index: Option<usize>,
     highlighted_action_index: Option<usize>,
     menu_open: bool,
+    /// How far the drop-down has opened. The `menu_open` flag above stays the authority (it is
+    /// what hit testing and the property contract read); this only describes the transition.
+    reveal: PopupReveal,
     pressed_primary: bool,
     pressed_arrow: bool,
     hovered_primary: bool,
@@ -78,6 +95,7 @@ impl SplitButton {
             primary_action_index: None,
             highlighted_action_index: None,
             menu_open: false,
+            reveal: PopupReveal::new(false),
             pressed_primary: false,
             pressed_arrow: false,
             hovered_primary: false,
@@ -176,12 +194,19 @@ impl SplitButton {
     }
 
     /// Opens menu.
+    ///
+    /// The grab is what makes the list modal for the gesture that dismisses it: a press outside
+    /// the control is delivered here (where `handle_event` closes the menu) instead of reaching
+    /// the control underneath. See `runtime::POPUP_GRAB`.
     pub fn open_menu(&mut self) {
         if self.menu_open {
             return;
         }
         self.menu_open = true;
+        self.reveal.set_open(true);
         self.highlighted_action_index = self.primary_action_index();
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::set_popup_grab(self.id());
         self.menu_toggled.emit(true);
         self.base.request_redraw();
     }
@@ -192,6 +217,11 @@ impl SplitButton {
             return;
         }
         self.menu_open = false;
+        // Aimed at closed before the signal, so a listener that reopens immediately starts from
+        // wherever the exit had got to rather than from a fully-open panel.
+        self.reveal.set_open(false);
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::clear_popup_grab_for(self.id());
         self.menu_toggled.emit(false);
         self.base.request_redraw();
     }
@@ -437,6 +467,31 @@ impl Widget for SplitButton {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    /// The control **and** its open drop-down accept the pointer.
+    ///
+    /// The list hangs below the face, outside this control's rectangle. Without this override the
+    /// runtime's own bounds check rejects every press on a row that is visible but past the
+    /// control's bottom edge — the rows would be painted and unreachable.
+    fn contains_point(&self, point: Point) -> bool {
+        self.base().contains_point_with_touch_expansion(point)
+            || (self.menu_open && self.menu_rect().contains_point(point))
+    }
+
+    /// The open drop-down is a real popup, so the runtime lets it win the hit test against a
+    /// sibling that covers the same pixels and treats an outside press as its dismissal.
+    fn has_open_popup(&self) -> bool {
+        self.menu_open
+    }
+
+    /// Advances the drop-down's open/close reveal; `true` while it still owes frames.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.reveal.tick(delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.reveal.is_animating()
     }
 
     fn size_hint(&self) -> crate::core::Size {
@@ -764,8 +819,21 @@ impl Draw for SplitButton {
             IconName::ChevronDown,
         );
 
-        if self.menu_open {
+        // The panel is painted while it is **either** open or still leaving: `menu_open` flips on
+        // the frame `close_menu` runs, but the reveal can still have frames to show. Clipping to
+        // the revealed rectangle is what keeps a partially-open list to the rows it has actually
+        // uncovered — the same contract the shared `PopupReveal` gives the rest of the family.
+        if self.menu_open || !self.reveal.is_closed() {
             let menu = self.menu_rect();
+            let revealed = self.reveal.revealed(
+                menu,
+                RevealDirection::Down,
+                PopupReveal::travel_cap_for(Size::new(menu.width, menu.height)),
+            );
+            let clipped = !self.reveal.is_closed();
+            if clipped {
+                context.push_clip(revealed.x, revealed.y, revealed.width, revealed.height);
+            }
             context.fill_rect(menu, face.blend(&ink, 0.22));
             context.draw_rect(menu, border);
 
@@ -793,6 +861,11 @@ impl Draw for SplitButton {
                         HorizontalAlignment::Left,
                     );
                 }
+            }
+            // Popped on the same path it was pushed, so a reveal cannot leak a clip onto whatever
+            // the host paints after this control.
+            if clipped {
+                context.pop_clip();
             }
         }
     }
@@ -896,6 +969,182 @@ mod tests {
         assert!(split.actions().is_empty());
         assert_eq!(split.primary_action_index(), None);
         assert!(!split.menu_open());
+    }
+
+    /// An open menu is a popup the runtime can route to, including outside this control's box.
+    #[test]
+    fn an_open_menu_answers_has_open_popup_and_accepts_rows_outside_the_face() {
+        let mut split = SplitButton::new("Run", Rect::new(0, 0, 160, 20));
+        split.set_actions(sample_actions());
+        // The list hangs below the 20 px face; row 1 is entirely outside the control rectangle.
+        let outside_row = Point::new(10, split.menu_rect().y + split.row_height() as i32 + 4);
+        assert!(
+            !split.contains_point(outside_row),
+            "a closed control must not claim a point below itself"
+        );
+
+        split.open_menu();
+
+        assert!(split.has_open_popup(), "an open list must tell the runtime it is a popup");
+        assert!(
+            split.contains_point(outside_row),
+            "a visible row outside the control's rectangle must still be hit-testable"
+        );
+        assert!(!split.contains_point(Point::new(1000, 1000)), "and the claim is not unbounded");
+        // Leave the thread-local grab as this test found it.
+        split.close_menu();
+    }
+
+    /// A press outside the open menu dismisses it and performs nothing.
+    #[test]
+    fn an_outside_press_closes_the_menu_without_triggering_an_action() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let mut split = SplitButton::new("Run", Rect::new(0, 0, 160, 28));
+        split.set_actions(sample_actions());
+        let triggered = Arc::new(AtomicUsize::new(0));
+        let selected = Arc::new(AtomicUsize::new(0));
+        {
+            let triggered = Arc::clone(&triggered);
+            split.triggered.connect(move |_| {
+                triggered.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        {
+            let selected = Arc::clone(&selected);
+            split.action_selected.connect(move |_| {
+                selected.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        split.open_menu();
+        split.handle_event(&Event::MousePress {
+            pos: Point::new(900, 900),
+            button: 1,
+            modifiers: 0,
+        });
+
+        assert!(!split.menu_open(), "the outside press is the dismissal");
+        assert_eq!(triggered.load(Ordering::SeqCst), 0, "a dismissal is not an activation");
+        assert_eq!(selected.load(Ordering::SeqCst), 0, "nor a selection");
+    }
+
+    /// A press that dismisses the popup must not also activate a sibling underneath it.
+    ///
+    /// This is the runtime's popup-grab contract: because the control answers
+    /// `has_open_popup`, the outside press is delivered to it and goes no further. The sibling
+    /// therefore sees a release with no matching press (and, for a button, no click).
+    #[test]
+    #[cfg(not(alloc_frugal))]
+    fn an_outside_press_is_dismissed_and_does_not_reach_a_sibling() {
+        use crate::widget::runtime::{
+            clear_popup_grab, dispatch_pointer_event, register, unregister, with_widget_mut,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let split = register(Box::new(SplitButton::new("Run", Rect::new(20, 20, 160, 28))))
+            .expect("mount the split button");
+        let _ = with_widget_mut(split, |widget| {
+            let control = (widget as &mut dyn core::any::Any)
+                .downcast_mut::<SplitButton>()
+                .expect("the mounted control is a split button");
+            control.set_actions(sample_actions());
+            // Opened after mounting so `self.id()` resolves to the registry id the router
+            // addresses; a grab taken before mount would name an id nothing is registered at.
+            control.open_menu();
+        });
+
+        let clicks = Arc::new(AtomicUsize::new(0));
+        let sibling = crate::widget::base_widgets::button::Button::new(
+            "Other".to_string(),
+            Rect::new(220, 200, 100, 30),
+        );
+        let sibling = register(Box::new(sibling)).expect("mount the sibling");
+        {
+            let clicks = Arc::clone(&clicks);
+            let _ = with_widget_mut(sibling, |widget| {
+                widget.base().clicked.connect(move || {
+                    clicks.fetch_add(1, Ordering::SeqCst);
+                });
+            });
+        }
+
+        // Register the window before linking the children: `add_child_linked` writes the
+        // parent link in the *registry* id space, which it can only resolve once the window
+        // itself is mounted. `top_level_window_of` walks that link when the popup grab is
+        // checked, so a window that was linked before mounting would make a real popup look
+        // like it belonged to no surface.
+        let root = register(Box::new(crate::widget::Window::new(
+            "popup".to_string(),
+            Rect::new(0, 0, 400, 300),
+        )))
+        .expect("mount the window");
+        let _ = with_widget_mut(root, |widget| {
+            let window = (widget as &mut dyn core::any::Any)
+                .downcast_mut::<crate::widget::Window>()
+                .expect("the mounted root is a window");
+            window.add_child(split);
+            window.add_child(sibling);
+        });
+
+        let point = Point::new(270, 215);
+        let handled = dispatch_pointer_event(
+            root,
+            &Event::MousePress { pos: point, button: 1, modifiers: 0 },
+            point,
+        );
+        assert!(handled, "the dismissive press is delivered to the popup");
+        let still_open = with_widget_mut(split, |widget| {
+            (widget as &dyn core::any::Any)
+                .downcast_ref::<SplitButton>()
+                .map(SplitButton::menu_open)
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+        assert!(!still_open, "the popup closes on the press that dismisses it");
+
+        // The release lands on the sibling, but it never saw the press, so it cannot click.
+        dispatch_pointer_event(root, &Event::MouseRelease { pos: point, button: 1 }, point);
+        assert_eq!(
+            clicks.load(Ordering::SeqCst),
+            0,
+            "the dismissing press must not pass through to the sibling"
+        );
+
+        clear_popup_grab();
+        unregister(root);
+        unregister(sibling);
+        unregister(split);
+    }
+
+    /// `tick` drives the reveal and reports the frames it still owes.
+    #[test]
+    fn opening_the_menu_drives_the_reveal_through_tick() {
+        use crate::widget::menu_toolbar::effects::with_test_effects;
+
+        // Pin the effect policy this test needs rather than inheriting the process-wide config:
+        // the reveal's contract is "moves while enabled", and a host that disabled animations
+        // legitimately settles at once.
+        let mut effects = crate::style::MenuEffects::legacy();
+        effects.enabled = true;
+        effects.animations = true;
+        with_test_effects(effects, || {
+            let mut split = SplitButton::new("Run", Rect::new(0, 0, 160, 28));
+            split.set_actions(sample_actions());
+            split.open_menu();
+
+            assert!(split.is_animating(), "an opening menu owes frames");
+            assert!(split.tick(1), "the first millisecond is still in flight");
+
+            let mut frames = 0;
+            while split.tick(16) {
+                frames += 1;
+                assert!(frames < 1_000, "the reveal must settle rather than animate forever");
+            }
+            assert!(!split.is_animating(), "a settled reveal owes no further frames");
+            // Close (and, on the animation-enabled path, clear the grab this open_menu took).
+            split.close_menu();
+        });
     }
 
     #[test]

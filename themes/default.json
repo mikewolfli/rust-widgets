@@ -209,6 +209,8 @@
     "shadow": true
   },
   "flat_surfaces": true,
+  "system_accent": "blue",
+  "metrics_profile": "material",
   "overrides": {
     "styles": {
       "button:disabled": {
@@ -622,6 +624,7 @@
     "fast": 100,
     "normal": 200,
     "slow": 300,
-    "easing": "EaseOut"
+    "easing": "EaseOut",
+    "curve": "Easing"
   }
 }

@@ -545,7 +545,7 @@ void rw_set_high_contrast(int mode);
 | 不做 | 判例依据 |
 |---|---|
 | `@media` / `@supports` / `@keyframes` | 参考工具包 的 QSS 刻意无此；widget 树无 viewport 概念 |
-| `var()` / `calc()` | 需表达式求值器；参考工具包 让 C++ 侧用 `QPalette` 表达 |
+| `var()` / `calc()` | 需表达式求值器；参考工具包 让 C++ 侧用 `palette` 表达 |
 | `!important` | 参考工具包 明确反对（破坏可预测性） |
 | 文档流（`display`/float/inline） | 本库是 widget 树 + 自绘，**无文档流** |
 | 参考工具包的标记语言 级表达式/绑定/Repeater/状态机 | 参考工具包 为此**另建运行时**（JS 引擎 + 场景图 + 新语言 + 工具链），是定位变更而非功能补全 |
@@ -1077,7 +1077,7 @@ ZoomControl struct=
 | 2 | **`OtpInput`** | 主流 material 实现 OTP / 各家验证码 | 登录流程高频；`MaskedEdit` 是整体掩码，**不覆盖分格** | 无 | ✅ **做**（P1）|
 | 3 | **`Pagination`** | Ant Design / Bootstrap | 表格分页高频；`PagerPageView` 是**页面滑动**，非页码跳转 | 无 | ✅ **做**（P1）|
 | 4 | **`Banner`** | Material 规范 `Banner` | 需用户**显式关闭**的持久提示；`Snackbar` 会自动消失 | 无 | ✅ **做**（P2）|
-| 5 | `PopupButton` | 参考工具包 `QPushButton` + menu | 有 `MenuButton`（点击弹菜单），缺“带默认值的分段弹出” | 无 | ❌ **不做**（`MenuButton` 覆盖 ~90% 场景）|
+| 5 | `PopupButton` | 参考工具包 `push button` + menu | 有 `MenuButton`（点击弹菜单），缺“带默认值的分段弹出” | 无 | ❌ **不做**（`MenuButton` 覆盖 ~90% 场景）|
 | 6 | `ZoomControl` | 图像/文档查看器 | `ImageView` 无缩放 UI | 无 | ❌ **不做**（可由 `Slider` + `ImageView` 组合）|
 | 7 | `Toast`（非 Material）| Android `Toast` | 已有 `MaterialSnackbar` + `ToastStack` | 无独立 kind | ❌ **不做**（`ToastStack` 已覆盖）|
 | 8 | `Magnifier` / `Ruler` | Windows Magnifier / 设计工具 | **长尾专业工具** | 无 | ❌ **不做**（登记为范围外）|

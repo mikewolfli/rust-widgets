@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Progress dialog widget.
-use crate::core::{Color, HorizontalAlignment, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
@@ -393,6 +393,12 @@ impl EventHandler for ProgressDialog {
             return;
         }
         match event {
+            Event::MousePress { pos, button: 1, .. } => {
+                if self.button_at(*pos).is_some() {
+                    self.cancel();
+                }
+            }
+            Event::KeyPress { key, .. } if *key == key_codes::ENTER => self.cancel(),
             Event::KeyPress { key, .. } if *key == key_codes::ESCAPE => self.cancel(),
             _ => { /* Other events are not relevant */ }
         }
@@ -415,6 +421,64 @@ impl ProgressDialog {
             self.base.geometry(),
             Size::new(dimensions::DIALOG_MIN_WIDTH, dimensions::DIALOG_MIN_HEIGHT),
         )
+    }
+
+    /// The action labels this dialog paints, in row order.
+    ///
+    /// A progress dialog has one action, so the row is the caller's Cancel caption alone.
+    /// `draw` and [`ProgressDialog::button_at`] both call this.
+    fn action_labels(&self) -> Vec<String> {
+        vec![self.cancel_button_text.clone()]
+    }
+
+    /// The rect the single Cancel button occupies.
+    ///
+    /// # Why this is a function of `rect`, `context` and `labels`
+    ///
+    /// A lone action is centred in its band rather than trailing-anchored, so its x is *not*
+    /// whatever `action_row_geometry` returns — that helper owns the size and the row, and the
+    /// centring is added here. Both the paint path and the hit test call this one function, so
+    /// the extra step cannot exist in one and be forgotten in the other.
+    fn cancel_button_rect_for(
+        &self,
+        rect: Rect,
+        context: &RenderContext,
+        labels: &[String],
+    ) -> Rect {
+        let body =
+            ControlMetrics::content_below_top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
+        let button_band = super::message_box::inset_action_band(
+            ControlMetrics::bottom_band(body, dimensions::DIALOG_BUTTON_HEIGHT),
+            body.y,
+        );
+        let row = super::message_box::action_row_geometry(
+            context,
+            effective_font(self.base.style()),
+            labels,
+            button_band,
+            false,
+        );
+        let btn_w = row.buttons[0].width;
+        let btn_x = (rect.x + rect.width as i32 / 2 - btn_w as i32 / 2).max(rect.x);
+        Rect::new(btn_x, button_band.y, btn_w, button_band.height.max(1))
+    }
+
+    /// The button rect, rebuilt through the same context-free measurement the press path uses.
+    fn cancel_button_rect(&self) -> Rect {
+        let size = Size::new(self.base.geometry().width.max(1), self.base.geometry().height.max(1));
+        let mut backend = crate::render::SoftwarePaintBackend::new(size, 1.0);
+        let context = RenderContext::new(&mut backend);
+        let labels = self.action_labels();
+        self.cancel_button_rect_for(self.frame_rect(), &context, &labels)
+    }
+
+    /// The index of the action button under `pos`, or `None`.
+    fn button_at(&self, pos: Point) -> Option<usize> {
+        if self.cancel_button_rect().contains_point(pos) {
+            Some(0)
+        } else {
+            None
+        }
     }
 }
 
@@ -526,10 +590,6 @@ impl Draw for ProgressDialog {
         // a literal.
         let body =
             ControlMetrics::content_below_top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
-        let button_band = super::message_box::inset_action_band(
-            ControlMetrics::bottom_band(body, dimensions::DIALOG_BUTTON_HEIGHT),
-            body.y,
-        );
         let content =
             ControlMetrics::content_above_bottom_band(body, dimensions::DIALOG_BUTTON_HEIGHT);
         let label_font = font;
@@ -597,12 +657,8 @@ impl Draw for ProgressDialog {
         // action is the panel's own call to action, which is the one place the row is not
         // trailing-anchored; the helper still owns the *size*, which is the part that was
         // duplicated.
-        let labels = vec![self.cancel_button_text.clone()];
-        let row =
-            super::message_box::action_row_geometry(context, font, &labels, button_band, false);
-        let btn_w = row.buttons[0].width;
-        let btn_x = (rect.x + rect.width as i32 / 2 - btn_w as i32 / 2).max(rect.x);
-        let btn_rect = Rect::new(btn_x, button_band.y, btn_w, button_band.height.max(1));
+        let labels = self.action_labels();
+        let btn_rect = self.cancel_button_rect_for(rect, context, &labels);
         context.fill_rect(btn_rect, button_fill);
         context.draw_rect(btn_rect, border);
         context.draw_text_line_cow(btn_rect, &labels[0], font, ink, HorizontalAlignment::Center);
@@ -626,6 +682,35 @@ mod tests {
         dialog.show();
         dialog.set_value(99);
         assert_eq!(dialog.value(), 20);
+        assert!(!dialog.is_visible());
+    }
+
+    #[test]
+    fn clicking_cancel_emits_canceled_and_hides() {
+        let mut dialog = ProgressDialog::new(Rect::new(0, 0, 360, 160));
+        let canceled = Arc::new(Mutex::new(0usize));
+        let canceled_clone = Arc::clone(&canceled);
+
+        dialog.canceled.connect(move || {
+            if let Ok(mut n) = canceled_clone.lock() {
+                *n += 1;
+            }
+        });
+
+        dialog.show();
+        let cancel = dialog.cancel_button_rect().center();
+        dialog.handle_event(&Event::mouse_press(cancel.x, cancel.y, 1));
+        assert!(dialog.was_canceled());
+        assert_eq!(*canceled.lock().expect("canceled lock"), 1);
+        assert!(!dialog.is_visible());
+    }
+
+    #[test]
+    fn enter_cancels_because_cancel_is_the_only_action() {
+        let mut dialog = ProgressDialog::new(Rect::new(0, 0, 360, 160));
+        dialog.show();
+        dialog.handle_event(&Event::key_press(13, 0));
+        assert!(dialog.was_canceled());
         assert!(!dialog.is_visible());
     }
 

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Dock widget.
+use crate::compat::Cow;
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -12,6 +13,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::effective_font;
+use crate::widget::text_utils::elide_end;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -996,9 +998,11 @@ impl DockWidget {
     ///
     /// # Truncation
     ///
-    /// The band's height bounds the number of glyphs, and the run stops when the next glyph would
-    /// cross it rather than being clipped mid-glyph. An ellipsis is deliberately not appended: there
-    /// is no room for one in a 24 px column, and a lone `.` under the title reads as part of it.
+    /// The band's height bounds the number of glyphs, and the run is cut with the shared
+    /// `…` rather than simply stopped: the old loop dropped the remainder silently, so a
+    /// clipped panel title read as if it ended where the strip ran out. The row budget is a
+    /// character budget (one glyph per row), which is exactly what [`elide_end`] takes, and
+    /// it keeps the cut between characters so a CJK or emoji title is never split.
     fn draw_vertical_title(
         &self,
         context: &mut RenderContext,
@@ -1007,14 +1011,11 @@ impl DockWidget {
         color: Color,
     ) {
         let step = context.measure_text("M", font).height.max(1) as i32;
-        let bottom = band.y + band.height as i32;
         let mut pen_y = band.y;
-        // One `char` per line: a multi-byte character is a single glyph, and `chars()` is what
-        // keeps a CJK title from being cut mid-character.
-        for ch in self.title.chars() {
-            if pen_y + step > bottom {
-                break;
-            }
+        // One `char` per line: a multi-byte character is a single glyph, and the budget is
+        // applied on character boundaries by the shared primitive.
+        let title = self.vertical_title(band.height, step);
+        for ch in title.chars() {
             let glyph = ch.to_string();
             // Centred across the strip by the glyph's own measured width, so a narrow `i` and a wide
             // `W` share the same column rather than all starting at the left edge.
@@ -1023,6 +1024,22 @@ impl DockWidget {
             context.draw_text(Point::new(x, pen_y), &glyph, font, color, HorizontalAlignment::Left);
             pen_y += step;
         }
+    }
+
+    /// The title as a vertical run: at most as many glyphs as the band has rows.
+    ///
+    /// The band's height divided by one row's height is the character budget, so the
+    /// shared primitive owns the cut and appends `…` when the title does not fit. A title
+    /// that fits is returned borrowed, which keeps the common case allocation-free.
+    fn vertical_title(&self, band_height: u32, step: i32) -> Cow<'_, str> {
+        if step <= 0 {
+            return Cow::Borrowed("");
+        }
+        let rows = (band_height as i32 / step).max(0) as usize;
+        if rows == 0 {
+            return Cow::Borrowed("");
+        }
+        elide_end(&self.title, rows)
     }
 }
 
@@ -1737,5 +1754,37 @@ mod tests {
             top, left,
             "a left-docked panel must not render as a top-docked one -- that was the dead state"
         );
+    }
+
+    /// A multi-byte vertical title is cut on character boundaries and marked with `…`.
+    ///
+    /// The old run stopped silently at the band's bottom, so a clipped title read as if it
+    /// ended there. The row budget is a character budget, which the shared primitive owns.
+    #[test]
+    fn a_long_vertical_title_is_elided_by_the_row_budget() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 160, 120));
+        dw.set_title(
+            "\u{4e16}\u{754c}\u{4f60}\u{597d}\u{4e16}\u{754c}\u{4f60}\u{597d}".to_string(),
+        );
+        // Four 14 px rows fit in a 56 px band: three glyphs plus the ellipsis.
+        assert_eq!(
+            dw.vertical_title(56, 14),
+            "\u{4e16}\u{754c}\u{4f60}\u{2026}",
+            "the cut lands between characters and is marked"
+        );
+        dw.set_title("\u{1f389}\u{1f389}\u{1f389}\u{1f389}\u{1f389}".to_string());
+        assert_eq!(
+            dw.vertical_title(56, 14),
+            "\u{1f389}\u{1f389}\u{1f389}\u{2026}",
+            "an emoji is a single character to the budget, not four bytes"
+        );
+    }
+
+    /// A title that fits the band is borrowed, so the common vertical run allocates nothing.
+    #[test]
+    fn a_fitting_vertical_title_is_borrowed() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 160, 120));
+        dw.set_title("Panel".to_string());
+        assert!(matches!(dw.vertical_title(120, 14), crate::compat::Cow::Borrowed("Panel")));
     }
 }

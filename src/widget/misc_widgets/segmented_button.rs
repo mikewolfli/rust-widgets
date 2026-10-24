@@ -8,6 +8,7 @@
 //! displays a text label and an optional icon. The active/highlighted segment uses
 //! a filled background to indicate selection.
 
+use crate::compat::Cow;
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -17,6 +18,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, role_font, ControlMetrics};
+use crate::widget::text_utils::elide_to_width;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -389,6 +391,18 @@ impl WidgetProperties for SegmentedButton {
     }
 }
 
+/// Elides a segment caption to `max_width` using the renderer's own measurement.
+///
+/// The primitive owns the character-boundary rule and the shared `…`; a caption that fits
+/// is returned borrowed, so drawing the common case allocates nothing.
+fn fitted_caption<'a>(
+    caption: &'a str,
+    max_width: u32,
+    measure: &mut dyn FnMut(&str) -> u32,
+) -> Cow<'a, str> {
+    elide_to_width(caption, max_width, measure)
+}
+
 impl Draw for SegmentedButton {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
@@ -591,30 +605,23 @@ impl Draw for SegmentedButton {
                 let label_x = (start_x + icon_width as i32 + icon_gap as i32).max(seg_rect.x);
                 let label_y = text_y.max(seg_rect.y);
                 let label_right = seg_rect.x + seg_width as i32 - 2;
-                if label_x + metrics.width as i32 <= label_right {
-                    context.draw_text(
-                        Point::new(label_x, label_y),
-                        &label,
-                        &font,
-                        text_color,
-                        HorizontalAlignment::Left,
-                    );
-                } else {
-                    // A caption wider than its segment is ellipsised rather than painted
-                    // over the neighbouring segment.
-                    context.draw_text_fitted_cow(
-                        Rect::new(
-                            label_x,
-                            label_y,
-                            ((label_right - label_x).max(0)) as u32,
-                            metrics.height.max(1),
-                        ),
-                        &label,
-                        &font,
-                        text_color,
-                        HorizontalAlignment::Left,
-                    );
-                }
+                // A caption wider than its segment is elided rather than painted over the
+                // neighbouring segment. The shared primitive owns the budget and is measured
+                // with the renderer's callback, so the fitting decision and the painted advance
+                // come from one metric; a caption that fits is borrowed and drawn at its old
+                // origin.
+                let caption = fitted_caption(
+                    &label,
+                    (label_right - label_x).max(0) as u32,
+                    &mut |text: &str| context.measure_text(text, &font).width,
+                );
+                context.draw_text(
+                    Point::new(label_x, label_y),
+                    &caption,
+                    &font,
+                    text_color,
+                    HorizontalAlignment::Left,
+                );
             }
         }
     }
@@ -906,5 +913,38 @@ mod tests {
         );
         btn.handle_event(&Event::MouseLeave { pos: Point::new(500, 500) });
         assert_eq!(btn.widget_state(), WidgetState::Normal, "and that it left");
+    }
+
+    /// A multi-byte caption is elided on character boundaries, never inside a glyph.
+    ///
+    /// The budget is the distance from the caption's origin to the segment's inner right
+    /// edge; the shared primitive keeps whole characters and marks the cut with `…`.
+    #[test]
+    fn a_wide_segment_caption_is_elided_on_character_boundaries() {
+        let mut measure = |text: &str| text.chars().count() as u32 * 7;
+        // A 35 px budget keeps four characters plus the ellipsis.
+        assert_eq!(
+            fitted_caption("\u{4e16}\u{754c}\u{4f60}\u{597d}\u{4e16}\u{754c}", 35, &mut measure),
+            "\u{4e16}\u{754c}\u{4f60}\u{597d}\u{2026}"
+        );
+        assert_eq!(
+            fitted_caption(
+                "\u{1f389}\u{1f389}\u{1f389}\u{1f389}\u{1f389}\u{1f389}",
+                35,
+                &mut measure
+            ),
+            "\u{1f389}\u{1f389}\u{1f389}\u{1f389}\u{2026}",
+            "an emoji is a single character to the budget, not four bytes"
+        );
+    }
+
+    /// A caption that fits its segment is borrowed, so the paint path allocates nothing.
+    #[test]
+    fn a_fitting_segment_caption_is_borrowed() {
+        let mut measure = |text: &str| text.chars().count() as u32 * 7;
+        assert!(matches!(
+            fitted_caption("Day", 35, &mut measure),
+            crate::compat::Cow::Borrowed("Day")
+        ));
     }
 }

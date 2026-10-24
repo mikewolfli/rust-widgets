@@ -16,7 +16,7 @@ struct BoxLayoutItem {
     /// Cross-axis alignment for this item.
     ///
     /// `None` means the item is stretched to the full cross extent, which is what the
-    /// layout has always done and what a CSS/Qt box does by default. A value shrinks the
+    /// layout has always done and what a CSS/参考工具包 box does by default. A value shrinks the
     /// item to the cross size it *asks for* (from [`ChildInfo::hints`]) and places it
     /// within the cross extent — the same split Flutter's `crossAxisAlignment` makes.
     align: Option<Alignment>,
@@ -156,7 +156,7 @@ impl BoxLayout {
     /// Adds an empty spacer that is exactly `size` pixels on the major axis.
     ///
     /// [`Self::add_spacer`] is elastic by construction (`stretch.max(1)` with an
-    /// `Expanding` policy), so it cannot express Qt's `QSpacerItem(w, h, Fixed)` or wx's
+    /// `Expanding` policy), so it cannot express the reference toolkit's `spacer(w, h, Fixed)` or wx's
     /// `AddSpacer(size)`. A fixed spacer is the "push these two items `size` apart and
     /// give the leftover to the others" shape, which is common in toolbars and dialog
     /// button rows. The minor axis is unconstrained; a spacer paints nothing.

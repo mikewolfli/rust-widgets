@@ -32,17 +32,17 @@
 //! use rust_widgets::core::Point;
 //! use rust_widgets::event::{DragPayload, DragSession, DropEffect, DropTarget};
 //!
-//! /// A concrete target that accepts cards and moves them on drop.
+//! // A concrete target that accepts cards and moves them on drop.
 //! struct CardColumn;
 //!
 //! impl DropTarget for CardColumn {
-//!     fn can_accept(&self, payload: &DragPayload) -> bool {
-//!         payload.is_type("card")
-//!     }
+//! fn can_accept(&self, payload: &DragPayload) -> bool {
+//! payload.is_type("card")
+//! }
 //!
-//!     fn on_drop(&mut self, _payload: &DragPayload, _pos: Point) -> DropEffect {
-//!         DropEffect::Move
-//!     }
+//! fn on_drop(&mut self, _payload: &DragPayload, _pos: Point) -> DropEffect {
+//! DropEffect::Move
+//! }
 //! }
 //!
 //! // The source: serialise what is being moved and begin a session.
@@ -64,7 +64,7 @@
 //! ```
 
 use crate::compat::String;
-use crate::core::Point;
+use crate::core::{ObjectId, Point};
 
 /// What a drag carries.
 ///
@@ -101,6 +101,26 @@ pub struct DragPayload {
     /// Carried so a target can describe a drop in the source's terms (\"after item
     /// 7 of this list\") without having to know which control started the drag.
     pub origin: Point,
+    /// The control that began the drag, in the control's own id ([`crate::widget::Widget::id`]).
+    ///
+    /// # Why a target needs to know this
+    ///
+    /// A reorder and a transfer are the same gesture but not the same operation: dropping a row
+    /// back onto the list it came from moves that row, while dropping it on *another* list inserts
+    /// it and leaves the source to remove its copy. A target that could not tell the two apart
+    /// would either duplicate the row or move an unrelated one, because an index is only
+    /// meaningful inside the control that produced it.
+    ///
+    /// The runtime's coordinator fills this in when it begins a session, so a source does not have
+    /// to set it.
+    pub source: Option<ObjectId>,
+    /// An optional control that travels with the item.
+    ///
+    /// Used when the item is not only data but also owns a widget: a tab's page, a card's body.
+    /// A transfer to another container has to reparent that widget, and the payload is the only
+    /// thing that crosses between the two controls, so the id travels with it. Targets that do not
+    /// understand the field ignore it.
+    pub attached: Option<ObjectId>,
 }
 
 impl DragPayload {
@@ -111,7 +131,33 @@ impl DragPayload {
             item_id: item_id.into(),
             label: String::new(),
             origin: Point::new(0, 0),
+            source: None,
+            attached: None,
         }
+    }
+
+    /// Attaches the control that is part of the item and must move with it.
+    pub fn with_attached(mut self, attached: ObjectId) -> Self {
+        self.attached = Some(attached);
+        self
+    }
+
+    /// Sets the control that began the drag.
+    ///
+    /// Called by the runtime's drag coordinator, which is the only party that knows the control's
+    /// own id while a payload is being built; a control building a payload for its own live pointer
+    /// path leaves it unset.
+    pub fn with_source(mut self, source: ObjectId) -> Self {
+        self.source = Some(source);
+        self
+    }
+
+    /// Returns whether this payload was taken from `source`.
+    ///
+    /// The comparison a drop target makes to tell a reorder from a transfer, named so every
+    /// target spells it the same way.
+    pub fn came_from(&self, source: ObjectId) -> bool {
+        self.source == Some(source)
     }
 
     /// Sets the human-readable label.
@@ -157,6 +203,35 @@ pub enum DropEffect {
 }
 
 impl DropEffect {
+    /// The effect's stable token, for a published event wire.
+    ///
+    /// The spelling is lower-case and stable because it is what a host's callback receives and
+    /// what the generated event table publishes; it matches [`Self::parse`], so the two cannot
+    /// drift into a spelling only one of them accepts.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Copy => "copy",
+            Self::Move => "move",
+            Self::Link => "link",
+        }
+    }
+
+    /// Parses a token produced by [`Self::as_str`].
+    ///
+    /// `None` rather than a default, for the same reason the crate's other token parsers answer
+    /// `None`: a token this version does not publish is a fact about a version mismatch, and
+    /// folding it into `None` would claim the drop was refused.
+    pub fn parse(token: &str) -> Option<Self> {
+        match token {
+            "none" => Some(Self::None),
+            "copy" => Some(Self::Copy),
+            "move" => Some(Self::Move),
+            "link" => Some(Self::Link),
+            _ => None,
+        }
+    }
+
     /// Returns whether the source should remove its original after this drop.
     ///
     /// Exposed because it is the one decision every source has to make from the
@@ -212,6 +287,61 @@ pub trait DropTarget {
         let _ = (payload, pos);
         None
     }
+
+    /// Reports that `payload` is now over this target, or changed while over it.
+    ///
+    /// Called by the runtime's drag coordinator on pointer moves. A target that paints
+    /// feedback overrides this; the default does nothing, which is right for a target
+    /// whose landing zone is not visual. The target must not change the payload: this is
+    /// a preview, and a refusal is expressed by returning `false` from
+    /// [`Self::can_accept`], never by mutating state that pretends the drop happened.
+    fn report_hover(&mut self, payload: &DragPayload) {
+        let _ = payload;
+    }
+
+    /// Reports that the drag left this target without dropping.
+    ///
+    /// The counterpart of [`Self::report_hover`], so a preview is cleared when the
+    /// pointer moves away instead of staying lit for a drop that will not happen. The
+    /// default does nothing.
+    fn report_leave(&mut self) {}
+}
+
+/// A control that can begin a cross-control drag.
+///
+/// # Why this is the mirror of [`DropTarget`]
+///
+/// A drag has two ends, and before this trait only the receiving end had a name. The
+/// source answers two questions the coordinator cannot infer: *what* the pointer is
+/// carrying at the press position, and *what to do* once the drop has been committed.
+/// Keeping those on the source means a control that already knows its own selection
+/// does not have to expose that selection to the runtime just to be draggable.
+///
+/// # Why both methods have a default
+///
+/// A control that is not draggable simply does not return itself as a source (see
+/// [`crate::widget::Widget::drag_source_mut`]); the defaults make that case explicit
+/// and let a source implement only the half it needs while it is being brought up.
+/// Returning `None` from [`Self::drag_payload`] means \"this press starts no drag\",
+/// which is the answer for a press outside the draggable part of the control.
+pub trait DragSource {
+    /// Returns the payload a drag beginning at `pos` would carry, or `None` when no
+    /// drag should start there.
+    ///
+    /// Called once, on the press. `pos` is in the control's coordinate space (the same
+    /// space its geometry uses), so a source can decide per-pixel — a list row, a
+    /// selected run of text, or a tab under the pointer.
+    fn drag_payload(&self, pos: Point) -> Option<DragPayload> {
+        let _ = pos;
+        None
+    }
+
+    /// Reports that the drag this source began has finished with `effect`.
+    ///
+    /// Called exactly once for a session that started from this source, including a
+    /// cancelled session (`DropEffect::None`). A source that moves its item should
+    /// keep it when `effect.consumes_source()` is `false`.
+    fn on_drag_finished(&mut self, _effect: DropEffect) {}
 }
 
 /// The state of one in-progress drag.
@@ -239,6 +369,14 @@ pub struct DragSession {
 }
 
 impl DragSession {
+    /// Pointer travel, in logical pixels, after which a press becomes a drag.
+    ///
+    /// The session owns the number because the distinction between a click and a drag
+    /// belongs to the gesture, not to each coordinator or control that drives one. A
+    /// caller may still pass a different threshold to [`Self::update`] when a control
+    /// has its own reason to be more or less eager.
+    pub const ACTIVATION_THRESHOLD: i32 = 5;
+
     /// Begins a session with `payload` at `start`.
     ///
     /// The session starts **inactive**: a press is not yet a drag. Until the

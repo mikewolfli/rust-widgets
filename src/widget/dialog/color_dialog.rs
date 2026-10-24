@@ -235,6 +235,48 @@ impl ColorDialog {
         Rect::new(rect.x + 10, picker_top, rect.width.saturating_sub(20), height)
     }
 
+    /// The action labels this dialog paints, in row order.
+    ///
+    /// `draw` and [`ColorDialog::button_at`] both call this, so a press can never resolve
+    /// against a different label set than the one that was measured and painted.
+    fn action_labels() -> Vec<String> {
+        vec![
+            super::localized_label("common.button.ok", "OK"),
+            super::localized_label("common.button.cancel", "Cancel"),
+        ]
+    }
+
+    /// The action button rects, rebuilt from the same bands `draw` uses.
+    ///
+    /// The press path has no render context of its own, so it builds a measuring one — the
+    /// pattern `MessageBox::action_button_at` established. The rects themselves are never
+    /// cached: a cache is a second copy of the geometry that a resize can leave stale, which is
+    /// exactly how a hit region drifts away from the ink it is meant to describe.
+    fn action_buttons(&self) -> Vec<Rect> {
+        let size = Size::new(self.base.geometry().width.max(1), self.base.geometry().height.max(1));
+        let mut backend = crate::render::SoftwarePaintBackend::new(size, 1.0);
+        let context = RenderContext::new(&mut backend);
+        let rect = self.frame_rect();
+        let band = super::message_box::inset_action_band(
+            Rect::new(rect.x, self.button_row_top(), rect.width, Self::BUTTON_HEIGHT as u32),
+            rect.y,
+        );
+        let labels = Self::action_labels();
+        super::message_box::action_row_geometry(
+            &context,
+            effective_font(self.base.style()),
+            &labels,
+            band,
+            true,
+        )
+        .buttons
+    }
+
+    /// The index of the action button under `pos`, or `None`.
+    fn button_at(&self, pos: Point) -> Option<usize> {
+        self.action_buttons().iter().position(|button| button.contains_point(pos))
+    }
+
     fn point_in_rect(pos: Point, rect: Rect) -> bool {
         pos.x >= rect.x
             && pos.x < rect.x + rect.width as i32
@@ -383,6 +425,16 @@ impl EventHandler for ColorDialog {
 
         match event {
             Event::MousePress { pos, button: 1, .. } => {
+                // The buttons share the bottom band with nothing else, but the check comes
+                // first anyway: a press on a button must never fall through to the picker.
+                if let Some(index) = self.button_at(*pos) {
+                    if index == 0 {
+                        self.accept();
+                    } else {
+                        self.reject();
+                    }
+                    return;
+                }
                 if let Some(color) = self.pick_color_from_point(*pos) {
                     self.set_current_color(color);
                 }
@@ -567,10 +619,7 @@ impl Draw for ColorDialog {
             Rect::new(rect.x, self.button_row_top(), rect.width, Self::BUTTON_HEIGHT as u32),
             rect.y,
         );
-        let labels = vec![
-            super::localized_label("common.button.ok", "OK"),
-            super::localized_label("common.button.cancel", "Cancel"),
-        ];
+        let labels = Self::action_labels();
         let row = super::message_box::action_row_geometry(context, font, &labels, band, true);
         let ok_rect = row.buttons[0];
         context.fill_rect(ok_rect, accent);
@@ -608,6 +657,38 @@ mod tests {
         assert_eq!(dialog.current_color().r, 105);
         dialog.handle_event(&Event::key_press(38, 0));
         assert_eq!(dialog.current_color().g, 105);
+    }
+
+    #[test]
+    fn clicking_ok_accepts_and_clicking_cancel_rejects() {
+        let mut dialog = ColorDialog::new(Rect::new(0, 0, 300, 260));
+        let accepted = Arc::new(Mutex::new(0usize));
+        let rejected = Arc::new(Mutex::new(0usize));
+
+        let a = Arc::clone(&accepted);
+        dialog.accepted.connect(move || {
+            if let Ok(mut n) = a.lock() {
+                *n += 1;
+            }
+        });
+        let r = Arc::clone(&rejected);
+        dialog.rejected.connect(move || {
+            if let Ok(mut n) = r.lock() {
+                *n += 1;
+            }
+        });
+
+        dialog.show();
+        let ok = dialog.action_buttons()[0].center();
+        dialog.handle_event(&Event::mouse_press(ok.x, ok.y, 1));
+        assert_eq!(*accepted.lock().expect("accepted lock"), 1);
+        assert!(!dialog.is_visible());
+
+        dialog.show();
+        let cancel = dialog.action_buttons()[1].center();
+        dialog.handle_event(&Event::mouse_press(cancel.x, cancel.y, 1));
+        assert_eq!(*rejected.lock().expect("rejected lock"), 1);
+        assert!(!dialog.is_visible());
     }
 
     #[test]

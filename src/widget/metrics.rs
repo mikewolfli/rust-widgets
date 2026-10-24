@@ -44,9 +44,11 @@
 //! clamped up to a one-pixel floor so a squeezed dialog stays visible instead of
 //! collapsing to a zero-extent, invisible rect.
 
-use crate::core::{Font, Rect, Size};
+use crate::core::{Color, Font, Rect, Size};
 use crate::render::text::{estimate_cluster_advance, for_each_cluster};
 use crate::style::{EdgeOffsets, WidgetStyle};
+#[cfg(all(feature = "serde", widgets_unstripped))]
+use serde::{Deserialize, Serialize};
 
 // The cluster ranges `estimate_text_width` hands to the shaper, reused across calls.
 //
@@ -573,6 +575,55 @@ impl ControlMetrics {
 /// agrees on how thick it is.
 pub const FOCUS_RING_WIDTH: u32 = 2;
 
+/// Thickness of the outer accent halo a focus ring draws on the macOS profile: 4.
+///
+/// The halo is not an inset stroke; it is a blurred glow that starts at the control's edge
+/// and extends past it. Four logical pixels is the AppKit focus-ring width (3-4 pt), and it
+/// is deliberately wider than [`FOCUS_RING_WIDTH`] because a glow loses contrast where it
+/// blurs. Only the macOS metrics profile selects it (see
+/// [`ControlMetricsProfile`](crate::widget::metrics::ControlMetricsProfile)); the default
+/// inset ring is unchanged.
+pub const FOCUS_HALO_WIDTH: u32 = 4;
+
+/// Blur radius of the macOS focus halo: 6.
+///
+/// Passed to [`RenderContext::draw_box_shadow`](crate::render::RenderContext::draw_box_shadow)
+/// so the halo uses the renderer's existing box-blur primitive rather than a new command.
+pub const FOCUS_HALO_BLUR_RADIUS: u32 = 6;
+
+/// How far a partial repaint must reach past a control's painted box: 10.
+///
+/// # Why a partial repaint needs a bleed at all
+///
+/// A control's layout rectangle is not the whole of what it paints. A focus ring drawn
+/// as an outer ring and a blurred halo both extend past the edge, so a damage rectangle
+/// that stopped at the geometry would leave the old ring or glow on screen — the first
+/// way a regioned repaint goes visibly wrong. Growing every submitted rectangle by the
+/// widest of those decorations keeps the damaged area a superset of the pixels that can
+/// change.
+///
+/// The value is the worst case of the three focus decorations this crate draws: the
+/// halo is wider than the inset ring, and its blur extends past the halo stroke.
+/// `runtime::painted_box_with_damage_margin` applies it to a widget's geometry, so a
+/// control can submit a correct rectangle without re-deriving the number.
+pub const DAMAGE_MARGIN: u32 =
+    if FOCUS_RING_WIDTH > FOCUS_HALO_WIDTH { FOCUS_RING_WIDTH } else { FOCUS_HALO_WIDTH }
+        + FOCUS_HALO_BLUR_RADIUS;
+
+/// Which side of a control's border a focus ring occupies.
+///
+/// [`Inner`](Self::Inner) is the behaviour every current draw site has: the stroke is
+/// inset so it never leaves the control's own rectangle. [`Halo`](Self::Halo) draws the
+/// stroke around the control instead; it is the API ground work for the accent halo
+/// (P2-1), named here so a draw site can describe both shapes without re-deriving either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusRingStyle {
+    /// The ring is inset inside the control's own rectangle.
+    Inner,
+    /// The ring surrounds the control, one ring width outside its rectangle.
+    Halo,
+}
+
 /// Builds the focus ring geometry for `rect` drawn with corner radius `radius`.
 ///
 /// # Why a constructor rather than two calls at each draw site
@@ -606,6 +657,44 @@ impl FocusRing {
     pub fn is_drawable(&self) -> bool {
         self.rect.width > 0 && self.rect.height > 0
     }
+
+    /// The ring for a control occupying `rect` with corner radius `radius`, drawn **outside**
+    /// the control as a halo rather than inside it.
+    ///
+    /// This is the inverse of [`ControlMetrics::focus_ring_rect`]: the rectangle grows by
+    /// one ring width on every side and the radius grows with it, so the stroke surrounds
+    /// the control without cutting into its own content. Existing draw sites use
+    /// [`FocusRing::for_control`]; this constructor is the API the halo style builds on.
+    pub fn halo(rect: Rect, radius: u32) -> Self {
+        Self::grown_by(rect, radius, FOCUS_RING_WIDTH)
+    }
+
+    /// The halo geometry for a control occupying `rect` with corner radius `radius`, sized
+    /// for the macOS accent glow.
+    ///
+    /// Like [`halo`](Self::halo) this grows the rectangle outwards, but by
+    /// [`FOCUS_HALO_WIDTH`] rather than [`FOCUS_RING_WIDTH`] and with
+    /// [`FOCUS_HALO_BLUR_RADIUS`] blur applied at the draw site. Kept separate from `halo`
+    /// because the two describe different platform treatments: `halo` is the geometric
+    /// inverse of the inset ring, while this is the AppKit glow that draw sites select when
+    /// the active theme asks for the macOS metrics profile.
+    pub fn halo_for_control(rect: Rect, radius: u32) -> Self {
+        Self::grown_by(rect, radius, FOCUS_HALO_WIDTH)
+    }
+
+    /// Grows `rect` by `width` on every side and the radius with it.
+    fn grown_by(rect: Rect, radius: u32, width: u32) -> Self {
+        let grow = width as i32;
+        Self {
+            rect: Rect::new(
+                rect.x.saturating_sub(grow),
+                rect.y.saturating_sub(grow),
+                rect.width.saturating_add(2 * width),
+                rect.height.saturating_add(2 * width),
+            ),
+            radius: radius.saturating_add(width),
+        }
+    }
 }
 
 /// The colour a focus ring takes.
@@ -613,22 +702,65 @@ impl FocusRing {
 /// # Why this is not the control's border colour
 ///
 /// A ring must announce itself. Reading the same token a border reads is what made a
-/// focused control indistinguishable from a merely bordered one (BLUE21 §7 B). This
-/// function therefore takes the control's own colours and returns the contrast colour of
-/// `fallback`'s surface, which is legible by construction on both appearances.
+/// focused control indistinguishable from a merely bordered one (BLUE21 §7 B). A theme
+/// that names the ring explicitly wins, because a theme author can then tune the ring
+/// without also moving every border in the application.
 ///
-/// # Why there is no theme rung
+/// # Where the colour comes from
 ///
-/// The BLUE22 design called for a theme-provided `outline` token and this function used to
-/// read `theme.colors.outline`. That field does not exist on [`Colors`], so the module never
-/// compiled and the ring was unreachable code. Deriving the ring from the control's own ink
-/// is the mechanism the crate actually has; a named `outline` token can be added to
-/// [`Colors`] later, at which point this is the single site that reads it.
+/// The active theme's `outline` token is the first rung. `Colors` carries it on both the
+/// themed and the placeholder palette, so there is no profile-specific arm here. When no
+/// theme is active — including a build whose theme layer is compiled out — the ring falls
+/// back to the contrast colour of `fallback`'s surface, which is legible by construction
+/// on both appearances.
 ///
-/// Takes the colour rather than a theme handle so this module stays free of the theme
-/// layer and so a control with no theme can still ask.
-pub fn focus_ring_color(fallback: crate::core::Color) -> crate::core::Color {
-    fallback.contrast_color()
+/// Takes the colour rather than a theme handle so a control with no theme can still ask.
+pub fn focus_ring_color(fallback: Color) -> Color {
+    ring_color_from(
+        crate::style::theme_manager()
+            .current_theme()
+            .map(|theme| focus_ring_color_from_theme(&theme.colors)),
+        fallback,
+    )
+}
+
+/// The colour a focus ring (inset or halo) takes from a theme palette.
+///
+/// The `outline` token is the theme's declared "this line announces itself" colour, and
+/// naming it here makes this function the single place a focus ring reads the theme. Both
+/// the inset ring and the macOS halo go through it, so they can never disagree about the
+/// accent. The parameter is the theme's `Colors` palette (re-exported through
+/// [`crate::style::Colors`] in builds without a theme module).
+pub fn focus_ring_color_from_theme(colors: &crate::style::Colors) -> Color {
+    colors.outline
+}
+
+/// Resolves a ring colour from an optional theme token.
+///
+/// Split out from [`focus_ring_color`] so the fallback branch stays directly testable: the
+/// process-wide registry is seeded with a theme, so a build cannot reach the `None` arm by
+/// clearing the manager.
+fn ring_color_from(outline: Option<Color>, fallback: Color) -> Color {
+    outline.unwrap_or_else(|| fallback.contrast_color())
+}
+
+/// The smallest hit area the current device class asks for.
+///
+/// Reads the same platform fact [`crate::layout::LayoutContext::min_touch_size`] defaults
+/// to: the recommended touch target for this build (desktop 32, tablet 44, phone 48,
+/// embedded 40). A control that derives its own hit region asks here rather than restating
+/// one of those numbers, so a profile change moves every control together.
+pub fn minimum_hit_size() -> Size {
+    crate::layout::LayoutContext::default().min_touch_size
+}
+
+/// Grows `rect` to at least [`minimum_hit_size`], centred on the original.
+///
+/// A rectangle that already meets the floor on both axes is returned unchanged. The
+/// arithmetic is [`crate::layout::grow_to_min_touch_size`]'s, so a layout that grows a
+/// child and a control that grows its own hit region cannot disagree about "centred".
+pub fn expand_to_hit_area(rect: Rect) -> Rect {
+    crate::layout::grow_to_min_touch_size(rect, minimum_hit_size())
 }
 
 /// Device-independent control dimensions.
@@ -931,6 +1063,21 @@ pub mod dimensions {
     /// A scrollbar thumb's minimum length: 48. A proportional thumb with no floor
     /// disappears on a very long document.
     pub const SCROLLBAR_MIN_LENGTH: u32 = 48;
+
+    /// The thickness of an overlay-style scrollbar: 6.
+    ///
+    /// An overlay bar floats above the content and has no arrow cells, so it is thinner
+    /// than [`SCROLLBAR_THICKNESS`] and its thumb uses the whole band. The hit geometry keeps
+    /// this thickness; only the painted band widens on hover (see
+    /// [`SCROLLBAR_OVERLAY_HOVER_THICKNESS`]).
+    pub const SCROLLBAR_OVERLAY_THICKNESS: u32 = 6;
+
+    /// The thickness an overlay scrollbar paints at while the pointer is over it: 9.
+    ///
+    /// The width change is a paint-only affordance. Growing the hit rectangle with it made
+    /// the bar flicker as the pointer crossed the edge and left again, so the extra three
+    /// pixels are drawn but not measured.
+    pub const SCROLLBAR_OVERLAY_HOVER_THICKNESS: u32 = 9;
 
     /// A horizontal divider's thickness: 1.
     pub const DIVIDER_THICKNESS: u32 = 1;
@@ -1721,6 +1868,94 @@ impl Default for SwitchGeometry {
     }
 }
 
+/// The platform metrics profile a theme asks controls to draw with.
+///
+/// # Why a profile and not new constants
+///
+/// The [`dimensions`] table below is the Material baseline, and the values in it are read by
+/// `size_hint` **and** `draw` so those two can never disagree. Replacing the constants with
+/// macOS numbers would move every non-macOS control at once and break every existing
+/// snapshot. A profile is a lookup the theme carries: the constants stay the Material
+/// default, and a theme that names `macos` reads the AppKit row instead. The profile is
+/// spelled lowercase in serialised themes (`"material"`, `"macos"`, `"cupertino"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(all(feature = "serde", widgets_unstripped), derive(Serialize, Deserialize))]
+#[cfg_attr(all(feature = "serde", widgets_unstripped), serde(rename_all = "lowercase"))]
+pub enum ControlMetricsProfile {
+    /// The shared Material-derived baseline; the values in [`dimensions`].
+    #[default]
+    Material,
+    /// AppKit's tighter desktop metrics.
+    Macos,
+    /// iOS/Cupertino metrics, aligned with the `CUPERTINO_*` constants.
+    Cupertino,
+}
+
+/// The subset of control metrics that differs between platform profiles.
+///
+/// This is intentionally a small, growing table: it covers the tokens with the largest
+/// documented drift (button size and corner radius, switch track, text-field height). A
+/// value here is a **floor/shape token**, not a complete style, so adding a profile cannot
+/// silently change padding, colours or typography.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ProfileMetrics {
+    /// A push button's minimum size.
+    pub button_min: Size,
+    /// A rectangular button's corner radius.
+    pub button_radius: u32,
+    /// A switch track's size.
+    pub switch_track: Size,
+    /// A text field's minimum content height.
+    pub text_field_min_height: u32,
+}
+
+/// The metric values for `profile`.
+///
+/// [`ControlMetricsProfile::Material`] returns the existing [`dimensions`] constants
+/// verbatim, so every non-macOS build keeps the exact geometry it had. `Macos` carries the
+/// AppKit row from the plan: a 28 px-tall button with a 6 px radius, a 38x22 switch track,
+/// and a 22 px text field. `Cupertino` reuses the existing `CUPERTINO_SWITCH_TRACK` and
+/// otherwise keeps the Material button and field floors.
+pub const fn profile_metrics(profile: ControlMetricsProfile) -> ProfileMetrics {
+    match profile {
+        ControlMetricsProfile::Material => ProfileMetrics {
+            button_min: dimensions::BUTTON_MIN,
+            button_radius: dimensions::BUTTON_RADIUS,
+            switch_track: dimensions::SWITCH_TRACK,
+            text_field_min_height: dimensions::TEXT_FIELD_MIN_HEIGHT,
+        },
+        ControlMetricsProfile::Macos => ProfileMetrics {
+            button_min: Size { width: dimensions::BUTTON_MIN.width, height: 28 },
+            button_radius: 6,
+            switch_track: Size { width: 38, height: 22 },
+            text_field_min_height: 22,
+        },
+        ControlMetricsProfile::Cupertino => ProfileMetrics {
+            button_min: dimensions::BUTTON_MIN,
+            button_radius: dimensions::BUTTON_RADIUS,
+            switch_track: dimensions::CUPERTINO_SWITCH_TRACK,
+            text_field_min_height: dimensions::TEXT_FIELD_MIN_HEIGHT,
+        },
+    }
+}
+
+/// The metrics profile of the active theme, or [`ControlMetricsProfile::Material`] when no
+/// theme is active.
+///
+/// A control asks this rather than reading the theme itself so the `None` case has one
+/// answer. A build without a theme module has no profile to read and therefore also answers
+/// Material, which is the same rendering such a build had before profiles existed.
+pub fn active_profile() -> ControlMetricsProfile {
+    #[cfg(device_profile)]
+    let profile = crate::style::theme_manager()
+        .current_theme()
+        .map(|theme| theme.metrics_profile)
+        .unwrap_or_default();
+    #[cfg(not(device_profile))]
+    let profile = ControlMetricsProfile::Material;
+    profile
+}
+
 #[cfg(all(test, full_widgets))]
 mod tests {
     use super::*;
@@ -2179,5 +2414,186 @@ mod tests {
         let mut taller = font.clone();
         taller.set_line_height(20.0);
         assert_eq!(estimate_line_height(&taller, 1.0), 20);
+    }
+
+    /// The hit-area floor is the platform's answer, not a number restated here.
+    #[test]
+    fn minimum_hit_size_matches_the_platform_profile() {
+        assert_eq!(
+            minimum_hit_size(),
+            crate::platform::profile::recommended_touch_target().dimensions(),
+            "the hit-area floor must come from the device class the platform reports"
+        );
+    }
+
+    /// A small hit region grows on **both** axes, stays centred, and a second pass is a no-op.
+    #[test]
+    fn expand_to_hit_area_expands_both_axes_and_is_idempotent() {
+        let floor = minimum_hit_size();
+        let small = Rect::new(10, 20, 4, 6);
+        assert!(
+            small.width < floor.width && small.height < floor.height,
+            "the fixture must be below the floor on both axes: {small:?} vs {floor:?}"
+        );
+
+        let expanded = expand_to_hit_area(small);
+        assert_eq!(expanded.width, floor.width, "a narrow region reaches the width floor");
+        assert_eq!(expanded.height, floor.height, "a short region reaches the height floor");
+        assert_eq!(
+            expanded.x,
+            small.x - (expanded.width - small.width) as i32 / 2,
+            "the expansion is centred horizontally"
+        );
+        assert_eq!(
+            expanded.y,
+            small.y - (expanded.height - small.height) as i32 / 2,
+            "the expansion is centred vertically"
+        );
+        assert_eq!(expand_to_hit_area(expanded), expanded, "a region at the floor must not move");
+
+        // A region already larger than the floor is returned unchanged, not shrunk.
+        let large = Rect::new(5, 6, 200, 100);
+        assert_eq!(expand_to_hit_area(large), large);
+    }
+
+    /// The theme's `outline` token wins; without one the contrast fallback is used.
+    #[test]
+    fn focus_ring_color_uses_outline_when_the_theme_provides_one_and_falls_back_otherwise() {
+        let fallback = Color::rgb(200, 210, 220);
+        let outline = Color::rgb(1, 2, 3);
+        assert_eq!(ring_color_from(Some(outline), fallback), outline);
+        assert_eq!(ring_color_from(None, fallback), fallback.contrast_color());
+        assert_ne!(
+            outline,
+            fallback.contrast_color(),
+            "the fixture must distinguish the two branches for this assertion to mean anything"
+        );
+    }
+
+    /// `focus_ring_color` reads the active theme's `outline` token end to end.
+    #[cfg(device_profile)]
+    #[test]
+    fn focus_ring_color_reads_the_active_themes_outline_token() {
+        use crate::compat::ToString;
+
+        let _guard = crate::style::theme_test_guard();
+        let mut theme = crate::theme::Theme::default();
+        theme.name = "p1-5-outline".to_string();
+        theme.colors.outline = Color::rgb(7, 8, 9);
+        {
+            let mut manager = crate::theme::global_theme_manager();
+            manager.register_theme(theme);
+            assert!(manager.set_theme("p1-5-outline"), "the fixture theme must become active");
+        }
+
+        assert_eq!(focus_ring_color(Color::WHITE), Color::rgb(7, 8, 9));
+
+        // Restore the seeded preset before releasing the process-wide guard.
+        assert!(crate::theme::global_theme_manager().set_theme("default"));
+    }
+
+    /// The halo constructor places the ring outside the control, the inverse of the inner form.
+    #[test]
+    fn a_halo_ring_sits_one_ring_width_outside_the_control() {
+        let rect = Rect::new(10, 20, 40, 30);
+        let ring = FocusRing::halo(rect, 6);
+        let width = FOCUS_RING_WIDTH as i32;
+        assert_eq!(
+            ring.rect,
+            Rect::new(
+                rect.x - width,
+                rect.y - width,
+                rect.width + 2 * FOCUS_RING_WIDTH,
+                rect.height + 2 * FOCUS_RING_WIDTH,
+            )
+        );
+        assert_eq!(ring.radius, 6 + FOCUS_RING_WIDTH, "the radius follows the grown rectangle");
+        assert!(ring.is_drawable(), "the halo has area to paint");
+    }
+
+    /// The macOS halo grows by the halo width, not the inset ring width.
+    #[test]
+    fn a_macos_halo_grows_by_the_halo_width() {
+        let rect = Rect::new(10, 20, 40, 30);
+        let ring = FocusRing::halo_for_control(rect, 6);
+        let grow = FOCUS_HALO_WIDTH as i32;
+        assert_eq!(
+            ring.rect,
+            Rect::new(
+                rect.x - grow,
+                rect.y - grow,
+                rect.width + 2 * FOCUS_HALO_WIDTH,
+                rect.height + 2 * FOCUS_HALO_WIDTH,
+            )
+        );
+        assert_eq!(ring.radius, 6 + FOCUS_HALO_WIDTH);
+        assert!(
+            ring.rect.width > FocusRing::halo(rect, 6).rect.width,
+            "the macOS halo must be wider than the inset-inverse halo"
+        );
+    }
+
+    /// The Material profile is the existing constant table, value for value.
+    #[test]
+    fn the_material_profile_keeps_the_existing_constants() {
+        let metrics = profile_metrics(ControlMetricsProfile::Material);
+        assert_eq!(metrics.button_min, dimensions::BUTTON_MIN);
+        assert_eq!(metrics.button_radius, dimensions::BUTTON_RADIUS);
+        assert_eq!(metrics.switch_track, dimensions::SWITCH_TRACK);
+        assert_eq!(metrics.text_field_min_height, dimensions::TEXT_FIELD_MIN_HEIGHT);
+    }
+
+    /// The macOS row carries the AppKit values from the plan.
+    #[test]
+    fn the_macos_profile_matches_the_appkit_metrics() {
+        let metrics = profile_metrics(ControlMetricsProfile::Macos);
+        assert_eq!(metrics.button_min.height, 28, "AppKit's push button is 28 px tall");
+        assert_eq!(metrics.button_radius, 6);
+        assert_eq!(metrics.switch_track, Size { width: 38, height: 22 }, "NSSwitch is 38x22");
+        assert_eq!(metrics.text_field_min_height, 22);
+    }
+
+    /// The Cupertino row keeps the iOS switch track the crate already draws.
+    #[test]
+    fn the_cupertino_profile_uses_the_cupertino_switch_track() {
+        let metrics = profile_metrics(ControlMetricsProfile::Cupertino);
+        assert_eq!(metrics.switch_track, dimensions::CUPERTINO_SWITCH_TRACK);
+        assert_eq!(metrics.button_min, dimensions::BUTTON_MIN);
+    }
+
+    /// A theme that omits `metrics_profile` means Material, not an arbitrary variant.
+    #[test]
+    fn the_default_metrics_profile_is_material() {
+        assert_eq!(ControlMetricsProfile::default(), ControlMetricsProfile::Material);
+    }
+
+    /// The focus ring colour reads the palette's `outline` token and nothing else.
+    #[test]
+    fn focus_ring_color_from_theme_reads_the_outline_token() {
+        let mut colors = crate::style::Colors::default();
+        colors.outline = Color::rgb(11, 22, 33);
+        assert_eq!(focus_ring_color_from_theme(&colors), Color::rgb(11, 22, 33));
+    }
+
+    /// `active_profile` follows the active theme and falls back to Material.
+    #[cfg(device_profile)]
+    #[test]
+    fn active_profile_reads_the_active_theme() {
+        use crate::compat::ToString;
+
+        let _guard = crate::style::theme_test_guard();
+        let mut theme = crate::theme::Theme::default();
+        theme.name = "p2-6-macos".to_string();
+        theme.metrics_profile = ControlMetricsProfile::Macos;
+        {
+            let mut manager = crate::theme::global_theme_manager();
+            manager.register_theme(theme);
+            assert!(manager.set_theme("p2-6-macos"), "the fixture theme must become active");
+        }
+
+        assert_eq!(active_profile(), ControlMetricsProfile::Macos);
+
+        // Restore the seeded preset before releasing the process-wide guard.
+        assert!(crate::theme::global_theme_manager().set_theme("default"));
     }
 }

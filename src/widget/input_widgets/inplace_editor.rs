@@ -9,12 +9,14 @@
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::shortcut::Key;
 use crate::signal::{GenericSignal, Signal1};
 use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::input_widgets::shortcut_editor::primary_shortcut_pressed;
 use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -597,10 +599,13 @@ impl EventHandler for InplaceEditor {
                     return;
                 }
                 match *key {
-                    90 if *modifiers == 2 => {
+                    // Undo and redo are the platform primary chord: Control+Z/Y on
+                    // Windows and Linux, Command+Z/Y on macOS. A shifted chord is a
+                    // different binding and stays unbound here.
+                    _ if primary_shortcut_pressed(*key, *modifiers, Key::Z) => {
                         let _ = self.undo();
                     }
-                    89 if *modifiers == 2 => {
+                    _ if primary_shortcut_pressed(*key, *modifiers, Key::Y) => {
                         let _ = self.redo();
                     }
                     0x1B => {

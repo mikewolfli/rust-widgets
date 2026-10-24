@@ -79,6 +79,46 @@ pub fn touch_cancel_payload(event: &Event) -> Option<(crate::core::Point, TouchI
     Some((crate::core::Point::new(x, y), touch_id))
 }
 
+/// The Win32 `VK_APPS` code for the Application/Menu key.
+///
+/// # Why the collision with ASCII `]` is documented rather than hidden
+///
+/// The framework's key-code convention uses ASCII values for printable keys, so `0x5D` is also
+/// the code a host that folds a character through
+/// [`ascii_key_code`](crate::event::key_codes::ascii_key_code) produces for `]`. The GTK backend
+/// forwards raw GDK keyvals, where the same value is `]` and the dedicated Menu key is
+/// [`X11_MENU_KEY_CODE`]. A GTK host that wants the Application key must therefore translate the
+/// dedicated keyval, not this one; a Windows host forwards the virtual-key code directly and
+/// gets the Application key as `0x5D`, which is why the mapping exists.
+pub const APPLICATION_KEY_CODE: u32 = 0x5D;
+
+/// The X11/GDK `XK_Menu` keyval for the dedicated Menu key.
+pub const X11_MENU_KEY_CODE: u32 = 0xFF67;
+
+/// The Linux evdev `KEY_MENU` code, for a host that forwards raw scan codes.
+pub const EVDEV_MENU_KEY_CODE: u32 = 139;
+
+/// Returns whether `key` is one of the Menu/Application key codes this crate recognises.
+pub fn is_context_menu_key(key: u32) -> bool {
+    matches!(key, APPLICATION_KEY_CODE | X11_MENU_KEY_CODE | EVDEV_MENU_KEY_CODE)
+}
+
+/// Returns the context-menu request a Menu/Application key press carries, if `event` is one.
+///
+/// The keyboard has no pointer position, so the request is anchored at `(0, 0)`. That is the one
+/// value the event cannot derive; a host replaces it with the focused control's caret origin (or
+/// simply clamps the menu to the viewport) before opening it.
+pub fn context_menu_for_key(event: &Event) -> Option<Event> {
+    let Event::KeyPress { key, .. } = event else {
+        return None;
+    };
+    if is_context_menu_key(*key) {
+        Some(Event::ContextMenu { pos: crate::core::Point::new(0, 0) })
+    } else {
+        None
+    }
+}
+
 /// Touch-to-mouse event translator.
 ///
 /// Tracks active touch points and synthesizes equivalent mouse events:
@@ -208,6 +248,13 @@ impl TouchEventTranslator {
                     // withdrawn", so clear the tracked set rather than leave a stale entry.
                     self.active_touches.clear();
                 }
+            }
+            Event::KeyPress { key, .. } if is_context_menu_key(key) => {
+                // The Menu/Application key means "open the context menu" on every platform that
+                // has one. Synthesizing the typed request here (instead of teaching each host
+                // and control the key codes) keeps the mapping in one place. The original key
+                // event is not consumed: a host may still route it for its own bindings.
+                out.push(Event::ContextMenu { pos: crate::core::Point::new(0, 0) });
             }
             _ => {}
         }
@@ -569,6 +616,32 @@ mod tests {
         assert!(
             t.translate(&Event::TouchEnd { pos: Point::new(1, 1), touch_id: 9 }).is_empty(),
             "an end for a pre-disable begin must stay unmatched"
+        );
+    }
+
+    /// The Menu/Application key becomes a `ContextMenu` request, in addition to the key event
+    /// that caused it.
+    #[test]
+    fn the_menu_key_maps_to_a_context_menu_request() {
+        let mut t = TouchEventTranslator::new();
+        for key in [APPLICATION_KEY_CODE, X11_MENU_KEY_CODE, EVDEV_MENU_KEY_CODE] {
+            let translated = t.translate(&Event::key_press(key, 0));
+            assert_eq!(translated.len(), 1, "one request, not a changed key stream");
+            assert!(
+                matches!(translated[0], Event::ContextMenu { pos } if pos == Point::new(0, 0)),
+                "key code {key} is a Menu/Application key"
+            );
+        }
+    }
+
+    /// An ordinary key is not a menu request: the mapping must not turn typing into popups.
+    #[test]
+    fn ordinary_keys_are_not_context_menu_requests() {
+        let mut t = TouchEventTranslator::new();
+        assert!(t.translate(&Event::key_press(65, 0)).is_empty(), "A is not the Menu key");
+        assert!(
+            t.translate(&Event::key_press(0xDD, 0)).is_empty(),
+            "Win32 `]` is not the Menu key"
         );
     }
 }

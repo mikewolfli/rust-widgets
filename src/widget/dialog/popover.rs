@@ -36,6 +36,17 @@ const REVEAL_MIN_SCALE: f32 = 0.06;
 /// The alpha of the shadow under the card, out of 255. A constant rather than a literal in the draw
 /// so the reveal can scale it without a second magic number.
 const SHADOW_ALPHA: u8 = 40;
+/// How far the shadow is offset below the card, in pixels.
+///
+/// AppKit's popover shadow falls mostly downward, so the offset is vertical only; a
+/// diagonal offset reads as a material elevation shadow rather than a floating panel.
+const SHADOW_OFFSET_Y: i32 = 4;
+/// The shadow's blur radius, in pixels, passed to the renderer's box-blur primitive.
+///
+/// Shared with the popup menu's blurred tier (12), so a popover and a menu float at the
+/// same height. The soft edge is what makes the card read as detached from the page; the
+/// previous hard offset rectangle read as a second border.
+const SHADOW_BLUR_RADIUS: u32 = 12;
 
 /// Popover widget — a floating bubble card with an anchor arrow.
 ///
@@ -398,29 +409,27 @@ impl Draw for Popover {
 
         // ── Draw shadow ──
         //
-        // The shadow is offset down-right, so at a geometry whose right or bottom edge is
-        // already reached by the card it would paint past the control: the census reported
-        // the shadow rect at `[12,2..242,122]` on a 240×120 box. It only makes sense where
-        // there is room for it, so it is dropped when the offset would leave the control
-        // rather than being clamped — a half-shadow along one edge reads as a rendering
-        // fault, whereas no shadow at rest reads as the flat card it is.
-        let shadow_offset = 2i32;
-        let shadow_fits = body_rect.x + shadow_offset + body_rect.width as i32
-            <= rect.x + rect.width as i32
-            && body_rect.y + shadow_offset + body_rect.height as i32 <= rect.y + rect.height as i32;
-        if shadow_fits && body_rect.height > 0 {
-            let shadow_rect = Rect::new(
-                body_rect.x + shadow_offset,
-                body_rect.y + shadow_offset,
-                body_rect.width,
-                body_rect.height,
-            );
-            // The shadow fades in with the unfold and is gone at `reveal = 0`, where the card is a
-            // closed strip: a shadow under a strip that has not opened yet is a smudge on the page.
-            context.fill_rounded_rect(
-                shadow_rect,
-                CORNER_RADIUS,
+        // A real blur, not a second hard rectangle: the renderer's `BoxShadow` command is the one
+        // primitive both backends already soften (three-pass box blur / `feGaussianBlur`), and the
+        // previously offset solid fill read as a border rather than as elevation. `SHADOW_ALPHA` is
+        // the weight and the reveal scales it, so the shadow grows with the unfold instead of
+        // arriving at full strength beside a half-open card.
+        //
+        // The blur makes the shadow **bleed past the card by design**. Nothing in the render path
+        // clips a widget to its layout slot, so the shadow is painted rather than dropped when it
+        // would extend past the control's rectangle: the old "does it fit?" guard silently removed
+        // the shadow at exactly the anchors where the card sits nearest an edge. No extra intrinsic
+        // bounds are needed here, because the control's own rectangle is not a clip.
+        if body_rect.height > 0 && reveal > 0.0 {
+            // The shadow is gone at `reveal = 0`, where the card is a closed strip: a shadow under
+            // a strip that has not opened yet is a smudge on the page.
+            context.draw_box_shadow(
+                body_rect,
                 Color::rgba(0, 0, 0, (SHADOW_ALPHA as f32 * reveal) as u8),
+                0,
+                SHADOW_OFFSET_Y,
+                SHADOW_BLUR_RADIUS,
+                0,
             );
         }
 
@@ -877,5 +886,56 @@ mod tests {
             top >= card_y + 8,
             "a top-edge origin would pin the placeholder at the padding, got {top} in card y={card_y}"
         );
+    }
+
+    /// The open card casts a **blurred** shadow, not a second hard rectangle.
+    ///
+    /// The old shadow was the card's own shape offset by two pixels and filled solid, which
+    /// reads as a second border. The assertion is on the renderer's box-blur marker
+    /// (`feGaussianBlur` and its filter reference) rather than on any fill alpha, so it fails
+    /// if the shadow regresses to a rounded-rect fill.
+    #[test]
+    fn an_open_popover_paints_a_blurred_shadow() {
+        let rect = Rect::new(0, 0, 300, 400);
+        let mut popover = Popover::new(rect);
+        popover.show(Rect::new(100, 20, 50, 20));
+        while popover.tick(1000) {}
+
+        let svg = render_to_svg(&mut popover);
+        assert!(
+            svg.contains(&format!("shadow_blur_{SHADOW_BLUR_RADIUS}")),
+            "the shadow must go through the box-blur primitive: {svg}"
+        );
+        assert!(
+            svg.contains(&format!("filter=\"url(#shadow_blur_{SHADOW_BLUR_RADIUS})\"")),
+            "the emitted shadow rectangle must reference the blur filter: {svg}"
+        );
+    }
+
+    /// The blur does not make the shadow disappear where the card reaches the control's edge.
+    ///
+    /// This is the geometry where the card (and therefore the shadow) extends below the 120 px
+    /// control: the old `shadow_fits` guard dropped the shadow entirely there. The renderer does
+    /// not clip a widget to its slot, so the shadow must still be emitted.
+    #[test]
+    fn the_shadow_is_not_dropped_when_it_extends_past_the_control() {
+        let mut popover = Popover::new(Rect::new(0, 0, 240, 120));
+        popover.show(Rect::new(100, 100, 50, 20));
+        while popover.tick(1000) {}
+
+        let svg = render_to_svg(&mut popover);
+        assert!(
+            svg.contains(&format!("shadow_blur_{SHADOW_BLUR_RADIUS}")),
+            "the shadow must survive a card that sits past the control's bottom edge: {svg}"
+        );
+    }
+
+    /// A closed popover paints no shadow; the reveal drives the shadow to nothing.
+    #[test]
+    fn a_closed_popover_paints_no_shadow() {
+        let mut popover = Popover::new(Rect::new(0, 0, 300, 400));
+        assert_eq!(popover.reveal_progress(), 0.0);
+        let svg = render_to_svg(&mut popover);
+        assert!(!svg.contains("shadow_blur_"), "a closed popover must not cast a shadow: {svg}");
     }
 }

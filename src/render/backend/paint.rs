@@ -5,12 +5,13 @@
 use super::batch::BatchState;
 use crate::compat::vec;
 use crate::compat::Rc;
-use crate::core::{Color, Font, Size};
+use crate::core::{Color, Font, Rect, Size};
 use crate::render::pipeline::{
     sat_add_i32, sat_mul_i32, sat_neg_i32, set_pixel, u32_to_i32_saturating,
 };
 use crate::render::{
-    RenderCommand, ShapedText, SoftwareRenderConfig, SoftwareSurface, TextMetrics,
+    blend_pixel_with_mode, BlendMode, RenderCommand, ShapedText, SoftwareRenderConfig,
+    SoftwareSurface, TextMetrics,
 };
 
 /// Pluggable paint backend strategy used by render scene composition.
@@ -376,6 +377,34 @@ fn take_gradient_owned_command_count() -> usize {
 pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &RenderCommand) {
     match command {
         RenderCommand::FillRect { rect, color } => surface.fill_rect(*rect, *color),
+        #[cfg(feature = "3d")]
+        RenderCommand::FillQuad { corners, color } => {
+            // The surface's existing scanline polygon fill is the software expression of the
+            // same quadrilateral. It is deliberately not reduced to a bounding box: a rotated
+            // item must keep its corners.
+            surface.draw_path(&corners[..], true, *color, true, 0);
+        }
+        #[cfg(feature = "3d")]
+        RenderCommand::StrokeQuad { corners, color, width } => {
+            // Four connected edges, each drawn by the same line primitive a `DrawLineStroke`
+            // uses. A closed polygon outline would also work, but its joins are mitered, and the
+            // affine-mapped rectangle a widget produces has corners the caller positioned: a
+            // miter there would push the stroke outside the geometry the caller asked for.
+            if *width > 0 {
+                for index in 0..4 {
+                    surface.draw_line_with_width(
+                        corners[index],
+                        corners[(index + 1) % 4],
+                        *color,
+                        *width,
+                    );
+                }
+            }
+        }
+        #[cfg(feature = "3d")]
+        RenderCommand::DrawImageQuad { corners, width, height, data } => {
+            surface.draw_image_quad(*corners, *width, *height, data);
+        }
         RenderCommand::DrawRect { rect, color } => surface.draw_rect(*rect, *color),
         RenderCommand::DrawRectStroke { rect, color, width } => {
             surface.draw_rect_with_width(*rect, *color, *width)
@@ -422,6 +451,8 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
             surface.push_clip(*x, *y, *width, *height)
         }
         RenderCommand::PopClip => surface.pop_clip(),
+        RenderCommand::PushLayer { bounds, effect } => push_layer(surface, *bounds, *effect),
+        RenderCommand::PopLayer => pop_layer(surface),
         RenderCommand::DrawGradient { rect, gradient } => {
             surface.fill_rect_gradient(*rect, gradient);
         }
@@ -557,6 +588,241 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
                 }
             }
         }
+    }
+}
+
+/// Begin a layered region: capture its backdrop, clear it, and clip the foreground to it.
+///
+/// # Why the region is cleared
+///
+/// The foreground and the backdrop have to be separable at pop, and the only exact way to
+/// separate two source-over composites is to draw them one at a time. Clearing the region
+/// means everything drawn between `PushLayer` and `PopLayer` is foreground with its own
+/// alpha, which the pop can then composite over the processed backdrop. Leaving the backdrop
+/// in place would make the foreground an opaque mixture of the two, and no amount of blurring
+/// could recover the layer's own alpha.
+///
+/// # Why the clip is pushed before the capture
+///
+/// The layer may only paint inside `bounds`, and the capture must cover exactly the pixels
+/// the layer can touch. Reading `current_clip()` after the push gives the intersection of
+/// `bounds` with the caller's own clip, so both operations agree about the region by
+/// construction.
+fn push_layer(
+    surface: &mut SoftwareSurface,
+    bounds: Rect,
+    effect: Option<crate::render::core::command::LayerEffect>,
+) {
+    surface.push_clip(bounds.x, bounds.y, bounds.width, bounds.height);
+    let size = surface.size();
+    let Some(rect) = clipped_region(surface.current_clip(), size) else {
+        surface.buffer.layers.push(super::surface::LayerCapture {
+            rect: (0, 0, 0, 0),
+            effect,
+            backdrop: Vec::new(),
+        });
+        return;
+    };
+    let backdrop = match effect {
+        Some(_) => capture_region(surface.buffer.back_mut(), size.width as usize, rect),
+        None => Vec::new(),
+    };
+    if effect.is_some() {
+        clear_region(surface.buffer.back_mut(), size.width as usize, rect);
+    }
+    surface.buffer.layers.push(super::surface::LayerCapture { rect, effect, backdrop });
+}
+
+/// End the innermost layer, apply its effect to the captured backdrop, and composite the
+/// foreground over the result.
+///
+/// An unmatched pop is ignored on purpose: the clip stack belongs to the caller too, and
+/// popping it for a layer that was never pushed would widen or narrow an unrelated clip.
+///
+/// The captured region is blurred as its own image, so a pixel on the region's boundary clamps
+/// to that boundary rather than sampling the surface outside it. That is the same edge rule
+/// the full-surface `Blur` command follows, and it keeps the layer independent of pixels the
+/// material does not cover.
+fn pop_layer(surface: &mut SoftwareSurface) {
+    if surface.buffer.layers.is_empty() {
+        return;
+    }
+    let Some(layer) = surface.buffer.layers.pop() else {
+        return;
+    };
+    surface.pop_clip();
+    let Some(effect) = layer.effect else {
+        return;
+    };
+    let (_, _, width, height) = layer.rect;
+    if width == 0 || height == 0 {
+        return;
+    }
+    let expected = width as usize * height as usize * 4;
+    if layer.backdrop.len() != expected {
+        return;
+    }
+    let mut backdrop = layer.backdrop;
+    // The same clamp `RenderCommand::Blur` applies: a radius beyond the kernel's useful reach
+    // only costs time, and the command's range is already a public, untrusted input.
+    let radius = effect.radius().min(100) as usize;
+    if radius > 0 {
+        box_blur_region(
+            &mut backdrop,
+            width as usize,
+            height as usize,
+            0,
+            0,
+            width as usize,
+            height as usize,
+            radius,
+        );
+    }
+    if let Some((tint, weight)) = effect.tint() {
+        tint_region(&mut backdrop, tint, weight);
+    }
+    let surface_width = surface.size().width as usize;
+    composite_foreground(surface.buffer.back_mut(), surface_width, layer.rect, &backdrop);
+}
+
+/// The part of `clip` that lies inside `size`, or `None` when there is no visible part.
+///
+/// The arithmetic is done in `i64`: both a negative origin and a `u32::MAX` extent are legal
+/// command inputs, and adding them in `i32` would wrap the right/bottom edge into the region.
+fn clipped_region(clip: Option<(i32, i32, u32, u32)>, size: Size) -> Option<(i32, i32, u32, u32)> {
+    let (x, y, width, height) = clip?;
+    let x0 = x.max(0) as i64;
+    let y0 = y.max(0) as i64;
+    let x1 = (x as i64 + width as i64).min(size.width as i64);
+    let y1 = (y as i64 + height as i64).min(size.height as i64);
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    Some((x0 as i32, y0 as i32, (x1 - x0) as u32, (y1 - y0) as u32))
+}
+
+/// Copies a clipped region out of `back` into a tightly packed RGBA buffer.
+fn capture_region(back: &[u8], surface_width: usize, rect: (i32, i32, u32, u32)) -> Vec<u8> {
+    let (x, y, width, height) = rect;
+    let row_bytes = width as usize * 4;
+    let mut out = vec![0u8; row_bytes * height as usize];
+    for row in 0..height as usize {
+        let src = (y as usize + row) * surface_width * 4 + x as usize * 4;
+        let dst = row * row_bytes;
+        if let (Some(source), Some(target)) =
+            (back.get(src..src + row_bytes), out.get_mut(dst..dst + row_bytes))
+        {
+            target.copy_from_slice(source);
+        }
+    }
+    out
+}
+
+/// Overwrites a clipped region of `back` with a tightly packed RGBA buffer.
+fn restore_region(
+    back: &mut [u8],
+    surface_width: usize,
+    rect: (i32, i32, u32, u32),
+    source: &[u8],
+) {
+    let (x, y, width, height) = rect;
+    let row_bytes = width as usize * 4;
+    for row in 0..height as usize {
+        let dst = (y as usize + row) * surface_width * 4 + x as usize * 4;
+        let src = row * row_bytes;
+        if let (Some(target), Some(pixels)) =
+            (back.get_mut(dst..dst + row_bytes), source.get(src..src + row_bytes))
+        {
+            target.copy_from_slice(pixels);
+        }
+    }
+}
+
+/// Sets every byte of a clipped region to zero, i.e. transparent black.
+fn clear_region(back: &mut [u8], surface_width: usize, rect: (i32, i32, u32, u32)) {
+    let (x, y, width, height) = rect;
+    let row_bytes = width as usize * 4;
+    for row in 0..height as usize {
+        let start = (y as usize + row) * surface_width * 4 + x as usize * 4;
+        if let Some(slice) = back.get_mut(start..start + row_bytes) {
+            slice.fill(0);
+        }
+    }
+}
+
+/// Composites the layer's foreground (still in `back`) over `backdrop` and writes the result
+/// back into the same region.
+///
+/// The foreground is copied out before the backdrop is written, because the two live in the
+/// same buffer: reading a pixel after its row was overwritten would composite the backdrop
+/// onto itself.
+fn composite_foreground(
+    back: &mut [u8],
+    surface_width: usize,
+    rect: (i32, i32, u32, u32),
+    backdrop: &[u8],
+) {
+    let foreground = capture_region(back, surface_width, rect);
+    restore_region(back, surface_width, rect, backdrop);
+    let (x, y, width, height) = rect;
+    for row in 0..height as usize {
+        for column in 0..width as usize {
+            let index = (row * width as usize + column) * 4;
+            let color = Color::rgba(
+                foreground[index],
+                foreground[index + 1],
+                foreground[index + 2],
+                foreground[index + 3],
+            );
+            if color.a == 0 {
+                continue;
+            }
+            blend_pixel_with_mode(
+                back,
+                surface_width as u32,
+                x.max(0) as u32 + column as u32,
+                y.max(0) as u32 + row as u32,
+                color,
+                1.0,
+                BlendMode::Normal,
+            );
+        }
+    }
+}
+
+/// Blends `tint` over every pixel of a tightly packed region.
+///
+/// `weight` scales the tint's own alpha, so a tint declared with `a = 128` at weight `0.5`
+/// contributes half of half opacity. A non-finite weight is treated as no tint: `clamp`
+/// propagates `NaN`, which would poison every channel it touched.
+#[allow(clippy::chunks_exact_to_as_chunks)]
+fn tint_region(region: &mut [u8], tint: Color, weight: f32) {
+    if !weight.is_finite() {
+        return;
+    }
+    let weight = weight.clamp(0.0, 1.0);
+    if weight <= 0.0 {
+        return;
+    }
+    let tint_alpha = (tint.a as f32 / 255.0) * weight;
+    if tint_alpha <= 0.0 {
+        return;
+    }
+    let tint_rgb = [tint.r as f32 / 255.0, tint.g as f32 / 255.0, tint.b as f32 / 255.0];
+    for pixel in region.chunks_exact_mut(4) {
+        let dst_alpha = pixel[3] as f32 / 255.0;
+        let out_alpha = tint_alpha + dst_alpha * (1.0 - tint_alpha);
+        if out_alpha <= f32::EPSILON {
+            pixel.fill(0);
+            continue;
+        }
+        for channel in 0..3 {
+            let dst = pixel[channel] as f32 / 255.0;
+            let blended =
+                (tint_rgb[channel] * tint_alpha + dst * dst_alpha * (1.0 - tint_alpha)) / out_alpha;
+            pixel[channel] = (blended * 255.0).round().clamp(0.0, 255.0) as u8;
+        }
+        pixel[3] = (out_alpha * 255.0).round().clamp(0.0, 255.0) as u8;
     }
 }
 
@@ -966,6 +1232,35 @@ mod tests {
         assert_eq!(rgba[idx], 0); // R
         assert_eq!(rgba[idx + 1], 0); // G
         assert_eq!(rgba[idx + 2], 255); // B
+    }
+
+    /// The `3d` feature's quad command fills the quadrilateral, not its bounding box.
+    ///
+    /// The fixture is a diamond: the centre and the four mid-edges are inside it, while the
+    /// corners of its bounding box are outside. A backend that collapsed the command to
+    /// `Rect(min, min, width, height)` would paint those corners too.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn paint_backend_execute_fill_quad_fills_the_quadrilateral() {
+        let size = Size::new(24, 24);
+        let mut backend = SoftwarePaintBackend::new(size, 1.0);
+        backend.begin_frame(Color::WHITE);
+
+        backend.execute_command(&RenderCommand::FillQuad {
+            corners: [Point::new(12, 2), Point::new(22, 12), Point::new(12, 22), Point::new(2, 12)],
+            color: Color::RED,
+        });
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        let stride = 24 * 4;
+        let center = 12 * stride + 12 * 4;
+        assert_eq!(&rgba[center..center + 4], &[255, 0, 0, 255], "the centre is inside");
+
+        let box_corner = 3 * stride + 3 * 4;
+        assert_eq!(rgba[box_corner], 255, "the bounding-box corner is outside the diamond");
+        assert_eq!(rgba[box_corner + 1], 255);
+        assert_eq!(rgba[box_corner + 2], 255);
     }
 
     #[test]
@@ -1556,5 +1851,113 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A backdrop-blur layer blurs the pixels that were already there and keeps the region's
+    /// own drawing out of the blur source.
+    #[test]
+    fn a_backdrop_blur_layer_blurs_what_is_behind_it() {
+        use crate::render::core::command::LayerEffect;
+
+        let mut backend = SoftwarePaintBackend::new(Size::new(40, 20), 1.0);
+        backend.begin_frame(Color::BLACK);
+        backend.execute_command(&RenderCommand::FillRect {
+            rect: Rect::new(0, 0, 20, 20),
+            color: Color::rgb(255, 0, 0),
+        });
+        backend.execute_command(&RenderCommand::FillRect {
+            rect: Rect::new(20, 0, 20, 20),
+            color: Color::rgb(0, 0, 255),
+        });
+        backend.execute_command(&RenderCommand::PushLayer {
+            bounds: Rect::new(0, 0, 40, 20),
+            effect: Some(LayerEffect::BackdropBlur { radius: 8 }),
+        });
+        backend.execute_command(&RenderCommand::PopLayer);
+        backend.end_frame();
+
+        let frame = backend.frame_rgba();
+        let at = |x: usize, y: usize| -> [u8; 4] {
+            let index = (y * 40 + x) * 4;
+            [frame[index], frame[index + 1], frame[index + 2], frame[index + 3]]
+        };
+        assert_eq!(at(0, 10), [255, 0, 0, 255], "the untouched edge stays red");
+        assert_eq!(at(39, 10), [0, 0, 255, 255], "and the other edge stays blue");
+        let left = at(19, 10);
+        let right = at(20, 10);
+        assert!(left[2] > 0, "blue must bleed across the hard edge: {left:?}");
+        assert!(right[0] > 0, "red must bleed across the hard edge: {right:?}");
+    }
+
+    /// The foreground is composited **over** the processed backdrop, not blurred with it.
+    #[test]
+    fn a_layer_composites_its_foreground_over_the_tinted_backdrop() {
+        use crate::render::core::command::LayerEffect;
+
+        let mut backend = SoftwarePaintBackend::new(Size::new(20, 20), 1.0);
+        backend.begin_frame(Color::TRANSPARENT);
+        backend.execute_command(&RenderCommand::FillRect {
+            rect: Rect::new(0, 0, 20, 20),
+            color: Color::WHITE,
+        });
+        backend.execute_command(&RenderCommand::PushLayer {
+            bounds: Rect::new(0, 0, 20, 20),
+            effect: Some(LayerEffect::BackdropBlurTint {
+                radius: 0,
+                tint: Color::rgb(255, 0, 0),
+                tint_weight: 1.0,
+            }),
+        });
+        backend.execute_command(&RenderCommand::FillRect {
+            rect: Rect::new(4, 4, 4, 4),
+            color: Color::rgb(0, 255, 0),
+        });
+        backend.execute_command(&RenderCommand::PopLayer);
+        backend.end_frame();
+
+        let frame = backend.frame_rgba();
+        let at = |x: usize, y: usize| -> [u8; 4] {
+            let index = (y * 20 + x) * 4;
+            [frame[index], frame[index + 1], frame[index + 2], frame[index + 3]]
+        };
+        assert_eq!(at(10, 10), [255, 0, 0, 255], "the backdrop takes the tint");
+        assert_eq!(at(5, 5), [0, 255, 0, 255], "the foreground stays on top of it");
+    }
+
+    /// Layer composition is a 2D capability: the same commands produce the same pixels in a
+    /// build with and without the `3d` feature.
+    ///
+    /// This test is deliberately **not** `cfg`-gated. It runs in both matrices and asserts a
+    /// concrete picture, so a future change that accidentally puts the layer path behind `3d`
+    /// would either fail to compile in the 2D matrix or produce different pixels here.
+    #[test]
+    fn a_layer_snapshot_is_the_same_with_and_without_the_3d_feature() {
+        use crate::render::core::command::LayerEffect;
+
+        let mut backend = SoftwarePaintBackend::new(Size::new(16, 16), 1.0);
+        backend.begin_frame(Color::rgb(0, 0, 0));
+        backend.execute_command(&RenderCommand::FillRect {
+            rect: Rect::new(0, 0, 8, 16),
+            color: Color::rgb(200, 40, 20),
+        });
+        backend.execute_command(&RenderCommand::FillRect {
+            rect: Rect::new(8, 0, 8, 16),
+            color: Color::rgb(20, 40, 200),
+        });
+        backend.execute_command(&RenderCommand::PushLayer {
+            bounds: Rect::new(0, 0, 16, 16),
+            effect: Some(LayerEffect::BackdropBlur { radius: 6 }),
+        });
+        backend.execute_command(&RenderCommand::PopLayer);
+        backend.end_frame();
+
+        let frame = backend.frame_rgba();
+        let index = (8 * 16 + 8) * 4;
+        let red = frame[index];
+        let blue = frame[index + 2];
+        assert!(
+            red > 0 && blue > 0,
+            "the seam must be a blend of both halves regardless of the 3d feature: {red}, {blue}"
+        );
     }
 }

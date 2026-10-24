@@ -15,8 +15,14 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{
     dimensions, effective_font, estimate_line_height, estimate_text_width, ControlMetrics,
 };
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, InteractionFade, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// How far the ink moves toward its contrasting tone at full interaction strength.
+///
+/// Named because the draw path and its tests read the same value; at rest the tint is
+/// skipped entirely, so this only describes the hovered/pressed picture.
+const LABEL_INTERACTION_TINT: f32 = 0.22;
 
 /// A label's own padding: the gap it keeps between its rectangle and its text.
 ///
@@ -37,6 +43,11 @@ pub struct Label {
     base: BaseWidget,
     text: String,
     alignment: crate::core::Alignment,
+    /// The hover/press fade that deepens the ink while the pointer interacts.
+    ///
+    /// Both drivers rest at exactly `0.0`, so a label that has never been pointed at paints
+    /// its declared ink byte-for-byte (see `Label::interactive_ink`).
+    fade: InteractionFade,
 }
 impl Label {
     /// Creates a label with initial text and geometry.
@@ -45,6 +56,7 @@ impl Label {
             base: BaseWidget::new(WidgetKind::Label, geometry, "Label"),
             text,
             alignment: crate::core::Alignment::Left,
+            fade: InteractionFade::new(),
         }
     }
     /// Returns label text.
@@ -89,6 +101,30 @@ impl Label {
         let floor = Size::new(LABEL_MIN_WIDTH, estimate_line_height(font, 1.0));
         ControlMetrics::implicit_size(Size::new(text_width, 0), LABEL_PADDING, floor)
     }
+
+    /// Retargets the interaction fade from the pointer facts the base recorded.
+    ///
+    /// A disabled label is inert, so both targets collapse to rest instead of letting a
+    /// hover linger on a control the user cannot interact with. `sync` itself re-aims rather
+    /// than restarts, so a repeated event cannot make the tint stutter.
+    fn sync_fade(&mut self) {
+        let enabled = self.base.is_enabled();
+        self.fade.sync(enabled && self.base.is_hovered(), enabled && self.base.is_pressed());
+    }
+
+    /// The ink colour with the interaction tint applied.
+    ///
+    /// At rest the intensity is exactly `0.0` and `color` is returned unchanged, which is
+    /// what keeps a static label's output byte-identical to the pre-fade rendering. A
+    /// hovered or pressed label steps toward the ink's contrasting tone, so the feedback is
+    /// visible on either appearance rather than assuming a light one.
+    fn interactive_ink(&self, color: Color) -> Color {
+        let intensity = self.fade.intensity();
+        if intensity <= 0.0 {
+            return color;
+        }
+        color.blend(&color.contrast_color(), LABEL_INTERACTION_TINT * intensity)
+    }
 }
 impl Widget for Label {
     fn base(&self) -> &BaseWidget {
@@ -113,6 +149,18 @@ impl Widget for Label {
         );
         self.implicit_size()
     }
+
+    // The ink is what a label paints, so a hovered or pressed label owes frames while the
+    // tint is in flight. A resting label's drivers report no movement, so it costs nothing
+    // on the animation bus.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.fade.tick(delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.fade.is_animating()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -154,6 +202,15 @@ impl WidgetProperties for Label {
 impl EventHandler for Label {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        // The four pointer events are the only ones that can change the interaction fade.
+        // The base has already recorded hover/press by the time this runs.
+        match event {
+            Event::MouseEnter { .. }
+            | Event::MouseLeave { .. }
+            | Event::MousePress { .. }
+            | Event::MouseRelease { .. } => self.sync_fade(),
+            _ => { /* Other events carry no fade-relevant pointer state */ }
+        }
     }
 }
 impl Draw for Label {
@@ -204,6 +261,10 @@ impl Draw for Label {
             } else {
                 Color::rgb(0, 0, 0)
             });
+            // The tint is skipped entirely at rest, so the declared ink is what a static
+            // label paints. Once a hover or press is in flight the ink steps toward its
+            // contrasting tone by the driver's own fraction.
+            let text_color = self.interactive_ink(text_color);
             let font = effective_font(self.style());
             // The **shared** estimate, because this is the same quantity `implicit_size` reports.
             //
@@ -278,7 +339,8 @@ impl Draw for Label {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{Alignment, Color, Font, ObjectId, Rect, Size};
+    use crate::compat::{Box, Vec};
+    use crate::core::{Alignment, Color, Font, ObjectId, Point, Rect, Size};
     use crate::style::WidgetStyle;
     #[cfg(device_profile)]
     use crate::theme::AppearanceMode;
@@ -985,5 +1047,137 @@ mod tests {
     fn ink_width(label: &mut Label) -> i32 {
         let svg = crate::widget::svg::render_to_svg(label);
         crate::widget::svg::text_ink_box(&svg).map(|(x, _, right, _)| right - x).unwrap_or(0)
+    }
+
+    // ------------------------------------------------------------------
+    // Interaction fade (P1-9)
+    // ------------------------------------------------------------------
+
+    /// Rasterises `label` into a frame buffer a test can compare byte-for-byte.
+    fn render_rgba(label: &mut Label, size: Size) -> Vec<u8> {
+        use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
+        let mut backend = SoftwarePaintBackend::new(size, 1.0);
+        backend.begin_frame(Color::rgba(0, 0, 0, 0));
+        {
+            let mut context = RenderContext::new(&mut backend);
+            label.draw(&mut context);
+        }
+        backend.end_frame();
+        backend.frame_rgba().to_vec()
+    }
+
+    /// A pointer entering the label retargets the hover driver at once.
+    #[test]
+    fn mouse_enter_makes_the_label_animating() {
+        let mut label = Label::new("Hover".to_string(), Rect::new(0, 0, 80, 24));
+        assert!(!Widget::is_animating(&label), "a new label rests and owes no frames");
+
+        label.handle_event(&Event::MouseEnter { pos: Point::new(1, 1) });
+
+        assert!(
+            Widget::is_animating(&label),
+            "MouseEnter must make the label's fade moving before any tick"
+        );
+        assert!(Widget::tick(&mut label, 16), "the first fade frame must report work");
+    }
+
+    /// A resting label paints its declared ink byte-for-byte, and returns to exactly that
+    /// picture after a hover has come and gone.
+    #[test]
+    fn a_resting_label_paints_the_untinted_ink() {
+        // The label's draw reads the theme's role colours even when the caller overrides
+        // the ink, so this render must not race a neighbouring test's appearance switch.
+        let _guard = crate::style::theme_test_guard();
+        let rect = Rect::new(0, 0, 80, 24);
+        let ink = Color::rgb(40, 60, 80);
+
+        let mut label = Label::new("MMMM".to_string(), rect);
+        label.set_style(WidgetStyle::default().with_text_color(ink));
+        let fresh = crate::widget::svg::render_to_svg(&mut label);
+        assert_eq!(
+            ink_path_fill(&fresh),
+            ink,
+            "at rest the label must paint the caller's ink, not a tinted one"
+        );
+
+        label.handle_event(&Event::MouseEnter { pos: Point::new(1, 1) });
+        while Widget::tick(&mut label, 16) {}
+        let hovered = crate::widget::svg::render_to_svg(&mut label);
+        assert_ne!(ink_path_fill(&hovered), ink, "a settled hover must actually tint the ink");
+
+        label.handle_event(&Event::MouseLeave { pos: Point::new(1, 1) });
+        while Widget::tick(&mut label, 16) {}
+        assert_eq!(label.fade.hover.value(), 0.0, "the fade returns to rest exactly");
+        assert_eq!(
+            crate::widget::svg::render_to_svg(&mut label),
+            fresh,
+            "a label back at rest must repaint the same bytes it did before the hover"
+        );
+    }
+
+    /// Animating to the hover terminal state produces the same picture as setting the
+    /// terminal value directly, so the fade is purely a path between two identical ends.
+    #[test]
+    fn a_settled_hover_matches_the_manually_set_terminal_state() {
+        let _guard = crate::style::theme_test_guard();
+        let rect = Rect::new(0, 0, 80, 24);
+        let size = Size::new(80, 24);
+        let ink = Color::rgb(40, 60, 80);
+        let make = || {
+            let mut label = Label::new("MMMM".to_string(), rect);
+            label.set_style(WidgetStyle::default().with_text_color(ink));
+            label
+        };
+
+        let mut animated = make();
+        animated.handle_event(&Event::MouseEnter { pos: Point::new(1, 1) });
+        let mut frames = 0;
+        while Widget::tick(&mut animated, 16) {
+            frames += 1;
+            assert!(frames < 500, "the fade must terminate");
+        }
+        assert_eq!(animated.fade.hover.value(), 1.0, "the hover settles at its target");
+
+        let mut manual = make();
+        manual.fade.hover.jump_to(1.0);
+        manual.fade.press.jump_to(0.0);
+
+        assert_eq!(
+            render_rgba(&mut animated, size),
+            render_rgba(&mut manual, size),
+            "the animated end state must be the manually set terminal state"
+        );
+    }
+
+    /// Reduced motion collapses the fast tempo to zero, so one tick reaches the target.
+    #[test]
+    fn reduced_motion_reaches_the_label_target_in_one_frame() {
+        use crate::style::environment::{
+            install_environment, uninstall_environment, EnvironmentProvider,
+        };
+        use crate::style::MotionPreference;
+
+        struct Reduced;
+        impl EnvironmentProvider for Reduced {
+            fn motion_preference(&self) -> MotionPreference {
+                MotionPreference::ReduceMotion
+            }
+        }
+
+        let _guard = crate::style::theme_test_guard();
+        let previous = install_environment(Box::new(Reduced));
+
+        let mut label = Label::new("Hover".to_string(), Rect::new(0, 0, 80, 24));
+        label.handle_event(&Event::MouseEnter { pos: Point::new(1, 1) });
+        let moving = Widget::tick(&mut label, 16);
+
+        assert!(!moving, "a zero-duration fade settles on the first tick");
+        assert_eq!(label.fade.hover.value(), 1.0, "and reaches the target, not half way");
+        assert!(!Widget::is_animating(&label));
+
+        let _ = uninstall_environment();
+        if let Some(previous) = previous {
+            install_environment(previous);
+        }
     }
 }

@@ -147,14 +147,6 @@ fn face_for_text(text: &str) -> Option<FaceBytes> {
     crate::render::text::font_assets::face_for_char(probe)
 }
 
-/// A parsed view of `face`'s bytes, or `None` if they are not a font this crate can read.
-///
-/// Kept private: parsing is the one operation that can fail, and every caller wants a different
-/// thing from the result. Exposing the parser would leak the font crate into this module's API.
-fn face_parser(face: &FaceBytes) -> Option<ttf_parser::Face<'static>> {
-    ttf_parser::Face::parse(face.bytes, 0).ok()
-}
-
 /// The advance of each cluster, summed over the **glyphs** that cluster shaped into.
 ///
 /// `ranges` is the caller's clusters as `(byte_start, byte_end)` pairs in logical order — the
@@ -275,7 +267,10 @@ pub struct RustybuzzShaper {
 impl RustybuzzShaper {
     /// A shaper over `face`, or `None` when its bytes are not a font this crate can read.
     pub fn new(face: FaceBytes) -> Option<Self> {
-        face_parser(&face)?;
+        // Validate through the name-keyed shaper cache: construction is the moment a caller has a
+        // face it intends to shape with, so warming the same cache `shape_face` reads means the
+        // first call does not walk the table directory again.
+        super::font_assets::with_shaper_face(face, |_| ())?;
         Some(Self { face })
     }
 
@@ -302,33 +297,37 @@ impl RustybuzzShaper {
     /// its `height` is the font's line box — the same box
     /// [`crate::render::text::line`]'s model reports.
     pub fn shape_face(&self, text: &str, font_size: f32, scale: f32) -> Option<ShapedGlyphRun> {
-        let parsed = rustybuzz::Face::from_slice(self.face.bytes, 0)?;
-        let units_per_em = parsed.units_per_em() as f32;
-        if units_per_em <= 0.0 {
-            return None;
-        }
-        let mut buffer = rustybuzz::UnicodeBuffer::new();
-        buffer.push_str(text);
-        buffer.guess_segment_properties();
-        let output = rustybuzz::shape(&parsed, ligature_free_features(), buffer);
+        // The name-keyed shaper cache: a label is measured and then drawn, and the same face is
+        // shaped again across frames, so this must not re-read the table directory per call.
+        super::font_assets::with_shaper_face(self.face, |parsed| {
+            let units_per_em = parsed.units_per_em() as f32;
+            if units_per_em <= 0.0 {
+                return None;
+            }
+            let mut buffer = rustybuzz::UnicodeBuffer::new();
+            buffer.push_str(text);
+            buffer.guess_segment_properties();
+            let output = rustybuzz::shape(parsed, ligature_free_features(), buffer);
 
-        let unit_px = font_size * scale / units_per_em;
-        let mut glyph_ids = Vec::with_capacity(output.len());
-        let mut positions = Vec::with_capacity(output.len());
-        let mut pen_x = 0.0f32;
-        for (info, position) in output.glyph_infos().iter().zip(output.glyph_positions()) {
-            glyph_ids.push(info.glyph_id);
-            pen_x += position.x_offset as f32 * unit_px;
-            positions.push((pen_x, position.y_offset as f32 * unit_px));
-            pen_x += position.x_advance as f32 * unit_px;
-        }
-        Some(ShapedGlyphRun {
-            width: pen_x,
-            height: font_size * 1.2,
-            glyph_ids,
-            positions,
-            font_size,
+            let unit_px = font_size * scale / units_per_em;
+            let mut glyph_ids = Vec::with_capacity(output.len());
+            let mut positions = Vec::with_capacity(output.len());
+            let mut pen_x = 0.0f32;
+            for (info, position) in output.glyph_infos().iter().zip(output.glyph_positions()) {
+                glyph_ids.push(info.glyph_id);
+                pen_x += position.x_offset as f32 * unit_px;
+                positions.push((pen_x, position.y_offset as f32 * unit_px));
+                pen_x += position.x_advance as f32 * unit_px;
+            }
+            Some(ShapedGlyphRun {
+                width: pen_x,
+                height: font_size * 1.2,
+                glyph_ids,
+                positions,
+                font_size,
+            })
         })
+        .flatten()
     }
 }
 

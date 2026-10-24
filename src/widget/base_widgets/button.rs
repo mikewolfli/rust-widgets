@@ -15,8 +15,9 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{
-    dimensions, effective_font, estimate_line_height, estimate_text_width, focus_ring_color,
-    ControlMetrics, FocusRing, FOCUS_RING_WIDTH,
+    active_profile, dimensions, effective_font, estimate_line_height, estimate_text_width,
+    focus_ring_color, profile_metrics, ControlMetrics, ControlMetricsProfile, FocusRing,
+    FOCUS_HALO_BLUR_RADIUS, FOCUS_RING_WIDTH,
 };
 #[cfg(feature = "image")]
 use crate::widget::Image;
@@ -175,9 +176,13 @@ impl Button {
     /// template.
     ///
     /// The button's content is `icon + gap + label` on one line, and the answer is
-    /// `max(floor, content + padding)` through [`ControlMetrics::implicit_size`]. `BUTTON_MIN`
-    /// (64x40) is the load-bearing term: a button labelled with two characters must still be big
-    /// enough to press.
+    /// `max(floor, content + padding)` through [`ControlMetrics::implicit_size`]. The active
+    /// profile's button floor is the load-bearing term — Material's `64x40` or macOS's shorter
+    /// `64x28` — so a button labelled with two characters is still big enough to press.
+    ///
+    /// A profile with a compact floor also owns the vertical air: the height is the floor, and
+    /// the space left around the content is split above and below it. Material's floor is taller
+    /// than its content plus its named padding, so there its padding token remains the answer.
     ///
     /// # The two defects this replaces
     ///
@@ -200,10 +205,24 @@ impl Button {
         // A label-only button is one line tall; an icon can be taller than a line of text, so the
         // content height is the taller of the two rather than either one alone.
         let content_height = line_height.max(self.icon_height());
+        // The profile, not the constant table: Material keeps its `64x40` floor and its 8 px
+        // vertical padding, while macOS's `64x28` floor is the whole height and the remaining
+        // air around the content is split evenly. Cupertino is the Material row. Compare the
+        // profile's floor with the Material floor, not with the named padding: a tall custom
+        // font must still grow a Material button instead of being squeezed into the 40 px
+        // floor.
+        let profile = profile_metrics(active_profile());
+        let material_min = profile_metrics(ControlMetricsProfile::Material).button_min.height;
+        let vertical_air = profile.button_min.height.saturating_sub(content_height) / 2;
+        let padding_v = if profile.button_min.height < material_min {
+            vertical_air
+        } else {
+            dimensions::BUTTON_PADDING_V
+        };
         ControlMetrics::implicit_size(
             Size::new(content_width, content_height),
-            EdgeOffsets::symmetric(dimensions::BUTTON_PADDING_V, dimensions::BUTTON_PADDING_H),
-            dimensions::BUTTON_MIN,
+            EdgeOffsets::symmetric(padding_v, dimensions::BUTTON_PADDING_H),
+            profile.button_min,
         )
     }
 
@@ -333,12 +352,12 @@ impl Button {
     /// Setting it also requests a redraw, because the flag is now something that changes what is
     /// painted over an animation rather than only at the next event.
     pub fn set_hovered(&mut self, hovered: bool) {
-        // Delegate to the trait default, which writes the flag **and** re-resolves the theme for
-        // `button:hover`. This inherent method shadows the trait's default implementation, so an
-        // early return plus a plain field write would make the key unreachable for this control
-        // while the default covered the other 187 — the exact drift the shared default exists to
-        // prevent. The fully qualified `<dyn Widget>` names the default through the trait object,
-        // and the default's own early return is what keeps a repeated `MouseMove` cheap.
+        // Delegate to the trait implementation, which writes the flag **and** re-resolves the
+        // theme for `button:hover`; this control's implementation submits a narrow repaint.
+        // This inherent method shadows the trait method, so an early return plus a plain field
+        // write would make the key unreachable for this control. The fully qualified
+        // `<dyn Widget>` names the implementation through the trait object, and its early
+        // return is what keeps a repeated `MouseMove` cheap.
         <dyn Widget>::set_hovered(self, hovered);
     }
     /// Advances the interaction transition by `delta_ms` and reports whether another frame is needed.
@@ -396,7 +415,7 @@ impl Button {
         if !self.base.is_enabled() {
             return;
         }
-        // The trait default carries both the field write and the theme re-resolution for
+        // The trait implementation carries both the field write and the theme re-resolution for
         // `button:pressed`; see `Button::set_hovered` for why an inherent method must delegate
         // through the trait object rather than writing the field itself.
         <dyn Widget>::set_pressed(self, pressed);
@@ -410,7 +429,7 @@ impl Button {
             self.released_signal.emit();
         }
         self.state_changed.emit(self.state());
-        self.base.request_redraw();
+        self.request_frame_repaint(None);
     }
     /// Begins a gesture: takes the grab and marks the control pressed.
     ///
@@ -564,6 +583,60 @@ impl Button {
         self.release();
         self.base.clicked.emit();
     }
+
+    /// Submits one animated or interactive frame as damage bounded by the painted box
+    /// plus the focus-ring and halo margin.
+    ///
+    /// `bounds` is `Some` only when the caller already has the rectangle; interaction
+    /// paths pass `None` and let the runtime derive the box.
+    ///
+    /// A control that is unmounted falls back to [`BaseWidget::request_redraw`], which
+    /// keeps the redraw signal contract for host-owned controls. An interaction frame in
+    /// [`crate::widget::runtime::RepaintMode::Full`] still routes through
+    /// [`crate::widget::runtime::request_repaint_rect`], whose documented fallback repaints
+    /// the whole control.
+    fn request_frame_repaint(&self, bounds: Option<Rect>) {
+        let _ = bounds;
+        #[cfg(not(alloc_frugal))]
+        {
+            if let Some(id) = crate::widget::runtime::registry_id_of(self.id()) {
+                let narrow = crate::widget::runtime::repaint_mode(id)
+                    != crate::widget::runtime::RepaintMode::Full;
+                // Interaction paths may take the whole-control fallback in `Full`;
+                // `bounds` lets a caller that already has the rectangle skip the lookup.
+                if narrow || bounds.is_none() {
+                    let damage = bounds
+                        .or_else(|| crate::widget::runtime::painted_box_with_damage_margin(id))
+                        .unwrap_or_else(|| self.damage_bounds());
+                    crate::widget::runtime::request_repaint_rect(id, damage);
+                    // The replaced `request_redraw` emitted this signal; keep it.
+                    self.base.redraw_requested.emit();
+                    return;
+                }
+            }
+        }
+        self.base.request_redraw();
+    }
+
+    /// This control's own rectangle grown by
+    /// [`crate::widget::metrics::DAMAGE_MARGIN`].
+    ///
+    /// Used when the runtime cannot read the mounted geometry back, which is the case
+    /// while an interaction event holds the control out of the registry. Deriving the
+    /// rectangle from `Widget::geometry` yields the same answer the runtime returns for
+    /// the mounted control.
+    #[cfg(not(alloc_frugal))]
+    fn damage_bounds(&self) -> Rect {
+        let rect = self.geometry();
+        let margin = crate::widget::metrics::DAMAGE_MARGIN;
+        let offset = margin as i32;
+        Rect::new(
+            rect.x.saturating_sub(offset),
+            rect.y.saturating_sub(offset),
+            rect.width.saturating_add(margin).saturating_add(margin),
+            rect.height.saturating_add(margin).saturating_add(margin),
+        )
+    }
 }
 impl Widget for Button {
     /// Resolves the published event names this control emits to their signals.
@@ -616,6 +689,32 @@ impl Widget for Button {
 
     fn set_enabled(&mut self, enabled: bool) {
         self.set_enabled_state(enabled);
+    }
+
+    /// Sets hover and repaints only the area this control can change.
+    ///
+    /// The flag write and theme re-resolution match the trait default; the repaint is
+    /// the narrow one, so a hover does not invalidate the whole control.
+    fn set_hovered(&mut self, hovered: bool) {
+        if self.base.is_hovered() == hovered {
+            return;
+        }
+        self.base.set_hovered(hovered);
+        self.set_state_theme_hook();
+        self.request_frame_repaint(None);
+    }
+
+    /// Sets pressed and repaints only the area this control can change.
+    ///
+    /// The flag write and theme re-resolution match the trait default; the repaint is
+    /// the narrow one, so a press does not invalidate the whole control.
+    fn set_pressed(&mut self, pressed: bool) {
+        if self.base.is_pressed() == pressed {
+            return;
+        }
+        self.base.set_pressed(pressed);
+        self.set_state_theme_hook();
+        self.request_frame_repaint(None);
     }
 
     fn size_hint(&self) -> Size {
@@ -870,7 +969,7 @@ impl EventHandler for Button {
                 self.click();
             }
             Event::MouseEnter { .. } => {
-                self.base.request_redraw();
+                self.request_frame_repaint(None);
             }
             Event::MouseLeave { .. } => {
                 // A pointer that leaves while held abandons the painted pressed state,
@@ -879,7 +978,7 @@ impl EventHandler for Button {
                 // complete. Only the release, wherever it lands, ends the gesture and
                 // decides the outcome.
                 self.set_pressed(false);
-                self.base.request_redraw();
+                self.request_frame_repaint(None);
             }
             _ => { /* Other events are not relevant */ }
         }
@@ -957,7 +1056,18 @@ impl Draw for Button {
             };
             bg.blend(&interactive, progress)
         };
-        let br = style.border_radius.unwrap_or(0);
+        // The corner radius is a profile shape token, not a second colour fact. A radius the
+        // caller or the theme actually chose is honoured; the Material baseline is the generic
+        // theme radius rather than a button-specific choice, so it follows the active profile
+        // instead — 6 px on macOS, Material's own 4 everywhere else. An unset radius keeps
+        // drawing square, which is what a control with no theme has always done.
+        let material_baseline = profile_metrics(ControlMetricsProfile::Material).button_radius;
+        let profile = profile_metrics(active_profile());
+        let br = match style.border_radius {
+            Some(radius) if radius != material_baseline => radius,
+            Some(_) => profile.button_radius,
+            None => 0,
+        };
         // ── The face ──
         //
         // The fill, the bevel and the outline are painted in one call, because they are one
@@ -1133,15 +1243,34 @@ impl Draw for Button {
         // drawing a ring, Tab and Shortcut draw one. This is the standard rule
         // for visual focus, and it is why `Button` carries a `FocusReason` rather than
         // a bare `focused` bool.
+        //
+        // The macOS metrics profile asks for AppKit's outer accent halo instead of the inset
+        // stroke. Both are selected here so the two styles cannot be mixed up: every other
+        // profile keeps the inset ring byte for byte, which is what preserves the Material
+        // snapshot.
         if self.visual_focus() {
-            let ring = FocusRing::for_control(rect, br);
-            if ring.is_drawable() {
-                context.draw_rounded_rect_stroke(
-                    ring.rect,
-                    ring.radius,
-                    focus_ring_color(bg.contrast_color()),
-                    FOCUS_RING_WIDTH,
-                );
+            if active_profile() == ControlMetricsProfile::Macos {
+                let halo = FocusRing::halo_for_control(rect, br);
+                if halo.is_drawable() {
+                    context.draw_box_shadow(
+                        halo.rect,
+                        focus_ring_color(bg.contrast_color()),
+                        0,
+                        0,
+                        FOCUS_HALO_BLUR_RADIUS,
+                        1,
+                    );
+                }
+            } else {
+                let ring = FocusRing::for_control(rect, br);
+                if ring.is_drawable() {
+                    context.draw_rounded_rect_stroke(
+                        ring.rect,
+                        ring.radius,
+                        focus_ring_color(bg.contrast_color()),
+                        FOCUS_RING_WIDTH,
+                    );
+                }
             }
         }
     }
@@ -1885,6 +2014,146 @@ mod tests {
         }
     }
 
+    /// The Material metrics profile keeps the inset stroke exactly as it was.
+    ///
+    /// Focus-ring styling is now selected by the theme's metrics profile, so this is the
+    /// regression guard that the default profile did not acquire the macOS halo. The inner
+    /// ring is a 2 px stroke and no box-blur filter is emitted.
+    #[test]
+    fn a_material_focused_button_keeps_the_inset_ring() {
+        let _theme_guard = crate::style::theme_test_guard();
+        assert!(crate::theme::global_theme_manager().set_theme("default"));
+
+        let mut b = make_button();
+        b.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
+        let svg = crate::widget::svg::render_to_svg(&mut b);
+        assert!(
+            svg.contains(&format!("stroke-width=\"{FOCUS_RING_WIDTH}\"")),
+            "the Material profile must keep the inset ring stroke: {svg}"
+        );
+        assert!(
+            !svg.contains("shadow_blur_"),
+            "the Material profile must not acquire the macOS halo: {svg}"
+        );
+    }
+
+    /// A theme on the macOS metrics profile draws the focus ring outside the control.
+    ///
+    /// AppKit's focus indicator is a blurred accent glow around the control, not an inset
+    /// stroke. The halo goes through the renderer's existing box-blur command, so the marker
+    /// to assert is the emitted blur filter (and the absence of the 2 px inset stroke).
+    #[cfg(device_profile)]
+    #[test]
+    fn a_macos_focused_button_draws_an_outer_halo() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut theme = crate::theme::Theme::default();
+        theme.name = "p2-1-macos".to_string();
+        theme.metrics_profile = ControlMetricsProfile::Macos;
+        {
+            let mut manager = crate::theme::global_theme_manager();
+            manager.register_theme(theme);
+            assert!(manager.set_theme("p2-1-macos"));
+        }
+
+        let mut b = make_button();
+        b.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
+        let svg = crate::widget::svg::render_to_svg(&mut b);
+        assert!(
+            svg.contains(&format!("shadow_blur_{FOCUS_HALO_BLUR_RADIUS}")),
+            "the macOS profile must draw the halo through the box-blur primitive: {svg}"
+        );
+        assert!(
+            !svg.lines().any(|line| line.contains("<rect") && line.contains("stroke-width=\"2\"")),
+            "the halo replaces the inset stroke rather than joining it: {svg}"
+        );
+
+        assert!(crate::theme::global_theme_manager().set_theme("default"));
+    }
+
+    /// The Material metrics profile is the existing constant table, applied to the control.
+    ///
+    /// This is the regression guard for the default appearance: the button's hint is the old
+    /// `64x40` floor and the painted face keeps the old 4 px radius.
+    #[test]
+    fn the_material_profile_keeps_the_button_constants() {
+        let _theme_guard = crate::style::theme_test_guard();
+        assert!(crate::theme::global_theme_manager().set_theme("default"));
+
+        let mut b = Button::new("Go".into(), Rect::new(0, 0, 200, 40));
+        crate::theme::apply_active_theme(&mut b);
+        let hint = b.implicit_size();
+        let svg = crate::widget::svg::render_to_svg(&mut b);
+
+        assert_eq!(hint.width, dimensions::BUTTON_MIN.width, "the old width floor: {hint:?}");
+        assert_eq!(hint.height, dimensions::BUTTON_MIN.height, "the old height floor: {hint:?}");
+        assert!(
+            svg.contains("rx=\"4\""),
+            "Material keeps the old 4 px radius rather than acquiring a profile shape: {svg}"
+        );
+    }
+
+    /// A Macos-profile theme draws the shorter, rounder macOS push button.
+    ///
+    /// The floor is `64x28`, and the corner radius follows the profile's shape token rather
+    /// than the theme's generic border radius. The height assertion is the load-bearing one:
+    /// the profile's floor must also own the vertical air, or Material's 8 px padding would
+    /// push the content-plus-padding term past 28 and the profile would be invisible.
+    #[cfg(device_profile)]
+    #[test]
+    fn a_macos_profile_theme_shortens_and_rounds_the_button() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut theme = crate::theme::Theme::default();
+        theme.name = "p2-6-button-macos".to_string();
+        theme.metrics_profile = ControlMetricsProfile::Macos;
+        {
+            let mut manager = crate::theme::global_theme_manager();
+            manager.register_theme(theme);
+            assert!(manager.set_theme("p2-6-button-macos"));
+        }
+
+        let mut b = make_button();
+        crate::theme::apply_active_theme(&mut b);
+        let hint = b.implicit_size();
+        let svg = crate::widget::svg::render_to_svg(&mut b);
+        assert!(crate::theme::global_theme_manager().set_theme("default"));
+
+        assert_eq!(hint.height, 28, "macOS's push button is 28 px tall: {hint:?}");
+        assert_eq!(
+            hint.width,
+            dimensions::BUTTON_MIN.width,
+            "the profile keeps Material's width floor: {hint:?}"
+        );
+        assert!(
+            svg.contains("rx=\"6\""),
+            "the profile's 6 px radius reaches the painted face: {svg}"
+        );
+    }
+
+    /// The Cupertino profile keeps the Material button row unchanged.
+    #[cfg(device_profile)]
+    #[test]
+    fn the_cupertino_profile_keeps_the_button_constants() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut theme = crate::theme::Theme::default();
+        theme.name = "p2-6-button-cupertino".to_string();
+        theme.metrics_profile = ControlMetricsProfile::Cupertino;
+        {
+            let mut manager = crate::theme::global_theme_manager();
+            manager.register_theme(theme);
+            assert!(manager.set_theme("p2-6-button-cupertino"));
+        }
+
+        let mut b = Button::new("Go".into(), Rect::new(0, 0, 200, 40));
+        crate::theme::apply_active_theme(&mut b);
+        let hint = b.implicit_size();
+        let svg = crate::widget::svg::render_to_svg(&mut b);
+        assert!(crate::theme::global_theme_manager().set_theme("default"));
+
+        assert_eq!(hint.width, dimensions::BUTTON_MIN.width, "Cupertino is the Material row");
+        assert_eq!(hint.height, dimensions::BUTTON_MIN.height);
+        assert!(svg.contains("rx=\"4\""), "and the Material radius: {svg}");
+    }
+
     /// A **default** button is drawn differently, and a normal one is untouched.
     ///
     /// # The defect this pins
@@ -2494,6 +2763,11 @@ mod tests {
     /// sizes, so a part that gets wider pushes the rest along rather than overlapping it.
     #[test]
     fn the_implicit_size_is_the_icon_and_the_label_on_one_line() {
+        // The assertions are the Material floor, so a concurrent test that activates the
+        // Macos profile must not change what this control reports.
+        let _theme_guard = crate::style::theme_test_guard();
+        assert!(crate::theme::global_theme_manager().set_theme("default"));
+
         let empty = Button::new(String::new(), Rect::new(0, 0, 200, 40));
         let short = Button::new("Go".into(), Rect::new(0, 0, 200, 40));
         let long = Button::new("Go somewhere much further".into(), Rect::new(0, 0, 200, 40));
@@ -2558,6 +2832,9 @@ mod tests {
     /// wide button from being drawn as a wide pill: the reported height is what it paints.
     #[test]
     fn the_hint_height_is_the_height_painted() {
+        // `implicit_size` reads the active metrics profile, which is theme state; hold the
+        // crate-wide guard so a neighbouring appearance switch cannot change the answer.
+        let _guard = crate::style::theme_test_guard();
         let b = make_button();
         let hint = b.implicit_size();
         // A census cell is far taller than a button; the drawn box must be the hint, not the cell.
@@ -2714,5 +2991,59 @@ mod tests {
     fn ink_width(button: &mut Button) -> i32 {
         let svg = crate::widget::svg::render_to_svg(button);
         crate::widget::svg::text_ink_box(&svg).map(|(x, _, right, _)| right - x).unwrap_or(0)
+    }
+
+    /// A hover frame submits damage bounded by the painted box and the margin.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_hover_frame_submits_the_painted_box_with_the_damage_margin() {
+        use crate::widget::runtime;
+
+        let id = runtime::register(crate::compat::Box::new(Button::new(
+            "Go".to_string(),
+            Rect::new(4, 8, 80, 32),
+        )))
+        .expect("registry");
+        assert!(runtime::set_repaint_mode(id, runtime::RepaintMode::Dirty));
+
+        assert!(runtime::dispatch_event(id, &Event::mouse_enter(1, 1)));
+
+        let expected = runtime::painted_box_with_damage_margin(id).expect("painted box");
+        assert_eq!(
+            runtime::dirty_rects(id),
+            vec![expected],
+            "a hover must damage the painted box plus the margin"
+        );
+        runtime::unregister(id);
+    }
+
+    /// `Full` keeps the whole-control path and records no damage rectangle.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_hover_frame_in_full_mode_keeps_the_whole_control_repaint() {
+        use crate::platform::RecordingInvalidations;
+        use crate::widget::runtime;
+
+        let id = runtime::register(crate::compat::Box::new(Button::new(
+            "Go".to_string(),
+            Rect::new(4, 8, 80, 32),
+        )))
+        .expect("registry");
+        assert_eq!(runtime::repaint_mode(id), runtime::RepaintMode::Full);
+
+        // A recorder that accepts narrowed repaints proves the control did not offer one:
+        // the `Full` arm falls back to the whole-control invalidation.
+        let log: &'static RecordingInvalidations =
+            Box::leak(Box::new(RecordingInvalidations::new()));
+        let dispatched = crate::platform::with_recorded_invalidations(log, || {
+            runtime::dispatch_event(id, &Event::mouse_enter(1, 1))
+        });
+        assert!(dispatched);
+        assert_eq!(log.calls(), vec![(id, None)], "Full mode keeps the whole-control repaint");
+        assert!(
+            runtime::dirty_rects(id).is_empty(),
+            "Full mode records no damage, so the control repaints whole"
+        );
+        runtime::unregister(id);
     }
 }

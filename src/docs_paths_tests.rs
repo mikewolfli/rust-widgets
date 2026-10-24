@@ -226,7 +226,7 @@ fn published_os_capability_matrix_matches_the_trait_default() {
         ("windows", PlatformFamily::Desktop, true, true, true, false),
         ("macos", PlatformFamily::Desktop, false, true, true, false),
         ("linux-gtk", PlatformFamily::Desktop, true, true, true, false),
-        // Wayland answers `dpi_scale_factor()` from `GDK_SCALE`/`QT_SCALE_FACTOR` (so `dpi_scaling`
+        // Wayland answers `dpi_scale_factor()` from `GDK_SCALE`/`scale factor` (so `dpi_scaling`
         // is honest) but overrides neither `ime_bridge()` nor `accessibility_bridge()`: there is no
         // Wayland `text-input` binding and no Wayland a11y bridge in this crate, so both flags would
         // promise a method that answers `None`.

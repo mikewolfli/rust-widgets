@@ -113,6 +113,52 @@ pub enum BlendMode {
     Luminosity,
 }
 
+/// What a [`RenderCommand::PushLayer`] does with the backdrop it captured.
+///
+/// A layer is a pure 2D composition primitive: the commands between `PushLayer` and
+/// `PopLayer` are drawn into their own region, and the backdrop captured at the push is
+/// processed before the two are composited again. Nothing here depends on the `3d` feature,
+/// so a material can be drawn in a build that has no matrix pipeline at all.
+///
+/// The blur radius is a Gaussian's 2-sigma point, the same convention
+/// [`RenderCommand::Blur`] and the box-shadow blur use, so a material and a shadow that
+/// declare the same radius are equally soft.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LayerEffect {
+    /// Blur the captured backdrop and composite the layer's foreground over it.
+    BackdropBlur {
+        /// Blur radius in pixels; `0` leaves the backdrop sharp.
+        radius: u32,
+    },
+    /// Blur the captured backdrop, tint it, and composite the foreground over the result.
+    BackdropBlurTint {
+        /// Blur radius in pixels; `0` tints the sharp backdrop.
+        radius: u32,
+        /// Colour laid over the blurred backdrop.
+        tint: Color,
+        /// How strongly `tint` replaces the backdrop, in `0.0..=1.0`. Values outside the
+        /// range are clamped, and a non-finite value is treated as `0.0`.
+        tint_weight: f32,
+    },
+}
+
+impl LayerEffect {
+    /// The blur radius this effect requests, in pixels.
+    pub fn radius(self) -> u32 {
+        match self {
+            Self::BackdropBlur { radius } | Self::BackdropBlurTint { radius, .. } => radius,
+        }
+    }
+
+    /// The tint and its weight, or `None` for an untinted blur.
+    pub fn tint(self) -> Option<(Color, f32)> {
+        match self {
+            Self::BackdropBlur { .. } => None,
+            Self::BackdropBlurTint { tint, tint_weight, .. } => Some((tint, tint_weight)),
+        }
+    }
+}
+
 /// Draw command recorded by a render layer.
 #[derive(Debug, Clone)]
 pub enum RenderCommand {
@@ -122,6 +168,55 @@ pub enum RenderCommand {
         rect: Rect,
         /// Fill color.
         color: Color,
+    },
+    /// Fill the quadrilateral spanned by `corners` with `color`.
+    ///
+    /// Corners are in logical pixels, in perimeter order. A back end fills the shape the
+    /// four points enclose rather than the axis-aligned box around them, which is what lets
+    /// an affine transform (feature `3d`) rotate or shear a rectangle without reducing it
+    /// to its bounding box. A degenerate or self-intersecting set of corners has no
+    /// well-defined interior and may draw nothing.
+    #[cfg(feature = "3d")]
+    FillQuad {
+        /// Quadrilateral vertices in logical pixels, in perimeter order.
+        corners: [Point; 4],
+        /// Fill color.
+        color: Color,
+    },
+    /// Outline the quadrilateral spanned by `corners`.
+    ///
+    /// The stroked counterpart of [`RenderCommand::FillQuad`]: a rectangle whose corners an
+    /// affine transform moved is no longer a rectangle, so a stroked `DrawRectStroke` under a
+    /// rotation has to become four connected edges rather than the outline of the bounding box.
+    /// The stroke width is in destination pixels and does not scale with the transform, matching
+    /// [`RenderCommand::DrawLineStroke`].
+    #[cfg(feature = "3d")]
+    StrokeQuad {
+        /// Quadrilateral vertices in logical pixels, in perimeter order.
+        corners: [Point; 4],
+        /// Stroke color.
+        color: Color,
+        /// Stroke width in pixels; a zero width draws nothing.
+        width: u32,
+    },
+    /// Draw an image mapped onto the quadrilateral spanned by `corners`.
+    ///
+    /// `width` and `height` describe the **source** pixel grid, which is also the grid the
+    /// image occupied before the transform: the batch path builds an image from the rectangle's
+    /// own width and height, so the two agree. `corners` are the destination positions of that
+    /// grid's top-left, top-right, bottom-right and bottom-left corners. An affine transform
+    /// maps a rectangle to a parallelogram, which is exactly what the inverse mapping in the
+    /// software backend solves; a projective quad is not expressible here.
+    #[cfg(feature = "3d")]
+    DrawImageQuad {
+        /// Destination corners in logical pixels, in perimeter order.
+        corners: [Point; 4],
+        /// Source image width in pixels.
+        width: u32,
+        /// Source image height in pixels.
+        height: u32,
+        /// RGBA pixel data (4 bytes per pixel).
+        data: Vec<u8>,
     },
     /// Outline the rectangle `rect` with a one-pixel-wide stroke.
     DrawRect {
@@ -322,6 +417,26 @@ pub enum RenderCommand {
     },
     /// Pop the top clipping rectangle from the clip stack.
     PopClip,
+    /// Begin a composed layer inside `bounds`.
+    ///
+    /// The current surface region is captured as the layer's backdrop and the region is
+    /// cleared, so every command until the matching [`RenderCommand::PopLayer`] paints only
+    /// the layer's foreground. On the pop, `effect` is applied to the captured backdrop and
+    /// the foreground is composited over it. Layers nest, and an unbalanced pop is ignored
+    /// rather than closing someone else's layer.
+    ///
+    /// This is deliberately **not** gated on `3d`: material/vibrancy composition is a 2D
+    /// capability, and a build without the matrix pipeline must still draw a blurred
+    /// backdrop.
+    PushLayer {
+        /// Region of the surface the layer covers, in logical pixels.
+        bounds: Rect,
+        /// How to process the captured backdrop, or `None` to draw the foreground directly over
+        /// the untouched backdrop.
+        effect: Option<LayerEffect>,
+    },
+    /// End the innermost [`RenderCommand::PushLayer`] and composite it.
+    PopLayer,
     /// Draw a filled gradient rectangle.
     DrawGradient {
         /// Region to fill in logical pixels.

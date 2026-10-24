@@ -35,6 +35,14 @@ pub struct BaseWidget {
     pub(crate) object: Object,
     pub(crate) kind: WidgetKind,
     pub(crate) geometry: Rect,
+    /// Settled item-level affine matrix, compiled only with the `3d` feature.
+    ///
+    /// The matrix is the transform applied to this control's own drawing, not to its
+    /// children or its hit-test rectangle. It is stored in the same representation the batch
+    /// replay stack accepts, so a control can record it as `PushTransform` without a second
+    /// conversion.
+    #[cfg(feature = "3d")]
+    pub(crate) item_transform: crate::render::math3d::Mat3,
     pub(crate) min_size: Option<Size>,
     pub(crate) max_size: Option<Size>,
     pub(crate) parent: Option<ObjectId>,
@@ -172,6 +180,8 @@ impl BaseWidget {
             object: Object::new(class_name),
             kind,
             geometry,
+            #[cfg(feature = "3d")]
+            item_transform: crate::render::math3d::Mat3::IDENTITY,
             min_size: None,
             max_size: None,
             parent: None,
@@ -220,29 +230,98 @@ impl BaseWidget {
     pub fn geometry(&self) -> Rect {
         self.geometry
     }
-    /// Replaces the widget's rectangle.
+    /// Replaces the widget's rectangle, clamped to its declared size bounds.
     ///
-    /// Purely stores the value — no clamping against `min_size`/`max_size`, and
-    /// no redraw or layout is requested, so callers that need one must ask for it
-    /// via [`Self::request_redraw`].
+    /// `min_size`/`max_size` are no longer advisory (C11=A): the layout's
+    /// [`crate::widget::Widget::hints`] reports them, and this setter enforces the same
+    /// bounds on direct writes so a programmatic resize cannot bypass them. The position
+    /// is never clamped — only the extent — and no redraw or layout is requested, so
+    /// callers that need one must ask for it via [`Self::request_redraw`].
     pub fn set_geometry(&mut self, geometry: Rect) {
+        let mut geometry = geometry;
+        if let Some(min) = self.min_size {
+            geometry.width = geometry.width.max(min.width);
+            geometry.height = geometry.height.max(min.height);
+        }
+        if let Some(max) = self.max_size {
+            // A contradictory declaration is a caller bug, not a value to silently choose
+            // between: report it in debug builds and let the maximum win in release so a
+            // widget can never be forced to an impossible size.
+            debug_assert!(
+                self.min_size.map(|min| min.width <= max.width && min.height <= max.height)
+                    != Some(false),
+                "min_size must not exceed max_size"
+            );
+            geometry.width = geometry.width.min(max.width);
+            geometry.height = geometry.height.min(max.height);
+        }
         self.geometry = geometry;
     }
-    /// The minimum size hint, or `None` when unset. Advisory only.
+
+    /// Sets the item-level affine used by the control's own drawing (`3d` feature only).
+    ///
+    /// `origin` is the rotation/scale centre in the control's local pixel coordinates.
+    /// Rotation is in radians; a positive angle turns the local x axis toward the local y
+    /// axis, which reads as clockwise in the render coordinate system (y grows downward).
+    /// A negative scale mirrors that axis.
+    ///
+    /// # Reduced motion
+    ///
+    /// The matrix is installed as the **settled** state in the same call; there is no
+    /// in-between value in this API. That is precisely the reduced-motion contract, so a
+    /// first frame under [`crate::style::environment::EnvironmentSnapshot::prefers_reduced_motion`]
+    /// already shows the final transform. A caller that animates towards a transform must
+    /// interpolate its own parameters and call this once with the final values when reduced
+    /// motion is on.
+    #[cfg(feature = "3d")]
+    pub fn set_item_transform(&mut self, rotation_radians: f32, scale: (f32, f32), origin: Point) {
+        // A non-finite parameter would poison every mapped point (and a NaN rectangle draws
+        // nothing), so it is replaced by the identity value for that parameter rather than
+        // stored as-is.
+        let rotation = if rotation_radians.is_finite() { rotation_radians } else { 0.0 };
+        let scale_x = if scale.0.is_finite() { scale.0 } else { 1.0 };
+        let scale_y = if scale.1.is_finite() { scale.1 } else { 1.0 };
+        let origin_x = origin.x as f32;
+        let origin_y = origin.y as f32;
+
+        // Translate the origin to zero, scale and rotate there, then translate it back.
+        self.item_transform = crate::render::math3d::Mat3::translation(-origin_x, -origin_y)
+            .then(&crate::render::math3d::Mat3::scaling(scale_x, scale_y))
+            .then(&crate::render::math3d::Mat3::rotation(rotation))
+            .then(&crate::render::math3d::Mat3::translation(origin_x, origin_y));
+    }
+
+    /// The settled item matrix, in the representation [`crate::render::BatchCommand::PushTransform`]
+    /// accepts.
+    ///
+    /// Recording it on the batch replay stack applies the control's own rotation and scale to
+    /// every primitive in the batch. It is the identity until [`Self::set_item_transform`] is
+    /// called.
+    #[cfg(feature = "3d")]
+    pub fn item_transform(&self) -> crate::render::math3d::Mat3 {
+        self.item_transform
+    }
+    /// The minimum size, or `None` when unset. Enforced by `set_geometry` and reported
+    /// through [`crate::widget::Widget::hints`].
     pub fn min_size(&self) -> Option<Size> {
         self.min_size
     }
-    /// The maximum size hint, or `None` when unset. Advisory only.
+    /// The maximum size, or `None` when unset. Enforced by `set_geometry` and reported
+    /// through [`crate::widget::Widget::hints`].
     pub fn max_size(&self) -> Option<Size> {
         self.max_size
     }
-    /// Sets the minimum size hint; `None` clears it. Not enforced by this type,
-    /// and not validated against the maximum.
+    /// Sets the minimum size; `None` clears it.
+    ///
+    /// The bound is enforced by [`Self::set_geometry`] and consumed by
+    /// `Widget::hints`, so a layout is told the same floor the widget enforces itself.
     pub fn set_min_size(&mut self, min_size: Option<Size>) {
         self.min_size = min_size;
     }
-    /// Sets the maximum size hint; `None` clears it. Not enforced here, and not
-    /// validated against the minimum.
+    /// Sets the maximum size; `None` clears it.
+    ///
+    /// The bound is enforced by [`Self::set_geometry`] and consumed by
+    /// `Widget::hints`, so a layout is told the same ceiling the widget enforces itself.
     pub fn set_max_size(&mut self, max_size: Option<Size>) {
         self.max_size = max_size;
     }
@@ -1194,6 +1273,26 @@ mod tests {
     }
 
     #[test]
+    fn set_geometry_enforces_the_declared_bounds() {
+        let mut bw = make_base();
+        bw.set_min_size(Some(Size::new(50, 20)));
+        bw.set_geometry(Rect::new(10, 10, 10, 5));
+        assert_eq!(
+            bw.geometry(),
+            Rect::new(10, 10, 50, 20),
+            "the minimum must win over a smaller direct write"
+        );
+
+        bw.set_max_size(Some(Size::new(100, 40)));
+        bw.set_geometry(Rect::new(10, 10, 500, 500));
+        assert_eq!(
+            bw.geometry(),
+            Rect::new(10, 10, 100, 40),
+            "the maximum must win over a larger direct write"
+        );
+    }
+
+    #[test]
     fn test_parent_and_children() {
         let mut bw = make_base();
         assert!(bw.parent().is_none());
@@ -1694,5 +1793,74 @@ mod tests {
         assert!(bw.draws_focus_ring(), "Tab paints a ring");
         bw.handle_event(&Event::FocusLost);
         assert!(bw.focus_reason().is_none(), "FocusLost clears the reason");
+    }
+
+    #[cfg(feature = "3d")]
+    #[test]
+    fn item_transform_is_identity_until_set() {
+        let bw = make_base();
+        assert_eq!(bw.item_transform().map_point(Point::new(7, 3)), Point::new(7, 3));
+    }
+
+    /// The item transform is origin-centred: a quarter turn about `(10, 10)` moves the point
+    /// `(20, 10)` to `(10, 20)` rather than rotating about the control's top-left corner.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn item_transform_rotates_and_scales_around_the_given_origin() {
+        let mut bw = make_base();
+        bw.set_item_transform(core::f32::consts::FRAC_PI_2, (1.0, 1.0), Point::new(10, 10));
+        assert_eq!(bw.item_transform().map_point(Point::new(20, 10)), Point::new(10, 20));
+
+        bw.set_item_transform(0.0, (2.0, 3.0), Point::new(0, 0));
+        assert_eq!(bw.item_transform().map_point(Point::new(4, 5)), Point::new(8, 15));
+    }
+
+    /// A non-finite rotation or scale must not poison the stored matrix.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn item_transform_rejects_non_finite_parameters() {
+        use crate::render::math3d::Mat3;
+
+        let mut bw = make_base();
+        bw.set_item_transform(f32::NAN, (1.0, 1.0), Point::new(0, 0));
+        assert_eq!(bw.item_transform(), Mat3::IDENTITY);
+
+        bw.set_item_transform(0.0, (f32::INFINITY, 1.0), Point::new(0, 0));
+        assert_eq!(bw.item_transform(), Mat3::IDENTITY);
+    }
+
+    /// Under reduced motion the first call must already be the final transform.
+    ///
+    /// The setter has no intermediate state, so this is also the property an animating caller
+    /// has to preserve: when the preference is on, it calls the setter once with the final
+    /// parameters instead of scheduling frames.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn item_transform_lands_on_the_final_matrix_under_reduced_motion() {
+        use crate::style::environment::{
+            install_environment, uninstall_environment, EnvironmentProvider, MotionPreference,
+        };
+
+        struct ReduceMotion;
+        impl EnvironmentProvider for ReduceMotion {
+            fn motion_preference(&self) -> MotionPreference {
+                MotionPreference::ReduceMotion
+            }
+        }
+
+        let previous = install_environment(crate::compat::Box::new(ReduceMotion));
+        let mut bw = make_base();
+        bw.set_item_transform(core::f32::consts::FRAC_PI_2, (1.0, 1.0), Point::new(10, 10));
+        let mapped = bw.item_transform().map_point(Point::new(20, 10));
+        match previous {
+            Some(previous) => {
+                install_environment(previous);
+            }
+            None => {
+                uninstall_environment();
+            }
+        }
+
+        assert_eq!(mapped, Point::new(10, 20), "the first call must land on the final matrix");
     }
 }

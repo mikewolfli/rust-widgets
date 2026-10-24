@@ -318,7 +318,21 @@ pub fn draw_legend(
     layout: &CartesianLayout,
     series: &[&ChartSeries],
 ) {
-    if series.is_empty() {
+    draw_legend_rows(context, layout, series.iter().copied(), series.len());
+}
+
+/// Shared legend body: an iterator keeps the visible-series filter allocation-free.
+///
+/// The four cartesian charts previously collected `Vec<&ChartSeries>` on every paint
+/// just to hand it to [`draw_legend`]. They now pass their filtered iterator here, so
+/// a frame with a stable series list allocates nothing for the legend.
+fn draw_legend_rows<'a>(
+    context: &mut dyn ChartContext,
+    layout: &CartesianLayout,
+    series: impl Iterator<Item = &'a ChartSeries>,
+    visible_count: usize,
+) {
+    if visible_count == 0 {
         return;
     }
     // Keep one legend row roughly every 18 px and reserve one row for overflow summary.
@@ -326,7 +340,7 @@ pub fn draw_legend(
     let max_items = max_rows.saturating_sub(1).max(1);
     let max_label_chars = 20usize;
     let mut cursor_y = layout.legend_y;
-    for item in series.iter().take(max_items) {
+    for item in series.take(max_items) {
         context.draw_line(
             Point::from_f32(layout.legend_x, cursor_y),
             Point::from_f32(layout.legend_x + 20.0, cursor_y),
@@ -341,7 +355,7 @@ pub fn draw_legend(
         );
         cursor_y += 18.0;
     }
-    let hidden = series.len().saturating_sub(max_items);
+    let hidden = visible_count.saturating_sub(max_items);
     if hidden > 0 {
         // Reused buffer, not `format!`: this row repaints every frame while the
         // legend overflows, and the text never exceeds a handful of bytes.
@@ -357,25 +371,14 @@ pub fn draw_legend(
     }
 }
 /// Truncates a legend label to at most `max_chars` **characters** (not bytes),
-/// appending `"..."` when it has to cut.
+/// appending the shared `…` when it has to cut.
 ///
-/// The ellipsis is part of the budget, so a label is short enough to fit
-/// `max_chars`. When `max_chars` is 3 or fewer the result is exactly `"..."`,
-/// since there is no room to keep any of the label; the reserved space is still
-/// filled, so a zero-width column is not produced.
+/// Delegates to [`crate::widget::text_utils::elide_end`], the crate's single
+/// character-budget truncation primitive. The ellipsis is part of the budget, so the
+/// result is at most `max_chars` characters; a label that already fits is borrowed,
+/// which is the common case and allocates nothing per legend item per frame.
 pub fn truncate_legend_label(label: &str, max_chars: usize) -> Cow<'_, str> {
-    let char_count = label.chars().count();
-    if char_count <= max_chars {
-        // Borrowed: the common case is a label that fits, and it used to allocate a copy of
-        // every such label once per legend item per frame.
-        return Cow::Borrowed(label);
-    }
-    if max_chars <= 3 {
-        return Cow::Borrowed("...");
-    }
-    let kept = max_chars - 3;
-    let prefix = label.chars().take(kept).collect::<String>();
-    Cow::Owned(format!("{prefix}..."))
+    crate::widget::text_utils::elide_end(label, max_chars)
 }
 
 /// Builds the vertex ring approximating a pie/donut sector.
@@ -490,20 +493,19 @@ impl Chart for LineChart {
             14.0,
             axis_chrome_color(0.70),
         );
-        let visible_series: Vec<&ChartSeries> =
-            self.series.iter().filter(|series| series.visible).collect();
+        let visible_count = self.series.iter().filter(|series| series.visible).count();
         let layout = compute_cartesian_layout(
             rect,
             !self.x_axis_label.is_empty(),
             !self.y_axis_label.is_empty(),
-            visible_series.len(),
+            visible_count,
         );
         draw_cartesian_axes(context, &layout);
         let mut min_x = f64::MAX;
         let mut max_x = f64::MIN;
         let mut min_y = f64::MAX;
         let mut max_y = f64::MIN;
-        for series in &visible_series {
+        for series in self.series.iter().filter(|series| series.visible) {
             for point in &series.data {
                 min_x = min_x.min(point.x);
                 max_x = max_x.max(point.x);
@@ -537,7 +539,7 @@ impl Chart for LineChart {
                 axis_chrome_color(0.45),
             );
         }
-        for series in &visible_series {
+        for series in self.series.iter().filter(|series| series.visible) {
             if series.data.len() < 2 {
                 continue;
             }
@@ -558,7 +560,12 @@ impl Chart for LineChart {
                 );
             }
         }
-        draw_legend(context, &layout, &visible_series);
+        draw_legend_rows(
+            context,
+            &layout,
+            self.series.iter().filter(|series| series.visible),
+            visible_count,
+        );
     }
 }
 /// Bar chart
@@ -625,13 +632,12 @@ impl Chart for BarChart {
             14.0,
             axis_chrome_color(0.70),
         );
-        let visible_series: Vec<&ChartSeries> =
-            self.series.iter().filter(|series| series.visible).collect();
+        let visible_count = self.series.iter().filter(|series| series.visible).count();
         let layout = compute_cartesian_layout(
             rect,
             !self.x_axis_label.is_empty(),
             !self.y_axis_label.is_empty(),
-            visible_series.len(),
+            visible_count,
         );
         // # Why the axes are drawn before the empty check
         //
@@ -643,14 +649,14 @@ impl Chart for BarChart {
         // `ScatterChart`, `AreaChart`) already draw their axes first and then bail, so this also
         // removes the one inconsistency between them.
         draw_cartesian_axes(context, &layout);
-        if visible_series.is_empty() {
+        if visible_count == 0 {
             return;
         }
         let mut max_y = 1.0f64;
         let mut min_x = f64::MAX;
         let mut max_x = f64::MIN;
         let mut points_per_series = 0usize;
-        for series in &visible_series {
+        for series in self.series.iter().filter(|series| series.visible) {
             points_per_series = points_per_series.max(series.data.len());
             for point in &series.data {
                 max_y = max_y.max(point.y.max(1.0));
@@ -683,9 +689,10 @@ impl Chart for BarChart {
                 axis_chrome_color(0.45),
             );
         }
-        let point_slots = points_per_series.max(1) * visible_series.len();
+        let point_slots = points_per_series.max(1) * visible_count;
         let bar_width = (layout.plot_w / (point_slots as f32 + 1.0)).clamp(4.0, 24.0);
-        for (series_index, series) in visible_series.iter().enumerate() {
+        for (series_index, series) in self.series.iter().filter(|series| series.visible).enumerate()
+        {
             for point in &series.data {
                 let base_x = layout.plot_x
                     + (((point.x - min_x) / span_x) as f32) * (layout.plot_w - bar_width);
@@ -700,7 +707,12 @@ impl Chart for BarChart {
                 context.draw_rect(bar, series.color);
             }
         }
-        draw_legend(context, &layout, &visible_series);
+        draw_legend_rows(
+            context,
+            &layout,
+            self.series.iter().filter(|series| series.visible),
+            visible_count,
+        );
     }
 }
 /// Pie chart
@@ -883,20 +895,19 @@ impl Chart for ScatterChart {
             14.0,
             axis_chrome_color(0.70),
         );
-        let visible_series: Vec<&ChartSeries> =
-            self.series.iter().filter(|series| series.visible).collect();
+        let visible_count = self.series.iter().filter(|series| series.visible).count();
         let layout = compute_cartesian_layout(
             rect,
             !self.x_axis_label.is_empty(),
             !self.y_axis_label.is_empty(),
-            visible_series.len(),
+            visible_count,
         );
         draw_cartesian_axes(context, &layout);
         let mut min_x = f64::MAX;
         let mut max_x = f64::MIN;
         let mut min_y = f64::MAX;
         let mut max_y = f64::MIN;
-        for series in &visible_series {
+        for series in self.series.iter().filter(|series| series.visible) {
             for point in &series.data {
                 min_x = min_x.min(point.x);
                 max_x = max_x.max(point.x);
@@ -930,7 +941,7 @@ impl Chart for ScatterChart {
                 axis_chrome_color(0.45),
             );
         }
-        for series in &visible_series {
+        for series in self.series.iter().filter(|series| series.visible) {
             for point in &series.data {
                 let x = layout.plot_x + (((point.x - min_x) / span_x) as f32) * layout.plot_w;
                 let y = layout.plot_y + layout.plot_h
@@ -942,7 +953,12 @@ impl Chart for ScatterChart {
                 );
             }
         }
-        draw_legend(context, &layout, &visible_series);
+        draw_legend_rows(
+            context,
+            &layout,
+            self.series.iter().filter(|series| series.visible),
+            visible_count,
+        );
     }
 }
 /// Area chart
@@ -1015,16 +1031,21 @@ impl Chart for AreaChart {
             14.0,
             axis_chrome_color(0.70),
         );
-        let visible_series: Vec<&ChartSeries> =
-            self.series.iter().filter(|series| series.visible).collect();
+        let visible_count = self.series.iter().filter(|series| series.visible).count();
         let layout = compute_cartesian_layout(
             rect,
             !self.x_axis_label.is_empty(),
             !self.y_axis_label.is_empty(),
-            visible_series.len(),
+            visible_count,
         );
         draw_cartesian_axes(context, &layout);
-        let max_len = visible_series.iter().map(|s| s.data.len()).max().unwrap_or(0);
+        let max_len = self
+            .series
+            .iter()
+            .filter(|series| series.visible)
+            .map(|s| s.data.len())
+            .max()
+            .unwrap_or(0);
         let mut min_x = f64::MAX;
         let mut max_x = f64::MIN;
         let mut min_y = f64::MAX;
@@ -1032,7 +1053,7 @@ impl Chart for AreaChart {
 
         if self.stacked {
             let mut stacked_y_totals = vec![0.0f64; max_len];
-            for series in &visible_series {
+            for series in self.series.iter().filter(|series| series.visible) {
                 for (i, point) in series.data.iter().enumerate() {
                     if !point.x.is_finite() || !point.y.is_finite() {
                         continue;
@@ -1051,7 +1072,7 @@ impl Chart for AreaChart {
                 max_y = min_y + 1.0;
             }
         } else {
-            for series in &visible_series {
+            for series in self.series.iter().filter(|series| series.visible) {
                 for point in &series.data {
                     if !point.x.is_finite() || !point.y.is_finite() {
                         continue;
@@ -1090,64 +1111,57 @@ impl Chart for AreaChart {
             );
         }
         let baseline = layout.plot_y + layout.plot_h;
-        // Track accumulated y-values for stacking mode
-        let mut accum = vec![0.0_f64; max_len];
-        for series in &visible_series {
+        // Accumulated y-values for stacking mode. Only allocate when stacking is on: the
+        // common unstacked path used to pay for this buffer (and for a per-series
+        // `effective_y` vector) on every paint.
+        let mut accum = if self.stacked { vec![0.0_f64; max_len] } else { Vec::new() };
+        for series in self.series.iter().filter(|series| series.visible) {
             if series.data.len() < 2 {
                 continue;
             }
-            // Determine effective y-values for this series (stacked or raw)
-            let effective_y: Vec<f64> = if self.stacked {
-                series
-                    .data
-                    .iter()
-                    .enumerate()
-                    .map(|(i, p)| {
-                        let stacked_y = accum[i] + p.y;
-                        accum[i] = stacked_y;
-                        stacked_y
-                    })
-                    .collect()
-            } else {
-                series.data.iter().map(|p| p.y).collect()
-            };
-            // Build polygon from baseline up to data points, across, and back down
+            // Build the polygon from baseline up to data points, across, and back down.
+            // Stacked values are accumulated in place, so no `effective_y` vector is
+            // materialised per series per frame.
             let mut pts = Vec::with_capacity(series.data.len() * 2 + 2);
             let p0 = &series.data[0];
             let x0 = layout.plot_x + (((p0.x - min_x) / span_x) as f32) * layout.plot_w;
-            let y0 = baseline - (((effective_y[0] - min_y) / span_y) as f32) * layout.plot_h;
-            // Start at baseline below first point, go up to first point
+            let first_y = if self.stacked {
+                let stacked_y = accum[0] + p0.y;
+                accum[0] = stacked_y;
+                stacked_y
+            } else {
+                p0.y
+            };
+            let y0 = baseline - (((first_y - min_y) / span_y) as f32) * layout.plot_h;
             pts.push(Point::from_f32(x0, baseline));
             pts.push(Point::from_f32(x0, y0));
-            // Walk through intermediate data points
-            for (p, ey) in series.data.iter().zip(effective_y.iter()).skip(1) {
+            for (i, p) in series.data.iter().enumerate().skip(1) {
+                let effective_y = if self.stacked {
+                    let stacked_y = accum[i] + p.y;
+                    accum[i] = stacked_y;
+                    stacked_y
+                } else {
+                    p.y
+                };
                 let x = layout.plot_x + (((p.x - min_x) / span_x) as f32) * layout.plot_w;
-                let y = baseline - (((ey - min_y) / span_y) as f32) * layout.plot_h;
+                let y = baseline - (((effective_y - min_y) / span_y) as f32) * layout.plot_h;
                 pts.push(Point::from_f32(x, y));
             }
-            // Drop back down to baseline from last point
             let last = &series.data[series.data.len() - 1];
             let last_x = layout.plot_x + (((last.x - min_x) / span_x) as f32) * layout.plot_w;
             pts.push(Point::from_f32(last_x, baseline));
-            // Fill the enclosed area with semi-transparent color
             context.draw_polygon(&pts, series.color.with_alpha_f32(0.3));
-            // Overdraw the top line for visual clarity
-            for i in 1..series.data.len() {
-                let p1 = &series.data[i - 1];
-                let p2 = &series.data[i];
-                let x1 = layout.plot_x + (((p1.x - min_x) / span_x) as f32) * layout.plot_w;
-                let y1 =
-                    baseline - (((effective_y[i - 1] - min_y) / span_y) as f32) * layout.plot_h;
-                let x2 = layout.plot_x + (((p2.x - min_x) / span_x) as f32) * layout.plot_w;
-                let y2 = baseline - (((effective_y[i] - min_y) / span_y) as f32) * layout.plot_h;
-                context.draw_line(
-                    Point::from_f32(x1, y1),
-                    Point::from_f32(x2, y2),
-                    2.0,
-                    series.color,
-                );
+            // The top edge of the polygon is already the effective series line, so the
+            // overlay reuses those points instead of recomputing (or storing) the values.
+            for pair in pts[1..pts.len() - 1].windows(2) {
+                context.draw_line(pair[0], pair[1], 2.0, series.color);
             }
         }
-        draw_legend(context, &layout, &visible_series);
+        draw_legend_rows(
+            context,
+            &layout,
+            self.series.iter().filter(|series| series.visible),
+            visible_count,
+        );
     }
 }

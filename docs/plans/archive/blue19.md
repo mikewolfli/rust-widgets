@@ -357,7 +357,6 @@ pub struct EventSchema {
  pub name: &'static str,
  /// 载荷种类。`None` = 无载荷事件（`clicked`）；
  /// `Some(kind)` = 载荷按 `PropertyValueKind` 描述。
- ///
  /// 复用 `PropertyValueKind` 而非新造枚举：payload 与属性值走同一个
  /// JSON/类型转换管道，两套枚举必然漂移（原则 #54）。
  pub payload: Option<PropertyValueKind>,

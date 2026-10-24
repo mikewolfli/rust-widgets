@@ -15,6 +15,8 @@ use crate::render::{
 };
 
 use super::paint::{route_command_to_surface, PaintBackend, SoftwarePaintBackend};
+#[cfg(feature = "3d")]
+use crate::render::math3d::{Mat3, Transform, TransformStack, TRANSFORM_STACK_MAX};
 
 /// A zero-copy [`PaintBackend`] view over a borrowed [`SoftwareSurface`].
 ///
@@ -148,6 +150,21 @@ pub enum BatchCommand {
         /// Fill colour.
         color: Color,
     },
+    /// Save the current affine transform and compose `matrix` onto it.
+    ///
+    /// The saved transform is restored by [`BatchCommand::PopTransform`]. If the fixed-capacity
+    /// save stack is already full the command is dropped with a warning and the current matrix is
+    /// left untouched, so a malformed batch cannot abort a replay.
+    #[cfg(feature = "3d")]
+    PushTransform {
+        /// Local affine composed after the current transform.
+        matrix: Mat3,
+    },
+    /// Restore the affine transform saved by the matching [`BatchCommand::PushTransform`].
+    ///
+    /// An unbalanced pop leaves the current transform unchanged and logs a warning.
+    #[cfg(feature = "3d")]
+    PopTransform,
     /// Stroke a rectangular border.
     ///
     /// Translated by the active offset; `width` is in pixels and is truncated
@@ -401,8 +418,12 @@ impl BatchState {
     }
 }
 
-/// Accumulated transform state that tracks translation and opacity
-/// across consecutive [`BatchCommand`]s.
+/// Accumulated transform state that tracks translation, opacity and (with the `3d` feature)
+/// the current affine matrix across consecutive [`BatchCommand`]s.
+///
+/// With `3d` off the type is exactly the 2D state it has always been: two offsets and an
+/// opacity. The affine field and its save stack exist only in a `3d` build, which is what keeps
+/// the default binary unchanged.
 #[derive(Debug, Clone, Copy)]
 struct TransformState {
     /// Accumulated X offset.
@@ -411,10 +432,36 @@ struct TransformState {
     dy: f32,
     /// Accumulated opacity multiplier (1.0 = fully opaque).
     opacity: f32,
+    /// Current affine matrix, composed by `PushTransform`/`PopTransform`.
+    #[cfg(feature = "3d")]
+    matrix: Mat3,
+    /// Saved matrices for balanced `PushTransform`/`PopTransform` pairs.
+    #[cfg(feature = "3d")]
+    stack: TransformStack,
 }
 
 impl TransformState {
     fn apply_to_rect(&self, rect: &Rect) -> Rect {
+        #[cfg(feature = "3d")]
+        {
+            if self.matrix != Mat3::IDENTITY {
+                // A rotated or sheared rectangle is no longer a rectangle. The non-quad
+                // primitives that still travel through this helper (strokes, images, clips,
+                // text anchors) take the bounding box of the mapped corners rather than
+                // silently ignoring the transform.
+                let corners = self.apply_to_quad(rect);
+                let min_x = corners.iter().map(|p| p.x).min().unwrap_or(0);
+                let min_y = corners.iter().map(|p| p.y).min().unwrap_or(0);
+                let max_x = corners.iter().map(|p| p.x).max().unwrap_or(0);
+                let max_y = corners.iter().map(|p| p.y).max().unwrap_or(0);
+                return Rect::new(
+                    min_x,
+                    min_y,
+                    max_x.saturating_sub(min_x).max(0) as u32,
+                    max_y.saturating_sub(min_y).max(0) as u32,
+                );
+            }
+        }
         Rect::new(
             (rect.x as f32 + self.dx).round() as i32,
             (rect.y as f32 + self.dy).round() as i32,
@@ -424,7 +471,37 @@ impl TransformState {
     }
 
     fn apply_to_point(&self, pt: &Point) -> Point {
-        Point::new((pt.x as f32 + self.dx).round() as i32, (pt.y as f32 + self.dy).round() as i32)
+        #[cfg(feature = "3d")]
+        let (x, y) = {
+            let (x, y) = self.map_xy(pt.x as f32, pt.y as f32);
+            (x + self.dx, y + self.dy)
+        };
+        #[cfg(not(feature = "3d"))]
+        let (x, y) = (pt.x as f32 + self.dx, pt.y as f32 + self.dy);
+        Point::new(x.round() as i32, y.round() as i32)
+    }
+
+    /// Maps all four rectangle corners through the affine matrix and the translation.
+    #[cfg(feature = "3d")]
+    fn apply_to_quad(&self, rect: &Rect) -> [Point; 4] {
+        let x0 = rect.x as f32;
+        let y0 = rect.y as f32;
+        let x1 = x0 + rect.width as f32;
+        let y1 = y0 + rect.height as f32;
+        let source = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)];
+        let mut corners = [Point::new(0, 0); 4];
+        for (slot, (x, y)) in corners.iter_mut().zip(source) {
+            let (mx, my) = self.map_xy(x, y);
+            *slot = Point::new((mx + self.dx).round() as i32, (my + self.dy).round() as i32);
+        }
+        corners
+    }
+
+    /// Maps a point through the affine matrix, without translation or rounding.
+    #[cfg(feature = "3d")]
+    fn map_xy(&self, x: f32, y: f32) -> (f32, f32) {
+        let [a, b, c, d, e, f] = self.matrix.m;
+        (a * x + c * y + e, b * x + d * y + f)
     }
 
     fn apply_to_color(&self, color: &Color) -> Color {
@@ -443,7 +520,15 @@ impl TransformState {
 
 impl Default for TransformState {
     fn default() -> Self {
-        Self { dx: 0.0, dy: 0.0, opacity: 1.0 }
+        Self {
+            dx: 0.0,
+            dy: 0.0,
+            opacity: 1.0,
+            #[cfg(feature = "3d")]
+            matrix: Mat3::IDENTITY,
+            #[cfg(feature = "3d")]
+            stack: TransformStack::new(),
+        }
     }
 }
 
@@ -473,16 +558,67 @@ fn transform_command(
     state: &mut TransformState,
 ) -> Option<RenderCommand> {
     match cmd {
-        BatchCommand::FillRect { rect, color } => Some(RenderCommand::FillRect {
-            rect: state.apply_to_rect(rect),
-            color: state.apply_to_color(color),
-        }),
+        BatchCommand::FillRect { rect, color } => {
+            #[cfg(feature = "3d")]
+            {
+                // A non-identity affine means the four corners no longer coincide with the
+                // axis-aligned rectangle, so the command becomes a quad. The identity case
+                // keeps the exact 2D rounding path below.
+                if state.matrix != Mat3::IDENTITY {
+                    return Some(RenderCommand::FillQuad {
+                        corners: state.apply_to_quad(rect),
+                        color: state.apply_to_color(color),
+                    });
+                }
+            }
+            Some(RenderCommand::FillRect {
+                rect: state.apply_to_rect(rect),
+                color: state.apply_to_color(color),
+            })
+        }
 
-        BatchCommand::StrokeRect { rect, color, width } => Some(RenderCommand::DrawRectStroke {
-            rect: state.apply_to_rect(rect),
-            color: state.apply_to_color(color),
-            width: (*width).round().max(1.0) as u32,
-        }),
+        #[cfg(feature = "3d")]
+        BatchCommand::PushTransform { matrix } => {
+            let saved = Transform::from_affine(state.matrix);
+            if !state.stack.push(saved) {
+                log::warn!(
+                    "[batch] PushTransform rejected: the save stack already holds its maximum of {} entries",
+                    TRANSFORM_STACK_MAX
+                );
+                return None;
+            }
+            state.matrix = state.matrix.then(matrix);
+            None
+        }
+
+        #[cfg(feature = "3d")]
+        BatchCommand::PopTransform => {
+            match state.stack.pop() {
+                Some(saved) => state.matrix = saved.affine(),
+                None => log::warn!("[batch] PopTransform with an empty save stack"),
+            }
+            None
+        }
+
+        BatchCommand::StrokeRect { rect, color, width } => {
+            #[cfg(feature = "3d")]
+            {
+                // The outline of an affine-mapped rectangle is four connected edges, not the
+                // outline of its bounding box: the box's corners are where the shape *is not*.
+                if state.matrix != Mat3::IDENTITY {
+                    return Some(RenderCommand::StrokeQuad {
+                        corners: state.apply_to_quad(rect),
+                        color: state.apply_to_color(color),
+                        width: (*width).round().max(1.0) as u32,
+                    });
+                }
+            }
+            Some(RenderCommand::DrawRectStroke {
+                rect: state.apply_to_rect(rect),
+                color: state.apply_to_color(color),
+                width: (*width).round().max(1.0) as u32,
+            })
+        }
 
         BatchCommand::DrawLine { from, to, color, width } => Some(RenderCommand::DrawLineStroke {
             from: state.apply_to_point(from),
@@ -512,6 +648,19 @@ fn transform_command(
                     px[3] = (px[3] as f32 * combined_opacity).round().clamp(0.0, 255.0) as u8;
                 }
             }
+            #[cfg(feature = "3d")]
+            {
+                // A rotated image keeps its pixels: the destination is the mapped quad, and the
+                // source grid is the rectangle the 2D path would have stretched the data across.
+                if state.matrix != Mat3::IDENTITY {
+                    return Some(RenderCommand::DrawImageQuad {
+                        corners: state.apply_to_quad(rect),
+                        width: rect.width,
+                        height: rect.height,
+                        data,
+                    });
+                }
+            }
             Some(RenderCommand::DrawImage {
                 x: applied_rect.x,
                 y: applied_rect.y,
@@ -533,7 +682,18 @@ fn transform_command(
         }
 
         BatchCommand::DrawText { position, text, color, font_size } => {
-            let font = Font::simple(BATCH_DEFAULT_FONT_FAMILY, *font_size);
+            // A glyph has no corners to transform, so under an affine it follows the transform's
+            // **length scale**: a rotated-and-scaled card keeps its captions in proportion instead
+            // of drawing them at their untransformed size. The baseline stays upright and the
+            // anchor moves with the transform — rotating each glyph is a text-layout feature this
+            // path does not have, and pretending otherwise by shearing the run would be worse than
+            // the honest upright approximation.
+            #[cfg(feature = "3d")]
+            let scale =
+                if state.matrix == Mat3::IDENTITY { 1.0 } else { state.matrix.length_scale() };
+            #[cfg(not(feature = "3d"))]
+            let scale = 1.0f32;
+            let font = Font::simple(BATCH_DEFAULT_FONT_FAMILY, (*font_size * scale).max(1.0));
             Some(RenderCommand::DrawText {
                 origin: state.apply_to_point(position),
                 text: text.clone(),
@@ -879,6 +1039,164 @@ mod tests {
             }
             _ => panic!("expected SetOpacity variant"),
         }
+    }
+
+    /// With `3d` off, the replay transform state must stay exactly the two offsets plus the
+    /// opacity: 12 bytes. A field that leaked into the default build would change this number
+    /// silently and grow every batch replay's working set.
+    #[cfg(not(feature = "3d"))]
+    #[test]
+    fn transform_state_is_byte_identical_when_3d_is_off() {
+        assert_eq!(core::mem::size_of::<TransformState>(), 12);
+    }
+
+    #[cfg(feature = "3d")]
+    #[test]
+    fn a_pushed_transform_turns_a_fill_rect_into_a_quad_and_pop_restores_it() {
+        let mut state = TransformState::default();
+        let images = HashMap::new();
+        let rotation = Mat3::translation(-5.0, -5.0)
+            .then(&Mat3::rotation(core::f32::consts::FRAC_PI_4))
+            .then(&Mat3::translation(5.0, 5.0));
+
+        assert!(transform_command(
+            &BatchCommand::PushTransform { matrix: rotation },
+            &images,
+            &mut state
+        )
+        .is_none());
+
+        let rotated = transform_command(
+            &BatchCommand::FillRect { rect: Rect::new(0, 0, 10, 10), color: Color::RED },
+            &images,
+            &mut state,
+        );
+        match rotated {
+            Some(RenderCommand::FillQuad { corners, .. }) => {
+                assert_eq!(corners.len(), 4, "a rotated rectangle is four corners");
+                assert_ne!(corners[0].x, corners[1].x, "the top edge is no longer axis-aligned");
+            }
+            _ => panic!("a non-identity transform must produce FillQuad"),
+        }
+
+        assert!(transform_command(&BatchCommand::PopTransform, &images, &mut state).is_none());
+        let restored = transform_command(
+            &BatchCommand::FillRect { rect: Rect::new(0, 0, 10, 10), color: Color::RED },
+            &images,
+            &mut state,
+        );
+        assert!(
+            matches!(restored, Some(RenderCommand::FillRect { .. })),
+            "PopTransform must restore the identity and the 2D fill path"
+        );
+    }
+
+    #[cfg(feature = "3d")]
+    #[test]
+    fn a_pushed_transform_turns_a_stroke_into_four_mapped_edges() {
+        let mut state = TransformState::default();
+        let images = HashMap::new();
+        let rotation = Mat3::rotation(core::f32::consts::FRAC_PI_4);
+        assert!(transform_command(
+            &BatchCommand::PushTransform { matrix: rotation },
+            &images,
+            &mut state
+        )
+        .is_none());
+
+        let stroked = transform_command(
+            &BatchCommand::StrokeRect {
+                rect: Rect::new(0, 0, 10, 10),
+                color: Color::RED,
+                width: 2.0,
+            },
+            &images,
+            &mut state,
+        );
+        match stroked {
+            Some(RenderCommand::StrokeQuad { corners, width, .. }) => {
+                assert_eq!(width, 2, "the stroke width is in destination pixels");
+                for index in 0..4 {
+                    let a = corners[index];
+                    let b = corners[(index + 1) % 4];
+                    assert!(a != b, "edge {index} must have length");
+                }
+                assert_ne!(corners[0].y, corners[1].y, "a rotated edge is no longer axis-aligned");
+            }
+            _ => panic!("a rotated stroke must produce StrokeQuad, not a bounding box"),
+        }
+    }
+
+    #[cfg(feature = "3d")]
+    #[test]
+    fn a_rotated_image_maps_its_source_grid_onto_the_quad() {
+        let mut state = TransformState::default();
+        let mut images = HashMap::new();
+        images.insert(7u64, vec![255u8; 2 * 2 * 4]);
+        let rotation = Mat3::rotation(core::f32::consts::FRAC_PI_4);
+        assert!(transform_command(
+            &BatchCommand::PushTransform { matrix: rotation },
+            &images,
+            &mut state
+        )
+        .is_none());
+
+        let drawn = transform_command(
+            &BatchCommand::DrawImage { rect: Rect::new(0, 0, 2, 2), image_id: 7, opacity: 1.0 },
+            &images,
+            &mut state,
+        );
+        match drawn {
+            Some(RenderCommand::DrawImageQuad { corners, width, height, data }) => {
+                assert_eq!((width, height), (2, 2), "the source grid is the untransformed rect");
+                assert_eq!(data.len(), 2 * 2 * 4, "the pixels travel with the quad");
+                assert_ne!(corners[0].x, corners[1].x, "the top edge rotated");
+            }
+            _ => panic!("a rotated image must produce DrawImageQuad"),
+        }
+    }
+
+    #[cfg(feature = "3d")]
+    #[test]
+    fn text_under_an_affine_follows_the_transform_scale() {
+        let mut state = TransformState::default();
+        let images = HashMap::new();
+        assert!(transform_command(
+            &BatchCommand::PushTransform { matrix: Mat3::scaling(2.0, 2.0) },
+            &images,
+            &mut state
+        )
+        .is_none());
+
+        let drawn = transform_command(
+            &BatchCommand::DrawText {
+                position: crate::core::Point::new(0, 0),
+                text: "hi".to_string(),
+                color: Color::BLACK,
+                font_size: 12.0,
+            },
+            &images,
+            &mut state,
+        );
+        match drawn {
+            Some(RenderCommand::DrawText { font, .. }) => {
+                assert!(
+                    (font.size() - 24.0).abs() < 0.01,
+                    "a 2x scale must double the point size, got {}",
+                    font.size()
+                );
+            }
+            _ => panic!("text under an affine is still a DrawText"),
+        }
+    }
+
+    #[cfg(feature = "3d")]
+    #[test]
+    fn an_unbalanced_pop_transform_leaves_the_matrix_untouched() {
+        let mut state = TransformState::default();
+        let images = HashMap::new();
+        assert!(transform_command(&BatchCommand::PopTransform, &images, &mut state).is_none());
+        assert_eq!(state.matrix, Mat3::IDENTITY);
     }
 
     // ── BatchState lifecycle ────────────────────────────────────────────

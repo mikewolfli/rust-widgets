@@ -1256,14 +1256,9 @@ impl WidgetFactory {
     where
         F: FnMut() + Send + Sync + 'static,
     {
-        let capability =
-            self.capability(control_name).ok_or(CapabilityAccessError::UnknownWidget)?;
-
         // Normalised, so `"value-changed"` and `"value_changed"` reach the same event
         // — the same tolerance `invoke_command` and `read_property` provide.
-        let canonical = find_event_schema(capability, event_name)
-            .map(|schema| schema.name)
-            .ok_or(CapabilityAccessError::UnknownCommand)?;
+        let canonical = self.canonical_event_name(control_name, event_name)?;
 
         // Subscribe under the event's **canonical** published spelling, not the caller's
         // raw argument. The validation above already normalised the argument to find a
@@ -1274,6 +1269,25 @@ impl WidgetFactory {
         // canonical name here is what makes a hyphenated, differently-cased or
         // space-separated spelling bind to the one signal the control actually emits.
         Ok(hub.connect(canonical, slot))
+    }
+
+    /// Resolves a caller's event spelling to the name the capability publishes.
+    ///
+    /// One lookup shared by [`Self::connect_event`] and [`Self::event_is_subscribable`],
+    /// so a connect and its matching disconnect cannot use different spellings. That
+    /// asymmetry was the subscription leak P0-17: the probe connected under
+    /// `value_changed` and disconnected under the caller's `value-changed`, which the
+    /// hub's exact lookup did not find.
+    fn canonical_event_name(
+        &self,
+        control_name: &str,
+        event_name: &str,
+    ) -> Result<&'static str, CapabilityAccessError> {
+        let capability =
+            self.capability(control_name).ok_or(CapabilityAccessError::UnknownWidget)?;
+        find_event_schema(capability, event_name)
+            .map(|schema| schema.name)
+            .ok_or(CapabilityAccessError::UnknownCommand)
     }
 
     /// Reports whether `control_name` publishes `event_name`, without subscribing.
@@ -1299,10 +1313,14 @@ impl WidgetFactory {
         event_name: &str,
         hub: &crate::signal::CustomSignalHub,
     ) -> Result<(), CapabilityAccessError> {
-        // A real connection, not a flag: the slot is dropped with the handle, so this
-        // has no lasting effect on the hub while exercising the identical validation.
-        let handle = self.connect_event(control_name, event_name, hub, || {})?;
-        let _ = hub.disconnect(event_name, handle);
+        // Resolve the canonical spelling once, and use **that** name for both halves
+        // of the probe. The connection and the disconnect must name the same hub key;
+        // the previous code connected under the canonical name and disconnected under
+        // the caller's raw spelling, so a tolerated spelling such as `value-changed`
+        // left its slot behind on every probe (P0-17).
+        let canonical = self.canonical_event_name(control_name, event_name)?;
+        let handle = hub.connect(canonical, || {});
+        let _ = hub.disconnect(canonical, handle);
         Ok(())
     }
 

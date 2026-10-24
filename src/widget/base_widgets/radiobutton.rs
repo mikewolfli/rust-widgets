@@ -13,10 +13,10 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{
-    dimensions, effective_font, estimate_line_height, estimate_text_width, ControlMetrics,
-    FocusRing, FOCUS_RING_WIDTH,
+    active_profile, dimensions, effective_font, estimate_line_height, estimate_text_width,
+    ControlMetrics, ControlMetricsProfile, FocusRing, FOCUS_HALO_BLUR_RADIUS, FOCUS_RING_WIDTH,
 };
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, InteractionFade, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Radius of the indicator disc, in logical pixels.
@@ -45,6 +45,14 @@ const INDICATOR_INSET: i32 = 1;
 const RADIO_PADDING: crate::style::EdgeOffsets =
     crate::style::EdgeOffsets { left: 1, top: 0, right: 1, bottom: 0 };
 
+/// How far the indicator and label move toward their contrasting tone at full interaction
+/// strength.
+///
+/// Applied only when the fade's intensity is above zero, so a resting radio paints its resolved
+/// ink byte-for-byte. At the settled end this is the same weight the control used to apply
+/// conditionally on `is_hovered() || is_pressed()`; only the path between the two ends is new.
+const RADIO_INTERACTION_TINT: f32 = 0.25;
+
 /// The line box a single line of `font` occupies, centred vertically in `rect`.
 ///
 /// A copy of what `RenderContext::text_line` computes, for the sizing path: `hit_area` is a
@@ -63,6 +71,12 @@ pub struct RadioButton {
     checked: bool,
     group_id: Option<String>,
     text: String,
+    /// The hover/press fade that tints the indicator while the pointer interacts.
+    ///
+    /// Both drivers rest at exactly `0.0`, so a radio that has never been pointed at paints its
+    /// resolved ink byte-for-byte. The fade replaces the old two-state read of
+    /// `is_hovered() || is_pressed()`, which changed the shade on the frame the flag flipped.
+    fade: InteractionFade,
     /// Emitted without a payload when this button becomes the selected member of
     /// its peer group. Only fires on a `false` -> `true` transition; deselection
     /// does not emit.
@@ -184,6 +198,7 @@ impl RadioButton {
             checked: false,
             group_id: None,
             text: String::new(),
+            fade: InteractionFade::new(),
             selected: GenericSignal::new(),
             checked_changed: Signal1::new(),
         }
@@ -253,6 +268,18 @@ impl RadioButton {
         true
     }
 
+    /// Retargets the interaction fade from the pointer facts the base recorded.
+    ///
+    /// A disabled radio is inert, so both targets collapse to rest instead of letting a hover
+    /// linger on a control the user cannot interact with. `sync` re-aims rather than restarts,
+    /// so a repeated event cannot make the tint stutter.
+    fn sync_fade(&mut self) {
+        let enabled = self.base.is_enabled();
+        if self.fade.sync(enabled && self.base.is_hovered(), enabled && self.base.is_pressed()) {
+            self.request_frame_repaint(None);
+        }
+    }
+
     /// Whether this control currently owns keyboard focus.
     ///
     /// Reads [`BaseWidget`], which records the fact for every control from
@@ -277,10 +304,65 @@ impl RadioButton {
 
     /// Sets the hovered flag and requests a redraw.
     pub fn set_hovered(&mut self, hovered: bool) {
-        // Delegates to the trait default, which writes the flag **and** re-resolves the theme for
-        // `radio_button:hover`. See `Button::set_hovered` for why an inherent method must delegate
-        // through the trait object rather than writing the field itself.
+        // Delegates to the trait implementation, which writes the flag **and** re-resolves the
+        // theme for `radio_button:hover`; this control's implementation submits a narrow repaint.
+        // See `Button::set_hovered` for why an inherent method must delegate through the trait
+        // object rather than writing the field itself.
         <dyn Widget>::set_hovered(self, hovered);
+    }
+
+    /// Submits one animated or interactive frame as damage bounded by the painted box
+    /// plus the focus-ring and halo margin.
+    ///
+    /// `bounds` is `Some` only when the caller already has the rectangle; interaction
+    /// paths pass `None` and let the runtime derive the box.
+    ///
+    /// A control that is unmounted falls back to [`BaseWidget::request_redraw`], which
+    /// keeps the redraw signal contract for host-owned controls. An interaction frame in
+    /// [`crate::widget::runtime::RepaintMode::Full`] still routes through
+    /// [`crate::widget::runtime::request_repaint_rect`], whose documented fallback repaints
+    /// the whole control.
+    fn request_frame_repaint(&self, bounds: Option<Rect>) {
+        let _ = bounds;
+        #[cfg(not(alloc_frugal))]
+        {
+            if let Some(id) = crate::widget::runtime::registry_id_of(self.id()) {
+                let narrow = crate::widget::runtime::repaint_mode(id)
+                    != crate::widget::runtime::RepaintMode::Full;
+                // Interaction paths may take the whole-control fallback in `Full`;
+                // `bounds` lets a caller that already has the rectangle skip the lookup.
+                if narrow || bounds.is_none() {
+                    let damage = bounds
+                        .or_else(|| crate::widget::runtime::painted_box_with_damage_margin(id))
+                        .unwrap_or_else(|| self.damage_bounds());
+                    crate::widget::runtime::request_repaint_rect(id, damage);
+                    // The replaced `request_redraw` emitted this signal; keep it.
+                    self.base.redraw_requested.emit();
+                    return;
+                }
+            }
+        }
+        self.base.request_redraw();
+    }
+
+    /// This control's own rectangle grown by
+    /// [`crate::widget::metrics::DAMAGE_MARGIN`].
+    ///
+    /// Used when the runtime cannot read the mounted geometry back, which is the case
+    /// while an interaction event holds the control out of the registry. Deriving the
+    /// rectangle from `Widget::geometry` yields the same answer the runtime returns for
+    /// the mounted control.
+    #[cfg(not(alloc_frugal))]
+    fn damage_bounds(&self) -> Rect {
+        let rect = self.geometry();
+        let margin = crate::widget::metrics::DAMAGE_MARGIN;
+        let offset = margin as i32;
+        Rect::new(
+            rect.x.saturating_sub(offset),
+            rect.y.saturating_sub(offset),
+            rect.width.saturating_add(margin).saturating_add(margin),
+            rect.height.saturating_add(margin).saturating_add(margin),
+        )
     }
 }
 // Implement Widget trait
@@ -290,6 +372,19 @@ impl Widget for RadioButton {
     }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
+    }
+
+    /// Sets hover and repaints only the area this control can change.
+    ///
+    /// The flag write and theme re-resolution match the trait default; the repaint is
+    /// the narrow one, so a hover does not invalidate the whole control.
+    fn set_hovered(&mut self, hovered: bool) {
+        if self.base.is_hovered() == hovered {
+            return;
+        }
+        self.base.set_hovered(hovered);
+        self.set_state_theme_hook();
+        self.request_frame_repaint(None);
     }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
@@ -306,6 +401,17 @@ impl Widget for RadioButton {
             "a size hint must be measured through ControlMetrics"
         );
         self.implicit_size()
+    }
+
+    // The indicator and label are what the pointer feedback paints, so a hovered or pressed
+    // radio owes frames while the tint is in flight. A resting button's drivers report no
+    // movement, so it costs nothing on the animation bus.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.fade.tick(delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.fade.is_animating()
     }
 
     /// Reports `Checked` for a selected radio, so the preset's `radio_button:checked` override is
@@ -422,6 +528,16 @@ impl WidgetProperties for RadioButton {
 impl EventHandler for RadioButton {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        // The four pointer events are the only ones that can change the interaction fade. They
+        // run before the enabled early return so a disabled radio still retargets both drivers
+        // to rest instead of leaving a hovered tint frozen in place.
+        match event {
+            Event::MouseEnter { .. }
+            | Event::MouseLeave { .. }
+            | Event::MousePress { .. }
+            | Event::MouseRelease { .. } => self.sync_fade(),
+            _ => { /* Other events carry no fade-relevant pointer state */ }
+        }
         if !self.base.is_enabled() {
             return;
         }
@@ -457,12 +573,6 @@ impl EventHandler for RadioButton {
                 self.base.request_redraw();
             }
             Event::FocusLost => {
-                self.base.request_redraw();
-            }
-            Event::MouseEnter { .. } => {
-                self.base.request_redraw();
-            }
-            Event::MouseLeave { .. } => {
                 self.base.request_redraw();
             }
             _ => { /* Other events are not relevant */ }
@@ -506,17 +616,18 @@ impl Draw for RadioButton {
         // anti-aliased edges meet.
         //
         // A hovered control steps the ring one shade toward its own ink, which is how a radio
-        // acknowledges the pointer without needing a ripple layer. The overlay is the *one*
-        // place this control asks "what states hold right now": it carries hover and focus
-        // together, so the fill blend and the ring cannot disagree about whether the pointer
-        // is here.
+        // acknowledges the pointer without needing a ripple layer. The stepping is priced by
+        // the interaction fade rather than by two booleans, so a hover eases in and out instead
+        // of snapping; `intensity` is the stronger of hover and press, and at rest it is
+        // exactly `0.0`, in which case the tint is skipped entirely.
         let overlay = crate::style::StateOverlay::from_base(
             self.base.is_hovered(),
             self.base.is_pressed(),
             self.visual_focus(),
         );
-        let ink = if enabled && (overlay.hovered || overlay.pressed) {
-            ink.blend(&ink.contrast_color(), 0.25)
+        let intensity = if enabled { self.fade.intensity() } else { 0.0 };
+        let ink = if intensity > 0.0 {
+            ink.blend(&ink.contrast_color(), RADIO_INTERACTION_TINT * intensity)
         } else {
             ink
         };
@@ -614,18 +725,35 @@ impl Draw for RadioButton {
         // Inset inside the control's own rectangle, and gated on the *reason* focus arrived so a
         // click focuses without painting a ring. Reading the same overlay as the fill above is
         // what keeps "the pointer is here" from being answered twice, differently.
+        //
+        // The macOS metrics profile uses AppKit's outer halo; every other profile keeps the
+        // inset stroke unchanged.
         if overlay.focused {
-            let ring_outer = FocusRing::for_control(
-                rect,
-                ControlMetrics::focus_ring_radius(dimensions::RADIO_OUTER_RADIUS),
-            );
-            if ring_outer.is_drawable() {
-                context.draw_rounded_rect_stroke(
-                    ring_outer.rect,
-                    ring_outer.radius,
-                    crate::widget::metrics::focus_ring_color(ink.contrast_color()),
-                    FOCUS_RING_WIDTH,
+            if active_profile() == ControlMetricsProfile::Macos {
+                let halo = FocusRing::halo_for_control(rect, dimensions::RADIO_OUTER_RADIUS);
+                if halo.is_drawable() {
+                    context.draw_box_shadow(
+                        halo.rect,
+                        crate::widget::metrics::focus_ring_color(ink.contrast_color()),
+                        0,
+                        0,
+                        FOCUS_HALO_BLUR_RADIUS,
+                        1,
+                    );
+                }
+            } else {
+                let ring_outer = FocusRing::for_control(
+                    rect,
+                    ControlMetrics::focus_ring_radius(dimensions::RADIO_OUTER_RADIUS),
                 );
+                if ring_outer.is_drawable() {
+                    context.draw_rounded_rect_stroke(
+                        ring_outer.rect,
+                        ring_outer.radius,
+                        crate::widget::metrics::focus_ring_color(ink.contrast_color()),
+                        FOCUS_RING_WIDTH,
+                    );
+                }
             }
         }
     }
@@ -1404,6 +1532,37 @@ mod tests {
         crate::widget::svg::text_ink_box(&svg).map(|(x, _, right, _)| right - x).unwrap_or(0)
     }
 
+    /// Keyboard focus paints the ring; a pointer press focuses without painting one.
+    ///
+    /// The radio already drew the ring through `visual_focus()`, so this test is the
+    /// regression guard that keeps its treatment identical to the checkbox's as the
+    /// ring's colour source moves to the theme's `outline` token.
+    #[test]
+    fn keyboard_focus_paints_the_ring_and_pointer_focus_does_not() {
+        // The ring's colour reads the process-wide theme; hold the guard so a concurrent
+        // appearance switch cannot change this render mid-assertion.
+        let _guard = crate::style::theme_test_guard();
+        let mut keyboard = RadioButton::new(Rect::new(0, 0, 60, 40));
+        keyboard.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        let focused = crate::widget::svg::render_to_svg(&mut keyboard);
+        assert!(
+            focused
+                .lines()
+                .any(|line| line.contains("<rect") && line.contains("stroke-width=\"2\"")),
+            "keyboard focus must paint the ring as a rounded-rect stroke: {focused}"
+        );
+
+        let mut pointer = RadioButton::new(Rect::new(0, 0, 60, 40));
+        pointer.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Pointer });
+        let unfocused = crate::widget::svg::render_to_svg(&mut pointer);
+        assert!(
+            !unfocused
+                .lines()
+                .any(|line| line.contains("<rect") && line.contains("stroke-width=\"2\"")),
+            "pointer focus must not paint a ring: {unfocused}"
+        );
+    }
+
     /// A same-value write must not queue a repaint.
     ///
     /// `Button`, `CheckBox` and `ToggleButton` already answered this way; this control was the one
@@ -1430,5 +1589,159 @@ mod tests {
         radio.set_text("Option B".to_string());
         assert_eq!(count.load(Ordering::SeqCst), 1, "a real change must repaint");
         assert_eq!(radio.text(), "Option B");
+    }
+
+    // ── Interaction fade (P1-9) ─────────────────────────────────────────────
+
+    /// Rasterises the radio's paint into the SVG document the comparisons read.
+    fn render(radio: &mut RadioButton) -> String {
+        crate::widget::svg::render_to_svg(radio)
+    }
+
+    /// A pointer entering the radio retargets the hover driver at once.
+    ///
+    /// The answer has to be true before any `tick` has run: the animation bus asks
+    /// `is_animating` first, and a control that only admitted movement on its next tick
+    /// would never be scheduled for one.
+    #[test]
+    fn mouse_enter_makes_the_radio_animating() {
+        let mut radio = RadioButton::new(Rect::new(0, 0, 60, 40));
+        assert!(!Widget::is_animating(&radio), "a new radio rests and owes no frames");
+
+        radio.handle_event(&Event::MouseEnter { pos: Point::new(1, 1) });
+
+        assert!(
+            Widget::is_animating(&radio),
+            "MouseEnter must make the radio's fade moving before any tick"
+        );
+        assert!(Widget::tick(&mut radio, 16), "the first fade frame must report work");
+    }
+
+    /// A resting radio paints its resolved ink byte-for-byte, and returns to exactly that
+    /// picture after a hover has come and gone.
+    #[test]
+    fn a_resting_radio_paints_the_untinted_indicator() {
+        let _guard = crate::style::theme_test_guard();
+        let mut radio = RadioButton::new(Rect::new(0, 0, 120, 32));
+        radio.set_text("Option A".to_string());
+        let fresh = render(&mut radio);
+
+        radio.handle_event(&Event::MouseEnter { pos: Point::new(1, 1) });
+        while Widget::tick(&mut radio, 16) {}
+        assert_ne!(render(&mut radio), fresh, "a settled hover must actually tint the indicator");
+
+        radio.handle_event(&Event::MouseLeave { pos: Point::new(1, 1) });
+        while Widget::tick(&mut radio, 16) {}
+        assert_eq!(radio.fade.hover.value(), 0.0, "the fade returns to rest exactly");
+        assert_eq!(
+            render(&mut radio),
+            fresh,
+            "a radio back at rest must repaint the same bytes it did before the hover"
+        );
+    }
+
+    /// Animating to the hover terminal state produces the same picture as setting the
+    /// terminal value directly, so the fade is purely a path between two identical ends.
+    #[test]
+    fn a_settled_hover_matches_the_manually_set_terminal_state() {
+        let _guard = crate::style::theme_test_guard();
+        let make = || {
+            let mut radio = RadioButton::new(Rect::new(0, 0, 120, 32));
+            radio.set_text("Option A".to_string());
+            radio
+        };
+
+        let mut animated = make();
+        animated.handle_event(&Event::MouseEnter { pos: Point::new(1, 1) });
+        let mut frames = 0;
+        while Widget::tick(&mut animated, 16) {
+            frames += 1;
+            assert!(frames < 500, "the fade must terminate");
+        }
+        assert_eq!(animated.fade.hover.value(), 1.0, "the hover settles at its target");
+
+        let mut manual = make();
+        manual.fade.hover.jump_to(1.0);
+        manual.fade.press.jump_to(0.0);
+
+        assert_eq!(
+            render(&mut animated),
+            render(&mut manual),
+            "the animated end state must be the manually set terminal state"
+        );
+    }
+
+    /// Reduced motion collapses the fast tempo to zero, so one tick reaches the target.
+    #[test]
+    fn reduced_motion_reaches_the_radio_target_in_one_frame() {
+        use crate::compat::Box;
+        use crate::style::environment::{
+            install_environment, uninstall_environment, EnvironmentProvider,
+        };
+        use crate::style::MotionPreference;
+
+        struct Reduced;
+        impl EnvironmentProvider for Reduced {
+            fn motion_preference(&self) -> MotionPreference {
+                MotionPreference::ReduceMotion
+            }
+        }
+
+        let _guard = crate::style::theme_test_guard();
+        let previous = install_environment(Box::new(Reduced));
+
+        let mut radio = RadioButton::new(Rect::new(0, 0, 60, 40));
+        radio.handle_event(&Event::MouseEnter { pos: Point::new(1, 1) });
+        let moving = Widget::tick(&mut radio, 16);
+
+        assert!(!moving, "a zero-duration fade settles on the first tick");
+        assert_eq!(radio.fade.hover.value(), 1.0, "and reaches the target, not half way");
+        assert!(!Widget::is_animating(&radio));
+
+        let _ = uninstall_environment();
+        if let Some(previous) = previous {
+            install_environment(previous);
+        }
+    }
+
+    /// A hover frame submits damage bounded by the painted box and the margin.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_hover_frame_submits_the_painted_box_with_the_damage_margin() {
+        use crate::widget::runtime;
+
+        let id =
+            runtime::register(crate::compat::Box::new(RadioButton::new(Rect::new(4, 8, 120, 32))))
+                .expect("registry");
+        assert!(runtime::set_repaint_mode(id, runtime::RepaintMode::Dirty));
+
+        assert!(runtime::dispatch_event(id, &Event::mouse_enter(1, 1)));
+
+        let expected = runtime::painted_box_with_damage_margin(id).expect("painted box");
+        assert_eq!(
+            runtime::dirty_rects(id),
+            vec![expected],
+            "a hover must damage the painted box plus the margin"
+        );
+        runtime::unregister(id);
+    }
+
+    /// `Full` keeps the whole-control path and records no damage rectangle.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_hover_frame_in_full_mode_keeps_the_whole_control_repaint() {
+        use crate::widget::runtime;
+
+        let id =
+            runtime::register(crate::compat::Box::new(RadioButton::new(Rect::new(4, 8, 120, 32))))
+                .expect("registry");
+        assert_eq!(runtime::repaint_mode(id), runtime::RepaintMode::Full);
+
+        assert!(runtime::dispatch_event(id, &Event::mouse_enter(1, 1)));
+        assert!(
+            runtime::dirty_rects(id).is_empty(),
+            "Full mode records no damage, so the control repaints whole"
+        );
+        runtime::unregister(id);
     }
 }

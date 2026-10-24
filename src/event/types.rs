@@ -284,6 +284,19 @@ pub enum Event {
         /// Modifier bitmask, using the same convention as [`Event::KeyPress`].
         modifiers: u32,
     },
+    /// A request to show the context menu at a pointer position.
+    ///
+    /// The event is delivered **in addition to** the input that caused it, never instead of
+    /// it: a secondary-button press still reaches the control as [`Event::MousePress`] (so a
+    /// control that starts a selection or opens its own popup keeps doing so), and the runtime
+    /// then sends this variant so the control can emit a menu request. A Menu/Application key
+    /// press is mapped to this variant by [`crate::event::translator`].
+    ///
+    /// `pos` is window-relative, matching every other pointer variant.
+    ContextMenu {
+        /// Position at which the menu should appear, relative to the window origin.
+        pos: Point,
+    },
     /// Free-form custom event payload.
     Custom {
         /// The event name the sender and receiver agree on.
@@ -513,6 +526,15 @@ impl Event {
             _ => 0,
         }
     }
+
+    /// Returns the event's modifiers as the typed [`Modifiers`](crate::shortcut::Modifiers)
+    /// set, applying the framework bitmask conversion.
+    ///
+    /// This is the single typed entry point for event modifiers, so widgets do not have to
+    /// spell out the conversion at every call site.
+    pub fn modifiers_typed(&self) -> crate::shortcut::Modifiers {
+        crate::shortcut::Modifiers::from_event_bits(self.modifiers())
+    }
     /// Creates a mouse release event.
     pub fn mouse_release(x: i32, y: i32, button: u32) -> Self {
         Self::MouseRelease { pos: Point::new(x, y), button }
@@ -568,6 +590,14 @@ impl Event {
     /// Creates a mouse wheel event.
     pub fn wheel(delta_x: i32, delta_y: i32, modifiers: u32) -> Self {
         Self::Wheel { delta: Point::new(delta_x, delta_y), modifiers }
+    }
+    /// Creates a context-menu request at `(x, y)`.
+    ///
+    /// A keyboard-originated request has no pointer position; a host that maps the Menu key
+    /// supplies the focused control's caret rectangle origin (or any anchor it wants the menu
+    /// clamped to), so the event still carries a concrete `pos` rather than an `Option`.
+    pub fn context_menu(x: i32, y: i32) -> Self {
+        Self::ContextMenu { pos: Point::new(x, y) }
     }
     // ── Touch / Gesture constructors ──
     /// Creates a touch begin event.
@@ -865,6 +895,16 @@ mod tests {
     fn mouse_event_gesture_class_is_none() {
         let e = Event::mouse_press(1, 2, 0);
         assert_eq!(e.gesture_class(), None);
+    }
+
+    /// A context-menu request is a pointer-shaped event with no modifier payload of its own.
+    #[test]
+    fn context_menu_carries_its_position_and_no_modifiers() {
+        match Event::context_menu(7, 9) {
+            Event::ContextMenu { pos } => assert_eq!(pos, Point::new(7, 9)),
+            _ => panic!("expected ContextMenu"),
+        }
+        assert_eq!(Event::context_menu(7, 9).modifiers(), 0);
     }
 
     #[test]

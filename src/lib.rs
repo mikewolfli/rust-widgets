@@ -70,7 +70,14 @@
 #![cfg_attr(feature = "mini", no_std)]
 // BLUE11: Clippy lints enabled for quality enforcement.
 // Individual allows are placed next to their specific violations.
-#![cfg_attr(test, allow(clippy::needless_pass_by_value, clippy::unwrap_used))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::needless_pass_by_value,
+        clippy::unwrap_used,
+        clippy::field_reassign_with_default
+    )
+)]
 // Required unconditionally — `alloc` is available in both std (re-exported)
 // and no_std contexts. `core` is always available via `extern crate std` under
 // std, but we need direct `alloc::` paths in `compat` for no_std builds.
@@ -226,6 +233,16 @@ pub mod quality;
 pub mod render;
 /// Runtime render-engine abstraction.
 pub mod render_engine;
+/// Persistent application settings (`settings store`-equivalent key/value store).
+///
+/// Gated like the existing menu-config persistence precedent (`advanced-widgets`) plus
+/// `serde_json`, and absent from `alloc_frugal` builds where `std::fs` is unavailable.
+#[cfg(all(feature = "advanced-widgets", feature = "serde_json", not(alloc_frugal)))]
+pub mod settings;
+#[cfg(all(feature = "advanced-widgets", feature = "serde_json", not(alloc_frugal)))]
+pub use settings::{
+    JsonSettings, MemorySettings, SettingValue, Settings, SettingsError, SettingsStore,
+};
 /// Global shortcut system for keyboard shortcuts.
 pub mod shortcut;
 /// Signal-slot utilities.

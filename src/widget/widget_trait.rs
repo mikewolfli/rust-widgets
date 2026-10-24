@@ -12,6 +12,20 @@ use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::css::CssParser;
 use crate::style::{Margin, Padding, WidgetStyle};
 
+/// Where a control inserts text, as a native input method needs to know it.
+///
+/// A platform IME places its candidate window beside the insertion point, so the host has to
+/// answer two facts about the focused control: the caret's rectangle in window coordinates and,
+/// when the control edits a byte-indexed string, the caret's byte offset. A control without a
+/// text insertion point reports `None` for the whole query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputMethodQuery {
+    /// The caret's rectangle in window logical coordinates.
+    pub caret_rect: Rect,
+    /// The caret's byte offset into the editable text, when the control has one.
+    pub caret_byte: Option<usize>,
+}
+
 /// Common widget contract implemented by all widget models.
 pub trait Widget: EventHandler + Any {
     /// Returns shared base widget state for default trait delegation.
@@ -56,6 +70,52 @@ pub trait Widget: EventHandler + Any {
     /// it. Most controls answer `false`; a popup widget answers for its own open state.
     fn has_open_popup(&self) -> bool {
         false
+    }
+    /// Reports the insertion point a native IME should anchor its candidate window to.
+    ///
+    /// A control that edits text overrides this with the caret's measured rectangle and byte
+    /// offset. The default is `None`, so a control with no text insertion point pays nothing and
+    /// every existing widget keeps its behaviour without an edit.
+    fn input_method_query(&self) -> Option<InputMethodQuery> {
+        None
+    }
+    /// Handles a request to show a context menu at `pos`.
+    ///
+    /// `pos` is in the window's logical coordinates, matching the position carried by
+    /// [`crate::event::Event::ContextMenu`]. The default returns `false`, which means "this control has
+    /// no menu here": a control that does not override this keeps its previous behaviour exactly.
+    ///
+    /// # Why the control answers instead of the runtime
+    ///
+    /// Only the control knows what the menu would contain — the selected text, the tab under the
+    /// pointer, the row that was right-clicked. So this hook is where the control turns the request
+    /// into its own intent, usually by emitting a signal such as `context_menu_requested`. The host
+    /// supplies the menu itself: the library does not impose a menu implementation or a menu UI.
+    ///
+    /// # Return value
+    ///
+    /// `true` means the control handled the request and a host should not fall back to a generic
+    /// menu. `false` is the honest answer for a point the control does not consider menu-worthy —
+    /// for example, a tab strip point that is not on a tab.
+    fn context_menu_event(&mut self, pos: Point) -> bool {
+        let _ = pos;
+        false
+    }
+    /// Returns this control as a drag source, when a press can begin a cross-control drag.
+    ///
+    /// The runtime's drag coordinator probes this once per press. The default is `None`, so a
+    /// control that is not draggable is unaffected by the drag infrastructure. A control implements
+    /// [`crate::event::dnd::DragSource`] and returns `Some(self)` here to opt in.
+    fn drag_source_mut(&mut self) -> Option<&mut dyn crate::event::dnd::DragSource> {
+        None
+    }
+    /// Returns this control as a drop target, when it accepts dragged payloads.
+    ///
+    /// The counterpart of [`Self::drag_source_mut`]. A control implements
+    /// [`crate::event::dnd::DropTarget`] and returns `Some(self)` here; the default keeps every
+    /// other control exactly as it was.
+    fn drop_target_mut(&mut self) -> Option<&mut dyn crate::event::dnd::DropTarget> {
+        None
     }
     /// Get cursor shape this control wants while hovered.
     ///
@@ -929,24 +989,46 @@ pub trait Widget: EventHandler + Any {
     /// may I stretch you. A single value cannot express a button's floor (it must stay
     /// tappable) or an icon's ceiling (it must not inflate).
     ///
-    /// # Why the default derives from `size_hint`
+    /// # Where the three values come from
     ///
-    /// 176 widgets implement `size_hint`, and requiring all of them to switch at once is
-    /// the mass-migration shape this crate has already paid for. So the default is a
-    /// **faithful translation** of the existing method: the reported size becomes both the
-    /// preferred value and the floor, with no ceiling. That is the closest thing to the
-    /// old behaviour expressible in three values, and it means every widget already
-    /// answers sensibly — a widget that has a real floor or ceiling overrides this.
+    /// * `pref` is [`Widget::size_hint`], unchanged.
+    /// * `min` is the larger of [`Widget::minimum_size_hint`] (a widget's content floor)
+    ///   and the explicit lower bound from `BaseWidget::min_size`.
+    /// * `max` is the explicit upper bound from `BaseWidget::max_size`, or unbounded.
     ///
-    /// The translation is deliberately *not* "unconstrained": a layout that asked the old
-    /// `size_hint` and got `50x28` must not now be told "any size at all", or adopting the
-    /// new channel would visibly loosen every existing layout.
+    /// A widget that overrides neither `minimum_size_hint` nor the base setters therefore
+    /// reports exactly what it reported before: `min == pref`, `max == u32::MAX`. Once a
+    /// caller sets a bound, the layout consumes it — `AxisHints` normalises
+    /// `min <= pref <= max` by construction.
     fn hints(&self) -> crate::layout::Hints {
         let preferred = self.size_hint();
+        let minimum = self.minimum_size_hint();
+        let lower = self.base().min_size();
+        let upper = self.base().max_size();
         crate::layout::Hints {
-            width: crate::layout::AxisHints::at_least(preferred.width),
-            height: crate::layout::AxisHints::at_least(preferred.height),
+            width: crate::layout::AxisHints::new(
+                minimum.width.max(lower.map(|size| size.width).unwrap_or(0)),
+                preferred.width,
+                upper.map(|size| size.width).unwrap_or(u32::MAX),
+            ),
+            height: crate::layout::AxisHints::new(
+                minimum.height.max(lower.map(|size| size.height).unwrap_or(0)),
+                preferred.height,
+                upper.map(|size| size.height).unwrap_or(u32::MAX),
+            ),
         }
+    }
+
+    /// The smallest size this widget's **content** can take without breaking.
+    ///
+    /// This is the 参考工具包 `minimumSizeHint` distinction: `size_hint` is the preferred size,
+    /// while this is the floor a layout may compress to. The default returns
+    /// [`Widget::size_hint`], so a widget that does not override it keeps exactly the old
+    /// layout behaviour (its preferred size is also its floor). Controls with genuinely
+    /// elastic content — text that can wrap, lists that can scroll — override it with a
+    /// smaller value.
+    fn minimum_size_hint(&self) -> Size {
+        self.size_hint()
     }
 
     /// How this widget wants its parent's layout to treat it by default.
@@ -1013,7 +1095,7 @@ pub trait Widget: EventHandler + Any {
 mod tests {
     use super::Widget;
     use crate::compat::{MiniToString, String};
-    use crate::core::Rect;
+    use crate::core::{Rect, Size};
     use crate::widget::base_widgets::button::Button;
 
     #[test]
@@ -1054,11 +1136,41 @@ mod tests {
         assert_eq!(button.geometry(), Rect::new(10, 20, 120, 36));
     }
 
+    /// `hints()` is the single bridge from a widget's own floor/ceiling to the layout.
+    #[test]
+    fn hints_report_the_base_size_bounds() {
+        let mut button = Button::new("Run".to_string(), Rect::new(0, 0, 120, 36));
+        let preferred = button.size_hint();
+        let unbounded = button.hints();
+        assert_eq!(unbounded.width.min, preferred.width, "the default floor is the size hint");
+        assert_eq!(unbounded.height.min, preferred.height);
+        assert_eq!(unbounded.width.max, u32::MAX, "no declared ceiling means unbounded");
+        assert_eq!(unbounded.height.max, u32::MAX);
+
+        button.set_min_size(Some(Size::new(200, 50)));
+        button.set_max_size(Some(Size::new(300, 80)));
+        let bounded = button.hints();
+        assert_eq!(bounded.width.min, 200);
+        assert_eq!(bounded.height.min, 50);
+        assert_eq!(bounded.width.max, 300);
+        assert_eq!(bounded.height.max, 80);
+    }
+
     #[test]
     fn widget_structure_button_has_distinct_object_ids() {
         let a = Button::new("A".to_string(), Rect::new(0, 0, 80, 24));
         let b = Button::new("B".to_string(), Rect::new(0, 0, 80, 24));
         assert_ne!(a.id(), b.id());
+    }
+
+    /// A control without a text insertion point inherits the trait's `None`.
+    ///
+    /// The default is what makes the query backward compatible: a button, a slider or any
+    /// control that never opts in reports no IME anchor rather than a fabricated rectangle.
+    #[test]
+    fn a_widget_without_an_insertion_point_reports_no_ime_anchor() {
+        let button = Button::new("Open".to_string(), Rect::new(0, 0, 100, 32));
+        assert!(button.input_method_query().is_none());
     }
 
     // ── The announced value (BLUE21 P2-8) ──────────────────────────────

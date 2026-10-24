@@ -12,7 +12,7 @@
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::Signal1;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -55,6 +55,13 @@ pub struct AdaptiveScaffold {
     selected_nav_index: usize,
     /// Emitted when the bottom navigation selection changes.
     pub nav_selected: Signal1<usize>,
+    /// Emitted when the AppBar's back affordance is pressed.
+    ///
+    /// The AppBar itself stays private, so this mirrors its signal outward: an embedder
+    /// observes navigation on the scaffold rather than reaching into a child it does not own.
+    pub back_pressed: GenericSignal,
+    /// Emitted when the AppBar's action affordance is pressed.
+    pub action_pressed: GenericSignal,
 }
 
 impl AdaptiveScaffold {
@@ -69,7 +76,7 @@ impl AdaptiveScaffold {
         let app_bar =
             AppBar::new(title, Rect::new(geometry.x, geometry.y, geometry.width, app_bar_height));
 
-        Self {
+        let scaffold = Self {
             base: BaseWidget::new(WidgetKind::AdaptiveScaffold, geometry, "AdaptiveScaffold"),
             title: title.to_string(),
             app_bar,
@@ -79,7 +86,18 @@ impl AdaptiveScaffold {
             nav_item_icon_sources: Vec::new(),
             selected_nav_index: 0,
             nav_selected: Signal1::new(),
-        }
+            back_pressed: GenericSignal::new(),
+            action_pressed: GenericSignal::new(),
+        };
+
+        // Mirror the AppBar's two signals onto the scaffold's own. The handles are
+        // intentionally dropped: a `ConnectionHandle` only lets a caller disconnect, and
+        // the slot lives for as long as the signal it was registered on does.
+        let back_out = scaffold.back_pressed.clone();
+        let _ = scaffold.app_bar.back_pressed.connect(move || back_out.emit());
+        let action_out = scaffold.action_pressed.clone();
+        let _ = scaffold.app_bar.action_pressed.connect(move || action_out.emit());
+        scaffold
     }
 
     /// Sets the title displayed in the AppBar.
@@ -472,8 +490,9 @@ impl EventHandler for AdaptiveScaffold {
 
                 // AppBar zone (top)
                 if pos.y >= rect.y && pos.y < rect.y + app_bar_height {
+                    // The AppBar's signals are mirrored onto this scaffold at construction,
+                    // so forwarding the event is all this arm has to do.
                     self.app_bar.handle_event(event);
-                    // Bridge AppBar signals
                     return;
                 }
 
@@ -715,5 +734,52 @@ mod tests {
         // With bottom nav: content = y 56, h 812-56-56 = 700
         let content = scaffold.content_rect();
         assert_eq!(content, Rect::new(0, 56, 375, 700));
+    }
+
+    /// The scaffold used to hold its AppBar privately and drop its signals, so a page
+    /// built on the scaffold had no way to observe a back tap.
+    #[test]
+    fn adaptive_scaffold_forwards_app_bar_back_pressed() {
+        let mut scaffold = AdaptiveScaffold::new("Home", Rect::new(0, 0, 375, 812));
+        scaffold.set_show_back(true);
+
+        let fired = Arc::new(AtomicUsize::new(0));
+        let f = fired.clone();
+        scaffold.back_pressed.connect(move || {
+            f.fetch_add(1, Ordering::SeqCst);
+        });
+
+        // The AppBar commits on release, so a press alone must not reach the scaffold.
+        scaffold.handle_event(&Event::MousePress {
+            pos: Point::new(10, 28),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(fired.load(Ordering::SeqCst), 0, "a press is not a committed tap");
+
+        scaffold.handle_event(&Event::MouseRelease { pos: Point::new(10, 28), button: 1 });
+        assert_eq!(fired.load(Ordering::SeqCst), 1, "one tap forwards exactly one back event");
+    }
+
+    #[test]
+    fn adaptive_scaffold_forwards_app_bar_action_pressed() {
+        let mut scaffold = AdaptiveScaffold::new("Home", Rect::new(0, 0, 375, 812));
+        scaffold.set_action_text("Save");
+
+        let fired = Arc::new(AtomicUsize::new(0));
+        let f = fired.clone();
+        scaffold.action_pressed.connect(move || {
+            f.fetch_add(1, Ordering::SeqCst);
+        });
+
+        scaffold.handle_event(&Event::MousePress {
+            pos: Point::new(340, 28),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(fired.load(Ordering::SeqCst), 0, "a press is not a committed tap");
+
+        scaffold.handle_event(&Event::MouseRelease { pos: Point::new(340, 28), button: 1 });
+        assert_eq!(fired.load(Ordering::SeqCst), 1, "one tap forwards exactly one action event");
     }
 }

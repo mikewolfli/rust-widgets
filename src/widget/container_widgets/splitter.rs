@@ -124,6 +124,14 @@ impl Splitter {
     pub fn ratio(&self, index: usize) -> Option<f32> {
         self.layout.ratio(index)
     }
+    /// Returns every pane ratio, in pane order.
+    ///
+    /// These are the layout's relative weights — the same values [`Self::ratio`] exposes — so a
+    /// host can hand them to `Settings::set_split_ratios` unchanged and restore them on the next
+    /// launch with [`Self::set_ratios`].
+    pub fn ratios(&self) -> Vec<f32> {
+        self.layout.ratios().to_vec()
+    }
     /// Adds one pane and returns assigned index.
     pub fn add_pane(&mut self, pane_id: ObjectId, stretch: u32) -> usize {
         let index = self.layout.add_pane(pane_id, stretch);
@@ -164,9 +172,12 @@ impl Splitter {
         self.base.request_redraw();
         true
     }
-    /// Sets all pane ratios.
-    pub fn set_ratios(&mut self, ratios: Vec<f32>) -> bool {
-        if !self.layout.set_ratios(ratios) {
+    /// Sets all pane ratios. Returns false when the slice length differs from the pane count.
+    ///
+    /// A host restores a saved layout by calling this before the splitter is shown, using the
+    /// vector [`Self::ratios`] returned in the previous session.
+    pub fn set_ratios(&mut self, ratios: &[f32]) -> bool {
+        if !self.layout.set_ratios(ratios.to_vec()) {
             return false;
         }
         if self.pane_layout_changed.slot_count() > 0 {
@@ -705,6 +716,26 @@ mod tests {
         sp.add_pane(1, 1);
         sp.add_pane(2, 1);
         sp
+    }
+
+    /// A saved layout survives a rebuild: read the weights, build a fresh splitter, restore them.
+    #[test]
+    fn splitter_set_ratios_round_trips_through_a_rebuild() {
+        let mut source = two_pane_splitter();
+        let saved = [0.25f32, 0.75];
+        assert!(source.set_ratios(&saved));
+        assert_eq!(source.ratios(), saved.to_vec());
+
+        let saved_ratios = source.ratios();
+        let mut rebuilt = Splitter::new(source.geometry());
+        rebuilt.add_pane(1, 1);
+        rebuilt.add_pane(2, 1);
+        assert!(rebuilt.set_ratios(&saved_ratios));
+        assert_eq!(
+            rebuilt.ratios(),
+            saved_ratios,
+            "a splitter restored from saved weights must split its panes identically"
+        );
     }
 
     /// The x coordinate of the divider between two equal panes.

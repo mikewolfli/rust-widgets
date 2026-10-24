@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 //! Tool button widget.
-use crate::core::{Color, HorizontalAlignment, Rect};
-use crate::event::{Event, EventHandler};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::style::EdgeOffsets;
@@ -11,17 +11,28 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::menu_toolbar::menu_button::{
+    draw_menu_panel, menu_item_rect, menu_panel_rect, MenuItem,
+};
+use crate::widget::menu_toolbar::popup_reveal::{PopupReveal, RevealDirection};
 use crate::widget::metrics::{dimensions, effective_font, estimate_line_height, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconName, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::path::{Path, PathBuf};
 
+/// How long a [`ToolButtonPopupMode::DelayedPopup`] press must be held before the menu opens.
+///
+/// Five hundred milliseconds is the threshold the popup family has always described in words
+/// ("long or delayed press"); keeping it a named constant is what makes it observable to
+/// `Widget::tick` and to the tests that pin the boundary.
+const DELAYED_POPUP_MS: u32 = 500;
+
 /// Tool button popup mode.
 ///
-/// Selects how the button's attached menu is presented. The mode is stored and
-/// exposed as a property, but the widget does not itself own or show a menu: it
-/// paints the popup indicator arrow and reserves its room, and the value tells
-/// the containment layer that wires the button to a menu how to present it.
+/// Selects how the button's attached menu is presented. A menu set with
+/// [`ToolButton::set_menu`] is owned and painted by the button itself: the mode only decides
+/// which gesture opens it. A button with no menu keeps its plain push-button behaviour, so
+/// the default mode cannot turn every tool-bar button into a popup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolButtonPopupMode {
     /// Opening the menu requires a long or delayed press, so a quick click
@@ -104,6 +115,21 @@ pub struct ToolButton {
     popup_mode: ToolButtonPopupMode,
     button_style: ToolButtonStyle,
     auto_raise: bool,
+    /// The rows of the menu this button owns. Empty means the button has no menu, and every
+    /// popup mode then behaves as a plain push button.
+    menu_items: Vec<MenuItem>,
+    /// Whether that menu is currently showing.
+    menu_open: bool,
+    /// The menu's open/close reveal, so the panel grows out of the button rather than appearing.
+    reveal: PopupReveal,
+    /// Whether a `DelayedPopup` press is being held, waiting to reach
+    /// [`DELAYED_POPUP_MS`].
+    delayed_press: bool,
+    /// How long the current held press has been accumulating, in milliseconds.
+    delayed_elapsed_ms: u32,
+    /// Set by a press that the open menu consumed (or that opened it), so the matching release
+    /// does not also fire the button's main action.
+    suppress_click: bool,
     /// Emitted on every activation by [`ToolButton::click`], carrying the
     /// button's checked state at that moment. For a non-checkable button this is
     /// therefore always `false`, and it is emitted even when nothing was
@@ -144,6 +170,12 @@ impl ToolButton {
             popup_mode: ToolButtonPopupMode::DelayedPopup,
             button_style: ToolButtonStyle::IconOnly,
             auto_raise: false,
+            menu_items: Vec::new(),
+            menu_open: false,
+            reveal: PopupReveal::new(false),
+            delayed_press: false,
+            delayed_elapsed_ms: 0,
+            suppress_click: false,
             clicked: Signal1::new(),
             toggled: Signal1::new(),
             triggered: GenericSignal::new(),
@@ -342,6 +374,96 @@ impl ToolButton {
         self.base.request_redraw();
     }
 
+    /// Replaces the button's menu rows and requests a redraw.
+    ///
+    /// An empty list removes the menu: every popup mode then keeps the plain push-button
+    /// gesture, so a tool-bar button that was never given a menu cannot open an empty panel.
+    pub fn set_menu(&mut self, items: Vec<MenuItem>) {
+        self.menu_items = items;
+        if self.menu_items.is_empty() {
+            self.close_menu();
+        }
+        self.base.request_redraw();
+    }
+
+    /// Returns the menu rows this button owns.
+    pub fn menu_items(&self) -> &[MenuItem] {
+        &self.menu_items
+    }
+
+    /// Returns whether the button's menu is currently showing.
+    pub fn is_menu_open(&self) -> bool {
+        self.menu_open
+    }
+
+    /// Opens the menu and takes the popup grab, so a press outside it is routed here.
+    pub fn open_menu(&mut self) {
+        self.menu_open = true;
+        self.delayed_press = false;
+        self.delayed_elapsed_ms = 0;
+        self.reveal.set_open(true);
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::set_popup_grab(self.id());
+        self.base.request_redraw();
+    }
+
+    /// Closes the menu and releases the popup grab.
+    pub fn close_menu(&mut self) {
+        self.menu_open = false;
+        self.delayed_press = false;
+        self.delayed_elapsed_ms = 0;
+        self.reveal.set_open(false);
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::clear_popup_grab_for(self.id());
+        self.base.request_redraw();
+    }
+
+    /// Whether this mode paints an indicator arrow and reserves room for it.
+    fn popup_capable(&self) -> bool {
+        matches!(
+            self.popup_mode,
+            ToolButtonPopupMode::MenuButtonPopup | ToolButtonPopupMode::InstantPopup
+        )
+    }
+
+    /// The trailing strip the indicator arrow occupies, or `None` when no arrow is drawn.
+    ///
+    /// This is the single derivation of the arrow's rectangle: the paint and the arrow's hit
+    /// test must agree, or a button would react to a click beside the glyph.
+    fn popup_arrow_rect(&self) -> Option<Rect> {
+        if !self.popup_capable() {
+            return None;
+        }
+        let rect = self.geometry();
+        let strip = dimensions::TOOL_BUTTON_POPUP_ARROW_RESERVE as i32;
+        Some(Rect::new(
+            rect.x + rect.width as i32 - strip,
+            rect.y,
+            strip.max(1) as u32,
+            rect.height.max(1),
+        ))
+    }
+
+    /// The menu panel's rectangle, hung below the button.
+    fn menu_rect(&self) -> Rect {
+        menu_panel_rect(self.geometry(), self.menu_items.len())
+    }
+
+    /// The enabled menu row at `pos`, when the menu is open.
+    fn hit_test_item(&self, pos: Point) -> Option<usize> {
+        if !self.menu_open {
+            return None;
+        }
+        let panel = self.menu_rect();
+        if !panel.contains_point(pos) {
+            return None;
+        }
+        self.menu_items.iter().enumerate().find_map(|(index, item)| {
+            let row = menu_item_rect(panel, index);
+            (item.enabled && row.contains_point(pos)).then_some(index)
+        })
+    }
+
     /// Sets the button style and requests a redraw.
     pub fn set_button_style(&mut self, style: ToolButtonStyle) {
         if self.button_style == style {
@@ -405,10 +527,7 @@ impl ToolButton {
     /// where the button's interior ends.
     fn content_box(&self) -> Rect {
         let rect = self.geometry();
-        let has_popup = matches!(
-            self.popup_mode,
-            ToolButtonPopupMode::MenuButtonPopup | ToolButtonPopupMode::InstantPopup
-        );
+        let has_popup = self.popup_capable();
         let padding = dimensions::TOOL_BUTTON_PADDING;
         let trailing =
             if has_popup { dimensions::TOOL_BUTTON_POPUP_ARROW_RESERVE } else { padding };
@@ -567,6 +686,45 @@ impl Widget for ToolButton {
         &mut self.base
     }
 
+    /// The button and its open menu accept the pointer.
+    ///
+    /// The panel hangs below the button's rectangle; without this override a press on a menu row
+    /// is rejected by the hit test and never reaches `hit_test_item`.
+    fn contains_point(&self, point: Point) -> bool {
+        self.base().contains_point_with_touch_expansion(point)
+            || (self.menu_open && self.menu_rect().contains_point(point))
+    }
+
+    fn has_open_popup(&self) -> bool {
+        self.menu_open
+    }
+
+    /// Advances the reveal and the delayed-popup timer.
+    ///
+    /// A held `DelayedPopup` press is a timed gesture, not an event: nothing else would ever
+    /// turn the press into an open menu, so the accumulation happens here and reports frames
+    /// for as long as the hold is pending.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        let mut animating = self.reveal.tick(delta_ms);
+        if self.delayed_press && !self.menu_open && self.base.is_enabled() {
+            self.delayed_elapsed_ms = self.delayed_elapsed_ms.saturating_add(delta_ms);
+            if self.delayed_elapsed_ms >= DELAYED_POPUP_MS {
+                self.delayed_press = false;
+                if !self.menu_items.is_empty() {
+                    self.open_menu();
+                    self.suppress_click = true;
+                }
+            }
+            // The opening itself started a reveal, so this call still owes a frame either way.
+            animating = true;
+        }
+        animating
+    }
+
+    fn is_animating(&self) -> bool {
+        self.reveal.is_animating() || (self.delayed_press && !self.menu_open)
+    }
+
     /// The square this button claims when nothing constrains it.
     ///
     /// [`dimensions::TOOL_BUTTON_SIZE`] rather than a literal, so the tool bar that packs a row of
@@ -699,34 +857,115 @@ impl EventHandler for ToolButton {
     /// | release outside | nothing (the base clears the state) |
     /// | Enter / Space | `clicked` + `triggered` |
     /// | disabled | every arm is skipped |
+    ///
+    /// # Popup modes
+    ///
+    /// When a menu is set, the three modes differ only in the gesture that opens it:
+    ///
+    /// | mode | opening gesture |
+    /// |---|---|
+    /// | `MenuButtonPopup` | press on the trailing arrow zone |
+    /// | `InstantPopup` | any press on the button |
+    /// | `DelayedPopup` | a press held for `DELAYED_POPUP_MS`, accumulated by [`Widget::tick`] |
+    ///
+    /// A press the open menu consumes (a row, the button that toggles it closed, or the press
+    /// that opened it) suppresses the release's main action, so a menu interaction never doubles
+    /// as a click.
     fn handle_event(&mut self, event: &Event) {
         match event {
-            // Only a press that resolves to this control arms it. The runtime hit-tests before
-            // delivery, but a direct dispatch (a test, a host with its own routing, a designer
-            // preview) does not, and an unguarded press would leave the latch armed for a release
-            // that belongs elsewhere. Both halves of "resolves to this control" are in the guard,
-            // so the arm either arms the gesture or does nothing at all.
+            // Only a press that resolves to this control (or to its open panel) arms a gesture.
+            // The runtime hit-tests before delivery, but a direct dispatch does not, and an
+            // unguarded press would leave the latch armed for a release that belongs elsewhere.
             Event::MousePress { pos, button, .. }
                 if self.base.is_enabled()
                     && *button == crate::event::mouse_button::PRIMARY
-                    && self.base.contains_point_with_touch_expansion(*pos) =>
+                    && (self.base.contains_point_with_touch_expansion(*pos)
+                        || (self.menu_open && self.menu_rect().contains_point(*pos))) =>
             {
-                self.base.set_pressed(true);
+                if self.menu_open && self.menu_rect().contains_point(*pos) {
+                    // A press on the open panel selects a row; it is not a new button gesture.
+                    if self.hit_test_item(*pos).is_some() {
+                        self.triggered.emit();
+                    }
+                    self.suppress_click = true;
+                    self.close_menu();
+                } else if self.menu_open {
+                    // A press on the button while its menu is open closes it, the toggle a menu
+                    // button performs, instead of also performing the main action.
+                    self.suppress_click = true;
+                    self.close_menu();
+                } else {
+                    self.delayed_press = false;
+                    self.delayed_elapsed_ms = 0;
+                    self.suppress_click = false;
+                    match self.popup_mode {
+                        ToolButtonPopupMode::InstantPopup if !self.menu_items.is_empty() => {
+                            self.open_menu();
+                            self.suppress_click = true;
+                        }
+                        ToolButtonPopupMode::MenuButtonPopup
+                            if !self.menu_items.is_empty()
+                                && self
+                                    .popup_arrow_rect()
+                                    .is_some_and(|zone| zone.contains_point(*pos)) =>
+                        {
+                            self.open_menu();
+                            self.suppress_click = true;
+                        }
+                        ToolButtonPopupMode::DelayedPopup => {
+                            self.delayed_press = true;
+                            self.base.set_pressed(true);
+                        }
+                        _ => {
+                            self.base.set_pressed(true);
+                        }
+                    }
+                }
+            }
+            // A press outside the button and its panel closes the menu. The runtime's popup grab
+            // routes such a press here even though it hit nothing, so this arm is what makes the
+            // grab's "outside press dismisses" contract observable.
+            Event::MousePress { button, .. }
+                if self.base.is_enabled()
+                    && *button == crate::event::mouse_button::PRIMARY
+                    && self.menu_open =>
+            {
+                self.suppress_click = true;
+                self.close_menu();
             }
             // A press that wanders off cancels, and one that wanders back re-arms: `pressed` is a
             // continuous quantity, not an edge. Guarded on the grab rather than on `pressed` so
             // that the move which should restore the state is not the one that exits early.
             Event::MouseMove { pos } | Event::PointerMove { pos, .. } if self.base.is_grabbed() => {
-                self.base.set_pressed(self.base.contains_point_with_touch_expansion(*pos));
+                let inside = self.base.contains_point_with_touch_expansion(*pos);
+                self.base.set_pressed(inside);
+                if !inside {
+                    // Dragging off a held press abandons the delayed-popup gesture, the same way
+                    // it abandons an ordinary press-to-click gesture.
+                    self.delayed_press = false;
+                    self.delayed_elapsed_ms = 0;
+                }
             }
             // `is_pressed` still answers for the gesture that is ending, because the base has not
             // yet cleared it (the base records after this match). A release inside is an
-            // activation; a release outside was already cancelled by the move arm, so the guard
-            // reads the same fact the arm would.
+            // activation; a release outside was already cancelled by the move arm.
             Event::MouseRelease { .. } | Event::PointerRelease { .. }
                 if self.base.is_grabbed() && self.base.is_pressed() =>
             {
-                self.click();
+                if !self.suppress_click {
+                    self.click();
+                }
+                self.suppress_click = false;
+                self.delayed_press = false;
+                self.delayed_elapsed_ms = 0;
+            }
+            Event::MouseRelease { .. } | Event::PointerRelease { .. } => {
+                self.suppress_click = false;
+                self.delayed_press = false;
+                self.delayed_elapsed_ms = 0;
+            }
+            Event::KeyPress { key, .. } if *key == key_codes::ESCAPE && self.menu_open => {
+                self.close_menu();
             }
             Event::KeyPress { key: 13 | 32, .. } if self.base.is_enabled() => {
                 self.click();
@@ -757,7 +996,9 @@ impl Draw for ToolButton {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's
         // mutex is not re-entrant.
-        let style = self.base.style();
+        // The style is cloned rather than borrowed because the icon decode below (`resolved_icon`)
+        // needs `&mut self`; a borrow of the base would keep the whole widget borrowed through it.
+        let style = self.base.style().clone();
         let theme = crate::style::resolved_theme_style_shared("tool_button");
         let themed_bg = theme.as_ref().and_then(|resolved| resolved.background_color);
         let themed_text = theme.as_ref().and_then(|resolved| resolved.text_color);
@@ -856,10 +1097,6 @@ impl Draw for ToolButton {
         // The **effective font** — the resolved theme/caller font — not a hardcoded default, so
         // the label honours the theme body font and the user's text scale (D09-STYLE-01).
         let font = effective_font(self.style());
-        let has_popup = matches!(
-            self.popup_mode,
-            ToolButtonPopupMode::MenuButtonPopup | ToolButtonPopupMode::InstantPopup
-        );
         if let Some(box_) = self.label_rect() {
             // `draw_text_line` is the primitive that both fits the label to the box and centres it
             // **vertically** in it -- `draw_text_fitted` alone leaves the origin at `bounds.y`, so a
@@ -872,16 +1109,13 @@ impl Draw for ToolButton {
             // half a box to the leading side.
             context.draw_text_line_cow(box_, &self.text, font, fg, HorizontalAlignment::Center);
         }
-        if has_popup {
+        if let Some(arrow_box) = self.popup_arrow_rect() {
             // The arrow lives in the trailing strip `content_box` already removed from the content,
-            // so its x is derived from that strip rather than from another literal. It is a
-            // `ChevronDown` **icon outline**, not the `▾` text glyph (U+25BE is covered by no
+            // so its rectangle comes from that one derivation rather than from another literal. It
+            // is a `ChevronDown` **icon outline**, not the `▾` text glyph (U+25BE is covered by no
             // bundled face, so the glyph drew as an 8x8 bitmap block), centred in the strip so it
             // reads on the button's middle line like the label.
-            let strip = dimensions::TOOL_BUTTON_POPUP_ARROW_RESERVE as i32;
-            let arrow_x = rect.x + rect.width as i32 - strip;
-            let arrow_box = Rect::new(arrow_x, rect.y, strip.max(1) as u32, rect.height.max(1));
-            let side = strip as u32;
+            let side = dimensions::TOOL_BUTTON_POPUP_ARROW_RESERVE;
             crate::widget::draw_icon_centered(
                 context,
                 arrow_box,
@@ -889,6 +1123,28 @@ impl Draw for ToolButton {
                 fg,
                 IconName::ChevronDown,
             );
+        }
+
+        // ── Draw the menu ──
+        //
+        // Same shared painter as `MenuButton`, and the same reveal rule: the panel is painted
+        // while the reveal has anything left to show, so a *closing* popup animates out instead
+        // of being cut off on its first frame.
+        if self.menu_open || !self.reveal.is_closed() {
+            let panel = self.menu_rect();
+            let revealed = self.reveal.revealed(
+                panel,
+                RevealDirection::Down,
+                PopupReveal::travel_cap_for(Size::new(panel.width, panel.height)),
+            );
+            let clipped = !self.reveal.is_closed();
+            if clipped {
+                context.push_clip(revealed.x, revealed.y, revealed.width, revealed.height);
+            }
+            draw_menu_panel(context, panel, &self.menu_items, &[], &style, accent);
+            if clipped {
+                context.pop_clip();
+            }
         }
     }
 }
@@ -903,6 +1159,7 @@ mod tests {
     use crate::render::PaintBackend;
     use crate::render::RenderContext;
     use crate::widget::capability::{CapabilityAccessError, CapabilityValue, WidgetProperties};
+    use crate::widget::menu_toolbar::menu_button::MenuItem;
     use crate::widget::{Draw, IconName, IconSource, Widget, WidgetKind};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -1088,6 +1345,118 @@ mod tests {
 
         btn.set_popup_mode(ToolButtonPopupMode::DelayedPopup);
         assert_eq!(btn.popup_mode(), ToolButtonPopupMode::DelayedPopup);
+    }
+
+    // ── 6b. Popup behaviour ──
+
+    fn two_rows() -> Vec<MenuItem> {
+        vec![MenuItem::new(1, "Open"), MenuItem::new(2, "Save")]
+    }
+
+    /// An `InstantPopup` press opens the menu and takes the popup grab; a button with no menu
+    /// keeps its plain push-button behaviour even in that mode.
+    #[test]
+    fn tool_button_instant_popup_press_opens_and_takes_the_grab() {
+        let mut btn = ToolButton::new("Menu", rect());
+        btn.set_popup_mode(ToolButtonPopupMode::InstantPopup);
+        btn.set_menu(two_rows());
+        btn.handle_event(&Event::mouse_press(15, 25, 1));
+
+        assert!(btn.is_menu_open());
+        assert!(btn.has_open_popup());
+        assert!(btn.is_animating(), "the opening reveal owes frames");
+        assert_eq!(btn.menu_items().len(), 2);
+        assert!(!btn.geometry().contains_point(Point::new(500, 500)));
+
+        let mut plain = ToolButton::new("Plain", rect());
+        plain.set_popup_mode(ToolButtonPopupMode::InstantPopup);
+        plain.handle_event(&Event::mouse_press(15, 25, 1));
+        assert!(!plain.is_menu_open(), "an empty menu must not turn a push button into a popup");
+    }
+
+    /// A press outside the popup closes it, which is what the runtime's grab route delivers.
+    #[test]
+    fn tool_button_outside_press_closes_the_popup() {
+        let mut btn = ToolButton::new("Menu", rect());
+        btn.set_popup_mode(ToolButtonPopupMode::InstantPopup);
+        btn.set_menu(two_rows());
+        btn.open_menu();
+        assert!(btn.is_menu_open());
+
+        btn.handle_event(&Event::mouse_press(500, 500, 1));
+        assert!(!btn.is_menu_open());
+        assert!(!btn.has_open_popup());
+    }
+
+    /// A `MenuButtonPopup` opens from its arrow strip while its body still fires `triggered`.
+    #[test]
+    fn tool_button_menu_button_popup_arrow_opens_and_the_body_still_triggers() {
+        let mut btn = ToolButton::new("Menu", Rect::new(0, 0, 120, 40));
+        btn.set_popup_mode(ToolButtonPopupMode::MenuButtonPopup);
+        btn.set_menu(two_rows());
+
+        let arrow = btn.popup_arrow_rect().expect("the arrow strip is reserved");
+        btn.handle_event(&Event::mouse_press(arrow.x + 1, arrow.y + 1, 1));
+        assert!(btn.is_menu_open());
+        assert!(btn.has_open_popup());
+
+        btn.handle_event(&Event::mouse_release(arrow.x + 1, arrow.y + 1, 1));
+        btn.close_menu();
+
+        let triggered = Arc::new(AtomicUsize::new(0));
+        let count = triggered.clone();
+        btn.triggered.connect(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+        });
+        btn.handle_event(&Event::mouse_press(5, 5, 1));
+        btn.handle_event(&Event::mouse_release(5, 5, 1));
+        assert_eq!(triggered.load(Ordering::SeqCst), 1);
+        assert!(!btn.is_menu_open(), "the body performs the main action, not the popup");
+    }
+
+    /// A `DelayedPopup` opens only after the hold threshold, accumulated by `tick`.
+    #[test]
+    fn tool_button_delayed_popup_opens_after_the_hold_threshold() {
+        let mut btn = ToolButton::new("Menu", rect());
+        assert_eq!(btn.popup_mode(), ToolButtonPopupMode::DelayedPopup);
+        btn.set_menu(vec![MenuItem::new(1, "Open")]);
+
+        btn.handle_event(&Event::mouse_press(15, 25, 1));
+        assert!(!btn.is_menu_open());
+        assert!(btn.is_animating(), "a pending held press owes frames");
+
+        assert!(btn.tick(499), "one millisecond short of the threshold");
+        assert!(!btn.is_menu_open());
+        btn.tick(1);
+        assert!(btn.is_menu_open());
+        assert!(btn.has_open_popup());
+
+        // The release ends the held gesture; it must not also fire the main action or close
+        // the menu it just produced.
+        btn.handle_event(&Event::mouse_release(15, 25, 1));
+        assert!(btn.is_menu_open());
+    }
+
+    /// Every mode keeps the capability contract it had before the popup existed.
+    #[test]
+    fn tool_button_popup_modes_keep_the_capability_write_back() {
+        let modes = [
+            ToolButtonPopupMode::DelayedPopup,
+            ToolButtonPopupMode::MenuButtonPopup,
+            ToolButtonPopupMode::InstantPopup,
+        ];
+        for mode in modes {
+            let mut btn = ToolButton::new("Menu", rect());
+            btn.set_popup_mode(mode);
+            btn.set("text", CapabilityValue::String(String::from("Renamed")))
+                .expect("text is writable");
+            assert_eq!(btn.get("text"), Ok(CapabilityValue::String(String::from("Renamed"))));
+            btn.set_checkable(true);
+            btn.set("checked", CapabilityValue::Bool(true)).expect("checked is writable");
+            assert_eq!(btn.get("checked"), Ok(CapabilityValue::Bool(true)));
+            assert!(btn.menu_items().is_empty());
+            assert!(!btn.is_menu_open());
+        }
     }
 
     /// The popup arrow is centred on the button's middle line, not half a line below it.

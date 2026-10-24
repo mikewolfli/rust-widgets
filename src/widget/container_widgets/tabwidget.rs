@@ -14,6 +14,7 @@
 //! this arithmetic (the stripped-profile arm already computed it that way).
 
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
+use crate::event::dnd::{DragSource, DropEffect, DropTarget};
 use crate::event::{DragPayload, DragSession, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -48,7 +49,14 @@ pub struct TabWidget {
     /// makes "click" and "drag" the same gesture, so a stray pixel of movement while
     /// selecting a tab would silently reorder it.
     drag_session: Option<DragSession>,
+    /// The slot the carried tab occupies now, updated as the live preview reorders the strip.
     dragging_from: Option<usize>,
+    /// The slot the carried tab occupied when the live gesture began.
+    ///
+    /// Kept beside [`Self::dragging_from`] so a coordinator drop can tell whether the two
+    /// paths observed the same gesture: if the payload's own index matches this origin, the
+    /// live path has already reordered and the drop must use the current slot instead.
+    live_drag_origin: Option<usize>,
     /// Emitted with the new index when the selected tab changes; not emitted
     /// when the same index is re-applied.
     pub current_changed: Signal1<usize>,
@@ -64,6 +72,32 @@ pub struct TabWidget {
     /// could neither turn reordering on nor learn that it had happened. The drag gesture in
     /// [`TabWidget::handle_event`] is what emits it.
     pub tab_moved: Signal1<(usize, usize)>,
+    /// Emitted with the effect of a completed tab drag.
+    ///
+    /// The strip reorders as the pointer moves, so a `Move` reports that the gesture
+    /// committed; `None` reports that the session ended without a committed drop.
+    pub drag_finished: Signal1<DropEffect>,
+    /// The tab a coordinator drag taken from this strip started on.
+    ///
+    /// Consumed by `on_drag_finished`: a transfer to another strip inserted the tab (and its
+    /// page) there, so this strip's copy has to go. The live pointer path keeps its own
+    /// [`Self::dragging_from`], which tracks a slot that moves while the gesture is in flight;
+    /// this one is the press-time slot the payload named.
+    pending_drag_tab: core::cell::Cell<Option<usize>>,
+    /// Whether the drop that ended the current gesture was committed **by this strip**.
+    ///
+    /// A reorder finishes in `on_drop`, so the source half must not remove the tab a second
+    /// time. A transfer commits in the target's strip, leaving this false — which is exactly
+    /// when the source's copy has to go.
+    drop_committed_here: core::cell::Cell<bool>,
+    /// Emitted when a context menu is requested on a tab.
+    ///
+    /// The payload is the request position in window coordinates; the widget only emits it
+    /// when the point is inside a tab, because a menu about a tab makes no sense on the
+    /// content page. The host supplies the menu (close, pin, and whatever else its tab
+    /// policy defines) and resolves the tab from the position with the same geometry the
+    /// strip paints.
+    pub context_menu_requested: Signal1<Point>,
     /// Optional shared registry for child widget forwarding.
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
     /// Memoised preferred width per tab, keyed by the inputs the measurement reads.
@@ -287,9 +321,14 @@ impl TabWidget {
             movable: false,
             drag_session: None,
             dragging_from: None,
+            live_drag_origin: None,
             current_changed: Signal1::new(),
             tab_close_requested: Signal1::new(),
             tab_moved: Signal1::new(),
+            drag_finished: Signal1::new(),
+            pending_drag_tab: core::cell::Cell::new(None),
+            drop_committed_here: core::cell::Cell::new(false),
+            context_menu_requested: Signal1::new(),
             registry: None,
             tab_width_cache: RefCell::new(TabWidthCache::default()),
         }
@@ -357,12 +396,18 @@ impl TabWidget {
         if index < self.tabs.len() {
             let before = self.current_index;
             if let Some(widget_id) = self.tabs[index].widget {
-                self.base.remove_child_linked(widget_id);
-                // The page is no longer this container's content, so it must stop painting where
-                // the tab used to be. Removing it from the child list is not enough: a detached
-                // control keeps its own visibility flag, and a host that renders by id would
-                // still draw it over whatever the tab shows now.
-                crate::set_widget_visible(widget_id, false);
+                // Only a page this strip still owns is hidden. A cross-strip transfer has
+                // already reparented it into the target's child list (the drop commits before
+                // the source is told), so unlinking would clear the new parent and hiding would
+                // blank the page in the strip that just received it.
+                let was_ours = self.base.remove_child_linked(widget_id);
+                if was_ours {
+                    // The page is no longer this container's content, so it must stop painting
+                    // where the tab used to be. Removing it from the child list is not enough: a
+                    // detached control keeps its own visibility flag, and a host that renders by
+                    // id would still draw it over whatever the tab shows now.
+                    crate::set_widget_visible(widget_id, false);
+                }
             }
             self.tabs.remove(index);
             if self.current_index >= index && self.current_index > 0 {
@@ -640,6 +685,7 @@ impl TabWidget {
         let payload = DragPayload::new(TAB_DRAG_TYPE, index.to_string()).with_origin(pos);
         self.drag_session = Some(DragSession::begin(payload, pos));
         self.dragging_from = Some(index);
+        self.live_drag_origin = Some(index);
     }
     /// Reorders the tabs as the pointer moves past a neighbour's midpoint.
     ///
@@ -684,14 +730,16 @@ impl TabWidget {
     ///
     /// The session is closed without a further move: `update_tab_drag` already placed the
     /// tab under the pointer, so acting on the release position again would double-apply
-    /// the last step.
+    /// the last step. The carried slot is retained until `on_drag_finished`, because a
+    /// coordinator that observed the same gesture still has to commit against it.
     fn end_tab_drag(&mut self) {
-        self.cancel_tab_drag();
+        self.drag_session = None;
     }
     /// Drops any in-progress move gesture without reordering further.
     fn cancel_tab_drag(&mut self) {
         self.drag_session = None;
         self.dragging_from = None;
+        self.live_drag_origin = None;
     }
     /// Returns tab rectangle at index.
     ///
@@ -1026,6 +1074,42 @@ impl Widget for TabWidget {
         crate::core::Size::new(300, 200)
     }
 
+    /// Opts a movable strip into the runtime's drag coordinator as a source.
+    fn drag_source_mut(&mut self) -> Option<&mut dyn DragSource> {
+        if !self.movable {
+            return None;
+        }
+        // A coordinator press calls this hook before it records the payload. When no live
+        // pointer gesture is open, any carried slot still here belongs to an older gesture
+        // and must be forgotten, or the drop would commit against a stale tab.
+        if self.drag_session.is_none() {
+            self.dragging_from = None;
+            self.live_drag_origin = None;
+        }
+        Some(self)
+    }
+
+    /// Opts a movable strip into the runtime's drag coordinator as a drop target.
+    fn drop_target_mut(&mut self) -> Option<&mut dyn DropTarget> {
+        if self.movable {
+            Some(self)
+        } else {
+            None
+        }
+    }
+
+    /// Emits a context-menu request only when a tab is under the point.
+    ///
+    /// A request on the content page belongs to the page's own control (if any), not to the
+    /// strip, so answering `false` there keeps the host from showing a tab menu over content.
+    fn context_menu_event(&mut self, pos: Point) -> bool {
+        if self.tab_at_position(pos).is_none() {
+            return false;
+        }
+        self.context_menu_requested.emit(pos);
+        true
+    }
+
     /// Moves the tab widget and re-places the current page.
     ///
     /// A layout positions the tab widget through the same geometry entry point, so this is
@@ -1067,8 +1151,132 @@ impl Widget for TabWidget {
                     CapabilityValue::UInt(v.1 as u64),
                 ]))
             })),
+            "context_menu_requested" => Some(EventSignalRef::mapped(
+                "context_menu_requested",
+                &self.context_menu_requested,
+                |v| CapabilityValue::String(format!("{v:?}")),
+            )),
+            "drag_finished" => {
+                Some(EventSignalRef::mapped("drag_finished", &self.drag_finished, |v| {
+                    CapabilityValue::String(v.as_str().to_string())
+                }))
+            }
             _ => None,
         }
+    }
+}
+
+/// A tab drag carries the tab's index in the item id and its caption in the label.
+///
+/// The index is the reorder key the drop target reads back, so a coordinator-only host that
+/// never drives the pointer path can still reorder the strip. The caption and the page travel in
+/// the label and in [`DragPayload::attached`] because a *different* strip inserts those, and an
+/// index means nothing outside the strip that produced it.
+impl DragSource for TabWidget {
+    fn drag_payload(&self, pos: Point) -> Option<DragPayload> {
+        if !self.movable {
+            return None;
+        }
+        let index = self.tab_at_position(pos)?;
+        let tab = self.tabs.get(index)?;
+        if !tab.enabled {
+            return None;
+        }
+        self.pending_drag_tab.set(Some(index));
+        self.drop_committed_here.set(false);
+        let payload = DragPayload::new(TAB_DRAG_TYPE, index.to_string())
+            .with_label(tab.title.clone())
+            .with_origin(pos);
+        let payload = match tab.widget {
+            Some(page) => payload.with_attached(page),
+            None => payload,
+        };
+        Some(payload)
+    }
+
+    /// Ends the gesture, removing the source copy of a tab that was transferred away.
+    ///
+    /// A reorder inside this strip already committed in `on_drop`, so nothing is removed. A
+    /// transfer inserted the tab (and reparented its page) in another strip and reported `Move`,
+    /// which is the signal that this strip's copy has to go; a refusal reports `None` and the tab
+    /// stays where it was.
+    fn on_drag_finished(&mut self, effect: DropEffect) {
+        let moved_away = effect.consumes_source() && !self.drop_committed_here.get();
+        if moved_away {
+            if let Some(index) = self.pending_drag_tab.take() {
+                self.remove_tab(index);
+            }
+        }
+        self.pending_drag_tab.set(None);
+        self.drop_committed_here.set(false);
+        self.cancel_tab_drag();
+        self.drag_finished.emit(effect);
+    }
+}
+
+/// A dropped tab moves to the tab under the pointer.
+///
+/// # Reorder versus transfer
+///
+/// A payload taken from this strip names one of its tabs, so the drop moves it — using the live
+/// path's current slot when both paths observed the same gesture. A payload taken from *another*
+/// strip names an index that means nothing here, so the drop inserts the carried caption at the
+/// tab under the pointer and adopts the page it carries.
+impl DropTarget for TabWidget {
+    fn can_accept(&self, payload: &DragPayload) -> bool {
+        if !self.movable || !payload.is_type(TAB_DRAG_TYPE) {
+            return false;
+        }
+        if payload.came_from(self.base.id()) {
+            return payload.item_id.parse::<usize>().is_ok_and(|index| index < self.tabs.len());
+        }
+        !payload.label.is_empty()
+    }
+
+    fn on_drop(&mut self, payload: &DragPayload, pos: Point) -> DropEffect {
+        if !self.can_accept(payload) {
+            return DropEffect::None;
+        }
+        let Some(target) = self.tab_at_position(pos) else {
+            return DropEffect::None;
+        };
+        if payload.came_from(self.base.id()) {
+            let Ok(original) = payload.item_id.parse::<usize>() else {
+                return DropEffect::None;
+            };
+            // The pointer path reorders live and records the carried tab's current slot in
+            // `dragging_from`. Using that slot when its origin matches the payload keeps the
+            // coordinator's commit idempotent when both paths observed the same gesture;
+            // otherwise the payload's own index is still the tab's slot.
+            let from = match (self.live_drag_origin, self.dragging_from) {
+                (Some(origin), Some(current)) if origin == original => current,
+                _ => original,
+            };
+            if from >= self.tabs.len() {
+                return DropEffect::None;
+            }
+            if !self.move_tab(from, target) {
+                // A drop onto the dragged tab itself is accepted without moving anything.
+                if from != target {
+                    return DropEffect::None;
+                }
+            }
+        } else {
+            // `insert_tab` clamps and links the page: `add_child_linked` also takes the page out
+            // of the strip it came from, which is why the source's later `remove_tab` must not
+            // unlink it again.
+            self.insert_tab(target, payload.label.clone(), payload.attached);
+        }
+        self.drop_committed_here.set(true);
+        DropEffect::Move
+    }
+
+    /// Highlights the band the tab would land on.
+    fn preview_rect(&self, payload: &DragPayload, pos: Point) -> Option<Rect> {
+        if !self.can_accept(payload) {
+            return None;
+        }
+        self.tab_rect(self.tab_at_position(pos)?)
     }
 }
 
@@ -1235,7 +1443,11 @@ impl EventHandler for TabWidget {
         let allow_child_event = match event {
             Event::MousePress { pos, .. }
             | Event::MouseRelease { pos, .. }
-            | Event::MouseMove { pos } => self.content_rect().contains(*pos),
+            | Event::MouseMove { pos }
+            // A menu request is positional, like the pointer events above: one issued on
+            // the strip is about a tab, so forwarding it to the page would offer the page a
+            // menu request it never received the click for.
+            | Event::ContextMenu { pos } => self.content_rect().contains(*pos),
             _ => true,
         };
         // Forward content events only to the current widget.
@@ -1475,6 +1687,24 @@ mod tests {
     use crate::widget::svg::{render_to_svg, render_widget_to_svg};
     use crate::widget::IconName;
     use std::sync::{Arc, Mutex};
+
+    /// A request on the strip is a tab request; the same request on the page is not.
+    #[test]
+    fn a_context_menu_request_needs_a_tab_under_the_point() {
+        let mut tabs = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tabs.add_tab("One".to_string(), None);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        tabs.context_menu_requested.connect_ref(move |pos: &Point| {
+            sink.lock().unwrap().push(*pos);
+        });
+
+        let on_tab = Point::new(5, 5);
+        assert!(tabs.context_menu_event(on_tab));
+        // Below the strip is the content page: not a tab request.
+        assert!(!tabs.context_menu_event(Point::new(150, 150)));
+        assert_eq!(*seen.lock().unwrap(), vec![on_tab]);
+    }
 
     /// Helper to create unique test ObjectIds.
     fn wid1() -> ObjectId {
@@ -2552,6 +2782,177 @@ mod tests {
         tw.set_movable(false);
         tw.handle_event(&Event::MouseMove { pos: Point::new(third.x + third.width as i32 / 2, y) });
         assert_eq!(titles(&tw), vec!["T0", "T1", "T2"]);
+    }
+
+    /// Unmounts a widget registered by a test, even on panic.
+    #[cfg(not(alloc_frugal))]
+    struct MountGuard(crate::core::ObjectId);
+
+    #[cfg(not(alloc_frugal))]
+    impl Drop for MountGuard {
+        fn drop(&mut self) {
+            crate::widget::runtime::unregister(self.0);
+        }
+    }
+
+    /// A coordinator-only press, move and release reorders the strip and reports `Move` to
+    /// the source, without the pointer handler ever seeing the gesture.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn tabwidget_coordinator_reorders_a_dragged_tab() {
+        use crate::event::mouse_button::PRIMARY;
+        use crate::widget::runtime::{register, with_widget_mut, DragCoordinator};
+        use std::sync::{Arc, Mutex};
+
+        let tw = movable_strip(3);
+        let first = tw.tab_rect(0).expect("tab 0 has a band");
+        let third = tw.tab_rect(2).expect("tab 2 has a band");
+        let press = Point::new(first.x + first.width as i32 / 2, first.y + 5);
+        let drop = Point::new(third.x + third.width as i32 / 2, third.y + 5);
+
+        let finished = Arc::new(Mutex::new(None));
+        let sink = Arc::clone(&finished);
+        tw.drag_finished.connect_ref(move |effect: &DropEffect| {
+            *sink.lock().unwrap() = Some(*effect);
+        });
+        let id = register(crate::compat::Box::new(tw)).expect("mount the strip");
+        let _guard = MountGuard(id);
+
+        let viewport = Rect::new(0, 0, 800, 300);
+        let mut coordinator = DragCoordinator::new();
+        assert_eq!(
+            coordinator.on_event(&Event::mouse_press(press.x, press.y, PRIMARY), viewport),
+            None
+        );
+        assert_eq!(coordinator.on_event(&Event::mouse_move(drop.x, drop.y), viewport), None);
+        assert_eq!(
+            coordinator.on_event(&Event::mouse_release(drop.x, drop.y, PRIMARY), viewport),
+            Some(DropEffect::Move)
+        );
+
+        let observed = with_widget_mut(id, |widget| {
+            let tw = (widget as &mut dyn core::any::Any)
+                .downcast_mut::<TabWidget>()
+                .expect("the mounted control is a tab widget");
+            (titles(tw), tw.selected_index())
+        })
+        .expect("the strip is still mounted");
+        assert_eq!(observed.0, vec!["T1", "T2", "T0"]);
+        assert_eq!(observed.1, Some(2), "the selection follows the tab that moved");
+        assert_eq!(*finished.lock().unwrap(), Some(DropEffect::Move));
+    }
+
+    /// A tab dragged onto a *second* strip moves there with its page.
+    ///
+    /// The payload's index addresses the source strip's tabs, so the target inserts the carried
+    /// caption and adopts the attached page; the source — told the effect was `Move` — removes its
+    /// own copy without unlinking the page it no longer owns.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn tabwidget_a_tab_dragged_to_another_strip_moves_with_its_page() {
+        use crate::event::mouse_button::PRIMARY;
+        use crate::widget::runtime::{register, with_widget_mut, DragCoordinator};
+
+        let mut source = TabWidget::new(Rect::new(0, 0, 600, 200));
+        let page = register(crate::compat::Box::new(crate::widget::Label::new(
+            "page".to_string(),
+            Rect::new(0, 0, 100, 40),
+        )))
+        .expect("mount the page");
+        let _page_guard = MountGuard(page);
+        source.add_tab("T0".to_string(), Some(page));
+        source.add_tab("T1".to_string(), None);
+        source.set_movable(true);
+        let first = source.tab_rect(0).expect("tab 0 has a band");
+        let press = Point::new(first.x + first.width as i32 / 2, first.y + 5);
+
+        let mut target = TabWidget::new(Rect::new(0, 300, 600, 200));
+        target.add_tab("X0".to_string(), None);
+        target.set_movable(true);
+        let slice = target.tab_rect(0).expect("the target has a band");
+        let drop = Point::new(slice.x + slice.width as i32 / 2, slice.y + 5);
+
+        let source_id = register(crate::compat::Box::new(source)).expect("mount the source");
+        let _source_guard = MountGuard(source_id);
+        let target_id = register(crate::compat::Box::new(target)).expect("mount the target");
+        let _target_guard = MountGuard(target_id);
+
+        let viewport = Rect::new(0, 0, 700, 600);
+        let mut coordinator = DragCoordinator::new();
+        assert_eq!(
+            coordinator.on_event(&Event::mouse_press(press.x, press.y, PRIMARY), viewport),
+            None
+        );
+        assert_eq!(coordinator.on_event(&Event::mouse_move(drop.x, drop.y), viewport), None);
+        assert_eq!(
+            coordinator.on_event(&Event::mouse_release(drop.x, drop.y, PRIMARY), viewport),
+            Some(DropEffect::Move)
+        );
+
+        let (source_titles, target_titles) = with_widget_mut(source_id, |widget| {
+            let source = (widget as &mut dyn core::any::Any)
+                .downcast_mut::<TabWidget>()
+                .expect("a tab widget");
+            titles(source)
+        })
+        .and_then(|source_titles| {
+            with_widget_mut(target_id, |widget| {
+                let target = (widget as &mut dyn core::any::Any)
+                    .downcast_mut::<TabWidget>()
+                    .expect("a tab widget");
+                (source_titles, titles(target))
+            })
+        })
+        .expect("both strips are still mounted");
+        assert_eq!(source_titles, vec!["T1"], "the source copy is gone");
+        assert_eq!(target_titles, vec!["T0", "X0"], "the tab landed before tab 0");
+
+        // The page followed the tab: it is the target's child now, not the source's.
+        let owned = |id| {
+            with_widget_mut(id, |widget| widget.base().children().to_vec()).unwrap_or_default()
+        };
+        assert!(!owned(source_id).contains(&page), "the source released the page");
+        assert!(owned(target_id).contains(&page), "the target adopted the page");
+    }
+
+    /// A host that feeds the same gesture to both the pointer handler and the coordinator
+    /// must reorder once, not twice.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn tabwidget_a_live_drag_and_the_coordinator_do_not_double_reorder() {
+        use crate::event::mouse_button::PRIMARY;
+        use crate::widget::runtime::{register, with_widget_mut, DragCoordinator};
+
+        let tw = movable_strip(3);
+        let first = tw.tab_rect(0).expect("tab 0 has a band");
+        let third = tw.tab_rect(2).expect("tab 2 has a band");
+        let press = Point::new(first.x + first.width as i32 / 2, first.y + 5);
+        let drop = Point::new(third.x + third.width as i32 / 2, third.y + 5);
+        let id = register(crate::compat::Box::new(tw)).expect("mount the strip");
+        let _guard = MountGuard(id);
+
+        let viewport = Rect::new(0, 0, 800, 300);
+        let mut coordinator = DragCoordinator::new();
+        let press_event = Event::mouse_press(press.x, press.y, PRIMARY);
+        let move_event = Event::mouse_move(drop.x, drop.y);
+        let release_event = Event::mouse_release(drop.x, drop.y, PRIMARY);
+
+        let _ = with_widget_mut(id, |widget| widget.handle_event(&press_event));
+        let _ = coordinator.on_event(&press_event, viewport);
+        let _ = coordinator.on_event(&move_event, viewport);
+        let _ = with_widget_mut(id, |widget| widget.handle_event(&move_event));
+        let effect = coordinator.on_event(&release_event, viewport);
+        let _ = with_widget_mut(id, |widget| widget.handle_event(&release_event));
+
+        assert_eq!(effect, Some(DropEffect::Move));
+        let observed = with_widget_mut(id, |widget| {
+            let tw = (widget as &mut dyn core::any::Any)
+                .downcast_mut::<TabWidget>()
+                .expect("the mounted control is a tab widget");
+            titles(tw)
+        })
+        .expect("the strip is still mounted");
+        assert_eq!(observed, vec!["T1", "T2", "T0"], "the commit must not move the tab again");
     }
 
     #[test]

@@ -3,7 +3,15 @@
 
 //! DiffViewer widget.
 
+/// The top of the first diff row below the column headings.
+const ROW_TOP: i32 = 34;
+/// The pitch between diff rows.
+const ROW_HEIGHT: i32 = 16;
+/// How much room below a row's top its height still needs.
+const ROW_BOTTOM_INSET: i32 = 14;
+
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::event::wheel::WheelScroll;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -57,6 +65,11 @@ pub struct DiffViewer {
     right: String,
     lines: Vec<DiffLine>,
     selected_index: Option<usize>,
+    /// The first diff row the viewport paints.
+    ///
+    /// The paint path used to stop at a fixed twelve rows, so a longer comparison was not
+    /// reachable. This is the scroll state the wheel drives.
+    first_visible_line: usize,
     /// Emitted after compare. Payload is changed-lines count.
     pub compared: Signal1<usize>,
 }
@@ -70,6 +83,7 @@ impl DiffViewer {
             right: String::new(),
             lines: Vec::new(),
             selected_index: None,
+            first_visible_line: 0,
             compared: Signal1::new(),
         }
     }
@@ -78,6 +92,7 @@ impl DiffViewer {
     pub fn set_texts(&mut self, left: impl Into<String>, right: impl Into<String>) {
         self.left = left.into();
         self.right = right.into();
+        self.first_visible_line = 0;
         self.recompute();
     }
 
@@ -106,27 +121,76 @@ impl DiffViewer {
         self.lines.iter().filter(|line| line.kind != DiffKind::Equal).count()
     }
 
+    /// How many diff rows fit below the column headings.
+    ///
+    /// At least one, so a short viewer still paints a row instead of scrolling everything away.
+    fn visible_line_count(&self) -> usize {
+        let usable = self.geometry().height as i32 - ROW_TOP - ROW_BOTTOM_INSET;
+        if usable < 0 {
+            return 1;
+        }
+        (usable / ROW_HEIGHT + 1) as usize
+    }
+
+    /// The first row the viewport actually starts at, clamped to the last full window.
+    fn visible_start(&self) -> usize {
+        let max_first = self.lines.len().saturating_sub(self.visible_line_count());
+        self.first_visible_line.min(max_first)
+    }
+
+    /// Scrolls the viewport by `lines` rows toward the end of the comparison.
+    ///
+    /// Positive values reveal later rows, negative values reveal earlier ones. Returns whether the
+    /// viewport moved, so the caller repaints only on a change.
+    fn scroll_lines(&mut self, lines: i32) -> bool {
+        if lines == 0 {
+            return false;
+        }
+        let max_first = self.lines.len().saturating_sub(self.visible_line_count());
+        let next =
+            (self.first_visible_line as i64 + lines as i64).clamp(0, max_first as i64) as usize;
+        if next == self.first_visible_line {
+            return false;
+        }
+        self.first_visible_line = next;
+        true
+    }
+
     fn recompute(&mut self) {
         let left_lines: Vec<&str> = self.left.lines().collect();
         let right_lines: Vec<&str> = self.right.lines().collect();
-        let max_len = left_lines.len().max(right_lines.len());
 
         self.lines.clear();
-        for idx in 0..max_len {
-            let l = left_lines.get(idx).copied();
-            let r = right_lines.get(idx).copied();
-            let kind = match (l, r) {
-                (Some(a), Some(b)) if a == b => DiffKind::Equal,
-                (Some(_), Some(_)) => DiffKind::Changed,
-                (Some(_), None) => DiffKind::Removed,
-                (None, Some(_)) => DiffKind::Added,
-                (None, None) => DiffKind::Equal,
-            };
-            self.lines.push(DiffLine {
-                left: l.map(|s| s.to_string()),
-                right: r.map(|s| s.to_string()),
-                kind,
-            });
+
+        // # Size guard
+        //
+        // The Myers trace keeps one `V` snapshot per edit distance `D`, so its memory is
+        // O((N + M) * D) and a pair of large, entirely different documents would spend it
+        // without bound. When the line grid exceeds this budget the previous positional
+        // comparison is kept: it misreports insertions as changes, but it is linear, never
+        // allocates a trace, and still produces a usable row list. The full-clone of both
+        // inputs below is a separate, pre-existing cost and is deliberately not addressed
+        // here.
+        if (left_lines.len() + 1).saturating_mul(right_lines.len() + 1) > 4_000_000 {
+            let max_len = left_lines.len().max(right_lines.len());
+            for idx in 0..max_len {
+                let l = left_lines.get(idx).copied();
+                let r = right_lines.get(idx).copied();
+                let kind = match (l, r) {
+                    (Some(a), Some(b)) if a == b => DiffKind::Equal,
+                    (Some(_), Some(_)) => DiffKind::Changed,
+                    (Some(_), None) => DiffKind::Removed,
+                    (None, Some(_)) => DiffKind::Added,
+                    (None, None) => DiffKind::Equal,
+                };
+                self.lines.push(DiffLine {
+                    left: l.map(|s| s.to_string()),
+                    right: r.map(|s| s.to_string()),
+                    kind,
+                });
+            }
+        } else {
+            self.lines = build_diff_lines(&left_lines, &right_lines);
         }
 
         self.selected_index = if self.lines.is_empty() { None } else { Some(0) };
@@ -134,6 +198,163 @@ impl DiffViewer {
         self.base.request_layout();
         self.base.request_redraw();
     }
+}
+
+/// One primitive step of an edit script.
+///
+/// The indexes are line indexes into the left (`Equal`/`Delete`) and right
+/// (`Equal`/`Insert`) snapshots, so the script is a lossless description of how
+/// the left document turns into the right one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditOp {
+    /// Left line `l` and right line `r` are the same line.
+    Equal(usize, usize),
+    /// Left line `l` has no counterpart on the right.
+    Delete(usize),
+    /// Right line `r` has no counterpart on the left.
+    Insert(usize),
+}
+
+/// Computes a shortest edit script with Myers' O(ND) greedy algorithm.
+///
+/// `V[k]` tracks the furthest `x` reached on diagonal `k = x - y`; one snapshot of
+/// `V` is saved per round `d`, which is what the linear backtrack needs to recover
+/// the steps. The script is assembled backwards from the end and then reversed.
+fn myers_diff(a: &[&str], b: &[&str]) -> Vec<EditOp> {
+    let n = a.len();
+    let m = b.len();
+    let max = n + m;
+
+    // `V` is indexed by `k` shifted by `offset`. The two spare slots cover the
+    // `k - 1` / `k + 1` probes at the widest round and keep the empty-input case
+    // (`max == 0`) in bounds.
+    let offset = max + 1;
+    let mut v = vec![0isize; 2 * max + 3];
+    let mut trace: Vec<Vec<isize>> = Vec::new();
+    let mut reached = false;
+
+    for d in 0..=max {
+        trace.push(v.clone());
+        let d = d as isize;
+        let mut k = -d;
+        while k <= d {
+            let down = (k + offset as isize + 1) as usize;
+            let right = (k + offset as isize - 1) as usize;
+            let mut x =
+                if k == -d || (k != d && v[right] < v[down]) { v[down] } else { v[right] + 1 };
+            let mut y = x - k;
+            while x < n as isize && y < m as isize && a[x as usize] == b[y as usize] {
+                x += 1;
+                y += 1;
+            }
+            v[(k + offset as isize) as usize] = x;
+            if x >= n as isize && y >= m as isize {
+                reached = true;
+            }
+            k += 2;
+        }
+        if reached {
+            break;
+        }
+    }
+
+    let mut ops = Vec::new();
+    let mut x = n as isize;
+    let mut y = m as isize;
+    let mut d = (trace.len() - 1) as isize;
+    while d >= 0 {
+        let v = &trace[d as usize];
+        let k = x - y;
+        let prev_k = if k == -d
+            || (k != d
+                && v[(k - 1 + offset as isize) as usize] < v[(k + 1 + offset as isize) as usize])
+        {
+            k + 1
+        } else {
+            k - 1
+        };
+        let prev_x = v[(prev_k + offset as isize) as usize];
+        let prev_y = prev_x - prev_k;
+        // Walk back along the snake (the equal lines the forward pass skipped).
+        while x > prev_x && y > prev_y {
+            x -= 1;
+            y -= 1;
+            ops.push(EditOp::Equal(x as usize, y as usize));
+        }
+        if d > 0 {
+            if x == prev_x {
+                y -= 1;
+                ops.push(EditOp::Insert(y as usize));
+            } else {
+                x -= 1;
+                ops.push(EditOp::Delete(x as usize));
+            }
+        }
+        x = prev_x;
+        y = prev_y;
+        d -= 1;
+    }
+    ops.reverse();
+    ops
+}
+
+/// Turns an edit script into display rows.
+///
+/// A maximal run of `Delete`/`Insert` steps between two `Equal` steps is one change
+/// region. Its deletions and insertions are paired positionally into `Changed` rows
+/// (the existing side-by-side meaning) and any leftovers become `Removed` / `Added`
+/// rows, which is exactly the `left`/`right: Option<String>` shape of [`DiffLine`].
+fn build_diff_lines(a: &[&str], b: &[&str]) -> Vec<DiffLine> {
+    let ops = myers_diff(a, b);
+    let mut lines = Vec::new();
+    let mut idx = 0usize;
+    while idx < ops.len() {
+        match ops[idx] {
+            EditOp::Equal(l, r) => {
+                lines.push(DiffLine {
+                    left: Some(a[l].to_string()),
+                    right: Some(b[r].to_string()),
+                    kind: DiffKind::Equal,
+                });
+                idx += 1;
+            }
+            EditOp::Delete(_) | EditOp::Insert(_) => {
+                let mut deletes = Vec::new();
+                let mut inserts = Vec::new();
+                while idx < ops.len() {
+                    match ops[idx] {
+                        EditOp::Equal(_, _) => break,
+                        EditOp::Delete(l) => deletes.push(l),
+                        EditOp::Insert(r) => inserts.push(r),
+                    }
+                    idx += 1;
+                }
+                let paired = deletes.len().min(inserts.len());
+                for (&l, &r) in deletes.iter().zip(inserts.iter()).take(paired) {
+                    lines.push(DiffLine {
+                        left: Some(a[l].to_string()),
+                        right: Some(b[r].to_string()),
+                        kind: DiffKind::Changed,
+                    });
+                }
+                for &l in &deletes[paired..] {
+                    lines.push(DiffLine {
+                        left: Some(a[l].to_string()),
+                        right: None,
+                        kind: DiffKind::Removed,
+                    });
+                }
+                for &r in &inserts[paired..] {
+                    lines.push(DiffLine {
+                        left: None,
+                        right: Some(b[r].to_string()),
+                        kind: DiffKind::Added,
+                    });
+                }
+            }
+        }
+    }
+    lines
 }
 
 impl Widget for DiffViewer {
@@ -274,6 +495,14 @@ impl EventHandler for DiffViewer {
                 _ => { /* Other keys are not relevant */ }
             }
         }
+        // Wheel: positive `delta.y` moves the content down, so the viewport moves toward the
+        // start. Three lines per notch is the desktop default shared with the text controls.
+        if let Event::Wheel { delta, modifiers, .. } = event {
+            let scroll = WheelScroll::from_event(*delta, *modifiers, 3);
+            if self.scroll_lines(-scroll.lines_y) {
+                self.base.request_redraw();
+            }
+        }
     }
 }
 
@@ -363,11 +592,14 @@ impl Draw for DiffViewer {
             HorizontalAlignment::Left,
         );
 
-        for (idx, line) in self.lines.iter().take(12).enumerate() {
-            let y = rect.y + 34 + (idx as i32) * 16;
+        for (row, line) in
+            self.lines.iter().skip(self.visible_start()).take(self.visible_line_count()).enumerate()
+        {
+            let idx = self.visible_start() + row;
+            let y = rect.y + ROW_TOP + (row as i32) * ROW_HEIGHT;
             // Rows below the control are not painted: a 120 px viewer used to draw its eleventh
             // row about 90 px below itself, over the neighbouring widget.
-            if y + 14 > rect.y + rect.height as i32 {
+            if y + ROW_BOTTOM_INSET > rect.y + rect.height as i32 {
                 break;
             }
             let bg = match line.kind {
@@ -473,5 +705,73 @@ mod tests {
 
         viewer.handle_event(&Event::key_press(38, 0));
         assert_eq!(viewer.selected_index(), Some(1));
+    }
+
+    #[test]
+    fn leading_insertion_leaves_the_rest_equal() {
+        let mut viewer = DiffViewer::new(Rect::new(0, 0, 640, 300));
+        viewer.set_texts("A\nB\nC", "X\nA\nB\nC");
+
+        let lines = viewer.lines();
+        assert_eq!(lines.len(), 4);
+        assert_eq!(lines[0].kind, DiffKind::Added);
+        assert_eq!(lines[0].left, None);
+        assert_eq!(lines[0].right.as_deref(), Some("X"));
+        assert!(lines[1..].iter().all(|line| line.kind == DiffKind::Equal));
+        assert_eq!(lines[1].left.as_deref(), Some("A"));
+        assert_eq!(viewer.change_count(), 1);
+    }
+
+    #[test]
+    fn identical_inputs_are_all_equal() {
+        let mut viewer = DiffViewer::new(Rect::new(0, 0, 640, 300));
+        viewer.set_texts("alpha\nbeta\ngamma", "alpha\nbeta\ngamma");
+
+        assert_eq!(viewer.lines().len(), 3);
+        assert!(viewer.lines().iter().all(|line| line.kind == DiffKind::Equal));
+        assert_eq!(viewer.change_count(), 0);
+    }
+
+    #[test]
+    fn change_count_matches_non_equal_rows() {
+        let mut viewer = DiffViewer::new(Rect::new(0, 0, 640, 300));
+        viewer.set_texts("one\ntwo\nthree\nfour", "one\n2\nthree\nfour\nfive");
+
+        let non_equal = viewer.lines().iter().filter(|line| line.kind != DiffKind::Equal).count();
+        assert_eq!(viewer.change_count(), non_equal);
+        assert!(non_equal > 0);
+    }
+
+    /// The wheel scrolls the visible diff window and clamps at both ends.
+    ///
+    /// # The defect this pins
+    ///
+    /// The paint path stopped at a fixed twelve rows, so a longer comparison could not be
+    /// reached. This drives the window the paint path now starts from.
+    #[test]
+    fn diff_viewer_wheel_scrolls_and_clamps() {
+        let text: Vec<String> = (0..20).map(|n| format!("line{n}")).collect();
+        let joined = text.join("\n");
+        let mut viewer = DiffViewer::new(Rect::new(0, 0, 640, 100));
+        viewer.set_texts(joined.clone(), joined);
+        assert_eq!(viewer.lines().len(), 20);
+        assert_eq!(viewer.first_visible_line, 0);
+
+        // One notch toward the end reveals three rows.
+        viewer.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+        assert_eq!(viewer.first_visible_line, 3, "a downward notch moves the viewport down");
+
+        // The other direction returns to the top and clamps there.
+        viewer.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+        assert_eq!(viewer.first_visible_line, 0);
+        viewer.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+        assert_eq!(viewer.first_visible_line, 0, "the viewport clamps at the first row");
+
+        // Scrolling on stops at the last full window.
+        let max_first = viewer.lines().len() - viewer.visible_line_count();
+        for _ in 0..20 {
+            viewer.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+        }
+        assert_eq!(viewer.first_visible_line, max_first, "the viewport clamps at the last window");
     }
 }

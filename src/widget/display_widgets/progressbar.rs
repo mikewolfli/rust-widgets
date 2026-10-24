@@ -136,7 +136,7 @@ impl ProgressBar {
         }
         self.value = clamped;
         self.value_changed.emit(self.value);
-        self.base.request_redraw();
+        self.request_frame_repaint(None);
     }
     /// Resets progress bar to minimum value.
     pub fn reset(&mut self) {
@@ -220,7 +220,65 @@ impl ProgressBar {
             return;
         }
         self.indeterminate = indeterminate;
+        self.request_frame_repaint(None);
+    }
+
+    /// Submits one animated frame as damage bounded by the painted box plus the
+    /// focus-ring and halo margin.
+    ///
+    /// `bounds` is supplied by [`Self::tick`], because the animation sweep calls `tick`
+    /// while it holds the widget registry; passing the rectangle keeps that path from
+    /// asking the runtime to read the geometry back. Event and setter paths pass `None`
+    /// and let the runtime derive the box.
+    ///
+    /// A control that is unmounted falls back to [`BaseWidget::request_redraw`], which
+    /// keeps the redraw signal contract for host-owned controls. An interaction frame in
+    /// [`crate::widget::runtime::RepaintMode::Full`] still routes through
+    /// [`crate::widget::runtime::request_repaint_rect`], whose documented fallback repaints
+    /// the whole control; a tick frame keeps the base signal there because the animation
+    /// sweep holds the registry across `tick`.
+    fn request_frame_repaint(&self, bounds: Option<Rect>) {
+        let _ = bounds;
+        #[cfg(not(alloc_frugal))]
+        {
+            if let Some(id) = crate::widget::runtime::registry_id_of(self.id()) {
+                let narrow = crate::widget::runtime::repaint_mode(id)
+                    != crate::widget::runtime::RepaintMode::Full;
+                // `bounds` is `Some` only from `tick`, which the animation sweep calls
+                // while it holds the registry; the whole-control fallback would re-enter
+                // that borrow, so `Full` stays on the base signal there. Interaction paths
+                // may take the documented fallback.
+                if narrow || bounds.is_none() {
+                    let damage = bounds
+                        .or_else(|| crate::widget::runtime::painted_box_with_damage_margin(id))
+                        .unwrap_or_else(|| self.damage_bounds());
+                    crate::widget::runtime::request_repaint_rect(id, damage);
+                    // The replaced `request_redraw` emitted this signal; keep it.
+                    self.base.redraw_requested.emit();
+                    return;
+                }
+            }
+        }
         self.base.request_redraw();
+    }
+
+    /// This control's own rectangle grown by
+    /// [`crate::widget::metrics::DAMAGE_MARGIN`].
+    ///
+    /// The animation sweep holds the registry across `tick`, so the geometry lookup
+    /// [`crate::widget::runtime::painted_box_with_damage_margin`] performs cannot run
+    /// there. Deriving the rectangle from `Widget::geometry` yields the same answer the
+    /// runtime returns for the mounted control.
+    fn damage_bounds(&self) -> Rect {
+        let rect = self.geometry();
+        let margin = crate::widget::metrics::DAMAGE_MARGIN;
+        let offset = margin as i32;
+        Rect::new(
+            rect.x.saturating_sub(offset),
+            rect.y.saturating_sub(offset),
+            rect.width.saturating_add(margin).saturating_add(margin),
+            rect.height.saturating_add(margin).saturating_add(margin),
+        )
     }
 
     /// Advances the indeterminate sweep, reporting whether another frame is needed.
@@ -247,7 +305,7 @@ impl ProgressBar {
         if !moving {
             self.sweep_phase.jump_to(0.0);
         }
-        self.base.request_redraw();
+        self.request_frame_repaint(Some(self.damage_bounds()));
         true
     }
 
@@ -1152,5 +1210,50 @@ mod tests {
         bar.set_value(42);
         bar.set_indeterminate(true);
         assert_eq!(bar.format_text(), "", "no number when the amount is unknown");
+    }
+
+    /// An animation frame submits damage bounded by the painted box and the margin.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_sweep_frame_submits_the_painted_box_with_the_damage_margin() {
+        use crate::widget::runtime;
+
+        let mut bar = ProgressBar::new(Rect::new(4, 8, 120, 12));
+        bar.set_indeterminate(true);
+        let id = runtime::register(crate::compat::Box::new(bar)).expect("registry");
+        assert!(runtime::set_repaint_mode(id, runtime::RepaintMode::Dirty));
+
+        let moved = runtime::with_widget_mut(id, |widget| Widget::tick(widget, 16))
+            .expect("mounted control");
+        assert!(moved, "the indeterminate sweep owes a frame");
+
+        let expected = runtime::painted_box_with_damage_margin(id).expect("painted box");
+        assert_eq!(
+            runtime::dirty_rects(id),
+            vec![expected],
+            "one animated frame must damage the painted box plus the margin"
+        );
+        runtime::unregister(id);
+    }
+
+    /// `Full` keeps the whole-control path and records no damage rectangle.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_sweep_frame_in_full_mode_keeps_the_whole_control_repaint() {
+        use crate::widget::runtime;
+
+        let mut bar = ProgressBar::new(Rect::new(4, 8, 120, 12));
+        bar.set_indeterminate(true);
+        let id = runtime::register(crate::compat::Box::new(bar)).expect("registry");
+        assert_eq!(runtime::repaint_mode(id), runtime::RepaintMode::Full);
+
+        let moved = runtime::with_widget_mut(id, |widget| Widget::tick(widget, 16))
+            .expect("mounted control");
+        assert!(moved);
+        assert!(
+            runtime::dirty_rects(id).is_empty(),
+            "Full mode records no damage, so the control repaints whole"
+        );
+        runtime::unregister(id);
     }
 }

@@ -83,7 +83,7 @@ width="240" height="120" ← 全部 188 个控件都是这个画布
 background foreground primary secondary accent error warning success disabled info
 ```
 
-（对照 主流 material 实现 `ColorScheme` 的 40+ 角色与 参考工具包的标记语言 `QQuickColorGroup` 的 21 个角色，
+（对照 主流 material 实现 `ColorScheme` 的 40+ 角色与 参考工具包的标记语言 `quick color group` 的 21 个角色，
 本仓的角色面**极窄**——这正是「控件看起来单调」的根因之一，而不是绘制代码画错了。）
 
 **`Motion` 已存在**（`src/theme/types.rs:65`）：`fast=100 / normal=200 / slow=300 / easing=EaseOut`，
@@ -285,14 +285,12 @@ background foreground primary secondary accent error warning success disabled in
 
 ```rust
 /// 一个控件在**内容驱动**下的固有尺寸。
-///
 /// 为什么不直接用 `rect`：`rect` 是**可用区域**（可能是 240×120 的画布），
 /// 而控件要画多大是另一件事。两者混用就是 `switch.svg` 变成 240×120 体育场的原因。
 pub struct ControlMetrics;
 
 impl ControlMetrics {
  /// 固有尺寸 = max(背景地板, 内容 + padding)。
- ///
  /// 这个 `max` 是 参考工具包的标记语言 `reference: the button's implicit-size formula and padding cascade` 的全部要点：**背景是一个最小可点区地板**，
  /// 所以 5px 文字仍得到 100×40 的按钮，而不是 100×18。
  pub fn implicit_size(content: Size, padding: EdgeInsets, floor: Size) -> Size;
@@ -327,7 +325,6 @@ pub const TOUCH_TARGET_MIN: u32 = 48; // 主流 material 实现 constants.dart:2
 
 ```rust
 /// 焦点环是否应当绘制。
-///
 /// 参考工具包的标记语言 `reference-toolkit control.cpp:1433` + `:126`：`activeFocus && (Tab | Backtab | Shortcut)`。
 /// **鼠标点击不应画焦点环**——这是手写工具箱最常漏掉的一条，
 /// 因为「有焦点」和「用户正用键盘导航」是两件事。
@@ -534,24 +531,18 @@ JSON 路径是完整的（`loader.rs` 里 `store_layout` → `add_widget_to_layo
 // src/layout/hints.rs （新建）
 
 /// 一个控件在某一方向上的尺寸诉求。
-///
 /// # 为什么是三个值而不是一个
-///
 /// `size_hint() -> Size` 只能回答「我想要多大」，无法回答两个组合控件**每天都要问**的问题：
-///
 /// - 「最多能把我压到多小？」→ `min`。按钮/开关/进度条都有一条**地板**。
 /// - 「最多能把我拉到多大？」→ `max`。图标、徽标不该被无限拉伸。
-///
 /// 本仓当前用「背景隐式尺寸」当唯一的地板，而它只影响**自己**——无法向上传播。
 /// 参考工具包 的真值表（`reference-toolkit layout.cpp:1176`）把这三个值放在一起，正是因为它们必须一起决胜：
-///
 /// ```text
 /// | minimum | preferred | maximum
 /// USER | Layout.minimumWidth | Layout.preferredWidth | Layout.maximumWidth
 /// HINT | implicit min | implicitWidth | implicit max
 /// FALLBACK | 0 | width | +infinity
 /// ```
-///
 /// 不变式：`min <= pref <= max`（参考工具包 的 `normalizeHints`，`reference-toolkit layout.cpp:1218`）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AxisHints {
@@ -562,7 +553,6 @@ pub struct AxisHints {
 
 impl AxisHints {
  /// 一个新的提示，自动满足 `min <= pref <= max`。
- ///
  /// **构造时即归一化**，而不是靠调用方记得：参考工具包 因为允许未归一化的值，
  /// 不得不在每次读取前跑一遍 `normalizeHints`/`expandSize`/`boundSize`（`reference-toolkit layout.cpp:1218-1288`）。
  /// 让非法状态**不可表示**比事后修正便宜。
@@ -581,9 +571,7 @@ pub struct Hints {
 }
 
 /// 孩子希望怎样被父布局对待。
-///
 /// # 为什么「拉伸」不能从提示里推出来
-///
 /// 「我想变大」与「父布局该把我拉长」**是两件事**：一个滑块的 `pref` 是固定的，
 /// 但它**应该**被拉宽；一个按钮的 `pref` 也固定，却**不该**被拉宽。
 /// 两者无法从尺寸区分，所以必须单独一个位。参考工具包 的 `Layout.fillWidth`（`reference-toolkit layout.cpp:303`）
@@ -600,15 +588,12 @@ pub struct LayoutParams {
 }
 
 /// 控件声明自己的尺寸诉求。
-///
 /// # 为什么不是 主流 material 实现 的 4 个对轴函数
-///
 /// 主流 material 实现 的 `getMinIntrinsicWidth(height)` 要给定对轴才能回答，因此它的 `IntrinsicWidth`
 /// 是「a speculative layout pass」且自认「O(N²) in the depth of the tree」（`basic.dart:3804-3807`）。
 /// min/pref/max 是**控件自己算出的定值**，布局直接读，无往返、无 O(N²)。
 /// 代价是它不能表达「宽度依赖高度」的强耦合——本仓的控件几乎全是定高的（按钮/开关/输入框），
 /// 真正需要宽高联动的是自动换行的文本，而文本有独立的测量入口。
-///
 /// 默认返回全 0（等同旧 `size_hint() -> Size::ZERO`），所以现有 176 个实现不会因此报错，
 /// 可逐个迁移（与 BLUE21 「先立原语再机械替换」同一手法）。
 trait Widget {
@@ -628,14 +613,11 @@ trait Widget {
 // src/layout/types.rs —— 改签名：从「只写」变成「可读写」
 
 /// 布局所需的子控件信息。
-///
 /// # 为什么必须有这个参数
-///
 /// 旧签名 `update(&self, rect, &mut dyn FnMut(ObjectId, Rect))` 只能**写**子控件的位置，
 /// 无法**读**子控件想要多大。于是每个布局只能要求调用方提前把尺寸塞进自己：
 /// `FlexLayout::set_child_sizes(Vec<Size>)`（`flex.rs:167`）就是这么来的，
 /// 它的注释写着“set **before** update”——布局被迫在做布局前先被人告知答案。
-///
 /// 后果是 `Widget::hints()` 有 176 个实现却只有 1 个消费者。
 /// 这个参数把那条通道接上：布局**问**子控件，而不是**被告知**。
 pub struct ChildInfo {
@@ -651,7 +633,6 @@ pub trait Layout {
  fn remove_widget(&mut self, widget_id: ObjectId);
 
  /// 排布子控件。`children` 给出每个子控件的尺寸诉求，`out` 回写几何。
- ///
  /// 默认实现忽略提示，转发到旧的 `update`，让 15 个现有布局**不必同时改完**。
  fn arrange(
  &self,
@@ -677,14 +658,11 @@ pub trait Layout {
 // src/widget/composite.rs
 
 /// 由基本控件 + 布局组装组合控件。
-///
 /// # 它只做四件事，且都不含布局算法
-///
 /// 1. 持子控件（`Box<dyn Widget>`，因此能读 `hints()`）
 /// 2. 按 `Hints + LayoutParams + padding + floor` 计算自己的 `Hints`（= 参考工具包的标记语言 的 `implicitWidth` 公式）
 /// 3. 把子控件的 `hints()` 收成 `ChildInfo` 交给 `Layout::arrange`
 /// 4. 把 `arrange` 回写的几何应用到子控件
-///
 /// **排布算法完全在 `src/layout/` 里，此处一行都没有**（§B.10 风险 2）。
 pub struct CompositeBuilder {
  layout: Box<dyn Layout>,
@@ -695,7 +673,7 @@ pub struct CompositeBuilder {
 }
 ```
 
-> **实控证据**：参考工具包 的 `QQuickControl` 用**同一套**公式算控件自身的固有尺寸：
+> **实控证据**：参考工具包 的 `quick control` 用**同一套**公式算控件自身的固有尺寸：
 > ```
 > implicitWidth: Math.max(implicitBackgroundWidth + leftInset + rightInset,
 > implicitContentWidth + leftPadding + rightPadding)
@@ -726,7 +704,7 @@ pub struct CompositeBuilder {
 | 约束下发/尺寸上传（`BoxConstraints`） | `box.dart:164-176` | 它解决的是「父可以压缩子」，而我们的 `min` 已经表达了地板；全套约束会连同 `parentUsesSize`、relayout boundary、`sizedByParent` 一起进来（~3500 行） |
 | `shouldRelayout` / `polish()` 延迟管线 | `custom_layout.dart:297`、`reference-toolkit item.cpp:4686` | 本仓已有帧循环与 `request_repaint`；再接一套延迟通道只会多一条失效路径 |
 | `Layout.fillWidth` 之类**附着属性** | `qquicklayout_p.h:160` | 参考工具包 需要它是因为 参考工具包的标记语言 无法给已有 item 添字段；Rust 直接把 `LayoutParams` 放进构建器的 `.child(.., params)` |
-| 全套 `QLayoutPolicy` 位标志 | `qquicklayout_p.h:228` | 整棵树里**只用到 `GrowFlag` 一个位** ⇒ 我们用一个 `bool fill` 即可 |
+| 全套 `layout policy` 位标志 | `qquicklayout_p.h:228` | 整棵树里**只用到 `GrowFlag` 一个位** ⇒ 我们用一个 `bool fill` 即可 |
 | 锚点（anchors）约束系统 | `qquickanchors_p.h:59` | 它会与布局互相冲突（参考工具包 自己必须检测并警告：`quicklayout.cpp:891`）；我们只提供 `align_in(rect, alignment)` 一次性对齐 |
 | 参考工具包 的 `-1`/`+inf`/`NaN` 三种「未设」惯例 | `reference-toolkit layout.cpp:64` | 那是 `Option<T>` 被实现了九遍；本仓用 `AxisHints` 的归一化构造器一次性解决 |
 

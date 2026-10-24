@@ -488,12 +488,10 @@ impl Draw for BarcodeScanner {
                 HorizontalAlignment::Left,
             );
 
-            let display_data = if result.data.len() > 30 {
-                let boundary = crate::widget::text_utils::floor_char_boundary(&result.data, 27);
-                format!("{}...", &result.data[..boundary])
-            } else {
-                result.data.clone()
-            };
+            // Borrowing elision: the fitting case used to clone the data string on every
+            // paint. The shared primitive also counts characters instead of bytes.
+            let display_data: crate::compat::Cow<'_, str> =
+                crate::widget::text_utils::elide_end(&result.data, 30);
             // The second line occupies the overlay's lower half, so the two lines cannot
             // overlap whatever the overlay was clamped to.
             let data_band = Rect::new(

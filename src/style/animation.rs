@@ -104,12 +104,72 @@ impl EasingFunction {
         }
     }
 }
+/// Which family of shapes a state transition follows.
+///
+/// [`Self::Easing`] is the historical path: the theme's [`EasingFunction`] applied to the
+/// frame's share of the duration. [`Self::Spring`] runs the crate's physical spring instead,
+/// which is what gives an interaction the settle macOS controls are known for. A driver stores
+/// this value, so a caller can choose the shape per property without changing a theme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum MotionCurve {
+    /// Ease along the theme's `Motion::easing` curve. The default, so every existing theme and
+    /// every existing driver keeps its exact output.
+    #[default]
+    Easing,
+    /// Settle like a damped spring with the named preset.
+    Spring(SpringPreset),
+}
+
+/// The spring characters the library ships.
+///
+/// The presets are damping **ratios**, not one-off stiffness numbers: `Settle` is critically
+/// damped (no overshoot), `Snappy` overshoots slightly, and `Bouncy` overshoots visibly. The
+/// stiffness is folded from the motion slot the driver is priced by, so a `Fast` spring
+/// settles sooner than a `Slow` one while keeping the same character.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum SpringPreset {
+    /// Critically damped: reaches the target without crossing it. The default.
+    #[default]
+    Settle,
+    /// Slightly under-damped: a small overshoot that reads as responsiveness.
+    Snappy,
+    /// Under-damped: a visible overshoot and one or two diminishing rebounds.
+    Bouncy,
+}
+
+impl SpringPreset {
+    /// The damping ratio this preset names.
+    pub const fn damping_ratio(self) -> f32 {
+        match self {
+            Self::Settle => 1.0,
+            Self::Snappy => 0.85,
+            Self::Bouncy => 0.7,
+        }
+    }
+
+    /// The `(stiffness, damping)` pair for a spring that settles over `tempo`'s duration.
+    ///
+    /// For a unit mass, a damping ratio `zeta` and a natural frequency `omega`, the spring
+    /// constant is `omega^2` and the damping coefficient is `2 * zeta * omega`. The envelope
+    /// decays as `exp(-zeta * omega * t)`, so `omega = 4 / (zeta * duration)` places the
+    /// four-time-constant point at the requested duration. The frequency is capped at 100 rad/s
+    /// so the explicit integrator stays stable at the driver's maximum substep; a token shorter
+    /// than that cap would describe a motion too fast to see anyway.
+    pub fn parameters(self, tempo: TransitionTempo) -> (f32, f32) {
+        let duration_secs = (tempo.duration_ms().max(1) as f32) / 1000.0;
+        let ratio = self.damping_ratio();
+        let omega = (4.0 / (ratio * duration_secs)).min(100.0);
+        (omega * omega, 2.0 * ratio * omega)
+    }
+}
 /// Which direction each iteration of a repeating animation runs in.
 ///
 /// Only [`Self::Alternate`] and [`Self::AlternateReverse`] depend on the
 /// iteration index; the other two play every iteration identically, so a
 /// non-infinite animation with them simply restarts from the same end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AnimationDirection {
     #[default]
     /// Play forwards on every iteration: progress runs `0.0` to `1.0`.
@@ -1489,6 +1549,19 @@ impl SpringAnimation {
         self.mass = m;
         self
     }
+    /// Returns a copy with the current velocity set to `v`, in units per second.
+    ///
+    /// Used by [`PropertyDriver`] when it hands a spring in flight to a fresh integrator: the
+    /// driver keeps the velocity across ticks so an interrupted spring continues with the
+    /// momentum it already had instead of restarting from rest.
+    pub fn with_velocity(mut self, v: f32) -> Self {
+        self.velocity = v;
+        self
+    }
+    /// The current velocity, in units per second.
+    pub fn velocity(&self) -> f32 {
+        self.velocity
+    }
     /// Starts the spring.
     ///
     /// The value is *not* reset to `from_value`; integration continues from
@@ -1885,6 +1958,15 @@ pub struct PropertyDriver {
     target: f32,
     /// Which motion token prices the move.
     tempo: MotionSlot,
+    /// Which shape the move follows.
+    curve: MotionCurve,
+    /// Velocity carried across spring ticks, in normalised units per second.
+    ///
+    /// Only the spring path writes it. It is stored on the driver rather than in a
+    /// [`SpringAnimation`] because the driver must stay `Copy`, and because the integrator is
+    /// rebuilt every tick from this state — the physics is the engine's, the memory of it is
+    /// the driver's.
+    spring_velocity: f32,
 }
 
 impl Default for PropertyDriver {
@@ -1895,7 +1977,13 @@ impl Default for PropertyDriver {
     /// own state on the first frame it is drawn (the defect `button.rs` records in prose and
     /// `PieMenu` still exhibited -- BLUE24 §2.4 gate B exists to pin it here instead).
     fn default() -> Self {
-        Self { current: 0.0, target: 0.0, tempo: MotionSlot::Normal }
+        Self {
+            current: 0.0,
+            target: 0.0,
+            tempo: MotionSlot::Normal,
+            curve: MotionCurve::Easing,
+            spring_velocity: 0.0,
+        }
     }
 }
 
@@ -1906,7 +1994,39 @@ impl PropertyDriver {
     /// not "about to travel to zero". A control that wants the value to move calls
     /// [`set_target`](Self::set_target).
     pub fn at(value: f32, tempo: MotionSlot) -> Self {
-        Self { current: value, target: value, tempo }
+        Self {
+            current: value,
+            target: value,
+            tempo,
+            curve: MotionCurve::Easing,
+            spring_velocity: 0.0,
+        }
+    }
+
+    /// A driver resting at `value`, priced by `tempo`, following `curve`.
+    ///
+    /// The curve is a driver property rather than a theme read so a control can opt one
+    /// property into a spring (a switch's thumb, a sheet's reveal) while the rest of the window
+    /// keeps the theme's easing. [`MotionCurve::Easing`] reproduces [`Self::at`] exactly.
+    pub fn with_curve(value: f32, tempo: MotionSlot, curve: MotionCurve) -> Self {
+        Self { curve, ..Self::at(value, tempo) }
+    }
+
+    /// Replaces the curve without touching the current value or target.
+    ///
+    /// Switching to or from a spring discards the accumulated spring velocity: a curve is a
+    /// statement about the shape of the **remaining** movement, and carrying momentum from a
+    /// different shape would make the new curve overshoot for a reason the caller did not ask
+    /// for. Re-aiming with [`Self::set_target`] is the way to interrupt a spring while keeping
+    /// its momentum.
+    pub fn set_curve(&mut self, curve: MotionCurve) {
+        self.curve = curve;
+        self.spring_velocity = 0.0;
+    }
+
+    /// The curve this driver follows.
+    pub fn curve(&self) -> MotionCurve {
+        self.curve
     }
 
     /// The value the driver is currently interpolating, which is the same `f32` the
@@ -1935,15 +2055,88 @@ impl PropertyDriver {
 
     /// Advance by `delta_ms` toward the target; `true` while there is still movement.
     ///
-    /// The interpolation itself is [`Transition`]'s, so there is one place that knows the
-    /// curve, the pacing and the snap tolerance. This method is the storage half of the same
-    /// operation, which is why it is three lines rather than a second implementation.
+    /// [`MotionCurve::Easing`] delegates to [`Transition`], so there is one place that knows
+    /// the curve, the pacing and the snap tolerance. [`MotionCurve::Spring`] delegates to the
+    /// crate's [`SpringAnimation`] integrator, with the preset's damping ratio and a stiffness
+    /// folded from the driver's tempo. Both paths store their result back into `current`, so
+    /// [`Self::is_moving`] reads one fact regardless of which curve produced it.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
-        let mut transition = Transition::with_tempo(self.tempo);
-        transition.reset_to(self.current);
-        let moving = transition.tick(self.target, delta_ms);
-        self.current = transition.progress();
-        moving
+        if (self.current - self.target).abs() <= f32::EPSILON {
+            self.spring_velocity = 0.0;
+            return false;
+        }
+        // Reduced motion reaches the target on this frame rather than skipping the animation:
+        // the value is *reached*, so every caller sees the same end state it would after the
+        // full transition. This is the same rule `motion_tokens` applies by collapsing the
+        // duration to zero, stated once here as well because a driver can carry an explicit
+        // curve the token set does not price.
+        if crate::style::environment::environment().prefers_reduced_motion() {
+            let target = self.target;
+            self.jump_to(target);
+            return false;
+        }
+        match self.curve {
+            MotionCurve::Easing => {
+                let mut transition = Transition::with_tempo(self.tempo);
+                transition.reset_to(self.current);
+                let moving = transition.tick(self.target, delta_ms);
+                self.current = transition.progress();
+                self.spring_velocity = 0.0;
+                moving
+            }
+            MotionCurve::Spring(preset) => self.tick_spring(preset, delta_ms),
+        }
+    }
+
+    /// One spring step, using the crate's [`SpringAnimation`] integrator.
+    ///
+    /// The integrator's own settle tolerance is half a unit, which is an enormous distance on a
+    /// `0..=1` property. The values are therefore scaled to a thousand units, where that
+    /// tolerance is a twentieth of a percent — small enough to be invisible and large enough
+    /// that floating-point noise cannot keep a settled spring running. The frame delta is split
+    /// into short substeps because the integration is explicit Euler: at 8 ms the fastest
+    /// preset stays well inside the stability bound, while a single stalled 100 ms frame would
+    /// not.
+    fn tick_spring(&mut self, preset: SpringPreset, delta_ms: u32) -> bool {
+        const VALUE_SCALE: f32 = 1_000.0;
+        const MAX_SUBSTEP_MS: u32 = 8;
+
+        // A zero-duration token means "reach the target now" everywhere else in the crate; a
+        // spring asked to settle in zero time has no finite stiffness, so it takes the same
+        // one-frame path.
+        if self.tempo.duration_ms() == 0 {
+            let target = self.target;
+            self.jump_to(target);
+            return false;
+        }
+
+        let (stiffness, damping) = preset.parameters(self.tempo);
+        let mut spring =
+            SpringAnimation::new(self.current * VALUE_SCALE, self.target * VALUE_SCALE)
+                .with_stiffness(stiffness)
+                .with_damping(damping)
+                .with_velocity(self.spring_velocity * VALUE_SCALE);
+        spring.start();
+
+        let mut remaining = delta_ms;
+        loop {
+            let step = remaining.min(MAX_SUBSTEP_MS);
+            spring.update(Duration::from_millis(step as u64));
+            remaining = remaining.saturating_sub(step);
+            if !spring.is_running() || remaining == 0 {
+                break;
+            }
+        }
+
+        self.current = spring.current_value() / VALUE_SCALE;
+        self.spring_velocity = spring.velocity() / VALUE_SCALE;
+        if spring.is_running() {
+            true
+        } else {
+            self.current = self.target;
+            self.spring_velocity = 0.0;
+            false
+        }
     }
 
     /// Whether the driver is between two values -- **answers only, never advances**.
@@ -1963,12 +2156,18 @@ impl PropertyDriver {
     pub fn jump_to(&mut self, value: f32) {
         self.current = value;
         self.target = value;
+        self.spring_velocity = 0.0;
     }
 }
 
 #[cfg(test)]
 mod property_driver_tests {
-    use super::{MotionSlot, PropertyDriver};
+    use super::{MotionCurve, MotionSlot, PropertyDriver, SpringPreset, Transition};
+    use crate::style::environment::{
+        install_environment, uninstall_environment, DefaultEnvironment, EnvironmentProvider,
+    };
+    use crate::style::MotionPreference;
+    use alloc::boxed::Box;
 
     /// The default is the resting end, and it is asserted rather than inferred.
     ///
@@ -2118,6 +2317,136 @@ mod property_driver_tests {
         while settling.tick(16) {}
         assert_eq!(settling.value(), 1.0, "the engine's end value is reached exactly");
         assert!(!settling.is_moving());
+    }
+
+    /// The default curve is `Easing`, and that path produces exactly what `Transition` produces.
+    ///
+    /// This is the regression guard for the whole token extension: a driver built without a
+    /// curve must not move by one bit differently from the transition it has always mirrored.
+    #[test]
+    fn the_default_curve_is_easing_and_matches_the_transition_path() {
+        let _guard = crate::style::theme_test_guard();
+        let previous = install_environment(Box::new(DefaultEnvironment));
+
+        assert_eq!(PropertyDriver::default().curve(), MotionCurve::Easing);
+        let tempo = MotionSlot::Normal;
+        let mut driver = PropertyDriver::at(0.0, tempo);
+        driver.set_target(1.0);
+        let mut transition = Transition::with_tempo(tempo);
+        transition.reset_to(0.0);
+
+        for step in 0..6 {
+            let driver_moving = driver.tick(16);
+            let transition_moving = transition.tick(1.0, 16);
+            assert_eq!(
+                driver.value(),
+                transition.progress(),
+                "step {step}: the easing path must be the transition's path bit for bit"
+            );
+            assert_eq!(driver_moving, transition_moving, "step {step}: the frame demand agrees");
+        }
+
+        match previous {
+            Some(previous) => {
+                install_environment(previous);
+            }
+            None => {
+                uninstall_environment();
+            }
+        }
+    }
+
+    /// Every spring preset reaches the target, and stops asking for frames when it does.
+    #[test]
+    fn every_spring_preset_settles_on_the_target() {
+        let _guard = crate::style::theme_test_guard();
+        let previous = install_environment(Box::new(DefaultEnvironment));
+
+        for preset in [SpringPreset::Settle, SpringPreset::Snappy, SpringPreset::Bouncy] {
+            let mut driver =
+                PropertyDriver::with_curve(0.0, MotionSlot::Normal, MotionCurve::Spring(preset));
+            driver.set_target(1.0);
+            let mut frames = 0;
+            while driver.tick(16) {
+                frames += 1;
+                assert!(frames < 1000, "{preset:?} must settle rather than tick forever");
+            }
+            assert_eq!(driver.value(), 1.0, "{preset:?} must land exactly on the target");
+            assert!(!driver.is_moving(), "{preset:?} reports that it is at rest");
+        }
+
+        match previous {
+            Some(previous) => {
+                install_environment(previous);
+            }
+            None => {
+                uninstall_environment();
+            }
+        }
+    }
+
+    /// `set_curve` after construction changes the shape of the remaining movement and keeps the
+    /// value it had already reached.
+    #[test]
+    fn set_curve_after_construction_changes_the_path() {
+        let _guard = crate::style::theme_test_guard();
+        let previous = install_environment(Box::new(DefaultEnvironment));
+
+        let mut driver = PropertyDriver::at(0.0, MotionSlot::Normal);
+        driver.set_target(1.0);
+        let _ = driver.tick(16);
+        let partway = driver.value();
+        assert!(partway > 0.0 && partway < 1.0, "the fixture must be mid-flight: {partway}");
+
+        driver.set_curve(MotionCurve::Spring(SpringPreset::Snappy));
+        assert_eq!(driver.curve(), MotionCurve::Spring(SpringPreset::Snappy));
+        assert_eq!(driver.value(), partway, "changing the curve must not move the value");
+
+        assert!(driver.tick(16), "the spring continues toward the same target");
+        assert!(driver.value() > partway, "and moves forward: {}", driver.value());
+        while driver.tick(16) {}
+        assert_eq!(driver.value(), 1.0, "the spring settles on the stored target");
+
+        match previous {
+            Some(previous) => {
+                install_environment(previous);
+            }
+            None => {
+                uninstall_environment();
+            }
+        }
+    }
+
+    /// Reduced motion reaches the target on the first tick and asks for no more frames.
+    #[test]
+    fn reduced_motion_lands_on_the_target_in_one_frame() {
+        struct Reduced;
+        impl EnvironmentProvider for Reduced {
+            fn motion_preference(&self) -> MotionPreference {
+                MotionPreference::ReduceMotion
+            }
+        }
+
+        let previous = install_environment(Box::new(Reduced));
+        let mut driver = PropertyDriver::with_curve(
+            0.0,
+            MotionSlot::Normal,
+            MotionCurve::Spring(SpringPreset::Bouncy),
+        );
+        driver.set_target(0.75);
+
+        assert!(!driver.tick(16), "a reduced-motion tick completes the move");
+        assert_eq!(driver.value(), 0.75, "the end state is reached, not skipped");
+        assert!(!driver.is_moving());
+
+        match previous {
+            Some(previous) => {
+                install_environment(previous);
+            }
+            None => {
+                uninstall_environment();
+            }
+        }
     }
 }
 

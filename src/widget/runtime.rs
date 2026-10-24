@@ -33,6 +33,7 @@
 // must be able to answer "which widget is under this point?".
 use crate::compat::Rc;
 use crate::core::{ObjectId, Point, Rect, Size};
+use crate::event::dnd::{DragSession, DropEffect};
 use crate::event::{Event, FocusReason};
 use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
 
@@ -1148,10 +1149,257 @@ pub fn dispatch_pointer_event(root: ObjectId, event: &Event, point: Point) -> bo
             if starts {
                 let _ = capture_pointer(target);
             }
-            dispatch_event(target, event)
+            let handled = dispatch_event(target, event);
+            // A secondary press is both a pointer gesture and a menu request. The press above is
+            // delivered first and unconditionally, so a control that starts a selection or opens
+            // its own popup keeps receiving it; the request is then delivered to the *same* widget
+            // as a separate event. Delivering it here (rather than replacing the press) is the
+            // additive contract documented on `Event::ContextMenu`.
+            if let Event::MousePress { pos, button, .. } = event {
+                if *button == crate::event::mouse_button::SECONDARY {
+                    let _ = dispatch_event(target, &Event::ContextMenu { pos: *pos });
+                }
+            }
+            handled
         }
         _ => false,
     }
+}
+
+/// Routes a context-menu request to the focused control.
+///
+/// A Menu/Application key has no pointer position, so the translator emits
+/// [`Event::ContextMenu`] with the anchor the translator was given (currently `(0, 0)`). The host
+/// cannot hit-test such a request — there is no pointer — and the control it belongs to is by
+/// definition the one with keyboard focus. This function performs that routing.
+///
+/// Returns whether the event was delivered to a mounted focused control. `false` means either the
+/// event is not a context-menu request or no control currently has focus; a host that receives
+/// `false` may fall back to its own menu policy. The focused control may still answer `false` from
+/// its own [`Widget::context_menu_event`] — that is the control saying "no menu at this point",
+/// which is a handled delivery rather than a routing failure.
+pub fn dispatch_context_menu_event(event: &Event) -> bool {
+    if !matches!(event, Event::ContextMenu { .. }) {
+        return false;
+    }
+    let Some(focused) = focused_widget() else {
+        return false;
+    };
+    dispatch_event(focused, event)
+}
+
+/// Drives one cross-control drag from the raw pointer stream.
+///
+/// # Why a coordinator and not per-control state machines
+///
+/// A drag crosses controls: it starts on a row, travels over a column, and ends on a
+/// third widget. Each control can answer "what would I carry"
+/// ([`crate::event::dnd::DragSource`]) and "would I take this"
+/// ([`crate::event::dnd::DropTarget`]), but none of them can see the others. The
+/// registry is the only layer that can, so the coordinator lives here and uses it to
+/// translate `MousePress -> MouseMove -> MouseRelease` into one [`DragSession`].
+///
+/// # What it does not do
+///
+/// It does not deliver the events to controls or draw a preview. A host that wants both
+/// the ordinary event stream *and* drag detection calls [`Self::on_event`] alongside
+/// [`dispatch_pointer_event`]; the two are additive, so a control never loses its
+/// press just because it is also draggable.
+///
+/// # Ordering
+///
+/// * press: probe the control under the pointer for a
+///   [`crate::event::dnd::DragSource`] and begin an inactive session;
+/// * move: let the session apply its own activation threshold, then probe the control
+///   under the pointer for a [`crate::event::dnd::DropTarget`] and report the hover;
+/// * release: commit through [`DragSession::drop_on`], then tell the source what the
+///   effect was.
+///
+/// The session stays inactive until the pointer travels, so a press that never moves is
+/// still a click and no target is highlighted.
+#[derive(Default)]
+pub struct DragCoordinator {
+    session: Option<DragSession>,
+    hovered: Option<ObjectId>,
+    /// The control that supplied the payload. Kept here because [`DragSession`] describes
+    /// the gesture, not who owns it, and the completion has to be delivered back to the
+    /// source even when the pointer ends over a different control.
+    source: Option<ObjectId>,
+}
+
+impl DragCoordinator {
+    /// Creates an idle coordinator.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The session currently being driven, if any.
+    pub fn session(&self) -> Option<&DragSession> {
+        self.session.as_ref()
+    }
+
+    /// The control the pointer is currently over during an active drag, if any.
+    pub fn hovered(&self) -> Option<ObjectId> {
+        self.hovered
+    }
+
+    /// Feeds one pointer event to the drag state machine.
+    ///
+    /// Returns `Some(effect)` when this event ended a drag, and `None` for every other
+    /// event. The effect is reported for a session that started, even when it never
+    /// became active (a click): its value is then [`DropEffect::None`], which is the
+    /// honest "nothing was dropped" answer the source needs to restore its state.
+    ///
+    /// `viewport` bounds the hit test. A point outside it resolves to no control, which
+    /// is what stops a drag from targeting a widget in another surface.
+    pub fn on_event(&mut self, event: &Event, viewport: Rect) -> Option<DropEffect> {
+        match event {
+            Event::MousePress { pos, button, .. }
+                if *button == crate::event::mouse_button::PRIMARY =>
+            {
+                self.begin(*pos, viewport);
+                None
+            }
+            Event::MouseMove { pos } => {
+                self.update(*pos, viewport);
+                None
+            }
+            Event::MouseRelease { pos, .. } => self.finish(*pos, viewport),
+            _ => None,
+        }
+    }
+
+    /// Starts a session when the press landed on a control that offers a payload.
+    fn begin(&mut self, pos: Point, viewport: Rect) {
+        if self.session.is_some() {
+            return;
+        }
+        let Some(source) = widget_at_point(pos, viewport) else {
+            return;
+        };
+        let payload = with_widget_mut(source, |widget| {
+            // The identity a target compares against is the control's **own** id, not the
+            // registry id that mounted it: a control knows only its own id, and a target asks
+            // the same question of itself.
+            let identity = widget.id();
+            widget
+                .drag_source_mut()
+                .and_then(|source| source.drag_payload(pos))
+                .map(|payload| payload.with_source(identity))
+        })
+        .flatten();
+        let Some(payload) = payload else {
+            return;
+        };
+        self.session = Some(DragSession::begin(payload, pos));
+        self.source = Some(source);
+        self.hovered = None;
+    }
+
+    /// Advances the session and reports the hover to the control under the pointer.
+    fn update(&mut self, pos: Point, viewport: Rect) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        session.update(pos, DragSession::ACTIVATION_THRESHOLD);
+        if !session.is_active() {
+            return;
+        }
+        // Clone the payload so the session borrow ends before the registry is entered:
+        // `with_widget_mut` runs user code that may re-enter the coordinator's owner.
+        let payload = session.payload().clone();
+        let target = widget_at_point(pos, viewport);
+        if target == self.hovered {
+            return;
+        }
+        if let Some(previous) = self.hovered {
+            let _ = with_widget_mut(previous, |widget| {
+                if let Some(target) = widget.drop_target_mut() {
+                    target.report_leave();
+                }
+            });
+        }
+        self.hovered = target;
+        if let Some(target) = target {
+            let _ = with_widget_mut(target, |widget| {
+                if let Some(target) = widget.drop_target_mut() {
+                    // Ask whether a drop would be taken, then report the hover either way.
+                    // `can_accept` drives the preview/commit decision; `report_hover` lets a
+                    // target paint its own refusal as well as its acceptance (a drop zone shows
+                    // a different state for a payload it will not take). Suppressing the hover
+                    // report for a refusal would leave that feedback unreachable.
+                    let _ = target.can_accept(&payload);
+                    target.report_hover(&payload);
+                }
+            });
+        }
+    }
+
+    /// Commits a release and reports the effect back to the source.
+    fn finish(&mut self, pos: Point, viewport: Rect) -> Option<DropEffect> {
+        let mut session = self.session.take()?;
+        let source = self.source.take();
+        if let Some(previous) = self.hovered.take() {
+            let _ = with_widget_mut(previous, |widget| {
+                if let Some(target) = widget.drop_target_mut() {
+                    target.report_leave();
+                }
+            });
+        }
+        let effect = if session.is_active() {
+            match widget_at_point(pos, viewport) {
+                Some(target) => {
+                    let dropped = with_widget_mut(target, |widget| {
+                        widget.drop_target_mut().map(|target| session.drop_on(target, pos))
+                    });
+                    dropped.flatten().unwrap_or(DropEffect::None)
+                }
+                // A release outside every control is a cancelled drag, not a drop:
+                // `DropEffect::None` tells the source to keep its item.
+                None => DropEffect::None,
+            }
+        } else {
+            DropEffect::None
+        };
+        if let Some(source) = source {
+            let _ = with_widget_mut(source, |widget| {
+                if let Some(source) = widget.drag_source_mut() {
+                    source.on_drag_finished(effect);
+                }
+            });
+        }
+        Some(effect)
+    }
+}
+
+/// Returns the deepest mounted control whose own hit rule accepts `point`.
+///
+/// The drag coordinator has no root id to descend from — a drag may travel between
+/// surfaces, and the caller hands it a viewport rather than a tree — so it asks the
+/// registry directly. The deepest hit wins, expressed as the smallest rectangle: a child
+/// lies inside its parent, and the pointer belongs to the most specific control under it.
+/// Equal areas are broken by the later id, matching the "later sibling paints on top"
+/// rule the renderer uses.
+fn widget_at_point(point: Point, viewport: Rect) -> Option<ObjectId> {
+    if !viewport.contains_point(point) {
+        return None;
+    }
+    let mut best: Option<(ObjectId, u32)> = None;
+    for_each_mounted_widget(|id, widget| {
+        if !widget.is_visible() || !widget.is_enabled() || !widget.contains_point(point) {
+            return;
+        }
+        let rect = widget.geometry();
+        let area = rect.width.saturating_mul(rect.height);
+        let better = match best {
+            None => true,
+            Some((best_id, best_area)) => area < best_area || (area == best_area && id >= best_id),
+        };
+        if better {
+            best = Some((id, area));
+        }
+    });
+    best.map(|(id, _)| id)
 }
 
 /// Gives `id` capture of the pointer until released.
@@ -1757,6 +2005,11 @@ pub fn drive_frame(delta_ms: u32) -> FrameOutcome {
     } else {
         tick_animations_sweep(delta_ms)
     };
+    // A narrow submission queued while a control was lent out for its `tick` is flushed here,
+    // before the ledger below reads the frame's repaint counts, so the frame that made the
+    // request is the frame that reports it. The sweep already flushes its own; this also covers
+    // a suspended frame, where no sweep runs.
+    flush_deferred_damage();
 
     // Step 3 -- the bus answers for the *next* frame, so a settle is painted once more
     // and then scheduling stops. `sweep_animating` is this frame's answer from the sweep just
@@ -2151,7 +2404,16 @@ pub fn tick_animations(delta_ms: u32) -> bool {
 /// just saw made every frame walk the whole tree twice, and a third time to answer
 /// "is anything still animating?". One walk now answers all of it.
 fn tick_animations_sweep(delta_ms: u32) -> (usize, bool) {
-    let mut still_animating = false;
+    // A theme crossfade is a frame-driven animation too, and its tokens are read by every
+    // control's paint. Advancing it here is what makes `set_theme_faded` visible without a
+    // second timer; the manager arms the global repaint through `note_theme_mutation`.
+    let theme_moving = if delta_ms == 0 {
+        false
+    } else {
+        let mut manager = crate::theme::global_theme_manager();
+        manager.tick_theme_crossfade(delta_ms)
+    };
+    let mut still_animating = theme_moving;
     let mut ticked = 0usize;
     // Ids that advanced this sweep. Collected rather than invalidated in place: the sweep
     // holds each widget out of the registry for its `tick`, and a repaint request walks the
@@ -2193,8 +2455,9 @@ fn tick_animations_sweep(delta_ms: u32) -> (usize, bool) {
     // `needs_another_frame` mean "another frame will be *drawn*", not just "another frame will
     // be computed".
     for id in moved {
-        request_repaint_subtree_because(id, RepaintReason::Animation);
+        request_narrow_repaint(id, RepaintReason::Animation);
     }
+    flush_deferred_damage();
     // The latch is written **both ways**, and that is the whole point.
     //
     // # The defect this replaces
@@ -2366,7 +2629,21 @@ fn frame_origin(id: ObjectId) -> (i32, i32) {
 /// (to place children, or from a host callback) sees a free map. It also brings the same
 /// nested-mutation refusal as `dispatch_event`, rather than aliasing a live `&mut`.
 pub fn set_geometry(id: ObjectId, geometry: Rect) -> bool {
-    with_widget_mut(id, |widget| widget.set_geometry(geometry)).is_some()
+    let mut changed = false;
+    let found = with_widget_mut(id, |widget| {
+        changed = widget.geometry() != geometry;
+        widget.set_geometry(geometry);
+    })
+    .is_some();
+    // A moved or resized subtree no longer matches any layer captured at its previous box. The
+    // tree-frame cache compares the same epoch, so one bump keeps both caches honest.
+    if found && changed {
+        note_renderable_change();
+        // A resize can leave a parent's layer rect unchanged while the child inside it shrinks,
+        // so the layers are dropped wholesale rather than by rectangle.
+        invalidate_widget_layers();
+    }
+    found
 }
 
 /// Runs `f` with mutable access to a mounted widget.
@@ -2816,6 +3093,43 @@ pub(crate) fn clear_ime_preedit_callbacks(widget_id: ObjectId) {
     });
 }
 
+/// Places the platform IME candidate window at the focused control's caret.
+///
+/// The query is the control's own answer ([`crate::widget::Widget::input_method_query`]);
+/// coordinates are window-relative, which is what the platform bridge expects. A control with
+/// no insertion point, a widget that is not focused, and a build without an IME bridge all
+/// answer `false` without touching the platform.
+#[cfg(not(alloc_frugal))]
+pub fn sync_ime_candidate(widget_id: ObjectId) -> bool {
+    let Some((focused, query)) = read_widget(widget_id, |widget| {
+        (widget.base().focus_reason().is_some(), widget.input_method_query())
+    }) else {
+        return false;
+    };
+    if !focused {
+        return false;
+    }
+    let Some(query) = query else {
+        return false;
+    };
+    let Some(bridge) = crate::platform::platform_facts().ime_bridge() else {
+        return false;
+    };
+    bridge.set_candidate_window_position(crate::platform::ime::ImeCandidatePosition {
+        x: query.caret_rect.x,
+        y: query.caret_rect.y + query.caret_rect.height as i32,
+    });
+    true
+}
+
+/// [`sync_ime_candidate`] for a build with no widget registry or platform IME.
+///
+/// There is no registry to query and no bridge to position, so the honest answer is `false`.
+#[cfg(alloc_frugal)]
+pub fn sync_ime_candidate(_widget_id: ObjectId) -> bool {
+    false
+}
+
 /// Forwards a platform event into a mounted widget's `EventHandler`.
 ///
 /// Returns whether the widget was found. Backends call this to deliver raw
@@ -2886,6 +3200,10 @@ pub fn dispatch_event(id: ObjectId, event: &Event) -> bool {
         let mut map = map.borrow_mut();
         map.entry(id).or_insert(mounted);
     });
+    // A caret-moving event (typing, arrows, a click) may have changed the insertion point.
+    // Keep the platform candidate window anchored to the control's own answer; controls with
+    // no insertion point answer `false` and cost one predicate.
+    let _ = sync_ime_candidate(id);
     true
 }
 
@@ -2915,6 +3233,14 @@ impl DispatchGuard {
     /// and definitely removed after it (or during an unwind).
     fn run(&mut self, mounted: &mut Mounted, event: &Event) {
         mounted.widget.handle_event(event);
+        // A context-menu request is delivered *in addition to* the event's ordinary handling, so a
+        // control that starts a selection on a secondary press keeps doing so. The hook lives on
+        // `Widget` rather than on `EventHandler` because it answers a question about the control's
+        // intent (what menu, at which point), not about the raw event. The event itself is still
+        // passed to `handle_event` first, which is what keeps the delivery additive.
+        if let Event::ContextMenu { pos } = event {
+            let _ = mounted.widget.context_menu_event(*pos);
+        }
     }
 
     /// Completes the dispatch bookkeeping, returning whether a handler destroyed the control.
@@ -3279,12 +3605,162 @@ pub fn request_repaint(id: ObjectId) {
     request_repaint_because(id, RepaintReason::Explicit);
 }
 
+/// Submits a **partial** repaint for `id`, bounded by `rect`.
+///
+/// Use this instead of [`request_repaint`] when a control knows which pixels it just
+/// changed. The rectangle should be the control's painted box grown by
+/// [`DAMAGE_MARGIN`](crate::widget::metrics::DAMAGE_MARGIN);
+/// [`painted_box_with_damage_margin`] computes exactly that, because a focus ring or a
+/// blurred halo paints outside the rectangle the layout gave the control.
+///
+/// # It cannot regress the whole-control behaviour
+///
+/// The submission goes through [`mark_dirty_rect`], so damage is recorded only for a
+/// mounted control in [`RepaintMode::Dirty`] or [`RepaintMode::Adaptive`]. When that
+/// lookup refuses -- [`RepaintMode::Full`], which stays the default, or a mounted control
+/// with no tracker -- the call falls back to the whole-control invalidation it replaces,
+/// so a caller that has not opted into damage tracking keeps the behaviour it had before.
+///
+/// A control that was never mounted is a no-op: there is no surface to invalidate, and
+/// no damage state to record. `id` is the registry id returned by [`register`], not the
+/// widget's own `BaseWidget::id()`.
+pub fn request_repaint_rect(id: ObjectId, rect: Rect) {
+    request_repaint_rect_because(id, rect, RepaintReason::Explicit);
+}
+
+/// [`request_repaint_rect`] with an explicit cause.
+///
+/// `reason` names why the pixels changed and is reported when the call has to fall back
+/// to the whole-control path. When the damage is recorded instead, [`mark_dirty_rect`]
+/// accounts the submission as [`RepaintReason::State`]: a submitted damage rectangle is a
+/// state change by construction, and keeping that accounting in one place is what stops
+/// the frame ledger from counting the same submission twice.
+pub fn request_repaint_rect_because(id: ObjectId, rect: Rect, reason: RepaintReason) {
+    // An id that was never mounted has neither a surface nor a damage state, so neither
+    // arm below could do anything useful; returning here keeps a stray submission from
+    // reaching the platform at all.
+    if !is_mounted(id) {
+        return;
+    }
+    if !mark_dirty_rect(id, rect) {
+        request_repaint_because(id, reason);
+    }
+}
+
+/// Submits a narrow repaint from inside a control's `tick`.
+///
+/// # Why the rectangle is known but the rest is deferred
+///
+/// A `tick` runs with the control lent out of the registry (see [`with_widget_mut`]), so the
+/// runtime cannot look up the box the repaint is bounded by or the window above the control
+/// while the tick is on the stack. The control does know its own box, so it hands the rectangle
+/// over now; the platform submission and the window invalidation happen in
+/// [`flush_deferred_damage`], which the frame driver calls as soon as the sweep releases the
+/// registry.
+///
+/// A control outside a tick should call [`request_repaint_rect`] instead: this path costs one
+/// queue entry per control per frame.
+pub fn request_repaint_rect_deferred(id: ObjectId, rect: Rect, reason: RepaintReason) {
+    let _ = DEFERRED_DAMAGE.try_with(|queue| {
+        let mut queue = queue.borrow_mut();
+        // One entry per control per frame: a later rectangle supersedes an earlier one, and the
+        // damage tracker coalesces whatever the two of them recorded anyway.
+        if let Some(entry) = queue.iter_mut().find(|(queued, _, _)| *queued == id) {
+            entry.1 = rect;
+            entry.2 = reason;
+        } else {
+            queue.push((id, rect, reason));
+        }
+    });
+}
+
+/// Flushes the damage queued by [`request_repaint_rect_deferred`].
+///
+/// Called after the animation sweep, and before a frame's repaint counts are taken, so a
+/// submission made from inside a `tick` is attributed to the frame that made it. Cheap when the
+/// queue is empty: one `try_with` and a length check.
+pub(crate) fn flush_deferred_damage() {
+    let queued = DEFERRED_DAMAGE
+        .try_with(|queue| core::mem::take(&mut *queue.borrow_mut()))
+        .unwrap_or_default();
+    if queued.is_empty() {
+        return;
+    }
+    for (id, rect, reason) in queued {
+        request_repaint_rect_because(id, rect, reason);
+        // A window that paints its own child list has to be told separately: the control inside
+        // it has no surface of its own there, so the narrow call above reaches nothing. The
+        // rectangle is the control's, not the window's, which keeps the window's own layer
+        // validation scoped to the pixels that actually changed.
+        if let Some(window) = top_level_window_of(id) {
+            request_repaint_rect_because(window, rect, reason);
+        }
+    }
+}
+
+/// Submits a repaint for `id` bounded by its painted box, plus the same rectangle on the
+/// window that paints it.
+///
+/// This is what the animation sweep uses per advanced control. It is a narrowing of
+/// [`request_repaint_subtree_because`]: the window is still told, because on a window-tree
+/// backend the window is what redraws the children, but it is told a rectangle instead of
+/// being asked to repaint everything.
+fn request_narrow_repaint(id: ObjectId, reason: RepaintReason) {
+    let Some(rect) = painted_box_with_damage_margin(id) else {
+        request_repaint_subtree_because(id, reason);
+        return;
+    };
+    request_repaint_rect_because(id, rect, reason);
+    if let Some(window) = top_level_window_of(id) {
+        request_repaint_rect_because(window, rect, reason);
+    }
+}
+
+/// The rectangle to hand [`request_repaint_rect`] for `id`: its painted box grown by
+/// [`DAMAGE_MARGIN`](crate::widget::metrics::DAMAGE_MARGIN) on every side.
+///
+/// # Why the geometry is the base
+///
+/// A library-painted control paints inside the rectangle it was given, and the one
+/// rectangle the runtime can read back for every widget kind is [`geometry_of`]. The
+/// margin turns that rectangle into the full area the control can affect, including a
+/// focus ring or a blurred halo that extends past it.
+///
+/// Returns `None` when `id` is not mounted, so a caller can skip a submission that would
+/// be refused anyway.
+pub fn painted_box_with_damage_margin(id: ObjectId) -> Option<Rect> {
+    geometry_of(id).map(grow_by_damage_margin)
+}
+
+/// Grows `rect` by [`DAMAGE_MARGIN`](crate::widget::metrics::DAMAGE_MARGIN) on all four
+/// sides, saturating instead of wrapping at the coordinate limits.
+fn grow_by_damage_margin(rect: Rect) -> Rect {
+    let margin = crate::widget::metrics::DAMAGE_MARGIN;
+    let offset = margin as i32;
+    Rect::new(
+        rect.x.saturating_sub(offset),
+        rect.y.saturating_sub(offset),
+        rect.width.saturating_add(margin).saturating_add(margin),
+        rect.height.saturating_add(margin).saturating_add(margin),
+    )
+}
+
 /// Epoch of the last global-input change (see [`arm_global_repaint`]).
 static GLOBAL_REPAINT_EPOCH: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 thread_local! {
     /// The global-repaint epoch this loop thread last repainted everything for.
     static GLOBAL_REPAINT_SEEN: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+
+    /// The global-repaint generation this thread has observed.
+    ///
+    /// Per-widget layers live on the thread that painted them, so a theme reset only has to
+    /// invalidate that thread's layers. [`arm_global_repaint`] bumps this beside the process-wide
+    /// atomic: the atomic wakes every thread, while this counter is what the layer cache on the
+    /// painting thread compares against. A cross-thread arming is still honoured — the next
+    /// [`drive_frame`] flushes it through `mark_dirty_rect`, which bumps the tree epoch.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static GLOBAL_REPAINT_LOCAL: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
 }
 
 /// Arms one full repaint of every window and mounted surface for the next frame.
@@ -3303,7 +3779,13 @@ thread_local! {
 /// keeping the frame it already drew until the user happens to move the mouse.
 pub(crate) fn arm_global_repaint() {
     GLOBAL_REPAINT_EPOCH.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    let _ = GLOBAL_REPAINT_LOCAL.try_with(|epoch| epoch.set(epoch.get().wrapping_add(1)));
     crate::platform::frame_wait::wake();
+}
+
+/// The global-repaint generation layers on this thread must match.
+fn global_repaint_generation() -> u64 {
+    GLOBAL_REPAINT_LOCAL.try_with(|epoch| epoch.get()).unwrap_or(0)
 }
 
 /// The epoch a theme mutation bumps, so `theme::manager` can assert it armed the repaint.
@@ -3451,7 +3933,16 @@ fn request_repaint_subtree_because(id: ObjectId, reason: RepaintReason) {
 /// A request for a surface already repainted this frame is folded into it and counted as
 /// coalesced; see [`note_frame_repaint_reason`].
 pub fn request_repaint_because(id: ObjectId, reason: RepaintReason) {
+    // A whole-control request names no rectangle, so no layer can be proven still valid for the
+    // control itself. The invalidation is bounded to the control's box when the runtime can read
+    // it, so a control that repaints wholesale does not throw away an unrelated neighbour's
+    // layer; a widget the registry cannot answer for (it is lent out mid-tick) falls back to
+    // dropping every layer, which is the safe direction.
     note_renderable_change();
+    match geometry_of(id) {
+        Some(rect) => invalidate_widget_layers_in(grow_by_damage_margin(rect)),
+        None => invalidate_widget_layers(),
+    }
     if crate::invalidate_surface(id) {
         note_frame_repaint_reason(id, reason);
     }
@@ -3729,9 +4220,9 @@ pub fn enable_damage_tracking_if_useful(id: ObjectId) -> bool {
     set_repaint_mode_adaptive(id)
 }
 
-/// One cached window-tree frame: the size it was rendered at, its pixels, and the content epoch
-/// they describe.
-type CachedTreeFrame = (Size, Rc<Vec<u8>>, u64);
+/// One cached window-tree frame: the size it was rendered at, its pixels, the content epoch it
+/// describes, and the global-repaint generation it was painted under.
+type CachedTreeFrame = (Size, Rc<Vec<u8>>, u64, u64);
 
 thread_local! {
     /// The widget registry id for a widget's own `BaseWidget::id()`.
@@ -3821,6 +4312,223 @@ fn note_renderable_change() {
 /// The current content epoch for this thread.
 fn renderable_epoch() -> u64 {
     TREE_FRAME_EPOCH.try_with(|epoch| epoch.get()).unwrap_or(1)
+}
+
+thread_local! {
+    /// Generation of the per-widget layer cache for this thread.
+    ///
+    /// # Why this is separate from `TREE_FRAME_EPOCH`
+    ///
+    /// The tree-frame epoch answers "does the window frame I cached still describe the tree?" —
+    /// a whole-frame question, so any change must invalidate the whole frame. A per-widget layer
+    /// answers a narrower question: "do these pixels describe *this* control's box?". Reusing
+    /// the tree epoch for both meant one changed control threw away every control's layer, and a
+    /// hover on one button re-shaped the text of the whole window.
+    ///
+    /// This epoch is therefore only bumped by causes no rectangle describes — a geometry change
+    /// and a whole-control repaint. Rectangle damage is answered by dropping exactly the layers
+    /// it touches (see [`invalidate_widget_layers_in`]).
+    #[allow(clippy::missing_const_for_thread_local)]
+    static LAYER_EPOCH: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+
+    /// Narrow damage submitted while the registry had lent a control out (a `tick`).
+    ///
+    /// A control's `tick` runs inside `with_widget_mut`, which takes its entry out of the
+    /// registry map. Anything that has to read the registry in the same breath — the box a
+    /// repaint is bounded by, the window above it — would see a missing widget, so those two
+    /// lookups are deferred to [`flush_deferred_damage`], which runs after the sweep.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static DEFERRED_DAMAGE: core::cell::RefCell<alloc::vec::Vec<(ObjectId, Rect, RepaintReason)>> =
+        const { core::cell::RefCell::new(alloc::vec::Vec::new()) };
+}
+
+/// The current per-widget layer epoch for this thread.
+fn layer_epoch() -> u64 {
+    LAYER_EPOCH.try_with(|epoch| epoch.get()).unwrap_or(0)
+}
+
+/// Drops every per-widget layer on this thread.
+///
+/// Used by a change that no rectangle describes: a moved or resized subtree (the parent's layer
+/// rect can stay the same while its child shrinks inside it) and a whole-control repaint.
+fn invalidate_widget_layers() {
+    let _ = LAYER_EPOCH.try_with(|epoch| epoch.set(epoch.get().wrapping_add(1)));
+}
+
+/// Drops the per-widget layers whose pixels `rect` overlaps.
+///
+/// # Why a rectangle is the right granularity
+///
+/// A layer holds the pixels of one subtree inside its bounds. Damage at `rect` can only make a
+/// layer stale when the two overlap, so everything else keeps serving its pixels. The rule is
+/// deliberately conservative in one direction: a sibling whose bounds happen to overlap keeps
+/// being invalidated too, which costs a repaint but can never show a stale pixel.
+fn invalidate_widget_layers_in(rect: Rect) {
+    let _ = WIDGET_LAYERS.try_with(|layers| {
+        layers.borrow_mut().retain(|_, layer| !layer.rect.intersects(&rect));
+    });
+}
+
+/// How many per-widget offscreen layers may be resident at once.
+///
+/// A layer is a full RGBA copy of one widget's painted box, so the bound is on the number of
+/// boxes rather than on bytes: a small window full of tiny controls and a large window full of
+/// small controls then have the same worst case. The least recently replayed or replaced layer
+/// is dropped first, so a scrolled-away page cannot evict the page currently on screen.
+const MAX_CACHED_WIDGET_LAYERS: usize = 128;
+
+/// One widget subtree rendered into its own transparent RGBA layer.
+///
+/// # Why the key carries more than the id
+///
+/// A layer's pixels describe one rectangle, drawn at one time, under one clip. An id alone would
+/// let a moved, resized, differently clipped, or pre-theme-change control replay pixels that no
+/// longer answer its box. Every field below is therefore part of the match: the id selects the
+/// candidate, and the remaining fields decide whether it still describes this paint.
+struct CachedWidgetLayer {
+    /// Bounds of the layer in absolute (window) coordinates.
+    rect: Rect,
+    /// Clip the ancestors imposed when the layer was captured.
+    clip: Option<Rect>,
+    /// Origin of the frame the layer was captured for.
+    frame_origin: (i32, i32),
+    /// Size of the frame the layer was captured for.
+    frame_size: Size,
+    /// Tree/damage epoch at which the layer was captured.
+    epoch: u64,
+    /// Global repaint generation at which the layer was captured.
+    global_epoch: u64,
+    /// Layer pixels, row-major RGBA, `width * height * 4` bytes.
+    pixels: Rc<Vec<u8>>,
+    /// Monotonic use stamp for least-recently-used eviction.
+    last_used: u64,
+}
+
+thread_local! {
+    /// Per-widget offscreen layers, keyed by registry id.
+    ///
+    /// The existing [`LAST_TREE_FRAME`] cache answers "has the whole window changed?"; this map
+    /// answers the finer question "which control changed?" so one dirty control no longer forces
+    /// every clean sibling to run `draw` (and re-shape and re-rasterise its text) again.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static WIDGET_LAYERS: RefCell<HashMap<ObjectId, CachedWidgetLayer>> =
+        RefCell::new(HashMap::new());
+
+    /// Monotonic clock used to order [`WIDGET_LAYERS`] for eviction.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static WIDGET_LAYER_CLOCK: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
+/// Advances and returns the layer use stamp.
+fn next_widget_layer_clock() -> u64 {
+    WIDGET_LAYER_CLOCK.with(|clock| {
+        let next = clock.get().wrapping_add(1);
+        clock.set(next);
+        next
+    })
+}
+
+/// Looks up a layer that still describes this exact paint.
+fn lookup_widget_layer(
+    id: ObjectId,
+    rect: Rect,
+    clip: Option<Rect>,
+    frame_origin: (i32, i32),
+    frame_size: Size,
+    epoch: u64,
+    global_epoch: u64,
+) -> Option<Rc<Vec<u8>>> {
+    WIDGET_LAYERS
+        .try_with(|layers| {
+            let mut layers = layers.borrow_mut();
+            let layer = layers.get_mut(&id)?;
+            let matches = layer.rect == rect
+                && layer.clip == clip
+                && layer.frame_origin == frame_origin
+                && layer.frame_size == frame_size
+                && layer.epoch == epoch
+                && layer.global_epoch == global_epoch;
+            if !matches {
+                return None;
+            }
+            layer.last_used = next_widget_layer_clock();
+            Some(Rc::clone(&layer.pixels))
+        })
+        .ok()
+        .flatten()
+}
+
+/// Stores a freshly painted layer, evicting the least recently used one when full.
+#[allow(clippy::too_many_arguments)]
+fn store_widget_layer(
+    id: ObjectId,
+    rect: Rect,
+    clip: Option<Rect>,
+    frame_origin: (i32, i32),
+    frame_size: Size,
+    epoch: u64,
+    global_epoch: u64,
+    pixels: Rc<Vec<u8>>,
+) {
+    let stamp = next_widget_layer_clock();
+    let _ = WIDGET_LAYERS.try_with(|layers| {
+        let mut layers = layers.borrow_mut();
+        if !layers.contains_key(&id) && layers.len() >= MAX_CACHED_WIDGET_LAYERS {
+            let oldest = layers.iter().min_by_key(|(_, layer)| layer.last_used).map(|(id, _)| *id);
+            if let Some(oldest) = oldest {
+                layers.remove(&oldest);
+            }
+        }
+        layers.insert(
+            id,
+            CachedWidgetLayer {
+                rect,
+                clip,
+                frame_origin,
+                frame_size,
+                epoch,
+                global_epoch,
+                pixels,
+                last_used: stamp,
+            },
+        );
+    });
+}
+
+// Test-only count of layer replays, so a regression test can prove a clean control returned its
+// cached pixels instead of running `draw` (and therefore instead of shaping or rasterising text).
+#[cfg(test)]
+thread_local! {
+    #[allow(clippy::missing_const_for_thread_local)]
+    static WIDGET_LAYER_REPLAYS: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn note_widget_layer_replay() {
+    WIDGET_LAYER_REPLAYS.with(|count| count.set(count.get() + 1));
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn note_widget_layer_replay() {}
+
+/// Resets and returns the layer replay counter.
+#[cfg(all(test, full_widgets))]
+pub(crate) fn take_widget_layer_replays_for_test() -> usize {
+    WIDGET_LAYER_REPLAYS.with(|count| count.replace(0))
+}
+
+/// How many per-widget layers are resident on this thread.
+#[cfg(all(test, full_widgets))]
+pub(crate) fn cached_widget_layer_count_for_test() -> usize {
+    WIDGET_LAYERS.try_with(|layers| layers.borrow().len()).unwrap_or(0)
+}
+
+/// Drops every per-widget layer on this thread.
+#[cfg(all(test, full_widgets))]
+pub(crate) fn clear_widget_layers_for_test() {
+    let _ = WIDGET_LAYERS.try_with(|layers| layers.borrow_mut().clear());
+    let _ = WIDGET_LAYER_REPLAYS.try_with(|count| count.set(0));
 }
 
 // Counts full-frame buffer copies performed by the incremental frame cache. Test-only.
@@ -3930,6 +4638,8 @@ pub fn mark_dirty_rect(id: ObjectId, rect: Rect) -> bool {
     // tree-frame cache compares against (see `render_frame_tree_cached`). Bumped even when this
     // widget has no tracker, because a window-level cache is not the per-widget policy.
     note_renderable_change();
+    // The layer cache is narrower: only the layers this rectangle touches can now be stale.
+    invalidate_widget_layers_in(rect);
     let recorded = REPAINT
         .try_with(|map| {
             let mut map = map.borrow_mut();
@@ -4200,12 +4910,15 @@ pub fn render_frame_tree_cached_shared(
         return None;
     }
     let epoch = renderable_epoch();
+    let global_epoch = global_repaint_generation();
     let previous = LAST_TREE_FRAME
         .try_with(|map| {
             map.borrow()
                 .get(&id)
-                .filter(|(stored, _, stored_epoch)| *stored == size && *stored_epoch == epoch)
-                .map(|(_, frame, _)| Rc::clone(frame))
+                .filter(|(stored, _, stored_epoch, stored_global)| {
+                    *stored == size && *stored_epoch == epoch && *stored_global == global_epoch
+                })
+                .map(|(_, frame, _, _)| Rc::clone(frame))
         })
         .ok()
         .flatten();
@@ -4215,7 +4928,7 @@ pub fn render_frame_tree_cached_shared(
 
     let shared = Rc::new(render_frame_tree(id, size, clear)?);
     let _ = LAST_TREE_FRAME.try_with(|map| {
-        map.borrow_mut().insert(id, (size, Rc::clone(&shared), epoch));
+        map.borrow_mut().insert(id, (size, Rc::clone(&shared), epoch, global_epoch));
     });
     Some(shared)
 }
@@ -4318,6 +5031,7 @@ pub fn render_frame_cached_shared(
 pub fn forget_cached_frame(id: ObjectId) {
     let _ = LAST_FRAME.try_with(|map| map.borrow_mut().remove(&id));
     let _ = LAST_TREE_FRAME.try_with(|map| map.borrow_mut().remove(&id));
+    let _ = WIDGET_LAYERS.try_with(|map| map.borrow_mut().remove(&id));
 }
 
 /// The size of the cached frame for `id`, if one is held.
@@ -4461,7 +5175,14 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
     if size.width == 0 || size.height == 0 {
         return None;
     }
+    // Captured before anything paints: a request made *during* a draw belongs to the next frame,
+    // so the layer stored now must not carry the epoch that request produced. This is the layer
+    // epoch rather than the tree epoch: a frame is repainted whole after any change, while the
+    // controls whose pixels did not change keep their layers.
+    let epoch = layer_epoch();
+    let global_epoch = global_repaint_generation();
     let origin = frame_origin(id);
+    let frame_bounds = Rect::new(origin.0, origin.1, size.width, size.height);
     let mut backend = SoftwarePaintBackend::new(size, 1.0);
 
     // The root's own painting is part of the frame: a window draws its background and
@@ -4487,72 +5208,38 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
     .unwrap_or(false);
 
     if painted {
-        // Children are drawn into the same frame, so the traversal only issues draw calls;
-        // the frame was begun above and is ended once below.
+        // Each direct child is offered to the per-widget layer cache. A child whose subtree is
+        // unchanged replays its cached pixels; a changed one is rasterised once into its own
+        // transparent offscreen surface and then composited into this frame. The recursion below
+        // owns the descent, so the root's children are the only stack this function needs.
         //
-        // Each entry carries the clip **its ancestors** impose on it. A control answers
+        // Every entry carries the clip **its ancestors** impose on it. A control answers
         // `children_clip` for its descendants (a scroll area's viewport, for example), and the
         // painter intersects that with the clip its own ancestors already imposed. Without the
-        // carried rectangle a container could only draw and place its content; the content
-        // would then escape the viewport as soon as it was scrolled, which is exactly the
-        // half-fix `ScrollArea` used to be.
-        let mut stack: Vec<(ObjectId, Option<Rect>)> = ordered_root_children(root_children)
-            .into_iter()
-            .map(|child| (child, root_clip))
-            .collect();
-        // Reversed so the traversal visits children in declaration order: `pop` takes the
-        // last element, so pushing the children reversed makes the first one first.
-        stack.reverse();
-        while let Some((current, clip)) = stack.pop() {
+        // carried rectangle a control's content would escape the viewport as soon as it scrolled.
+        //
+        // `SubtreeMetrics` is a per-frame memo: subtree bounds and the open-popup flag are each
+        // computed once per node, not once per ancestor that asks for them.
+        let mut metrics = HashMap::new();
+        for child in ordered_root_children(root_children) {
             // A node whose clip has no area cannot paint anything, and neither can its
             // descendants. Skipping the node skips the subtree, the same rule hiding uses.
-            if clip.is_some_and(|rect| rect.width == 0 || rect.height == 0) {
+            if root_clip.is_some_and(|rect| rect.width == 0 || rect.height == 0) {
                 continue;
             }
-            // Visibility, the child list, the descendant clip and the draw itself are read
-            // in **one** registry loan. They used to be three (`is_visible`, then
-            // `with_widget_mut`, then `direct_children_of`), and every loan detaches the
-            // widget from the registry, installs three loan markers and re-inserts it — so a
-            // 100-node window paid ~900 map operations per frame before it drew a pixel. One
-            // loan also makes the four values describe the same instant.
-            //
-            // The children go straight onto the work stack rather than into a per-node `Vec`:
-            // the traversal is iterative, so the list only has to exist long enough to be
-            // pushed, and a snapshot per node was one heap allocation per node per frame
-            // (WBASE-05). Pushing them **reversed** keeps the `pop` order the declaration
-            // order, exactly as the reverse-then-extend form did.
-            let outcome = with_widget_mut(current, |widget| {
-                if !widget.is_visible() {
-                    return None;
-                }
-                // Read before the draw: `as_draw_mut` needs the exclusive borrow, and the child
-                // list is read from the same immutable view.
-                let descendant_clip = intersect_clip(clip, widget.children_clip());
-                for child in widget.base().children().iter().rev() {
-                    stack.push((*child, descendant_clip));
-                }
-                let Some(drawable) = widget.as_draw_mut() else {
-                    return Some(false);
-                };
-                let mut context = RenderContext::new(&mut backend);
-                context.push_offset(-origin.0, -origin.1);
-                if let Some(rect) = clip {
-                    context.push_clip(rect.x, rect.y, rect.width, rect.height);
-                }
-                drawable.draw(&mut context);
-                if clip.is_some() {
-                    context.pop_clip();
-                }
-                context.pop_offset();
-                Some(true)
-            })
-            .flatten();
-            let Some(drew) = outcome else {
-                // Not visible: a hidden node hides its whole subtree. Its children were not
-                // pushed, because the visibility check precedes the push above.
-                continue;
-            };
-            if drew {
+            let painted_child = paint_widget_layer(
+                child,
+                root_clip,
+                &mut backend,
+                origin,
+                frame_bounds,
+                size,
+                epoch,
+                global_epoch,
+                0,
+                &mut metrics,
+            );
+            if painted_child.drew {
                 painted = true;
             }
         }
@@ -4563,6 +5250,277 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
     }
     backend.end_frame();
     Some(backend.into_frame_rgba())
+}
+
+/// Bounds and painting facts for one widget subtree, computed once per frame.
+#[derive(Clone, Copy)]
+struct SubtreeMetrics {
+    /// Union of the subtree's painted boxes, or `None` when the subtree is hidden.
+    bounds: Option<Rect>,
+    /// Whether any visible node in the subtree paints an overlay outside its own rectangle.
+    has_open_popup: bool,
+}
+
+/// The result of offering one widget subtree to the layer cache.
+#[derive(Clone, Copy)]
+struct LayerPaint {
+    /// Whether this subtree painted anything.
+    drew: bool,
+    /// Whether the subtree was rendered into a rectangle that fully describes it.
+    cacheable: bool,
+}
+
+/// The deepest subtree the painter will descend, so a corrupted parent/child cycle cannot
+/// overflow the stack. Real trees are far shallower.
+const MAX_LAYER_DEPTH: u32 = 64;
+
+/// Returns the subtree's painted bounds and whether it paints outside its own box, memoised.
+fn subtree_metrics(
+    id: ObjectId,
+    depth: u32,
+    memo: &mut HashMap<ObjectId, SubtreeMetrics>,
+) -> SubtreeMetrics {
+    if let Some(cached) = memo.get(&id) {
+        return *cached;
+    }
+    let empty = SubtreeMetrics { bounds: None, has_open_popup: false };
+    if depth >= MAX_LAYER_DEPTH {
+        return empty;
+    }
+    let info = read_widget(id, |widget| {
+        (
+            widget.is_visible(),
+            widget.has_open_popup(),
+            grow_by_damage_margin(widget.geometry()),
+            widget.base().children().to_vec(),
+        )
+    });
+    let metrics = match info {
+        Some((true, has_open_popup, mut bounds, children)) => {
+            let mut has_open_popup = has_open_popup;
+            for child in children {
+                let child_metrics = subtree_metrics(child, depth + 1, memo);
+                has_open_popup |= child_metrics.has_open_popup;
+                if let Some(child_bounds) = child_metrics.bounds {
+                    bounds = union_rect(bounds, child_bounds);
+                }
+            }
+            SubtreeMetrics { bounds: Some(bounds), has_open_popup }
+        }
+        // A hidden node hides its whole subtree, and an id that is no longer mounted paints
+        // nothing. Both are ordinary states, not errors.
+        _ => empty,
+    };
+    memo.insert(id, metrics);
+    metrics
+}
+
+/// The union of two rectangles, saturating at the coordinate limits.
+fn union_rect(a: Rect, b: Rect) -> Rect {
+    let x0 = a.x.min(b.x);
+    let y0 = a.y.min(b.y);
+    let x1 = a.right().max(b.right());
+    let y1 = a.bottom().max(b.bottom());
+    Rect::new(x0, y0, x1.saturating_sub(x0).max(0) as u32, y1.saturating_sub(y0).max(0) as u32)
+}
+
+/// Narrows a subtree's painted bounds to what the frame and the ancestors can show.
+fn layer_bounds(raw: Rect, clip: Option<Rect>, frame_bounds: Rect) -> Option<Rect> {
+    let bounded = intersect_clip(Some(raw), clip)?;
+    let bounded = intersect_clip(Some(bounded), Some(frame_bounds))?;
+    (bounded.width > 0 && bounded.height > 0).then_some(bounded)
+}
+
+/// Draws a cached layer into `backend` at its absolute position.
+fn blit_widget_layer(
+    backend: &mut SoftwarePaintBackend,
+    origin: (i32, i32),
+    bounds: Rect,
+    pixels: &[u8],
+) {
+    let mut context = RenderContext::new(backend);
+    context.draw_image(
+        bounds.x - origin.0,
+        bounds.y - origin.1,
+        bounds.width,
+        bounds.height,
+        pixels,
+    );
+}
+
+/// Paints one widget subtree, reusing its cached layer when one still describes the paint.
+#[allow(clippy::too_many_arguments)]
+fn paint_widget_layer(
+    id: ObjectId,
+    clip: Option<Rect>,
+    backend: &mut SoftwarePaintBackend,
+    origin: (i32, i32),
+    frame_bounds: Rect,
+    frame_size: Size,
+    epoch: u64,
+    global_epoch: u64,
+    depth: u32,
+    metrics: &mut HashMap<ObjectId, SubtreeMetrics>,
+) -> LayerPaint {
+    let subtree = subtree_metrics(id, depth, metrics);
+    let Some(raw_bounds) = subtree.bounds else {
+        return LayerPaint { drew: false, cacheable: true };
+    };
+    // A subtree that paints outside its own box (an open drop-down list) cannot be captured in
+    // a bounded layer without clipping the overlay. Paint it straight into the target instead,
+    // and mark it uncacheable so no ancestor captures a layer that omits the overlay.
+    if subtree.has_open_popup {
+        return paint_widget_direct(
+            id,
+            clip,
+            backend,
+            origin,
+            frame_bounds,
+            frame_size,
+            epoch,
+            global_epoch,
+            depth,
+            metrics,
+        );
+    }
+    let Some(bounds) = layer_bounds(raw_bounds, clip, frame_bounds) else {
+        return LayerPaint { drew: false, cacheable: true };
+    };
+
+    if let Some(pixels) =
+        lookup_widget_layer(id, bounds, clip, origin, frame_size, epoch, global_epoch)
+    {
+        blit_widget_layer(backend, origin, bounds, pixels.as_slice());
+        note_widget_layer_replay();
+        return LayerPaint { drew: true, cacheable: true };
+    }
+
+    // A miss paints the subtree into its own transparent surface. Draws inside the layer are
+    // translated by the layer's absolute origin, exactly as the frame path translates them by
+    // the frame origin. `end_frame` publishes the drawn back buffer as the frame to take.
+    let layer_size = Size::new(bounds.width, bounds.height);
+    let mut offscreen = SoftwarePaintBackend::new(layer_size, 1.0);
+    let mut children = Vec::new();
+    let mut child_clip = None;
+    let mut self_drew = false;
+    let rendered = with_widget_mut(id, |widget| {
+        children = widget.base().children().to_vec();
+        child_clip = intersect_clip(clip, widget.children_clip());
+        let Some(drawable) = widget.as_draw_mut() else {
+            return;
+        };
+        let mut context = RenderContext::new(&mut offscreen);
+        context.push_offset(-bounds.x, -bounds.y);
+        drawable.draw(&mut context);
+        context.pop_offset();
+        self_drew = true;
+    });
+    if rendered.is_none() {
+        return LayerPaint { drew: false, cacheable: true };
+    }
+
+    let mut child_drew = false;
+    let mut cacheable = true;
+    for child in children {
+        let painted = paint_widget_layer(
+            child,
+            child_clip,
+            &mut offscreen,
+            (bounds.x, bounds.y),
+            bounds,
+            layer_size,
+            epoch,
+            global_epoch,
+            depth + 1,
+            metrics,
+        );
+        child_drew |= painted.drew;
+        cacheable &= painted.cacheable;
+    }
+    if !self_drew && !child_drew {
+        return LayerPaint { drew: false, cacheable };
+    }
+
+    offscreen.end_frame();
+    let pixels = Rc::new(offscreen.into_frame_rgba());
+    if cacheable {
+        store_widget_layer(
+            id,
+            bounds,
+            clip,
+            origin,
+            frame_size,
+            epoch,
+            global_epoch,
+            Rc::clone(&pixels),
+        );
+    }
+    blit_widget_layer(backend, origin, bounds, pixels.as_slice());
+    LayerPaint { drew: true, cacheable }
+}
+
+/// Paints one widget and its descendants directly into `backend`.
+///
+/// This is the path for a subtree that paints outside its own rectangle. It keeps the original
+/// clipping and ordering rules; descendants without an overlay can still be layered, which is
+/// why it recurses through [`paint_widget_layer`] rather than drawing the whole subtree here.
+#[allow(clippy::too_many_arguments)]
+fn paint_widget_direct(
+    id: ObjectId,
+    clip: Option<Rect>,
+    backend: &mut SoftwarePaintBackend,
+    origin: (i32, i32),
+    frame_bounds: Rect,
+    frame_size: Size,
+    epoch: u64,
+    global_epoch: u64,
+    depth: u32,
+    metrics: &mut HashMap<ObjectId, SubtreeMetrics>,
+) -> LayerPaint {
+    let mut children = Vec::new();
+    let mut child_clip = None;
+    let mut self_drew = false;
+    let rendered = with_widget_mut(id, |widget| {
+        if !widget.is_visible() {
+            return;
+        }
+        children = widget.base().children().to_vec();
+        child_clip = intersect_clip(clip, widget.children_clip());
+        let Some(drawable) = widget.as_draw_mut() else {
+            return;
+        };
+        let mut context = RenderContext::new(backend);
+        context.push_offset(-origin.0, -origin.1);
+        if let Some(rect) = clip {
+            context.push_clip(rect.x, rect.y, rect.width, rect.height);
+        }
+        drawable.draw(&mut context);
+        if clip.is_some() {
+            context.pop_clip();
+        }
+        context.pop_offset();
+        self_drew = true;
+    });
+    if rendered.is_none() {
+        return LayerPaint { drew: false, cacheable: false };
+    }
+    let mut child_drew = false;
+    for child in children {
+        let painted = paint_widget_layer(
+            child,
+            child_clip,
+            backend,
+            origin,
+            frame_bounds,
+            frame_size,
+            epoch,
+            global_epoch,
+            depth + 1,
+            metrics,
+        );
+        child_drew |= painted.drew;
+    }
+    LayerPaint { drew: self_drew || child_drew, cacheable: false }
 }
 
 /// The overlap of two clip rectangles, or a zero-area rectangle when they do not overlap.
@@ -4626,6 +5584,10 @@ mod tests {
     use crate::core::{Color, Point};
     use crate::platform::accessibility::AccessibilityBridge as _;
     use crate::widget::special_widgets::code_editor::CodeEditor;
+    use crate::widget::{BaseWidget, Draw, WidgetKind};
+
+    /// A counter shared with a test control.
+    type DrawCount = core::cell::Cell<usize>;
 
     // ── BLUE23 §3.3 -- the animation bus ────────────────────────────────────────
 
@@ -4765,6 +5727,54 @@ mod tests {
             outcome.needs_another_frame,
             "a transition still in flight means the host must schedule another frame"
         );
+    }
+
+    /// A frame that advances a control submits damage bounded by that control.
+    ///
+    /// 丝滑-2's last step: the sweep used to ask for the whole subtree (and the whole window)
+    /// to repaint. It still tells the window, because on a window-tree backend the window is
+    /// what redraws the children, but it now hands over a rectangle instead of asking for
+    /// everything. The assertion is the union of the control's damage, not a specific count:
+    /// a tracker may coalesce regions, and what matters is that nothing outside the control's
+    /// painted box plus the halo margin was submitted.
+    #[test]
+    fn an_animation_frame_submits_damage_bounded_by_the_moving_control() {
+        let _serial = serialise_drive_frame();
+        let id = register(Box::new(crate::widget::Button::new(
+            "ok".to_string(),
+            crate::core::Rect::new(0, 0, 80, 32),
+        )))
+        .expect("mount");
+        let _unmount = MountGuard(id);
+        // Drain anything an earlier test left armed, so this test measures its own frame.
+        let _ = drive_frame(0);
+        assert!(
+            set_repaint_mode(id, RepaintMode::Dirty),
+            "the control must opt into damage tracking for a rectangle to be recorded"
+        );
+        assert!(
+            dispatch_event(id, &crate::event::Event::MouseEnter { pos: Point::new(5, 5) }),
+            "the hover must reach the control, or there is nothing to animate"
+        );
+
+        let outcome = drive_frame(16);
+        assert_eq!(outcome.controls_ticked, 1, "exactly the hovered button advanced");
+
+        let bounds = painted_box_with_damage_margin(id).expect("a mounted control has a box");
+        let damage = dirty_rects(id);
+        assert!(
+            !damage.is_empty(),
+            "the sweep must submit the control's damage, not merely ask for a frame"
+        );
+        for rect in damage {
+            let bottom_right =
+                Point::new(rect.x + rect.width as i32 - 1, rect.y + rect.height as i32 - 1);
+            assert!(
+                bounds.contains_point(Point::new(rect.x, rect.y))
+                    && bounds.contains_point(bottom_right),
+                "animation damage {rect:?} must stay inside the painted box {bounds:?}"
+            );
+        }
     }
 
     /// A static frame costs nothing and submits nothing.
@@ -5664,6 +6674,95 @@ mod tests {
         let editor = CodeEditor::new(Rect::new(0, 0, 40, 20));
         editor.base().request_redraw();
         assert!(dirty_rects(editor.base().id()).is_empty());
+    }
+
+    // ── Partial submissions from a control ─────────────────────────────────────
+    //
+    // `request_redraw` submits the control's whole geometry. These entry points let a
+    // control submit only the rectangle it changed, while keeping the whole-control
+    // fallback for modes that do not read damage.
+
+    /// A control that submits its painted box plus the bleed produces exactly that
+    /// damage, and the union never leaves those bounds.
+    #[test]
+    fn a_rect_submission_is_bounded_by_the_painted_box_plus_the_margin() {
+        let id = register(auto_accepted_surface()).expect("registry");
+        assert_eq!(repaint_mode(id), RepaintMode::Adaptive, "the fixture tracks damage");
+
+        let margin = crate::widget::metrics::DAMAGE_MARGIN;
+        let geometry = geometry_of(id).expect("geometry");
+        let bounds = painted_box_with_damage_margin(id).expect("painted box");
+        assert_eq!(
+            bounds,
+            Rect::new(
+                geometry.x - margin as i32,
+                geometry.y - margin as i32,
+                geometry.width + margin * 2,
+                geometry.height + margin * 2,
+            ),
+            "the box is the control's geometry grown by the bleed on every side"
+        );
+
+        request_repaint_rect(id, bounds);
+
+        let damaged = dirty_rects(id);
+        assert_eq!(damaged.len(), 1, "one submission is one region: {damaged:?}");
+        assert_eq!(damaged[0], bounds, "the submission must be recorded as given");
+        assert!(
+            damaged.iter().all(|rect| {
+                rect.x >= bounds.x
+                    && rect.y >= bounds.y
+                    && rect.x + rect.width as i32 <= bounds.x + bounds.width as i32
+                    && rect.y + rect.height as i32 <= bounds.y + bounds.height as i32
+            }),
+            "the damage union must stay inside rect + margin: {damaged:?} vs {bounds:?}"
+        );
+
+        unregister(id);
+    }
+
+    /// `Full` is unchanged: a rectangle submission there becomes a whole-control
+    /// repaint, which is the behaviour every control had before this API existed.
+    #[test]
+    fn a_rect_submission_in_full_mode_falls_back_to_a_whole_control_repaint() {
+        use crate::platform::RecordingInvalidations;
+
+        let id = register(sample_editor("fn main() {}")).expect("registry");
+        assert_eq!(repaint_mode(id), RepaintMode::Full, "Full is the default");
+
+        let log: &'static RecordingInvalidations =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(RecordingInvalidations::new()));
+        let rect = Rect::new(4, 8, 16, 16);
+        crate::platform::with_recorded_invalidations(log, || request_repaint_rect(id, rect));
+
+        assert_eq!(
+            log.calls(),
+            vec![(id, None)],
+            "a control that does not track damage is invalidated whole, as before"
+        );
+        assert!(dirty_rects(id).is_empty(), "Full mode records no damage to replay");
+        unregister(id);
+    }
+
+    /// A control nobody mounted has no surface to invalidate, so both entry points are
+    /// silent even when a recording backend is installed.
+    #[test]
+    fn a_rect_submission_on_an_unregistered_widget_is_a_no_op() {
+        use crate::platform::RecordingInvalidations;
+
+        let editor = CodeEditor::new(Rect::new(0, 0, 40, 20));
+        let id = editor.base().id();
+        let log: &'static RecordingInvalidations =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(RecordingInvalidations::new()));
+
+        crate::platform::with_recorded_invalidations(log, || {
+            request_repaint_rect(id, Rect::new(0, 0, 40, 20));
+            request_repaint_rect_because(id, Rect::new(0, 0, 40, 20), RepaintReason::State);
+        });
+
+        assert!(log.calls().is_empty(), "an unmounted id must not reach the platform");
+        assert!(dirty_rects(id).is_empty());
+        assert_eq!(painted_box_with_damage_margin(id), None);
     }
 
     /// Every frame that repaints must clear the damage, or the next frame repaints the
@@ -6699,6 +7798,262 @@ mod tests {
         assert!(!open_context_menu(id, Point::new(5, 5), Rect::new(0, 0, 400, 400)));
         assert!(!open_context_menu(9_999, Point::new(5, 5), Rect::new(0, 0, 400, 400)));
         unregister(id);
+    }
+
+    /// The secondary press is delivered first and the menu request follows it, both to the
+    /// same control. The press half is observable through the focus move it performs; the
+    /// request half through the control's own signal.
+    #[test]
+    fn a_secondary_press_delivers_the_press_and_then_the_menu_request() {
+        let field = crate::LineEdit::new(Rect::new(0, 0, 120, 32));
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = std::sync::Arc::clone(&seen);
+        field.context_menu_requested.connect_ref(move |pos: &Point| {
+            *sink.lock().unwrap() = Some(*pos);
+        });
+        let id = register(Box::new(field)).expect("registry");
+        let _guard = MountGuard(id);
+        let point = Point::new(20, 16);
+
+        assert!(dispatch_pointer_event(
+            id,
+            &Event::MousePress {
+                pos: point,
+                button: crate::event::mouse_button::SECONDARY,
+                modifiers: 0,
+            },
+            point,
+        ));
+        assert_eq!(*seen.lock().unwrap(), Some(point), "the menu request follows the press");
+        assert_eq!(
+            focused_widget(),
+            Some(id),
+            "the press itself must still be delivered, not swallowed by the menu path"
+        );
+        clear_focus();
+    }
+
+    /// A keyboard-originated request (the translator's `ContextMenu`) goes to the control that
+    /// owns the keyboard, because there is no pointer position to hit-test.
+    #[test]
+    fn a_translated_menu_key_request_reaches_the_focused_control() {
+        let field = crate::LineEdit::new(Rect::new(0, 0, 120, 32));
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = std::sync::Arc::clone(&seen);
+        field.context_menu_requested.connect_ref(move |pos: &Point| {
+            *sink.lock().unwrap() = Some(*pos);
+        });
+        let id = register(Box::new(field)).expect("registry");
+        let _guard = MountGuard(id);
+        assert!(focus_widget(id));
+
+        assert!(dispatch_context_menu_event(&Event::context_menu(4, 5)));
+        assert_eq!(*seen.lock().unwrap(), Some(Point::new(4, 5)));
+        clear_focus();
+    }
+
+    /// A control that never opted into the context-menu hook reports `false` and is otherwise
+    /// untouched: the request is delivered, the hook declines it, and the widget's state does
+    /// not move.
+    #[test]
+    fn an_unintegrated_control_ignores_a_context_menu_request() {
+        use crate::widget::base_widgets::label::Label;
+
+        let label = Label::new("plain".to_string(), Rect::new(0, 0, 80, 24));
+        let id = register(Box::new(label)).expect("registry");
+        let _guard = MountGuard(id);
+        let before = geometry_of(id).expect("mounted");
+
+        assert!(dispatch_event(id, &Event::context_menu(3, 4)));
+        assert_eq!(geometry_of(id), Some(before), "the request must change nothing");
+        let handled = with_widget_mut(id, |widget| widget.context_menu_event(Point::new(3, 4)))
+            .unwrap_or(true);
+        assert!(!handled, "the default is no menu");
+    }
+
+    /// A text selection dragged onto a drop zone is committed through the coordinator: the
+    /// session activates on the move, the target reports its hover, and the release emits the
+    /// zone's own `payload_dropped` signal.
+    #[cfg(full_widgets)]
+    #[test]
+    fn the_drag_coordinator_drops_a_text_selection_on_a_drop_zone() {
+        use crate::event::dnd::DragPayload;
+        use crate::widget::misc_widgets::drop_zone::{DropZone, DropZoneState};
+
+        let mut area = crate::TextArea::new("hello".to_string(), Rect::new(0, 0, 120, 60));
+        area.select_all();
+        let area_id = register(Box::new(area)).expect("registry");
+        let _area_guard = MountGuard(area_id);
+
+        let zone = DropZone::new(Rect::new(200, 0, 120, 80), "text/plain");
+        let dropped = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = std::sync::Arc::clone(&dropped);
+        zone.payload_dropped.connect_ref(move |payload: &DragPayload| {
+            *sink.lock().unwrap() = Some(payload.item_id.clone());
+        });
+        let zone_id = register(Box::new(zone)).expect("registry");
+        let _zone_guard = MountGuard(zone_id);
+
+        let viewport = Rect::new(0, 0, 400, 200);
+        let mut coordinator = DragCoordinator::new();
+        assert_eq!(
+            coordinator.on_event(
+                &Event::mouse_press(10, 10, crate::event::mouse_button::PRIMARY),
+                viewport
+            ),
+            None
+        );
+        assert_eq!(
+            coordinator.session().map(|session| session.is_active()),
+            Some(false),
+            "a press alone is not yet a drag"
+        );
+
+        assert_eq!(
+            coordinator.on_event(&Event::mouse_move(220, 40), viewport),
+            None,
+            "a move only advances the session"
+        );
+        let hovered = with_widget_mut(zone_id, |widget| {
+            (widget as &mut dyn core::any::Any).downcast_mut::<DropZone>().map(|zone| zone.state())
+        })
+        .flatten();
+        assert_eq!(hovered, Some(DropZoneState::Accepted), "the target was told it is hovered");
+
+        assert_eq!(
+            coordinator.on_event(
+                &Event::mouse_release(220, 40, crate::event::mouse_button::PRIMARY),
+                viewport
+            ),
+            Some(DropEffect::Copy)
+        );
+        assert_eq!(dropped.lock().unwrap().as_deref(), Some("hello"));
+        assert!(coordinator.session().is_none(), "the release ends the session");
+    }
+
+    /// A control that implements neither trait is invisible to the coordinator: no session
+    /// starts, no event is delivered by the coordinator, and every call answers `None`.
+    #[test]
+    fn a_control_without_the_drag_traits_changes_nothing() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Plain {
+            base: crate::widget::BaseWidget,
+            deliveries: std::sync::Arc<AtomicUsize>,
+        }
+        impl crate::widget::Widget for Plain {
+            fn base(&self) -> &crate::widget::BaseWidget {
+                &self.base
+            }
+            fn base_mut(&mut self) -> &mut crate::widget::BaseWidget {
+                &mut self.base
+            }
+        }
+        impl crate::event::EventHandler for Plain {
+            fn handle_event(&mut self, _event: &Event) {
+                self.deliveries.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let deliveries = std::sync::Arc::new(AtomicUsize::new(0));
+        let plain = Plain {
+            base: crate::widget::BaseWidget::new(
+                crate::widget::WidgetKind::Label,
+                Rect::new(0, 0, 100, 40),
+                "Plain",
+            ),
+            deliveries: std::sync::Arc::clone(&deliveries),
+        };
+        let id = register(Box::new(plain)).expect("registry");
+        let _guard = MountGuard(id);
+
+        let viewport = Rect::new(0, 0, 400, 200);
+        let mut coordinator = DragCoordinator::new();
+        assert_eq!(
+            coordinator.on_event(
+                &Event::mouse_press(10, 10, crate::event::mouse_button::PRIMARY),
+                viewport
+            ),
+            None
+        );
+        assert!(coordinator.session().is_none(), "no DragSource, so no session");
+        assert_eq!(coordinator.hovered(), None);
+        assert_eq!(coordinator.on_event(&Event::mouse_move(60, 20), viewport), None);
+        assert_eq!(
+            coordinator.on_event(
+                &Event::mouse_release(60, 20, crate::event::mouse_button::PRIMARY),
+                viewport
+            ),
+            None
+        );
+        assert_eq!(
+            deliveries.load(Ordering::SeqCst),
+            0,
+            "the coordinator must not deliver events to a control that did not opt in"
+        );
+    }
+
+    /// The source is told what the drop produced, not merely that something happened.
+    #[cfg(full_widgets)]
+    #[test]
+    fn the_source_learns_the_effect_of_the_drop() {
+        use crate::event::dnd::{DragPayload, DragSource};
+        use crate::widget::misc_widgets::drop_zone::DropZone;
+
+        struct ProbeSource {
+            base: crate::widget::BaseWidget,
+            finished: std::sync::Arc<std::sync::Mutex<Option<DropEffect>>>,
+        }
+        impl crate::widget::Widget for ProbeSource {
+            fn base(&self) -> &crate::widget::BaseWidget {
+                &self.base
+            }
+            fn base_mut(&mut self) -> &mut crate::widget::BaseWidget {
+                &mut self.base
+            }
+            fn drag_source_mut(&mut self) -> Option<&mut dyn DragSource> {
+                Some(self)
+            }
+        }
+        impl DragSource for ProbeSource {
+            fn drag_payload(&self, _pos: Point) -> Option<DragPayload> {
+                Some(DragPayload::new("probe", "p1"))
+            }
+            fn on_drag_finished(&mut self, effect: DropEffect) {
+                *self.finished.lock().unwrap() = Some(effect);
+            }
+        }
+        impl crate::event::EventHandler for ProbeSource {
+            fn handle_event(&mut self, _event: &Event) {}
+        }
+
+        let finished = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let source = ProbeSource {
+            base: crate::widget::BaseWidget::new(
+                crate::widget::WidgetKind::Label,
+                Rect::new(0, 0, 100, 40),
+                "ProbeSource",
+            ),
+            finished: std::sync::Arc::clone(&finished),
+        };
+        let source_id = register(Box::new(source)).expect("registry");
+        let _source_guard = MountGuard(source_id);
+
+        let zone = DropZone::new(Rect::new(200, 0, 120, 80), "probe");
+        let zone_id = register(Box::new(zone)).expect("registry");
+        let _zone_guard = MountGuard(zone_id);
+
+        let viewport = Rect::new(0, 0, 400, 200);
+        let mut coordinator = DragCoordinator::new();
+        let _ = coordinator
+            .on_event(&Event::mouse_press(10, 10, crate::event::mouse_button::PRIMARY), viewport);
+        let _ = coordinator.on_event(&Event::mouse_move(220, 40), viewport);
+        let effect = coordinator.on_event(
+            &Event::mouse_release(220, 40, crate::event::mouse_button::PRIMARY),
+            viewport,
+        );
+        assert_eq!(effect, Some(DropEffect::Copy));
+        assert_eq!(*finished.lock().unwrap(), Some(DropEffect::Copy));
     }
 
     // -----------------------------------------------------------------------
@@ -9165,6 +10520,323 @@ mod tests {
         assert_eq!(first, third, "the same content paints the same bytes");
 
         unregister(id);
+    }
+
+    // ── per-widget layer cache ─────────────────────────────────────────────────
+
+    /// A plain container that paints its own background.
+    struct LayerRoot {
+        base: BaseWidget,
+    }
+    impl Widget for LayerRoot {
+        fn base(&self) -> &BaseWidget {
+            &self.base
+        }
+        fn base_mut(&mut self) -> &mut BaseWidget {
+            &mut self.base
+        }
+        fn as_draw_mut(&mut self) -> Option<&mut dyn Draw> {
+            Some(self)
+        }
+    }
+    impl crate::event::EventHandler for LayerRoot {
+        fn handle_event(&mut self, _event: &crate::event::Event) {}
+    }
+    impl Draw for LayerRoot {
+        fn draw(&mut self, context: &mut RenderContext) {
+            context.fill_rect(self.base.geometry(), Color::WHITE);
+        }
+    }
+
+    /// A control that counts how often its own `draw` ran.
+    struct LayerProbe {
+        base: BaseWidget,
+        draws: Rc<DrawCount>,
+    }
+    impl Widget for LayerProbe {
+        fn base(&self) -> &BaseWidget {
+            &self.base
+        }
+        fn base_mut(&mut self) -> &mut BaseWidget {
+            &mut self.base
+        }
+        fn as_draw_mut(&mut self) -> Option<&mut dyn Draw> {
+            Some(self)
+        }
+    }
+    impl crate::event::EventHandler for LayerProbe {
+        fn handle_event(&mut self, _event: &crate::event::Event) {}
+    }
+    impl Draw for LayerProbe {
+        fn draw(&mut self, context: &mut RenderContext) {
+            self.draws.set(self.draws.get() + 1);
+            context.fill_rect(self.base.geometry(), Color::rgb(20, 40, 60));
+        }
+    }
+
+    /// A text-heavy control: every `draw` lays out many labels.
+    struct LayerText {
+        base: BaseWidget,
+        draws: Rc<DrawCount>,
+    }
+    impl Widget for LayerText {
+        fn base(&self) -> &BaseWidget {
+            &self.base
+        }
+        fn base_mut(&mut self) -> &mut BaseWidget {
+            &mut self.base
+        }
+        fn as_draw_mut(&mut self) -> Option<&mut dyn Draw> {
+            Some(self)
+        }
+    }
+    impl crate::event::EventHandler for LayerText {
+        fn handle_event(&mut self, _event: &crate::event::Event) {}
+    }
+    impl Draw for LayerText {
+        fn draw(&mut self, context: &mut RenderContext) {
+            use crate::core::{Font, HorizontalAlignment};
+            self.draws.set(self.draws.get() + 1);
+            let font = Font::simple("Arial", 12.0);
+            let rect = self.base.geometry();
+            for line in 0..16 {
+                context.draw_text(
+                    Point::new(rect.x + 2, rect.y + 2 + line * 14),
+                    "The quick brown fox jumps over the lazy dog 0123456789",
+                    &font,
+                    Color::BLACK,
+                    HorizontalAlignment::Left,
+                );
+            }
+        }
+    }
+
+    /// Builds a root with one child and returns both ids plus the child's draw counter.
+    fn layer_fixture(
+        root_geometry: Rect,
+        child_geometry: Rect,
+    ) -> (ObjectId, ObjectId, Rc<DrawCount>) {
+        let draws = Rc::new(DrawCount::new(0));
+        let root = register(Box::new(LayerRoot {
+            base: BaseWidget::new(WidgetKind::Panel, root_geometry, "layer-root"),
+        }))
+        .expect("mount root");
+        let child = register(Box::new(LayerProbe {
+            base: BaseWidget::new(WidgetKind::Panel, child_geometry, "layer-child"),
+            draws: Rc::clone(&draws),
+        }))
+        .expect("mount child");
+        with_widget_mut(root, |widget| widget.base_mut().add_child_linked(child))
+            .expect("the root is mounted");
+        (root, child, draws)
+    }
+
+    /// The second frame of an untouched control replays its layer and never runs `draw`.
+    #[test]
+    fn an_unchanged_widget_replays_its_cached_layer_without_drawing() {
+        clear_widget_layers_for_test();
+        let (root, child, draws) = layer_fixture(Rect::new(0, 0, 60, 40), Rect::new(5, 5, 20, 20));
+        let size = Size::new(60, 40);
+
+        let first = render_frame_tree(root, size, Color::WHITE).expect("first frame");
+        assert_eq!(draws.get(), 1, "the first frame has no layer to reuse");
+
+        let _ = take_widget_layer_replays_for_test();
+        let second = render_frame_tree(root, size, Color::WHITE).expect("second frame");
+        assert_eq!(draws.get(), 1, "an unchanged control must not run draw again");
+        assert!(
+            take_widget_layer_replays_for_test() >= 1,
+            "the second frame must be served from the layer cache"
+        );
+        assert_eq!(first, second, "the replay must be the bytes that were painted");
+
+        unregister(child);
+        unregister(root);
+    }
+
+    /// A submitted damage rectangle invalidates the control and replaces its layer.
+    #[test]
+    fn a_damaged_control_redraws_and_replaces_its_layer() {
+        clear_widget_layers_for_test();
+        let (root, child, draws) = layer_fixture(Rect::new(0, 0, 60, 40), Rect::new(5, 5, 20, 20));
+        let size = Size::new(60, 40);
+
+        render_frame_tree(root, size, Color::WHITE).expect("first frame");
+        render_frame_tree(root, size, Color::WHITE).expect("cached frame");
+        assert_eq!(draws.get(), 1, "the untouched frame replays the layer");
+
+        // `mark_dirty_rect` always advances the tree epoch, even for a control with no
+        // damage tracker of its own, which is the path `request_redraw` takes.
+        let _ = mark_dirty_rect(child, Rect::new(5, 5, 20, 20));
+        render_frame_tree(root, size, Color::WHITE).expect("dirty frame");
+        assert_eq!(draws.get(), 2, "a recorded damage must redraw the control");
+
+        render_frame_tree(root, size, Color::WHITE).expect("replacement cached frame");
+        assert_eq!(draws.get(), 2, "the replacement layer serves the next clean frame");
+
+        unregister(child);
+        unregister(root);
+    }
+
+    /// Damage to one control does not throw away an unrelated control's layer.
+    ///
+    /// This is what the separate layer epoch buys. A frame is still repainted whole after any
+    /// change — one frame is one rasterisation of the tree — but a control whose pixels did not
+    /// change replays the layer it already has. Before the layer epoch was separated from the
+    /// tree epoch, a hover on one button made every text control in the window shape again.
+    #[test]
+    fn a_damaged_control_keeps_an_unrelated_controls_layer() {
+        clear_widget_layers_for_test();
+        let root = register(Box::new(LayerRoot {
+            base: BaseWidget::new(WidgetKind::Panel, Rect::new(0, 0, 60, 40), "selective-root"),
+        }))
+        .expect("mount root");
+        let left_draws = Rc::new(DrawCount::new(0));
+        let right_draws = Rc::new(DrawCount::new(0));
+        let left = register(Box::new(LayerProbe {
+            base: BaseWidget::new(WidgetKind::Panel, Rect::new(5, 5, 20, 20), "selective-left"),
+            draws: Rc::clone(&left_draws),
+        }))
+        .expect("mount left");
+        let right = register(Box::new(LayerProbe {
+            base: BaseWidget::new(WidgetKind::Panel, Rect::new(35, 5, 20, 20), "selective-right"),
+            draws: Rc::clone(&right_draws),
+        }))
+        .expect("mount right");
+        with_widget_mut(root, |widget| {
+            widget.base_mut().add_child_linked(left);
+            widget.base_mut().add_child_linked(right);
+        })
+        .expect("the root is mounted");
+        let size = Size::new(60, 40);
+
+        render_frame_tree(root, size, Color::WHITE).expect("first frame");
+        render_frame_tree(root, size, Color::WHITE).expect("cached frame");
+        assert_eq!(
+            (left_draws.get(), right_draws.get()),
+            (1, 1),
+            "both controls have a warm layer"
+        );
+
+        let _ = take_widget_layer_replays_for_test();
+        let _ = mark_dirty_rect(left, Rect::new(5, 5, 20, 20));
+        render_frame_tree(root, size, Color::WHITE).expect("damaged frame");
+        assert_eq!(left_draws.get(), 2, "the damaged control repaints its layer");
+        assert_eq!(right_draws.get(), 1, "an unrelated control keeps its layer");
+        assert!(
+            take_widget_layer_replays_for_test() >= 1,
+            "the untouched control must have been served from its layer"
+        );
+
+        unregister(right);
+        unregister(left);
+        unregister(root);
+    }
+
+    /// Changing a control's geometry or size makes its old layer ineligible.
+    #[test]
+    fn resizing_a_control_invalidates_its_layer() {
+        clear_widget_layers_for_test();
+        let (root, child, draws) = layer_fixture(Rect::new(0, 0, 60, 40), Rect::new(5, 5, 20, 20));
+        let size = Size::new(60, 40);
+
+        render_frame_tree(root, size, Color::WHITE).expect("first frame");
+        render_frame_tree(root, size, Color::WHITE).expect("cached frame");
+        assert_eq!(draws.get(), 1, "the untouched frame replays the layer");
+
+        assert!(set_geometry(child, Rect::new(5, 5, 28, 24)), "the child is mounted");
+        render_frame_tree(root, size, Color::WHITE).expect("resized frame");
+        assert_eq!(draws.get(), 2, "a resized control must repaint its layer");
+
+        unregister(child);
+        unregister(root);
+    }
+
+    /// A global repaint (the theme path) invalidates every per-widget layer.
+    #[test]
+    fn a_global_repaint_invalidates_cached_layers() {
+        clear_widget_layers_for_test();
+        let (root, child, draws) = layer_fixture(Rect::new(0, 0, 60, 40), Rect::new(5, 5, 20, 20));
+        let size = Size::new(60, 40);
+
+        render_frame_tree_cached(root, size, Color::WHITE).expect("first frame");
+        render_frame_tree_cached(root, size, Color::WHITE).expect("cached frame");
+        assert_eq!(draws.get(), 1, "the untouched frame replays the cache");
+
+        arm_global_repaint();
+        render_frame_tree_cached(root, size, Color::WHITE).expect("repainted frame");
+        assert_eq!(draws.get(), 2, "a global repaint must not reuse the old theme's pixels");
+
+        unregister(child);
+        unregister(root);
+    }
+
+    /// A text-heavy control does not shape or rasterise again on an untouched frame.
+    #[test]
+    fn a_text_heavy_control_does_not_draw_again_on_an_unchanged_frame() {
+        clear_widget_layers_for_test();
+        let draws = Rc::new(DrawCount::new(0));
+        let root = register(Box::new(LayerRoot {
+            base: BaseWidget::new(WidgetKind::Panel, Rect::new(0, 0, 240, 200), "text-root"),
+        }))
+        .expect("mount root");
+        let text = register(Box::new(LayerText {
+            base: BaseWidget::new(WidgetKind::Panel, Rect::new(4, 4, 220, 180), "text-child"),
+            draws: Rc::clone(&draws),
+        }))
+        .expect("mount text");
+        with_widget_mut(root, |widget| widget.base_mut().add_child_linked(text))
+            .expect("the root is mounted");
+        let size = Size::new(240, 200);
+
+        render_frame_tree(root, size, Color::WHITE).expect("first frame");
+        assert_eq!(draws.get(), 1, "the first frame lays the text out");
+
+        let _ = take_widget_layer_replays_for_test();
+        render_frame_tree(root, size, Color::WHITE).expect("cached frame");
+        assert_eq!(draws.get(), 1, "a cached frame must not shape or rasterise text again");
+        assert!(
+            take_widget_layer_replays_for_test() >= 1,
+            "the text control must have been served by the layer cache"
+        );
+
+        unregister(text);
+        unregister(root);
+    }
+
+    /// The layer cache drops least-recently-used entries instead of growing without bound.
+    #[test]
+    fn the_layer_cache_is_bounded() {
+        clear_widget_layers_for_test();
+        let root = register(Box::new(LayerRoot {
+            base: BaseWidget::new(WidgetKind::Panel, Rect::new(0, 0, 64, 64), "bounded-root"),
+        }))
+        .expect("mount root");
+        let draws = Rc::new(DrawCount::new(0));
+        let mut children = Vec::new();
+        for index in 0..(MAX_CACHED_WIDGET_LAYERS + 8) {
+            let x = (index % 24) as i32 * 2;
+            let y = (index / 24) as i32 * 2;
+            let child = register(Box::new(LayerProbe {
+                base: BaseWidget::new(WidgetKind::Panel, Rect::new(x, y, 2, 2), "bounded-child"),
+                draws: Rc::clone(&draws),
+            }))
+            .expect("mount child");
+            with_widget_mut(root, |widget| widget.base_mut().add_child_linked(child))
+                .expect("the root is mounted");
+            children.push(child);
+        }
+
+        render_frame_tree(root, Size::new(64, 64), Color::WHITE).expect("frame");
+        assert!(
+            cached_widget_layer_count_for_test() <= MAX_CACHED_WIDGET_LAYERS,
+            "the cache must not exceed its configured bound"
+        );
+
+        for child in children {
+            unregister(child);
+        }
+        unregister(root);
     }
 
     /// Two clips compose to their overlap, and a disjoint pair is a zero-area answer rather

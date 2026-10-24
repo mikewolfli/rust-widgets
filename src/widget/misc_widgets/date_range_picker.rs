@@ -9,9 +9,7 @@
 //! A `range_changed` signal is emitted whenever the selection changes.
 
 use super::date_utils::{days_in_month, parse_iso_date, DAY_NAMES, MONTH_NAMES};
-#[cfg(test)]
-use crate::core::Point;
-use crate::core::{Color, HorizontalAlignment, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderContext, TEXT_FIT_MARGIN};
 use crate::signal::Signal1;
@@ -178,6 +176,32 @@ impl DateRangePicker {
 
         let day = (cell_index - first_dow + 1) as u32;
         Some((self.display_year, self.display_month, day))
+    }
+
+    /// Returns the grid cell index under `pos`, or `None` when the point is outside the
+    /// calendar grid.
+    ///
+    /// Shared by the press and hover paths so a pointer can never highlight a different
+    /// cell from the one a click would select.
+    fn cell_at_position(&self, pos: Point) -> Option<usize> {
+        let layout = self.grid_layout();
+        let rel_x = pos.x - layout.grid_left;
+        let rel_y = pos.y - layout.grid_top;
+        if rel_x < 0 || rel_y < 0 {
+            return None;
+        }
+        let col = (rel_x as u32) / layout.column_pitch;
+        let row = (rel_y as u32) / layout.row_pitch;
+        if col >= 7 || row >= 6 {
+            return None;
+        }
+        let cell_idx = (row as usize) * 7 + (col as usize);
+        (cell_idx < layout.total_cells).then_some(cell_idx)
+    }
+
+    /// The date under `pos`, if the point is on a day cell.
+    fn date_at_position(&self, pos: Point) -> Option<(i32, u32, u32)> {
+        self.cell_at_position(pos).and_then(|cell| self.date_at_cell(cell))
     }
 
     /// Checks if a date falls within the current selection range.
@@ -540,11 +564,23 @@ impl Draw for DateRangePicker {
         let day_font = role_font(style, 10.0);
         let total_cells = layout.total_cells;
 
+        // Two-digit day text is assembled into a stack buffer. The previous
+        // `day.to_string()` allocated once per visible cell per frame (up to 42
+        // allocations for a month grid that repaints on every hover move).
+        let mut day_buf = [0u8; 2];
         for cell_idx in 0..total_cells {
             let Some(date) = self.date_at_cell(cell_idx) else {
                 continue;
             };
             let day = date.2;
+            let day_text = if day < 10 {
+                day_buf[0] = b'0' + day as u8;
+                core::str::from_utf8(&day_buf[..1]).unwrap_or("")
+            } else {
+                day_buf[0] = b'0' + (day / 10) as u8;
+                day_buf[1] = b'0' + (day % 10) as u8;
+                core::str::from_utf8(&day_buf[..2]).unwrap_or("")
+            };
 
             let row = cell_idx / 7;
             let col = cell_idx % 7;
@@ -580,8 +616,7 @@ impl Draw for DateRangePicker {
             // the glyph's top edge, so the vertical centre is half the *line box* — the old
             // `(cell - height)/2 + ascent` began the glyph box half a line below the cell's
             // middle, which walked the bottom row past the control's edge.
-            let day_text = day.to_string();
-            let day_metrics = context.measure_text(&day_text, &day_font);
+            let day_metrics = context.measure_text(day_text, &day_font);
             let day_y = cell_y + (cell_size as i32 - day_metrics.height as i32) / 2;
 
             let day_color = if !is_enabled {
@@ -602,7 +637,7 @@ impl Draw for DateRangePicker {
                     cell_width + 2 * TEXT_FIT_MARGIN,
                     day_metrics.height,
                 ),
-                &day_text,
+                day_text,
                 &day_font,
                 day_color,
                 HorizontalAlignment::Center,
@@ -616,6 +651,28 @@ impl EventHandler for DateRangePicker {
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
+        }
+
+        match event {
+            // Hovering a day cell previews the range the click would complete. Before this
+            // arm `hover_date` was only ever `None`, so the draw's highlight branch was
+            // unreachable and the control gave no pointer feedback at all.
+            Event::MouseMove { pos } => {
+                let hovered = self.date_at_position(*pos);
+                if self.hover_date != hovered {
+                    self.hover_date = hovered;
+                    self.base.request_redraw();
+                }
+                return;
+            }
+            Event::MouseLeave { .. } => {
+                if self.hover_date.is_some() {
+                    self.hover_date = None;
+                    self.base.request_redraw();
+                }
+                return;
+            }
+            _ => {}
         }
 
         if let Event::MousePress { pos, button: 1, .. } = event {
@@ -823,6 +880,24 @@ mod tests {
             );
             assert!(clicked.end_date().is_none());
         }
+    }
+
+    #[test]
+    fn hover_tracks_the_day_under_the_pointer_and_clears_on_leave() {
+        let mut picker = make_picker();
+        let offset = picker.first_day_of_week();
+        let index = offset + 14; // day 15
+        let (col, row) = (index % 7, index / 7);
+
+        picker.handle_event(&Event::MouseMove { pos: cell_centre(&picker, col, row) });
+        assert_eq!(
+            picker.hover_date,
+            Some((2025, 1, 15)),
+            "the cell under the pointer must be the highlighted date"
+        );
+
+        picker.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
+        assert_eq!(picker.hover_date, None, "leaving the control clears the preview");
     }
 
     #[test]

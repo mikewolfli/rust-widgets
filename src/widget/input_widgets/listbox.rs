@@ -4,7 +4,8 @@
 //! List box widget.
 use crate::compat::{String, ToString, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
-use crate::event::{Event, EventHandler};
+use crate::event::dnd::{DragPayload, DragSource, DropEffect, DropTarget};
+use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 
@@ -15,6 +16,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{focus_ring_color, FocusRing, FOCUS_RING_WIDTH};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -30,6 +32,23 @@ fn list_box_selection_mode_to_str(mode: SelectionMode) -> &'static str {
         SelectionMode::Multi => "multi",
         SelectionMode::Extended => "extended",
         SelectionMode::None => "none",
+    }
+}
+
+/// The index a row takes after the row at `from` is moved to `to`.
+///
+/// Every index-based piece of state the list keeps — the selection, the cursor row and the
+/// range anchor — uses this one rule, so a reorder cannot leave one of them pointing at a
+/// different item than the other two.
+fn index_after_move(index: usize, from: usize, to: usize) -> usize {
+    if index == from {
+        to
+    } else if from < index && index <= to {
+        index - 1
+    } else if to <= index && index < from {
+        index + 1
+    } else {
+        index
     }
 }
 
@@ -71,6 +90,24 @@ pub struct ListBox {
     /// including mode switches and `clear()`, which can alter the selection
     /// without changing the cursor row.
     pub selection_changed: GenericSignal,
+    /// Emitted with the effect of a drag that began in this list.
+    ///
+    /// The coordinator reports the same effect through `DragSource::on_drag_finished`; this
+    /// signal is the observable form for a host that holds the control by id.
+    pub drag_finished: Signal1<DropEffect>,
+    /// The row a drag taken from this list started on.
+    ///
+    /// Taken in `drag_payload` and consumed by `on_drag_finished`: a transfer to another list
+    /// inserts the row there, and this is the copy the source then removes. An index is only
+    /// meaningful inside the list that produced it, which is why the payload's item id is not
+    /// reused for the removal — the rows may have shifted by then.
+    pending_drag_row: core::cell::Cell<Option<usize>>,
+    /// Whether the drop that ended the current gesture was committed **by this list**.
+    ///
+    /// A reorder is already finished when `on_drop` returns, so the source half must not remove
+    /// the row a second time. A transfer commits in the target's list, leaving this false, and
+    /// that is exactly when the source's copy has to go.
+    drop_committed_here: core::cell::Cell<bool>,
 }
 /// Selection mode for list, tree, table and list-box views.
 ///
@@ -119,6 +156,9 @@ impl ListBox {
             item_selected: Signal1::new(),
             item_activated: Signal1::new(),
             selection_changed: GenericSignal::new(),
+            drag_finished: Signal1::new(),
+            pending_drag_row: core::cell::Cell::new(None),
+            drop_committed_here: core::cell::Cell::new(false),
         }
     }
     /// Returns number of items.
@@ -216,6 +256,34 @@ impl ListBox {
             self.selection_changed.emit();
         }
     }
+
+    /// Moves the item at `from` to `to`, keeping the selection on the items it names.
+    ///
+    /// A move onto the same row is accepted without changing anything, so a drop aimed at
+    /// the dragged row still reports that the list accepted it. Returns `false` only for an
+    /// out-of-range index, which can only be a caller error.
+    pub fn move_row(&mut self, from: usize, to: usize) -> bool {
+        if from >= self.items.len() || to >= self.items.len() {
+            return false;
+        }
+        if from == to {
+            return true;
+        }
+        let item = self.items.remove(from);
+        self.items.insert(to, item);
+        for index in &mut self.selected_indices {
+            *index = index_after_move(*index, from, to);
+        }
+        // The mapping moves the dragged row ahead of rows that were behind it, so the sorted
+        // order `is_selected` binary-searches has to be restored after the transformation.
+        self.selected_indices.sort_unstable();
+        self.current_row = self.current_row.map(|index| index_after_move(index, from, to));
+        self.anchor = self.anchor.map(|index| index_after_move(index, from, to));
+        self.selection_changed.emit();
+        self.base.request_redraw();
+        true
+    }
+
     /// Clears all items.
     pub fn clear(&mut self) {
         self.items.clear();
@@ -570,6 +638,31 @@ impl ListBox {
         (index < self.items.len()).then_some(index)
     }
 
+    /// The row a drop at `pos` would land on.
+    ///
+    /// Dropping past the last row means "move to the end", the same way a drop past the last
+    /// tab is clamped by the tab strip. A point outside the content box is not a drop at all.
+    fn drop_index_at(&self, pos: Point) -> Option<usize> {
+        if let Some(index) = self.item_index_at_y(pos) {
+            return Some(index);
+        }
+        if self.content_rect().contains(pos) && !self.items.is_empty() {
+            return Some(self.items.len() - 1);
+        }
+        None
+    }
+
+    /// The rectangle the keyboard focus ring follows.
+    ///
+    /// A list box's keyboard target is a *row*, so the ring frames the current row rather
+    /// than the whole box. With no row selected there is no row to frame, so the content
+    /// box is the fallback: keyboard focus must remain visible either way.
+    fn focus_ring_rect(&self) -> Rect {
+        self.current_row
+            .and_then(|index| self.row_rect(index))
+            .unwrap_or_else(|| self.content_rect())
+    }
+
     /// Returns visible item range based on scroll position.
     fn visible_range(&self) -> (usize, usize) {
         let content = self.content_rect();
@@ -615,6 +708,17 @@ impl Widget for ListBox {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(120, 100)
     }
+
+    /// Opts the list into the runtime's drag coordinator as a source.
+    fn drag_source_mut(&mut self) -> Option<&mut dyn DragSource> {
+        Some(self)
+    }
+
+    /// Opts the list into the runtime's drag coordinator as a drop target.
+    fn drop_target_mut(&mut self) -> Option<&mut dyn DropTarget> {
+        Some(self)
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
     /// Resolves a published event name to the control's own signal.
@@ -642,8 +746,105 @@ impl Widget for ListBox {
             "selection_changed" => {
                 Some(EventSignalRef::unit("selection_changed", &self.selection_changed))
             }
+            "drag_finished" => {
+                Some(EventSignalRef::mapped("drag_finished", &self.drag_finished, |v| {
+                    CapabilityValue::String(v.as_str().to_string())
+                }))
+            }
             _ => None,
         }
+    }
+}
+
+/// A row drag carries its display index in the item id and its text in the label.
+///
+/// The index is the reorder key: a target reads it back with `parse`, and the text is the
+/// human-readable form a preview or an accessibility announcement uses. The label is also what
+/// a *different* list inserts, because the index addresses this list's rows and nothing else.
+impl DragSource for ListBox {
+    fn drag_payload(&self, pos: Point) -> Option<DragPayload> {
+        if !self.base.is_enabled() {
+            return None;
+        }
+        let index = self.item_index_at_y(pos)?;
+        let text = self.items.get(index)?.clone();
+        // A fresh gesture: the previous one's bookkeeping cannot describe this drag.
+        self.pending_drag_row.set(Some(index));
+        self.drop_committed_here.set(false);
+        Some(DragPayload::new("text/plain", index.to_string()).with_label(text).with_origin(pos))
+    }
+
+    /// Ends the gesture, removing the source copy of a row that was transferred away.
+    ///
+    /// A reorder inside this list already committed in `on_drop`, so nothing is removed. A
+    /// transfer inserted the row in another list and reported `Move`, which is the signal that
+    /// this list's copy has to go; a refusal reports `None` and the row stays where it was.
+    fn on_drag_finished(&mut self, effect: DropEffect) {
+        let moved_away = effect.consumes_source() && !self.drop_committed_here.get();
+        if moved_away {
+            if let Some(row) = self.pending_drag_row.take() {
+                self.remove_item(row);
+            }
+        }
+        self.pending_drag_row.set(None);
+        self.drop_committed_here.set(false);
+        self.drag_finished.emit(effect);
+    }
+}
+
+/// A row dropped on the list moves to the row under the pointer.
+///
+/// # Reorder versus transfer
+///
+/// A payload taken from this list names one of its rows, so the drop moves it. A payload taken
+/// from *another* list names an index that means nothing here, so the drop inserts the carried
+/// text at the row under the pointer instead — and the source list, told the effect was `Move`,
+/// removes its copy. Without that split a cross-list drag would move an unrelated row here and
+/// keep a stale copy there.
+impl DropTarget for ListBox {
+    fn can_accept(&self, payload: &DragPayload) -> bool {
+        if !self.base.is_enabled() || !payload.is_type("text/plain") {
+            return false;
+        }
+        if payload.came_from(self.base.id()) {
+            return payload.item_id.parse::<usize>().is_ok_and(|index| index < self.items.len());
+        }
+        !payload.label.is_empty()
+    }
+
+    fn on_drop(&mut self, payload: &DragPayload, pos: Point) -> DropEffect {
+        if !self.can_accept(payload) {
+            return DropEffect::None;
+        }
+        let Some(to) = self.drop_index_at(pos) else {
+            return DropEffect::None;
+        };
+        if payload.came_from(self.base.id()) {
+            let Ok(from) = payload.item_id.parse::<usize>() else {
+                return DropEffect::None;
+            };
+            if !self.move_row(from, to) {
+                return DropEffect::None;
+            }
+        } else {
+            // The carried text is inserted *before* the row under the pointer, which is what a
+            // drop on that row means; a drop past the last row lands after it.
+            self.insert_item(to, payload.label.clone());
+            self.selection_changed.emit();
+        }
+        // Either arm finished the move here, so the source half of this gesture must not remove
+        // a row when the coordinator reports the effect back.
+        self.drop_committed_here.set(true);
+        self.base.request_redraw();
+        DropEffect::Move
+    }
+
+    /// Highlights the band the row would land on.
+    fn preview_rect(&self, payload: &DragPayload, pos: Point) -> Option<Rect> {
+        if !self.can_accept(payload) {
+            return None;
+        }
+        self.row_rect(self.drop_index_at(pos)?)
     }
 }
 
@@ -847,9 +1048,11 @@ impl EventHandler for ListBox {
                     _ => {}
                 }
             }
-            Event::Wheel { delta, .. } => {
-                // delta.y > 0 = scroll down, delta.y < 0 = scroll up
-                self.scroll(-delta.y);
+            Event::Wheel { delta, modifiers } => {
+                // One notch is one row. The event's positive y means "content moves
+                // down", so it scrolls toward earlier rows, hence the negation.
+                let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
+                self.scroll(-scroll.lines_y);
             }
             // Other events are not relevant for this widget
             _ => {}
@@ -972,6 +1175,25 @@ impl Draw for ListBox {
                     Point::new(row.x, sep_y),
                     Point::new(row.x + row.width as i32, sep_y),
                     separator,
+                );
+            }
+        }
+
+        // ── Keyboard focus ring ──
+        //
+        // Inside the content clip, because the ring is drawn on a row that is itself clipped
+        // to the rows' box. Gated on the *reason* focus arrived: a pointer press selects a
+        // row without painting a ring under the cursor, while Tab and Shortcut draw one.
+        if self.base.draws_focus_ring() {
+            let ring = FocusRing::for_control(self.focus_ring_rect(), 0);
+            if ring.is_drawable() {
+                // The fallback is the surface's contrasting tone; an active theme overrides
+                // it with its declared `outline` token.
+                context.draw_rounded_rect_stroke(
+                    ring.rect,
+                    ring.radius,
+                    focus_ring_color(surface),
+                    FOCUS_RING_WIDTH,
                 );
             }
         }
@@ -1390,5 +1612,260 @@ mod tests {
                 "text at ({x},{y})-({right},{bottom}) escaped the list's bottom edge"
             );
         }
+    }
+
+    /// One wheel notch scrolls one row, whether the host sends the documented
+    /// notch delta or the legacy 120-unit tick.
+    #[test]
+    fn wheel_scrolls_one_row_per_notch() {
+        let mut list = listbox_with(10);
+
+        list.handle_event(&Event::wheel(0, -120, 0));
+        assert_eq!(list.scroll_offset, 1, "one legacy notch is one row");
+
+        list.handle_event(&Event::wheel(0, -1, 0));
+        assert_eq!(list.scroll_offset, 2, "one documented notch is one row");
+
+        list.handle_event(&Event::wheel(0, 120, 0));
+        assert_eq!(list.scroll_offset, 1, "the opposite notch scrolls back one row");
+    }
+
+    /// Keyboard focus paints the ring on the current row; a pointer press does not.
+    ///
+    /// The list reported `WidgetState::Focused` for keyboard focus but painted no ring, so
+    /// the state had no visible consumer. The ring is the only 2 px stroke a list with no
+    /// other chrome emits, which makes its presence observable in the render.
+    #[test]
+    fn a_keyboard_focused_list_paints_the_ring_and_pointer_focus_does_not() {
+        // The ring's colour reads the process-wide theme; hold the guard so a concurrent
+        // appearance switch cannot change this render mid-assertion.
+        let _guard = crate::style::theme_test_guard();
+        let make = || {
+            let mut list = ListBox::new(Rect::new(0, 0, 120, 80));
+            list.add_items(vec!["one".to_string(), "two".to_string()]);
+            list.set_current_row(Some(0));
+            list
+        };
+
+        let mut keyboard = make();
+        keyboard.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        assert!(keyboard.base.draws_focus_ring(), "Tab focus must ask for a ring");
+        let focused = crate::widget::svg::render_to_svg(&mut keyboard);
+        assert!(
+            focused.lines().any(|line| line.contains("stroke-width=\"2\"")),
+            "keyboard focus must paint the ring around the current row: {focused}"
+        );
+
+        let mut pointer = make();
+        pointer.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Pointer });
+        let unfocused = crate::widget::svg::render_to_svg(&mut pointer);
+        assert!(
+            !unfocused.lines().any(|line| line.contains("stroke-width=\"2\"")),
+            "pointer focus must not paint a ring: {unfocused}"
+        );
+    }
+
+    /// With no current row the ring falls back to the content box rather than vanishing.
+    #[test]
+    fn keyboard_focus_without_a_current_row_still_paints_a_ring() {
+        let _guard = crate::style::theme_test_guard();
+        let mut list = ListBox::new(Rect::new(0, 0, 120, 80));
+        list.add_item("one".to_string());
+        list.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        let svg = crate::widget::svg::render_to_svg(&mut list);
+        assert!(
+            svg.lines().any(|line| line.contains("stroke-width=\"2\"")),
+            "keyboard focus must be visible even with no row selected: {svg}"
+        );
+    }
+
+    // ── Drag and drop ─────────────────────────────────────────────────────
+
+    /// Unmounts a widget registered by a test, even on panic.
+    #[cfg(not(alloc_frugal))]
+    struct MountGuard(crate::core::ObjectId);
+
+    #[cfg(not(alloc_frugal))]
+    impl Drop for MountGuard {
+        fn drop(&mut self) {
+            crate::widget::runtime::unregister(self.0);
+        }
+    }
+
+    /// A press, a move past the threshold and a release inside the list move the pressed row
+    /// to the release row, and the source learns that the drop was a `Move`.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_drag_within_the_list_reorders_rows_and_reports_move() {
+        use crate::event::mouse_button::PRIMARY;
+        use crate::widget::runtime::{register, with_widget_mut, DragCoordinator};
+        use std::sync::{Arc, Mutex};
+
+        let mut list = ListBox::new(Rect::new(0, 0, 200, 100));
+        list.add_items(vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+        list.select(0);
+        let finished = Arc::new(Mutex::new(None));
+        let sink = Arc::clone(&finished);
+        list.drag_finished.connect_ref(move |effect: &DropEffect| {
+            *sink.lock().unwrap() = Some(*effect);
+        });
+        let id = register(crate::compat::Box::new(list)).expect("mount the list");
+        let _guard = MountGuard(id);
+
+        let viewport = Rect::new(0, 0, 400, 200);
+        let mut coordinator = DragCoordinator::new();
+        assert_eq!(coordinator.on_event(&Event::mouse_press(10, 5, PRIMARY), viewport), None);
+        assert_eq!(coordinator.on_event(&Event::mouse_move(10, 50), viewport), None);
+        assert_eq!(
+            coordinator.on_event(&Event::mouse_release(10, 50, PRIMARY), viewport),
+            Some(DropEffect::Move)
+        );
+
+        let observed = with_widget_mut(id, |widget| {
+            let list = (widget as &mut dyn core::any::Any)
+                .downcast_mut::<ListBox>()
+                .expect("the mounted control is a list box");
+            (list.items().to_vec(), list.selected_indices().to_vec())
+        })
+        .expect("the list is still mounted");
+        assert_eq!(observed.0, vec!["B", "C", "A"]);
+        assert_eq!(observed.1, vec![2], "the selection follows the row that moved");
+        assert_eq!(*finished.lock().unwrap(), Some(DropEffect::Move));
+    }
+
+    /// A row dragged onto a *second* list is inserted there and removed from the list it came
+    /// from.
+    ///
+    /// This is the difference between a reorder and a transfer: the payload's index addresses the
+    /// source's rows, so the target inserts the carried text instead of moving one of its own, and
+    /// the source — told the effect was `Move` — drops its copy.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_row_dragged_to_another_list_is_inserted_there_and_removed_from_the_source() {
+        use crate::event::mouse_button::PRIMARY;
+        use crate::widget::runtime::{register, with_widget_mut, DragCoordinator};
+
+        let mut source = ListBox::new(Rect::new(0, 0, 200, 100));
+        source.add_items(vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+        let mut target = ListBox::new(Rect::new(300, 0, 200, 100));
+        target.add_items(vec!["X".to_string(), "Y".to_string()]);
+        let source_id = register(crate::compat::Box::new(source)).expect("mount the source");
+        let _source_guard = MountGuard(source_id);
+        let target_id = register(crate::compat::Box::new(target)).expect("mount the target");
+        let _target_guard = MountGuard(target_id);
+
+        let viewport = Rect::new(0, 0, 600, 200);
+        let mut coordinator = DragCoordinator::new();
+        // Row 0 of the source, row 1 of the target (`item_height` is 20 by default).
+        assert_eq!(coordinator.on_event(&Event::mouse_press(10, 5, PRIMARY), viewport), None);
+        assert_eq!(coordinator.on_event(&Event::mouse_move(310, 25), viewport), None);
+        assert_eq!(
+            coordinator.on_event(&Event::mouse_release(310, 25, PRIMARY), viewport),
+            Some(DropEffect::Move)
+        );
+
+        let items = |id| {
+            with_widget_mut(id, |widget| {
+                (widget as &mut dyn core::any::Any)
+                    .downcast_mut::<ListBox>()
+                    .expect("the mounted control is a list box")
+                    .items()
+                    .to_vec()
+            })
+            .expect("the list is still mounted")
+        };
+        assert_eq!(items(source_id), vec!["B", "C"], "the source copy is gone");
+        assert_eq!(items(target_id), vec!["X", "A", "Y"], "the row landed before row 1");
+    }
+
+    /// A press that never travels far enough is still a click: no row moves and the selection
+    /// the press established is left exactly as it was.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_press_below_the_drag_threshold_keeps_the_selection() {
+        use crate::event::mouse_button::PRIMARY;
+        use crate::widget::runtime::{register, with_widget_mut, DragCoordinator};
+        use std::sync::{Arc, Mutex};
+
+        let mut list = ListBox::new(Rect::new(0, 0, 200, 100));
+        list.add_items(vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+        list.select(1);
+        let finished = Arc::new(Mutex::new(None));
+        let sink = Arc::clone(&finished);
+        list.drag_finished.connect_ref(move |effect: &DropEffect| {
+            *sink.lock().unwrap() = Some(*effect);
+        });
+        let id = register(crate::compat::Box::new(list)).expect("mount the list");
+        let _guard = MountGuard(id);
+
+        let viewport = Rect::new(0, 0, 400, 200);
+        let mut coordinator = DragCoordinator::new();
+        let _ = coordinator.on_event(&Event::mouse_press(10, 5, PRIMARY), viewport);
+        let _ = coordinator.on_event(&Event::mouse_move(10, 7), viewport);
+        assert_eq!(
+            coordinator.on_event(&Event::mouse_release(10, 7, PRIMARY), viewport),
+            Some(DropEffect::None),
+            "a gesture below the threshold is a click, not a drop"
+        );
+
+        let observed = with_widget_mut(id, |widget| {
+            let list = (widget as &mut dyn core::any::Any)
+                .downcast_mut::<ListBox>()
+                .expect("the mounted control is a list box");
+            (list.items().to_vec(), list.selected_indices().to_vec())
+        })
+        .expect("the list is still mounted");
+        assert_eq!(observed.0, vec!["A", "B", "C"]);
+        assert_eq!(observed.1, vec![1], "the click selection must not be disturbed");
+        assert_eq!(*finished.lock().unwrap(), Some(DropEffect::None));
+    }
+
+    /// Text dragged from a text area lands as a new row: a `text/plain` payload from *another*
+    /// control carries text, not one of this list's row indices, so the drop inserts it.
+    ///
+    /// This replaces the earlier expectation that such a payload was refused. Refusing it was
+    /// right while every drop was a reorder; with cross-control transfers the payload's label *is*
+    /// the row, and the source — told `Move` — removes its own copy.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn text_dragged_from_another_control_is_inserted_as_a_row() {
+        use crate::event::mouse_button::PRIMARY;
+        use crate::widget::runtime::{register, with_widget_mut, DragCoordinator};
+
+        let mut area =
+            crate::TextArea::new("not a row index".to_string(), Rect::new(0, 0, 100, 40));
+        area.select_all();
+        let area_id = register(crate::compat::Box::new(area)).expect("mount the text area");
+        let _area_guard = MountGuard(area_id);
+
+        let mut list = ListBox::new(Rect::new(200, 0, 200, 100));
+        list.add_items(vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+        list.select(1);
+        let list_id = register(crate::compat::Box::new(list)).expect("mount the list");
+        let _list_guard = MountGuard(list_id);
+
+        let viewport = Rect::new(0, 0, 400, 200);
+        let mut coordinator = DragCoordinator::new();
+        let _ = coordinator.on_event(&Event::mouse_press(10, 10, PRIMARY), viewport);
+        let _ = coordinator.on_event(&Event::mouse_move(210, 50), viewport);
+        assert_eq!(
+            coordinator.on_event(&Event::mouse_release(210, 50, PRIMARY), viewport),
+            Some(DropEffect::Move),
+            "a foreign text payload is inserted at the row under the pointer"
+        );
+
+        let observed = with_widget_mut(list_id, |widget| {
+            let list = (widget as &mut dyn core::any::Any)
+                .downcast_mut::<ListBox>()
+                .expect("the mounted control is a list box");
+            (list.items().to_vec(), list.selected_indices().to_vec())
+        })
+        .expect("the list is still mounted");
+        assert_eq!(
+            observed.0,
+            vec!["A", "B", "not a row index", "C"],
+            "the carried text became a row before the row under the pointer"
+        );
+        assert_eq!(observed.1, vec![1], "an insert after the selected row leaves its index alone");
     }
 }

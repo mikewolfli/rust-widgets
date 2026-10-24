@@ -57,6 +57,11 @@ pub mod gpu;
 // SVG rendering backend
 pub mod svg;
 
+// Matrix maths and the batch transform stack. Compiled only with the `3d` feature so the
+// default 2D build carries none of it.
+#[cfg(feature = "3d")]
+pub mod math3d;
+
 // Text caching
 #[cfg(test)]
 mod tests;
@@ -80,7 +85,8 @@ pub mod grapheme;
 
 // Core
 pub use core::{
-    BlendMode, CompoundPath, CompoundPathError, RenderCommand, ShapedText, TextCluster, TextMetrics,
+    BlendMode, CompoundPath, CompoundPathError, LayerEffect, RenderCommand, ShapedText,
+    TextCluster, TextMetrics,
 };
 
 // SVG

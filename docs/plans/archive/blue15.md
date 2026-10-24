@@ -661,7 +661,6 @@ cargo test --no-default-features --features desktop --lib -q # 全绿
 //! Gives every self-painting control its painting bridge, once.
 
 /// A control that paints itself and can be reached through `dyn Widget`.
-///
 /// `Widget::as_draw_mut` defaults to `None`, which is honest for a control with
 /// no `Draw` impl but was *silently wrong* for the 162 controls that do
 /// implement `Draw`: `render_frame` asked the bridge, got `None`, and returned
@@ -736,7 +735,6 @@ fn every_factory_widget_can_be_painted() {
 
 ```rust
 /// One property contract, implemented by the control that owns the property.
-///
 /// Replaces the centralised `match widget.kind()` dispatch, where adding a
 /// control meant editing seven files and silently doing nothing if one was
 /// missed. Common properties come from the blanket impl below; a control
@@ -755,7 +753,6 @@ pub trait WidgetProperties {
 
 ```rust
 /// Properties every control owns via `BaseWidget`.
-///
 /// These live here, not in the `Platform` trait and not duplicated per control.
 /// A control's `WidgetProperties::get` forwards its unmatched names here.
 pub fn base_property_get(
@@ -826,7 +823,6 @@ impl WidgetProperties for Button {
 
 ```rust
 /// Build the widget object for `kind` and hand it to the host surface.
-///
 /// The returned id addresses the widget inside `widget::runtime`. There is no
 /// second mechanism: a kind either has a widget object (all 167 do) or the
 /// factory reports `None` and this returns 0.
@@ -979,7 +975,6 @@ cargo test --no-default-features --features desktop --lib -q
 
 ```rust
 /// What this build's self-hosted runtime must provide.
-///
 /// `embedded` and `mini` differ in exactly two facts — whether an OS window
 /// exists, and whether the alloc-frugal caps apply. Encoding them as one table
 /// keeps the 800+ scattered feature tests from coming back.
@@ -1487,7 +1482,6 @@ fn as_draw_mut(&mut self) -> Option<&mut dyn crate::widget::Draw> {
 
 ```rust
 /// Blanket bridge: anything that paints itself is paintable through `dyn Widget`.
-///
 /// Implementing `Draw` for a control whose `Widget::as_draw_mut` still returned
 /// `None` was a silent no-op — 162 of 168 controls were in exactly that state,
 /// so mounting any of them painted an empty surface. Returning `Some(self)` here
@@ -1655,7 +1649,6 @@ fn routing_matches_backend_declaration() {
 
 ```rust
 /// One property access contract, implemented by every control.
-///
 /// Replaces the centralised `match widget.kind()` dispatch, where adding a
 /// control meant editing seven files and silently doing nothing if one was
 /// missed. A control now answers for itself, and the only way to be a control
@@ -1740,7 +1733,6 @@ let mut backend = SoftwarePaintBackend::new(size, 1.0);
 ```rust
 thread_local! {
  /// Reused per-thread paint surface, keyed by size.
- ///
  /// `render_frame` allocated a fresh double buffer (`front` + `back`) on every
  /// call — 8 MB per frame at 1000x1000, which at 60 Hz is ~480 MB/s of pure
  /// zeroing. Surfaces are recycled because widgets are `!Send` and every

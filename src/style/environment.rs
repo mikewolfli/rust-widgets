@@ -20,7 +20,7 @@
 //! | mirror the layout? | nothing |
 //!
 //! The last three rows and the first are why this is a **trait** and not a set of globals: the
-//! authority for all eight is the *host*, and a library can only ask.
+//! authority for all of them is the *host*, and a library can only ask.
 //!
 //! # Why not `cfg`, environment variables or constants
 //!
@@ -44,7 +44,7 @@
 //! provider renders exactly as it did before this module existed, which is what makes the whole
 //! mechanism opt-in.
 
-use crate::core::TextDirection;
+use crate::core::{Color, TextDirection};
 use crate::style::ReducedMotionPreference;
 use crate::style::ThemeMode;
 
@@ -122,6 +122,33 @@ pub trait EnvironmentProvider {
         MotionPreference::NoPreference
     }
 
+    /// Whether translucent materials should be replaced with opaque surfaces.
+    ///
+    /// # What the `bool` means, and what it does not
+    ///
+    /// `true` means the user asked the system to reduce transparency, so a material that would
+    /// show what is behind it should be drawn as a solid surface instead.
+    ///
+    /// `false` is both "the setting was observed and is off" **and** "there is no such setting
+    /// here". Those are different facts about the user, and the collapse to `false` is a rendering
+    /// decision, not a claim: a caller that needs to tell them apart asks the platform, whose
+    /// answer stays `Option<bool>` (`None` = not observed). Treating "cannot ask" as "the user
+    /// turned transparency off" would silently make every material opaque on a backend that has
+    /// never heard of the setting.
+    fn reduce_transparency(&self) -> bool {
+        false
+    }
+
+    /// The host's accent colour, when it has a user-selectable one.
+    ///
+    /// `None` means the host did not report one. That is distinct from a colour: a backend with no
+    /// accent concept must not answer the default blue, because a theme would then record a blue
+    /// accent the user never chose. macOS reports `NSColor.controlAccentColor`; other backends
+    /// answer `None` until they have a source.
+    fn system_accent(&self) -> Option<Color> {
+        None
+    }
+
     /// Whether the user asked for increased contrast.
     ///
     /// A host that returns `true` is asking the library to prefer `outline` over decorative
@@ -161,9 +188,13 @@ pub trait EnvironmentProvider {
 /// So the default provider **is** the platform, for the facts the platform can answer, and stays
 /// neutral for the rest — which are exactly the ones no `Platform` method covers.
 ///
-/// Two facts are forwarded today: [`EnvironmentProvider::text_scale`] and
-/// [`EnvironmentProvider::color_scheme`]. The latter used to be answered by the neutral default
-/// even on a backend that could read the system appearance, so a dark-mode user got a light UI.
+/// Facts forwarded today: [`EnvironmentProvider::text_scale`],
+/// [`EnvironmentProvider::color_scheme`], [`EnvironmentProvider::locale`],
+/// [`EnvironmentProvider::motion_preference`], [`EnvironmentProvider::high_contrast`],
+/// [`EnvironmentProvider::reduce_transparency`] and [`EnvironmentProvider::system_accent`]. The
+/// appearance and locale facts used to be answered by the neutral default even on a backend that
+/// could read them, so a dark-mode user got a light UI and a localized host got the neutral
+/// locale.
 ///
 /// A host that wants to supply its own answers (a settings screen, a test) calls
 /// [`install_environment`] and takes over completely.
@@ -221,6 +252,22 @@ impl EnvironmentProvider for PlatformEnvironment {
         crate::platform::platform_facts().high_contrast().unwrap_or(false)
     }
 
+    /// The host's transparency preference, when it has one.
+    ///
+    /// `None` (no such setting) and `Some(false)` (setting observed and off) both paint opaque
+    /// materials, but only the latter is a claim about the user; see the trait method's docs.
+    fn reduce_transparency(&self) -> bool {
+        reduce_transparency_from(crate::platform::platform_facts().reduce_transparency())
+    }
+
+    /// The host's accent colour, when a backend can read one.
+    ///
+    /// This is the fact, not a fallback: `None` stays `None` so a theme can decide what to do
+    /// about an unknown accent without being handed a fabricated blue.
+    fn system_accent(&self) -> Option<Color> {
+        crate::platform::platform_facts().accent_color()
+    }
+
     /// The base text direction, derived from the host locale.
     ///
     /// The direction is a property of the language, so it is derived from the same tag
@@ -265,7 +312,8 @@ pub struct DefaultEnvironment;
 
 impl EnvironmentProvider for DefaultEnvironment {}
 
-/// The eight facts, copied out of the provider as **values**.
+/// The eight base facts plus the two accessibility/appearance facts that joined them, copied out
+/// of the provider as **values**.
 ///
 /// # Why a value type and not a reference to the provider
 ///
@@ -299,6 +347,10 @@ pub struct EnvironmentSnapshot {
     pub text_direction: TextDirection,
     /// See [`EnvironmentProvider::mirroring`].
     pub mirroring: bool,
+    /// See [`EnvironmentProvider::reduce_transparency`].
+    pub reduce_transparency: bool,
+    /// See [`EnvironmentProvider::system_accent`].
+    pub system_accent: Option<Color>,
 }
 
 impl Default for EnvironmentSnapshot {
@@ -323,6 +375,8 @@ impl EnvironmentSnapshot {
             high_contrast: provider.high_contrast(),
             text_direction: provider.text_direction(),
             mirroring: provider.mirroring(),
+            reduce_transparency: provider.reduce_transparency(),
+            system_accent: provider.system_accent(),
         }
     }
 
@@ -393,6 +447,19 @@ pub fn effective_duration(tempo: crate::style::MotionSlot, env: &EnvironmentSnap
         return 0;
     }
     tempo.duration_ms()
+}
+
+/// Folds the platform's three-way transparency fact into the style layer's `bool`.
+///
+/// # Why the `Option` survives as far as this function
+///
+/// `None` ("this backend cannot ask") and `Some(false)` ("the user left the setting off") both
+/// paint opaque materials, so the fold is `unwrap_or(false)`. Keeping the fold in one named
+/// function rather than open-coding `unwrap_or` at the provider is what makes the rule auditable:
+/// a caller reading `Platform::reduce_transparency` still sees the difference, and this function
+/// is the only place that deliberately discards it for painting.
+pub(crate) fn reduce_transparency_from(observed: Option<bool>) -> bool {
+    observed.unwrap_or(false)
 }
 
 // ── The process-wide slot ────────────────────────────────────────────────────
@@ -514,6 +581,8 @@ mod tests {
         contrast: bool,
         scheme: ThemeMode,
         layout_scale: f32,
+        transparency: bool,
+        accent: Option<Color>,
     }
 
     impl Default for Fixed {
@@ -527,6 +596,8 @@ mod tests {
                 contrast: false,
                 scheme: ThemeMode::Light,
                 layout_scale: 1.0,
+                transparency: false,
+                accent: None,
             }
         }
     }
@@ -556,11 +627,17 @@ mod tests {
         fn mirroring(&self) -> bool {
             self.mirroring
         }
+        fn reduce_transparency(&self) -> bool {
+            self.transparency
+        }
+        fn system_accent(&self) -> Option<Color> {
+            self.accent
+        }
     }
 
     /// The default provider answers every question with a neutral value.
     ///
-    /// This is the "an uninstalled build is unchanged" property, stated as eight assertions
+    /// This is the "an uninstalled build is unchanged" property, stated as one assertion per fact
     /// rather than as a claim: a build with no host provider must render exactly what it did
     /// before this module existed.
     #[test]
@@ -574,6 +651,8 @@ mod tests {
         assert!(!env.high_contrast);
         assert_eq!(env.text_direction, TextDirection::LeftToRight);
         assert!(!env.mirroring);
+        assert!(!env.reduce_transparency, "an uninstalled build keeps materials opaque");
+        assert_eq!(env.system_accent, None, "no accent is not the same fact as the blue accent");
         assert_eq!(env, EnvironmentSnapshot::default(), "the two spellings agree");
     }
 
@@ -594,6 +673,8 @@ mod tests {
             mirroring: true,
             contrast: true,
             scheme: ThemeMode::Dark,
+            transparency: true,
+            accent: Some(Color::rgb(0xAF, 0x52, 0xDE)),
         };
         let env = EnvironmentSnapshot::from_provider(&provider);
         assert_eq!(env.text_scale, 1.5);
@@ -604,6 +685,32 @@ mod tests {
         assert!(env.high_contrast);
         assert_eq!(env.text_direction, TextDirection::RightToLeft);
         assert!(env.mirroring);
+        assert!(env.reduce_transparency);
+        assert_eq!(env.system_accent, Some(Color::rgb(0xAF, 0x52, 0xDE)));
+    }
+
+    /// "Cannot ask" is not "the user turned it off".
+    ///
+    /// Both paint opaque materials, so the fold is `false` in both cases — but the platform's
+    /// `Option` is what keeps the difference observable, and this test pins both the fold and the
+    /// distinction the fold must not erase.
+    #[test]
+    fn an_unobserved_transparency_setting_is_not_a_user_choice() {
+        // The fold: no observation and an observed `false` produce the same painting decision.
+        assert!(!reduce_transparency_from(None));
+        assert!(!reduce_transparency_from(Some(false)));
+        assert!(reduce_transparency_from(Some(true)), "an observed request is honoured");
+
+        // The distinction: `None` is still `None` at the interface that can express it.
+        let neutral = EnvironmentSnapshot::from_provider(&DefaultEnvironment);
+        assert!(!neutral.reduce_transparency);
+        assert_eq!(neutral.system_accent, None);
+        // And the provider's answer is exactly the platform's fold, so a backend that cannot
+        // observe the setting does not become a backend that reports "off".
+        assert_eq!(
+            PlatformEnvironment.reduce_transparency(),
+            crate::platform::platform_facts().reduce_transparency().unwrap_or(false)
+        );
     }
 
     /// A hostile scale degrades to a usable one instead of collapsing the layout.
@@ -694,7 +801,7 @@ mod tests {
         assert_eq!(text_direction_for_locale(None), TextDirection::LeftToRight);
     }
 
-    /// The platform provider forwards all four environment facts it can read.
+    /// The platform provider forwards every environment fact it can read.
     ///
     /// This cannot pin the host's actual values (they differ per machine), so it asserts the
     /// relationship a forwarding bug would break: the provider's answers equal the platform's.
@@ -706,6 +813,8 @@ mod tests {
         let platform = crate::platform::platform_facts();
         assert_eq!(provider.locale(), platform.system_locale());
         assert_eq!(provider.high_contrast(), platform.high_contrast().unwrap_or(false));
+        assert_eq!(provider.reduce_transparency(), platform.reduce_transparency().unwrap_or(false));
+        assert_eq!(provider.system_accent(), platform.accent_color());
         assert_eq!(
             provider.motion_preference() == MotionPreference::ReduceMotion,
             platform.reduce_motion() == Some(true)
